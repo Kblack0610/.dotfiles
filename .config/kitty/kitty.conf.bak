@@ -1,0 +1,234 @@
+# vim:fileencoding=utf-8:foldmethod=marker
+
+# Allow scripts to controll kitty session
+allow_remote_control yes
+
+# Numpad tab change
+map cmd+1 goto_tab 1
+map cmd+2 goto_tab 2
+map cmd+3 goto_tab 3
+map cmd+4 goto_tab 4
+map cmd+5 goto_tab 5
+map cmd+6 goto_tab 6
+map cmd+7 goto_tab 7
+map cmd+8 goto_tab 8
+map cmd+9 goto_tab 9
+map kitty_mod+1 goto_tab 1
+map kitty_mod+2 goto_tab 2
+map kitty_mod+3 goto_tab 3
+map kitty_mod+4 goto_tab 4
+map kitty_mod+5 goto_tab 5
+map kitty_mod+6 goto_tab 6
+map kitty_mod+7 goto_tab 7
+map kitty_mod+8 goto_tab 8
+map kitty_mod+9 goto_tab 9
+# Cycle tab
+map cmd+; next_tab
+map kitty_mod+; next_tab
+map cmd+a previous_tab
+map kitty_mod+a previous_tab
+
+# Maximized remap
+map ctrl+f toggle_maximized
+
+font_family      Hack
+# The rest are default to Auto, and kitty will try to find them based on the font family
+# bold_font        DroidSansMono Nerd Font Bold
+# italic_font      DroidSansMono Nerd Font Italic
+# bold_italic_font DroidSansMono Nerd Font Bold Italic
+
+# 18 is good size on linux
+# font_size 18.0
+# 22 is good size on mac
+font_size 14.0
+
+####START####
+#: E.g. symbol_map U+E0A0-U+E0A3,U+E0C0-U+E0C7 PowerlineSymbols
+###########################################################
+# Symbols Nerd Font complete symbol_map
+# easily troubleshoot missing/incorrect characters with:
+#   kitty --debug-font-fallback
+###########################################################
+# - Use additional nerd symbols
+# See https://github.com/be5invis/Iosevka/issues/248
+# See https://github.com/ryanoasis/nerd-fonts/wiki/Glyph-Sets-and-Code-Points
+
+# Seti-UI + Custom
+symbol_map U+E5FA-U+E6AC Symbols Nerd Font
+
+# Devicons
+symbol_map U+E700-U+E7C5 Symbols Nerd Font
+
+# Font Awesome
+symbol_map U+F000-U+F2E0 Symbols Nerd Font
+
+# Font Awesome Extension
+symbol_map U+E200-U+E2A9 Symbols Nerd Font
+
+# Material Design Icons
+symbol_map U+F0001-U+F1AF0 Symbols Nerd Font
+
+# Weather
+symbol_map U+E300-U+E3E3 Symbols Nerd Font
+
+# Octicons
+symbol_map U+F400-U+F532,U+2665,U+26A1 Symbols Nerd Font
+
+# Powerline Symbols
+symbol_map U+E0A0-U+E0A2,U+E0B0-U+E0B3 Symbols Nerd Font
+
+# Powerline Extra Symbols
+symbol_map U+E0A3,U+E0B4-U+E0C8,U+E0CA,U+E0CC-U+E0D4 Symbols Nerd Font
+
+# IEC Power Symbols
+symbol_map U+23FB-U+23FE,U+2B58 Symbols Nerd Font
+
+# Font Logos
+symbol_map U+F300-U+F32F Symbols Nerd Font
+
+# Pomicons
+symbol_map U+E000-U+E00A Symbols Nerd Font
+
+# Codicons
+symbol_map U+EA60-U+EBEB Symbols Nerd Font
+
+# Additional sets
+symbol_map U+E276C-U+E2771 Symbols Nerd Font # Heavy Angle Brackets
+symbol_map U+2500-U+259F Symbols Nerd Font # Box Drawing
+
+# Some symbols not covered by Symbols Nerd Font
+# nonicons contains icons in the range: U+F101-U+F27D
+# U+F167 is HTML logo, but YouTube logo in Symbols Nerd Font
+symbol_map U+F102,U+F115-U+F118,U+F12F,U+F13E,U+F1AF,U+F1BF,U+F1CF,U+F1FF,U+F20F,U+F21F-U+F220,U+F22E-U+F22F,U+F23F,U+F24F,U+F25F nonicons
+####END#####
+
+# Hide extra window stuff
+hide_window_decorations yes
+
+# Padding
+window_padding_width 5 0 0 0
+
+# Tabs on top
+tab_bar_edge top
+
+# Tab style
+tab_bar_style slant
+
+# Remove user/hostname from tab title
+tab_title_template "{title[title.index(":") + 1:]}"
+
+# Tab Colors
+active_tab_foreground   #000
+active_tab_background   #999
+active_tab_font_style   bold-italic
+inactive_tab_foreground #444
+inactive_tab_background #999
+inactive_tab_font_style normal
+
+# THEME
+# One Dark by Giuseppe Cesarano, https://github.com/GiuseppeCesarano
+# This work is licensed under the terms of the GPL-2.0 license.
+# For a copy, see https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html.
+# foreground #979eab
+# # OG bg color, i alterd to look good for my image background
+# # background #282c34
+# # Override color
+# background #000000
+# cursor #cccccc
+# color0 #282c34
+# color1 #e06c75
+# color2 #98c379
+# color3 #e5c07b
+# color4 #61afef
+# color5 #be5046
+# color6 #56b6c2
+# color7 #979eab
+# color8 #393e48
+# color9 #d19a66
+# color10 #56b6c2
+# color11 #e5c07b
+# color12 #61afef
+# color13 #be5046
+# color14 #56b6c2
+# color15 #abb2bf
+# selection_foreground #282c34
+# selection_background #979eab
+# One Dark END
+
+## name: Tokyo Night
+## license: MIT
+## author: Folke Lemaitre
+## upstream: https://github.com/folke/tokyonight.nvim/raw/main/extras/kitty/tokyonight_night.conf
+
+
+# OG tokyonight BG
+# background #1a1b26
+# This is my override so BG is dark AF
+background #0A020E
+foreground #c0caf5
+selection_background #283457
+selection_foreground #c0caf5
+url_color #73daca
+cursor #c0caf5
+cursor_text_color #1a1b26
+
+# Tabs
+active_tab_background #7aa2f7
+active_tab_foreground #16161e
+inactive_tab_background #292e42
+inactive_tab_foreground #545c7e
+#tab_bar_background #15161e
+
+# Windows
+active_border_color #7aa2f7
+inactive_border_color #292e42
+
+# normal
+color0 #15161e
+color1 #f7768e
+color2 #9ece6a
+color3 #e0af68
+color4 #7aa2f7
+color5 #bb9af7
+color6 #7dcfff
+color7 #a9b1d6
+
+# bright
+color8 #414868
+color9 #f7768e
+color10 #9ece6a
+color11 #e0af68
+color12 #7aa2f7
+color13 #bb9af7
+color14 #7dcfff
+color15 #c0caf5
+
+# extended colors
+color16 #ff9e64
+color17 #db4b4b
+## name: Tokyo Night END
+
+# Use image in path as BG
+background_image ~/Pictures/asv-bg.png
+
+# Layout of BG
+background_image_layout scaled
+
+# Tint the BG image for better text readability
+background_tint 0.98
+
+# Map CMD + ` to go to next kitty window
+map kitty_mod+` next_window
+
+# Map CMD + t to go to open kitty tab from durrent dir
+# kitty_mod doesnt work for some reason on mac so bind both
+map cmd+t new_tab_with_cwd
+map kitty_mod+t new_tab_with_cwd
+
+# Allows for vim terminal scroll back
+scrollback_pager nvim --noplugin -u ~/.config/kitty/scrollback-pager/nvim/init.lua -c "silent write! /tmp/kitty_scrollback_buffer | te cat /tmp/kitty_scrollback_buffer - "
+map kitty_mod+s show_scrollback
+map cmd+s show_scrollback
+
+include theme.conf
+# include ./kitty-themes/themes/Floraverse.conf 
