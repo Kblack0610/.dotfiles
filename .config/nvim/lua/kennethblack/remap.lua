@@ -9,7 +9,6 @@ vim.keymap.set("n", "<C-u>", "<C-u>zz")
 vim.keymap.set("n", "n", "nzzzv")
 vim.keymap.set("n", "N", "Nzzzv")
 
-
 -- greatest remap ever
 vim.keymap.set("x", "<leader>p", [["_dP]])
 
@@ -43,7 +42,7 @@ vim.keymap.set("n", "<leader><leader>", function()
 end)
 
 -- Edit and reload nvim config file quickly
-vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.config/nvim/ <bar> tcd %:h<cr>", {
+vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.dotfiles/.config/nvim/ <bar> tcd %:h<cr>", {
   silent = true,
   desc = "open init.lua",
 })
