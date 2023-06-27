@@ -78,6 +78,7 @@ return require('packer').startup(function(use)
     use("nvim-tree/nvim-tree.lua")
     use("nvim-tree/nvim-web-devicons")
     use('mfussenegger/nvim-dap')
+    use('sultanahamer/nvim-dap-reactnative')
     -- use({
     --     "jackMort/ChatGPT.nvim",
     --     config = function()

@@ -160,6 +160,11 @@ _G.packer_plugins = {
     path = "/home/kennethblack/.local/share/nvim/site/pack/packer/start/nvim-dap",
     url = "https://github.com/mfussenegger/nvim-dap"
   },
+  ["nvim-dap-reactnative"] = {
+    loaded = true,
+    path = "/Users/A3037604/.local/share/nvim/site/pack/packer/start/nvim-dap-reactnative",
+    url = "https://github.com/sultanahamer/nvim-dap-reactnative"
+  },
   ["nvim-lspconfig"] = {
     loaded = true,
     path = "/home/kennethblack/.local/share/nvim/site/pack/packer/start/nvim-lspconfig",
@@ -261,6 +266,7 @@ time([[Config for rose-pine]], false)
 -- Config for: toggleterm.nvim
 time([[Config for toggleterm.nvim]], true)
 try_loadstring("\27LJ\2\0028\0\0\2\0\3\0\0066\0\0\0'\1\1\0B\0\2\0029\0\2\0B\0\1\1K\0\1\0\nsetup\15toggleterm\frequire\0", "config", "toggleterm.nvim")
+
 time([[Config for toggleterm.nvim]], false)
 
 _G._packer.inside_compile = false
