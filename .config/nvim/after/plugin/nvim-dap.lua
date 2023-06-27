@@ -1,5 +1,32 @@
 local dap = require('dap')
 
+
+
+
+-- OR
+-- directly - typescript react example
+
+dap.adapters.node2 = {
+	type = "executable",
+	command = "node",
+	args = { os.getenv("HOME") .. "/vscode-node-debug2/out/src/nodeDebug.js" },
+}
+
+
+dap.configurations.typescriptreact = {
+	{
+		name = "React native",
+		type = "node2",
+		request = "attach",
+		program = "${file}",
+		cwd = vim.fn.getcwd(),
+		sourceMaps = true,
+		protocol = "inspector",
+		console = "integratedTerminal",
+		port = 35000,
+	},
+}
+
 dap.adapters.chrome = {
     type = "executable",
     command = "node",
