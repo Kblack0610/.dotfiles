@@ -20,7 +20,12 @@ return require('packer').startup(function(use)
             vim.cmd('colorscheme rose-pine')
         end
     })
-    use('nvim-treesitter/nvim-treesitter', { run = ':TSUpdate' })
+    
+    use ({
+        'nvim-treesitter/nvim-treesitter', 
+        -- { run = ':TSUpdate' },
+        requires = { { 'JoosepAlviste/nvim-ts-context-commentstring' } }
+    })
     use('nvim-treesitter/playground')
     use('theprimeagen/harpoon')
     use('mbbill/undotree')
@@ -50,7 +55,10 @@ return require('packer').startup(function(use)
     use {
         'numToStr/Comment.nvim',
         config = function()
-            require('Comment').setup()
+            require('Comment').setup({   
+            pre_hook = 
+            require('ts_context_commentstring.integrations.comment_nvim').create_pre_hook(),
+        })
         end
     }
     use { 'nvim-telescope/telescope-fzf-native.nvim', run = 'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build' }

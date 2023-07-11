@@ -1,5 +1,7 @@
 local builtin = require('telescope.builtin')
 local actions = require "telescope.actions"
+local utils = require("telescope.utils")
+
 require('telescope').setup {
     pickers = {
         buffers = {
@@ -30,6 +32,11 @@ require('telescope').setup {
         }
     }
 }
+
+
+-- vim.keymap.set('n', '<leader>pd', builtin.find_files, {cwd = utils.buffer_dir()})
+
+vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
 
 --require('telescope').load_extension('fzf')
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
