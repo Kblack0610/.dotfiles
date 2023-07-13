@@ -66,3 +66,13 @@ require("toggleterm").setup{
 vim.keymap.set("n", "<leader>pt", "<cmd>ToggleTerm<cr>",
   {silent = true, noremap = true}
 )
+
+local Terminal  = require('toggleterm.terminal').Terminal
+local lazygit = Terminal:new({ cmd = "lazygit", hidden = true })
+
+function _lazygit_toggle()
+  lazygit:toggle()
+end
+
+vim.api.nvim_set_keymap("n", "<leader>gb", "<cmd>lua _lazygit_toggle()<CR>", {noremap = true, silent = true})
+

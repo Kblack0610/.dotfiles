@@ -30,6 +30,7 @@ vim.lsp.handlers["textDocument/publishDiagnostics"] =
         signs = false,
         update_in_insert = false
     })
+
 lsp.configure('omnisharp-mono', {
   on_attach = function(client, bufnr)
     print('hello omnisharp mono')
@@ -39,6 +40,9 @@ lsp.configure('omnisharp-mono', {
   --   
   -- }
 })
+-- TODO TS SERVER
+require'lspconfig'.tsserver.setup{}
+
 
 local cmp = require('cmp')
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
@@ -48,7 +52,60 @@ local cmp_mappings = lsp.defaults.cmp_mappings({
     ['<C-y>'] = cmp.mapping.confirm({ select = true }),
     ["<C-Space>"] = cmp.mapping.complete(),
 })
+local cmp_select_opts = {behavior = cmp.SelectBehavior.Select}
 
+cmp.setup({
+  sources = {
+    {name = 'nvim_lsp'},
+  },
+  mapping = {
+    ['<C-y>'] = cmp.mapping.confirm({select = true}),
+    ['<C-e>'] = cmp.mapping.abort(),
+    ['<C-u>'] = cmp.mapping.scroll_docs(-4),
+    ['<C-d>'] = cmp.mapping.scroll_docs(4),
+    ['<Up>'] = cmp.mapping.select_prev_item(cmp_select_opts),
+    ['<Down>'] = cmp.mapping.select_next_item(cmp_select_opts),
+    ['<C-p>'] = cmp.mapping(function()
+      if cmp.visible() then
+        cmp.select_prev_item(cmp_select_opts)
+      else
+        cmp.complete()
+      end
+    end),
+    ['<C-n>'] = cmp.mapping(function()
+      if cmp.visible() then
+        cmp.select_next_item(cmp_select_opts)
+      else
+        cmp.complete()
+      end
+    end),
+  },
+  snippet = {
+    expand = function(args)
+      require('luasnip').lsp_expand(args.body)
+    end,
+  },
+  window = {
+    documentation = {
+      max_height = 15,
+      max_width = 60,
+    }
+  },
+  formatting = {
+    fields = {'abbr', 'menu', 'kind'},
+    format = function(entry, item)
+      local short_name = {
+        nvim_lsp = 'LSP',
+        nvim_lua = 'nvim'
+      }
+
+      local menu_name = short_name[entry.source.name] or entry.source.name
+
+      item.menu = string.format('[%s]', menu_name)
+      return item
+    end,
+  },
+})
 cmp_mappings['<Tab>'] = nil
 cmp_mappings['<S-Tab>'] = nil
 
@@ -78,8 +135,6 @@ lsp.on_attach(function(client, bufnr)
     -- vim.keymap.set("n", "<leader>e", "<CMD> lua vim.diagnostic.open_float()<CR>", opts)
     vim.keymap.set("n", "gd", function() vim.lsp.buf.definition() end, opts)
     vim.keymap.set("n", "gD", function() vim.lsp.buf.declaration() end, opts)
-    -- vim.api.nvim_set_keymap("n", "gD", "<cmd>lua vim.lsp.buf.declaration()<CR>", { noremap = true, silent = true })
-    -- vim.api.nvim_set_keymap("n", "gd", "<cmd>lua vim.lsp.buf.definition()<CR>", { noremap = true, silent = true })
     vim.keymap.set("n", "K", function() vim.lsp.buf.hover() end, opts)
     vim.keymap.set("n", "<leader>vws", function() vim.lsp.buf.workspace_symbol() end, opts)
     vim.keymap.set("n", "<leader>vd", function() vim.diagnostic.open_float() end, opts)
@@ -89,6 +144,7 @@ lsp.on_attach(function(client, bufnr)
     vim.keymap.set("n", "<leader>vrr", function() vim.lsp.buf.references() end, opts)
     vim.keymap.set("n", "<leader>vrn", function() vim.lsp.buf.rename() end, opts)
     vim.keymap.set("i", "<C-h>", function() vim.lsp.buf.signature_help() end, opts)
+    -- for unity
     if client.name == "omnisharp" then
         client.server_capabilities.semanticTokensProvider = {
             full = vim.empty_dict(),
@@ -173,8 +229,3 @@ end)
 
 lsp.setup()
 
--- vim.diagnostic.config({
---     virtual_text = true
--- })
-
-lsp.setup()

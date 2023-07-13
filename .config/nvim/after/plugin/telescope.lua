@@ -13,11 +13,16 @@ require('telescope').setup {
         }
     },
     defaults = {
+        -- for unity
         -- file_ignore_patterns = { "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
         --     "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules", "%.prefab",
             -- "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
             --
-        file_ignore_patterns = {"%.snap"},
+        file_ignore_patterns = {"%.snap", '__tests__'},
+        --when you needs tests
+        -- file_ignore_patterns = {"%.snap"},
+
+        --other stuff
         -- find_command = { "fd", "-t=f", "-a" },
         -- path_display = { "absolute" },
         wrap_results = true
@@ -39,13 +44,21 @@ require('telescope').setup {
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
 
 --require('telescope').load_extension('fzf')
-vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
+-- vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
 -- vim.keymap.set('n', '<leader>pc', builtin.find_files, {default_text = " ", search_dirs = { "/tmp" }})
 -- lua require('telescope.builtin').live_grep({default_text = " ", search_dirs = { "/tmp" }})  
 vim.keymap.set('n', '<C-p>', builtin.git_files, {})
 vim.keymap.set('n', '<leader>ps', function()
     builtin.grep_string({ search = vim.fn.input("Grep > ") })
 end)
+--
+-- vim.keymap.set('n', '<leader>pd', function()
+--     builtin.live_grep({ searchdirs = './account' })
+-- end)
+
+-- vim.keymap.set("n", "<leader>pd", "<cmd>Telescope live_grep search_dirs=./account/<CR>");
+
 vim.keymap.set('n', '<leader>pg', builtin.live_grep, {})
+vim.keymap.set('n', '<leader>pw', builtin.grep_string, {})
 vim.keymap.set('n', '<leader>pb', builtin.buffers, {})
 
