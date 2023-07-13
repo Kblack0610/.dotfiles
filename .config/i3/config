@@ -5,8 +5,6 @@
 # this file and re-run i3-config-wizard(1).
 #
 
-
-
 ####CUSTOM ALIASES
 #exec --no-startup-id nitrogen --set-auto /Media/Pictures/godofwar.jpg --head=0 && nitrogen --set-auto /Media/Pictures/godofwar.jpg --head=1
 #exec --no-startup-id feh --bg-max ~/Media/Pictures/godofwar.jpg
@@ -20,8 +18,9 @@ gaps inner 10
 gaps outer 10
 bindsym $mod+z		gaps outer current plus 5
 bindsym $mod+Shift+z	gaps outer current minus 5
+
 # Put second monitor above
-exec "xrandr --output DP-3 --auto --above HDMI-0"
+exec "xrandr --output DP-3 --auto --right-of HDMI-0"
 # keybinding to lock screen
 bindsym Control+$mod+l exec "i3lock -c 000000"
 

@@ -18,11 +18,10 @@ require('telescope').setup {
         --     "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules", "%.prefab",
             -- "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
             --
-        file_ignore_patterns = {"%.snap", '__tests__'},
-        --when you needs tests
-        -- file_ignore_patterns = {"%.snap"},
-
-        --other stuff
+        -- when you needs tests
+        -- file_ignore_patterns = {"%.snap", "%.meta"},
+        -- other stuff
+        file_ignore_patterns = {"%.snap","%.meta", '__tests__'},
         -- find_command = { "fd", "-t=f", "-a" },
         -- path_display = { "absolute" },
         wrap_results = true
