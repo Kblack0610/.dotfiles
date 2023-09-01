@@ -24,11 +24,11 @@ lsp.configure('lua-language-server', {
 vim.lsp.handlers["textDocument/publishDiagnostics"] =
     vim.lsp.with(vim.lsp.diagnostic.on_publish_diagnostics, {
         -- Disable underline, it's very annoying
-        underline = false,
+        underline = true,
         -- Enable virtual text, override spacing to 4
-        virtual_text = false,
-        signs = false,
-        update_in_insert = false
+        virtual_text = true,
+        signs = true,
+        update_in_insert = true 
     })
 
 lsp.configure('omnisharp-mono', {
