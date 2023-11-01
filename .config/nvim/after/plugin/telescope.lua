@@ -19,9 +19,9 @@ require('telescope').setup {
             -- "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
             --
         -- when you needs tests
-        -- file_ignore_patterns = {"%.snap", "%.meta"},
+        file_ignore_patterns = {"%.snap", "%.meta"},
         -- other stuff
-        file_ignore_patterns = {"%.snap","%.meta", '__tests__'},
+        -- file_ignore_patterns = {"%.snap","%.meta", '__tests__'},
         -- find_command = { "fd", "-t=f", "-a" },
         -- path_display = { "absolute" },
         wrap_results = true
@@ -41,6 +41,7 @@ require('telescope').setup {
 -- vim.keymap.set('n', '<leader>pd', builtin.find_files, {cwd = utils.buffer_dir()})
 
 vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
+-- vim.keymap.set('n', '<leader>pc', builtin.find_files, {default_text = " ", search_dirs = { "/tmp" }})
 
 --require('telescope').load_extension('fzf')
 -- vim.keymap.set('n', '<leader>pf', builtin.find_files, {})

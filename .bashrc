@@ -248,6 +248,8 @@ alias setbright="sudo brightnessctl set "
 alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
+
+alias vi='nvim --listen /tmp/nvim-server.pipe'
 ###########################
 ## Ubuntu-specific stuff ##
 ###########################
@@ -269,3 +271,4 @@ fi
 # Ubuntu already had an "fd" package, so the one I'd like to use is called "fdfind".
 ! which fdfind >/dev/null || alias fd=fdfind
 
+ulimit -n 4000

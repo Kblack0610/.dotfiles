@@ -1,16 +1,41 @@
+-- SETUP
+
 local lsp = require('lsp-zero').preset({
     name = 'minimal',
+    signs = true,
     set_lsp_keymaps = true,
     manage_nvim_cmp = true,
     suggest_lsp_servers = false,
+    -- sign_icons = {
+    --     error = 'E',
+    --     warn = 'W',
+    --     hint = 'H',
+    --     info = 'I'
+    -- },
+    -- severity_sort = false,
+    -- suggest_lsp_servers = false,
+    -- update_in_insert = false,
     underline = false,
 })
 
--- (Optional) Configure lua language server for neovim
+--todo might remove
+vim.lsp.handlers["textDocument/publishDiagnostics"] =
+    vim.lsp.with(vim.lsp.diagnostic.on_publish_diagnostics, {
+        -- Disable underline, it's very annoying
+        underline = true,
+        -- Enable virtual text, override spacing to 4
+        virtual_text = true,
+        signs = true,
+        update_in_insert = true 
+    })
+    
 lsp.nvim_workspace()
 
+
+-- SPECIFIC LANGUAGE SERVER CONFIGURATIONS
+-- todo Fix Undefined global 'vim'
 lsp.ensure_installed({ 'tsserver' })
--- Fix Undefined global 'vim'
+
 lsp.configure('lua-language-server', {
     settings = {
         Lua = {
@@ -21,29 +46,48 @@ lsp.configure('lua-language-server', {
     }
 })
 
-vim.lsp.handlers["textDocument/publishDiagnostics"] =
-    vim.lsp.with(vim.lsp.diagnostic.on_publish_diagnostics, {
-        -- Disable underline, it's very annoying
-        underline = true,
-        -- Enable virtual text, override spacing to 4
-        virtual_text = true,
-        signs = true,
-        update_in_insert = true 
-    })
 
 lsp.configure('omnisharp-mono', {
   on_attach = function(client, bufnr)
     print('hello omnisharp mono')
-    print('fuck my life!!!!')
   end,
-  -- settings = {
-  --   
-  -- }
+
 })
--- TODO TS SERVER
+
 require'lspconfig'.tsserver.setup{}
 
+-- FUNCTIONS
 
+local function filter(arr, fn)
+  if type(arr) ~= "table" then
+    return arr
+  end
+
+  local filtered = {}
+  for k, v in pairs(arr) do
+    if fn(v, k, arr) then
+      table.insert(filtered, v)
+    end
+  end
+
+  return filtered
+end
+
+local function filterReactDTS(value)
+  return string.match(value.filename, 'react/index.d.ts') == nil
+end
+
+local function on_list(options)
+  local items = options.items
+  if #items > 1 then
+    items = filter(items, filterReactDTS)
+  end
+
+  vim.fn.setqflist({}, ' ', { title = options.title, items = items, context = options.context })
+  vim.api.nvim_command('copen') -- or maybe you want 'copen' instead of 'cfirst'
+end
+
+-- POSSIBLY BULLSHIT
 local cmp = require('cmp')
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
 local cmp_mappings = lsp.defaults.cmp_mappings({
@@ -114,37 +158,31 @@ lsp.setup_nvim_cmp({
     mapping = cmp_mappings
 })
 
-lsp.set_preferences({
-    virtual_text = false,
-    signs = false,
-    update_in_insert = false,
-    underline = false,
-    severity_sort = false,
-    suggest_lsp_servers = false,
-    sign_icons = {
-        error = 'E',
-        warn = 'W',
-        hint = 'H',
-        info = 'I'
-    }
-})
-
 lsp.on_attach(function(client, bufnr)
     local opts = { buffer = bufnr, remap = false }
     lsp_status.on_attach(client)
-    -- vim.keymap.set("n", "<leader>e", "<CMD> lua vim.diagnostic.open_float()<CR>", opts)
-    vim.keymap.set("n", "gd", function() vim.lsp.buf.definition() end, opts)
+    local bufopts = { noremap=true, silent=true, buffer=bufnr }
+    -- vim.keymap.set('n', 'gd', function() vim.lsp.buf.definition{on_list=on_list} end, bufopts)
+    vim.keymap.set('n', 'gd', function() vim.lsp.buf.definition() end, bufopts)
     vim.keymap.set("n", "gD", function() vim.lsp.buf.declaration() end, opts)
     vim.keymap.set("n", "K", function() vim.lsp.buf.hover() end, opts)
-    vim.keymap.set("n", "<leader>vws", function() vim.lsp.buf.workspace_symbol() end, opts)
-    vim.keymap.set("n", "<leader>vd", function() vim.diagnostic.open_float() end, opts)
+
     vim.keymap.set("n", "[d", function() vim.diagnostic.goto_next() end, opts)
     vim.keymap.set("n", "]d", function() vim.diagnostic.goto_prev() end, opts)
-    vim.keymap.set("n", "<leader>vca", function() vim.lsp.buf.code_action() end, opts)
-    vim.keymap.set("n", "<leader>vrr", function() vim.lsp.buf.references() end, opts)
-    vim.keymap.set("n", "<leader>vrn", function() vim.lsp.buf.rename() end, opts)
-    vim.keymap.set("i", "<C-h>", function() vim.lsp.buf.signature_help() end, opts)
-    -- for unity
+
+    -- !!!!!!!!!!!!! NOTE: OPEN FLOAT IS default "gl" on lsp-zero!"
+    
+    -- vim.keymap.set("n", "<leader>xt", function() vim.diagnostic.open_float({scope="line"}) end, opts)
+    --vim.keymap.set("n", "<leader>vx", function() vim.lsp.diagnostic.show_line_diagnostics() end, opts)
+    --
+    -- possibly bs commands
+    -- vim.keymap.set("n", "<leader>vca", function() vim.lsp.buf.code_action() end, opts)
+    -- vim.keymap.set("n", "<leader>vrr", function() vim.lsp.buf.references() end, opts)
+    -- vim.keymap.set("n", "<leader>vrn", function() vim.lsp.buf.rename() end, opts)
+    --vim.set("n", "<leader>vws", function() vim.lsp.buf.workspace_symbol() end, opts)
+    --vim.keymap.set("i", "<C-h>", function() vim.lsp.buf.signature_help() end, opts)
+    
+    -- for unity, TODO might remove?
     if client.name == "omnisharp" then
         client.server_capabilities.semanticTokensProvider = {
             full = vim.empty_dict(),
@@ -228,4 +266,8 @@ lsp.on_attach(function(client, bufnr)
 end)
 
 lsp.setup()
+
+
+
+
 

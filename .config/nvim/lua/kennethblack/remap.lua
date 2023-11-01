@@ -24,6 +24,7 @@ vim.keymap.set("i", "<C-c>", "<Esc>")
 vim.keymap.set("n", "Q", "<nop>")
 vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww tmux-sessionizer<CR>")
 vim.keymap.set("n", "<leader>f", vim.lsp.buf.format)
+-- vim.keymap.set("n", "<leader>e", vim.lsp.diagnostic.show_line_diagnostics)
 
 vim.keymap.set("n", "<C-k>", "<cmd>cnext<CR>zz")
 vim.keymap.set("n", "<C-j>", "<cmd>cprev<CR>zz")
@@ -57,3 +58,4 @@ vim.keymap.set("n", "<leader>Q", "<cmd>qa!<cr>", { silent = true, desc = "quit n
 -- Go to the beginning and end of current line in insert mode quickly
 vim.keymap.set("i", "<C-A>", "<HOME>")
 vim.keymap.set("i", "<C-E>", "<END>")
+
