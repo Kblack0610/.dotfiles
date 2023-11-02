@@ -1,6 +1,6 @@
-##################################
 ## ALIASES ##
 ##################################
+
 # some more ls aliases
 alias ll='ls --color -alF'
 alias la='ls --color -A'
@@ -20,16 +20,32 @@ alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config
 
 alias vi='nvim --listen /tmp/nvim-server.pipe'
 
-########################################
-## Cool bash features nobody knows of ##
-########################################
+## Color ##
+##################################
+
+# Normal Bash
+# export PS1='\[\e[1;38;5;244m\]\t \[\e[1;36m\]\u@\H \[\e[1;33m\]\w \[\e[1;36m\]\$ \[\e[0m\]' 
+
+# Alpine Linux / ash
+# export PS1='\[\e[1;38;5;244m\]$(date +%H:%M:%S) \[\e[1;36m\]\u@\H \[\e[1;33m\]\w \[\e[1;36m\]\$ \[\e[0m\]'
+
+# Termux (without user@host)
+export PS1='\[\e[1;38;5;244m\]\t \[\e[1;33m\]\w \[\e[1;36m\]\$ \[\e[0m\]'
+
+# Minimal without path to working directory (~ $)
+# export PS1='\[\e[1;33m\]\W \[\e[1;36m\]\$ \[\e[0m\]'
+
+## CONFIGURATION ##
+##################################
+
 case $- in
     *i*) ;;
       *) return;;
 esac
 
 #Add docker as a group for lazydocker
-newgrp docker
+#DO NOT USE
+# newgrp docker
 
 ## Set Vim in terminal 
 set -o vi
@@ -62,17 +78,13 @@ shopt -s checkwinsize
 # match all files and zero or more directories and subdirectories.
 shopt -s globstar
 
-####################################################################
 ## Type :W in vim (or :WQ respectively) to save a file using sudo ##
-####################################################################
 
 if which vim >/dev/null && ! grep '^command W ' ~/.vimrc >/dev/null 2>&1 && ! [ `id -u` -eq 0 ]; then
 	echo "command W :execute ':silent w !sudo tee % > /dev/null' | :if v:shell_error | :edit! | :endif" >> ~/.vimrc
 fi
 
-#############################
 ## Warn about root shells! ##
-#############################
 
 if [ `id -u` -eq 0 ]; then 
     start="\033[1;37;41m"
@@ -85,9 +97,8 @@ if [ `id -u` -eq 0 ]; then
 fi
 
 
-#########################
 ## Path & Applications ##
-#########################
+##################################
 
 PATH="$HOME/.local/bin:$PATH"
 PATH="$HOME/Utilities:$PATH"
