@@ -1,3 +1,5 @@
 os:
   editCommand: 'nvim'
+  openCommand: 'nvim'
+  openCommandTemplate: '{{editor}} --server /tmp/nvim-server.pipe --remote-tab "$(pwd)/{{filename}}"'
   editCommandTemplate: '{{editor}} --server /tmp/nvim-server.pipe --remote-tab "$(pwd)/{{filename}}"'
