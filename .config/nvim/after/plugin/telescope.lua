@@ -40,7 +40,7 @@ require('telescope').setup {
 
 -- vim.keymap.set('n', '<leader>pd', builtin.find_files, {cwd = utils.buffer_dir()})
 
-vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
+vim.keymap.set('n', '<leader>pf', "<cmd>Telescope find_files disable_devicons=true <CR>")
 vim.keymap.set("n", "<leader>ps", "<cmd>Telescope find_files search_dirs=%:p:h select_buffer=true<CR>");
 -- vim.keymap.set('n', '<leader>pc', builtin.find_files, {default_text = " ", search_dirs = { "/tmp" }})
 

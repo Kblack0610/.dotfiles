@@ -24,8 +24,8 @@ require("telescope").load_extension "file_browser"
 
 vim.keymap.set("n", "<space>pa", ":Telescope file_browser<CR>")
 
--- open file_browser with the path of the current buffer
-vim.keymap.set("n", "<space>pv", ":Telescope file_browser path=%:p:h select_buffer=true<CR>")
+-- open file_browser with the path of the current buffer --for not hide devicons
+vim.keymap.set("n", "<space>pv", ":Telescope file_browser disable_devicons=true path=%:p:h<CR>")
 
 -- -- Alternatively, using lua API
 -- vim.keymap.set("n", "<space>fb", function()
