@@ -5,6 +5,7 @@ require("telescope").setup {
     file_browser = {
       theme = "ivy",
       -- disables netrw and use telescope-file-browser in its place
+      initial_mode = "normal",
       hijack_netrw = true,
       mappings = {
         ["i"] = {
