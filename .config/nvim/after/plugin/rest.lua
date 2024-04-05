@@ -1,4 +1,12 @@
 
 -- vim.keymap.set('n', '<leader>r', builtin, {})
 -- nnoremap <Plug>RestNvim :lua require('rest-nvim').run()<CR>
-
+-- keybinds = {
+--   {
+--     "<localleader>rr", "<cmd>Rest run<cr>", "Run request under the cursor",
+--   },
+--   {
+--     "<localleader>rl", "<cmd>Rest run last<cr>", "Re-run latest request",
+--   },
+-- }
+--
