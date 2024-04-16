@@ -59,4 +59,5 @@ vim.keymap.set("n", "<leader>Q", "<cmd>qa!<cr>", { silent = true, desc = "quit n
 -- Go to the beginning and end of current line in insert mode quickly
 vim.keymap.set("i", "<C-A>", "<HOME>")
 vim.keymap.set("i", "<C-E>", "<END>")
-
+vim.keymap.set("n", "<C-l>", "<C-w>w")
+vim.keymap.set("n", "<C-h>", "<C-w>W")
