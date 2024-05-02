@@ -17,7 +17,7 @@ require('telescope').setup {
         file_ignore_patterns = { "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
             "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules", "%.prefab",
             "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
-            --
+
         -- when you needs tests
         -- file_ignore_patterns = {"%.snap", "%.meta"},
         -- other stuff
@@ -49,7 +49,7 @@ vim.keymap.set('n', '<C-p>', builtin.git_files, {})
 --     builtin.grep_string({ search = vim.fn.input("Grep > ") })
 -- end)
 
-vim.keymap.set("n", "<leader>pd", "<cmd>Telescope live_grep search_dirs=.<CR>");
+vim.keymap.set("n", "<leader>pd", "<cmd>Telescope live_grep search_dirs=%:p:h<CR>");
 
 vim.keymap.set('n', '<leader>pg', builtin.live_grep, {})
 vim.keymap.set('n', '<leader>pw', builtin.grep_string, {})
