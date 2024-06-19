@@ -21,7 +21,7 @@ vim.opt.hlsearch = false
 vim.opt.incsearch = true
 
 vim.opt.termguicolors = true
-vim.opt.guifont='PrototypeNerdFont-Regular'
+vim.opt.guifont = '0xProto Nerd Font'
 vim.opt.scrolloff = 8
 vim.opt.signcolumn = "yes"
 vim.opt.isfname:append("@-@")
@@ -39,8 +39,9 @@ vim.opt.foldmethod = "marker"
 vim.opt.foldmarker = "#region,#endregion"
 vim.opt.foldexpr = "v:lua.vim.treesitter.foldexpr()"
 function _G.MyFoldText()
-  return vim.fn.getline(vim.v.foldstart)
+    return vim.fn.getline(vim.v.foldstart)
 end
+
 vim.opt.foldtext = 'v:lua.MyFoldText()'
 vim.opt.foldlevel = 99
 vim.opt.foldlevelstart = 1

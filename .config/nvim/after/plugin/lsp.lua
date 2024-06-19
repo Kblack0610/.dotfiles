@@ -31,7 +31,6 @@ vim.lsp.handlers["textDocument/publishDiagnostics"] =
     
 lsp.nvim_workspace()
 
-
 -- SPECIFIC LANGUAGE SERVER CONFIGURATIONS
 -- todo Fix Undefined global 'vim'
 lsp.ensure_installed({ 'tsserver' })
@@ -55,37 +54,6 @@ lsp.configure('omnisharp-mono', {
 })
 
 require'lspconfig'.tsserver.setup{}
-
--- FUNCTIONS
-
-local function filter(arr, fn)
-  if type(arr) ~= "table" then
-    return arr
-  end
-
-  local filtered = {}
-  for k, v in pairs(arr) do
-    if fn(v, k, arr) then
-      table.insert(filtered, v)
-    end
-  end
-
-  return filtered
-end
-
-local function filterReactDTS(value)
-  return string.match(value.filename, 'react/index.d.ts') == nil
-end
-
-local function on_list(options)
-  local items = options.items
-  if #items > 1 then
-    items = filter(items, filterReactDTS)
-  end
-
-  vim.fn.setqflist({}, ' ', { title = options.title, items = items, context = options.context })
-  vim.api.nvim_command('copen') -- or maybe you want 'copen' instead of 'cfirst'
-end
 
 -- POSSIBLY BULLSHIT
 local cmp = require('cmp')
