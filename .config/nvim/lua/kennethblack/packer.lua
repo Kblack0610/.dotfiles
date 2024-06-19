@@ -21,16 +21,18 @@ return require('packer').startup(function(use)
         requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" }
     }
     --THEME SHIT
-    use({
-        'rose-pine/neovim',
-        as = 'rose-pine',
-        config = function()
-            require("rose-pine").setup()
-            vim.cmd('colorscheme rose-pine')
-        end
-    })
-
     use('nvim-tree/nvim-web-devicons')
+    use { "ellisonleao/gruvbox.nvim" }
+
+    -- use({
+    --     'rose-pine/neovim',
+    --     as = 'rose-pine',
+    --     config = function()
+    --         require("rose-pine").setup()
+    --         vim.cmd('colorscheme rose-pine')
+    --     end
+    -- })
+
 
     -- use "folke/tokyonight.nvim"
 
