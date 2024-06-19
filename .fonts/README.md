@@ -1,4 +1,7 @@
+NOTE Have to install symbols only font as well, reset font cache (in bash rc) for linux or install fonts with homebrew into Library/Fonts for mac.
+
 # Nerd Fonts
+
 
 This is an archived font from the Nerd Fonts release v3.2.1.
 
