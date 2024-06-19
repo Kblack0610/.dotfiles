@@ -7,6 +7,8 @@ alias la='ls --color -A'
 alias l='ls --color -CF'
 alias ls='ls --color -CF'
 
+alias refreshfontcache='fc-cache -fv'
+
 alias v="nvr . -s"
 alias nv="nvim ."
 alias g="git"

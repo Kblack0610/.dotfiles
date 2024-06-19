@@ -20,6 +20,7 @@ return require('packer').startup(function(use)
         "nvim-telescope/telescope-file-browser.nvim",
         requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" }
     }
+    --THEME SHIT
     use({
         'rose-pine/neovim',
         as = 'rose-pine',
@@ -29,7 +30,12 @@ return require('packer').startup(function(use)
         end
     })
 
-    use "folke/tokyonight.nvim"
+    use('nvim-tree/nvim-web-devicons')
+
+    -- use "folke/tokyonight.nvim"
+
+    -- End Theme Shit
+
     use({
         'nvim-treesitter/nvim-treesitter',
         -- { run = ':TSUpdate' },
@@ -39,7 +45,6 @@ return require('packer').startup(function(use)
     use('theprimeagen/harpoon')
     use('mbbill/undotree')
     use('tpope/vim-fugitive')
-    use('nvim-tree/nvim-web-devicons')
     use {
         'VonHeikemen/lsp-zero.nvim',
         branch = 'v1.x',
@@ -95,7 +100,6 @@ return require('packer').startup(function(use)
     end }
 
     use("nvim-tree/nvim-tree.lua")
-    use("nvim-tree/nvim-web-devicons")
     use('mfussenegger/nvim-dap')
     use('ggandor/leap.nvim')
 
