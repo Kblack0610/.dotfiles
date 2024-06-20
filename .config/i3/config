@@ -22,10 +22,10 @@ bindsym $mod+Shift+z	gaps outer current minus 5
 # Put second monitor above
 exec "xrandr --output DP-3 --auto --right-of HDMI-0"
 # keybinding to lock screen
-bindsym Control+$mod+l exec "i3lock -c 000000"
+bindsym Control+$mod+l exec "i3lock -t -i /home/kblack0610/Media/LockScreen/lockscreen.png"
 
 # auto lock the screen
-exec "xautolock -detectsleep -time 3 -locker \"i3lock -c 000000\""
+exec "xautolock -detectsleep -time 3 -locker \"i3lock -t -i /home/kblack0610/Media/LockScreen/lockscreen.png\""
 
 # Resizing windows in i3 using keyboard only
 # https://unix.stackexchange.com/q/255344/150597
