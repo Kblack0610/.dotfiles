@@ -262,11 +262,6 @@ _G.packer_plugins = {
     path = "/home/kblack0610/.local/share/nvim/site/pack/packer/start/vim-fugitive",
     url = "https://github.com/tpope/vim-fugitive"
   },
-  vimwiki = {
-    loaded = true,
-    path = "/home/kblack0610/.local/share/nvim/site/pack/packer/start/vimwiki",
-    url = "https://github.com/vimwiki/vimwiki"
-  },
   ["zen-mode.nvim"] = {
     loaded = true,
     path = "/home/kblack0610/.local/share/nvim/site/pack/packer/start/zen-mode.nvim",

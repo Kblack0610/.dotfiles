@@ -106,7 +106,6 @@ return require('packer').startup(function(use)
     use('ggandor/leap.nvim')
 
     -- use('sultanahamer/nvim-dap-reactnative')
-    use('vimwiki/vimwiki')
 
     -- use {
     --   "rest-nvim/rest.nvim",
