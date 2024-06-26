@@ -4,6 +4,7 @@ require("telescope").setup {
   extensions = {
     file_browser = {
       theme = "ivy",
+      -- theme = "dropdown",
       -- disables netrw and use telescope-file-browser in its place
       initial_mode = "normal",
       hijack_netrw = true,
@@ -26,7 +27,7 @@ vim.keymap.set("n", "<space>pa", ":Telescope file_browser<CR>")
 
 -- open file_browser with the path of the current buffer 
 -- TODO Fix icons
-vim.keymap.set("n", "<space>pv", ":Telescope file_browser disable_devicons=true path=%:p:h<CR>")
+vim.keymap.set("n", "<space>pv", ":Telescope file_browser path=%:p:h<CR>")
 
 -- -- Alternatively, using lua API
 -- vim.keymap.set("n", "<space>fb", function()
