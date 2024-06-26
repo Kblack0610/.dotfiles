@@ -182,8 +182,7 @@ workspace $ws1 output DP-5
 workspace $ws6 output HDMI-0
 
 # switch to workspace
-bindsym $mod+1 workspace $ws1 
-# WHEN NOT USING COMPOSITOR bindsym $mod+1 workspace number $ws1; reload;
+bindsym $mod+1 workspace $ws1; reload;
 bindsym $mod+2 workspace $ws2
 bindsym $mod+3 workspace $ws3 
 bindsym $mod+4 workspace $ws4
