@@ -167,13 +167,13 @@ bindsym $mod+a focus parent
 # focus the child container
 #bindsym $mod+d focus child
 # Define names for default workspaces for which we configure key bindings later on. We use variables to avoid repeating the names in multiple places. 
-set $ws1 "main"
-set $ws2 "code"
-set $ws3 "web"
+set $ws1 "1:main"
+set $ws2 "2:code"
+set $ws3 "3:web"
 set $ws4 "4"
 set $ws5 "5"
-set $ws6 "test"
-set $ws7 "media"
+set $ws6 "6:test"
+set $ws7 "7:media"
 set $ws8 "8"
 set $ws9 "9"
 set $ws10 "10"
@@ -186,13 +186,13 @@ bindsym $mod+1 workspace $ws1
 # WHEN NOT USING COMPOSITOR bindsym $mod+1 workspace number $ws1; reload;
 bindsym $mod+2 workspace $ws2
 bindsym $mod+3 workspace $ws3 
-bindsym $mod+4 workspace number $ws4
-bindsym $mod+5 workspace number $ws5
+bindsym $mod+4 workspace $ws4
+bindsym $mod+5 workspace $ws5
 bindsym $mod+6 workspace $ws6
 bindsym $mod+7 workspace $ws7
-bindsym $mod+8 workspace number $ws8
-bindsym $mod+9 workspace number $ws9
-bindsym $mod+0 workspace number $ws10
+bindsym $mod+8 workspace $ws8
+bindsym $mod+9 workspace $ws9
+bindsym $mod+0 workspace $ws10
 
 # move focused container to workspace
 bindsym $mod+Shift+1 move container to workspace number $ws1
