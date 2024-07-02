@@ -3,7 +3,7 @@
 set +x
 set -e
 # inspired by https://stackoverflow.com/a/29535256/2860309
-. ./install_requirements_functions.sh 
+. ./InstallationScripts/install_requirements_functions.sh 
 pids=""
 failures=0
 
