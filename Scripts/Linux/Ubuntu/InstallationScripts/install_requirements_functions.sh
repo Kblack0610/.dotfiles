@@ -49,7 +49,6 @@ function install_git() {
 
 	if ! test -f ~/.ssh/id_ed25519; then
 		echo "git ssh doesn't exists, downloading"
-		read
 		cp ~/tmp/git_ssh ~/.ssh/id_ed25519 && \\
 		ssh-keygen -t ed25519 -C "kblack0610@example.com" && \\
 		eval "$(ssh-agent -s)" && \\
