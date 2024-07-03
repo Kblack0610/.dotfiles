@@ -7,6 +7,8 @@ alias la='ls --color -A'
 alias l='ls --color -CF'
 alias ls='ls --color -CF'
 
+#maybe fix unity size: [ -e /tmp/scalelockfile  ] && (xrandr --output eDP --scale 1x1; rm /tmp/scalelockfile) || (xrandr --output eDP --scale .75x.75; touch /tmp/scalelockfile)
+
 alias refreshfontcache='fc-cache -fv'
 
 alias v="nvr . -s"
@@ -21,6 +23,9 @@ alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
 
 alias vi='nvim --listen /tmp/nvim-server.pipe'
+
+#can use GDK_DPI_SCALE=0.5 after SCALE, need to tweak more
+alias unitylaptop='env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/'
 
 ## Color ##
 ##################################
