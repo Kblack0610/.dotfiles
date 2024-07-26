@@ -38,6 +38,15 @@ return require('packer').startup(function(use)
 
     -- End Theme Shit
 
+    use('Hoffs/omnisharp-extended-lsp.nvim')
+
+    use({
+        "stevearc/conform.nvim",
+        config = function()
+            require("conform").setup()
+        end,
+    })
+
     use({
         'nvim-treesitter/nvim-treesitter',
         -- { run = ':TSUpdate' },
