@@ -49,12 +49,10 @@ return require('packer').startup(function(use)
     use('tpope/vim-fugitive')
     use {
         'VonHeikemen/lsp-zero.nvim',
-        branch = 'v1.x',
+        branch = 'v4.x',
         requires = {
             -- LSP Support
             { 'neovim/nvim-lspconfig' },             -- Required
-            { 'williamboman/mason.nvim' },           -- Optional
-            { 'williamboman/mason-lspconfig.nvim' }, -- Optional
 
             -- Autocompletion
             { 'hrsh7th/nvim-cmp' },         -- Required
@@ -69,6 +67,19 @@ return require('packer').startup(function(use)
             { 'rafamadriz/friendly-snippets' }, -- Optional
         }
     }
+    use {
+        "williamboman/mason.nvim",
+        'williamboman/mason-lspconfig.nvim', 
+    }
+
+    use('Hoffs/omnisharp-extended-lsp.nvim')
+
+    use({
+        "stevearc/conform.nvim",
+        config = function()
+            require("conform").setup()
+        end,
+    })
     use {
         'numToStr/Comment.nvim',
         config = function()
