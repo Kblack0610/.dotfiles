@@ -52,7 +52,7 @@ return require('packer').startup(function(use)
         branch = 'v4.x',
         requires = {
             -- LSP Support
-            { 'neovim/nvim-lspconfig' },             -- Required
+            { 'neovim/nvim-lspconfig' }, -- Required
 
             -- Autocompletion
             { 'hrsh7th/nvim-cmp' },         -- Required
@@ -69,9 +69,20 @@ return require('packer').startup(function(use)
     }
     use {
         "williamboman/mason.nvim",
-        'williamboman/mason-lspconfig.nvim', 
+        'williamboman/mason-lspconfig.nvim',
     }
+    -- packer.nvim
+    use({
+        "robitx/gp.nvim",
+        config = function()
+            local conf = {
+                -- For customization, refer to Install > Configuration in the Documentation/Readme
+            }
+            require("gp").setup(conf)
 
+            -- Setup shortcuts here (see Usage > Shortcuts in the Documentation/Readme)
+        end,
+    })
     use('Hoffs/omnisharp-extended-lsp.nvim')
 
     use({
@@ -125,7 +136,7 @@ return require('packer').startup(function(use)
     --     require("rest-nvim").setup()
     --   end,
     -- }
-    
+
     -- use({
     --     "jackMort/ChatGPT.nvim",
     --     config = function()
