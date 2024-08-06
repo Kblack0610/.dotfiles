@@ -133,3 +133,4 @@ ulimit -n 4000
 
 
 export PATH=$PATH:/home/kblack0610/.spicetify
+# export OPENAI_API_KEY=
