@@ -45,7 +45,8 @@ local rounded_border_handlers = {
 -- CMP
 require 'cmp'.setup {
     sources = {
-        { name = 'nvim_lsp' }
+        { name = 'nvim_lsp' },
+        { name = "supermaven" }
     }
 }
 local capabilities = vim.lsp.protocol.make_client_capabilities()
@@ -135,6 +136,16 @@ require("mason-lspconfig").setup_handlers({
             handlers = vim.tbl_extend("force", rounded_border_handlers, {
                 ["textDocument/definition"] = require("omnisharp_extended").handler,
             }),
+            settings = {
+                omnisharp = {
+                    analyzeOpenDocumentsOnly = true,
+                    enableAsyncCompletion = false,
+                    enableMsBuildLoadProjectsOnDemand = false,
+                    -- projectLoadTimeout = 300,
+                    -- useModernNet = true,
+                    -- enableRoslynAnalyzers = false,
+                },
+            },
         })
     end,
     ["lua_ls"] = function()

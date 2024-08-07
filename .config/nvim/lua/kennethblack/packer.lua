@@ -40,7 +40,7 @@ return require('packer').startup(function(use)
         end
     })
 
-    --THEMES ------- 
+    --THEMES -------
     use('nvim-tree/nvim-web-devicons')
     use { "ellisonleao/gruvbox.nvim" }
     -- use({
@@ -54,6 +54,7 @@ return require('packer').startup(function(use)
     -- use "folke/tokyonight.nvim"
 
     -- LSP -------------
+    -- Need to deprecate lsp-zero and install requirements
     use {
         'VonHeikemen/lsp-zero.nvim',
         branch = 'v4.x',
@@ -89,6 +90,29 @@ return require('packer').startup(function(use)
 
     -- AI -------
     use({
+        "supermaven-inc/supermaven-nvim",
+        config = function()
+            require("supermaven-nvim").setup({
+                -- your configuration goes here
+                identifier = "supermaven",
+                -- the default is to use the current buffer's filetype
+                keymaps = {
+                    accept_suggestion = "<Tab>",
+                    clear_suggestion = "<Esc>",
+                    accept_word = "<C-j>",
+                },
+                ignore_filetypes = { cpp = true },
+                color = {
+                    -- suggestion_color = "#ffffff",
+                    cterm = 244,
+                },
+                log_level = "info",              -- set to "off" to disable logging completely
+                disable_inline_completion = false, -- disables inline completion for use with cmp
+                disable_keymaps = false          -- disables built in keymaps for more manual control
+            })
+        end,
+    })
+    use({
         "robitx/gp.nvim",
         config = function()
             local conf = {
@@ -99,6 +123,7 @@ return require('packer').startup(function(use)
             -- Setup shortcuts here (see Usage > Shortcuts in the Documentation/Readme)
         end,
     })
+    -- use("github/copilot.vim")
 
     --- TOOLS ---------
     use('theprimeagen/harpoon')
@@ -113,9 +138,8 @@ return require('packer').startup(function(use)
             })
         end
     }
-    use ("almo7aya/openingh.nvim")
+    use("almo7aya/openingh.nvim")
     use("nvim-treesitter/nvim-treesitter-context");
-    use("github/copilot.vim")
     use("laytan/cloak.nvim")
     use { "akinsho/toggleterm.nvim", tag = '*', config = function()
         require("toggleterm").setup()
@@ -135,5 +159,4 @@ return require('packer').startup(function(use)
     --- FUN -----------
     use("folke/zen-mode.nvim")
     use("eandrju/cellular-automaton.nvim")
-
 end)
