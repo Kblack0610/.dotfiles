@@ -4,26 +4,45 @@
 vim.cmd [[packadd packer.nvim]]
 
 return require('packer').startup(function(use)
-    -- Packer can manage itself
+    -- CORE ------------
     use 'wbthomason/packer.nvim'
-    use "almo7aya/openingh.nvim"
+    use({
+        'nvim-treesitter/nvim-treesitter',
+        -- { run = ':TSUpdate' },
+        requires = { { 'JoosepAlviste/nvim-ts-context-commentstring' } }
+    })
+    use('nvim-treesitter/playground')
+    use {
+        'nvim-pack/nvim-spectre',
+        requires = { { 'nvim-lua/plenary.nvim' } }
+    }
+    -- telescope and file browser
     use {
         'nvim-telescope/telescope.nvim', tag = '0.1.4',
         -- or                            , branch = '0.1.x',
         requires = { { 'nvim-lua/plenary.nvim' } }
     }
     use {
-        'nvim-pack/nvim-spectre',
-        requires = { { 'nvim-lua/plenary.nvim' } }
-    }
-    use {
         "nvim-telescope/telescope-file-browser.nvim",
         requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" }
     }
-    --THEME SHIT
+    use { 'nvim-telescope/telescope-fzf-native.nvim', run =
+    'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build' }
+    use({
+        "folke/trouble.nvim",
+        config = function()
+            require("trouble").setup {
+                icons = false,
+                -- your configuration comes here
+                -- or leave it empty to use the default settings
+                -- refer to the configuration section below
+            }
+        end
+    })
+
+    --THEMES ------- 
     use('nvim-tree/nvim-web-devicons')
     use { "ellisonleao/gruvbox.nvim" }
-
     -- use({
     --     'rose-pine/neovim',
     --     as = 'rose-pine',
@@ -32,21 +51,9 @@ return require('packer').startup(function(use)
     --         vim.cmd('colorscheme rose-pine')
     --     end
     -- })
-
-
     -- use "folke/tokyonight.nvim"
 
-    -- End Theme Shit
-
-    use({
-        'nvim-treesitter/nvim-treesitter',
-        -- { run = ':TSUpdate' },
-        requires = { { 'JoosepAlviste/nvim-ts-context-commentstring' } }
-    })
-    use('nvim-treesitter/playground')
-    use('theprimeagen/harpoon')
-    use('mbbill/undotree')
-    use('tpope/vim-fugitive')
+    -- LSP -------------
     use {
         'VonHeikemen/lsp-zero.nvim',
         branch = 'v4.x',
@@ -71,7 +78,16 @@ return require('packer').startup(function(use)
         "williamboman/mason.nvim",
         'williamboman/mason-lspconfig.nvim',
     }
-    -- packer.nvim
+    use('Hoffs/omnisharp-extended-lsp.nvim')
+
+    use({
+        "stevearc/conform.nvim",
+        config = function()
+            require("conform").setup()
+        end,
+    })
+
+    -- AI -------
     use({
         "robitx/gp.nvim",
         config = function()
@@ -83,14 +99,11 @@ return require('packer').startup(function(use)
             -- Setup shortcuts here (see Usage > Shortcuts in the Documentation/Readme)
         end,
     })
-    use('Hoffs/omnisharp-extended-lsp.nvim')
 
-    use({
-        "stevearc/conform.nvim",
-        config = function()
-            require("conform").setup()
-        end,
-    })
+    --- TOOLS ---------
+    use('theprimeagen/harpoon')
+    use('mbbill/undotree')
+    use('tpope/vim-fugitive')
     use {
         'numToStr/Comment.nvim',
         config = function()
@@ -100,25 +113,10 @@ return require('packer').startup(function(use)
             })
         end
     }
-    use { 'nvim-telescope/telescope-fzf-native.nvim', run =
-    'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build' }
-    use({
-        "folke/trouble.nvim",
-        config = function()
-            require("trouble").setup {
-                icons = false,
-                -- your configuration comes here
-                -- or leave it empty to use the default settings
-                -- refer to the configuration section below
-            }
-        end
-    })
+    use ("almo7aya/openingh.nvim")
     use("nvim-treesitter/nvim-treesitter-context");
-    use("folke/zen-mode.nvim")
     use("github/copilot.vim")
-    use("eandrju/cellular-automaton.nvim")
     use("laytan/cloak.nvim")
-
     use { "akinsho/toggleterm.nvim", tag = '*', config = function()
         require("toggleterm").setup()
     end }
@@ -126,9 +124,6 @@ return require('packer').startup(function(use)
     use("nvim-tree/nvim-tree.lua")
     use('mfussenegger/nvim-dap')
     use('ggandor/leap.nvim')
-
-    -- use('sultanahamer/nvim-dap-reactnative')
-
     -- use {
     --   "rest-nvim/rest.nvim",
     --   rocks = { "lua-curl", "nvim-nio", "mimetypes", "xml2lua" },
@@ -137,17 +132,8 @@ return require('packer').startup(function(use)
     --   end,
     -- }
 
-    -- use({
-    --     "jackMort/ChatGPT.nvim",
-    --     config = function()
-    --         require("chatgpt").setup({
-    --             -- optional configuration
-    --         })
-    --     end,
-    --     requires = {
-    --         "MunifTanjim/nui.nvim",
-    --         "nvim-lua/plenary.nvim",
-    --         "nvim-telescope/telescope.nvim"
-    --     }
-    -- })
+    --- FUN -----------
+    use("folke/zen-mode.nvim")
+    use("eandrju/cellular-automaton.nvim")
+
 end)
