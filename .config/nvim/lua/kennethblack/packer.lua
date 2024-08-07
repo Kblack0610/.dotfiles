@@ -98,7 +98,7 @@ return require('packer').startup(function(use)
                 -- the default is to use the current buffer's filetype
                 keymaps = {
                     accept_suggestion = "<Tab>",
-                    clear_suggestion = "<Esc>",
+                    clear_suggestion = "<C-]>",
                     accept_word = "<C-j>",
                 },
                 ignore_filetypes = { cpp = true },
