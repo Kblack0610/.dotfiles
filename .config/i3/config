@@ -171,7 +171,7 @@ bindsym $mod+a focus parent
 set $ws1 "1:main"
 set $ws2 "2:code"
 set $ws3 "3:web"
-set $ws4 "4"
+set $ws4 "4:logs"
 set $ws5 "5"
 set $ws6 "6:test"
 set $ws7 "7:media"
