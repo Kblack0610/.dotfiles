@@ -13,7 +13,7 @@ local on_attach = function(_, bufnr)
     buf_set_keymap('n', 'gd', '<cmd>lua vim.lsp.buf.definition()<CR>', opts2)
     buf_set_keymap('n', 'gi', '<cmd>lua vim.lsp.buf.implementation()<CR>', opts2)
     -- buf_set_keymap('n', 'gl', '<cmd>lua vim.lsp.buf.hover()<CR>', opts2)
-    buf_set_keymap('n', '<C-k>', '<cmd>lua vim.lsp.buf.signature_help()<CR>', opts2)
+    -- buf_set_keymap('n', '<C-k>', '<cmd>lua vim.lsp.buf.signature_help()<CR>', opts2)
     buf_set_keymap('n', '[d', '<cmd>lua vim.diagnostic.goto_prev()<CR>', opts2)
     buf_set_keymap('n', ']d', '<cmd>lua vim.diagnostic.goto_next()<CR>', opts2)
     buf_set_keymap('n', 'gR', '<cmd>lua vim.lsp.buf.references()<CR>', opts2)
@@ -23,7 +23,7 @@ local on_attach = function(_, bufnr)
     vim.keymap.set("n", "gD", "<Cmd>lua vim.lsp.buf.declaration()<CR>", opts)
     vim.keymap.set("n", "gl", "<Cmd>lua vim.lsp.buf.hover()<CR>", opts)
     vim.keymap.set("n", "gi", "<cmd>lua vim.lsp.buf.implementation()<CR>", opts)
-    vim.keymap.set("n", "<C-k>", "<cmd>lua vim.lsp.buf.signature_help()<CR>", opts)
+    -- vim.keymap.set("n", "gl", "<cmd>lua vim.lsp.buf.signature_help()<CR>", opts)
     vim.keymap.set("n", "<leader>wa", "<cmd>lua vim.lsp.buf.add_workspace_folder()<CR>", opts)
     vim.keymap.set("n", "<leader>wr", "<cmd>lua vim.lsp.buf.remove_workspace_folder()<CR>", opts)
     vim.keymap.set("n", "<leader>wl", "<cmd>lua print(vim.inspect(vim.lsp.buf.list_workspace_folders()))<CR>", opts)
@@ -142,8 +142,8 @@ require("mason-lspconfig").setup_handlers({
                     enableAsyncCompletion = false,
                     enableMsBuildLoadProjectsOnDemand = false,
                     -- projectLoadTimeout = 300,
-                    -- useModernNet = true,
-                    -- enableRoslynAnalyzers = false,
+                    useModernNet = true,
+                    enableRoslynAnalyzers = false,
                 },
             },
         })
