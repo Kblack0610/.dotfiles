@@ -14,8 +14,8 @@ failures=0
 (install_kitty)
 (install_lazygit)
 (install_nvim)
+(install_tmux)
 (install_google_chrome)
 (install_stow)
 (install_i3)
 (install_dotfiles)
-

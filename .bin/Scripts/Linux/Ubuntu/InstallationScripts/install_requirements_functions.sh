@@ -118,6 +118,10 @@ function install_nvim(){
 	echo "nvim installed"
 }
 
+function install_tmux(){
+    sudo apt install -y tmux
+	echo "tmux installed"
+}
 function install_google_chrome(){
 	echo "Installing chrome"
 	if ! command -v google-chrome &> /dev/null 

@@ -1,33 +1,31 @@
 ## ALIASES ##
 ##################################
 
-# some more ls aliases
-alias ll='ls --color -alF'
-alias la='ls --color -A'
-alias l='ls --color -CF'
-alias ls='ls --color -CF'
-
-#maybe fix unity size: [ -e /tmp/scalelockfile  ] && (xrandr --output eDP --scale 1x1; rm /tmp/scalelockfile) || (xrandr --output eDP --scale .75x.75; touch /tmp/scalelockfile)
-
-alias refreshfontcache='fc-cache -fv'
-
-alias v="nvr . -s"
-alias nv="nvim ."
+#IMPORTANT
+alias nvr="nvr . -s"
+alias n="nvim ."
 alias g="git"
+# . important else it will execute in subshell
+alias f='. $HOME/.bin/term_scripts/fzf_dev.sh'
+# Alias fzf search zsh_history
+alias h='. $HOME/.bin/term_scripts/fzf_history.sh'
 
+#OTHERS
+#maybe fix unity size: [ -e /tmp/scalelockfile  ] && (xrandr --output eDP --scale 1x1; rm /tmp/scalelockfile) || (xrandr --output eDP --scale .75x.75; touch /tmp/scalelockfile)
+alias refreshfontcache='fc-cache -fv'
 alias killUnity="kill -9 $(pgrep Unity)"
-
 alias setbright="sudo brightnessctl set "
-
 alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
-
 alias vi='nvim --listen /tmp/nvim-server.pipe'
-
 #can use GDK_DPI_SCALE=0.5 after SCALE, need to tweak more
 alias unitylaptop='env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/'
+alias unmute='amixer -D pulse sset Master unmute'
+alias setSound='amixer -D pulse sset Master 50%'
 
-## Color ##
+# [ -f ~/scripts/.fzf_dev.zsh ] && source ~/scripts/.fzf_dev.zsh
+
+## TERMINAL PROMPT ##
 ##################################
 
 # Normal Bash
@@ -45,6 +43,7 @@ export PS1='\[\e[1;38;5;244m\]\t \[\e[1;33m\]\w \[\e[1;36m\]\$ \[\e[0m\]'
 ## CONFIGURATION ##
 ##################################
 
+#what the fuck does this do
 case $- in
     *i*) ;;
       *) return;;
@@ -131,6 +130,3 @@ ulimit -n 4000
 #https://daniel-ellis.medium.com/shell-script-submitting-a-password-after-a-prompt-690bcf144c0e
 
 
-
-export PATH=$PATH:/home/kblack0610/.spicetify
-# export OPENAI_API_KEY=
