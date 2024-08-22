@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # User configuration
 
 # export MANPATH="/usr/local/man:$MANPATH"
@@ -108,8 +110,17 @@ alias ct='kitty @ set-tab-title'
 
 
 ## AUTOJUMP ##
-[ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
-source /usr/share/autojump/autojump.zsh
+if [ "$(uname)" == "Darwin" ]; then
+    # Do something under Mac OS X platform        
+    [ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
+elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
+    # Do something under GNU/Linux platform
+    source /usr/share/autojump/autojump.zsh
+elif [ "$(expr substr $(uname -s) 1 10)" == "MINGW32_NT" ]; then
+    # Do something under 32 bits Windows NT platform
+elif [ "$(expr substr $(uname -s) 1 10)" == "MINGW64_NT" ]; then
+    # Do something under 64 bits Windows NT platform
+fi
 
 local copy_widgets=(
     vi-yank vi-yank-eol vi-delete vi-backward-kill-word vi-change-whole-line
