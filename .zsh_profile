@@ -132,4 +132,11 @@ x11-clip-wrap-widgets paste  $paste_widgets
 # plugins, and themes. Aliases can be placed here, though oh-my-zsh
 # users are encouraged to define aliases within the ZSH_CUSTOM folder.
 # For a full list of active aliases, run `alias`.
-#
+
+if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
+    fortune | cowsay
+elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
+    fortune | cowsay
+fi
+
+
