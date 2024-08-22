@@ -57,9 +57,9 @@ esac
 set -o vi
 
 ## Initial Prompt
-if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
-    fortune | cowsay
-fi
+# if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
+#     fortune | cowsay
+# fi
 
 # search through history with up/down arrows
 bind '"\e[A": history-search-backward' 2>/dev/null

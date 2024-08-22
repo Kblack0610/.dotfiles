@@ -90,6 +90,7 @@ alias g="git"
 alias f='. $HOME/.bin/term_scripts/fzf_dev.sh'
 # Alias fzf search zsh_history
 alias h='. $HOME/.bin/term_scripts/fzf_history.sh'
+alias e='exit'
 
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
