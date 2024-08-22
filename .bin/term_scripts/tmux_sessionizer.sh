@@ -3,7 +3,14 @@
 if [[ $# -eq 1 ]]; then
     selected=$1
 else
-    selected=$(find ~/work/builds ~/projects ~/ ~/work ~/personal ~/personal/yt -mindepth 1 -maxdepth 1 -type d | fzf)
+    dirs=(
+      "$HOME/.dotfiles"
+      "$HOME/dev"
+      "$HOME/Documents"
+      # Add more directories as needed
+    )
+
+    selected=$(find "${dirs[@]}" -maxdepth 4 -type d -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
 fi
 
 if [[ -z $selected ]]; then

@@ -101,8 +101,14 @@ SAVEHIST=10000000
 # Add wisely, as too many plugins slow down shell startup.
 #
 #
+#
 
 source ~/.zsh_profile
+
+if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
+  exec tmux
+fi
+
 
 plugins=(
     git

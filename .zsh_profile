@@ -45,7 +45,7 @@ bindkey -v
 # ctrl-p & ctrl-n to behave like arrow keys
 bindkey '^P' up-line-or-beginning-search
 bindkey '^N' down-line-or-beginning-search
-
+bindkey -s ^f "~/.bin/term_scripts/tmux_sessionizer.sh\n"
 #####
 # Yank to system register (https://unix.stackexchange.com/questions/25765/pasting-from-clipboard-to-vi-enabled-zsh-or-bash-shell)
 function x11-clip-wrap-widgets() {
