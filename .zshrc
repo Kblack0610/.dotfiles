@@ -329,3 +329,4 @@ alias ct='kitty @ set-tab-title'
 if [ -f $HOME/.bash_profile ]; then 
     . $HOME/.bash_profile;
 fi
+source /usr/share/autojump/autojump.zsh
