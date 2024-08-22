@@ -1,8 +1,7 @@
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
-
-[ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
-
+# Where should I put you?
+# bindkey -s ^f "tmux-sessionizer\n"
 alias vi='nvim --listen /tmp/nvim-server.pipe'
 
 # Path to your oh-my-zsh installation.
@@ -77,7 +76,11 @@ ZSH_THEME="robbyrussell"
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(git)
+plugins=( 
+    # other plugins...
+    # zsh-autosuggestions
+    git
+)
 
 HISTFILE=~/.histfile
 HISTSIZE=10000000
@@ -143,7 +146,7 @@ export ZSH="${HOME}/.oh-my-zsh"
 # load a random theme each time oh-my-zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
-ZSH_THEME="powerlevel10k/powerlevel10k"
+# ZSH_THEME="powerlevel10k/powerlevel10k"
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
@@ -207,8 +210,8 @@ ZSH_THEME="powerlevel10k/powerlevel10k"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(
 git
-zsh-syntax-highlighting
-zsh-autosuggestions
+# zsh-syntax-highlighting
+# zsh-autosuggestions
 )
 
 source $ZSH/oh-my-zsh.sh
@@ -269,6 +272,21 @@ function x11-clip-wrap-widgets() {
 }
 
 
+## ALIASES ##
+alias nvr="nvr . -s"
+alias n="nvim ."
+alias g="git"
+# . important else it will execute in subshell
+alias f='. $HOME/.bin/term_scripts/fzf_dev.sh'
+# Alias fzf search zsh_history
+alias h='. $HOME/.bin/term_scripts/fzf_history.sh'
+
+
+[ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
+# autojump
+# source /usr/share/autojump/autojump.bash
+
+
 local copy_widgets=(
     vi-yank vi-yank-eol vi-delete vi-backward-kill-word vi-change-whole-line
 )
@@ -306,12 +324,6 @@ x11-clip-wrap-widgets paste  $paste_widgets
 alias python=/usr/bin/python3
 # Alias for kitty set tab title
 alias ct='kitty @ set-tab-title'
-
-# Alias fzf dir search and navigate
-# . important else it will execute in subshell
-alias f='. $HOME/scripts/fzf_dev.sh'
-# Alias fzf search zsh_history
-alias h='. $HOME/scripts/fzf_history.sh'
 
 # load .bash_profile
 if [ -f $HOME/.bash_profile ]; then 
