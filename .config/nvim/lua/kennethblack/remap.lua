@@ -50,8 +50,8 @@ vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.dotfiles/.config/nvim/ <bar> t
 })
 
 -- Go to start or end of line easier
-vim.keymap.set({ "n", "x" }, "H", "^")
-vim.keymap.set({ "n", "x" }, "L", "g_")
+-- vim.keymap.set({ "n", "x" }, "H", "^")
+-- vim.keymap.set({ "n", "x" }, "L", "g_")
 
 -- Quit all opened buffers
 vim.keymap.set("n", "<leader>Q", "<cmd>qa!<cr>", { silent = true, desc = "quit nvim" })
@@ -60,5 +60,8 @@ vim.keymap.set("n", "<leader>Q", "<cmd>qa!<cr>", { silent = true, desc = "quit n
 vim.keymap.set("i", "<C-A>", "<HOME>")
 vim.keymap.set("i", "<C-E>", "<END>")
 
-vim.keymap.set("n", "<C-L>", "<C-w>w")
-vim.keymap.set("n", "<C-H>", "<C-w>W")
+vim.keymap.set("n", "L", "<C-w>w")
+vim.keymap.set("n", "H", "<C-w>W")
+
+-- nnoremap <Leader><Enter> :norm 0<CR>:.s/\[ ]/\[x]/g<CR>:.s/$/ ✅ /g<CR>:.s/$/\=strftime("%Y-%m-%d")/g<CR>:nohl<CR>
+-- nnoremap <Leader>w :norm 0<CR>:.s/\[ ]/\[ ] 🚧️/g<CR>:nohl<CR>

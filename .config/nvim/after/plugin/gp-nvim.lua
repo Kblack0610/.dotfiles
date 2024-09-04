@@ -8,7 +8,9 @@ local function keymapOptions(desc)
 end
 
 -- Chat commands
-vim.keymap.set({"n", "i"}, "<C-g>c", "<cmd>GpChatNew<cr>", keymapOptions("New Chat"))
+-- vim.keymap.set({"n", "i"}, "<C-g>c", "<cmd>GpChatNew<cr>", keymapOptions("New Chat"))
+-- vim.keymap.set({ "n", "i" }, "<C-g><C-v>", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
+vim.keymap.set({ "n", "i" }, "<C-g>c", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
 vim.keymap.set({"n", "i"}, "<C-g>t", "<cmd>GpChatToggle<cr>", keymapOptions("Toggle Chat"))
 vim.keymap.set({"n", "i"}, "<C-g>f", "<cmd>GpChatFinder<cr>", keymapOptions("Chat Finder"))
 
@@ -88,7 +90,7 @@ local config = {
     -- openai_api_key = { "bw", "get", "password", "OPENAI_API_KEY" },
     -- openai_api_key: "sk-...",
     -- openai_api_key = os.getenv("env_name.."),
-    openai_api_key = os.getenv("OPENAI_API_KEY"),
+    -- openai_api_key = os.getenv("OPENAI_API_KEY"),
 
     -- at least one working provider is required
     -- to disable a provider set it to empty table like openai = {}
@@ -99,9 +101,9 @@ local config = {
         -- secret : "sk-...",
         -- secret = os.getenv("env_name.."),
         openai = {
-            disable = false,
-            endpoint = "https://api.openai.com/v1/chat/completions",
-            secret = os.getenv("OPENAI_API_KEY"),
+            -- disable = false,
+            -- endpoint = "https://api.openai.com/v1/chat/completions",
+            -- secret = os.getenv("OPENAI_API_KEY"),
         },
         azure = {
             disable = true,
@@ -139,7 +141,7 @@ local config = {
             secret = os.getenv("PPLX_API_KEY"),
         },
         anthropic = {
-            disable = true,
+            disable = false,
             endpoint = "https://api.anthropic.com/v1/messages",
             secret = os.getenv("ANTHROPIC_API_KEY"),
         },
@@ -160,7 +162,7 @@ local config = {
     state_dir = vim.fn.stdpath("data"):gsub("/$", "") .. "/gp/persisted",
 
     -- default agent names set during startup, if nil last used agent is used
-    default_command_agent = nil,
+    default_command_agent = "ChatClaude-3-5-Sonnet",
     default_chat_agent = nil,
 
     -- default command agents (model + persona)
