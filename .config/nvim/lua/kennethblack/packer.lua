@@ -4,33 +4,55 @@
 vim.cmd([[packadd packer.nvim]])
 
 return require("packer").startup(function(use)
-	-- CORE ------------
+	-- Package Manager--------------------------------------------------------------------------------
 	use("wbthomason/packer.nvim")
+
+	-- Language Support --------------------------------------------------------------------------------------
 	use({
 		"nvim-treesitter/nvim-treesitter",
 		-- { run = ':TSUpdate' },
 		requires = { { "JoosepAlviste/nvim-ts-context-commentstring" } },
 	})
 	use("nvim-treesitter/playground")
+
+	-- LSP --------------------------------------------------------------------------------------
+	--Language Server Package Manager
 	use({
-		"nvim-pack/nvim-spectre",
-		requires = { { "nvim-lua/plenary.nvim" } },
-	})
-	-- telescope and file browser
-	use({
-		"nvim-telescope/telescope.nvim",
-		tag = "0.1.4",
-		-- or                            , branch = '0.1.x',
-		requires = { { "nvim-lua/plenary.nvim" } },
+		"williamboman/mason.nvim",
+		"williamboman/mason-lspconfig.nvim",
 	})
 	use({
-		"nvim-telescope/telescope-file-browser.nvim",
-		requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" },
+		{ "neovim/nvim-lspconfig" }, -- Required
+
+		-- Autocompletion
+		{ "hrsh7th/nvim-cmp" }, -- Required
+		{ "hrsh7th/cmp-nvim-lsp" }, -- Required
+		{ "hrsh7th/cmp-buffer" }, -- Optional
+		{ "hrsh7th/cmp-path" }, -- Optional
+		{ "saadparwaiz1/cmp_luasnip" }, -- Optional
+		{ "hrsh7th/cmp-nvim-lua" }, -- Optional
+
+		--See context
+		{ "nvim-treesitter/nvim-treesitter-context" },
+		-- Snippets
+		{ "L3MON4D3/LuaSnip" }, -- Required
+		{ "rafamadriz/friendly-snippets" }, -- Optional
+
+		--Debugger
+		{ "mfussenegger/nvim-dap" },
+
+		--Language Specific Packages
+		{ "Hoffs/omnisharp-extended-lsp.nvim" },
 	})
+
+	--Formatter
 	use({
-		"nvim-telescope/telescope-fzf-native.nvim",
-		run = "cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build",
+		"stevearc/conform.nvim",
+		config = function()
+			require("conform").setup()
+		end,
 	})
+	--Pretty LSP Diagnostics
 	use({
 		"folke/trouble.nvim",
 		config = function()
@@ -43,55 +65,12 @@ return require("packer").startup(function(use)
 		end,
 	})
 
-	--THEMES -------
-	use("nvim-tree/nvim-web-devicons")
-	use({ "ellisonleao/gruvbox.nvim" })
-	-- use({
-	--     'rose-pine/neovim',
-	--     as = 'rose-pine',
-	--     config = function()
-	--         require("rose-pine").setup()
-	--         vim.cmd('colorscheme rose-pine')
-	--     end
-	-- })
-	-- use "folke/tokyonight.nvim"
+	-- AI --------------------------------------------------------------------------------------
+	-- Code Completion ------
+	-- Github Copilot
+	-- use("github/copilot.vim")
 
-	-- LSP -------------
-	-- Need to deprecate lsp-zero and install requirements
-	use({
-		"VonHeikemen/lsp-zero.nvim",
-		branch = "v4.x",
-		requires = {
-			-- LSP Support
-			{ "neovim/nvim-lspconfig" }, -- Required
-
-			-- Autocompletion
-			{ "hrsh7th/nvim-cmp" }, -- Required
-			{ "hrsh7th/cmp-nvim-lsp" }, -- Required
-			{ "hrsh7th/cmp-buffer" }, -- Optional
-			{ "hrsh7th/cmp-path" }, -- Optional
-			{ "saadparwaiz1/cmp_luasnip" }, -- Optional
-			{ "hrsh7th/cmp-nvim-lua" }, -- Optional
-
-			-- Snippets
-			{ "L3MON4D3/LuaSnip" }, -- Required
-			{ "rafamadriz/friendly-snippets" }, -- Optional
-		},
-	})
-	use({
-		"williamboman/mason.nvim",
-		"williamboman/mason-lspconfig.nvim",
-	})
-	use("Hoffs/omnisharp-extended-lsp.nvim")
-
-	use({
-		"stevearc/conform.nvim",
-		config = function()
-			require("conform").setup()
-		end,
-	})
-
-	-- AI -------
+	-- Supermaven
 	use({
 		"supermaven-inc/supermaven-nvim",
 		config = function()
@@ -115,6 +94,8 @@ return require("packer").startup(function(use)
 			})
 		end,
 	})
+
+	--Chat/Commands
 	use({
 		"robitx/gp.nvim",
 		config = function()
@@ -147,16 +128,6 @@ return require("packer").startup(function(use)
 						system_prompt = require("gp.defaults").chat_system_prompt,
 					},
 					{
-						provider = "openai",
-						name = "ChatGPT4o-mini",
-						chat = true,
-						command = false,
-						-- string with model name or table with model name and parameters
-						model = { model = "gpt-4o-mini", temperature = 1.1, top_p = 1 },
-						-- system prompt (use this to specify the persona/role of the AI)
-						system_prompt = require("gp.defaults").chat_system_prompt,
-					},
-					{
 						provider = "copilot",
 						name = "ChatCopilot",
 						chat = true,
@@ -166,7 +137,7 @@ return require("packer").startup(function(use)
 						-- system prompt (use this to specify the persona/role of the AI)
 						system_prompt = require("gp.defaults").chat_system_prompt,
 					},
-					-- 
+					--
 					-- {
 					-- 	provider = "pplx",
 					-- 	name = "ChatPerplexityLlama3.1-8B",
@@ -206,16 +177,6 @@ return require("packer").startup(function(use)
 						model = { model = "gpt-4o", temperature = 0.8, top_p = 1 },
 						-- system prompt (use this to specify the persona/role of the AI)
 						system_prompt = require("gp.defaults").code_system_prompt,
-					},
-					{
-						provider = "openai",
-						name = "CodeGPT4o-mini",
-						chat = false,
-						command = true,
-						-- string with model name or table with model name and parameters
-						model = { model = "gpt-4o-mini", temperature = 0.7, top_p = 1 },
-						-- system prompt (use this to specify the persona/role of the AI)
-						system_prompt = "Please return ONLY code snippets.\nSTART AND END YOUR ANSWER WITH:\n\n```",
 					},
 					{
 						provider = "copilot",
@@ -285,12 +246,33 @@ return require("packer").startup(function(use)
 			-- Setup shortcuts here (see Usage > Shortcuts in the Documentation/Readme)
 		end,
 	})
-	-- use("github/copilot.vim")
 
-	--- TOOLS ---------
+	--- TOOLS --------------------------------------------------------------------------------------
+	-- Telescope and File Browser
+	use({
+		"nvim-telescope/telescope.nvim",
+		tag = "0.1.4",
+		-- or                            , branch = '0.1.x',
+		requires = { { "nvim-lua/plenary.nvim" } },
+	})
+	use({
+		"nvim-telescope/telescope-file-browser.nvim",
+		requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" },
+	})
+	use({
+		"nvim-telescope/telescope-fzf-native.nvim",
+		run = "cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build",
+	})
+	-- Find And Replace
+	use({
+		"nvim-pack/nvim-spectre",
+		requires = { { "nvim-lua/plenary.nvim" } },
+	})
+	--Tagging files
 	use("theprimeagen/harpoon")
+	--Undoing
 	use("mbbill/undotree")
-	use("tpope/vim-fugitive")
+	--Comments
 	use({
 		"numToStr/Comment.nvim",
 		config = function()
@@ -299,9 +281,14 @@ return require("packer").startup(function(use)
 			})
 		end,
 	})
+	--Git blame
+	use("tpope/vim-fugitive")
+	--Open in github
 	use("almo7aya/openingh.nvim")
-	use("nvim-treesitter/nvim-treesitter-context")
+
 	use("laytan/cloak.nvim")
+
+	--Floating terminal, good for panels like Lazygit
 	use({
 		"akinsho/toggleterm.nvim",
 		tag = "*",
@@ -310,9 +297,10 @@ return require("packer").startup(function(use)
 		end,
 	})
 
-	use("nvim-tree/nvim-tree.lua")
-	use("mfussenegger/nvim-dap")
+	--Quick file navigation
 	use("ggandor/leap.nvim")
+
+	--API Rest Calls
 	-- use {
 	--   "rest-nvim/rest.nvim",
 	--   rocks = { "lua-curl", "nvim-nio", "mimetypes", "xml2lua" },
@@ -324,4 +312,17 @@ return require("packer").startup(function(use)
 	--- FUN -----------
 	use("folke/zen-mode.nvim")
 	use("eandrju/cellular-automaton.nvim")
+
+	--THEMES --------------------------------------------------------------------------------------
+	use("nvim-tree/nvim-web-devicons")
+	use({ "ellisonleao/gruvbox.nvim" })
+	-- use({
+	--     'rose-pine/neovim',
+	--     as = 'rose-pine',
+	--     config = function()
+	--         require("rose-pine").setup()
+	--         vim.cmd('colorscheme rose-pine')
+	--     end
+	-- })
+	-- use "folke/tokyonight.nvim"
 end)

@@ -13,10 +13,19 @@ require('telescope').setup {
         }
     },
     defaults = {
+        -- TODO Make work/unity/other configs at root level
         -- for unity
-        file_ignore_patterns = { "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
-            "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules", "%.prefab",
-            "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
+        -- file_ignore_patterns = { "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy",
+        --     "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
+        --     "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules",
+        --     "%.prefab",
+        --     "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
+        --
+        -- WORK
+        file_ignore_patterns = { "android", "jest", "apps" },
+
+
+
 
         -- when you needs tests
         -- file_ignore_patterns = {"%.snap", "%.meta"},
@@ -41,14 +50,16 @@ require('telescope').setup {
 
 -- SET DIFFERENT TOGGLE FOR GREP
 vim.keymap.set('n', '<leader>pf', "<cmd>Telescope find_files prompt_prefix=🔍<CR>")
-vim.keymap.set('n', '<leader>pF', "<cmd>Telescope find_files find_command=rg,--ignore,--hidden,--files prompt_prefix=🔍<CR>")
+vim.keymap.set('n', '<leader>pF',
+    "<cmd>Telescope find_files find_command=rg,--ignore,--hidden,--files prompt_prefix=🔍<CR>")
 vim.keymap.set("n", "<leader>ps", "<cmd>Telescope find_files search_dirs=%:p:h select_buffer=true<CR>");
 
 vim.keymap.set('n', '<C-p>', builtin.git_files, {})
 
 vim.keymap.set("n", "<leader>pd", "<cmd>Telescope live_grep search_dirs=%:p:h prompt_prefix=🔍<CR>");
 vim.keymap.set("n", "<leader>pg", "<cmd>Telescope live_grep prompt_prefix=🔍<CR>");
-vim.keymap.set("n", "<leader>pG", "<cmd>Telescope live_grep find_command=rg,--ignore,--hidden,--files prompt_prefix=🔍<CR>");
+vim.keymap.set("n", "<leader>pG",
+    "<cmd>Telescope live_grep find_command=rg,--ignore,--hidden,--files prompt_prefix=🔍<CR>");
 
 vim.keymap.set('n', '<leader>pw', builtin.grep_string, {})
 vim.keymap.set('n', '<leader>pb', builtin.buffers, {})
@@ -57,5 +68,3 @@ vim.keymap.set('n', '<leader>pb', builtin.buffers, {})
 -- vim.keymap.set('n', '<leader>ps', function()
 --     builtin.grep_string({ search = vim.fn.input("Grep > ") })
 -- end)
-
-
