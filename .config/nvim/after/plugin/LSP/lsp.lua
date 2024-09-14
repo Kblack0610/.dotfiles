@@ -145,7 +145,7 @@ require("mason-lspconfig").setup_handlers({
 					analyzeOpenDocumentsOnly = true,
 					enableAsyncCompletion = false,
 					enableMsBuildLoadProjectsOnDemand = false,
-					-- projectLoadTimeout = 300,
+					projectLoadTimeout = 300,
 					useModernNet = true,
 					enableRoslynAnalyzers = false,
 				},

@@ -8,17 +8,17 @@ local function keymapOptions(desc)
 end
 
 --Chat
-vim.keymap.set({ "n", "i" }, "<leader>ac", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
-vim.keymap.set({"n", "i"}, "<leader>af", "<cmd>GpChatFinder<cr>", keymapOptions("Chat Finder"))
-
--- Commands
-vim.keymap.set({"n", "i", "v",  "x"}, "<leader>ar", "<cmd>GpRewrite<cr>", keymapOptions("Inline Rewrite"))
-vim.keymap.set({"n", "i", "v",  "x"}, "<leader>ap", "<cmd>GpAppend<cr>", keymapOptions("Append (after)"))
-vim.keymap.set({"n", "i",  "v",  "x"}, "<leader>aP", "<cmd>GpPrepend<cr>", keymapOptions("Prepend (before)"))
-
---Agents
-vim.keymap.set({"n", "i", "v", "x"}, "<leader>as", "<cmd>GpStop<cr>", keymapOptions("Stop"))
-vim.keymap.set({"n", "i", "v", "x"}, "<leader>an", "<cmd>GpNextAgent<cr>", keymapOptions("Next Agent"))
+-- vim.keymap.set({ "n", "i" }, "<leader>ac", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
+-- vim.keymap.set({"n", "i"}, "<leader>af", "<cmd>GpChatFinder<cr>", keymapOptions("Chat Finder"))
+--
+-- -- Commands
+-- vim.keymap.set({"n", "i", "v",  "x"}, "<leader>ar", "<cmd>GpRewrite<cr>", keymapOptions("Inline Rewrite"))
+-- vim.keymap.set({"n", "i", "v",  "x"}, "<leader>ap", "<cmd>GpAppend<cr>", keymapOptions("Append (after)"))
+-- vim.keymap.set({"n", "i",  "v",  "x"}, "<leader>aP", "<cmd>GpPrepend<cr>", keymapOptions("Prepend (before)"))
+--
+-- --Agents
+-- vim.keymap.set({"n", "i", "v", "x"}, "<leader>as", "<cmd>GpStop<cr>", keymapOptions("Stop"))
+-- vim.keymap.set({"n", "i", "v", "x"}, "<leader>an", "<cmd>GpNextAgent<cr>", keymapOptions("Next Agent"))
 
 -- vim.keymap.set({"n", "i", "v", "x"}, "<C-g>s", "<cmd>GpStop<cr>", keymapOptions("Stop"))
 -- vim.keymap.set({"n", "i", "v", "x"}, "<C-g>n", "<cmd>GpNextAgent<cr>", keymapOptions("Next Agent"))

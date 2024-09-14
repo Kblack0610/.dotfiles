@@ -45,13 +45,13 @@ bindsym $mod+Ctrl+Shift+Left resize grow width 10 px or 10 ppt
 exec "picom &"
 
 ## Screenshots
-bindsym F7 exec --no-startup-id maim "/home/$USER/Pictures/$(date)"
-bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Pictures/$(date)"
-bindsym F9 exec --no-startup-id maim --select "/home/$USER/Pictures/$(date)"
+bindsym Shift+F7 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
+bindsym Shift+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
+bindsym Shift+F9 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)"
 
 ## Clipboard Screenshots
-bindsym Ctrl+Print exec --no-startup-id maim | xclip -selection clipboard -t image/png
-bindsym Ctrl+$mod+Print exec --no-startup-id maim --window $(xdotool getactivewindow) | xclip -selection clipboard -t image/png
+bindsym Ctrl+F7 exec --no-startup-id maim | xclip -selection clipboard -t image/png
+bindsym Ctrl+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) | xclip -selection clipboard -t image/png
 bindsym Ctrl+Shift+Print exec --no-startup-id maim --select | xclip -selection clipboard -t image/png
 ####
 
@@ -65,7 +65,7 @@ set $mod Mod4
 # Font for window titles. Will also be used by the bar unless a different font
 # is used in the bar {} block below.
 # 20 for laptop, 18 for keyboard
-font pango:Hack 18
+font pango:Hack 14
 
 # This font is widely installed, provides lots of unicode glyphs, right-to-left
 # text rendering and scalability on retina/hidpi displays (thanks to pango).
@@ -96,6 +96,8 @@ bindsym XF86AudioMicMute exec --no-startup-id pactl set-source-mute @DEFAULT_SOU
 
 # Use Mouse+$mod to drag floating windows to their wanted position
 floating_modifier $mod
+
+# bindsym $mod+Return exec --no-startup-id i3-msg 'workspace $ws2\; exec kitty'
 
 # start a terminal
 bindsym $mod+Return exec kitty
@@ -170,8 +172,8 @@ bindsym $mod+a focus parent
 # Define names for default workspaces for which we configure key bindings later on. We use variables to avoid repeating the names in multiple places. 
 set $ws1 "1:main"
 set $ws2 "2:code"
-set $ws3 "3:web"
-set $ws4 "4:logs"
+set $ws3 "3:docs"
+set $ws4 "4:fun"
 set $ws5 "5"
 set $ws6 "6:test"
 set $ws7 "7:media"
