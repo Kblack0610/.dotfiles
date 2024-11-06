@@ -130,3 +130,4 @@ ulimit -n 4000
 #https://daniel-ellis.medium.com/shell-script-submitting-a-password-after-a-prompt-690bcf144c0e
 
 
+export PATH=$PATH:/home/kblack0610/.spicetify
