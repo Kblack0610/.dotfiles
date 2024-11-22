@@ -13,16 +13,29 @@ require('telescope').setup {
         }
     },
     defaults = {
+        layout_strategy = "horizontal",
+        layout_config = {
+            horizontal = {
+                prompt_position = "bottom",
+                width = { padding = 0 },
+                height = { padding = 0 },
+                preview_width = 0.55,
+            },
+        },
+        sorting_strategy = "descending",
         -- TODO Make work/unity/other configs at root level
         -- for unity
-        -- file_ignore_patterns = { "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy",
-        --     "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
-        --     "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "node_modules",
-        --     "%.prefab",
-        --     "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.anim", "%.unity" },
+        file_ignore_patterns = {
+            "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
+            "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
+            "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController",
+            "node_modules", --NODE
+            "%.prefab",
+            -- "%.anim",
+            "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller",  "%.unity" },
         --
         -- WORK
-        file_ignore_patterns = { "android", "jest", "apps" },
+        -- file_ignore_patterns = { "android", "jest", "apps" }, 
 
 
 
@@ -63,6 +76,7 @@ vim.keymap.set("n", "<leader>pG",
 
 vim.keymap.set('n', '<leader>pw', builtin.grep_string, {})
 vim.keymap.set('n', '<leader>pb', builtin.buffers, {})
+
 
 -- different toggle for grep
 -- vim.keymap.set('n', '<leader>ps', function()
