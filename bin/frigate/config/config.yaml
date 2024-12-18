@@ -1,0 +1,25 @@
+mqtt:
+  enabled: false
+
+cameras:
+  home: # <------ Name the camera
+    enabled: true
+    ffmpeg:
+      inputs:
+          roles:
+            - detect
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+  home: # <------ Name the camera
+    enabled: true
+    ffmpeg:
+      inputs:
+          roles:
+            - detect
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+version: 0.14
