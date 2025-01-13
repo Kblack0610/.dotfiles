@@ -1,0 +1,1 @@
+../../../../../../.dotfiles/qmk_firmware/keyboards/foostan/cornelius/keymaps/default/keymap.c

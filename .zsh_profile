@@ -46,7 +46,7 @@ bindkey -v
 bindkey '^P' up-line-or-beginning-search
 bindkey '^N' down-line-or-beginning-search
 
-bindkey -s '^f' "~/.bin/term_scripts/tmux_sessionizer.sh"
+# bindkey -s '^f' "~/.bin/term_scripts/tmux_sessionizer.sh"
 #####
 # Yank to system register (https://unix.stackexchange.com/questions/25765/pasting-from-clipboard-to-vi-enabled-zsh-or-bash-shell)
 function x11-clip-wrap-widgets() {
@@ -108,7 +108,6 @@ alias ct='kitty @ set-tab-title'
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 ## END ALIASES ##
 
-
 ## AUTOJUMP ##
 [ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
 [ -f /usr/share/autojump/autojump.zsh ] && source /usr/share/autojump/autojump.zsh
@@ -123,6 +122,7 @@ local paste_widgets=(
 # NB: can atm. only wrap native widgets
 x11-clip-wrap-widgets copy $copy_widgets
 x11-clip-wrap-widgets paste  $paste_widgets
+
 #####
 ##### END Yank to system register
 

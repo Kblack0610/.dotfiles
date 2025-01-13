@@ -8,7 +8,7 @@ local function keymapOptions(desc)
 end
 
 --Chat
--- vim.keymap.set({ "n", "i" }, "<leader>ac", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
+vim.keymap.set({ "n", "i" }, "<leader>ac", "<cmd>GpChatNew vsplit<cr>", keymapOptions("New Chat vsplit"))
 -- vim.keymap.set({"n", "i"}, "<leader>af", "<cmd>GpChatFinder<cr>", keymapOptions("Chat Finder"))
 --
 -- -- Commands

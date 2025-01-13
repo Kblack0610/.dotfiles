@@ -27,15 +27,15 @@ require('telescope').setup {
         -- for unity
         file_ignore_patterns = {
             "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
-            "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
+            -- "Art", "%.shader", "%.wav", "%.fbx", "%.obj",
             "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController",
             "node_modules", --NODE
             "%.prefab",
             -- "%.anim",
-            "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller",  "%.unity" },
+            "%.png", "%.tsm", "%.tmx", "%.gif", "%.PNG", "%.meta", "%.asset", "%.controller", "%.unity" },
         --
         -- WORK
-        -- file_ignore_patterns = { "android", "jest", "apps" }, 
+        -- file_ignore_patterns = { "android", "jest", "apps" },
 
 
 
