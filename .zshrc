@@ -6,7 +6,8 @@ ZSH_THEME="robbyrussell"
 # Stop insecure messages
 ZSH_DISABLE_COMPFIX="true"
 
-plugins=(git)
+export ZSH="${HOME}/.oh-my-zsh"
+source $ZSH/oh-my-zsh.sh
 
 # History
 HISTSIZE=5000
@@ -26,6 +27,7 @@ setopt hist_find_no_dups
 setopt NO_HIST_EXPAND
 
 # LANGUAGES
+
 # node version manager
 export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
@@ -40,12 +42,14 @@ if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] &&
   exec tmux
 fi
 
+[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+[ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
 plugins=(
     git
     zsh-autosuggestions
-    # zsh-syntax-highlighting
+    zsh-syntax-highlighting
 )
-
 
 # load .bash_profile
 if [ -f $HOME/.bash_profile ]; then 
@@ -54,13 +58,7 @@ fi
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
-# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
-[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
-
-# # Path to your oh-my-zsh installation.
-export ZSH="${HOME}/.oh-my-zsh"
-source $ZSH/oh-my-zsh.sh
-
+# NOTE: need to put this after exporting OH_MY_ZSH
 # vi mode
 bindkey -v
 # fix small delay when entering vi mode
@@ -71,6 +69,4 @@ bindkey '^P' up-line-or-beginning-search
 bindkey '^N' down-line-or-beginning-search
 bindkey '^R' history-incremental-search-backward
 
-# [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-# [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-# source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
