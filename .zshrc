@@ -1,4 +1,3 @@
-
 # if set to "random", it will load a random themeto know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 ZSH_THEME="robbyrussell"
@@ -49,6 +48,11 @@ plugins=(
 )
 
 source $ZSH/oh-my-zsh.sh
+
+# load .bash_profile
+if [ -f $HOME/.bash_profile ]; then 
+    . $HOME/.bash_profile;
+fi
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
