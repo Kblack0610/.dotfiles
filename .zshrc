@@ -6,6 +6,7 @@ ZSH_THEME="robbyrussell"
 # Stop insecure messages
 ZSH_DISABLE_COMPFIX="true"
 
+# NOTE: need to put bindkey -vi and plugins after importing oh-my-zsh
 export ZSH="${HOME}/.oh-my-zsh"
 source $ZSH/oh-my-zsh.sh
 
@@ -58,7 +59,6 @@ fi
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
-# NOTE: need to put this after exporting OH_MY_ZSH
 # vi mode
 bindkey -v
 # fix small delay when entering vi mode
