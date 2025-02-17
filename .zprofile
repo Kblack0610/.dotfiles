@@ -5,15 +5,6 @@ else
   export EDITOR='nvim'
 fi
 
-# node version manager
-export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
-
-# Add golang to path if it is installed
-if [ -d "/usr/local/go/bin" ]; then
-    export PATH=$PATH:/usr/local/go/bin
-fi
-
 # Stop insecure messages
 ZSH_DISABLE_COMPFIX="true"
 
@@ -22,9 +13,11 @@ export ZSH="${HOME}/.oh-my-zsh"
 
 # vi mode
 bindkey -v
+
 # ctrl-p & ctrl-n to behave like arrow keys
 bindkey '^P' up-line-or-beginning-search
 bindkey '^N' down-line-or-beginning-search
+
 
 # Yank to system register (https://unix.stackexchange.com/questions/25765/pasting-from-clipboard-to-vi-enabled-zsh-or-bash-shell)
 function x11-clip-wrap-widgets() {
