@@ -6,6 +6,11 @@ ZSH_THEME="robbyrussell"
 # Stop insecure messages
 ZSH_DISABLE_COMPFIX="true"
 
+plugins=(
+    git
+    zsh-autosuggestions
+)
+
 # NOTE: need to put bindkey -vi and plugins after importing oh-my-zsh
 export ZSH="${HOME}/.oh-my-zsh"
 source $ZSH/oh-my-zsh.sh
@@ -43,14 +48,10 @@ if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] &&
   exec tmux
 fi
 
+
+
 [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-
-plugins=(
-    git
-    zsh-autosuggestions
-    zsh-syntax-highlighting
-)
 
 # load .bash_profile
 if [ -f $HOME/.bash_profile ]; then 
