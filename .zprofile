@@ -5,20 +5,6 @@ else
   export EDITOR='nvim'
 fi
 
-# Stop insecure messages
-ZSH_DISABLE_COMPFIX="true"
-
-# Path to your oh-my-zsh installation.
-export ZSH="${HOME}/.oh-my-zsh"
-
-# vi mode
-bindkey -v
-
-# ctrl-p & ctrl-n to behave like arrow keys
-bindkey '^P' up-line-or-beginning-search
-bindkey '^N' down-line-or-beginning-search
-
-
 # Yank to system register (https://unix.stackexchange.com/questions/25765/pasting-from-clipboard-to-vi-enabled-zsh-or-bash-shell)
 function x11-clip-wrap-widgets() {
     local copy_or_paste=$1
@@ -83,9 +69,6 @@ local paste_widgets=(
 
 x11-clip-wrap-widgets copy $copy_widgets
 x11-clip-wrap-widgets paste  $paste_widgets
-
-source ~/.bin/quick-push/.quick-push
-
 
 if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
     fortune | cowsay

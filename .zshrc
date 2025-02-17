@@ -25,7 +25,6 @@ setopt hist_find_no_dups
 # This can interfere when ! is used in other commands, just disabling as I dont use ! or !!
 setopt NO_HIST_EXPAND
 
-
 # LANGUAGES
 # node version manager
 export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
@@ -47,7 +46,6 @@ plugins=(
     # zsh-syntax-highlighting
 )
 
-source $ZSH/oh-my-zsh.sh
 
 # load .bash_profile
 if [ -f $HOME/.bash_profile ]; then 
@@ -58,6 +56,20 @@ fi
 
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
+# # Path to your oh-my-zsh installation.
+export ZSH="${HOME}/.oh-my-zsh"
+source $ZSH/oh-my-zsh.sh
+
+# vi mode
+bindkey -v
+# fix small delay when entering vi mode
+# https://www.reddit.com/r/vim/comments/60jl7h/zsh_vimode_no_delay_entering_normal_mode/
+KEYTIMEOUT=1
+# ctrl-p & ctrl-n to behave like arrow keys
+bindkey '^P' up-line-or-beginning-search
+bindkey '^N' down-line-or-beginning-search
+bindkey '^R' history-incremental-search-backward
 
 # [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 # [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
