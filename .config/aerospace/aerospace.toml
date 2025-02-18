@@ -62,16 +62,19 @@ preset = 'qwerty'
 # All possible commands: https://nikitabobko.github.io/AeroSpace/commands
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#focus
-alt-h = 'focus left --boundaries-action wrap-around-the-workspace'
-alt-j = 'focus down'
-alt-k = 'focus up'
-alt-l = 'focus right --boundaries-action wrap-around-the-workspace'
-alt-tab = 'focus right --boundaries-action wrap-around-the-workspace'
-ctrl-shift-alt-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
+shift-cmd-h = 'focus left --boundaries-action wrap-around-the-workspace'
+shift-cmd-j = 'focus down'
+shift-cmd-k = 'focus up'
+shift-cmd-l = 'focus right --boundaries-action wrap-around-the-workspace'
+shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
+ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
-alt-t = 'layout tiles horizontal'
-alt-f = 'layout accordion horizontal'
+shift-cmd-t = 'layout tiles horizontal'
+shift-cmd-r = 'layout accordion horizontal'
+shift-cmd-g= "focus-monitor next"
+shift-cmd-f= "focus-monitor prev"
+
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
 # Current work setup with each app I keep in each workspace
@@ -96,6 +99,8 @@ shift-cmd-6 = 'move-node-to-workspace 6'
 shift-cmd-7 = 'move-node-to-workspace 7'
 shift-cmd-8 = 'move-node-to-workspace 8'
 
+shift-cmd-b= "move-node-to-monitor next"
+shift-cmd-v= "move-node-to-monitor prev"
 # Disable annoying and useless "hide application" shortcut
 # cmd-h = [] # Disable "hide application"
 # cmd-alt-h = [] # Disable "hide others"
