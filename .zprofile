@@ -44,9 +44,9 @@ alias nvr="nvr . -s"
 alias n="nvim ."
 alias g="git"
 # . important else it will execute in subshell
-alias f='. $HOME/.bin/term_scripts/fzf_dev.sh'
+alias f='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
 # Alias fzf search zsh_history
-alias h='. $HOME/.bin/term_scripts/fzf_history.sh'
+alias h='. $HOME/.local/bin/term_scripts/fzf_history.sh'
 alias e='exit'
 
 alias vi='nvim --listen /tmp/nvim-server.pipe'
