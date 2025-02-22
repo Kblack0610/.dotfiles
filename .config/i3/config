@@ -249,12 +249,16 @@ bar {
         position bottom
         status_command i3status --config ~/.config/i3status/config
         colors {
-            # background #2e3440
-            # statusline #d8dee9
-            # separator  #4c566a
+            background #2e3440
+            statusline #d8dee9
+            separator  #4c566a
+            # class            border  backgr. text
+            focused_workspace  #81a1c1 #81a1c1 #2e3440
+            active_workspace   #4c566a #4c566a #d8dee9
+            inactive_workspace #2e3440 #2e3440 #d8dee9
+            urgent_workspace   #bf616a #bf616a #2e3440
+            binding_mode      #ebcb8b #ebcb8b #2e3440
         }
-        # font pango:Hack Nerd Font 11
+        font pango:Hack Nerd Font 12
         separator_symbol " | "
 }
-
-
