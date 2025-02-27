@@ -5,6 +5,7 @@ local ensure_installed = {
   "bashls",
   "html",
   "cssls",
+  "omnisharp",
   "sqlls",
   -- "gopls",
   "yamlls",

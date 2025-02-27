@@ -4,16 +4,24 @@ return {
     lazy = false,
     ---@type snacks.Config
     opts = {
-        picker = { enabled = true },
-        notifier = { enabled = true },
+        dashboard = { enabled = true },
+        picker = {
+            enabled = true,
+            win = {
+                input = {
+                    keys = {
+                        ["<a-s>"] = { "flash", mode = { "n", "i" } },
+                        ["s"] = { "flash" },
+                    },
+                },
+            },
+        },
+        notifier = {
+            enabled = true
+        },
         bigfile = { enabled = true },
         debug = { enabled = true },
         gitbrowse = { enabled = true },
-        explorer = {
-            enabled = true,
-            auto_close = true,
-            replace_netwr = true,
-        },
         dim = {
             -- only enable when we toggle it on
             enabled = false,
@@ -69,8 +77,6 @@ return {
         { "<leader>pt", function() Snacks.picker.todo_comments({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end, desc = "Todo" },
         { "<leader>pn", function() Snacks.picker.notifications() end,                                                                        desc = "Notification History" },
 
-        --explorer
-        { "<leader>pv", function() Snacks.explorer() end,                                                                                    desc = "Lazygit" },
         -- lazygit
         { "<leader>gg", function() Snacks.lazygit() end,                                                                                     desc = "Lazygit" },
         -- git
