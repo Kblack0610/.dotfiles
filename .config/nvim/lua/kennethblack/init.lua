@@ -1,4 +1,5 @@
 require("kennethblack.remap")
 require("kennethblack.set")
--- require("kennethblack.packer")
-require("kennethblack.lazy")
+-- require("kennethblack.lazy")
+require("kennethblack.lazy_init")
+
