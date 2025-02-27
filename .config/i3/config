@@ -35,7 +35,6 @@ bindsym $mod+Ctrl+Shift+Up resize grow height 10 px or 10 ppt
 bindsym $mod+Ctrl+Shift+Down resize shrink height 10 px or 10 ppt
 bindsym $mod+Ctrl+Shift+Left resize grow width 10 px or 10 ppt
 
-
 ## Screenshots
 bindsym Shift+F7 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
 bindsym Shift+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"

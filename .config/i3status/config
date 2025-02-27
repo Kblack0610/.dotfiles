@@ -7,7 +7,6 @@ general {
         separator = " | "
 }
 
-/* order += "read_file BRIGHTNESS" */
 order += "volume master"
 order += "cpu_usage"
 order += "memory"
@@ -31,6 +30,7 @@ volume master {
 /*         path = "/home/user_name/.config/brightness" */
 /*         max_characters = 5 */
 /* } */
+
 cpu_usage {
         format = "CPU: %usage"
         max_threshold = 75
@@ -47,8 +47,13 @@ ethernet _first_ {
 }
 
 battery all {
-        format = "BAT: %status %percentage"
+        format = "BAT: %status %percentage %essid (%quality)"
         format_down = "NO BAT"
+}
+
+battery all {
+        format = "%status %percentage"
+        format_down = ""
         status_chr = ""
         status_bat = ""
         status_unk = "?"
@@ -74,4 +79,6 @@ disk "/" {
 
 load {
         format = "LOAD: %1min %5min %15min"
+        format = " %a %b %d  %H:%M"
 }
+
