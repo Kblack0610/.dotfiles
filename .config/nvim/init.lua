@@ -1,5 +1,4 @@
 require("kennethblack")
-
 -- vim.api.nvim_create_autocmd("VimEnter", {
 --   callback = function()
 --     if vim.fn.argv(0) == "" then

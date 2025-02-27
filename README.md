@@ -37,3 +37,8 @@ once stow is installed, run "stow ." to symlink
 # Linux reqs
 have various build scripts to install tools and dependencies. need to clean up flow for that.
 -  install picom, spicetify (for spotify), i3, and i3status 
+
+# Audio
+- alsamixer
+- pavucontrol (volume control)
+- audacity (mixing)
