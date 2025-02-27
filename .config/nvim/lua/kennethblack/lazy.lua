@@ -118,9 +118,9 @@ require("lazy").setup({
                         -- suggestion_color = "#ffffff",
                         cterm = 244,
                     },
-                    log_level = "info",            -- set to "off" to disable logging completely
+                    log_level = "info",                -- set to "off" to disable logging completely
                     disable_inline_completion = false, -- disables inline completion for use with cmp
-                    disable_keymaps = false,       -- disables built in keymaps for more manual control
+                    disable_keymaps = false,           -- disables built in keymaps for more manual control
                 })
             end,
         },
@@ -278,6 +278,29 @@ require("lazy").setup({
         },
 
         --- TOOLS --------------------------------------------------------------------------------------
+        -- {
+        --     "folke/snacks.nvim",
+        --     priority = 1000,
+        --     lazy = false,
+        --     ---@type snacks.Config
+        --     opts = {
+        --         -- your configuration comes here
+        --         -- or leave it empty to use the default settings
+        --         -- refer to the configuration section below
+        --         -- bigfile = { enabled = true },
+        --         -- dashboard = { enabled = true },
+        --         -- explorer = { enabled = true },
+        --         -- indent = { enabled = true },
+        --         -- input = { enabled = true },
+        --         -- picker = { enabled = true },
+        --         -- notifier = { enabled = true },
+        --         -- quickfile = { enabled = true },
+        --         -- scope = { enabled = true },
+        --         -- scroll = { enabled = true },
+        --         -- statuscolumn = { enabled = true },
+        --         -- words = { enabled = true },
+        --     },
+        -- },
         -- Telescope and File Browser
         {
             "nvim-telescope/telescope.nvim",

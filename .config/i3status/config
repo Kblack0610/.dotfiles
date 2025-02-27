@@ -19,8 +19,8 @@ order += "tztime local"
 order += "load"
 
 volume master {
-        format = " %volume"
-        format_muted = " muted"
+        format = "VOL: %volume"
+        format_muted = "VOL: muted"
         device = "default"
         mixer = "Master"
         mixer_idx = 0
@@ -32,24 +32,23 @@ volume master {
 /*         max_characters = 5 */
 /* } */
 cpu_usage {
-        format= "CPU %usage <%cpu0 %cpu1>"
-        format = " %usage"
+        format = "CPU: %usage"
         max_threshold = 75
 }
 
 wireless _first_ {
-        format_up = " %essid (%quality)"
-        format_down = ""
+        format_up = "WIFI: %essid (%quality)"
+        format_down = "WIFI: disconnected"
 }
 
 ethernet _first_ {
-        format_up = " %ip"
-        format_down = ""
+        format_up = "ETH: %ip"
+        format_down = "ETH: disconnected"
 }
 
 battery all {
-        format = "%status %percentage"
-        format_down = ""
+        format = "BAT: %status %percentage"
+        format_down = "NO BAT"
         status_chr = ""
         status_bat = ""
         status_unk = "?"
@@ -60,19 +59,19 @@ battery all {
 }
 
 tztime local {
-        format = " %a %b %d  %H:%M"
+        format = "TIME: %a %b %d  %H:%M"
 }
 
 memory {
-        format = " %used"
+        format = "MEM: %used"
         threshold_degraded = "10%"
-        format_degraded = " %free"
+        format_degraded = "MEM: %free"
 }
 
 disk "/" {
-        format = " %used"
+        format = "DISK: %used"
 }
 
 load {
-        format = "%1min %5min %15min"
+        format = "LOAD: %1min %5min %15min"
 }

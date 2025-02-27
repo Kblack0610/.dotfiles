@@ -18,7 +18,7 @@ enable_screen_saver() {
 hour=$(date +%H)
 
 # Day time is considered from 7 AM (7) to 8 PM (20)
-if [ $hour -ge 7 ] && [ $hour -lt 20 ]; then
+if [ $hour -ge 5 ] && [ $hour -lt 20 ]; then
     disable_screen_saver
 else
     enable_screen_saver

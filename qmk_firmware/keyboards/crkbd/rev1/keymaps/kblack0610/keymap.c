@@ -34,13 +34,13 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     [1] = LAYOUT_split_3x6_3(
   //,-----------------------------------------------------.                    ,-----------------------------------------------------.
-       XXXXXXX, XXXXXXX, KC_7,    KC_E,    KC_8,    KC_9,                     XXXXXXX, KC_7,    KC_8,    KC_9, XXXXXXX, XXXXXXX,
+       XXXXXXX, XXXXXXX, KC_7,    KC_E,    KC_8,    KC_9,                     XXXXXXX, KC_7,    KC_8,    KC_9, KC_0, XXXXXXX,
   //|--------+--------+--------+--------+--------+--------|                    |--------+--------+--------+--------+--------+--------|
       XXXXXXX, XXXXXXX, KC_4,    KC_5,    KC_6, XXXXXXX,                      XXXXXXX, KC_4,    KC_5,    KC_6, XXXXXXX, XXXXXXX,
   //|--------+--------+--------+--------+--------+--------|                    |--------+--------+--------+--------+--------+--------|
-      XXXXXXX, MT(MOD_LCTL, KC_Z), KC_1,    KC_2,    KC_3, XXXXXXX,                      XXXXXXX, KC_1,    KC_2,     KC_3, XXXXXXX, XXXXXXX,
+      KC_LSFT, MT(MOD_LCTL, KC_Z), KC_1,    KC_2,    KC_3, XXXXXXX,                      XXXXXXX, KC_1,    KC_2,     KC_3, XXXXXXX, XXXXXXX,
   //|--------+--------+--------+--------+--------+--------+--------|  |--------+--------+--------+--------+--------+--------+--------|
-                                          XXXXXXX, XXXXXXX,  XXXXXXX,     XXXXXXX,   XXXXXXX, XXXXXXX
+                                          XXXXXXX, KC_LGUI,  XXXXXXX,     XXXXXXX,   XXXXXXX, XXXXXXX
                                       //`--------------------------'  `--------------------------'
   ),
 
