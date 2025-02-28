@@ -75,7 +75,7 @@ floating_modifier $mod
 
 # start a terminal
 bindsym $mod+Return exec kitty
-bindsym $mod+c exec google-chrome 
+bindsym $mod+c exec flatpak run one.ablaze.floorp
 bindsym $mod+n exec nautilus
 bindsym $mod+u exec unityhub 
 
