@@ -6,8 +6,10 @@ else
     dirs=(
       "$HOME/.dotfiles"
       "$HOME/dev"
+      "$HOME/Work"
       "$HOME/bin"
       "$HOME/dev/*"
+      "$HOME/Work/*"
       "$HOME/Documents"
       # Add more directories as needed
     )

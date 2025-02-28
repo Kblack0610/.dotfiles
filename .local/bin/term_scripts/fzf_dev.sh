@@ -5,6 +5,8 @@ dirs=(
   "$HOME/bin"
   "$HOME/dev"
   "$HOME/dev/*"
+  "$HOME/Work"
+  "$HOME/Work/*"
   "$HOME/Documents"
   # Add more directories as needed
 )
