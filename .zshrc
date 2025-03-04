@@ -110,6 +110,8 @@ alias vi='nvim --listen /tmp/nvim-server.pipe'
 alias python=/usr/bin/python3
 
 alias ct='kitty @ set-tab-title'
+
+alias lg='lazygit'
 ## END ALIASES ##
 
 ## AUTOJUMP ##
