@@ -46,7 +46,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     [2] = LAYOUT_split_3x6_3(
   //,-----------------------------------------------------.                    ,-----------------------------------------------------.
-       RGB_TOG, KC_EXLM, KC_AT,   KC_MINS, KC_UNDS,  KC_PIPE,                      KC_PLUS, KC_AMPR, KC_EQL, KC_LT,   KC_GT,   KC_ASTR,
+       RGB_TOG, KC_EXLM, KC_AT,   KC_MINS, KC_UNDS,  KC_PIPE,                      KC_PLUS, KC_AMPR,  KC_LT,   KC_GT,   KC_ASTR, XXXXXXX,
   //|--------+--------+--------+--------+--------+--------|                    |--------+--------+--------+--------+--------+--------|
       RGB_MOD, KC_HASH, KC_DLR, KC_LPRN, KC_RPRN,   KC_GRV,                      KC_EQL,  KC_LCBR, KC_RCBR, KC_AMPR, KC_PIPE, KC_BSLS,
   //|--------+--------+--------+--------+--------+--------|                    |--------+--------+--------+--------+--------+--------|
