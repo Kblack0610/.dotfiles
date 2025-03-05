@@ -1,6 +1,7 @@
 require("kennethblack.remap")
 require("kennethblack.set")
 require("kennethblack.lazy_init")
+require("kennethblack.autocmds")
 
 -- colorscheme
 vim.cmd.colorscheme "gruvbox"
