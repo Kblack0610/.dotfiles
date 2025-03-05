@@ -71,7 +71,7 @@ preset = 'qwerty'
 # See: https://nikitabobko.github.io/AeroSpace/commands#focus
 cmd-j = 'focus left --boundaries-action wrap-around-the-workspace'
 cmd-k = 'focus down'
-cmd-l = 'focus up'
+# cmd-l = 'focus up'
 cmd-semicolon = 'focus right --boundaries-action wrap-around-the-workspace'
 shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
 ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
@@ -79,7 +79,6 @@ ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
 cmd-h = 'layout tiles horizontal'
 cmd-v = 'layout accordion horizontal'
-
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
 # Current work setup with each app I keep in each workspace
