@@ -4,20 +4,23 @@ return {
     lazy = false,
     ---@type snacks.Config
     opts = {
-        dashboard = { 
+        dashboard = {
             enabled = true
         },
-        -- picker = {
-        --     enabled = true,
-        --     win = {
-        --         input = {
-        --             keys = {
-        --                 ["<a-s>"] = { "flash", mode = { "n", "i" } },
-        --                 ["s"] = { "flash" },
-        --             },
-        --         },
-        --     },
-        -- },
+        picker = {
+            enabled = true,
+            win = {
+                input = {
+                    keys = {
+                        ["<a-s>"] = { "flash", mode = { "n", "i" } },
+                        ["s"] = { "flash" },
+                        ["<Esc>"] = { "close", mode = { "n", "i" } },
+                        ["<C-n>"] = { "history_forward", mode = { "i", "n" } },
+                        ["<C-p>"] = { "history_back", mode = { "i", "n" } },
+                    },
+                },
+            },
+        },
         notifier = {
             enabled = true
         },
