@@ -77,8 +77,8 @@ shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
 ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
-shift-cmd-t = 'layout tiles horizontal'
-shift-cmd-r = 'layout accordion horizontal'
+cmd-h = 'layout tiles horizontal'
+cmd-v = 'layout accordion horizontal'
 
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
@@ -92,24 +92,23 @@ cmd-4 = 'workspace 4' # postman
 cmd-5 = 'workspace 5' # db tool
 cmd-8 = 'workspace 8' # misc(finder/vpn/docker)
 
-## On I3, I usually use other monitor for workspaces 6 and 7. since aerospace works a little differently, I'll have 6 and 7 switch between the two workspaces. I only really need 5 or 6 workspaces on mac.
-cmd-6 = 'focus-monitor prev' 
-cmd-7 = 'focus-monitor next' 
-# shift-cmd-g= "focus-monitor next"
-# shift-cmd-f= "focus-monitor prev"
-
 # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
 shift-cmd-1 = 'move-node-to-workspace 1'
 shift-cmd-2 = 'move-node-to-workspace 2'
 shift-cmd-3 = 'move-node-to-workspace 3'
 shift-cmd-4 = 'move-node-to-workspace 4'
 shift-cmd-5 = 'move-node-to-workspace 5'
-shift-cmd-6 = 'move-node-to-workspace 6'
-shift-cmd-7 = 'move-node-to-workspace 7'
+# shift-cmd-6 = 'move-node-to-workspace 6'
+# shift-cmd-7 = 'move-node-to-workspace 7'
 shift-cmd-8 = 'move-node-to-workspace 8'
 
-shift-cmd-b= "move-node-to-monitor next"
-shift-cmd-v= "move-node-to-monitor prev"
+## On I3, I usually use other monitor for workspaces 6 and 7. since aerospace works a little differently, I'll have 6 and 7 switch between the two workspaces. I only really need 5 or 6 workspaces on mac.
+shift-cmd-j = 'focus-monitor prev' 
+shift-cmd-semicolon = 'focus-monitor next' 
+
+shift-cmd-6= "move-node-to-monitor next"
+shift-cmd-7= "move-node-to-monitor prev"
+
 # Disable annoying and useless "hide application" shortcut
 # cmd-h = [] # Disable "hide application"
 # cmd-alt-h = [] # Disable "hide others"
