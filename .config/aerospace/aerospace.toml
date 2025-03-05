@@ -69,10 +69,10 @@ preset = 'qwerty'
 # All possible commands: https://nikitabobko.github.io/AeroSpace/commands
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#focus
-shift-cmd-h = 'focus left --boundaries-action wrap-around-the-workspace'
-shift-cmd-j = 'focus down'
-shift-cmd-k = 'focus up'
-shift-cmd-l = 'focus right --boundaries-action wrap-around-the-workspace'
+cmd-j = 'focus left --boundaries-action wrap-around-the-workspace'
+cmd-k = 'focus down'
+cmd-l = 'focus up'
+cmd-semicolon = 'focus right --boundaries-action wrap-around-the-workspace'
 shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
 ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 
