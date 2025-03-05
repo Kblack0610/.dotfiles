@@ -79,8 +79,6 @@ ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
 shift-cmd-t = 'layout tiles horizontal'
 shift-cmd-r = 'layout accordion horizontal'
-shift-cmd-g= "focus-monitor next"
-shift-cmd-f= "focus-monitor prev"
 
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
@@ -92,9 +90,13 @@ cmd-2 = 'workspace 2' # browser(work)
 cmd-3 = 'workspace 3' # chat(slack/discord/etc)
 cmd-4 = 'workspace 4' # postman
 cmd-5 = 'workspace 5' # db tool
-cmd-6 = 'workspace 6' # browser(personal)
-cmd-7 = 'workspace 7' # sunfyre(work app)
 cmd-8 = 'workspace 8' # misc(finder/vpn/docker)
+
+## On I3, I usually use other monitor for workspaces 6 and 7. since aerospace works a little differently, I'll have 6 and 7 switch between the two workspaces. I only really need 5 or 6 workspaces on mac.
+cmd-6 = 'focus-monitor prev' 
+cmd-7 = 'focus-monitor next' 
+# shift-cmd-g= "focus-monitor next"
+# shift-cmd-f= "focus-monitor prev"
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
 shift-cmd-1 = 'move-node-to-workspace 1'
