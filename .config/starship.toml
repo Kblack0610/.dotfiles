@@ -1,0 +1,214 @@
+add_newline = false
+
+command_timeout = 3000
+
+# A minimal left prompt
+format = """$os$directory$git_branch$fill $cmd_duration$status$nodejs
+$character"""
+
+[fill]
+symbol = "─"
+style = "#27a1b9"
+
+[nodejs]
+symbol = " "
+format = "[$symbol($version )](bold green)"
+# Only show in node projects
+detect_extensions = []
+detect_files = ['package.json', '.node-version', '.nvmrc']
+
+[character]
+success_symbol = "[❯](bold #9ece6a)"  # Use the desired color here
+error_symbol = "[❯](bold #db4b4b)"   # Use the desired color here
+vimcmd_symbol = "[❮](bold #9ece6a)"  # Replace with your desired color
+
+[git_branch]
+symbol = " "
+format = '[$symbol$branch]($style) '
+style = 'bold #9ece6a'
+
+[directory]
+read_only = " 󰌾"
+style = "#7aa2f7"
+truncation_symbol = ""
+truncation_length = 10
+
+[cmd_duration]
+min_time = 30_000
+style = "#ff9e64"
+format = '[$duration]($style) '
+
+[line_break]
+disabled = false
+
+[status]
+disabled = false
+symbol = '✘ '
+
+## SYMBOLS ONLY (nerdfont)
+[aws]
+symbol = "  "
+
+[buf]
+symbol = " "
+
+[c]
+symbol = " "
+
+[cmake]
+symbol = " "
+
+[conda]
+symbol = " "
+
+[crystal]
+symbol = " "
+
+[dart]
+symbol = " "
+
+[docker_context]
+symbol = " "
+
+[elixir]
+symbol = " "
+
+[elm]
+symbol = " "
+
+[fennel]
+symbol = " "
+
+[fossil_branch]
+symbol = " "
+
+[git_commit]
+tag_symbol = '  '
+
+[golang]
+symbol = " "
+
+[guix_shell]
+symbol = " "
+
+[haskell]
+symbol = " "
+
+[haxe]
+symbol = " "
+
+[hg_branch]
+symbol = " "
+
+[hostname]
+ssh_symbol = " "
+
+[java]
+symbol = " "
+
+[julia]
+symbol = " "
+
+[kotlin]
+symbol = " "
+
+[lua]
+symbol = " "
+
+[memory_usage]
+symbol = "󰍛 "
+
+[meson]
+symbol = "󰔷 "
+
+[nim]
+symbol = "󰆥 "
+
+[nix_shell]
+symbol = " "
+
+[ocaml]
+symbol = " "
+
+[os.symbols]
+Alpaquita = " "
+Alpine = " "
+AlmaLinux = " "
+Amazon = " "
+Android = " "
+Arch = " "
+Artix = " "
+CachyOS = " "
+CentOS = " "
+Debian = " "
+DragonFly = " "
+Emscripten = " "
+EndeavourOS = " "
+Fedora = " "
+FreeBSD = " "
+Garuda = "󰛓 "
+Gentoo = " "
+HardenedBSD = "󰞌 "
+Illumos = "󰈸 "
+Kali = " "
+Linux = " "
+Mabox = " "
+Macos = " "
+Manjaro = " "
+Mariner = " "
+MidnightBSD = " "
+Mint = " "
+NetBSD = " "
+NixOS = " "
+Nobara = " "
+OpenBSD = "󰈺 "
+openSUSE = " "
+OracleLinux = "󰌷 "
+Pop = " "
+Raspbian = " "
+Redhat = " "
+RedHatEnterprise = " "
+RockyLinux = " "
+Redox = "󰀘 "
+Solus = "󰠳 "
+SUSE = " "
+Ubuntu = " "
+Unknown = " "
+Void = " "
+Windows = "󰍲 "
+
+[package]
+symbol = "󰏗 "
+
+[perl]
+symbol = " "
+
+[php]
+symbol = " "
+
+[pijul_channel]
+symbol = " "
+
+[python]
+symbol = " "
+
+[rlang]
+symbol = "󰟔 "
+
+[ruby]
+symbol = " "
+
+[rust]
+symbol = "󱘗 "
+
+[scala]
+symbol = " "
+
+[swift]
+symbol = " "
+
+[zig]
+symbol = " "
+
+[gradle]
+symbol = " "
