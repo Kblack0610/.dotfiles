@@ -92,6 +92,7 @@ cmd-5 = 'workspace 5' # db tool
 cmd-6 = 'workspace 6' # db tool
 cmd-7 = 'workspace 7' # db tool
 cmd-8 = 'workspace 8' # misc(finder/vpn/docker)
+cmd-9 = 'workspace 9' # misc(finder/vpn/docker)
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
 shift-cmd-1 = 'move-node-to-workspace 1'
@@ -102,6 +103,7 @@ shift-cmd-5 = 'move-node-to-workspace 5'
 shift-cmd-6 = 'move-node-to-workspace 6'
 shift-cmd-7 = 'move-node-to-workspace 7'
 shift-cmd-8 = 'move-node-to-workspace 8'
+shift-cmd-9 = 'move-node-to-workspace 9'
 
 ## On I3, I usually use other monitor for workspaces 6 and 7. since aerospace works a little differently, I'll have 6 and 7 switch between the two workspaces. I only really need 5 or 6 workspaces on mac.
 shift-cmd-j = 'focus-monitor prev' 
