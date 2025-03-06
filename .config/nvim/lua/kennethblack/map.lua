@@ -5,6 +5,8 @@
 -- vim.keymap.set("n", "<leader>pv", vim.cmd.Ex)
 -- Leader key mapping
 vim.g.mapleader = " "
+-- vim.g.maplocalleader = "\\" (what this do?)
+
 -- better j and k
 vim.keymap.set(
   { "n", "x" },
