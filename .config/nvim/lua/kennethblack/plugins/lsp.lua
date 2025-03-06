@@ -11,7 +11,8 @@ local ensure_installed = {
   "yamlls",
   "pyright",
   "emmet_language_server",
-  "angularls"
+  "ruby_lsp",
+  "rubocop",
 }
 
 return {
