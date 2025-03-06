@@ -1,4 +1,4 @@
-Need to install dconf for linux, remove/deprecate (make deprecate folder) for crappy script files.
+Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
 
 # For installation
 
