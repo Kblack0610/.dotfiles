@@ -1,27 +1,3 @@
--- Bootstrap lazy.nvim
-local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
-
-if not (vim.uv or vim.loop).fs_stat(lazypath) then
-    local lazyrepo = "https://github.com/folke/lazy.nvim.git"
-    local out = vim.fn.system({ "git", "clone", "--filter=blob:none", "--branch=stable", lazyrepo, lazypath })
-    if vim.v.shell_error ~= 0 then
-        vim.api.nvim_echo({
-            { "Failed to clone lazy.nvim:\n", "ErrorMsg" },
-            { out,                            "WarningMsg" },
-            { "\nPress any key to exit..." },
-        }, true, {})
-        vim.fn.getchar()
-        os.exit(1)
-    end
-end
-vim.opt.rtp:prepend(lazypath)
-
--- Make sure to setup `mapleader` and `maplocalleader` before
--- loading lazy.nvim so that mappings are correct.
--- This is also a good place to setup other settings (vim.opt)
-vim.g.mapleader = " "
-vim.g.maplocalleader = "\\"
-
 -- Setup lazy.nvim
 require("lazy").setup({
     spec = {
@@ -39,22 +15,8 @@ require("lazy").setup({
         },
         { "neovim/nvim-lspconfig" }, -- Required
 
-        -- Autocompletion
-        { "hrsh7th/nvim-cmp" },         -- Required
-        { "hrsh7th/cmp-nvim-lsp" },     -- Required
-        { "hrsh7th/cmp-buffer" },       -- Optional
-        { "hrsh7th/cmp-path" },         -- Optional
-        { "saadparwaiz1/cmp_luasnip" }, -- Optional
-        { "hrsh7th/cmp-nvim-lua" },     -- Optional
-
         --See context
         { "nvim-treesitter/nvim-treesitter-context" },
-        -- Snippets
-        { "L3MON4D3/LuaSnip" },             -- Required
-        { "rafamadriz/friendly-snippets" }, -- Optional
-
-        --Debugger
-        { "mfussenegger/nvim-dap" },
 
         --Language Specific Packages
         { "Hoffs/omnisharp-extended-lsp.nvim" },
@@ -68,18 +30,6 @@ require("lazy").setup({
             "stevearc/conform.nvim",
             config = function()
                 require("conform").setup()
-            end,
-        },
-        --Pretty LSP Diagnostics
-        {
-            "folke/trouble.nvim",
-            config = function()
-                require("trouble").setup({
-                    icons = false,
-                    -- your configuration comes here
-                    -- or leave it empty to use the default settings
-                    -- refer to the configuration section below
-                })
             end,
         },
         -- AI --------------------------------------------------------------------------------------
@@ -98,31 +48,6 @@ require("lazy").setup({
                 require("codeium").setup({
                 })
             end
-        },
-
-        -- Supermaven
-        {
-            "supermaven-inc/supermaven-nvim",
-            config = function()
-                require("supermaven-nvim").setup({
-                    -- your configuration goes here
-                    identifier = "supermaven",
-                    -- the default is to use the current buffer's filetype
-                    keymaps = {
-                        accept_suggestion = "<Tab>",
-                        clear_suggestion = "<C-]>",
-                        accept_word = "<C-j>",
-                    },
-                    ignore_filetypes = { cpp = true, md = true },
-                    color = {
-                        -- suggestion_color = "#ffffff",
-                        cterm = 244,
-                    },
-                    log_level = "info",                -- set to "off" to disable logging completely
-                    disable_inline_completion = false, -- disables inline completion for use with cmp
-                    disable_keymaps = false,           -- disables built in keymaps for more manual control
-                })
-            end,
         },
 
         --Chat/Commands
@@ -277,63 +202,8 @@ require("lazy").setup({
             end,
         },
 
-        --- TOOLS --------------------------------------------------------------------------------------
-        {
-            "folke/snacks.nvim",
-            priority = 1000,
-            lazy = false,
-            ---@type snacks.Config
-            opts = {
-                -- your configuration comes here
-                -- or leave it empty to use the default settings
-                -- refer to the configuration section below
-                -- bigfile = { enabled = true },
-                -- dashboard = { enabled = true },
-                explorer = { enabled = true },
-                -- indent = { enabled = true },
-                -- input = { enabled = true },
-                -- picker = { enabled = true },
-                -- notifier = { enabled = true },
-                -- quickfile = { enabled = true },
-                -- scope = { enabled = true },
-                -- scroll = { enabled = true },
-                -- statuscolumn = { enabled = true },
-                -- words = { enabled = true },
-            },
-        },
-        -- Telescope and File Browser
-        {
-            "nvim-telescope/telescope.nvim",
-            version = "0.1.4",
-            dependencies = { "nvim-lua/plenary.nvim" },
-        },
-        {
-            "nvim-telescope/telescope-file-browser.nvim",
-            dependencies = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" },
-        },
-        {
-            "nvim-telescope/telescope-fzf-native.nvim",
-            build =
-            "cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build",
-        },
-        {
-            "nvim-pack/nvim-spectre",
-            dependencies = { "nvim-lua/plenary.nvim" },
-        },
-        "theprimeagen/harpoon",
-        "mbbill/undotree",
-        {
-            "numToStr/Comment.nvim",
-            config = function()
-                require("Comment").setup({
-                    pre_hook = require("ts_context_commentstring.integrations.comment_nvim").create_pre_hook(),
-                })
-            end,
-        },
         "tpope/vim-fugitive",
         "almo7aya/openingh.nvim",
-        "laytan/cloak.nvim",
-
         --Floating terminal, good for panels like Lazygit
         {
             "akinsho/toggleterm.nvim",
