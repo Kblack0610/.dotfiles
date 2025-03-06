@@ -11,7 +11,7 @@ local ensure_installed = {
   "pyright",
   "emmet_language_server",
   --csharp
-  "csharpier",
+  -- "csharpier",
   "omnisharp",
   --ruby
   -- "ruby_lsp",
@@ -76,7 +76,6 @@ return {
         elseif value == "omnisharp" then
           lspconfig[value].setup {
             capabilities = capabilities,
-            filetypes = { "cs" },
             root_dir = function(fname)
               local lspconfig = require("lspconfig")
               local primary = lspconfig.util.root_pattern("*.sln")(fname)
