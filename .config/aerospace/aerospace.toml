@@ -109,8 +109,8 @@ shift-cmd-9 = 'move-node-to-workspace 9'
 shift-cmd-j = 'focus-monitor prev' 
 shift-cmd-semicolon = 'focus-monitor next' 
 
-shift-cmd-k= "move-node-to-monitor next"
-shift-cmd-l= "move-node-to-monitor prev"
+shift-cmd-l= "move-node-to-monitor next"
+shift-cmd-k= "move-node-to-monitor prev"
 
 # Disable annoying and useless "hide application" shortcut
 # cmd-h = [] # Disable "hide application"
