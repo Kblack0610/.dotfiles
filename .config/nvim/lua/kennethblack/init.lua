@@ -1,15 +1,27 @@
-require("kennethblack.remap")
-require("kennethblack.set")
-require("kennethblack.lazy_init")
-require("kennethblack.autocmds")
+-- Set up lazy.nvim
+local lazypath = vim.fn.stdpath "data" .. "/lazy/lazy.nvim"
+if not vim.loop.fs_stat(lazypath) then
+  vim.fn.system {
+    "git",
+    "clone",
+    "--filter=blob:none",
+    "https://github.com/folke/lazy.nvim.git",
+    "--branch=stable", -- latest stable release
+    lazypath,
+  }
+end
+vim.opt.rtp:prepend(lazypath)
 
--- colorscheme
+-- Load other lua files
+require "kennethblack.set"
+require "kennethblack.map"
+require "kennethblack.autocmds"
+
+-- Load plugins, lazy will do this automagically if string is in lua/{your dir here}. I use 'plugins'
+require("lazy").setup "kennethblack.plugins"
+
+-- colorscheme(is there a better place for this?)
 vim.cmd.colorscheme "tokyonight"
-
--- line number color custom
-vim.cmd [[
-  highlight CursorLineNr guifg=#c0c4d8 gui=bold
-]]
 
 -- line number color custom
 vim.cmd [[
