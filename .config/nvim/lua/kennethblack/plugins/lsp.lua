@@ -5,14 +5,17 @@ local ensure_installed = {
   "bashls",
   "html",
   "cssls",
-  "omnisharp",
   "sqlls",
   -- "gopls",
   "yamlls",
   "pyright",
   "emmet_language_server",
-  "ruby_lsp",
-  "rubocop",
+  --csharp
+  "csharpier",
+  "omnisharp",
+  --ruby
+  -- "ruby_lsp",
+  -- "rubocop",
 }
 
 return {
@@ -51,6 +54,8 @@ return {
         border = "rounded",
       })
 
+      local pid = vim.fn.getpid()
+      local omnisharp_bin = "/opt/omnisharp-roslyn/run"
       -- Setup up all language servers that are installed
       for _, value in ipairs(ensure_installed) do
         if value == "ts_ls" then
@@ -67,6 +72,36 @@ return {
           lspconfig[value].setup {
             capabilities = capabilities,
             filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
+          }
+        elseif value == "omnisharp" then
+          lspconfig[value].setup {
+            capabilities = capabilities,
+            filetypes = { "cs" },
+            root_dir = function(fname)
+              local lspconfig = require("lspconfig")
+              local primary = lspconfig.util.root_pattern("*.sln")(fname)
+              local fallback = lspconfig.util.root_pattern("*.csproj")(fname)
+              return primary or fallback
+            end,
+            analyze_open_documents_only = true,
+            organize_imports_on_format = true,
+            flags = {
+              debounce_text_changes = 150,
+            },
+            cmd = { omnisharp_bin, "--languageserver", "--hostPID", tostring(pid) },
+            -- handlers = vim.tbl_extend("force", rounded_border_handlers, {
+            --   ["textDocument/definition"] = require("omnisharp_extended").handler,
+            -- }),
+            settings = {
+              omnisharp = {
+                analyzeOpenDocumentsOnly = true,
+                enableAsyncCompletion = false,
+                enableMsBuildLoadProjectsOnDemand = false,
+                projectLoadTimeout = 300,
+                useModernNet = true,
+                enableRoslynAnalyzers = false,
+              },
+            },
           }
         else
           lspconfig[value].setup {
