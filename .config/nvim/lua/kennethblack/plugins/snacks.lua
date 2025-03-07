@@ -1,3 +1,4 @@
+---@module "snacks"
 return {
     "folke/snacks.nvim",
     priority = 1000,
@@ -78,6 +79,7 @@ return {
         -- file: https://github.com/folke/snacks.nvim/blob/main/docs/picker.md#files
         { "<leader>pf", function() Snacks.picker.files({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end,         desc = "Find Files" },
         { "<leader>pg", function() Snacks.picker.grep({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end,          desc = "Grep" },
+        { "<leader>pw", function() Snacks.picker.grep_word({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end,          desc = "Grep" },
         { "<leader>pb", function() Snacks.picker.recent() end,                                                                               desc = "Recent" },
         { "<leader>pt", function() Snacks.picker.todo_comments({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end, desc = "Todo" },
         { "<leader>pn", function() Snacks.picker.notifications() end,                                                                        desc = "Notification History" },
