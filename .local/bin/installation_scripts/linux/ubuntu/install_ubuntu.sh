@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # Ubuntu installation script with improved logging and error tracking
 # Last updated: $(date +"%Y-%m-%d")
@@ -8,7 +7,7 @@ set +x
 set -e
 
 # Source the functions file
-. ./InstallationScripts/install_requirements_functions.sh
+. $HOME/.dotfiles/.local/bin/installation_scripts/linux/ubuntu/installation_scripts/install_requirements_functions.sh
 
 # Create a log directory and files
 LOG_DIR="$HOME/.dotfiles/logs"
