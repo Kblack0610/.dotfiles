@@ -27,4 +27,3 @@ vim.cmd.colorscheme "tokyonight"
 vim.cmd [[
   highlight CursorLineNr guifg=#c0c4d8 gui=bold
 ]]
-

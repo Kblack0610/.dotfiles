@@ -11,7 +11,8 @@ function install_reqs() {
 	yes | sudo apt install vim -y &> /dev/null
 	yes | sudo apt install wget -y &> /dev/null
 	yes | sudo apt install curl -y &> /dev/null
-	yes | sudo apt install snap -y &> /dev/null
+	#yes | sudo apt install snap -y &> /dev/null
+	yes | sudo apt install flatpak -y &> /dev/null
     yes | sudo apt install libfuse2 &> /dev/null
 
 	yes | sudo apt install neofetch -y &> /dev/null
@@ -106,7 +107,10 @@ function install_nvim(){
 	echo "Installing nvim"
 
 	#install neovim
-	sudo snap install nvim --classic 
+	#sudo snap install nvim --classic 
+	flatpak install flathub io.neovim.nvim
+	flatpak run io.neovim.nvim
+
 	#install my neovim requirements
 	# --- packer
 	#git clone --depth 1 https://github.com/wbthomason/packer.nvim\ ~/.local/share/nvim/site/pack/packer/start/packer.nvim 

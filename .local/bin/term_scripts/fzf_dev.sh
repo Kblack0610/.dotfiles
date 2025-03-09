@@ -2,6 +2,7 @@
 # Specify additional directories to search for
 dirs=(
   "$HOME/.dotfiles"
+  "$HOME/.notes"
   "$HOME/bin"
   "$HOME/dev"
   "$HOME/dev/*"
