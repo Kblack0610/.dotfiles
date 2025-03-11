@@ -1,5 +1,3 @@
-
-
 function install_reqs() {
 	seconds_to_sleep=1
 	exit_code=1
