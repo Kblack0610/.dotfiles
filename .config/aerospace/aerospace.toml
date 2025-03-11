@@ -87,13 +87,13 @@ cmd-g = 'layout accordion horizontal'
 ################################################################################
 # WORKSPACES
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
-cmd-1 = 'workspace 1' # terminal
-cmd-2 = 'workspace 2' # browser(work)
-cmd-3 = 'workspace 3' # chat(slack/discord/etc)
-cmd-4 = 'workspace 4' # postman
-cmd-5 = 'workspace 5' # db tool
-cmd-6 = 'workspace 6' # db tool
-cmd-7 = 'workspace 7' # db tool
+cmd-1 = 'workspace 1' # teams
+cmd-2 = 'workspace 2' # chat(slack/discord/etc)
+cmd-3 = 'workspace 3' # browser(work)
+cmd-4 = 'workspace 4' # db tool
+cmd-5 = 'workspace 5' # postman
+cmd-6 = 'workspace 6' # fun
+cmd-7 = 'workspace 7' # fun
 cmd-8 = 'workspace 8' # misc(finder/vpn/docker)
 cmd-9 = 'workspace 9' # misc(finder/vpn/docker)
 
