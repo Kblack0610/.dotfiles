@@ -7,6 +7,7 @@ failures=0
 (install_git)
 (install_bash_reqs) 
 (install_kitty)
+(install_nerd_fonts)
 (install_lazygit)
 (install_nvim)
 (install_tmux)
