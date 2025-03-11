@@ -157,17 +157,22 @@ workspace $ws8 output HDMI-0
 workspace $ws7 output HDMI-0
 workspace $ws6 output HDMI-0
 
+#https://www.reddit.com/r/i3wm/comments/85scgq/for_window_and_multiple_wm_classes/
+#explains here to use instance or assign or by title instead of class for only using first instance. With assign it only activates when window property changes 
+
 #BINDS TO WORKSPACES
 for_window [class="kitty"] move to workspace $ws2
 for_window [class="floorp"] move to workspace $ws3 
+assign [class="floorp"] $ws3
 
 for_window [class="obsidian"] move to workspace $ws6
 
 for_window [class="(?i)spotify"] move to workspace $ws7
 for_window [class="(?i)discord"] move to workspace $ws7
 
-for_window [class="(?i)unity"] move to workspace $ws1
+# for_window [class="(?i)unity"] move to workspace $ws1
 for_window [class="(?i)unityhub"] move to workspace $ws1
+assign [class="(?i)unity"] $ws1
 
 # switch to workspace
 bindsym $mod+1 workspace $ws1; reload;
