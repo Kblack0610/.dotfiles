@@ -1,3 +1,13 @@
+function install_system_settings() {
+  echo "Installing system settings"
+  #need system settings too
+  mkdir ~/Media/Pictures
+  mkdir ~/Media/Videos
+  mkdir ~/Media/Music
+
+  #delete all unecessary dirs
+}
+
 function install_reqs() {
 	seconds_to_sleep=1
 	exit_code=1
