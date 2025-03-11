@@ -14,14 +14,13 @@ function install_reqs() {
 	yes | sudo apt install curl -y &> /dev/null
 
 	#yes | sudo apt install snap -y &> /dev/null
-	(install_flatpak)
 
   yes | sudo apt install libfuse2 &> /dev/null
 
 	yes | sudo apt install neofetch -y &> /dev/null
 
-    #Screenshots
-    yes | sudo apt install maim -y &> /dev/null
+  #Screenshots
+  yes | sudo apt install maim -y &> /dev/null
 
 	curl -fsSL https://deb.nodesource.com/setup_21.x | sudo -E bash - &&\
 	sudo apt-get install -y nodejs -y &> /dev/null
