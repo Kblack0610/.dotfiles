@@ -1,46 +1,4 @@
 
-function install_nerd_fonts() {
-  declare -a fonts=(
-      Hack
-      SymbolsOnly
-      # BitstreamVeraSansMono
-      # CodeNewRoman
-      # DroidSansMono
-      # FiraCode
-      # FiraMono
-      # Go-Mono
-      # Hermit
-      # Meslo
-      # Noto
-      # Overpass
-      # ProggyClean
-      # RobotoMono
-      # SourceCodePro
-      # SpaceMono
-      # Ubuntu
-      # UbuntuMono
-  )
-
-  version='2.1.0'
-  fonts_dir="${HOME}/.local/share/fonts"
-
-  if [[ ! -d "$fonts_dir" ]]; then
-      mkdir -p "$fonts_dir"
-  fi
-
-  for font in "${fonts[@]}"; do
-      zip_file="${font}.zip"
-      download_url="https://github.com/ryanoasis/nerd-fonts/releases/download/v${version}/${zip_file}"
-      echo "Downloading $download_url"
-      wget "$download_url"
-      unzip "$zip_file" -d "$fonts_dir"
-      rm "$zip_file"
-  done
-
-  find "$fonts_dir" -name '*Windows Compatible*' -delete
-
-  fc-cache -fv
-}
 
 function install_reqs() {
 	seconds_to_sleep=1
@@ -50,13 +8,15 @@ function install_reqs() {
 	yes | sudo apt update -y &> /dev/null 
 	yes | sudo apt upgrade -y &> /dev/null
 
-    #not necessary but reqs for my tools
+  #not necessary but reqs for my tools
 	yes | sudo apt install vim -y &> /dev/null
 	yes | sudo apt install wget -y &> /dev/null
 	yes | sudo apt install curl -y &> /dev/null
+
 	#yes | sudo apt install snap -y &> /dev/null
-	yes | sudo apt install flatpak -y &> /dev/null
-    yes | sudo apt install libfuse2 &> /dev/null
+	(install_flatpak)
+
+  yes | sudo apt install libfuse2 &> /dev/null
 
 	yes | sudo apt install neofetch -y &> /dev/null
 
@@ -102,13 +62,91 @@ function install_git() {
 	echo "git installed"
 }
 
-function install_bash_reqs() {
-	echo "Installing bash requirements"
+function install_nerd_fonts() {
+  declare -a fonts=(
+      Hack
+      SymbolsOnly
+      # BitstreamVeraSansMono
+      # CodeNewRoman
+      # DroidSansMono
+      # FiraCode
+      # FiraMono
+      # Go-Mono
+      # Hermit
+      # Meslo
+      # Noto
+      # Overpass
+      # ProggyClean
+      # RobotoMono
+      # SourceCodePro
+      # SpaceMono
+      # Ubuntu
+      # UbuntuMono
+  )
+
+  version='2.1.0'
+  fonts_dir="${HOME}/.local/share/fonts"
+
+  if [[ ! -d "$fonts_dir" ]]; then
+      mkdir -p "$fonts_dir"
+  fi
+
+  for font in "${fonts[@]}"; do
+      zip_file="${font}.zip"
+      download_url="https://github.com/ryanoasis/nerd-fonts/releases/download/v${version}/${zip_file}"
+      echo "Downloading $download_url"
+      wget "$download_url"
+      unzip "$zip_file" -d "$fonts_dir"
+      rm "$zip_file"
+  done
+
+ find "$fonts_dir" -name '*Windows Compatible*' -delete
+
+  cd ~/.dotfiles
+
+  stow .
+  
+  fc-cache -fv
+}
+function install_prompt_reqs() {
+	echo "Installing prompt requirements"
 	#bash requirements
 	yes | sudo apt install cowsay -y &> /dev/null
 	yes | sudo apt install fortune -y &> /dev/null
 	yes | sudo apt install feh -y &> /dev/null
-	echo "bash requirements installed"
+	echo "prompt requirements installed"
+}
+function install_zsh() {
+	echo "Installing zsh"
+	if ! command -v zsh &> /dev/null 
+	then 
+		echo "zsh could not be found, installing" 
+		#install zsh
+		yes | sudo apt install zsh -y &> /dev/null
+	fi
+	echo "zsh installed"
+} 
+
+function install_starship() {
+	echo "Installing starship"
+	if ! command -v starship &> /dev/null 
+	then 
+		echo "starship could not be found, installing" 
+		#install starship
+		yes | curl -sS https://starship.rs/install.sh | sh
+	fi
+	echo "starship installed"
+}
+
+function install_oh_my_zsh() {
+	echo "Installing oh-my-zsh"
+	if ! command -v zsh &> /dev/null 
+	then 
+		echo "oh-my-zsh could not be found, installing" 
+		#install oh-my-zsh
+		sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+	fi
+	echo "oh-my-zsh installed"
 }
 
 function install_kitty() {
@@ -146,6 +184,14 @@ function install_lazygit(){
 	echo "Lazygit installed"
 }
 
+function install_flatpak(){
+	echo "Installing flatpak"
+	yes | sudo apt install flatpak -y &> /dev/null
+	yes | flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+	echo "flatpak installed"
+}
+
 function install_nvim(){
 	echo "Installing nvim"
 
@@ -169,16 +215,14 @@ function install_tmux(){
     sudo apt install -y tmux
 	echo "tmux installed"
 }
-function install_google_chrome(){
-	echo "Installing chrome"
-	if ! command -v google-chrome &> /dev/null 
+function install_browser(){
+	echo "Installing floorp browser"
+	if ! command -v floorp &> /dev/null 
 	then 
-		echo "google chrome could not be found, installing" 
-		#install chrome
-		yes | wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb 
-		yes | sudo dpkg -i google-chrome-stable_current_amd64.deb 
+		echo "browser could not be found, installing" 
+		flatpak install flathub one.ablaze.floorp
 	fi
-	echo "chrome installed"
+	echo "browser installed"
 }
 
 function install_stow(){
@@ -194,11 +238,8 @@ function install_i3(){
 	then 
 		echo "i3 could not be found, installing" 
 		#install i3
-		yes | /usr/lib/apt/apt-helper download-file https://debian.sur5r.net/i3/pool/main/s/sur5r-keyring/sur5r-keyring_2023.02.18_all.deb keyring.deb sha256:a511ac5f10cd811f8a4ca44d665f2fa1add7a9f09bef238cdfad8461f5239cc4 
-		yes | sudo apt install ./keyring.deb  &> /dev/null
-		yes | echo "deb http://debian.sur5r.net/i3/ $(grep '^distrib_codename=' /etc/lsb-release | cut -f2 -d=) universe" | sudo tee /etc/apt/sources.list.d/sur5r-i3.list 
-		yes | sudo apt update  &> /dev/null
-		yes | sudo apt install i3  &> /dev/null
+		yes | sudo apt install i3-wm  &> /dev/null
+		yes | sudo apt install rofi  &> /dev/null
 	fi
 	echo "i3 installed"
 	i3-msg restart
