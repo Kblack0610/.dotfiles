@@ -110,6 +110,9 @@ shift-cmd-9 = 'move-node-to-workspace 9'
 
 
 #NOTE: to find bundle id of app: osascript -e 'id of app "kitty"'           
+[[on-window-detected]]
+    if.app-id = 'com.microsoft.teams2'
+    run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
     if.app-id = 'net.kovidgoyal.kitty'
