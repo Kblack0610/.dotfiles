@@ -46,14 +46,17 @@ bindsym Control+$mod+l exec "i3lock -c 000000"
 ###############################################################################
 
 ## Screenshots
-bindsym Shift+F7 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
-bindsym Shift+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
-bindsym Shift+F9 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)"
+bindsym F7 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)" 
+bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
+bindsym F9 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
 
 ## Clipboard Screenshots
 bindsym Ctrl+F7 exec --no-startup-id maim | xclip -selection clipboard -t image/png
 bindsym Ctrl+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) | xclip -selection clipboard -t image/png
 bindsym Ctrl+Shift+Print exec --no-startup-id maim --select | xclip -selection clipboard -t image/png
+
+# Video Recording
+# bindsym Shift+F7 exec --no-startup-id maim simplescreenrecorder --start-recording
 
 ## Resize
 # Resizing by 1
@@ -136,22 +139,38 @@ bindsym $mod+a focus parent
 set $ws1 "1:main"
 set $ws2 "2:code"
 set $ws3 "3:browser"
-set $ws4 "4:docs"
-set $ws5 "5:other"
-set $ws6 "6:test"
+set $ws4 "4:other"
+set $ws5 "5:party"
+set $ws6 "6:notes"
 set $ws7 "7:media"
-set $ws8 "8"
-set $ws9 "9"
-set $ws10 "10"
+set $ws8 "8:test"
+set $ws9 "9:audio"
+set $ws10 "10:getting-weird"
 
+#can also use:
+#xrandr --output <output> --primary), and use this syntax:
+#workspace 1 output primary
+#workspace 6 output secondary
 workspace $ws1 output DP-5
+
+workspace $ws8 output HDMI-0
+workspace $ws7 output HDMI-0
 workspace $ws6 output HDMI-0
+
+#BINDS TO WORKSPACES
+for_window [class="kitty"] move to workspace $ws2
+for_window [class="floorp"] move to workspace $ws3 
+
+for_window [class="obsidian"] move to workspace $ws6
+
+for_window [class="(?i)spotify"] move to workspace $ws7
+for_window [class="(?i)discord"] move to workspace $ws7
 
 # switch to workspace
 bindsym $mod+1 workspace $ws1; reload;
 bindsym $mod+2 workspace $ws2
 bindsym $mod+3 workspace $ws3 
-bindsym $mod+4 workspace $ws4; reload;
+bindsym $mod+4 workspace $ws4; 
 bindsym $mod+5 workspace $ws5
 bindsym $mod+6 workspace $ws6
 bindsym $mod+7 workspace $ws7
@@ -229,15 +248,15 @@ bindsym XF86AudioLowerVolume exec --no-startup-id pactl set-sink-volume @DEFAULT
 bindsym XF86AudioMute exec --no-startup-id pactl set-sink-mute @DEFAULT_SINK@ toggle && $refresh_i3status
 bindsym XF86AudioMicMute exec --no-startup-id pactl set-source-mute @DEFAULT_SOURCE@ toggle && $refresh_i3status
 
-# Audio driver controls
+# Audio driver controls (not used)
 # bindsym $mod+Ctrl+p exec --no-startup-id systemctl --user restart pipewire pipewire-pulse && $refresh_i3status
 # bindsym $mod+Ctrl+a exec --no-startup-id systemctl --user stop pipewire pipewire-pulse && systemctl --user start pulseaudio && $refresh_i3status
 
-## DMENU
+## DMENU (old)
 # start dmenu (a program launcher)
 # bindsym $mod+d exec --no-startup-id dmenu_run
 
-# A more modern dmenu replacement is rofi:
+# CURRENT: A more modern dmenu replacement is rofi:
 bindcode $mod+40 exec "rofi -modi drun,run -show drun -theme arthur -font 'hack 14' -show combi -icon-theme 'Papirus' -show-icons"
 
 # There also is i3-dmenu-desktop which only displays applications shipping a
