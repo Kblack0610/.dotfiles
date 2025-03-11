@@ -3,6 +3,7 @@
 pids=""
 failures=0
 (install_reqs) && \\ 
+(install_system_settings) && \
 (install_stow)
 (install_zsh) && \
 (install_oh_my_zsh) && \
