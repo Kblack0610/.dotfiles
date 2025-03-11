@@ -112,27 +112,27 @@ shift-cmd-9 = 'move-node-to-workspace 9'
 #NOTE: to find bundle id of app: osascript -e 'id of app "kitty"'           
 [[on-window-detected]]
     if.app-id = 'com.microsoft.teams2'
-    run = 'move-node-to-workspace 1'
+    run = 'move-node-to-workspace 6'
 
 [[on-window-detected]]
     if.app-id = 'net.kovidgoyal.kitty'
-    run = 'move-node-to-workspace 2'
+    run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
     if.app-id = 'org.mozilla.floorp'
-    run = 'move-node-to-workspace 3'
+    run = 'move-node-to-workspace 2'
 
 [[on-window-detected]]
     if.app-id = 'org.jkiss.dbeaver.core.product'
-    run = 'move-node-to-workspace 4'
+    run = 'move-node-to-workspace 3'
 
 [workspace-to-monitor-force-assignment]
-    1 = 'secondary'                           # Monitor sequence number from left to right. 1-based indexing
+    1 = 'main'                           # Monitor sequence number from left to right. 1-based indexing
     2 = 'main'                       # Main monitor
     3 = 'main'                  
     4 = 'main'                  
     5 = 'main'                  
-    6 = 'main'
+    6 = 'secondary'
     # 3 = 1                  # Non-main monitor in case when there are only two monitors
     # 4 = 'built-in'                   # Case insensitive regex substring
     # 5 = '^built-in retina display$'  # Case insensitive regex match
