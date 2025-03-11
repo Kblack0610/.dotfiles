@@ -166,6 +166,9 @@ for_window [class="obsidian"] move to workspace $ws6
 for_window [class="(?i)spotify"] move to workspace $ws7
 for_window [class="(?i)discord"] move to workspace $ws7
 
+for_window [class="(?i)unity"] move to workspace $ws1
+for_window [class="(?i)unityhub"] move to workspace $ws1
+
 # switch to workspace
 bindsym $mod+1 workspace $ws1; reload;
 bindsym $mod+2 workspace $ws2
