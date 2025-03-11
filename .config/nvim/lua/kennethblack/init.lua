@@ -20,10 +20,10 @@ require "kennethblack.autocmds"
 -- Load plugins, lazy will do this automagically if string is in lua/{your dir here}. I use 'plugins'
 require("lazy").setup "kennethblack.plugins"
 
--- colorscheme(is there a better place for this?)
-vim.cmd.colorscheme "tokyonight"
+-- colorscheme
+vim.cmd.colorscheme "gruvbox"
 
 -- line number color custom
-vim.cmd [[
-  highlight CursorLineNr guifg=#c0c4d8 gui=bold
-]]
+-- vim.cmd [[
+--   highlight CursorLineNr guifg=#c0c4d8 gui=bold
+-- ]]
