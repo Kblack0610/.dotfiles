@@ -32,6 +32,10 @@ function install_reqs() {
 	return "$exit_code"
 }
 
+function install_kvm(){
+# https://phoenixnap.com/kb/ubuntu-install-kvm
+}
+
 function install_tools() {
 	echo "Installing tools"
 
