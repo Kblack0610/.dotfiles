@@ -152,6 +152,9 @@ set $ws10 "10:getting-weird"
 #workspace 1 output primary
 #workspace 6 output secondary
 workspace $ws1 output DP-5
+
+workspace $ws8 output HDMI-0
+workspace $ws7 output HDMI-0
 workspace $ws6 output HDMI-0
 
 #BINDS TO WORKSPACES
