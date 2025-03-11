@@ -46,14 +46,21 @@ bindsym Control+$mod+l exec "i3lock -c 000000"
 ###############################################################################
 
 ## Screenshots
-bindsym Shift+F7 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
-bindsym Shift+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
-bindsym Shift+F9 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)"
+bindsym F7 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)" 
+bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
+bindsym F9 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
 
 ## Clipboard Screenshots
 bindsym Ctrl+F7 exec --no-startup-id maim | xclip -selection clipboard -t image/png
 bindsym Ctrl+F8 exec --no-startup-id maim --window $(xdotool getactivewindow) | xclip -selection clipboard -t image/png
 bindsym Ctrl+Shift+Print exec --no-startup-id maim --select | xclip -selection clipboard -t image/png
+
+# Video Recording
+# bindsym Shift+F7 exec --no-startup-id maim simplescreenrecorder --start-recording
+
+for_window [class="spotify"] move to workspace $ws7
+for_window [class="kitty"] move to workspace $ws2
+for_window [class="floorp"] move to workspace $ws3
 
 ## Resize
 # Resizing by 1
@@ -140,7 +147,7 @@ set $ws4 "4:docs"
 set $ws5 "5:other"
 set $ws6 "6:test"
 set $ws7 "7:media"
-set $ws8 "8"
+set $ws8 "8:notes"
 set $ws9 "9"
 set $ws10 "10"
 
@@ -151,7 +158,7 @@ workspace $ws6 output HDMI-0
 bindsym $mod+1 workspace $ws1; reload;
 bindsym $mod+2 workspace $ws2
 bindsym $mod+3 workspace $ws3 
-bindsym $mod+4 workspace $ws4; reload;
+bindsym $mod+4 workspace $ws4; 
 bindsym $mod+5 workspace $ws5
 bindsym $mod+6 workspace $ws6
 bindsym $mod+7 workspace $ws7
