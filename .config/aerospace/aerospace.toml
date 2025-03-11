@@ -115,3 +115,24 @@ shift-cmd-k= "move-node-to-monitor prev"
 # Disable annoying and useless "hide application" shortcut
 # cmd-h = [] # Disable "hide application"
 # cmd-alt-h = [] # Disable "hide others"
+
+[[on-window-detected]]
+    # if.app-id = 'kitty'
+    # if.app-name-regex-substring = 'kitty'
+    if.window-title-regex-substring = 'kitty'
+    # if.during-aerospace-startup = true
+    # check-further-callbacks = true
+    run = ['move-node-to-workspace 1']  # The callback itself
+
+[workspace-to-monitor-force-assignment]
+    1 = 'secondary'                           # Monitor sequence number from left to right. 1-based indexing
+    2 = 'main'                       # Main monitor
+    3 = 'main'                  
+    4 = 'main'                  
+    5 = 'main'                  
+    6 = 'main'
+    # 3 = 1                  # Non-main monitor in case when there are only two monitors
+    # 4 = 'built-in'                   # Case insensitive regex substring
+    # 5 = '^built-in retina display$'  # Case insensitive regex match
+    # 6 = ['secondary', 'dell']        # You can specify multiple patterns.
+                                     #   The first matching pattern will be used
