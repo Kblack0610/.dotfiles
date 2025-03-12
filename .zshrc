@@ -38,7 +38,6 @@ setopt NO_HIST_EXPAND
 # fi
 
 
-
 [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
@@ -95,6 +94,7 @@ function x11-clip-wrap-widgets() {
     done
 }
 
+###############################################################################
 ## ALIASES ##
 alias nvr="nvr . -s"
 alias n="nvim ."
@@ -112,7 +112,13 @@ alias python=/usr/bin/python3
 alias ct='kitty @ set-tab-title'
 
 alias lg='lazygit'
+
+#Update man pages to use nvim
+export MANPAGER='nvim +Man!'
+export MANWIDTH=999
+
 ## END ALIASES ##
+###############################################################################
 
 ## AUTOJUMP ##
 [ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
@@ -134,6 +140,7 @@ elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
     fortune | cowsay
 fi
 
+###############################################################################
 # LANGUAGES
 
 # node version manager
@@ -141,12 +148,11 @@ export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || pr
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
 
 # Add golang to path if it is installed
-# if [ -d "/usr/local/go/bin" ]; then
-#     export PATH=$PATH:/usr/local/go/bin
-# fi
+if [ -d "/usr/local/go/bin" ]; then
+    export PATH=$PATH:/usr/local/go/bin
+fi
 
-export MANPAGER='nvim +Man!'
-export MANWIDTH=999
 # starship prompt
 eval "$(starship init zsh)"
+
 
