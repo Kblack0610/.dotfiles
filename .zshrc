@@ -145,5 +145,8 @@ export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || pr
 #     export PATH=$PATH:/usr/local/go/bin
 # fi
 
+export MANPAGER='nvim +Man!'
+export MANWIDTH=999
 # starship prompt
 eval "$(starship init zsh)"
+
