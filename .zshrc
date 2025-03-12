@@ -114,7 +114,7 @@ alias ct='kitty @ set-tab-title'
 alias lg='lazygit'
 
 #Update man pages to use nvim
-export MANPAGER='nvim +Man!'
+export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
 export MANWIDTH=999
 
 ## END ALIASES ##
