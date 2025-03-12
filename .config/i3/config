@@ -46,9 +46,9 @@ bindsym Control+$mod+l exec "i3lock -c 000000"
 ###############################################################################
 
 ## Screenshots
-bindsym F7 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date)" 
-bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date)"
-bindsym F9 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date)"
+bindsym F7 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date).jpg" 
+bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date).jpg"
+bindsym F9 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date).jpg"
 
 ## Clipboard Screenshots
 bindsym Ctrl+F7 exec --no-startup-id maim | xclip -selection clipboard -t image/png

@@ -1,12 +1,6 @@
 #!/bin/bash
 
 #shoutout to https://github.com/donnybrilliant/install.sh/blob/main/install.sh
-rm ~/.bashrc
-rm ~/.config/i3/config
-git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
-cd ~/.dotfiles
-stow .
-cd ..
 
 # COLOR
 RED='\033[0;31m'
@@ -63,10 +57,11 @@ echo
 echo "${GREEN}Checking installation.."
 echo
 brew update && brew doctor
+
 export HOMEBREW_NO_INSTALL_CLEANUP=1
 
 # Check for Brewfile in the current directory and use it if present
-if [ -f "./Brewfile" ]; then
+if [ -f "~/.dotfiles/.config/brewfile/Brewfile" ]; then
   echo
   echo "${GREEN}Brewfile found. Using it to install packages..."
   brew bundle
@@ -115,6 +110,10 @@ else
   fi
 fi
 
+#Stow config
+cd ~/.dotfiles
+stow .
+
 # Install Node.js
 echo
 echo -n "${RED}Install Node.js via NVM or Brew? ${NC}[N/b]"
@@ -146,63 +145,63 @@ echo "${GREEN}Installing Global NPM Packages..."
 npm install -g ${NPMPACKAGES[@]}
 
 # Optional Packages
-echo
-echo -n "${RED}Install .NET? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew install dotnet
-  export DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
-fi
-
-echo
-echo -n "${RED}Install Firefox Developer Edition? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew tap homebrew/cask-versions
-  brew install firefox-developer-edition
-fi
-
-echo
-echo -n "${RED}Install PosreSQL, MySQL & MongoDB? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  # Postgres
-  brew install postgresql
-  # MySQL
-  brew install mysql
-  echo -n "${RED}Set up MySQL now? ${NC}[y/N]"
-  read REPLY
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "${GREEN}Starting MySQL..."
-    brew services start mysql
-    sleep 2
-    mysql_secure_installation
-  fi
-  # MongoDB
-  brew tap mongodb/brew
-  brew install mongodb-community
-fi
-
-echo
-echo -n "${RED}Install Epic & Steam ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew install steam epic-games
-fi
-
-echo
-echo -n "${RED}Install Unity Hub? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew install unity-hub
-fi
-
-echo
-echo -n "${RED}Install Figma? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew install figma
-fi
+# echo
+# echo -n "${RED}Install .NET? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew install dotnet
+#   export DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
+# fi
+#
+# echo
+# echo -n "${RED}Install Firefox Developer Edition? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew tap homebrew/cask-versions
+#   brew install firefox-developer-edition
+# fi
+#
+# echo
+# echo -n "${RED}Install PosreSQL, MySQL & MongoDB? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   # Postgres
+#   brew install postgresql
+#   # MySQL
+#   brew install mysql
+#   echo -n "${RED}Set up MySQL now? ${NC}[y/N]"
+#   read REPLY
+#   if [[ $REPLY =~ ^[Yy]$ ]]; then
+#     echo "${GREEN}Starting MySQL..."
+#     brew services start mysql
+#     sleep 2
+#     mysql_secure_installation
+#   fi
+#   # MongoDB
+#   brew tap mongodb/brew
+#   brew install mongodb-community
+# fi
+#
+# echo
+# echo -n "${RED}Install Epic & Steam ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew install steam epic-games
+# fi
+#
+# echo
+# echo -n "${RED}Install Unity Hub? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew install unity-hub
+# fi
+#
+# echo
+# echo -n "${RED}Install Figma? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew install figma
+# fi
 
 # Cleanup
 echo
@@ -213,54 +212,54 @@ brew tap homebrew/autoupdate
 brew autoupdate start $HOMEBREW_UPDATE_FREQUENCY --upgrade --cleanup --immediate --sudo
 
 # Settings
-echo
-echo -n "${RED}Configure default system settings? ${NC}[Y/n]"
-read REPLY
-if [[ -z $REPLY || $REPLY =~ ^[Yy]$ ]]; then
-  echo "${GREEN}Configuring default settings..."
-  for setting in "${SETTINGS[@]}"; do
-    eval $setting
-  done
-fi
-
-# Dock settings
-echo
-echo -n "${RED}Apply Dock settings?? ${NC}[y/N]"
-read REPLY
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  brew install dockutil
-  # Handle replacements
-  for item in "${DOCK_REPLACE[@]}"; do
-    IFS="|" read -r add_app replace_app <<<"$item"
-    dockutil --add "$add_app" --replacing "$replace_app" &>/dev/null
-  done
-  # Handle additions
-  for app in "${DOCK_ADD[@]}"; do
-    dockutil --add "$app" &>/dev/null
-  done
-  # Handle removals
-  for app in "${DOCK_REMOVE[@]}"; do
-    dockutil --remove "$app" &>/dev/null
-  done
-fi
+# echo
+# echo -n "${RED}Configure default system settings? ${NC}[Y/n]"
+# read REPLY
+# if [[ -z $REPLY || $REPLY =~ ^[Yy]$ ]]; then
+#   echo "${GREEN}Configuring default settings..."
+#   for setting in "${SETTINGS[@]}"; do
+#     eval $setting
+#   done
+# fi
+#
+# # Dock settings
+# echo
+# echo -n "${RED}Apply Dock settings?? ${NC}[y/N]"
+# read REPLY
+# if [[ $REPLY =~ ^[Yy]$ ]]; then
+#   brew install dockutil
+#   # Handle replacements
+#   for item in "${DOCK_REPLACE[@]}"; do
+#     IFS="|" read -r add_app replace_app <<<"$item"
+#     dockutil --add "$add_app" --replacing "$replace_app" &>/dev/null
+#   done
+#   # Handle additions
+#   for app in "${DOCK_ADD[@]}"; do
+#     dockutil --add "$app" &>/dev/null
+#   done
+#   # Handle removals
+#   for app in "${DOCK_REMOVE[@]}"; do
+#     dockutil --remove "$app" &>/dev/null
+#   done
+# fi
 
 # Git Login
-echo
-echo "${GREEN}SET UP GIT"
-echo
-
-echo "${RED}Please enter your git username:${NC}"
-read name
-echo "${RED}Please enter your git email:${NC}"
-read email
-
-git config --global user.name "$name"
-git config --global user.email "$email"
-git config --global color.ui true
-
-echo
-echo "${GREEN}GITTY UP!"
-
+# echo
+# echo "${GREEN}SET UP GIT"
+# echo
+#
+# echo "${RED}Please enter your git username:${NC}"
+# read name
+# echo "${RED}Please enter your git email:${NC}"
+# read email
+#
+# git config --global user.name "$name"
+# git config --global user.email "$email"
+# git config --global color.ui true
+#
+# echo
+# echo "${GREEN}GITTY UP!"
+#
 # ohmyzsh
 echo
 echo "${GREEN}Installing ohmyzsh!"
