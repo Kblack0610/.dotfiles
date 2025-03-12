@@ -6,3 +6,9 @@ sudo systemctl start ssh
 
 # Mac
 Use remote login from settings
+
+
+users:
+kblack-homelab
+kennethblack (mac)
+
