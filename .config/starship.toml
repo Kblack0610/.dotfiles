@@ -8,7 +8,7 @@ $character"""
 
 [fill]
 symbol = "─"
-style = "#27a1b9"
+style = "#845fa0"
 
 [nodejs]
 symbol = " "
