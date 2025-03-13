@@ -1,0 +1,11 @@
+[Unit]
+Description=Set screen power saveer
+After=graphical-session-pre.target
+PartOf=graphical-session.target
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=1
+
+[Install]
+WantedBy=graphical-session.target

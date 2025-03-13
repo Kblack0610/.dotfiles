@@ -1,0 +1,8 @@
+[Unit]
+Description=Set screen power saver
+PartOf=graphical-session.target
+ConditionEnvironment=DISPLAY
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/misc/screen_power_manager/screen_power_manager.sh
