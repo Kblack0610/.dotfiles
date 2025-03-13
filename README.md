@@ -43,3 +43,11 @@ have various build scripts to install tools and dependencies. need to clean up f
 - alsamixer
 - pavucontrol (volume control)
 - audacity (mixing)
+- pipewire (audio)
+
+
+# Keyboards 
+-- make sure to set up in src file
+qmk setup kblack0610/qmk_firmware -H ~/src/qmk_firmware
+
+
