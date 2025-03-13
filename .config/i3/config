@@ -152,10 +152,14 @@ set $ws10 "10:getting-weird"
 #workspace 1 output primary
 #workspace 6 output secondary
 workspace $ws1 output DP-5
+workspace $ws2 output DP-5
+workspace $ws3 output DP-5
+workspace $ws4 output DP-5
+workspace $ws5 output DP-5
 
-workspace $ws8 output HDMI-0
-workspace $ws7 output HDMI-0
 workspace $ws6 output HDMI-0
+workspace $ws7 output HDMI-0
+workspace $ws8 output HDMI-0
 
 #https://www.reddit.com/r/i3wm/comments/85scgq/for_window_and_multiple_wm_classes/
 #explains here to use instance or assign or by title instead of class for only using first instance. With assign it only activates when window property changes 
