@@ -1,3 +1,16 @@
+# Linux reqs
+have various build scripts to install tools and dependencies. need to clean up flow for that.
+-  install picom, spicetify (for spotify), i3, and i3status 
+
+Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
+
+# Audio
+- alsamixer
+- pavucontrol (volume control)
+- audacity (mixing)
+- pipewire (audio)
+
+
 https://askubuntu.com/questions/9135/how-to-backup-settings-and-list-of-installed-packages
 
 Going to use one of the many methods here to load up linux

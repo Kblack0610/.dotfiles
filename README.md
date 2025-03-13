@@ -1,5 +1,3 @@
-Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
-
 # For installation
 
 dotfiles, use stow to symlink to proper config locations
@@ -24,30 +22,19 @@ reqs for installation (not complete):
 
 once stow is installed, run "stow ." to symlink
 
-# Mac reqs
-- Preferences -> Apperance: Dark, Accent Color: Purple
-- System Settings -> Keyboard, Set Key Repeat to "Fast" and Delay until repeat to "Short" (haven't tried this yet)
-- System Settings -> Shortcuts, Add App Shortcuts "Minimize" and "Minimise" to random long key combos to overwrite cmd+m
-- System Settings -> Control Center, Set Automatically hide and show menu bar to "Always"
-- System Settings -> Control Center -> Soundm Set to "Always show in menu bar"
-- [Raycast](https://www.raycast.com/)
-    - Disabled Spotlight search in keyboard shortcuts
-    - Import config from `.dotfiles/mac/Raycast.rayconfig`
-- [Aerospace](https://github.com/nikitabobko/AeroSpace)
-
-# Linux reqs
-have various build scripts to install tools and dependencies. need to clean up flow for that.
--  install picom, spicetify (for spotify), i3, and i3status 
-
-# Audio
-- alsamixer
-- pavucontrol (volume control)
-- audacity (mixing)
-- pipewire (audio)
-
-
 # Keyboards 
 -- make sure to set up in src file
 qmk setup kblack0610/qmk_firmware -H ~/src/qmk_firmware
 
+filesystem:
+- bin : apps
+- src : source
+- dev: projects
+- .local/bin: scripts
+- media: music, videos, etc
+- tmp: for temp files
 
+required by ubuntu:
+- Documents
+- Downloads
+- snap (fuck snap)
