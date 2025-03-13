@@ -1,0 +1,11 @@
+[Unit]
+Description=Set random wallpaper
+After=graphical-session-pre.target
+PartOf=graphical-session.target
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=1
+
+[Install]
+WantedBy=graphical-session.target

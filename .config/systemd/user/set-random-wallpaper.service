@@ -1,0 +1,8 @@
+[Unit]
+Description=Set random wallpaper
+PartOf=graphical-session.target
+ConditionEnvironment=DISPLAY
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/misc/update_wallpaper.sh 
