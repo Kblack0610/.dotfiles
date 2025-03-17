@@ -18,5 +18,5 @@ failures=0
 (install_lazygit)
 (install_nvim)
 (install_tmux)
-(install_browser)
 (install_i3)
+(install_browser)
