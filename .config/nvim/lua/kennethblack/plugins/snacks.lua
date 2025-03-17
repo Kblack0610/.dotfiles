@@ -91,6 +91,8 @@ return {
             "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "%.prefab",
             "%.tsm", "%.tmx", "%.meta", "%.asset", "%.controller", "%.unity",
             -- "%.png", "%.gif", "%.PNG", --Pictures
+            -- PROJECT
+            "Library", "Builds", "Logs", "RewiredBackup", "SceneBackups", "Temp", "UserSettings", "obj",
           }
         })
       end,
@@ -110,12 +112,25 @@ return {
             "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "%.prefab",
             "%.tsm", "%.tmx", "%.meta", "%.asset", "%.controller", "%.unity",
             -- "%.png", "%.gif", "%.PNG", --Pictures
+            -- PROJECT
+            "Library", "Builds", "Logs", "RewiredBackup", "SceneBackups", "Temp", "UserSettings", "obj",
           }
         })
       end,
       desc = "Grep"
     },
-    { "<leader>pw", function() Snacks.picker.grep_word({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end,     desc = "Grep" },
+    { "<leader>pw", function() Snacks.picker.grep_word({ hidden = true, ignored = true, exclude = {
+            "node_modules", "dist",                                                              --NODE
+            -- UNITY
+            "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
+            -- "Art", "%.shader", "%.wav", "%.fbx", "%.obj", "%.anim", --3D
+            "%.exr", "%.ttf", "%.otf", "%.mat", "%.asmdef", "%.asmref", "%.overrideController", "%.prefab",
+            "%.tsm", "%.tmx", "%.meta", "%.asset", "%.controller", "%.unity",
+            -- "%.png", "%.gif", "%.PNG", --Pictures
+            -- PROJECT
+            "Library", "Builds", "Logs", "RewiredBackup", "SceneBackups", "Temp", "UserSettings", "obj",
+          }
+ }) end,     desc = "Grep" },
     { "<leader>pb", function() Snacks.picker.recent() end,                                                                               desc = "Recent" },
     { "<leader>pt", function() Snacks.picker.todo_comments({ hidden = true, ignored = true, exclude = { "node_modules", "dist" } }) end, desc = "Todo" },
     { "<leader>pn", function() Snacks.picker.notifications() end,                                                                        desc = "Notification History" },
