@@ -21,10 +21,7 @@ function install_reqs() {
 	yes | sudo apt install wget -y &> /dev/null
 	yes | sudo apt install curl -y &> /dev/null
 
-	#yes | sudo apt install snap -y &> /dev/null
-
   yes | sudo apt install libfuse2 &> /dev/null
-
 	yes | sudo apt install neofetch -y &> /dev/null
 
   #Screenshots
@@ -256,11 +253,11 @@ function install_i3(){
 function install_dotfiles(){
 	echo "Installidotfiles dotfiles"
 	#install dotfiles
-	if ! test -d ~/.dotfiles; then
-		echo "dotfiles not found"
+	if ! test -d ~/.zshrc && ! test -d ~/.config/i3/config; then
+		echo "dotfiles not stowed, installing"
 		rm ~/.bashrc
 		rm ~/.config/i3/config
-		git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
+		# git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
 		cd ~/.dotfiles
 		stow . 
 	fi
