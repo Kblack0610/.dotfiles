@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. ./post_installation_scripts/install_requirements_functions.sh
+. ~/.dotfiles/.local/bin/installation_scripts/linux/ubuntu/post_installation_scripts/install_requirements_functions.sh
 pids=""
 failures=0
 # (install_reqs) 
