@@ -56,12 +56,15 @@ function install_git() {
 	git config --global user.email kblack0610@gmail.com
 	git config --global credential.helper store
 
-	if ! test -f ~/.ssh/id_ed25519; then
+	if [ ! -f ~/.ssh/id_ed25519 ]; then
 		echo "git ssh doesn't exists, downloading"
 		cp ~/tmp/git_ssh ~/.ssh/id_ed25519 && \\
 		ssh-keygen -t ed25519 -C "kblack0610@example.com" && \\
 		eval "$(ssh-agent -s)" && \\
 		ssh-add ~/.ssh/id_ed25519 && \\
+		echo "git ssh installed"
+	else
+		echo "git ssh already exists"
 	fi
 
 	echo "git installed"
@@ -128,8 +131,10 @@ function install_zsh() {
 		echo "zsh could not be found, installing" 
 		#install zsh
 		yes | sudo apt install zsh -y &> /dev/null
+	  echo "zsh installed"
+	else
+		echo "zsh already installed"
 	fi
-	echo "zsh installed"
 } 
 
 function install_starship() {
@@ -139,8 +144,10 @@ function install_starship() {
 		echo "starship could not be found, installing" 
 		#install starship
 		yes | curl -sS https://starship.rs/install.sh | sh
+	  echo "starship installed"
+	else
+		echo "starship already installed"
 	fi
-	echo "starship installed"
 }
 
 function install_oh_my_zsh() {
@@ -150,8 +157,10 @@ function install_oh_my_zsh() {
 		echo "oh-my-zsh could not be found, installing" 
 		#install oh-my-zsh
 		sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+	  echo "oh-my-zsh installed"
+	else
+		echo "oh-my-zsh already installed"
 	fi
-	echo "oh-my-zsh installed"
 }
 
 function install_kitty() {
@@ -226,8 +235,10 @@ function install_browser(){
 	then 
 		echo "browser could not be found, installing" 
 		flatpak install flathub one.ablaze.floorp
+	  echo "browser installed"
+	else
+		echo "browser already installed"
 	fi
-	echo "browser installed"
 }
 
 function install_stow(){
@@ -245,9 +256,11 @@ function install_i3(){
 		#install i3
 		yes | sudo apt install i3-wm  &> /dev/null
 		yes | sudo apt install rofi  &> /dev/null
+	  echo "i3 installed"
+	  i3-msg restart
+	else
+		echo "i3 already installed"
 	fi
-	echo "i3 installed"
-	i3-msg restart
 }
 
 function install_dotfiles(){
@@ -260,8 +273,10 @@ function install_dotfiles(){
 		# git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
 		cd ~/.dotfiles
 		stow . 
+	  echo "dotfile installed"
+	else
+		echo "dotfiles already installed"
 	fi
-	echo "dotfile installed"
 }
  
 
