@@ -158,8 +158,7 @@ function install_starship() {
 
 function install_oh_my_zsh() {
 	echo "Installing oh-my-zsh"
-	if ! command -v zsh &> /dev/null 
-	then 
+	if [ ! -f ~/.oh-my-zsh ]; then
 		echo "oh-my-zsh could not be found, installing" 
 		#install oh-my-zsh
 		sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
