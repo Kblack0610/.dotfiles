@@ -275,6 +275,7 @@ function install_dotfiles(){
 		echo "dotfiles not stowed, installing"
 		rm ~/.bashrc
 		rm ~/.config/i3/config
+		rm ~/.zshrc
 		# git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
 		cd ~/.dotfiles
 		stow . 
