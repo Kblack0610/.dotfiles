@@ -135,6 +135,12 @@ function install_zsh() {
 	else
 		echo "zsh already installed"
 	fi
+
+  if(echo $SHELL | grep bash); then
+		echo "zsh not default shell, setting"
+	  #set zsh as default shell
+    chsh -s $(which zsh)
+  fi
 } 
 
 function install_starship() {
