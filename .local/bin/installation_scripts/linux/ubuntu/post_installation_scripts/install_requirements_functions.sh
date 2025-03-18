@@ -253,7 +253,7 @@ function install_i3(){
 function install_dotfiles(){
 	echo "Installing dotfiles"
 	#install dotfiles
-	if [ ! -f ~/.zshrc] && [ ! -f ~/.config/i3/config]; then
+	if [ ! -f ~/.zshrc ] && [ ! -f ~/.config/i3/config ]; then
 		echo "dotfiles not stowed, installing"
 		rm ~/.bashrc
 		rm ~/.config/i3/config
