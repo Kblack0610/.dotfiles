@@ -25,7 +25,7 @@ autoinstall:
   #    section and see the "Installation without a default user" section.
   identity:
     realname: ''
-    username: ubuntu
+    username: kblack0610
     # A password hash is needed. `mkpasswd --method=SHA-512` can help.
     # mkpasswd can be found in the package 'whois'
     # password: '<password hash>'

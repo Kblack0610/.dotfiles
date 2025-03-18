@@ -10,5 +10,5 @@ Use remote login from settings
 
 users:
 kblack-homelab (linux): 192.168.1.240
-kennethblack (mac): 192.168.1.209
+kennethblack (mac): 192.168.1.162
 

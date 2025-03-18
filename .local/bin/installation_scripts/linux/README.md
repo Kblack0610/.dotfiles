@@ -10,6 +10,9 @@ Need to install dconf for linux, set up flatpak and brew process for any remaini
 - audacity (mixing)
 - pipewire (audio)
 
+- guitarix
+#note for guitarix
+https://github.com/brummer10/guitarix/issues/64
 
 https://askubuntu.com/questions/9135/how-to-backup-settings-and-list-of-installed-packages
 

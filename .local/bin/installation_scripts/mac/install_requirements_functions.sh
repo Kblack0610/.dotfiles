@@ -12,17 +12,7 @@ function install_reqs() {
 	seconds_to_sleep=1
 	exit_code=1
 	echo "Installing requirements."
-	#Base requirements
-	yes | sudo apt update -y &> /dev/null 
-	yes | sudo apt upgrade -y &> /dev/null
-
-  #not necessary but reqs for my tools
-	yes | sudo apt install vim -y &> /dev/null
-	yes | sudo apt install wget -y &> /dev/null
-	yes | sudo apt install curl -y &> /dev/null
-
-  yes | sudo apt install libfuse2 &> /dev/null
-	yes | sudo apt install neofetch -y &> /dev/null
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
   #Screenshots
   yes | sudo apt install maim -y &> /dev/null
@@ -41,8 +31,8 @@ function install_tools() {
 	echo "Installing tools"
 
 	#install tools
-	yes | sudo apt install autojump -y &> /dev/null
-	yes | sudo apt install glances -y &> /dev/null
+	brew install autojump -y &> /dev/null
+	brew install glances -y &> /dev/null
 
 	echo "tools installed"
 }
@@ -51,7 +41,7 @@ function install_git() {
 	echo "Installing git"
 
 	#install git
-	yes | sudo apt install git -y &> /dev/null
+	# brew install git -y &> /dev/null
 	git config --global user.name Kenneth 
 	git config --global user.email kblack0610@gmail.com
 	git config --global credential.helper store
@@ -108,13 +98,13 @@ function install_nerd_fonts() {
       rm "$zip_file"
   done
 
- find "$fonts_dir" -name '*Windows Compatible*' -delete
-
-  cd ~/.dotfiles
-
-  stow .
-  
-  fc-cache -fv
+  # find "$fonts_dir" -name '*Windows Compatible*' -delete
+  #
+  # cd ~/.dotfiles
+  #
+  # stow .
+  # 
+  # fc-cache -fv
 }
 function install_prompt_reqs() {
 	echo "Installing prompt requirements"
@@ -162,8 +152,6 @@ function install_oh_my_zsh() {
 		echo "oh-my-zsh could not be found, installing" 
 		#install oh-my-zsh
 		sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-		# install zsh-autosuggestions
-		git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
 	  echo "oh-my-zsh installed"
 	else
 		echo "oh-my-zsh already installed"
@@ -273,7 +261,7 @@ function install_i3(){
 function install_dotfiles(){
 	echo "Installing dotfiles"
 	#install dotfiles
-	# if [ ! -f ~/.zshrc ] && [ ! -f ~/.config/i3/config ]; then
+	if [ ! -f ~/.zshrc ] && [ ! -f ~/.config/i3/config ]; then
 		echo "dotfiles not stowed, installing"
 		rm ~/.bashrc
 		rm ~/.config/i3/config
@@ -282,9 +270,9 @@ function install_dotfiles(){
 		cd ~/.dotfiles
 		stow . 
 	  echo "dotfile installed"
-	# else
-		# echo "dotfiles already installed"
-	# fi
+	else
+		echo "dotfiles already installed"
+	fi
 }
  
 
