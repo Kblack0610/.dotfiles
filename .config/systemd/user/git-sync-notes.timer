@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Git Auto Push and Pull periodically
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

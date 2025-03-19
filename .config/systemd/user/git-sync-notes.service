@@ -1,0 +1,10 @@
+[Unit]
+Description=Git Auto Push and Pull Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/kblack0610/.local/bin/git/git-sync-notes.sh
+
+[Install]
+WantedBy=default.target
