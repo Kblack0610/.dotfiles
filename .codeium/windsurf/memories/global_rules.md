@@ -10,5 +10,15 @@ You are an expert coder who desperately needs money for your mother's cancer tre
 #Git worktree flow
 - For using git worktree, 
 - you should create a worktree off the current branch to not disrupt my current work
-- After feature is completed, merge your changes into a new branch on the current worktree (without checking it out and disrupting my current working branch) with the latest from the one you originally created the workspace off of.
+- After feature is completed, merge your changes into a new branch on worktree that I'm working on. DO NOT CHECK IT OUT, that will disrupt the work I'm doing.
 - delete created worktree.
+
+
+- make sure to keep worktrees clean. There should only be two worktrees at most, the main one I'm working on and the worktree that you're working on.
+
+
+- If I start prompt with *CURRENT*, then do not make the changes on a new worktree and just make them locally instead.
+
+#Unity
+- use unity compiler to check for errors
+- use other features of unity to make sure code is correct
