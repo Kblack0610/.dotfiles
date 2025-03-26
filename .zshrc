@@ -152,7 +152,15 @@ if [ -d "/usr/local/go/bin" ]; then
     export PATH=$PATH:/usr/local/go/bin
 fi
 
+export UNITY_PATH="$HOME/src/Unity/Hub/Editor/6000.0.41f1/Editor/Unity"
+
+
+###############################################################################
+# TOOLS 
+#
 # starship prompt
 eval "$(starship init zsh)"
 
 
+export PATH=$PATH:$HOME/.maestro/bin
+export PATH=$PATH:$HOME/src/go/bin/bluetuith

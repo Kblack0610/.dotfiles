@@ -88,3 +88,34 @@ vim.opt.virtualedit = "block" -- Allow going past end of line in visual block mo
 vim.opt.wrap = false -- Disable wrapping of lines longer than the width of window
 vim.opt.writebackup = false -- Disable making a backup before overwriting a file
 vim.opt.scrolloff = 8 -- How many lines to keep on top/bottom of screen when scrolling
+
+-- for external editors
+-- vim.opt.autoread = true
+
+-- rewrite this
+-- autocmd FocusGained * checktim
+-- vim.autocommand.FocusGained {
+--   callback = function()
+--     vim.cmd("checktime")
+--   end,
+-- }
+--
+-- vim.autocommand.BufReadPost {
+--   pattern = "*",
+--   callback = function()
+--     vim.cmd("checktime")
+--   end,
+-- }
+-- vim.opt.autowrite = true
+-- vim.opt.swapfile = false
+-- vim.opt.backup = false
+-- vim.opt.undodir = os.getenv("HOME") .. "/.vim/undodir"
+-- vim.opt.undofile = true
+
+    -- " trigger `autoread` when files changes on disk
+      -- set autoread
+      -- autocmd FocusGained,BufEnter,CursorHold,CursorHoldI * if mode() != 'c' | checktime | endif
+    -- " notification after file change
+      -- autocmd FileChangedShellPost *
+        -- \ echohl WarningMsg | echo "File changed on disk. Buffer reloaded." | echohl None
+-- autocmd FocusGained * checktim

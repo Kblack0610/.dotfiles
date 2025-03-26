@@ -79,7 +79,8 @@ floating_modifier $mod
 # start a terminal
 bindsym $mod+Return exec kitty
 bindsym $mod+c exec flatpak run one.ablaze.floorp
-bindsym $mod+n exec nautilus
+bindsym $mod+n exec flatpak run org.kde.dolphin
+# bindsym $mod+n exec nautilus
 bindsym $mod+u exec unityhub 
 
 # kill focused window
@@ -139,7 +140,7 @@ bindsym $mod+a focus parent
 set $ws1 "1:main"
 set $ws2 "2:code"
 set $ws3 "3:browser"
-set $ws4 "4:other"
+set $ws4 "4:home"
 set $ws5 "5:party"
 set $ws6 "6:notes"
 set $ws7 "7:media"
@@ -165,7 +166,7 @@ workspace $ws8 output HDMI-0
 #explains here to use instance or assign or by title instead of class for only using first instance. With assign it only activates when window property changes 
 
 #BINDS TO WORKSPACES
-for_window [class="kitty"] move to workspace $ws2
+assign [class="kitty"] $ws2
 # for_window [class="floorp"] move to workspace $ws3 
 assign [class="floorp"] $ws3
 

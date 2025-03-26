@@ -89,9 +89,10 @@ return {
             "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
             "Art", "*.shader", "*.wav", "*.fbx", "*.FBX", "*.obj", "*.anim", --3D
             "*.exr", "*.ttf", "*.otf", "*.mat", "*.asmdef", "*.asmref", "*.overrideController", "*.prefab", --Unity
-            "*.tsm", "*.tmx", "*.meta", "*.cs.meta", "*.asset", "*.controller", "*.unity", "*.csproj", --Unity
+            "*.tsm", "*.tmx", "*.meta", "*.cs.meta", "*.asset", "*.controller", "*.csproj", --Unity
             "*.png", "*.gif", "*.PNG", --Pictures
             -- PROJECT
+            -- "*.unity", 
             "Library", "Builds", "Logs", "RewiredBackup", "SceneBackups", "Temp", "UserSettings", "obj",
           }
         })
@@ -123,7 +124,7 @@ return {
             "node_modules", "dist",                                                              --NODE
             -- UNITY
             "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
-            "Art", "*.shader", "*.wav", "*.fbx", "*.fbx",  "*.obj", "*.anim", --3D
+            "Art", "*.shader", "*.wav", "*.fbx", "*.fbx", "*.obj", "*.anim", --3D
             "*.exr", "*.ttf", "*.otf", "*.mat", "*.asmdef", "*.asmref", "*.overrideController", "*.prefab", --Unity
             "*.tsm", "*.tmx", "*.meta", "*.cs.meta", "*.asset", "*.controller", "*.unity", "*.csproj", --Unity
             "*.png", "*.gif", "*.PNG", --Pictures
