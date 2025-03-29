@@ -47,20 +47,17 @@ ethernet _first_ {
 }
 
 battery all {
-        format = "BAT: %status %percentage %essid (%quality)"
-        format_down = "NO BAT"
-}
-
-battery all {
-        format = "%status %percentage"
-        format_down = ""
-        status_chr = ""
-        status_bat = ""
-        status_unk = "?"
-        status_full = ""
+        format = "%status %percentage %remaining"
+        format_down = "No battery"
+        status_chr = "⚡ CHR:"
+        status_bat = "🔋 BAT:"
+        status_unk = "? UNK:"
+        status_full = "☻ FULL:"
         path = "/sys/class/power_supply/BAT%d/uevent"
         low_threshold = 20
+        threshold_type = percentage
         integer_battery_capacity = true
+        last_full_capacity = true
 }
 
 tztime local {
