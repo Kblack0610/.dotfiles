@@ -145,22 +145,26 @@ set $ws5 "5:party"
 set $ws6 "6:notes"
 set $ws7 "7:media"
 set $ws8 "8:test"
-set $ws9 "9:audio"
+set $ws9 "9:home"
 set $ws10 "10:getting-weird"
 
 #can also use:
 #xrandr --output <output> --primary), and use this syntax:
-#workspace 1 output primary
-#workspace 6 output secondary
-workspace $ws1 output DP-5
-workspace $ws2 output DP-5
-workspace $ws3 output DP-5
-workspace $ws4 output DP-5
-workspace $ws5 output DP-5
+set $primary_display "DP-5"
+set $secondary_display "HDMI-0"
 
-workspace $ws6 output HDMI-0
-workspace $ws7 output HDMI-0
-workspace $ws8 output HDMI-0
+workspace $ws1 output $primary_display
+workspace $ws2 output $primary_display
+workspace $ws3 output $primary_display
+workspace $ws4 output $primary_display
+workspace $ws5 output $primary_display
+
+workspace $ws6 output $secondary_display
+workspace $ws7 output $secondary_display
+workspace $ws8 output $secondary_display
+workspace $ws9 output $secondary_display
+workspace $ws10 output $secondary_display
+
 
 #https://www.reddit.com/r/i3wm/comments/85scgq/for_window_and_multiple_wm_classes/
 #explains here to use instance or assign or by title instead of class for only using first instance. With assign it only activates when window property changes 
@@ -236,6 +240,16 @@ mode "resize" {
 }
 
 bindsym $mod+r mode "resize"
+
+###############################################################################
+### Custom Workspace Movement Functions
+###############################################################################
+
+bindsym $mod+Shift+p move workspace to output $primary_display;
+bindsym $mod+Shift+o move workspace to output $secondary_display;
+
+# Notification when Windsurf/Cursor has finished working
+bindsym $mod+Shift+n exec --no-startup-id notify-send "Task Complete" "Cursor and Windsurf have finished working"
 
 ###############################################################################
 ## TOOLS
