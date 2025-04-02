@@ -173,6 +173,7 @@ workspace $ws10 output $secondary_display
 assign [class="kitty"] $ws2
 # for_window [class="floorp"] move to workspace $ws3 
 assign [class="floorp"] $ws3
+assign [class="firefox"] $ws4
 
 for_window [class="obsidian"] move to workspace $ws6
 
