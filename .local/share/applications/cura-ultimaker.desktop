@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Ultimaker Cura
+Icon=/home/kblack0610/.local/share/cursor/cursor.png
+Exec=/home/kblack0610/bin/UltiMaker-Cura-5.7.2-linux-X64.AppImage
+Type=Application
+Terminal=false

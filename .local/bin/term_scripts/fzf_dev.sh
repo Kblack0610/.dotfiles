@@ -3,17 +3,35 @@
 dirs=(
   "$HOME/.dotfiles"
   "$HOME/.notes"
-  "$HOME/bin"
   "$HOME/dev"
-  "$HOME/dev/*"
   "$HOME/Work"
-  "$HOME/Work/*"
-  "$HOME/Documents"
+  # "$HOME/Documents"
+  # "$HOME/bin"
+  # "$HOME/dev/*"
+  # "$HOME/Work/*"
   # Add more directories as needed
 )
 
-# dir=$(find "${dirs[@]}" -maxdepth 4 -type d -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
-dir=$(find "${dirs[@]}" -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
+# Specify directories to exclude from search
+blacklist_dirs=(
+  # Add directories you want to exclude
+  # "$HOME/.dotfiles/backup"
+  # "$HOME/dev/archived_projects"
+  # "$HOME/Work/legacy"
+)
+
+# Build the find command with exclusions
+find_cmd="find ${dirs[@]} -not -path \"*/\.git/*\" -not -path \"*/\node_modules/*\""
+
+# Add blacklist directories to exclusions
+for blacklist_dir in "${blacklist_dirs[@]}"; do
+  if [ -n "$blacklist_dir" ]; then
+    find_cmd+=" -not -path \"$blacklist_dir/*\""
+  fi
+done
+
+# Execute the find command and pipe to fzf
+dir=$(eval "$find_cmd" -print 2> /dev/null | fzf)
 
 if [ -n "$dir" ]; then
     if [ -f "$dir" ]; then

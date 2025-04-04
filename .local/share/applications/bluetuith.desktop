@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Bluituith
+Icon=/home/kblack0610/.local/share/cursor/cursor.png
+Exec=/home/kblack0610/bin/bluituith 
+Type=Application
+Terminal=false
