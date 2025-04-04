@@ -31,3 +31,21 @@ params: {}
 [2025-04-04T22:11:03.754Z][INFO] project:list-packages <-- Request received
 params: {}
 [2025-04-04T22:11:03.902Z][INFO] project:list-packages --> 200 (148 ms)
+[2025-04-04T22:13:29.179Z][INFO] project:list-packages <-- Request received
+params: {}
+[2025-04-04T22:13:29.825Z][INFO] project:list-packages --> 200 (646 ms)
+[2025-04-04T22:13:30.269Z][INFO] config:project:get-registries <-- Request received
+params: {}
+[2025-04-04T22:13:30.272Z][INFO] config:project:get-registries --> 200 (3 ms)
+[2025-04-04T22:13:34.051Z][INFO] project:list-packages <-- Request received
+params: {}
+[2025-04-04T22:13:34.227Z][INFO] project:list-packages --> 200 (176 ms)
+[2025-04-04T22:20:25.419Z][INFO] project:list-packages <-- Request received
+params: {}
+[2025-04-04T22:20:26.175Z][INFO] project:list-packages --> 200 (756 ms)
+[2025-04-04T22:20:26.811Z][INFO] config:project:get-registries <-- Request received
+params: {}
+[2025-04-04T22:20:26.818Z][INFO] config:project:get-registries --> 200 (7 ms)
+[2025-04-04T22:20:31.279Z][INFO] project:list-packages <-- Request received
+params: {}
+[2025-04-04T22:20:31.543Z][INFO] project:list-packages --> 200 (263 ms)

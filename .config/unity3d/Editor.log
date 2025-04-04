@@ -896,3 +896,1478 @@ Created GICache directory at /home/kblack0610/.cache/unity3d/GiCache. Took: 0.00
 [Licensing::Module] Successfully updated access token: "uVUnnfe-"... (expires: 2026-04-04T22:11:05Z)
 UPID Received 'fa4b20bc-6982-4db1-b3d6-01a5018193e2'.
 TrimDiskCacheJob: Current cache size 7mb
+Reloading assemblies for play mode.
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:13:25.907: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:13:25.918: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Reloading assemblies after forced synchronous recompile.
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+Begin MonoManager ReloadAssembly
+Symbol file LoadedFromMemory is not a mono symbol file
+- Loaded All Assemblies, in  1.031 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:13:26.990: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Refreshing native plugins compatible for Editor in 1.33 ms, found 4 plugins.
+Native extension for LinuxStandalone target not found
+Native extension for Android target not found
+Native extension for WindowsStandalone target not found
+Native extension for OSXStandalone target not found
+Refreshing native plugins compatible for Editor in 1.53 ms, found 4 plugins.
+[MODES] ModeService[none].Initialize
+[MODES] ModeService[none].LoadModes
+Mono: successfully reloaded assembly
+Method UnityBuildScript.PerformSwitch has invalid parameters. MenuCommand is the only optional supported parameter.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.MenuService:ValidateMethodForMenuCommand (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:504)
+UnityEditor.MenuService/<>c:<ExtractMenuItemsFromAttributes>b__18_0 (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:359)
+System.Linq.Enumerable/WhereEnumerableIterator`1<System.Reflection.MethodInfo>:ToArray ()
+System.Linq.Buffer`1<System.Reflection.MethodInfo>:.ctor (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+System.Linq.OrderedEnumerable`1<System.Reflection.MethodInfo>:ToList ()
+System.Linq.Enumerable:ToList<System.Reflection.MethodInfo> (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+UnityEditor.MenuService:ExtractMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:358)
+UnityEditor.MenuService:GetMenuItemsFromAttributesById (string) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:310)
+UnityEditor.MenuService:GetMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:64)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs Line: 504)
+
+CreateAssetMenu attribute on BlackNBrown.Characters.PathFindWalkToSceneAction will be ignored as BlackNBrown.Characters.PathFindWalkToSceneAction is not derived from ScriptableObject.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.AttributeHelper:ExtractCreateAssetMenuItems () (at /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs:156)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs Line: 156)
+
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+- Finished resetting the current domain, in  4.182 seconds
+Domain Reload Profiling: 5214ms
+	BeginReloadAssembly (671ms)
+		ExecutionOrderSort (0ms)
+		DisableScriptedObjects (49ms)
+		BackupInstance (0ms)
+		ReleaseScriptingObjects (3ms)
+		CreateAndSetChildDomain (417ms)
+	RebuildCommonClasses (24ms)
+	RebuildNativeTypeToScriptingClass (5ms)
+	initialDomainReloadingComplete (37ms)
+	LoadAllAssembliesAndSetupDomain (294ms)
+		LoadAssemblies (112ms)
+		RebuildTransferFunctionScriptingTraits (0ms)
+		AnalyzeDomain (232ms)
+			TypeCache.Refresh (6ms)
+				TypeCache.ScanAssembly (0ms)
+			BuildScriptInfoCaches (205ms)
+			ResolveRequiredComponents (17ms)
+	FinalizeReload (4182ms)
+		ReleaseScriptCaches (0ms)
+		RebuildScriptCaches (0ms)
+		SetupLoadedEditorAssemblies (2686ms)
+			LogAssemblyErrors (0ms)
+			InitializePlatformSupportModulesInManaged (280ms)
+			SetLoadedEditorAssemblies (4ms)
+			BeforeProcessingInitializeOnLoad (109ms)
+			ProcessInitializeOnLoadAttributes (1395ms)
+			ProcessInitializeOnLoadMethodAttributes (892ms)
+			AfterProcessingInitializeOnLoad (4ms)
+			EditorAssembliesLoaded (1ms)
+		ExecutionOrderSort2 (1ms)
+		AwakeInstancesAfterBackupRestoration (487ms)
+Asset Pipeline Refresh (id=361592dbf4b9420f482e74ba631063b1): Total: 5.924 seconds - Initiated by StopAssetImportingV2(ForceSynchronousImport | ForceDomainReload)
+	Summary:
+		Imports: total=0 (actual=0, local cache=0, cache server=0)
+		Asset DB Process Time: managed=0 ms, native=4668 ms
+		Asset DB Callback time: managed=195 ms, native=0 ms
+		Scripting: domain reloads=1, domain reload time=1058 ms, compile time=1 ms, other=0 ms
+		Project Asset Count: scripts=5546, non-scripts=33307
+		Asset File Changes: new=0, changed=0, moved=0, deleted=0
+		Scan Filter Count: 0
+	InvokeCustomDependenciesCallbacks: 0.002ms
+	InvokePackagesCallback: 1.133ms
+	ApplyChangesToAssetFolders: 0.590ms
+	Scan: 0.001ms
+	OnSourceAssetsModified: 0.001ms
+	CategorizeAssetsWithTransientArtifact: 0.002ms
+	ProcessAssetsWithTransientArtifactChanges: 7.598ms
+	CategorizeAssets: 362.247ms
+	ImportOutOfDateAssets: 4206.268ms (4192.479ms without children)
+		CompileScripts: 0.932ms
+		CollectScriptTypesHashes: 1.998ms
+		ReloadNativeAssets: 1.775ms
+		UnloadImportedAssets: 3.046ms
+		EnsureUptoDateAssetsAreRegisteredWithGuidPM: 5.131ms
+		InitializingProgressBar: 0.000ms
+		PostProcessAllAssetNotificationsAddChangedAssets: 0.001ms
+		OnDemandSchedulerStart: 0.905ms
+	PostProcessAllAssets: 195.517ms
+	GatherAllCurrentPrimaryArtifactRevisions: 0.889ms
+	UnloadStreamsBegin: 2.012ms
+	PersistCurrentRevisions: 0.691ms
+	UnloadStreamsEnd: 0.001ms
+	GenerateScriptTypeHashes: 10.801ms
+	Untracked: 1146.737ms
+
+PreProcessingGraphs
+No rasterizable objects were found contained in the layers specified by the 'mask' variables
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:LogWarning (object)
+Pathfinding.Graphs.Navmesh.TileBuilder:CollectMeshes (UnityEngine.Bounds) (at ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs:164)
+Pathfinding.Graphs.Navmesh.TileBuilder:Schedule (Pathfinding.Jobs.DisposeArena) (at ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs:250)
+Pathfinding.RecastGraph/RecastGraphScanPromise/<Prepare>d__9:MoveNext () (at ./Packages/com.arongranberg.astar/Graphs/RecastGraph.cs:1071)
+Pathfinding.GraphUpdateProcessor:PrepareGraphUpdatePromises (System.Collections.Generic.List`1<System.ValueTuple`2<Pathfinding.IGraphUpdatePromise, System.Collections.Generic.IEnumerator`1<Unity.Jobs.JobHandle>>>,Pathfinding.Jobs.TimeSlice) (at ./Packages/com.arongranberg.astar/Core/Pathfinding/GraphUpdateProcessor.cs:238)
+AstarPath/<ScanInternal>d__129:MoveNext () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1787)
+AstarPath:Scan (Pathfinding.NavGraph[]) (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1569)
+AstarPath:OnEnable () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1304)
+
+(Filename: ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs Line: 164)
+
+FinishingScans
+Scanned graphs in 46 ms
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+AstarPath/<ScanInternal>d__129:MoveNext () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1914)
+AstarPath:Scan (Pathfinding.NavGraph[]) (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1569)
+AstarPath:OnEnable () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1304)
+
+(Filename: ./Packages/com.arongranberg.astar/Core/AstarPath.cs Line: 1914)
+
+Loaded scene 'Temp/__Backupscenes/0.backup'
+	Deserialize:            0.675 ms
+	Integration:            375.816 ms
+	Integration of assets:  0.001 ms
+	Thread Wait Time:       0.006 ms
+	Total Operation Time:   376.498 ms
+Loaded scene 'Temp/__Backupscenes/1.backup'
+	Deserialize:            12.703 ms
+	Integration:            17.558 ms
+	Integration of assets:  0.002 ms
+	Thread Wait Time:       363.147 ms
+	Total Operation Time:   393.411 ms
+[Licensing::Client] Successfully resolved entitlement details
+The tree Tree1 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+The tree Tree2 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+The tree Tree3 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+Refreshing native plugins compatible for Editor in 1.46 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.22 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.17 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.16 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.14 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.14 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Loaded scene 'Assets/Scenes/Client/Environment.unity'
+	Deserialize:            3.355 ms
+	Integration:            1.183 ms
+	Integration of assets:  0.182 ms
+	Thread Wait Time:       2538.562 ms
+	Total Operation Time:   2543.282 ms
+Loaded scene 'Assets/Scenes/Client/Input.unity'
+	Deserialize:            178.035 ms
+	Integration:            126.803 ms
+	Integration of assets:  0.011 ms
+	Thread Wait Time:       2428.034 ms
+	Total Operation Time:   2732.882 ms
+NetworkManager not found in any open scenes.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+FishNet.InstanceFinder:get_NetworkManager () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/InstanceFinder.cs:50)
+FishNet.Managing.NetworkManagerExtensions:GetNetworkManager (FishNet.Managing.NetworkManager&) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:160)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (FishNet.Managing.NetworkManager,string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:133)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:174)
+FishNet.Object.NetworkObject:OnValidate () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Object/NetworkObject.cs:1386)
+
+(Filename: Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/InstanceFinder.cs Line: 50)
+
+Object GameNetworkManager will have it's IsGlobal state ignored because it is a scene object. Instantiated copies will still be global. This warning is informative only.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:LogWarning (object)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (FishNet.Managing.NetworkManager,string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:136)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:174)
+FishNet.Object.NetworkObject:OnValidate () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Object/NetworkObject.cs:1386)
+
+(Filename: Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs Line: 136)
+
+ManagerService initialized
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Core.Services.ManagerService:Initialize () (at Assets/Runtime/Scripts/Core/Services/ManagerService.cs:30)
+BlackNBrown.Core.Services.ManagerInitializer:Awake () (at Assets/Runtime/Scripts/Core/Services/ManagerInitializer.cs:21)
+
+(Filename: Assets/Runtime/Scripts/Core/Services/ManagerService.cs Line: 30)
+
+Loaded scene 'Assets/Scenes/Game/Network.unity'
+	Deserialize:            8.828 ms
+	Integration:            32.005 ms
+	Integration of assets:  0.018 ms
+	Thread Wait Time:       2633.319 ms
+	Total Operation Time:   2674.170 ms
+Loaded scene 'Assets/Scenes/Server/API.unity'
+	Deserialize:            4.911 ms
+	Integration:            1.321 ms
+	Integration of assets:  0.020 ms
+	Thread Wait Time:       2711.644 ms
+	Total Operation Time:   2717.897 ms
+Attempting Login
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.API:AttemptLogin () (at Assets/Runtime/Scripts/Server/API/API.cs:52)
+BlackNBrown.Managers.API:Start () (at Assets/Runtime/Scripts/Server/API/API.cs:46)
+
+(Filename: Assets/Runtime/Scripts/Server/API/API.cs Line: 52)
+
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: BasketHoop01_PhyWood
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: BasketHoop01_PhyMetal
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: VaultingHorse02_PhyMetall
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: VaultingHorse01_PhyMetal
+Loaded scene 'Assets/Scenes/Game/Levels/School.unity'
+	Deserialize:            778.691 ms
+	Integration:            433.033 ms
+	Integration of assets:  0.276 ms
+	Thread Wait Time:       1950.735 ms
+	Total Operation Time:   3162.735 ms
+Loading graph data from: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/StreamingAssets/school_astar_graph.bytes
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Common.AStarGraphLoader:LoadGraphData (string,System.Action`1<bool>) (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Pathfinding/AStarGraphLoader.cs:45)
+BlackNBrown.Managers.BBSceneManager:ResetAstarGraph () (at Assets/Runtime/Scripts/Managers/Scene/BBSceneManager.cs:286)
+BlackNBrown.Managers.BBSceneManager/<LoadLevel>d__18:MoveNext () (at Assets/Runtime/Scripts/Managers/Scene/BBSceneManager.cs:209)
+UnityEngine.SetupCoroutine:InvokeMoveNext (System.Collections.IEnumerator,intptr) (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+(Filename: Assets/Runtime/Scripts/Common.Dodgeball/Utils/Pathfinding/AStarGraphLoader.cs Line: 45)
+
+Unable to add the requested character to font asset [Cute Dino SDF]'s atlas texture. Please make the texture [Cute Dino SDF Atlas] readable.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TMP_FontAsset:TryAddCharacterInternal (uint,TMPro.TMP_Character&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:2600)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:172)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:57)
+TMPro.TMP_Text:GetTextElement (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:6095)
+TMPro.TextMeshPro:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:1623)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:2017)
+TMPro.TextMeshPro:OnPreRenderObject () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:2117)
+TMPro.TextMeshPro:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:292)
+TMPro.TMP_UpdateManager:DoRebuilds () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_UpdateManager.cs:177)
+UnityEngine.Canvas:SendWillRenderCanvases () (at /home/bokken/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+(Filename: ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs Line: 2600)
+
+Loaded scene 'Assets/Scenes/Client/Cameras.unity'
+	Deserialize:            3.640 ms
+	Integration:            5.590 ms
+	Integration of assets:  0.523 ms
+	Thread Wait Time:       2539.393 ms
+	Total Operation Time:   2549.145 ms
+NullReferenceException: Object reference not set to an instance of an object
+  at BlackNBrown.Managers.API.updateUserStatus (System.String id, System.String wins, System.String losses) [0x00000] in /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/Runtime/Scripts/Server/API/API.cs:171 
+  at BlackNBrown.Managers.API.<GetUserStats>b__19_0 (UnityEngine.Networking.UnityWebRequest www) [0x0004a] in /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/Runtime/Scripts/Server/API/API.cs:164 
+  at BlackNBrown.Managers.API+<GetRequest>d__29.MoveNext () [0x0010c] in /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/Runtime/Scripts/Server/API/API.cs:316 
+  at UnityEngine.SetupCoroutine.InvokeMoveNext (System.Collections.IEnumerator enumerator, System.IntPtr returnValueAddress) [0x00020] in /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17 
+
+(Filename: Assets/Runtime/Scripts/Server/API/API.cs Line: 171)
+
+fake asset loader initialized
+m/body	M_body (UnityEngine.GameObject)
+m/head/Head.01	Head.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.02	Head.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.03	Head.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.04	Head.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.01	Hairstyle.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.02	Hairstyle.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.03	Hairstyle.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.04	Hairstyle.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.05	Hairstyle.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.06	Hairstyle.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.07	Hairstyle.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-1	Hairstyle.08-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-2	Hairstyle.08-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-3	Hairstyle.08-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-1	Hairstyle.09-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-2	Hairstyle.09-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-3	Hairstyle.09-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-1	Hairstyle.10-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-2	Hairstyle.10-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-3	Hairstyle.10-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-1	Hairstyle.11-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-2	Hairstyle.11-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-3	Hairstyle.11-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-1	Hairstyle.12-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-2	Hairstyle.12-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-3	Hairstyle.12-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-1	Hairstyle.13-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-2	Hairstyle.13-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-3	Hairstyle.13-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-1	Hairstyle.14-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-2	Hairstyle.14-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-3	Hairstyle.14-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.15	Hairstyle.15 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.16	Hairstyle.16 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-1	Hat.001-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-2	Hat.001-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-3	Hat.001-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-4	Hat.001-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-5	Hat.001-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-1	Hat.002-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-2	Hat.002-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-3	Hat.002-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-4	Hat.002-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-5	Hat.002-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.003	Hat.003 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.17	Hairstyle.17 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/acc_head/Glasses.001	Glasses.001 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/acc_head/Glasses.002	Glasses.002 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.01	Top.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.02	Top.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.03	Top.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.04	Top.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.05	Top.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.06	Top.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.07-A	Top.07-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.07-B	Top.07-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.08-A	Top.08-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.08-B	Top.08-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.09	Top.09 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.10	Top.10 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.11	Top.11 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.01	Bot.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.02	Bot.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.03	Bot.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.04	Bot.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.05	Bot.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.06	Bot.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.01	Shoes.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.02	Shoes.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.03	Shoes.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.04	Shoes.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.05	Shoes.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.06	Shoes.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.07	Shoes.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.01	Outfit.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.02	Outfit.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.03	Outfit.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.04	Outfit.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/body	F_body (UnityEngine.GameObject)
+f/head/Head.01	Head.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.02	Head.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.03	Head.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.04	Head.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.01	Hairstyle.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.02	Hairstyle.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.03	Hairstyle.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.04	Hairstyle.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.05	Hairstyle.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.06	Hairstyle.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.07	Hairstyle.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-1	Hairstyle.08-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-2	Hairstyle.08-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-3	Hairstyle.08-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-1	Hairstyle.09-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-2	Hairstyle.09-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-3	Hairstyle.09-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-1	Hairstyle.10-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-2	Hairstyle.10-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-3	Hairstyle.10-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-1	Hairstyle.11-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-2	Hairstyle.11-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-3	Hairstyle.11-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-1	Hairstyle.12-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-2	Hairstyle.12-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-3	Hairstyle.12-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-1	Hairstyle.13-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-2	Hairstyle.13-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-3	Hairstyle.13-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-1	Hairstyle.14-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-2	Hairstyle.14-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-3	Hairstyle.14-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.15	Hairstyle.15 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.16	Hairstyle.16 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-1	Hat.001-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-2	Hat.001-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-3	Hat.001-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-4	Hat.001-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-5	Hat.001-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-1	Hat.002-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-2	Hat.002-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-3	Hat.002-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-4	Hat.002-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-5	Hat.002-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.003	Hat.003 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.17	Hairstyle.17 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/acc_head/Glasses.001	Glasses.001 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/acc_head/Glasses.002	Glasses.002 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.01	Top.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.02	Top.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.03	Top.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.04	Top.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.05	Top.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.06	Top.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.07-A	Top.07-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.07-B	Top.07-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.08-A	Top.08-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.08-B	Top.08-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.09	Top.09 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.10	Top.10 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.11	Top.11 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.01	Bot.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.02	Bot.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.03	Bot.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.04	Bot.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.05	Bot.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.06	Bot.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.01	Shoes.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.02	Shoes.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.03	Shoes.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.04	Shoes.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.05	Shoes.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.06	Shoes.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.07	Shoes.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.01	Outfit.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.02	Outfit.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.03	Outfit.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.04	Outfit.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+Rukha93.ModularAnimeCharacter.Customization.FakeLoader:Awake () (at Assets/Runtime/Scripts/Managers/Customization/AssetLoading/FakeLoader.cs:43)
+
+(Filename: Assets/Runtime/Scripts/Managers/Customization/AssetLoading/FakeLoader.cs Line: 43)
+
+Loaded scene 'Assets/Scenes/Client/UI.unity'
+	Deserialize:            113.698 ms
+	Integration:            107.358 ms
+	Integration of assets:  0.790 ms
+	Thread Wait Time:       2894.223 ms
+	Total Operation Time:   3116.069 ms
+Progress Loaded:
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.GUIManager:OnMMEvent (BlackNBrown.Managers.Game.GameEvent) (at Assets/Runtime/Scripts/Managers/UI/GUIManager.cs:193)
+MoreMountains.Tools.MMEventManager:TriggerEvent<BlackNBrown.Managers.Game.GameEvent> (BlackNBrown.Managers.Game.GameEvent) (at Assets/Plugins/com.blacknbrown.Common.External/MMTools/Tools/MMEvents/MMEventManager.cs:173)
+BlackNBrown.Managers.Game.GameEvent:Trigger (BlackNBrown.Managers.Game.GameEventTypes,BlackNBrown.Characters.Character,int) (at Assets/Runtime/Scripts/Managers/Game/GameType.cs:73)
+BlackNBrown.Managers.ProgressManager:LoadSavedProgress () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:234)
+BlackNBrown.Managers.ProgressManager:Awake () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:264)
+
+(Filename: Assets/Runtime/Scripts/Managers/UI/GUIManager.cs Line: 193)
+
+Loaded scene 'Assets/Scenes/Client/Progress.unity'
+	Deserialize:            2.408 ms
+	Integration:            10.746 ms
+	Integration of assets:  1.074 ms
+	Thread Wait Time:       3098.778 ms
+	Total Operation Time:   3113.005 ms
+Progress Loaded:
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.GUIManager:OnMMEvent (BlackNBrown.Managers.Game.GameEvent) (at Assets/Runtime/Scripts/Managers/UI/GUIManager.cs:193)
+MoreMountains.Tools.MMEventManager:TriggerEvent<BlackNBrown.Managers.Game.GameEvent> (BlackNBrown.Managers.Game.GameEvent) (at Assets/Plugins/com.blacknbrown.Common.External/MMTools/Tools/MMEvents/MMEventManager.cs:173)
+BlackNBrown.Managers.Game.GameEvent:Trigger (BlackNBrown.Managers.Game.GameEventTypes,BlackNBrown.Characters.Character,int) (at Assets/Runtime/Scripts/Managers/Game/GameType.cs:73)
+BlackNBrown.Managers.ProgressManager:LoadSavedProgress () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:234)
+BlackNBrown.Managers.Game.GameManager/<Initialize>d__41:MoveNext () (at Assets/Runtime/Scripts/Managers/Game/GameManager.cs:114)
+UnityEngine.SetupCoroutine:InvokeMoveNext (System.Collections.IEnumerator,intptr) (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+(Filename: Assets/Runtime/Scripts/Managers/UI/GUIManager.cs Line: 193)
+
+Loaded scene 'Assets/Scenes/Client/FX.unity'
+	Deserialize:            2.017 ms
+	Integration:            3.006 ms
+	Integration of assets:  1.044 ms
+	Thread Wait Time:       3258.123 ms
+	Total Operation Time:   3264.191 ms
+Loaded scene 'Assets/Scenes/Client/Audio.unity'
+	Deserialize:            3.717 ms
+	Integration:            691.090 ms
+	Integration of assets:  1.051 ms
+	Thread Wait Time:       3312.794 ms
+	Total Operation Time:   4008.652 ms
+Loaded scene 'Assets/Scenes/Server/ServerManager.unity'
+	Deserialize:            21.272 ms
+	Integration:            13.971 ms
+	Integration of assets:  1.054 ms
+	Thread Wait Time:       4038.841 ms
+	Total Operation Time:   4075.138 ms
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+Unable to add the requested character to font asset [Cute Dino SDF]'s atlas texture. Please make the texture [Cute Dino SDF Atlas] readable.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TMP_FontAsset:TryAddCharacterInternal (uint,TMPro.TMP_Character&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:2600)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:172)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:57)
+TMPro.TMP_Text:GetTextElement (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:6095)
+TMPro.TextMeshProUGUI:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:1938)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:2017)
+TMPro.TextMeshProUGUI:OnPreRenderCanvas () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:2471)
+TMPro.TextMeshProUGUI:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:227)
+UnityEngine.UI.CanvasUpdateRegistry:PerformUpdate () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/UGUI/UI/Core/CanvasUpdateRegistry.cs:215)
+UnityEngine.Canvas:SendWillRenderCanvases () (at /home/bokken/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+(Filename: ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs Line: 2600)
+
+Unable to add the requested character to font asset [Cute Dino SDF]'s atlas texture. Please make the texture [Cute Dino SDF Atlas] readable.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TMP_FontAsset:TryAddCharacterInternal (uint,TMPro.TMP_Character&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:2600)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:172)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:57)
+TMPro.TMP_Text:GetTextElement (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:6095)
+TMPro.TextMeshProUGUI:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:1938)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:2017)
+TMPro.TextMeshProUGUI:OnPreRenderCanvas () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:2471)
+TMPro.TextMeshProUGUI:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:227)
+UnityEngine.UI.CanvasUpdateRegistry:PerformUpdate () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/UGUI/UI/Core/CanvasUpdateRegistry.cs:215)
+UnityEngine.Canvas:SendWillRenderCanvases () (at /home/bokken/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+(Filename: ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs Line: 2600)
+
+Initializing animation cache
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+AnimationLoader/<InitializeCache>d__2:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs:16)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<AnimationLoader/<InitializeCache>d__2> (AnimationLoader/<InitializeCache>d__2&)
+AnimationLoader:InitializeCache (System.Collections.Generic.List`1<string>)
+BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45:MoveNext () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:266)
+System.Runtime.CompilerServices.AsyncVoidMethodBuilder:Start<BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45> (BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45&)
+BlackNBrown.Managers.SpawnManager:InitializeCache ()
+BlackNBrown.Managers.SpawnManager:Start () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:255)
+
+(Filename: Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs Line: 16)
+
+Loading animation data from: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/StreamingAssets/AnimationData.json
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Animation.AnimationData:LoadAllAnimationData () (at Assets/Runtime/Scripts/Characters/Animation/AnimationData.cs:42)
+BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationParametersLoader.cs:21)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1> (BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1&)
+BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader:Initialize ()
+AnimationLoader/<InitializeCache>d__2:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs:19)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<AnimationLoader/<InitializeCache>d__2> (AnimationLoader/<InitializeCache>d__2&)
+AnimationLoader:InitializeCache (System.Collections.Generic.List`1<string>)
+BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45:MoveNext () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:266)
+System.Runtime.CompilerServices.AsyncVoidMethodBuilder:Start<BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45> (BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45&)
+BlackNBrown.Managers.SpawnManager:InitializeCache ()
+BlackNBrown.Managers.SpawnManager:Start () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:255)
+
+(Filename: Assets/Runtime/Scripts/Characters/Animation/AnimationData.cs Line: 42)
+
+Initializing animation cache
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+AnimationLoader/<InitializeCache>d__2:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs:16)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<AnimationLoader/<InitializeCache>d__2> (AnimationLoader/<InitializeCache>d__2&)
+AnimationLoader:InitializeCache (System.Collections.Generic.List`1<string>)
+AnimationLoader/<InitializeCache>d__3:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs:41)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<AnimationLoader/<InitializeCache>d__3> (AnimationLoader/<InitializeCache>d__3&)
+AnimationLoader:InitializeCache (string[])
+BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationParametersLoader.cs:25)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1> (BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader/<Initialize>d__1&)
+BlackNBrown.Common.Utils.Loaders.AnimationParametersLoader:Initialize ()
+AnimationLoader/<InitializeCache>d__2:MoveNext () (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs:19)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start<AnimationLoader/<InitializeCache>d__2> (AnimationLoader/<InitializeCache>d__2&)
+AnimationLoader:InitializeCache (System.Collections.Generic.List`1<string>)
+BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45:MoveNext () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:266)
+System.Runtime.CompilerServices.AsyncVoidMethodBuilder:Start<BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45> (BlackNBrown.Managers.SpawnManager/<InitializeCache>d__45&)
+BlackNBrown.Managers.SpawnManager:InitializeCache ()
+BlackNBrown.Managers.SpawnManager:Start () (at Assets/Runtime/Scripts/Managers/Spawn/SpawnManager.cs:255)
+
+(Filename: Assets/Runtime/Scripts/Common.Dodgeball/Utils/Loaders/Object/AnimationLoader.cs Line: 16)
+
+Font Asset [LiberationSans SDF - Fallback] Units Per EM set to 2048. Please commit the newly serialized value.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+TMPro.TMP_FontAsset:ReadFontAssetDefinition () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:819)
+TMPro.TMP_FontAsset:get_characterLookupTable () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:193)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:78)
+TMPro.TMP_FontAssetUtilities:SearchFallbacksForCharacter (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:207)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:154)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:57)
+TMPro.TMP_Text:GetTextElement (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:6156)
+TMPro.TextMeshProUGUI:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:1938)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:2017)
+TMPro.TextMeshProUGUI:OnPreRenderCanvas () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:2471)
+TMPro.TextMeshProUGUI:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshProUGUI.cs:227)
+UnityEngine.UI.CanvasUpdateRegistry:PerformUpdate () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/UGUI/UI/Core/CanvasUpdateRegistry.cs:215)
+UnityEngine.Canvas:SendWillRenderCanvases () (at /home/bokken/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+(Filename: ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs Line: 819)
+
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+Character has died
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Characters.HealthPool:HandleDeath () (at Assets/Runtime/Scripts/Characters/Health/HealthPool.cs:90)
+BlackNBrown.Characters.HealthPool:TakeDamage (single) (at Assets/Runtime/Scripts/Characters/Health/HealthPool.cs:72)
+BlackNBrown.Characters.Character:CheckObjectCollision (UnityEngine.Collider) (at Assets/Runtime/Scripts/Characters/Character.cs:737)
+BlackNBrown.Characters.Character:ProcessCollision (UnityEngine.Collider) (at Assets/Runtime/Scripts/Characters/Character.cs:707)
+BlackNBrown.Characters.Character:NetworkCollisionEnter (UnityEngine.Collider) (at Assets/Runtime/Scripts/Characters/Character.cs:1026)
+FishNet.Component.Prediction.NetworkCollider:CheckColliders (uint,bool) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Generated/Component/Prediction/NetworkCollider.cs:312)
+FishNet.Component.Prediction.NetworkCollider:PredictionManager_OnPostReplicateReplay (uint,uint) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Generated/Component/Prediction/NetworkCollider.cs:176)
+FishNet.Managing.Predicting.PredictionManager:ReconcileToStates () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/Prediction/PredictionManager.cs:553)
+FishNet.Managing.Timing.TimeManager:IncreaseTick () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/Timing/TimeManager.cs:704)
+FishNet.Managing.Timing.TimeManager:<TickUpdate>g__MethodLogic|100_0 () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/Timing/TimeManager.cs:376)
+FishNet.Managing.Timing.TimeManager:TickUpdate () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/Timing/TimeManager.cs:366)
+FishNet.Transporting.NetworkReaderLoop:Update () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Transporting/NetworkReaderLoop.cs:28)
+
+(Filename: Assets/Runtime/Scripts/Characters/Health/HealthPool.cs Line: 90)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Unloading 2136 Unused Serialized files (Serialized files now loaded: 0)
+Loaded scene 'Temp/__Backupscenes/0.backup'
+	Deserialize:            1.995 ms
+	Integration:            334.481 ms
+	Integration of assets:  0.001 ms
+	Thread Wait Time:       0.009 ms
+	Total Operation Time:   336.486 ms
+Unloading 14320 unused Assets / (356.1 MB). Loaded Objects now: 32467.
+Memory consumption went from 2.56 GB to 2.21 GB.
+Total: 144.335350 ms (FindLiveObjects: 2.903519 ms CreateObjectMapping: 2.239083 ms MarkObjects: 106.048657 ms  DeleteObjects: 33.143398 ms)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Loaded scene 'Temp/__Backupscenes/1.backup'
+	Deserialize:            13.838 ms
+	Integration:            29.293 ms
+	Integration of assets:  0.009 ms
+	Thread Wait Time:       0.000 ms
+	Total Operation Time:   43.139 ms
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+Reloading assemblies for play mode.
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:20:21.436: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:20:21.442: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Reloading assemblies after forced synchronous recompile.
+Begin MonoManager ReloadAssembly
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Possible Issue Detected: The Graph of 'Animancer.CartesianMixerState' is null during finalization (garbage collection). This may have been caused by earlier exceptions, but otherwise it probably means that this node was never used for anything and should not have been created.
+
+Enable AnimancerNode.TraceConstructor on startup to allow this warning to include the StackTrace of when the node was constructed.
+
+This warning can be disabled via 'Edit/Project Settings/Animancer' or by calling Animancer.OptionalWarning.UnusedNode.Disable() and it will automatically be compiled out of Runtime Builds (except for Development Builds). More information can be found at https://kybernetik.com.au/animancer/api/Animancer/OptionalWarning
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+Animancer.Validate:Log (Animancer.OptionalWarning,string,object) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs:410)
+Animancer.AnimancerNode:Finalize () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Core/Nodes/AnimancerNode.cs:200)
+
+(Filename: Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Runtime/Editor/OptionalWarning.cs Line: 410)
+
+Symbol file LoadedFromMemory is not a mono symbol file
+- Loaded All Assemblies, in  1.199 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:20:22.671: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Refreshing native plugins compatible for Editor in 1.78 ms, found 4 plugins.
+Native extension for LinuxStandalone target not found
+Native extension for Android target not found
+Native extension for WindowsStandalone target not found
+Native extension for OSXStandalone target not found
+Refreshing native plugins compatible for Editor in 1.65 ms, found 4 plugins.
+[MODES] ModeService[none].Initialize
+[MODES] ModeService[none].LoadModes
+Mono: successfully reloaded assembly
+Method UnityBuildScript.PerformSwitch has invalid parameters. MenuCommand is the only optional supported parameter.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.MenuService:ValidateMethodForMenuCommand (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:504)
+UnityEditor.MenuService/<>c:<ExtractMenuItemsFromAttributes>b__18_0 (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:359)
+System.Linq.Enumerable/WhereEnumerableIterator`1<System.Reflection.MethodInfo>:ToArray ()
+System.Linq.Buffer`1<System.Reflection.MethodInfo>:.ctor (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+System.Linq.OrderedEnumerable`1<System.Reflection.MethodInfo>:ToList ()
+System.Linq.Enumerable:ToList<System.Reflection.MethodInfo> (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+UnityEditor.MenuService:ExtractMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:358)
+UnityEditor.MenuService:GetMenuItemsFromAttributesById (string) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:310)
+UnityEditor.MenuService:GetMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:64)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs Line: 504)
+
+CreateAssetMenu attribute on BlackNBrown.Characters.PathFindWalkToSceneAction will be ignored as BlackNBrown.Characters.PathFindWalkToSceneAction is not derived from ScriptableObject.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.AttributeHelper:ExtractCreateAssetMenuItems () (at /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs:156)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs Line: 156)
+
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+- Finished resetting the current domain, in  5.263 seconds
+Domain Reload Profiling: 6463ms
+	BeginReloadAssembly (764ms)
+		ExecutionOrderSort (0ms)
+		DisableScriptedObjects (29ms)
+		BackupInstance (0ms)
+		ReleaseScriptingObjects (4ms)
+		CreateAndSetChildDomain (517ms)
+	RebuildCommonClasses (30ms)
+	RebuildNativeTypeToScriptingClass (8ms)
+	initialDomainReloadingComplete (44ms)
+	LoadAllAssembliesAndSetupDomain (353ms)
+		LoadAssemblies (107ms)
+		RebuildTransferFunctionScriptingTraits (0ms)
+		AnalyzeDomain (285ms)
+			TypeCache.Refresh (6ms)
+				TypeCache.ScanAssembly (0ms)
+			BuildScriptInfoCaches (253ms)
+			ResolveRequiredComponents (22ms)
+	FinalizeReload (5264ms)
+		ReleaseScriptCaches (0ms)
+		RebuildScriptCaches (0ms)
+		SetupLoadedEditorAssemblies (3431ms)
+			LogAssemblyErrors (0ms)
+			InitializePlatformSupportModulesInManaged (382ms)
+			SetLoadedEditorAssemblies (5ms)
+			BeforeProcessingInitializeOnLoad (138ms)
+			ProcessInitializeOnLoadAttributes (1751ms)
+			ProcessInitializeOnLoadMethodAttributes (1148ms)
+			AfterProcessingInitializeOnLoad (4ms)
+			EditorAssembliesLoaded (1ms)
+		ExecutionOrderSort2 (1ms)
+		AwakeInstancesAfterBackupRestoration (559ms)
+Asset Pipeline Refresh (id=e830a45fded6ce7688161770b2caf649): Total: 7.314 seconds - Initiated by StopAssetImportingV2(ForceSynchronousImport | ForceDomainReload)
+	Summary:
+		Imports: total=0 (actual=0, local cache=0, cache server=0)
+		Asset DB Process Time: managed=0 ms, native=5840 ms
+		Asset DB Callback time: managed=254 ms, native=0 ms
+		Scripting: domain reloads=1, domain reload time=1217 ms, compile time=1 ms, other=0 ms
+		Project Asset Count: scripts=5546, non-scripts=33307
+		Asset File Changes: new=0, changed=0, moved=0, deleted=0
+		Scan Filter Count: 0
+	InvokeCustomDependenciesCallbacks: 0.002ms
+	InvokePackagesCallback: 1.313ms
+	ApplyChangesToAssetFolders: 0.726ms
+	Scan: 0.001ms
+	OnSourceAssetsModified: 0.002ms
+	CategorizeAssetsWithTransientArtifact: 0.003ms
+	ProcessAssetsWithTransientArtifactChanges: 9.295ms
+	CategorizeAssets: 445.399ms
+	ImportOutOfDateAssets: 5290.757ms (5278.680ms without children)
+		CompileScripts: 1.162ms
+		CollectScriptTypesHashes: 1.321ms
+		ReloadNativeAssets: 2.494ms
+		UnloadImportedAssets: 0.025ms
+		EnsureUptoDateAssetsAreRegisteredWithGuidPM: 5.647ms
+		InitializingProgressBar: 0.000ms
+		PostProcessAllAssetNotificationsAddChangedAssets: 0.001ms
+		OnDemandSchedulerStart: 1.426ms
+	PostProcessAllAssets: 254.700ms
+	GatherAllCurrentPrimaryArtifactRevisions: 0.939ms
+	UnloadStreamsBegin: 1.335ms
+	PersistCurrentRevisions: 0.857ms
+	UnloadStreamsEnd: 0.002ms
+	GenerateScriptTypeHashes: 12.170ms
+	Untracked: 1308.845ms
+
+PreProcessingGraphs
+No rasterizable objects were found contained in the layers specified by the 'mask' variables
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:LogWarning (object)
+Pathfinding.Graphs.Navmesh.TileBuilder:CollectMeshes (UnityEngine.Bounds) (at ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs:164)
+Pathfinding.Graphs.Navmesh.TileBuilder:Schedule (Pathfinding.Jobs.DisposeArena) (at ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs:250)
+Pathfinding.RecastGraph/RecastGraphScanPromise/<Prepare>d__9:MoveNext () (at ./Packages/com.arongranberg.astar/Graphs/RecastGraph.cs:1071)
+Pathfinding.GraphUpdateProcessor:PrepareGraphUpdatePromises (System.Collections.Generic.List`1<System.ValueTuple`2<Pathfinding.IGraphUpdatePromise, System.Collections.Generic.IEnumerator`1<Unity.Jobs.JobHandle>>>,Pathfinding.Jobs.TimeSlice) (at ./Packages/com.arongranberg.astar/Core/Pathfinding/GraphUpdateProcessor.cs:238)
+AstarPath/<ScanInternal>d__129:MoveNext () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1787)
+AstarPath:Scan (Pathfinding.NavGraph[]) (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1569)
+AstarPath:OnEnable () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1304)
+
+(Filename: ./Packages/com.arongranberg.astar/Graphs/Navmesh/TileBuilder.cs Line: 164)
+
+FinishingScans
+Scanned graphs in 55 ms
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+AstarPath/<ScanInternal>d__129:MoveNext () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1914)
+AstarPath:Scan (Pathfinding.NavGraph[]) (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1569)
+AstarPath:OnEnable () (at ./Packages/com.arongranberg.astar/Core/AstarPath.cs:1304)
+
+(Filename: ./Packages/com.arongranberg.astar/Core/AstarPath.cs Line: 1914)
+
+Loaded scene 'Temp/__Backupscenes/0.backup'
+	Deserialize:            0.832 ms
+	Integration:            474.207 ms
+	Integration of assets:  0.001 ms
+	Thread Wait Time:       0.008 ms
+	Total Operation Time:   475.049 ms
+Loaded scene 'Temp/__Backupscenes/1.backup'
+	Deserialize:            18.453 ms
+	Integration:            25.214 ms
+	Integration of assets:  0.003 ms
+	Thread Wait Time:       455.819 ms
+	Total Operation Time:   499.489 ms
+[Licensing::Client] Successfully resolved entitlement details
+The tree Tree1 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEditor.AssetDatabase:LoadAssetAtPath (string,System.Type)
+UnityEditor.AssetDatabase:LoadAssetAtPath<Animancer.Editor.ReadMe> (string) (at /home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs:337)
+Animancer.Editor.ReadMe:FindInstances (Animancer.Editor.ReadMe&) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:213)
+Animancer.Editor.ReadMe/<>c:<ShowReadMe>b__49_0 () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:182)
+UnityEditor.EditorApplication:Internal_CallDelayFunctions () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorApplication.cs:399)
+
+[/home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs line 337]
+
+The tree Tree2 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEditor.AssetDatabase:LoadAssetAtPath (string,System.Type)
+UnityEditor.AssetDatabase:LoadAssetAtPath<Animancer.Editor.ReadMe> (string) (at /home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs:337)
+Animancer.Editor.ReadMe:FindInstances (Animancer.Editor.ReadMe&) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:213)
+Animancer.Editor.ReadMe/<>c:<ShowReadMe>b__49_0 () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:182)
+UnityEditor.EditorApplication:Internal_CallDelayFunctions () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorApplication.cs:399)
+
+[/home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs line 337]
+
+The tree Tree3 must use the Nature/Soft Occlusion shader. Otherwise billboarding/lighting will not work correctly.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEditor.AssetDatabase:LoadAssetAtPath (string,System.Type)
+UnityEditor.AssetDatabase:LoadAssetAtPath<Animancer.Editor.ReadMe> (string) (at /home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs:337)
+Animancer.Editor.ReadMe:FindInstances (Animancer.Editor.ReadMe&) (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:213)
+Animancer.Editor.ReadMe/<>c:<ShowReadMe>b__49_0 () (at Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.kybernetik.animancer/Editor/ReadMe.cs:182)
+UnityEditor.EditorApplication:Internal_CallDelayFunctions () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorApplication.cs:399)
+
+[/home/bokken/build/output/unity/unity/Modules/AssetDatabase/Editor/ScriptBindings/AssetDatabase.bindings.cs line 337]
+
+Refreshing native plugins compatible for Editor in 1.72 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.49 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.69 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.66 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.45 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Refreshing native plugins compatible for Editor in 1.15 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Loaded scene 'Assets/Scenes/Client/Environment.unity'
+	Deserialize:            1.499 ms
+	Integration:            2.474 ms
+	Integration of assets:  0.005 ms
+	Thread Wait Time:       2689.905 ms
+	Total Operation Time:   2693.884 ms
+Loaded scene 'Assets/Scenes/Client/Input.unity'
+	Deserialize:            232.761 ms
+	Integration:            162.226 ms
+	Integration of assets:  0.011 ms
+	Thread Wait Time:       2542.174 ms
+	Total Operation Time:   2937.172 ms
+NetworkManager not found in any open scenes.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+FishNet.InstanceFinder:get_NetworkManager () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/InstanceFinder.cs:50)
+FishNet.Managing.NetworkManagerExtensions:GetNetworkManager (FishNet.Managing.NetworkManager&) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:160)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (FishNet.Managing.NetworkManager,string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:133)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:174)
+FishNet.Object.NetworkObject:OnValidate () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Object/NetworkObject.cs:1386)
+
+(Filename: Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/InstanceFinder.cs Line: 50)
+
+Object GameNetworkManager will have it's IsGlobal state ignored because it is a scene object. Instantiated copies will still be global. This warning is informative only.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:LogWarning (object)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (FishNet.Managing.NetworkManager,string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:136)
+FishNet.Managing.NetworkManagerExtensions:LogWarning (string) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs:174)
+FishNet.Object.NetworkObject:OnValidate () (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Object/NetworkObject.cs:1386)
+
+(Filename: Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Managing/NetworkManager.Logging.cs Line: 136)
+
+ManagerService initialized
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Core.Services.ManagerService:Initialize () (at Assets/Runtime/Scripts/Core/Services/ManagerService.cs:30)
+BlackNBrown.Core.Services.ManagerInitializer:Awake () (at Assets/Runtime/Scripts/Core/Services/ManagerInitializer.cs:21)
+
+(Filename: Assets/Runtime/Scripts/Core/Services/ManagerService.cs Line: 30)
+
+Loaded scene 'Assets/Scenes/Game/Network.unity'
+	Deserialize:            8.975 ms
+	Integration:            37.968 ms
+	Integration of assets:  0.017 ms
+	Thread Wait Time:       2765.341 ms
+	Total Operation Time:   2812.300 ms
+Loaded scene 'Assets/Scenes/Server/API.unity'
+	Deserialize:            4.835 ms
+	Integration:            1.335 ms
+	Integration of assets:  0.024 ms
+	Thread Wait Time:       2901.479 ms
+	Total Operation Time:   2907.673 ms
+Attempting Login
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.API:AttemptLogin () (at Assets/Runtime/Scripts/Server/API/API.cs:52)
+BlackNBrown.Managers.API:Start () (at Assets/Runtime/Scripts/Server/API/API.cs:46)
+
+(Filename: Assets/Runtime/Scripts/Server/API/API.cs Line: 52)
+
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: VaultingHorse02_PhyMetall
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: BasketHoop01_PhyWood
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: BasketHoop01_PhyMetal
+Detected one or more triangles where the distance between any 2 vertices is greater than 500 units. The resulting Triangle Mesh can impact simulation and query stability. It is recommended to tessellate meshes that have large triangles. Source mesh name: VaultingHorse01_PhyMetal
+Loaded scene 'Assets/Scenes/Game/Levels/School.unity'
+	Deserialize:            620.621 ms
+	Integration:            436.314 ms
+	Integration of assets:  0.202 ms
+	Thread Wait Time:       2303.735 ms
+	Total Operation Time:   3360.873 ms
+Loading graph data from: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets/StreamingAssets/school_astar_graph.bytes
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Common.AStarGraphLoader:LoadGraphData (string,System.Action`1<bool>) (at Assets/Runtime/Scripts/Common.Dodgeball/Utils/Pathfinding/AStarGraphLoader.cs:45)
+BlackNBrown.Managers.BBSceneManager:ResetAstarGraph () (at Assets/Runtime/Scripts/Managers/Scene/BBSceneManager.cs:286)
+BlackNBrown.Managers.BBSceneManager/<LoadLevel>d__18:MoveNext () (at Assets/Runtime/Scripts/Managers/Scene/BBSceneManager.cs:209)
+UnityEngine.SetupCoroutine:InvokeMoveNext (System.Collections.IEnumerator,intptr) (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+(Filename: Assets/Runtime/Scripts/Common.Dodgeball/Utils/Pathfinding/AStarGraphLoader.cs Line: 45)
+
+Unable to add the requested character to font asset [Cute Dino SDF]'s atlas texture. Please make the texture [Cute Dino SDF Atlas] readable.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object,UnityEngine.Object)
+UnityEngine.Debug:LogWarning (object,UnityEngine.Object)
+TMPro.TMP_FontAsset:TryAddCharacterInternal (uint,TMPro.TMP_Character&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs:2600)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset_Internal (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:172)
+TMPro.TMP_FontAssetUtilities:GetCharacterFromFontAsset (uint,TMPro.TMP_FontAsset,bool,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAssetUtilities.cs:57)
+TMPro.TMP_Text:GetTextElement (uint,TMPro.TMP_FontAsset,TMPro.FontStyles,TMPro.FontWeight,bool&) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:6095)
+TMPro.TextMeshPro:SetArraySizes (TMPro.TMP_Text/TextProcessingElement[]) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:1623)
+TMPro.TMP_Text:ParseInputText () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_Text.cs:2017)
+TMPro.TextMeshPro:OnPreRenderObject () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:2117)
+TMPro.TextMeshPro:Rebuild (UnityEngine.UI.CanvasUpdate) (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TextMeshPro.cs:292)
+TMPro.TMP_UpdateManager:DoRebuilds () (at ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_UpdateManager.cs:177)
+UnityEngine.Canvas:SendWillRenderCanvases () (at /home/bokken/build/output/unity/unity/Modules/UI/ScriptBindings/UICanvas.bindings.cs:121)
+
+(Filename: ./Library/PackageCache/com.unity.ugui@ae381d1d95dd/Runtime/TMP/TMP_FontAsset.cs Line: 2600)
+
+Loaded scene 'Assets/Scenes/Client/Cameras.unity'
+	Deserialize:            4.133 ms
+	Integration:            6.264 ms
+	Integration of assets:  0.503 ms
+	Thread Wait Time:       2915.757 ms
+	Total Operation Time:   2926.656 ms
+fake asset loader initialized
+m/body	M_body (UnityEngine.GameObject)
+m/head/Head.01	Head.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.02	Head.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.03	Head.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/head/Head.04	Head.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.01	Hairstyle.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.02	Hairstyle.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.03	Hairstyle.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.04	Hairstyle.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.05	Hairstyle.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.06	Hairstyle.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.07	Hairstyle.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-1	Hairstyle.08-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-2	Hairstyle.08-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.08-3	Hairstyle.08-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-1	Hairstyle.09-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-2	Hairstyle.09-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.09-3	Hairstyle.09-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-1	Hairstyle.10-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-2	Hairstyle.10-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.10-3	Hairstyle.10-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-1	Hairstyle.11-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-2	Hairstyle.11-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.11-3	Hairstyle.11-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-1	Hairstyle.12-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-2	Hairstyle.12-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.12-3	Hairstyle.12-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-1	Hairstyle.13-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-2	Hairstyle.13-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.13-3	Hairstyle.13-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-1	Hairstyle.14-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-2	Hairstyle.14-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.14-3	Hairstyle.14-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.15	Hairstyle.15 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.16	Hairstyle.16 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-1	Hat.001-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-2	Hat.001-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-3	Hat.001-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-4	Hat.001-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.001-5	Hat.001-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-1	Hat.002-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-2	Hat.002-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-3	Hat.002-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-4	Hat.002-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.002-5	Hat.002-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hat.003	Hat.003 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/hairstyle/Hairstyle.17	Hairstyle.17 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/acc_head/Glasses.001	Glasses.001 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/acc_head/Glasses.002	Glasses.002 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.01	Top.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.02	Top.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.03	Top.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.04	Top.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.05	Top.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.06	Top.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.07-A	Top.07-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.07-B	Top.07-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.08-A	Top.08-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.08-B	Top.08-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.09	Top.09 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.10	Top.10 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/top/Top.11	Top.11 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.01	Bot.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.02	Bot.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.03	Bot.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.04	Bot.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.05	Bot.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/bottom/Bot.06	Bot.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.01	Shoes.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.02	Shoes.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.03	Shoes.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.04	Shoes.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.05	Shoes.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.06	Shoes.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/shoes/Shoes.07	Shoes.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.01	Outfit.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.02	Outfit.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.03	Outfit.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+m/outfit/Outfit.04	Outfit.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/body	F_body (UnityEngine.GameObject)
+f/head/Head.01	Head.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.02	Head.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.03	Head.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/head/Head.04	Head.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.01	Hairstyle.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.02	Hairstyle.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.03	Hairstyle.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.04	Hairstyle.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.05	Hairstyle.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.06	Hairstyle.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.07	Hairstyle.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-1	Hairstyle.08-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-2	Hairstyle.08-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.08-3	Hairstyle.08-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-1	Hairstyle.09-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-2	Hairstyle.09-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.09-3	Hairstyle.09-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-1	Hairstyle.10-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-2	Hairstyle.10-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.10-3	Hairstyle.10-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-1	Hairstyle.11-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-2	Hairstyle.11-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.11-3	Hairstyle.11-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-1	Hairstyle.12-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-2	Hairstyle.12-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.12-3	Hairstyle.12-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-1	Hairstyle.13-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-2	Hairstyle.13-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.13-3	Hairstyle.13-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-1	Hairstyle.14-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-2	Hairstyle.14-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.14-3	Hairstyle.14-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.15	Hairstyle.15 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.16	Hairstyle.16 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-1	Hat.001-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-2	Hat.001-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-3	Hat.001-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-4	Hat.001-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.001-5	Hat.001-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-1	Hat.002-1 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-2	Hat.002-2 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-3	Hat.002-3 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-4	Hat.002-4 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.002-5	Hat.002-5 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hat.003	Hat.003 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/hairstyle/Hairstyle.17	Hairstyle.17 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/acc_head/Glasses.001	Glasses.001 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/acc_head/Glasses.002	Glasses.002 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.01	Top.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.02	Top.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.03	Top.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.04	Top.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.05	Top.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.06	Top.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.07-A	Top.07-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.07-B	Top.07-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.08-A	Top.08-A (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.08-B	Top.08-B (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.09	Top.09 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.10	Top.10 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/top/Top.11	Top.11 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.01	Bot.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.02	Bot.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.03	Bot.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.04	Bot.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.05	Bot.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/bottom/Bot.06	Bot.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.01	Shoes.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.02	Shoes.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.03	Shoes.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.04	Shoes.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.05	Shoes.05 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.06	Shoes.06 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/shoes/Shoes.07	Shoes.07 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.01	Outfit.01 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.02	Outfit.02 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.03	Outfit.03 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+f/outfit/Outfit.04	Outfit.04 (Rukha93.ModularAnimeCharacter.Customization.CustomizationItemAsset)
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+Rukha93.ModularAnimeCharacter.Customization.FakeLoader:Awake () (at Assets/Runtime/Scripts/Managers/Customization/AssetLoading/FakeLoader.cs:43)
+
+(Filename: Assets/Runtime/Scripts/Managers/Customization/AssetLoading/FakeLoader.cs Line: 43)
+
+Loaded scene 'Assets/Scenes/Client/UI.unity'
+	Deserialize:            194.480 ms
+	Integration:            128.665 ms
+	Integration of assets:  0.815 ms
+	Thread Wait Time:       3239.602 ms
+	Total Operation Time:   3563.562 ms
+Progress Loaded:
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.GUIManager:OnMMEvent (BlackNBrown.Managers.Game.GameEvent) (at Assets/Runtime/Scripts/Managers/UI/GUIManager.cs:193)
+MoreMountains.Tools.MMEventManager:TriggerEvent<BlackNBrown.Managers.Game.GameEvent> (BlackNBrown.Managers.Game.GameEvent) (at Assets/Plugins/com.blacknbrown.Common.External/MMTools/Tools/MMEvents/MMEventManager.cs:173)
+BlackNBrown.Managers.Game.GameEvent:Trigger (BlackNBrown.Managers.Game.GameEventTypes,BlackNBrown.Characters.Character,int) (at Assets/Runtime/Scripts/Managers/Game/GameType.cs:73)
+BlackNBrown.Managers.ProgressManager:LoadSavedProgress () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:234)
+BlackNBrown.Managers.ProgressManager:Awake () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:264)
+
+(Filename: Assets/Runtime/Scripts/Managers/UI/GUIManager.cs Line: 193)
+
+Loaded scene 'Assets/Scenes/Client/Progress.unity'
+	Deserialize:            2.698 ms
+	Integration:            11.045 ms
+	Integration of assets:  0.920 ms
+	Thread Wait Time:       3484.766 ms
+	Total Operation Time:   3499.429 ms
+Progress Loaded:
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+BlackNBrown.Managers.GUIManager:OnMMEvent (BlackNBrown.Managers.Game.GameEvent) (at Assets/Runtime/Scripts/Managers/UI/GUIManager.cs:193)
+MoreMountains.Tools.MMEventManager:TriggerEvent<BlackNBrown.Managers.Game.GameEvent> (BlackNBrown.Managers.Game.GameEvent) (at Assets/Plugins/com.blacknbrown.Common.External/MMTools/Tools/MMEvents/MMEventManager.cs:173)
+BlackNBrown.Managers.Game.GameEvent:Trigger (BlackNBrown.Managers.Game.GameEventTypes,BlackNBrown.Characters.Character,int) (at Assets/Runtime/Scripts/Managers/Game/GameType.cs:73)
+BlackNBrown.Managers.ProgressManager:LoadSavedProgress () (at Assets/Runtime/Scripts/Managers/Progress/ProgressManager.cs:234)
+BlackNBrown.Managers.Game.GameManager/<Initialize>d__41:MoveNext () (at Assets/Runtime/Scripts/Managers/Game/GameManager.cs:114)
+UnityEngine.SetupCoroutine:InvokeMoveNext (System.Collections.IEnumerator,intptr) (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/Coroutines.cs:17)
+
+(Filename: Assets/Runtime/Scripts/Managers/UI/GUIManager.cs Line: 193)
+
+Loaded scene 'Assets/Scenes/Client/FX.unity'
+	Deserialize:            2.885 ms
+	Integration:            3.929 ms
+	Integration of assets:  0.984 ms
+	Thread Wait Time:       3696.174 ms
+	Total Operation Time:   3703.972 ms
+Loaded scene 'Assets/Scenes/Client/Audio.unity'
+	Deserialize:            3.703 ms
+	Integration:            795.493 ms
+	Integration of assets:  1.199 ms
+	Thread Wait Time:       3776.895 ms
+	Total Operation Time:   4577.290 ms
+Loaded scene 'Assets/Scenes/Server/ServerManager.unity'
+	Deserialize:            6.435 ms
+	Integration:            16.988 ms
+	Integration of assets:  0.931 ms
+	Thread Wait Time:       4627.080 ms
+	Total Operation Time:   4651.434 ms
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateAlbedoBuffer: The albedo buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Enlighten warning: 'UpdateEmissiveBuffer: The emissive buffer needs to be re-initialised. This is due to some material status (Static/Dynamic) having changed since the buffer was last initialised.'. Return code 0.
+Unloading 1454 Unused Serialized files (Serialized files now loaded: 0)
+Loaded scene 'Temp/__Backupscenes/0.backup'
+	Deserialize:            0.534 ms
+	Integration:            296.475 ms
+	Integration of assets:  0.001 ms
+	Thread Wait Time:       0.005 ms
+	Total Operation Time:   297.015 ms
+Unloading 12680 unused Assets / (305.3 MB). Loaded Objects now: 31957.
+Memory consumption went from 2.42 GB to 2.12 GB.
+Total: 104.925850 ms (FindLiveObjects: 2.555707 ms CreateObjectMapping: 2.059375 ms MarkObjects: 76.513331 ms  DeleteObjects: 23.796925 ms)
+
+Loaded scene 'Temp/__Backupscenes/1.backup'
+	Deserialize:            12.608 ms
+	Integration:            26.985 ms
+	Integration of assets:  0.004 ms
+	Thread Wait Time:       0.002 ms
+	Total Operation Time:   39.600 ms
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
