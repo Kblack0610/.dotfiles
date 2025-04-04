@@ -1,0 +1,12 @@
+# Example source files list
+# Each line is a file to be symlinked
+# Comments (lines starting with #) and empty lines are ignored
+
+# Windsurf rules
+/home/kblack0610/.dotfiles/rules/windsurf.rules
+
+# Cursor rules
+/home/kblack0610/.dotfiles/rules/cursor.rules
+
+# You can add more files as needed
+# /home/kblack0610/.dotfiles/rules/other.rules
