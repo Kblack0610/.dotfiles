@@ -1,0 +1,6 @@
+{
+    "windsurf.autoExecutionPolicy": "turbo",
+    "windsurf.cascadeCommandsAllowList": [],
+    "windsurf.autoOpenEditedFiles": true,
+    "workbench.colorTheme": "Abyss"
+}
