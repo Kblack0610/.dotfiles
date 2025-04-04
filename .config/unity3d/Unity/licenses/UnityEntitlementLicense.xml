@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <License Id="Terms" IssueDate="2025-04-04T22:10:42.112Z" Version="1.0">
+    <EntitlementGroups>
+      <EntitlementGroup Id="2474150294557-UnityPersonal" Namespace="unity_editor" Product="Unity Personal" SubsGroup="Unity Editor" Tag="UnityPersonal" Type="EDITOR">
+        <Context>
+          <User Id="2474150294557" />
+          <StartDate>2019-08-07T05:30:38Z</StartDate>
+          <UpdateDate>2025-05-04T22:10:42.112Z</UpdateDate>
+          <Identifiers>
+            <Identifier Id="908959aef6e143ec804ea1628c175e69" Type="Legacy.MachineBinding1" />
+            <Identifier Id="908959aef6e143ec804ea1628c175e69" Type="Legacy.MachineBinding2" />
+          </Identifiers>
+        </Context>
+        <Entitlements>
+          <Entitlement Id="com.unity.editor" />
+          <Entitlement Id="com.unity.editor.ui" />
+          <Entitlement Id="com.unity.editor.headless" />
+          <Entitlement Id="com.unity.editor.dark-skin" />
+          <Entitlement Id="com.unity.editor.legacy.team-license" />
+          <Entitlement Id="com.unity.editor.platforms.android" />
+          <Entitlement Id="com.unity.editor.platforms.ios" />
+          <Entitlement Id="com.unity.editor.platforms.uwp" />
+        </Entitlements>
+      </EntitlementGroup>
+    </EntitlementGroups>
+  </License>
+  <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments" />
+      <SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" />
+      <Reference URI="#Terms">
+        <Transforms>
+          <Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" />
+        </Transforms>
+        <DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+        <DigestValue>+mBVCy7AXpMt0jG0/5G4iLT9AAta6QaygWTDq1wr06o=</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>Tn64sZftSKqJM5J1vnfyevGhQoOKh8AeqqvlDw+UICSrr9SKnffjvhVGt8u4cLEGn2cMN+6xIJHT
+k30wi2gIHm5SDT7r5WxQPaYoKKUTzQdqw8a2dqFiiPnH2otA7yCUS+B5KQCHDmrOn/SIcBrSZahg
+m3p7VUZzsJW1G2260YhkV/ehNb9/72/gfpgRzYsxYMpz3V6VUCQfTiK6PFN5wnjcue6F0tBwTUcO
+QIU69gj5T9iIwZNiJLHPrrOZkE/rocA+SwVNBCAWbWMKSYNg3lN3Np5zc4jkMDeRRySBaCDnlxzt
+Dk7xT8wKbnjo0Nh8hxCAUcvqh+vbKhx7/i8OxA==</SignatureValue>
+  </Signature>
+</root>

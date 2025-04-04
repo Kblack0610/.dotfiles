@@ -1,0 +1,898 @@
+Unity Editor version:    6000.0.43f1 (97272b72f107)
+Branch:                  6000.0/release
+Build type:              Release
+Batch mode:              NO
+System name:             Linux
+Distro version:          #21~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Feb 24 16:52:15 UTC 2
+Kernel version:          6.11.0-21-generic
+Architecture:            x86_64
+Available memory:        127917 MB
+[Licensing::Module] Trying to connect to existing licensing client channel...
+[Licensing::IpcConnector] Successfully connected to the License Client on channel: "LicenseClient-kblack0610" at "2025-04-04T22:10:41.641797Z"
+[SignatureVerifier] Application signature verification not supported on this platform.
+[Licensing::Client] Handshaking with LicensingClient:
+  Version:                 1.16.2+bdef8f5
+  Session Id:              163a9040d025482580b8d190b6b83449
+  Correlation Id:          7c8ee303910ad90cab65bf5ea31b6522
+  External correlation Id: 3526005078727077286
+  Machine Id:              iVhqybxWz1KgYaXP0hcPu99z1dQ=
+[Licensing::Module] Successfully connected to LicensingClient on channel: "LicenseClient-kblack0610" (connect: 0.00s, validation: 0.01s, handshake: 0.00s)
+[Licensing::IpcConnector] Successfully connected to the License Notification on channel: "LicenseClient-kblack0610-notifications" at "2025-04-04T22:10:41.652211Z"
+[Licensing::Client] Successfully updated the access token
+[Licensing::Module] Successfully updated the access token uVUnnfe-R4...
+[Licensing::Client] Successfully updated license
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+Pro License: NO
+The selected window backend is (null) 
+Desktop is 3520 x 1080 @ 60 Hz
+Initialize udev device monitor.
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+
+COMMAND LINE ARGUMENTS:
+/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Unity
+-projectpath
+/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls
+-useHub
+-hubIPC
+-cloudEnvironment
+production
+-licensingIpc
+LicenseClient-kblack0610
+-hubSessionId
+bb77ba07-fd39-4395-aa0b-f8fd433ff95f
+-accessToken
+uVUnnfe-R40hcyLtIkRBBnOab5F8K80N83Rbixh2y7U002f
+Successfully changed project path to: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls
+/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls
+[UnityMemory] Configuration Parameters - Can be set up in boot.config
+    "memorysetup-bucket-allocator-granularity=16"
+    "memorysetup-bucket-allocator-bucket-count=8"
+    "memorysetup-bucket-allocator-block-size=33554432"
+    "memorysetup-bucket-allocator-block-count=8"
+    "memorysetup-main-allocator-block-size=16777216"
+    "memorysetup-thread-allocator-block-size=16777216"
+    "memorysetup-gfx-main-allocator-block-size=16777216"
+    "memorysetup-gfx-thread-allocator-block-size=16777216"
+    "memorysetup-cache-allocator-block-size=4194304"
+    "memorysetup-typetree-allocator-block-size=2097152"
+    "memorysetup-profiler-bucket-allocator-granularity=16"
+    "memorysetup-profiler-bucket-allocator-bucket-count=8"
+    "memorysetup-profiler-bucket-allocator-block-size=33554432"
+    "memorysetup-profiler-bucket-allocator-block-count=8"
+    "memorysetup-profiler-allocator-block-size=16777216"
+    "memorysetup-profiler-editor-allocator-block-size=1048576"
+    "memorysetup-temp-allocator-size-main=16777216"
+    "memorysetup-job-temp-allocator-block-size=2097152"
+    "memorysetup-job-temp-allocator-block-size-background=1048576"
+    "memorysetup-job-temp-allocator-reduction-small-platforms=262144"
+    "memorysetup-allocator-temp-initial-block-size-main=262144"
+    "memorysetup-allocator-temp-initial-block-size-worker=262144"
+    "memorysetup-temp-allocator-size-background-worker=32768"
+    "memorysetup-temp-allocator-size-job-worker=262144"
+    "memorysetup-temp-allocator-size-preload-manager=33554432"
+    "memorysetup-temp-allocator-size-nav-mesh-worker=65536"
+    "memorysetup-temp-allocator-size-audio-worker=65536"
+    "memorysetup-temp-allocator-size-cloud-worker=32768"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gi-baking-worker=262144"
+    "memorysetup-temp-allocator-size-gfx=262144"
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.579: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.580: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Player connection [127427742094656]  Target information:
+
+Player connection [127427742094656]  * "[IP] 192.168.1.148 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 192.168.1.196 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 192.168.122.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 172.17.0.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 172.18.0.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 192.168.49.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 172.19.0.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 10.42.0.0 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656]  * "[IP] 10.42.0.1 [Port] 55504 [Flags] 2 [Guid] 4096837865 [EditorId] 4096837865 [Version] 1048832 [Id] LinuxEditor(16,192.168.1.196) [Debug] 1 [PackageName] LinuxEditor [ProjectName] Editor" 
+
+Player connection [127427742094656] Host joined multi-casting on [225.0.0.222:54997]...
+Player connection [127427742094656] Host joined alternative multi-casting on [225.0.0.222:34997]...
+Input System module state changed to: Initialized.
+[Physics::Module] Initialized fallback backend.
+[Physics::Module] Id: 0xdecafbad
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.614: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.616: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.616: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+[Package Manager] Connected to IPC stream "Upm-154662" after 0.1 seconds.
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.696: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Library Redirect Path: Library/
+[Package Manager] Restoring resolved packages state from cache
+[Licensing::Client] Successfully resolved entitlement details
+[Package Manager] Registered 86 packages:
+  Packages from [https://package.openupm.com]:
+    com.coffee.ui-particle@5.0.0-preview.16 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.coffee.ui-particle@8efcca0da2d0)
+  Packages from [https://packages.unity.com]:
+    com.unity.2d.animation@10.1.4 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.animation@494a3b4e73a9)
+    com.unity.2d.pixel-perfect@5.0.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.pixel-perfect@e3ae982b672d)
+    com.unity.2d.psdimporter@9.0.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.psdimporter@676bae148e11)
+    com.unity.2d.spriteshape@10.0.7 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.spriteshape@9e35352ae135)
+    com.unity.addressables@2.3.16 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.addressables@1d7f6a740e58)
+    com.unity.cinemachine@2.10.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.cinemachine@dcc61ebd6655)
+    com.unity.collab-proxy@2.7.1 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.collab-proxy@50ac96531b63)
+    com.unity.ext.nunit@2.0.5 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.ext.nunit@60ef35ffd3cd)
+    com.unity.ide.rider@3.0.35 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.ide.rider@7d01a2258732)
+    com.unity.mathematics@1.3.2 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.mathematics@8017b507cc74)
+    com.unity.nuget.newtonsoft-json@3.2.1 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.nuget.newtonsoft-json@74deb55db2a0)
+    com.unity.probuilder@6.0.4 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.probuilder@a2827f523e21)
+    com.unity.recorder@5.1.2 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.recorder@979a3db2a781)
+    com.unity.splines@2.7.2 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.splines@d3e1e500c9a0)
+    com.unity.test-framework@1.4.6 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.test-framework@5ac417e07314)
+    com.unity.timeline@1.8.7 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.timeline@c58b4ee65782)
+    com.unity.toolchain.linux-x86_64@2.0.10 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.toolchain.linux-x86_64@5a6ce31f8a65)
+    com.unity.burst@1.8.19 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.burst@7a907cf5a459)
+    com.unity.collections@2.5.1 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.collections@56bff8827a7e)
+    com.unity.sysroot@2.0.10 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.sysroot@7bbbb9339c14)
+    com.unity.sysroot.linux-x86_64@2.0.9 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.sysroot.linux-x86_64@1998d1c7730e)
+    com.unity.settings-manager@2.0.1 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.settings-manager@56a930affa1e)
+    com.unity.searcher@4.9.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.searcher@1e17ce91558d)
+    com.unity.bindings.openimageio@1.0.0 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.bindings.openimageio@3229d2aa5c76)
+    com.unity.ide.visualstudio@2.0.22 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.ide.visualstudio@8140e851d83e)
+    com.unity.editorcoroutines@1.0.0 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.editorcoroutines@7d48783e7b8c)
+    com.unity.performance.profile-analyzer@1.2.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.performance.profile-analyzer@a68e7bc84997)
+    com.unity.testtools.codecoverage@1.2.6 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.testtools.codecoverage@205a02cbcb39)
+    com.unity.profiling.core@1.0.2 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.profiling.core@aac7b93912bc)
+    com.unity.scriptablebuildpipeline@2.2.11 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.scriptablebuildpipeline@8e62a84f8b2e)
+    com.unity.2d.common@9.0.7 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.common@bb1fc9b3d81b)
+    com.unity.nuget.mono-cecil@1.11.4 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.nuget.mono-cecil@d6f9955a5d5f)
+    com.unity.test-framework.performance@3.0.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.test-framework.performance@fb0dc592af8b)
+  Built-in packages:
+    com.unity.2d.sprite@1.0.0 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.2d.sprite@2ec8aabae3ca)
+    com.unity.feature.development@1.0.2 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.feature.development@767aadbc6eb7)
+    com.unity.shadergraph@17.0.4 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.shadergraph@b5f9691ac703)
+    com.unity.ugui@2.0.0 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.ugui@ae381d1d95dd)
+    com.unity.modules.accessibility@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.accessibility)
+    com.unity.modules.ai@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.ai)
+    com.unity.modules.androidjni@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.androidjni)
+    com.unity.modules.animation@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.animation)
+    com.unity.modules.assetbundle@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.assetbundle)
+    com.unity.modules.audio@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.audio)
+    com.unity.modules.cloth@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.cloth)
+    com.unity.modules.director@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.director)
+    com.unity.modules.imageconversion@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.imageconversion)
+    com.unity.modules.imgui@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.imgui)
+    com.unity.modules.jsonserialize@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.jsonserialize)
+    com.unity.modules.particlesystem@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.particlesystem)
+    com.unity.modules.physics@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.physics)
+    com.unity.modules.physics2d@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.physics2d)
+    com.unity.modules.screencapture@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.screencapture)
+    com.unity.modules.terrain@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.terrain)
+    com.unity.modules.terrainphysics@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.terrainphysics)
+    com.unity.modules.tilemap@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.tilemap)
+    com.unity.modules.ui@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.ui)
+    com.unity.modules.uielements@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.uielements)
+    com.unity.modules.umbra@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.umbra)
+    com.unity.modules.unityanalytics@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unityanalytics)
+    com.unity.modules.unitywebrequest@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unitywebrequest)
+    com.unity.modules.unitywebrequestassetbundle@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unitywebrequestassetbundle)
+    com.unity.modules.unitywebrequestaudio@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unitywebrequestaudio)
+    com.unity.modules.unitywebrequesttexture@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unitywebrequesttexture)
+    com.unity.modules.unitywebrequestwww@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.unitywebrequestwww)
+    com.unity.modules.vehicles@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.vehicles)
+    com.unity.modules.video@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.video)
+    com.unity.modules.vr@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.vr)
+    com.unity.modules.wind@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.wind)
+    com.unity.modules.xr@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.xr)
+    com.unity.modules.subsystems@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.subsystems)
+    com.unity.modules.hierarchycore@1.0.0 (location: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/PackageManager/BuiltInPackages/com.unity.modules.hierarchycore)
+    com.unity.render-pipelines.core@17.0.4 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.render-pipelines.core@31aca0c38bdb)
+    com.unity.render-pipelines.universal-config@17.0.3 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.render-pipelines.universal-config@ae49062cc978)
+    com.unity.rendering.light-transport@1.0.1 (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.unity.rendering.light-transport@e291d2b283b1)
+  Embedded packages:
+    com.unity.render-pipelines.universal@file:/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.unity.render-pipelines.universal (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.unity.render-pipelines.universal)
+    bz-soft.ragdoll-helper@file:/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/bz-soft.ragdoll-helper (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/bz-soft.ragdoll-helper)
+    com.arongranberg.astar@file:/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.arongranberg.astar (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.arongranberg.astar)
+    com.kybernetik.animancer@file:/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.kybernetik.animancer (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.kybernetik.animancer)
+    com.singularitygroup.hotreload@file:/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.singularitygroup.hotreload (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Packages/com.singularitygroup.hotreload)
+  Local packages:
+    com.fluid.behavior-tree@file:/home/kblack0610/dev/Games/3rdParty/com.blacknbrown.fbt/Assets/com.fluid.behavior-tree (location: /home/kblack0610/dev/Games/3rdParty/com.blacknbrown.fbt/Assets/com.fluid.behavior-tree)
+    com.heathen.steamworkscomplete@file:/home/kblack0610/dev/Games/3rdParty/com.heathen.steamworkscomplete (location: /home/kblack0610/dev/Games/3rdParty/com.heathen.steamworkscomplete)
+    com.heathen.systemcore@file:/home/kblack0610/dev/Games/3rdParty/com.heathen.systemcore (location: /home/kblack0610/dev/Games/3rdParty/com.heathen.systemcore)
+  Git packages:
+    com.gamelovers.mcp-unity@https://github.com/CoderGamester/mcp-unity.git (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.gamelovers.mcp-unity@6e6bd61195ef)
+    com.rlabrecque.steamworks.net@https://github.com/rlabrecque/Steamworks.NET.git?path=/com.rlabrecque.steamworks.net (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.rlabrecque.steamworks.net@0e3531ecf7b5)
+    com.veriorpies.parrelsync@https://github.com/VeriorPies/ParrelSync.git?path=/ParrelSync (location: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Library/PackageCache/com.veriorpies.parrelsync@256065af1fc7)
+[Physics::Module] Selected backend.
+[Physics::Module] Name: PhysX
+[Physics::Module] Id: 0xf2b8ea05
+[Physics::Module] SDK Version: 4.1.2
+[Physics::Module] Integration Version: 1.0.0
+[Physics::Module] Threading Mode: Multi-Threaded
+[Subsystems] No new subsystems found in resolved package list.
+Package Manager log level set to [2]
+[Package Manager] Done registering packages in 0.22 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:43.927: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Artifact Garbage Collection - Removed 853 unused hashed content files
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.233: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.235: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Refreshing native plugins compatible for Editor in 2.06 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.238: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Initialize engine version: 6000.0.43f1 (97272b72f107)
+[Subsystems] Discovering subsystems at path /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Resources/UnitySubsystems
+[Subsystems] Discovering subsystems at path /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/Assets
+kGfxThreadingModeSplitJobs is not supported on OpenGL Core. Reverting to kGfxThreadingModeDirect instead.
+GfxDevice: creating device client; kGfxThreadingModeDirect
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+Renderer: NVIDIA GeForce RTX 4060 Ti/PCIe/SSE2
+Vendor:   NVIDIA Corporation
+Version:  4.5.0 NVIDIA 535.183.01
+GLES:     0
+ GL_AMD_multi_draw_indirect GL_AMD_seamless_cubemap_per_texture GL_AMD_vertex_shader_viewport_index GL_AMD_vertex_shader_layer GL_ARB_arrays_of_arrays GL_ARB_base_instance GL_ARB_bindless_texture GL_ARB_blend_func_extended GL_ARB_buffer_storage GL_ARB_clear_buffer_object GL_ARB_clear_texture GL_ARB_clip_control GL_ARB_color_buffer_float GL_ARB_compressed_texture_pixel_storage GL_ARB_conservative_depth GL_ARB_compute_shader GL_ARB_compute_variable_group_size GL_ARB_conditional_render_inverted GL_ARB_copy_buffer GL_ARB_copy_image GL_ARB_cull_distance GL_ARB_debug_output GL_ARB_depth_buffer_float GL_ARB_depth_clamp GL_ARB_depth_texture GL_ARB_derivative_control GL_ARB_direct_state_access GL_ARB_draw_buffers GL_ARB_draw_buffers_blend GL_ARB_draw_indirect GL_ARB_draw_elements_base_vertex GL_ARB_draw_instanced GL_ARB_enhanced_layouts GL_ARB_ES2_compatibility GL_ARB_ES3_compatibility GL_ARB_ES3_1_compatibility GL_ARB_ES3_2_compatibility GL_ARB_explicit_attrib_location GL_ARB_explicit_uniform_location GL_ARB_fragmen
+t_coord_conventions GL_ARB_fragment_layer_viewport GL_ARB_fragment_program GL_ARB_fragment_program_shadow GL_ARB_fragment_shader GL_ARB_fragment_shader_interlock GL_ARB_framebuffer_no_attachments GL_ARB_framebuffer_object GL_ARB_framebuffer_sRGB GL_ARB_geometry_shader4 GL_ARB_get_program_binary GL_ARB_get_texture_sub_image GL_ARB_gl_spirv GL_ARB_gpu_shader5 GL_ARB_gpu_shader_fp64 GL_ARB_gpu_shader_int64 GL_ARB_half_float_pixel GL_ARB_half_float_vertex GL_ARB_imaging GL_ARB_indirect_parameters GL_ARB_instanced_arrays GL_ARB_internalformat_query GL_ARB_internalformat_query2 GL_ARB_invalidate_subdata GL_ARB_map_buffer_alignment GL_ARB_map_buffer_range GL_ARB_multi_bind GL_ARB_multi_draw_indirect GL_ARB_multisample GL_ARB_multitexture GL_ARB_occlusion_query GL_ARB_occlusion_query2 GL_ARB_parallel_shader_compile GL_ARB_pipeline_statistics_query GL_ARB_pixel_buffer_object GL_ARB_point_parameters GL_ARB_point_sprite GL_ARB_polygon_offset_clamp GL_ARB_post_depth_coverage GL_ARB_program_interface_query GL_ARB_provoki
+ng_vertex GL_ARB_query_buffer_object GL_ARB_robust_buffer_access_behavior GL_ARB_robustness GL_ARB_sample_locations GL_ARB_sample_shading GL_ARB_sampler_objects GL_ARB_seamless_cube_map GL_ARB_seamless_cubemap_per_texture GL_ARB_separate_shader_objects GL_ARB_shader_atomic_counter_ops GL_ARB_shader_atomic_counters GL_ARB_shader_ballot GL_ARB_shader_bit_encoding GL_ARB_shader_clock GL_ARB_shader_draw_parameters GL_ARB_shader_group_vote GL_ARB_shader_image_load_store GL_ARB_shader_image_size GL_ARB_shader_objects GL_ARB_shader_precision GL_ARB_shader_storage_buffer_object GL_ARB_shader_subroutine GL_ARB_shader_texture_image_samples GL_ARB_shader_texture_lod GL_ARB_shading_language_100 GL_ARB_shader_viewport_layer_array GL_ARB_shading_language_420pack GL_ARB_shading_language_include GL_ARB_shading_language_packing GL_ARB_shadow GL_ARB_sparse_buffer GL_ARB_sparse_texture GL_ARB_sparse_texture2 GL_ARB_sparse_texture_clamp GL_ARB_spirv_extensions GL_ARB_stencil_texturing GL_ARB_sync GL_ARB_tessellation_shader GL_A
+RB_texture_barrier GL_ARB_texture_border_clamp GL_ARB_texture_buffer_object GL_ARB_texture_buffer_object_rgb32 GL_ARB_texture_buffer_range GL_ARB_texture_compression GL_ARB_texture_compression_bptc GL_ARB_texture_compression_rgtc GL_ARB_texture_cube_map GL_ARB_texture_cube_map_array GL_ARB_texture_env_add GL_ARB_texture_env_combine GL_ARB_texture_env_crossbar GL_ARB_texture_env_dot3 GL_ARB_texture_filter_anisotropic GL_ARB_texture_filter_minmax GL_ARB_texture_float GL_ARB_texture_gather GL_ARB_texture_mirror_clamp_to_edge GL_ARB_texture_mirrored_repeat GL_ARB_texture_multisample GL_ARB_texture_non_power_of_two GL_ARB_texture_query_levels GL_ARB_texture_query_lod GL_ARB_texture_rectangle GL_ARB_texture_rg GL_ARB_texture_rgb10_a2ui GL_ARB_texture_stencil8 GL_ARB_texture_storage GL_ARB_texture_storage_multisample GL_ARB_texture_swizzle GL_ARB_texture_view GL_ARB_timer_query GL_ARB_transform_feedback2 GL_ARB_transform_feedback3 GL_ARB_transform_feedback_instanced GL_ARB_transform_feedback_overflow_query GL_ARB_t
+ranspose_matrix GL_ARB_uniform_buffer_object GL_ARB_vertex_array_bgra GL_ARB_vertex_array_object GL_ARB_vertex_attrib_64bit GL_ARB_vertex_attrib_binding GL_ARB_vertex_buffer_object GL_ARB_vertex_program GL_ARB_vertex_shader GL_ARB_vertex_type_10f_11f_11f_rev GL_ARB_vertex_type_2_10_10_10_rev GL_ARB_viewport_array GL_ARB_window_pos GL_ATI_draw_buffers GL_ATI_texture_float GL_ATI_texture_mirror_once GL_S3_s3tc GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra GL_EXT_bindable_uniform GL_EXT_blend_color GL_EXT_blend_equation_separate GL_EXT_blend_func_separate GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_Cg_shader GL_EXT_depth_bounds_test GL_EXT_direct_state_access GL_EXT_draw_buffers2 GL_EXT_draw_instanced GL_EXT_draw_range_elements GL_EXT_fog_coord GL_EXT_framebuffer_blit GL_EXT_framebuffer_multisample GL_EXTX_framebuffer_mixed_formats GL_EXT_framebuffer_multisample_blit_scaled GL_EXT_framebuffer_object GL_EXT_framebuffer_sRGB GL_EXT_geometry_shader4 GL_EXT_gpu_program_parameters 
+GL_EXT_gpu_shader4 GL_EXT_multi_draw_arrays GL_EXT_multiview_texture_multisample GL_EXT_multiview_timer_query GL_EXT_packed_depth_stencil GL_EXT_packed_float GL_EXT_packed_pixels GL_EXT_pixel_buffer_object GL_EXT_point_parameters GL_EXT_polygon_offset_clamp GL_EXT_post_depth_coverage GL_EXT_provoking_vertex GL_EXT_raster_multisample GL_EXT_rescale_normal GL_EXT_secondary_color GL_EXT_separate_shader_objects GL_EXT_separate_specular_color GL_EXT_shader_image_load_formatted GL_EXT_shader_image_load_store GL_EXT_shader_integer_mix GL_EXT_shadow_funcs GL_EXT_sparse_texture2 GL_EXT_stencil_two_side GL_EXT_stencil_wrap GL_EXT_texture3D GL_EXT_texture_array GL_EXT_texture_buffer_object GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_latc GL_EXT_texture_compression_rgtc GL_EXT_texture_compression_s3tc GL_EXT_texture_cube_map GL_EXT_texture_edge_clamp GL_EXT_texture_env_combine GL_EXT_texture_env_dot3 GL_EXT_texture_filter_anisotropic GL_EXT_texture_filter_minmax GL_EXT_texture_integer GL_EXT_texture_lod G
+L_EXT_texture_lod_bias GL_EXT_texture_mirror_clamp GL_EXT_texture_object GL_EXT_texture_shadow_lod GL_EXT_texture_shared_exponent GL_EXT_texture_sRGB GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_decode GL_EXT_texture_storage GL_EXT_texture_swizzle GL_EXT_timer_query GL_EXT_transform_feedback2 GL_EXT_vertex_array GL_EXT_vertex_array_bgra GL_EXT_vertex_attrib_64bit GL_EXT_window_rectangles GL_EXT_x11_sync_object GL_EXT_import_sync_object GL_NV_robustness_video_memory_purge GL_IBM_rasterpos_clip GL_IBM_texture_mirrored_repeat GL_KHR_context_flush_control GL_KHR_debug GL_EXT_memory_object GL_EXT_memory_object_fd GL_NV_memory_object_sparse GL_KHR_parallel_shader_compile GL_KHR_no_error GL_KHR_robust_buffer_access_behavior GL_KHR_robustness GL_EXT_semaphore GL_EXT_semaphore_fd GL_NV_timeline_semaphore GL_KHR_shader_subgroup GL_KTX_buffer_region GL_NV_alpha_to_coverage_dither_control GL_NV_bindless_multi_draw_indirect GL_NV_bindless_multi_draw_indirect_count GL_NV_bindless_texture GL_NV_blend_equation_advanced GL_NV_
+blend_equation_advanced_coherent GL_NVX_blend_equation_advanced_multi_draw_buffers GL_NV_blend_minmax_factor GL_NV_blend_square GL_NV_clip_space_w_scaling GL_NV_command_list GL_NV_compute_program5 GL_NV_compute_shader_derivatives GL_NV_conditional_render GL_NV_conservative_raster GL_NV_conservative_raster_dilate GL_NV_conservative_raster_pre_snap GL_NV_conservative_raster_pre_snap_triangles GL_NV_conservative_raster_underestimation GL_NV_copy_depth_to_color GL_NV_copy_image GL_NV_depth_buffer_float GL_NV_depth_clamp GL_NV_draw_texture GL_NV_draw_vulkan_image GL_NV_ES1_1_compatibility GL_NV_ES3_1_compatibility GL_NV_explicit_multisample GL_NV_feature_query GL_NV_fence GL_NV_fill_rectangle GL_NV_float_buffer GL_NV_fog_distance GL_NV_fragment_coverage_to_color GL_NV_fragment_program GL_NV_fragment_program_option GL_NV_fragment_program2 GL_NV_fragment_shader_barycentric GL_NV_fragment_shader_interlock GL_NV_framebuffer_mixed_samples GL_NV_framebuffer_multisample_coverage GL_NV_geometry_shader4 GL_NV_geometry_sha
+der_passthrough GL_NV_gpu_program4 GL_NV_internalformat_sample_query GL_NV_gpu_program4_1 GL_NV_gpu_program5 GL_NV_gpu_program5_mem_extended GL_NV_gpu_program_fp64 GL_NV_gpu_shader5 GL_NV_half_float GL_NV_light_max_exponent GL_NV_memory_attachment GL_NV_mesh_shader GL_NV_multisample_coverage GL_NV_multisample_filter_hint GL_NV_occlusion_query GL_NV_packed_depth_stencil GL_NV_parameter_buffer_object GL_NV_parameter_buffer_object2 GL_NV_path_rendering GL_NV_path_rendering_shared_edge GL_NV_pixel_data_range GL_NV_point_sprite GL_NV_primitive_restart GL_NV_primitive_shading_rate GL_NV_query_resource GL_NV_query_resource_tag GL_NV_register_combiners GL_NV_register_combiners2 GL_NV_representative_fragment_test GL_NV_sample_locations GL_NV_sample_mask_override_coverage GL_NV_scissor_exclusive GL_NV_shader_atomic_counters GL_NV_shader_atomic_float GL_NV_shader_atomic_float64 GL_NV_shader_atomic_fp16_vector GL_NV_shader_atomic_int64 GL_NV_shader_buffer_load GL_NV_shader_storage_buffer_object GL_NV_shader_subgroup_par
+titioned GL_NV_shader_texture_footprint GL_NV_shading_rate_image GL_NV_stereo_view_rendering GL_NV_texgen_reflection GL_NV_texture_barrier GL_NV_texture_compression_vtc GL_NV_texture_dirty_tile_map GL_NV_texture_env_combine4 GL_NV_texture_multisample GL_NV_texture_rectangle GL_NV_texture_rectangle_compressed GL_NV_texture_shader GL_NV_texture_shader2 GL_NV_texture_shader3 GL_NV_transform_feedback GL_NV_transform_feedback2 GL_NV_uniform_buffer_unified_memory GL_NV_uniform_buffer_std430_layout GL_NV_vdpau_interop GL_NV_vdpau_interop2 GL_NV_vertex_array_range GL_NV_vertex_array_range2 GL_NV_vertex_attrib_integer_64bit GL_NV_vertex_buffer_unified_memory GL_NV_vertex_program GL_NV_vertex_program1_1 GL_NV_vertex_program2 GL_NV_vertex_program2_option GL_NV_vertex_program3 GL_NV_viewport_array2 GL_NV_viewport_swizzle GL_NVX_conditional_render GL_NV_gpu_multicast GL_NVX_progress_fence GL_NVX_gpu_memory_info GL_NVX_nvenc_interop GL_NV_shader_thread_group GL_NV_shader_thread_shuffle GL_KHR_blend_equation_advanced GL_KH
+R_blend_equation_advanced_coherent GL_OVR_multiview GL_OVR_multiview2 GL_SGIS_generate_mipmap GL_SGIS_texture_lod GL_SGIX_depth_texture GL_SGIX_shadow GL_SUN_slice_accum
+OPENGL LOG: Creating OpenGL 4.5 graphics device ; Context level  <OpenGL 4.5> ; Context handle 1467026952
+Shader 'MoreMountains/MMRipple': fallback shader 'Particle/AlphaBlended' not found
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.501: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.507: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Initialize mono
+Mono path[0] = '/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/Managed'
+Mono path[1] = '/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/MonoBleedingEdge/lib/mono/unityjit-linux'
+Mono config path = '/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/MonoBleedingEdge/etc'
+Using monoOptions --debugger-agent=transport=dt_socket,embedding=1,server=y,suspend=n,address=127.0.0.1:56662
+Using cacheserver namespaces - metadata:defaultmetadata, artifacts:defaultartifacts
+Using cacheserver namespaces - metadata:defaultmetadata, artifacts:defaultartifacts
+ImportWorker Server TCP listen port: 0
+AcceleratorClientConnectionCallback - disconnected - :0
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:45.529: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Begin MonoManager ReloadAssembly
+Registering precompiled unity dll's ...
+Register platform support module: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/PlaybackEngines/MacStandaloneSupport/UnityEditor.OSXStandalone.Extensions.dll
+Register platform support module: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/PlaybackEngines/WindowsStandaloneSupport/UnityEditor.WindowsStandalone.Extensions.dll
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+Register platform support module: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/PlaybackEngines/AndroidPlayer/UnityEditor.Android.Extensions.dll
+Register platform support module: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/PlaybackEngines/LinuxStandaloneSupport/UnityEditor.LinuxStandalone.Extensions.dll
+Registered in 0.012988 seconds.
+- Loaded All Assemblies, in  0.215 seconds
+Native extension for LinuxStandalone target not found
+Native extension for Android target not found
+Native extension for WindowsStandalone target not found
+Native extension for OSXStandalone target not found
+Mono: successfully reloaded assembly
+- Finished resetting the current domain, in  0.262 seconds
+Domain Reload Profiling: 476ms
+	BeginReloadAssembly (50ms)
+		ExecutionOrderSort (0ms)
+		DisableScriptedObjects (0ms)
+		BackupInstance (0ms)
+		ReleaseScriptingObjects (0ms)
+		CreateAndSetChildDomain (1ms)
+	RebuildCommonClasses (22ms)
+	RebuildNativeTypeToScriptingClass (5ms)
+	initialDomainReloadingComplete (45ms)
+	LoadAllAssembliesAndSetupDomain (93ms)
+		LoadAssemblies (50ms)
+		RebuildTransferFunctionScriptingTraits (0ms)
+		AnalyzeDomain (91ms)
+			TypeCache.Refresh (90ms)
+				TypeCache.ScanAssembly (82ms)
+			BuildScriptInfoCaches (0ms)
+			ResolveRequiredComponents (0ms)
+	FinalizeReload (262ms)
+		ReleaseScriptCaches (0ms)
+		RebuildScriptCaches (0ms)
+		SetupLoadedEditorAssemblies (242ms)
+			LogAssemblyErrors (0ms)
+			InitializePlatformSupportModulesInManaged (105ms)
+			SetLoadedEditorAssemblies (3ms)
+			BeforeProcessingInitializeOnLoad (29ms)
+			ProcessInitializeOnLoadAttributes (67ms)
+			ProcessInitializeOnLoadMethodAttributes (37ms)
+			AfterProcessingInitializeOnLoad (0ms)
+			EditorAssembliesLoaded (0ms)
+		ExecutionOrderSort2 (0ms)
+		AwakeInstancesAfterBackupRestoration (0ms)
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:46.017: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:46.031: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Application.AssetDatabase Initial Refresh Start
+Assembly for Assembly Definition File 'Assets/Plugins/com.blacknbrown.DevOps/com.blacknbrown.DevOps.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Plugins/com.blacknbrown.Common.External/com.blacknbrown.Common.External.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Editor/External/com.blacknbrown.DevEditor/com.blacknbrown.DevEditor.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Plugins/com.blacknbrown.Environment.External/com.blacknbrown.Environment.External.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Plugins/com.blacknbrown.Character.External/com.blacknbrown.Character.External.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Tests/PlayMode/DodginBalls.Tests.PlayMode.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+Assembly for Assembly Definition File 'Assets/Plugins/com.blacknbrown.UI/com.blacknbrown.UI.asmdef' will not be compiled, because it has no scripts associated with it.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:WarnIfThereAreAssembliesWithoutAnyScripts (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings,UnityEditor.Scripting.ScriptCompilation.ScriptAssembly[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:779)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScriptsWithSettings (UnityEditor.Scripting.ScriptCompilation.ScriptAssemblySettings) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:832)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilation:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs:715)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface/<>c__DisplayClass21_0:<CompileScripts>b__0 () (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:EmitExceptionAsError<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus> (System.Func`1<UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus>,UnityEditor.Scripting.ScriptCompilation.EditorCompilation/CompileStatus) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:49)
+UnityEditor.Scripting.ScriptCompilation.EditorCompilationInterface:CompileScripts (UnityEditor.Scripting.ScriptCompilation.EditorScriptCompilationOptions,UnityEditor.BuildTarget,int,string[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilationInterface.cs:184)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/Scripting/ScriptCompilation/EditorCompilation.cs Line: 779)
+
+[40m[32minfo[39m[22m[49m: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://unix:/tmp/ilpp.sock-044e1e40ca79ecb9c68efacc6ccd4d9b
+[40m[32minfo[39m[22m[49m: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+[40m[32minfo[39m[22m[49m: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Production
+[40m[32minfo[39m[22m[49m: Microsoft.Hosting.Lifetime[0]
+      Content root path: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/2 POST http://ilpp/UnityILPP.PostProcessing/Ping application/grpc -
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'gRPC - /UnityILPP.PostProcessing/Ping'
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'gRPC - /UnityILPP.PostProcessing/Ping'
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/2 POST http://ilpp/UnityILPP.PostProcessing/Ping application/grpc - - 200 - application/grpc 22.9730ms
+Starting: /home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/bee_backend --dont-print-to-structured-log --ipc --defer-dag-verification --dagfile="Library/Bee/2400b0aE.dag" --continue-on-failure --profile="Library/Bee/backend1.traceevents" ScriptAssemblies
+WorkingDir: /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/2 POST http://ilpp/UnityILPP.PostProcessing/ConfigurePostProcessors application/grpc -
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'gRPC - /UnityILPP.PostProcessing/ConfigurePostProcessors'
+[40m[1m[33mwarn[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Assembly system.runtime.interopservices.windowsruntime has duplicate hint path. Ignoring "/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/UnityReferenceAssemblies/unity-4.8-api/Facades/System.Runtime.InteropServices.WindowsRuntime.dll" in favor of "/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/NetStandard/Extensions/2.0.0/System.Runtime.InteropServices.WindowsRuntime.dll"
+[40m[1m[33mwarn[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Assembly system.componentmodel.composition has duplicate hint path. Ignoring "/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/UnityReferenceAssemblies/unity-4.8-api/System.ComponentModel.Composition.dll" in favor of "/home/kblack0610/src/Unity/Hub/Editor/6000.0.43f1/Editor/Data/NetStandard/compat/2.1.0/shims/netfx/System.ComponentModel.Composition.dll"
+[40m[32minfo[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Resolved Unity.Burst.Cecil, Version=0.11.4.0, Culture=neutral, PublicKeyToken=50cebf1cceb9d05e with Library/PackageCache/com.unity.burst@7a907cf5a459/Unity.Burst.CodeGen/Unity.Burst.Cecil.dll
+[40m[32minfo[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Resolved Mono.Cecil, Version=0.11.4.0, Culture=neutral, PublicKeyToken=50cebf1cceb9d05e with Library/PackageCache/com.unity.nuget.mono-cecil@d6f9955a5d5f/Mono.Cecil.dll
+[40m[32minfo[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Resolved FishNet.Codegen.Cecil, Version=0.11.4.0, Culture=neutral, PublicKeyToken=null with Library/Bee/artifacts/2400b0aE.dag/FishNet.Codegen.Cecil.dll
+[40m[32minfo[39m[22m[49m: Unity.ILPP.Runner.PostProcessingAssemblyLoadContext[0]
+      Resolved FishNet.Runtime, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null with Library/Bee/artifacts/2400b0aE.dag/FishNet.Runtime.dll
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Routing.EndpointMiddleware[1]
+      Executed endpoint 'gRPC - /UnityILPP.PostProcessing/ConfigurePostProcessors'
+[40m[32minfo[39m[22m[49m: Microsoft.AspNetCore.Hosting.Diagnostics[2]
+      Request finished HTTP/2 POST http://ilpp/UnityILPP.PostProcessing/ConfigurePostProcessors application/grpc - - 200 - application/grpc 14.7343ms
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:47.398: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:47.400: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+ExitCode: 0 Duration: 0s262ms
+[1274/1776  0s] ILPP-Configuration Library/ilpp-configuration.nevergeneratedoutput
+*** Tundra build success (0.22 seconds), 1 items updated, 1776 evaluated
+AssetDatabase: script compilation time: 0.903064s
+Total cache size 267683624
+Total cache size after purge 267683624, took 00:00:00.0853676
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:47.727: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Begin MonoManager ReloadAssembly
+Symbol file LoadedFromMemory is not a mono symbol file
+- Loaded All Assemblies, in  0.725 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:48.455: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Refreshing native plugins compatible for Editor in 1.33 ms, found 4 plugins.
+Native extension for LinuxStandalone target not found
+Native extension for Android target not found
+Native extension for WindowsStandalone target not found
+Native extension for OSXStandalone target not found
+Refreshing native plugins compatible for Editor in 1.40 ms, found 4 plugins.
+UpdateMenuTitleForLanguage: 10
+[MODES] ModeService[none].Initialize
+[MODES] ModeService[none].LoadModes
+[MODES] Loading mode Default (0) for mode-current-id-Dodgeball
+Mono: successfully reloaded assembly
+- Finished resetting the current domain, in  6.218 seconds
+Domain Reload Profiling: 6939ms
+	BeginReloadAssembly (84ms)
+		ExecutionOrderSort (0ms)
+		DisableScriptedObjects (6ms)
+		BackupInstance (0ms)
+		ReleaseScriptingObjects (0ms)
+		CreateAndSetChildDomain (27ms)
+	RebuildCommonClasses (21ms)
+	RebuildNativeTypeToScriptingClass (5ms)
+	initialDomainReloadingComplete (34ms)
+	LoadAllAssembliesAndSetupDomain (576ms)
+		LoadAssemblies (305ms)
+		RebuildTransferFunctionScriptingTraits (0ms)
+		AnalyzeDomain (306ms)
+			TypeCache.Refresh (225ms)
+				TypeCache.ScanAssembly (210ms)
+			BuildScriptInfoCaches (60ms)
+			ResolveRequiredComponents (16ms)
+	FinalizeReload (6219ms)
+		ReleaseScriptCaches (0ms)
+		RebuildScriptCaches (0ms)
+		SetupLoadedEditorAssemblies (5893ms)
+			LogAssemblyErrors (0ms)
+			InitializePlatformSupportModulesInManaged (94ms)
+			SetLoadedEditorAssemblies (4ms)
+			BeforeProcessingInitializeOnLoad (114ms)
+			ProcessInitializeOnLoadAttributes (3799ms)
+			ProcessInitializeOnLoadMethodAttributes (1878ms)
+			AfterProcessingInitializeOnLoad (3ms)
+			EditorAssembliesLoaded (1ms)
+		ExecutionOrderSort2 (0ms)
+		AwakeInstancesAfterBackupRestoration (3ms)
+Start importing Assets/Settings/Game/Managers/Progress/MMData/ProgressData/Progress.data using Guid(5c90c80de068a0a66b2d0c3d7b636eb1) (DefaultImporter)
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:55.756: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+ -> (artifact id: '3ab7ae729b29d50cd6de2a099bae217d') in 0.026101381 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:10:56.043: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Default prefab generator found 20 prefabs in 3821ms.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:Log (UnityEngine.LogType,object)
+UnityEngine.Debug:Log (object)
+FishNet.Editing.PrefabCollectionGenerator.Generator:GenerateFull (FishNet.Configuring.PrefabGeneratorConfigurations,bool,bool) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Editor/PrefabCollectionGenerator/Generator.cs:383)
+FishNet.Editing.PrefabCollectionGenerator.Generator:OnPostprocessAllAssets (string[],string[],string[],string[]) (at Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Editor/PrefabCollectionGenerator/Generator.cs:626)
+System.Reflection.RuntimeMethodInfo:Invoke (object,System.Reflection.BindingFlags,System.Reflection.Binder,object[],System.Globalization.CultureInfo)
+System.Reflection.MethodBase:Invoke (object,object[])
+UnityEditor.AssetPostprocessingInternal:InvokeMethod (System.Reflection.MethodInfo,object[]) (at /home/bokken/build/output/unity/unity/Editor/Mono/AssetPostprocessor.cs:1168)
+UnityEditor.AssetPostprocessingInternal:PostprocessAllAssets (string[],string[],string[],string[],string[],bool) (at /home/bokken/build/output/unity/unity/Editor/Mono/AssetPostprocessor.cs:403)
+
+(Filename: Assets/Plugins/com.blacknbrown.Networking/FishNet/Runtime/Editor/PrefabCollectionGenerator/Generator.cs Line: 383)
+
+Start importing ProjectSettings/ProjectSettings.asset using Guid(00000000000000004000000000000000) (LibraryAssetImporter) -> (artifact id: 'a533dd6e4cb48f3868f64ef7ce878772') in 0.001063676 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.365: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Start importing Assets/DefaultPrefabObjects.asset using Guid(75826a99a5c12083bac81f76acf0dce4) (NativeFormatImporter) -> (artifact id: '3d776bb14812b467ea4fd67b9ffc6fa4') in 0.000872638 seconds
+Refreshing native plugins compatible for Editor in 1.33 ms, found 4 plugins.
+Preloading 0 native plugins for Editor in 0.00 ms.
+Asset Pipeline Refresh (id=c428f07a2c5a86eedba6aa2d297e8bee): Total: 14.675 seconds - Initiated by InitialRefreshV2(ForceSynchronousImport)
+	Summary:
+		Imports: total=2 (actual=2, local cache=0, cache server=0)
+		Asset DB Process Time: managed=3 ms, native=8509 ms
+		Asset DB Callback time: managed=4411 ms, native=59 ms
+		Scripting: domain reloads=1, domain reload time=727 ms, compile time=904 ms, other=60 ms
+		Project Asset Count: scripts=5546, non-scripts=33307
+		Asset File Changes: new=0, changed=1, moved=0, deleted=0
+		Scan Filter Count: 3
+	InvokeCustomDependenciesCallbacks: 0.003ms
+	InvokePackagesCallback: 1.172ms
+	ApplyChangesToAssetFolders: 0.658ms
+	Scan: 1401.093ms
+	OnSourceAssetsModified: 0.645ms
+	CategorizeAssetsWithTransientArtifact: 57.584ms
+	ProcessAssetsWithTransientArtifactChanges: 107.952ms
+	CategorizeAssets: 348.932ms
+	ImportOutOfDateAssets: 6285.236ms (5329.061ms without children)
+		ImportManagerImport: 33.017ms (4.407ms without children)
+			ImportInProcess: 28.588ms
+			UpdateCategorizedAssets: 0.022ms
+		CompileScripts: 904.098ms
+		ReloadNativeAssets: 0.716ms
+		UnloadImportedAssets: 3.175ms
+		ReloadImportedAssets: 0.000ms
+		EnsureUptoDateAssetsAreRegisteredWithGuidPM: 9.388ms
+		InitializingProgressBar: 3.991ms
+		PostProcessAllAssetNotificationsAddChangedAssets: 0.000ms
+		OnDemandSchedulerStart: 1.789ms
+	PostProcessAllAssets: 4602.365ms
+	Hotreload: 55.514ms
+	GatherAllCurrentPrimaryArtifactRevisions: 0.694ms
+	UnloadStreamsBegin: 152.276ms
+	PersistCurrentRevisions: 1.452ms
+	UnloadStreamsEnd: 0.002ms
+	GenerateScriptTypeHashes: 7.073ms
+	Untracked: 1659.502ms
+
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.707: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Application.AssetDatabase Initial Refresh End
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.716: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.729: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.738: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Scanning for USB devices : 27.345ms
+Initializing Unity extensions:
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.782: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.783: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.815: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+[Licensing::Client] Successfully resolved entitlement details
+[Licensing::Module] Serial number assigned to: "F4-5E4E-72VA-XPHR-5MB2-XXXX"
+[Licensing::Module] Serial number assigned to: "2474150294557-UnityPersXXXX"
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:00.860: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Method UnityBuildScript.PerformSwitch has invalid parameters. MenuCommand is the only optional supported parameter.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.MenuService:ValidateMethodForMenuCommand (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:504)
+UnityEditor.MenuService/<>c:<ExtractMenuItemsFromAttributes>b__18_0 (System.Reflection.MethodInfo) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:359)
+System.Linq.Enumerable/WhereEnumerableIterator`1<System.Reflection.MethodInfo>:ToArray ()
+System.Linq.Buffer`1<System.Reflection.MethodInfo>:.ctor (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+System.Linq.OrderedEnumerable`1<System.Reflection.MethodInfo>:ToList ()
+System.Linq.Enumerable:ToList<System.Reflection.MethodInfo> (System.Collections.Generic.IEnumerable`1<System.Reflection.MethodInfo>)
+UnityEditor.MenuService:ExtractMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:358)
+UnityEditor.MenuService:GetMenuItemsFromAttributesById (string) (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:310)
+UnityEditor.MenuService:GetMenuItemsFromAttributes () (at /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs:64)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/EditorMode/MenuService.cs Line: 504)
+
+CreateAssetMenu attribute on BlackNBrown.Characters.PathFindWalkToSceneAction will be ignored as BlackNBrown.Characters.PathFindWalkToSceneAction is not derived from ScriptableObject.
+UnityEngine.Debug:ExtractStackTraceNoAlloc (byte*,int,string)
+UnityEngine.StackTraceUtility:ExtractStackTrace () (at /home/bokken/build/output/unity/unity/Runtime/Export/Scripting/StackTrace.cs:37)
+UnityEngine.DebugLogHandler:Internal_Log (UnityEngine.LogType,UnityEngine.LogOption,string,UnityEngine.Object)
+UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])
+UnityEngine.Logger:LogFormat (UnityEngine.LogType,string,object[])
+UnityEngine.Debug:LogWarningFormat (string,object[])
+UnityEditor.AttributeHelper:ExtractCreateAssetMenuItems () (at /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs:156)
+
+(Filename: /home/bokken/build/output/unity/unity/Editor/Mono/AttributeHelper.cs Line: 156)
+
+Unloading 29 Unused Serialized files (Serialized files now loaded: 0)
+LightingSettings: switching bake backend from 1 to 2.
+Loaded scene 'Assets/Scenes/_boot.unity'
+	Deserialize:            4.681 ms
+	Integration:            325.751 ms
+	Integration of assets:  0.011 ms
+	Thread Wait Time:       0.004 ms
+	Total Operation Time:   330.446 ms
+Unloading 187099 unused Assets / (0.62 GB). Loaded Objects now: 19336.
+Memory consumption went from 1.65 GB to 1.03 GB.
+Total: 188.689750 ms (FindLiveObjects: 10.391274 ms CreateObjectMapping: 12.112785 ms MarkObjects: 40.119191 ms  DeleteObjects: 126.066068 ms)
+
+Loaded scene 'Assets/Scenes/Game/SpawnPoints.unity'
+	Deserialize:            5.095 ms
+	Integration:            253.175 ms
+	Integration of assets:  0.003 ms
+	Thread Wait Time:       0.003 ms
+	Total Operation Time:   258.275 ms
+[LAYOUT] About to load UserSettings/Layouts/default-6000.dwlt, keepMainWindow=False
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+GLX Extensions: GLX_ARB_get_proc_address GLX_ARB_multisample GLX_EXT_visual_info GLX_EXT_visual_rating GLX_EXT_import_context GLX_SGI_video_sync GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_SGI_swap_control GLX_EXT_swap_control GLX_EXT_swap_control_tear GLX_EXT_buffer_age GLX_ARB_create_context GLX_ARB_create_context_profile GLX_NV_float_buffer GLX_ARB_fbconfig_float GLX_EXT_texture_from_pixmap GLX_EXT_framebuffer_sRGB GLX_NV_copy_image GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_ARB_create_context_no_error GLX_ARB_create_context_robustness GLX_NV_delay_before_swap GLX_EXT_stereo_tree GLX_ARB_context_flush_control GLX_NV_robustness_video_memory_purge GLX_NV_multigpu_context 
+[LAYOUT] About to save layout /home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/UserSettings/Layouts/default-6000.dwlt
+[LAYOUT] About to save layout /home/kblack0610/.config/unity3d/Preferences/Editor-5.x/Layouts/current/default-6000.dwlt
+[MODES] ModeService[default].InitializeCurrentMode
+[MODES] ModeService[default].RaiseModeChanged(default, default)
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:02.128: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Unhandled description string BACKSPACE
+Unhandled description string M2
+Unhandled description string `
+Unhandled description string \
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:02.340: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+IsTimeToCheckForNewEditor: Update time 1743780795 current 1743804662
+[Project] Loading completed in 20.779 seconds
+	Project init time: 				17.312 seconds
+		Template init time: 		0.000 seconds
+		Package Manager init time: 		0.080 seconds
+		Asset Database init time: 		1.534 seconds
+		Global illumination init time: 	0.003 seconds
+		Assemblies load time: 			0.487 seconds
+		Unity extensions init time: 	0.016 seconds
+		Asset Database refresh time: 	14.677 seconds
+	Scene opening time: 			1.485 seconds
+##utp:{"type":"ProjectInfo","version":2,"phase":"Immediate","time":1743804662350,"processId":154662,"projectLoad":20.778790301999999,"projectInit":17.312141249,"templateInit":0.0,"packageManagerInit":0.080286323,"assetDatabaseInit":1.534263566,"globalIlluminationInit":0.002791048,"assembliesLoad":0.486777714,"unityExtensionsInit":0.016089529,"assetDatabaseRefresh":14.677170718,"sceneOpening":1.485488638}
+##utp:{"type":"EditorInfo","version":2,"phase":"Immediate","time":1743804662350,"processId":154662,"editorVersion":"6000.0.43f1 (97272b72f107)","branch":"6000.0/release","buildType":"Release","platform":"Linux"}
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:02.357: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+Asset Pipeline Refresh (id=a7765a22518001e1ab671316569aebff): Total: 0.721 seconds - Initiated by RefreshV2(NoUpdateAssetOptions)
+	Summary:
+		Imports: total=0 (actual=0, local cache=0, cache server=0)
+		Asset DB Process Time: managed=0 ms, native=721 ms
+		Asset DB Callback time: managed=0 ms, native=0 ms
+		Scripting: domain reloads=0, domain reload time=0 ms, compile time=0 ms, other=0 ms
+		Project Asset Count: scripts=5546, non-scripts=33307
+		Asset File Changes: new=0, changed=0, moved=0, deleted=0
+		Scan Filter Count: 1
+	InvokeCustomDependenciesCallbacks: 0.001ms
+	InvokePackagesCallback: 0.000ms
+	ApplyChangesToAssetFolders: 0.208ms
+	Scan: 493.260ms
+	OnSourceAssetsModified: 0.001ms
+	CategorizeAssetsWithTransientArtifact: 0.001ms
+	ProcessAssetsWithTransientArtifactChanges: 0.084ms
+	CategorizeAssets: 194.632ms
+	ImportOutOfDateAssets: 5.011ms (1.099ms without children)
+		ReloadNativeAssets: 0.311ms
+		UnloadImportedAssets: 0.142ms
+		EnsureUptoDateAssetsAreRegisteredWithGuidPM: 2.486ms
+		InitializingProgressBar: 0.000ms
+		PostProcessAllAssetNotificationsAddChangedAssets: 0.000ms
+		OnDemandSchedulerStart: 0.972ms
+	GatherAllCurrentPrimaryArtifactRevisions: 2.218ms
+	UnloadStreamsBegin: 5.303ms
+	PersistCurrentRevisions: 0.679ms
+	UnloadStreamsEnd: 0.001ms
+	Untracked: 19.860ms
+
+Shader 'MoreMountains/MMRipple': fallback shader 'Particle/AlphaBlended' not found
+AutoLocale: current locale expects 'C' but got 'en_US.UTF-8'Launched and connected shader compiler UnityShaderCompiler after 0.14 seconds
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.380: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.382: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.383: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.383: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.384: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.384: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.384: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.385: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.385: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.385: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.386: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.386: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.386: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.386: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.389: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.390: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.391: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.391: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.392: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.393: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.393: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.393: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.393: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.394: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.394: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.394: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.394: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.394: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.395: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.395: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.395: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.395: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.396: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.396: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.396: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.396: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.397: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.397: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.397: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.397: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.398: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.398: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.398: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.398: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.399: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.399: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.399: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.399: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.400: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.401: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.407: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.407: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.409: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.409: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.409: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.410: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.410: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.410: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.410: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.411: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.411: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.411: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.413: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.413: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.414: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.415: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.416: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.416: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+
+(Unity:154662): GLib-GIO-CRITICAL **: 15:11:03.417: g_dbus_proxy_call_sync_internal: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+EditorUpdateCheck: Failed Cert verify failed. Certificate has expired. UnityTls error code: 7
+Created GICache directory at /home/kblack0610/.cache/unity3d/GiCache. Took: 0.002s, timestamps: [20.785 - 20.787]
+[Licensing::Client] Successfully updated the access token
+[Licensing::Module] Successfully updated access token: "uVUnnfe-"... (expires: 2026-04-04T22:11:05Z)
+UPID Received 'fa4b20bc-6982-4db1-b3d6-01a5018193e2'.
+TrimDiskCacheJob: Current cache size 7mb
