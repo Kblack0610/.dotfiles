@@ -6,6 +6,10 @@
 /home/kblack0610/.config/rules
 /home/kblack0610/.local/share/rules
 
+
+/home/kblack0610/dev/Games/DodginBalls_root/
+/home/kblack0610/dev/Games/DodginBalls_root/
+
 # System directories (might require sudo)
 # /etc/rules
 
