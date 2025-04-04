@@ -84,3 +84,47 @@ autocmd("BufEnter", {
     end
   end,
 })
+
+-- Kill OmniSharp server when leaving C# files or exiting Neovim
+local omnisharp_group = augroup("omnisharp_autoclose", { clear = true })
+
+-- Function to check if there are any C# buffers open
+local function has_csharp_buffers()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf) then
+      local ft = vim.api.nvim_buf_get_option(buf, "filetype")
+      if ft == "cs" then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Function to kill OmniSharp server process
+local function kill_omnisharp()
+  vim.fn.system("pkill -f 'omnisharp-roslyn'")
+  print("OmniSharp server terminated")
+end
+
+-- Check when leaving a C# buffer if we should kill the server
+autocmd("BufLeave", {
+  desc = "Check if we should kill OmniSharp server when leaving C# buffer",
+  group = omnisharp_group,
+  pattern = "*.cs",
+  callback = function()
+    -- Schedule the check to run after leaving the buffer
+    vim.defer_fn(function()
+      if not has_csharp_buffers() then
+        kill_omnisharp()
+      end
+    end, 100)
+  end,
+})
+
+-- Kill OmniSharp when exiting Neovim
+autocmd("VimLeave", {
+  desc = "Kill OmniSharp server when exiting Neovim",
+  group = omnisharp_group,
+  callback = kill_omnisharp,
+})
