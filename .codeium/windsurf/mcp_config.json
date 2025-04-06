@@ -26,18 +26,27 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
       }
     },
-     "python-execution": {
+    "python-execution": {
       "command": "uv",
-      "args": ["run", "python", "-m", "mcp_python"],
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "mcp_python"
+      ],
       "env": {}
     },
     "filesystem": {
-      "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "/home/kblack0610/dev"
-        ]
-      }
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--mount",
+        "type=bind,src=/home/kblack0610/,dst=/projects/kblack0610",
+        "mcp/filesystem",
+        "/projects"
+      ]
     }
+  }
 }
