@@ -5,4 +5,4 @@ ConditionEnvironment=DISPLAY
 
 [Service]
 Type=exec
-ExecStart=%h/.local/bin/misc/screen_power_manager/screen_power_manager.sh
+ExecStart=%h/.local/bin/systemd/screen_power_manager/screen_power_manager.sh
