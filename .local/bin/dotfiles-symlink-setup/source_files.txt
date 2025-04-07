@@ -1,0 +1,11 @@
+# AI configuration files to be symlinked
+# Each line is a file to be symlinked
+# Comments (lines starting with #) and empty lines are ignored
+
+# Common AI configuration files
+/home/kblack0610/.dotfiles/ai/.windsurfrules
+/home/kblack0610/.dotfiles/ai/.cursorrules
+/home/kblack0610/.dotfiles/ai/scratchpad.md
+
+# Tools directory - contains Python utilities
+/home/kblack0610/.dotfiles/ai/tools
