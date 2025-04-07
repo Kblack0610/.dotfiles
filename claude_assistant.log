@@ -145,3 +145,17 @@
 2025-04-04 14:31:16,854 - __main__ - INFO - System prompt updated with project context
 2025-04-04 14:31:19,452 - scripts.modular_tooling - WARNING - Claude integration not available, returning empty tool schema
 2025-04-04 14:31:19,452 - scripts.modular_tooling - WARNING - Claude integration not available, returning empty tool schema
+2025-04-04 16:50:37,924 - __main__ - INFO - Loaded rules from /home/kblack0610/dev/AI/claude_assistant/rules/default/global_rules.md
+2025-04-04 16:50:37,926 - __main__ - INFO - Loaded default rules from /home/kblack0610/dev/AI/claude_assistant/rules/default/global_rules.md
+2025-04-04 16:50:37,926 - scripts.tools.providers.registry - INFO - Registered tool provider: Core (category: core)
+2025-04-04 16:50:37,927 - scripts.tools.providers.registry - INFO - Registered tool provider: Web (category: web)
+2025-04-04 16:50:38,014 - scripts.tools.registry - INFO - Dependency not available for module tools.llm_api: No module named 'google.generativeai'
+2025-04-04 16:50:38,026 - scripts.tools.registry - INFO - Dependency not available for module tools.web_scraper: No module named 'html5lib'
+2025-04-04 16:50:38,026 - __main__ - INFO - Modular tool system initialized
+2025-04-04 16:50:38,026 - scripts.tools.providers.registry - INFO - Registered tool provider: Core (category: core)
+2025-04-04 16:50:38,026 - scripts.tools.providers.registry - INFO - Registered tool provider: Web (category: web)
+2025-04-04 16:50:38,026 - scripts.tools.registry - INFO - Dependency not available for module tools.llm_api: No module named 'google.generativeai'
+2025-04-04 16:50:38,027 - scripts.tools.registry - INFO - Dependency not available for module tools.web_scraper: No module named 'html5lib'
+2025-04-04 16:50:38,027 - __main__ - INFO - Modular tool system initialized: {'providers_registered': 2, 'tools_registered': 7, 'errors': 2, 'disabled': 0}
+2025-04-04 16:50:38,027 - __main__ - INFO - Refreshing project context for /home/kblack0610
+2025-04-04 16:50:38,027 - __main__ - INFO - Clearing project context cache

@@ -1,0 +1,162 @@
+# General
+- take the best approach to solving a problem with best architecture for scalability instead of the quick fix.
+- make sure all tests are passing e2e before you finish a feature.
+- Never work something out with a quick fix that isn't part of the architecture of the project.
+
+# Tools
+Always try and use the mcps first. If not use the built in tools. If not fall back on these tools.
+Note all the tools are in python3. So in the case you need to do batch processing, you can always consult the python files and write your own script.
+
+
+# File Operations
+
+- We should be using file-system mcp if available. 
+- If not, use built in tools.
+
+## Screenshot Verification
+
+The screenshot verification workflow allows you to capture screenshots of web pages and verify their appearance using LLMs. The following tools are available:
+
+1. Screenshot Capture:
+```bash
+venv/bin/python3 tools/screenshot_utils.py URL [--output OUTPUT] [--width WIDTH] [--height HEIGHT]
+```
+
+2. LLM Verification with Images:
+```bash
+venv/bin/python3 tools/llm_api.py --prompt "Your verification question" --provider {openai|anthropic} --image path/to/screenshot.png
+```
+
+Example workflow:
+```python
+from screenshot_utils import take_screenshot_sync
+from llm_api import query_llm
+
+# Take a screenshot
+screenshot_path = take_screenshot_sync('https://example.com', 'screenshot.png')
+
+# Verify with LLM
+response = query_llm(
+    "What is the background color and title of this webpage?",
+    provider="openai",  # or "anthropic"
+    image_path=screenshot_path
+)
+print(response)
+```
+
+## LLM
+
+You always have an LLM at your side to help you with the task. For simple tasks, you could invoke the LLM by running the following command:
+```
+venv/bin/python3 ./tools/llm_api.py --prompt "What is the capital of France?" --provider "anthropic"
+```
+
+The LLM API supports multiple providers:
+- OpenAI (default, model: gpt-4o)
+- Azure OpenAI (model: configured via AZURE_OPENAI_MODEL_DEPLOYMENT in .env file, defaults to gpt-4o-ms)
+- DeepSeek (model: deepseek-chat)
+- Anthropic (model: claude-3-sonnet-20240229)
+- Gemini (model: gemini-pro)
+- Local LLM (model: Qwen/Qwen2.5-32B-Instruct-AWQ)
+
+But usually it's a better idea to check the content of the file and use the APIs in the `tools/llm_api.py` file to invoke the LLM if needed.
+
+## Web browser
+
+You could use the `tools/web_scraper.py` file to scrape the web.
+```bash
+venv/bin/python3 ./tools/web_scraper.py --max-concurrent 3 URL1 URL2 URL3
+```
+This will output the content of the web pages.
+
+## Search engine
+
+You could use the `tools/search_engine.py` file to search the web.
+```bash
+venv/bin/python3 ./tools/search_engine.py "your search keywords"
+```
+This will output the search results in the following format:
+```
+URL: https://example.com
+Title: This is the title of the search result
+Snippet: This is a snippet of the search result
+```
+If needed, you can further use the `web_scraper.py` file to scrape the web page content.
+
+
+# Code Execution
+If python-execution mcp is avaialble, you can use it to execute code.
+
+If not, make sure you run commands on headless to avoid user input.
+
+# Git 
+- Pull latest from main worktree when you start working on a feature.
+- We always work on a different branch for each functionality we are working on. Refer to the branch naming conventions.
+
+# Branch Naming Conventions
+
+## Feature Branches
+
+Feature branches are used to develop new features or enhancements. They are named using the following convention:
+
+`feature/<feature-name>`
+
+For example:
+
+`feature/add-new-feature`
+
+## Bug Fix Branches
+
+Bug fix branches are used to fix bugs or issues in the codebase. They are named using the following convention:
+
+`bugfix/<bug-fix-name>`
+
+For example:
+
+`bugfix/fix-critical-bug`
+
+## Release Branches
+
+Release branches are used to prepare a new release of the codebase. They are named using the following convention:
+
+`release/<release-version>`
+
+For example:
+
+`release/1.0.0`
+
+## Hotfix Branches
+
+Hotfix branches are used to address critical issues or bugs in a released version. They are named using the following convention:
+
+`hotfix/<hotfix-name>`
+
+For example:
+
+`hotfix/fix-critical-bug-in-1.0.0`
+
+## Maintenance Branches
+
+Maintenance branches are used to maintain the codebase or infrastructure. They are named using the following convention:
+
+`maintenance/<maintenance-name>`
+
+For example:
+
+`maintenance/update-dependencies`
+
+# Branch Management Strategy
+
+The branch management strategy for the project is as follows:
+
+1. Create a new feature branch from the `main` branch.
+2. Make your changes and commit them to the feature branch.
+3. Push the feature branch to the remote repository.
+4. Create a pull request (PR) to merge the feature branch into the `main` branch.
+5. Address any feedback or issues raised during the review process.
+6. Once the PR is approved, merge the feature branch into the `main` branch.
+7. Delete the feature branch.
+
+This strategy ensures that the `main` branch remains stable and up-to-date with the latest changes, while allowing for parallel development of new features. It also encourages collaboration and review of code changes before merging them into the main branch.
+
+By following this branch management strategy, the project maintains a clear and organized workflow for managing code changes and ensuring smooth collaboration among team members.
