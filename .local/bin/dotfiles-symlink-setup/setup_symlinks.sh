@@ -53,11 +53,11 @@ grep -v "^#" "$DIRS_LIST_PATH" | grep -v "^$"
 set +e
 
 # Make our fixed script executable
-chmod +x "$SCRIPT_DIR/symlink_factory_fixed.sh"
+chmod +x "$SCRIPT_DIR/symlink_factory.sh"
 
 # Run our fixed symlink factory script instead
 echo -e "${BLUE}Running fixed symlink-factory script...${NC}"
-"$SCRIPT_DIR/symlink_factory_fixed.sh" -f -v -b \
+"$SCRIPT_DIR/symlink_factory.sh" -f -v -b \
     --files-list "$FILES_LIST_PATH" \
     --dirs-list "$DIRS_LIST_PATH"
 FACTORY_EXIT=$?

@@ -1,6 +1,8 @@
 # Target directories for AI configuration files
 # Each line is a directory where files will be symlinked
 # Comments (lines starting with #) and empty lines are ignored
+/home/kblack0610/dev/Games/HistoryTime_root/
+/home/kblack0610/dev/Games/DodginBalls_root/
 
 # Python project directories
 /home/kblack0610/CascadeProjects/python_projects

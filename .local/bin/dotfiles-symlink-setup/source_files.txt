@@ -5,7 +5,7 @@
 # Common AI configuration files
 /home/kblack0610/.dotfiles/ai/.windsurfrules
 /home/kblack0610/.dotfiles/ai/.cursorrules
-/home/kblack0610/.dotfiles/ai/scratchpad.md
+/home/kblack0610/.dotfiles/ai/.globalrules
 
 # Tools directory - contains Python utilities
 /home/kblack0610/.dotfiles/ai/tools
