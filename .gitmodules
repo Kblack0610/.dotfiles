@@ -1,0 +1,6 @@
+[submodule "src/qmk_firmware"]
+	path = src/qmk_firmware
+	url = git@github.com:Kblack0610/qmk_firmware.git
+[submodule "src/zmk-config"]
+	path = src/zmk-config
+	url = git@github.com:Kblack0610/zmk_config.git
