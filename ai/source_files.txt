@@ -1,8 +1,7 @@
-# Windsurf rules
-/home/kblack0610/.dotfiles/ai/.windsurfrules
+# multi agent
+/home/kblack0610/.dotfiles/ai/multi_agent/*
 
-# Cursor rules
-/home/kblack0610/.dotfiles/ai/.cursorrules
+# agent
+/home/kblack0610/.dotfiles/ai/agent/*
 
-# Global rules
-/home/kblack0610/.dotfiles/ai/.globalrules
+
