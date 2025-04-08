@@ -4,3 +4,6 @@
 [submodule "src/zmk-config"]
 	path = src/zmk-config
 	url = git@github.com:Kblack0610/zmk_config.git
+[submodule ".local/bin/term_scripts/fuzzy-drunk-finder"]
+	path = .local/bin/term_scripts/fuzzy-drunk-finder
+	url = git@github.com:Kblack0610/fuzzy-drunk-finder.git
