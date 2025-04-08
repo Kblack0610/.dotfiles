@@ -43,7 +43,8 @@
         "-i",
         "--rm",
         "--mount",
-        "type=bind,src=/home/kblack0610/,dst=/projects/kblack0610",
+        "type=bind,src=/home/kblack0610,dst=/projects/kblack0610",
+        "type=bind,src=/home/kblack0610/dev/AI/claude_assistant,dst=/projects/dev/AI/claude_assistant",
         "mcp/filesystem",
         "/projects"
       ]
