@@ -19,6 +19,11 @@ Create a more responsive version of `fzf_dev.sh` that:
 [X] Improve boot time measurement to accurately reflect startup time
 [X] Remove conflicting key bindings
 [X] Create compatible function definition that works across shells
+[X] Create enhanced directory navigation script (enhanced_fzd.sh)
+  - [X] Add support for starting from a specified directory
+  - [X] Add --hidden flag to include hidden files and directories
+  - [X] Add --depth parameter for customizing search depth
+  - [X] Create help function for usage instructions
 [ ] Implement additional improvements
 
 ## Lessons
@@ -38,6 +43,12 @@ Create a more responsive version of `fzf_dev.sh` that:
 - Sometimes a complete design change is better than trying to fix a problematic approach - for directories, we removed prefixes entirely to avoid extraction issues
 - Always test your changes in the environment where they'll be used, not just in theory
 - For directory navigation, avoid adding any tags or prefixes to directory names when they need to be used directly with cd
+- When creating command-line utilities, provide clear help documentation
+- Command line arguments should follow standard conventions (--flag for boolean options, --option value for options with values)
+- Scripts that affect shell state (like changing directories) must be sourced rather than executed
+- When allowing custom starting directories, validate they exist before using them
+- Provide reasonable defaults so the script is useful without any parameters
+- Adding a depth parameter lets users control performance vs. comprehensiveness tradeoff
 
 ## Potential Additional Improvements
 1. Add fuzzy search capabilities for deeper directory structures

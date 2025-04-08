@@ -44,6 +44,7 @@
         "--rm",
         "--mount",
         "type=bind,src=/home/kblack0610,dst=/projects/kblack0610",
+        "type=bind,src=/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls,dst=/projects/kblack0610/dev/Games/DodginBalls_root/DodginBalls",
         "mcp/filesystem",
         "/projects"
       ]
