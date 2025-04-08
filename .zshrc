@@ -100,10 +100,10 @@ alias nvr="nvr . -s"
 alias n="nvim ."
 alias g="git"
 # . important else it will execute in subshell
-# alias f='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
+alias fz='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
 # alias fzd='$HOME/.local/bin/term_scripts/improved-fzf/fzf_dev.sh'
-source /home/kblack0610/.dotfiles/.local/bin/term_scripts/improved-fzf/improved-fzf-2/enhanced_fzd.sh
-alias f='fzd --hidden /home/kblack0610'
+source /home/kblack0610/.dotfiles/.local/bin/term_scripts/fuzzy-drunk-finder/fuzzy-drunk-finder.sh
+alias f='fdf --hidden --unlimited /home/kblack0610'
 # Alias fzf search zsh_history
 alias h='. $HOME/.local/bin/term_scripts/fzf_history.sh'
 alias e='exit'
@@ -115,6 +115,8 @@ alias python=/usr/bin/python3
 alias ct='kitty @ set-tab-title'
 
 alias lg='lazygit'
+
+alias sysz='$HOME/.bin/sysz'
 
 #Update man pages to use nvim
 export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'

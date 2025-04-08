@@ -1,1 +1,0 @@
-Fuzzy finder is amazing, I was trying to improve the process with some questionable guesses, inferences, and assumptions. This maps your directory with history of most common places you go to help you get there just a little bit faster. 
