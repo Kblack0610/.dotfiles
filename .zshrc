@@ -101,6 +101,7 @@ alias n="nvim ."
 alias g="git"
 # . important else it will execute in subshell
 alias f='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
+alias fzd='$HOME/.local/bin/term_scripts/improved-fzf/fzf_dev.sh'
 # Alias fzf search zsh_history
 alias h='. $HOME/.local/bin/term_scripts/fzf_history.sh'
 alias e='exit'
