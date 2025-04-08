@@ -17,13 +17,17 @@
       "env": {}
     },
     "github": {
-      "command": "npx",
+      "command": "docker",
       "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server"
       ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
       }
     },
     "python-execution": {
@@ -44,7 +48,7 @@
         "--rm",
         "--mount",
         "type=bind,src=/home/kblack0610,dst=/projects/kblack0610",
-        "type=bind,src=/home/kblack0610/dev/AI/claude_assistant,dst=/projects/dev/AI/claude_assistant",
+        "type=bind,src=/home/kblack0610/dev/AI/claude_assistant,dst=/projects/kblack0610/dev/AI/claude_assistant",
         "mcp/filesystem",
         "/projects"
       ]
