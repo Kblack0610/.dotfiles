@@ -8,27 +8,13 @@
       ],
       "env": {}
     },
-    "puppeteer": {
+    "playwright": {
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-puppeteer"
+        "@executeautomation/playwright-mcp-server"
       ],
       "env": {}
-    },
-    "github": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "ghcr.io/github/github-mcp-server"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
-      }
     },
     "python-execution": {
       "command": "uv",
@@ -48,7 +34,6 @@
         "--rm",
         "--mount",
         "type=bind,src=/home/kblack0610,dst=/projects/kblack0610",
-        "type=bind,src=/home/kblack0610/dev/AI/claude_assistant,dst=/projects/kblack0610/dev/AI/claude_assistant",
         "mcp/filesystem",
         "/projects"
       ]

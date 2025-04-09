@@ -8,28 +8,6 @@
       ],
       "env": {}
     },
-    "puppeteer": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ],
-      "env": {}
-    },
-    "github": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "ghcr.io/github/github-mcp-server"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
-      }
-    },
     "python-execution": {
       "command": "uv",
       "args": [
@@ -48,10 +26,17 @@
         "--rm",
         "--mount",
         "type=bind,src=/home/kblack0610,dst=/projects/kblack0610",
-        "type=bind,src=/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls,dst=/projects/kblack0610/dev/Games/DodginBalls_root/DodginBalls",
         "mcp/filesystem",
         "/projects"
       ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@executeautomation/playwright-mcp-server"
+      ],
+      "env": {}
     }
   }
 }
