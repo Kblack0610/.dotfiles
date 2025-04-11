@@ -73,7 +73,12 @@ class SmartAutoclicker:
             for line in result.stdout.splitlines():
                 if line.startswith("WINDOW="):
                     try:
-                        window_id = int(line.split("=")[1], 16)
+                        window_id_str = line.split("=")[1]
+                        # Handle both decimal and hex formats
+                        if window_id_str.startswith("0x"):
+                            window_id = int(window_id_str, 16)
+                        else:
+                            window_id = int(window_id_str)
                         break
                     except (ValueError, IndexError):
                         pass
@@ -83,17 +88,102 @@ class SmartAutoclicker:
                 window_name = self.get_window_name(window_id)
                 print(f"Selected window: {window_name} (id: {window_id:x})")
                 
-                # Get window geometry
-                self.window_geometry = self.get_window_geometry(window_id)
+                # Try different methods to get window geometry for i3
+                geometry_methods = [
+                    self.get_window_geometry,
+                    self.get_window_geometry_alternative
+                ]
+                
+                for method in geometry_methods:
+                    self.window_geometry = method(window_id)
+                    if self.window_geometry:
+                        x, y, width, height = self.window_geometry
+                        print(f"Window geometry: x={x}, y={y}, width={width}, height={height}")
+                        return True
+                
+                # If we couldn't get the geometry, try a fallback method
+                print("Warning: Could not determine window geometry using standard methods.")
+                print("Attempting fallback method for i3 window manager...")
+                
+                # For i3, we can try to get the active window size
+                self.window_geometry = self.get_i3_window_geometry(window_id)
                 if self.window_geometry:
                     x, y, width, height = self.window_geometry
-                    print(f"Window geometry: x={x}, y={y}, width={width}, height={height}")
+                    print(f"Window geometry (i3 fallback): x={x}, y={y}, width={width}, height={height}")
+                    return True
+                    
+                # Last resort: ask user for manual confirmation
+                print("Could not automatically determine window geometry.")
+                confirm = input("Do you want to continue anyway? This may affect click accuracy. (y/n): ")
+                if confirm.lower() == 'y':
+                    # Use screen dimensions as fallback
+                    screen = self.display.screen()
+                    self.window_geometry = (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+                    print(f"Using screen dimensions as fallback: {self.window_geometry}")
                     return True
         except subprocess.SubprocessError as e:
             print(f"Error running xdotool: {e}")
             
         print("Failed to select window. Please try again.")
         return False
+        
+    def get_window_geometry_alternative(self, window_id):
+        """Alternative method to get window geometry, useful for i3 and other tiling WMs"""
+        try:
+            # Try using xwininfo
+            result = subprocess.run(["xwininfo", "-id", str(window_id)], 
+                                 capture_output=True, text=True, check=True)
+            
+            x, y, width, height = None, None, None, None
+            for line in result.stdout.splitlines():
+                if "Absolute upper-left X:" in line:
+                    x = int(line.split(":")[-1].strip())
+                elif "Absolute upper-left Y:" in line:
+                    y = int(line.split(":")[-1].strip())
+                elif "Width:" in line:
+                    width = int(line.split(":")[-1].strip())
+                elif "Height:" in line:
+                    height = int(line.split(":")[-1].strip())
+            
+            if all(v is not None for v in [x, y, width, height]):
+                return (x, y, width, height)
+        except (subprocess.SubprocessError, ValueError, IndexError) as e:
+            print(f"Alternative geometry method failed: {e}")
+            
+        return None
+    
+    def get_i3_window_geometry(self, window_id):
+        """Get window geometry specifically for i3 window manager"""
+        try:
+            # Try using i3-msg to get window position
+            result = subprocess.run(["i3-msg", "-t", "get_tree"], 
+                                 capture_output=True, text=True, check=True)
+            
+            import json
+            tree = json.loads(result.stdout)
+            
+            # Function to recursively search for window
+            def find_window(node, target_id):
+                if node.get('window') == target_id:
+                    rect = node.get('rect', {})
+                    return (rect.get('x', 0), rect.get('y', 0), 
+                            rect.get('width', 0), rect.get('height', 0))
+                
+                for child in node.get('nodes', []) + node.get('floating_nodes', []):
+                    result = find_window(child, target_id)
+                    if result:
+                        return result
+                return None
+            
+            # Search for window in i3 tree
+            geometry = find_window(tree, window_id)
+            if geometry and all(v > 0 for v in geometry[2:]):
+                return geometry
+            
+        except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+            print(f"i3 geometry method failed: {e}")
+            
+        return None
         
     def select_window_by_name(self, window_name):
         """Select a window by its name/title"""
@@ -232,6 +322,37 @@ class SmartAutoclicker:
             print(f"Error capturing screenshot: {e}")
             return None
     
+    def preprocess_image(self, image, preprocess_type="default"):
+        """Apply various preprocessing techniques to improve OCR accuracy"""
+        # Convert PIL image to OpenCV format
+        img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        if preprocess_type == "default":
+            # Basic preprocessing (grayscale)
+            return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        elif preprocess_type == "threshold":
+            # Basic thresholding
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+        
+        elif preprocess_type == "adaptive":
+            # Adaptive thresholding
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY, 11, 2)
+        
+        elif preprocess_type == "contrast":
+            # Increase contrast
+            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            cl = clahe.apply(l)
+            limg = cv2.merge((cl, a, b))
+            return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        
+        return img
+        
     def find_text_in_screenshot(self, target_text, screenshot=None):
         """Find text in the window screenshot and return its coordinates"""
         if screenshot is None:
@@ -240,35 +361,207 @@ class SmartAutoclicker:
                 return None
         
         try:
-            # Save image for tesseract processing
+            # Save original image for tesseract processing
             temp_file = "/tmp/smart_autoclicker_temp.png"
             screenshot.save(temp_file)
             
-            # Perform OCR with positioning data
-            ocr_data = pytesseract.image_to_data(screenshot, output_type=pytesseract.Output.DICT)
+            # Try different preprocessing techniques to improve OCR
+            preprocessing_methods = ["default", "threshold", "adaptive", "contrast"]
+            all_ocr_data = {}
             
-            # Search for the target text
+            for method in preprocessing_methods:
+                # Preprocess image
+                processed_img = self.preprocess_image(screenshot, method)
+                
+                # Save processed image for debugging
+                processed_file = f"/tmp/smart_autoclicker_{method}.png"
+                cv2.imwrite(processed_file, processed_img)
+                
+                # Perform OCR with positioning data
+                try:
+                    if method == "default":
+                        # For default, use original image
+                        ocr_data = pytesseract.image_to_data(screenshot, output_type=pytesseract.Output.DICT)
+                    else:
+                        ocr_data = pytesseract.image_to_data(processed_img, output_type=pytesseract.Output.DICT)
+                    
+                    all_ocr_data[method] = ocr_data
+                    print(f"\nProcessing using {method} preprocessing:")
+                except Exception as e:
+                    print(f"Error with {method} preprocessing: {e}")
+                    continue
+            
+            # Combine results from all preprocessing methods
+            print("\n--- All text found in window ---")
+            print(f"Target text: '{target_text}'")
+            print(f"Attempted preprocessing methods: {', '.join(all_ocr_data.keys())}")
+            print("\nText found with different preprocessing methods:")
+            
+            # Print results from each method
+            found_any_text = False
+            all_found_text = set()
+            
+            for method, ocr_data in all_ocr_data.items():
+                non_empty_text = [text for i, text in enumerate(ocr_data['text']) if text.strip()]
+                if non_empty_text:
+                    found_any_text = True
+                    print(f"\n[Method: {method}]")
+                    for i, text in enumerate(ocr_data['text']):
+                        if text.strip():  # Only show non-empty text
+                            conf = ocr_data['conf'][i]
+                            x = ocr_data['left'][i]
+                            y = ocr_data['top'][i]
+                            all_found_text.add(text.strip())
+                            print(f"  Text: '{text}' (confidence: {conf}) at ({x}, {y})")
+            
+            if not found_any_text:
+                print("No text found with any preprocessing method!")
+                print("Possible issues:")
+                print("  - Text may be too small or low contrast")
+                print("  - Window might be obscured or minimized")
+                print("  - OCR settings may need adjustment")
+            else:
+                print("\nAll unique text found (across all methods):")
+                for text in sorted(all_found_text):
+                    print(f"  '{text}'")
+            
+            print("--- End of found text ---\n")
+            
+            # Convert target text to lowercase for case-insensitive matching
             target_text = target_text.lower()
-            for i, text in enumerate(ocr_data['text']):
-                if target_text in text.lower():
+            target_parts = target_text.split()
+            print(f"Searching for: '{target_text}' (parts: {target_parts})")
+            
+            # Try without preprocessing first with additional OCR config
+            try:
+                # Add a custom OCR config specifically for hyperlinks and special formatting
+                custom_config = r'--oem 3 --psm 11 -c preserve_interword_spaces=1'
+                hyperlink_ocr = pytesseract.image_to_data(
+                    screenshot, 
+                    output_type=pytesseract.Output.DICT,
+                    config=custom_config
+                )
+                
+                print("\nAdditional OCR pass with custom config for hyperlinks:")
+                for i, text in enumerate(hyperlink_ocr['text']):
+                    if text.strip():  # Only show non-empty text
+                        conf = hyperlink_ocr['conf'][i]
+                        print(f"  Text: '{text}' (confidence: {conf})")
+                        
+                        # Direct check for hyperlink text
+                        if target_text.lower() in text.lower():
+                            x = hyperlink_ocr['left'][i]
+                            y = hyperlink_ocr['top'][i]
+                            w = hyperlink_ocr['width'][i] if hyperlink_ocr['width'][i] > 0 else 50
+                            h = hyperlink_ocr['height'][i] if hyperlink_ocr['height'][i] > 0 else 20
+                            center_x = x + w // 2
+                            center_y = y + h // 2
+                            print(f"Found hyperlink text match: '{text}' at position ({center_x}, {center_y})")
+                            return (center_x, center_y)
+                            
+                all_ocr_data['hyperlink'] = hyperlink_ocr
+            except Exception as e:
+                print(f"Error with hyperlink OCR: {e}")
+            
+            # Try each preprocessing method to find the text
+            for method_name, ocr_data in all_ocr_data.items():
+                print(f"\nSearching in {method_name} results:")
+                
+                # Try exact match first
+                for i, text in enumerate(ocr_data['text']):
+                    if not text.strip():
+                        continue
+                    
+                    # Try exact match
+                    text_lower = text.lower()
+                    if target_text in text_lower:
+                        # Get coordinates from OCR data
+                        x = ocr_data['left'][i]
+                        y = ocr_data['top'][i]
+                        w = ocr_data['width'][i] if ocr_data['width'][i] > 0 else 50  # Fallback width
+                        h = ocr_data['height'][i] if ocr_data['height'][i] > 0 else 20  # Fallback height
+                        
+                        # Calculate center of the text
+                        center_x = x + w // 2
+                        center_y = y + h // 2
+                        
+                        print(f"Found exact match with {method_name}: '{text}' at position ({center_x}, {center_y})")
+                        return (center_x, center_y)
+                
+                # Track best fuzzy match for this method
+                best_match = None
+                best_ratio = 0.7  # Minimum threshold for fuzzy match
+                best_i = -1
+                
+                # If exact match fails, try partial matching
+                for i, text in enumerate(ocr_data['text']):
+                    if not text.strip():
+                        continue
+                        
+                    text_lower = text.lower()
+                    
+                    # Check for partial matches (any word in target appears in text)
+                    matching_parts = [part for part in target_parts if part in text_lower]
+                    if matching_parts:
+                        match_ratio = len(matching_parts) / len(target_parts)
+                        print(f"Partial match: '{text}' contains {len(matching_parts)}/{len(target_parts)} target words")
+                        
+                        if match_ratio > best_ratio:
+                            best_ratio = match_ratio
+                            best_match = text
+                            best_i = i
+                
+                if best_match:
                     # Get coordinates from OCR data
-                    x = ocr_data['left'][i]
-                    y = ocr_data['top'][i]
-                    w = ocr_data['width'][i]
-                    h = ocr_data['height'][i]
+                    x = ocr_data['left'][best_i]
+                    y = ocr_data['top'][best_i]
+                    w = ocr_data['width'][best_i] if ocr_data['width'][best_i] > 0 else 50
+                    h = ocr_data['height'][best_i] if ocr_data['height'][best_i] > 0 else 20
                     
                     # Calculate center of the text
                     center_x = x + w // 2
                     center_y = y + h // 2
                     
-                    if self.debug_mode:
-                        print(f"Found text '{text}' at position ({center_x}, {center_y})")
-                    
+                    print(f"Found best fuzzy match with {method_name}: '{best_match}' (score: {best_ratio:.2f}) at position ({center_x}, {center_y})")
                     return (center_x, center_y)
             
-            if self.debug_mode:
-                print(f"Text '{target_text}' not found in window")
+            # If all methods failed, look for any text containing part of the target
+            print("\nNo good match found with any method. Looking for any partial matches...")
             
+            # Combine results from all methods
+            all_candidates = []
+            for method_name, ocr_data in all_ocr_data.items():
+                for i, text in enumerate(ocr_data['text']):
+                    if not text.strip():
+                        continue
+                    
+                    text_lower = text.lower()
+                    for part in target_parts:
+                        if len(part) > 3 and part in text_lower:  # Only match on meaningful parts
+                            x = ocr_data['left'][i]
+                            y = ocr_data['top'][i]
+                            w = ocr_data['width'][i] if ocr_data['width'][i] > 0 else 50
+                            h = ocr_data['height'][i] if ocr_data['height'][i] > 0 else 20
+                            center_x = x + w // 2
+                            center_y = y + h // 2
+                            
+                            candidate = {
+                                'text': text,
+                                'part': part,
+                                'method': method_name,
+                                'x': center_x,
+                                'y': center_y
+                            }
+                            all_candidates.append(candidate)
+            
+            if all_candidates:
+                # Pick the first candidate
+                best_candidate = all_candidates[0]
+                print(f"Using fallback: Found '{best_candidate['text']}' containing '{best_candidate['part']}'")
+                print(f"Position: ({best_candidate['x']}, {best_candidate['y']}), Method: {best_candidate['method']}")
+                return (best_candidate['x'], best_candidate['y'])
+            
+            print(f"Text '{target_text}' not found in window (neither exact nor fuzzy match)")
             return None
         except Exception as e:
             print(f"Error finding text: {e}")
@@ -707,12 +1000,79 @@ class SmartAutoclicker:
         
         return False
 
+def list_all_windows():
+    """List all available windows with their IDs"""
+    try:
+        # Get all window IDs
+        result = subprocess.run(["xdotool", "search", "--onlyvisible", "--all"], 
+                             capture_output=True, text=True, check=True)
+        window_ids = result.stdout.strip().split('\n')
+        
+        print("Available windows:")
+        print("-" * 80)
+        print(f"{'Window ID':<12} | {'Window Name':<50} | {'Geometry':>15}")
+        print("-" * 80)
+        
+        for wid in window_ids:
+            if not wid:
+                continue
+                
+            try:
+                # Get window name
+                name_result = subprocess.run(["xdotool", "getwindowname", wid], 
+                                          capture_output=True, text=True, check=True)
+                window_name = name_result.stdout.strip()
+                
+                # Get window geometry
+                geo_result = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid], 
+                                         capture_output=True, text=True, check=True)
+                
+                # Parse geometry
+                width, height = "?", "?"
+                for line in geo_result.stdout.splitlines():
+                    if line.startswith("WIDTH="):
+                        width = line.split("=")[1]
+                    elif line.startswith("HEIGHT="):
+                        height = line.split("=")[1]
+                        
+                geometry = f"{width}x{height}"
+                print(f"{wid:<12} | {window_name[:50]:<50} | {geometry:>15}")
+            except subprocess.SubprocessError:
+                print(f"{wid:<12} | <unable to get window info>")
+                
+        print("-" * 80)
+        print("\nTo use a specific window, run with: --window-id <WINDOW_ID>")
+        return True
+    except subprocess.SubprocessError as e:
+        print(f"Error listing windows: {e}")
+        return False
+
+def select_window_by_id(window_id):
+    """Validate and select a window by its ID"""
+    try:
+        # Verify the window exists
+        subprocess.run(["xdotool", "getwindowname", window_id], 
+                     capture_output=True, text=True, check=True)
+        
+        # Convert to int (might be hex or decimal)
+        if window_id.startswith("0x"):
+            return int(window_id, 16)
+        else:
+            return int(window_id)
+    except (subprocess.SubprocessError, ValueError) as e:
+        print(f"Error selecting window {window_id}: {e}")
+        return None
+
 def main():
     parser = argparse.ArgumentParser(description="Smart XTest Autoclicker - find and click UI elements without moving your cursor")
     parser.add_argument("--config", type=str, help="Path to configuration file")
     parser.add_argument("--window-name", type=str, help="Select window by name instead of clicking on it")
+    parser.add_argument("--window-id", type=str, help="Directly specify window ID (useful for i3 and other tiling managers)")
+    parser.add_argument("--list-windows", action="store_true", help="List all available windows with their IDs")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--no-activate", action="store_true", help="Don't activate the window before clicking")
+    parser.add_argument("--test-click", action="store_true", help="Perform a test click to verify XTest functionality")
+    parser.add_argument("--i3", action="store_true", help="Use i3-specific window handling methods")
     
     args = parser.parse_args()
     
@@ -723,6 +1083,11 @@ def main():
         print("Error: xdotool is required but not found. Please install it:")
         print("  sudo apt-get install xdotool")
         return 1
+    
+    # List windows and exit if requested
+    if args.list_windows:
+        list_all_windows()
+        return 0
     
     try:
         # Check if tesseract is installed
@@ -737,8 +1102,60 @@ def main():
     
     # Setup window
     window_selected = False
-    if args.window_name:
+    
+    # Priority: window-id > window-name > interactive selection
+    if args.window_id:
+        window_id = select_window_by_id(args.window_id)
+        if window_id:
+            clicker.selected_window = window_id
+            clicker.window_geometry = clicker.get_window_geometry(window_id) or \
+                                     clicker.get_window_geometry_alternative(window_id) or \
+                                     clicker.get_i3_window_geometry(window_id)
+            if clicker.window_geometry:
+                window_name = clicker.get_window_name(window_id)
+                print(f"Selected window: {window_name} (id: {window_id:x})")
+                x, y, width, height = clicker.window_geometry
+                print(f"Window geometry: x={x}, y={y}, width={width}, height={height}")
+                window_selected = True
+            else:
+                print(f"Warning: Could not get geometry for window ID {args.window_id}")
+                if input("Continue without geometry? (y/n): ").lower() == 'y':
+                    # Use screen dimensions as fallback
+                    screen = clicker.display.screen()
+                    clicker.window_geometry = (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+                    print(f"Using screen dimensions as fallback: {clicker.window_geometry}")
+                    window_selected = True
+    elif args.window_name:        
         window_selected = clicker.select_window_by_name(args.window_name)
+    
+    # Handle i3 window manager specifics
+    if args.i3:
+        print("Using i3 window manager specific methods")
+        # Prioritize i3 geometry methods
+        clicker.get_window_geometry = clicker.get_i3_window_geometry
+    
+    # Run a test click if requested
+    if args.test_click and window_selected:
+        print("\nPerforming test click...")
+        test_x, test_y = 100, 100  # Default position relative to window
+        
+        if clicker.window_geometry:
+            window_x, window_y, _, _ = clicker.window_geometry
+            abs_x = window_x + test_x
+            abs_y = window_y + test_y
+            
+            print(f"Clicking at position ({test_x}, {test_y}) relative to window")
+            print(f"Absolute screen position: ({abs_x}, {abs_y})")
+            
+            if clicker.send_click_event(abs_x, abs_y):
+                print("Test click successful!")
+                return 0
+            else:
+                print("Test click failed. XTest events may not be working correctly.")
+                return 1
+        else:
+            print("Cannot perform test click without window geometry information.")
+            return 1
     
     # Load configuration if specified
     if args.config:
