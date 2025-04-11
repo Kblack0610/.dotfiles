@@ -1,0 +1,6 @@
+numpy
+Xlib
+Pillow
+pytesseract
+opencv-python
+
