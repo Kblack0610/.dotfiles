@@ -1,0 +1,19 @@
+{
+  "interval": 50.0,
+  "activate_window": true,
+  "retry_count": 3,
+  "debug_mode": true,
+  "loop_actions": true,
+  "actions": [
+    {
+      "type": "click_text",
+      "text": "resume the conversation",
+      "required": false
+    },
+    {
+      "type": "click_text",
+      "text": "Accept",
+      "required": false
+    }
+  ]
+}

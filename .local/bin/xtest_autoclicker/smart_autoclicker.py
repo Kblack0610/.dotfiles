@@ -58,6 +58,7 @@ class SmartAutoclicker:
         self.retry_count = 3  # Number of retries if element not found
         self.activate_window = True
         self.config_file = None
+        self.continuous_mode = False  # Flag for continuous mode
         
     def select_window_by_click(self):
         """Prompt user to click on a window to select it"""
@@ -244,14 +245,20 @@ class SmartAutoclicker:
         return None
     
     def send_click_event(self, x, y, button=1):
-        """Send a synthetic click event using XTest at absolute coordinates"""
+        """Send a synthetic click event using XTest at absolute coordinates without moving the real cursor"""
         try:
-            # Move invisible cursor to target position
-            xtest.fake_input(self.display, X.MotionNotify, x=x, y=y)
+            # Save the current cursor position
+            old_pos = self.display.screen().root.query_pointer()
+            current_x, current_y = old_pos.root_x, old_pos.root_y
             
-            # Simulate mouse down and up (click)
+            # Use XTest to create a virtual click at the target position
+            # This should not affect the actual cursor position
+            xtest.fake_input(self.display, X.MotionNotify, x=x, y=y)
             xtest.fake_input(self.display, X.ButtonPress, button)
             xtest.fake_input(self.display, X.ButtonRelease, button)
+            
+            # Move the cursor back to its original position
+            xtest.fake_input(self.display, X.MotionNotify, x=current_x, y=current_y)
             
             # Make sure events are processed
             self.display.sync()
@@ -567,8 +574,10 @@ class SmartAutoclicker:
             print(f"Error finding text: {e}")
             return None
     
-    def find_element_by_template(self, template_path, threshold=0.8, screenshot=None):
-        """Find an element using template matching and return its coordinates"""
+    def find_element_by_template(self, template_path, threshold=0.8, screenshot=None, near_text_coords=None):
+        """Find an element using template matching and return its coordinates
+        
+        If near_text_coords is provided, will select the match closest to that text position"""
         if screenshot is None:
             screenshot = self.capture_window_screenshot()
             if screenshot is None:
@@ -584,29 +593,73 @@ class SmartAutoclicker:
                 print(f"Error: Could not load template image from {template_path}")
                 return None
             
+            # Get template dimensions
+            h, w = template.shape[:2]
+            
             # Perform template matching
             result = cv2.matchTemplate(screenshot_cv, template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             
-            if max_val >= threshold:
-                # Get template dimensions
-                h, w = template.shape[:2]
+            # Find all locations where match exceeds threshold
+            locations = np.where(result >= threshold)
+            
+            if len(locations[0]) > 0:
+                # Get all matches above threshold
+                matches = []
+                for pt_y, pt_x in zip(locations[0], locations[1]):
+                    match_val = result[pt_y, pt_x]
+                    # Calculate center position
+                    center_x = pt_x + w // 2
+                    center_y = pt_y + h // 2
+                    matches.append({
+                        'position': (center_x, center_y),
+                        'confidence': match_val,
+                        'distance': float('inf')  # Will be calculated later if near_text_coords is provided
+                    })
                 
-                # Calculate center position
-                center_x = max_loc[0] + w // 2
-                center_y = max_loc[1] + h // 2
-                
-                if self.debug_mode:
-                    print(f"Found template with {max_val:.2f} confidence at ({center_x}, {center_y})")
-                
-                return (center_x, center_y)
+                # If we have a reference text position, find the closest match
+                if near_text_coords is not None:
+                    text_x, text_y = near_text_coords
+                    print(f"Finding template closest to text at ({text_x}, {text_y})")
+                    
+                    # Calculate distance from each match to the text
+                    for match in matches:
+                        match_x, match_y = match['position']
+                        # Calculate Euclidean distance
+                        distance = math.sqrt((match_x - text_x)**2 + (match_y - text_y)**2)
+                        match['distance'] = distance
+                    
+                    # Sort by distance (closest first)
+                    matches.sort(key=lambda m: m['distance'])
+                    
+                    best_match = matches[0]
+                    print(f"Found {len(matches)} template matches, selecting closest to text:")
+                    for i, match in enumerate(matches[:min(3, len(matches))]):
+                        print(f"  Match {i+1}: pos={match['position']}, distance={match['distance']:.1f}px, confidence={match['confidence']:.2f}")
+                    
+                    print(f"Selected match at {best_match['position']} (distance: {best_match['distance']:.1f}px)")
+                    return best_match['position']
+                else:
+                    # No text reference, just use the best confidence match
+                    matches.sort(key=lambda m: m['confidence'], reverse=True)
+                    best_match = matches[0]
+                    
+                    if len(matches) > 1:
+                        print(f"Found {len(matches)} template matches, selecting best confidence:")
+                        for i, match in enumerate(matches[:min(3, len(matches))]):
+                            print(f"  Match {i+1}: pos={match['position']}, confidence={match['confidence']:.2f}")
+                    
+                    if self.debug_mode:
+                        print(f"Found template with {best_match['confidence']:.2f} confidence at {best_match['position']}")
+                    
+                    return best_match['position']
             
             if self.debug_mode:
-                print(f"Template not found (best match: {max_val:.2f}, threshold: {threshold})")
+                print(f"Template not found (threshold: {threshold})")
             
             return None
         except Exception as e:
             print(f"Error finding template: {e}")
+            traceback.print_exc()  # More detailed error information
             return None
     
     def perform_action(self, action):
@@ -666,14 +719,23 @@ class SmartAutoclicker:
             # Find and click template
             template = action.get('template', '')
             threshold = action.get('threshold', 0.8)
+            near_text = action.get('near_text', '')
             
             if not template or not os.path.exists(template):
                 print(f"Error: Template file '{template}' not found")
                 return False
             
+            # If near_text is specified, find that text first
+            text_coords = None
+            if near_text:
+                print(f"Looking for template near text: '{near_text}'")
+                text_coords = self.find_text_in_screenshot(near_text, screenshot)
+                if not text_coords:
+                    print(f"Warning: Specified text '{near_text}' not found, will find template without text reference")
+            
             # Try to find the template
             for i in range(self.retry_count):
-                coords = self.find_element_by_template(template, threshold, screenshot)
+                coords = self.find_element_by_template(template, threshold, screenshot, text_coords)
                 if coords:
                     window_x, window_y, _, _ = self.window_geometry
                     abs_x = window_x + coords[0]
@@ -686,6 +748,9 @@ class SmartAutoclicker:
                     print(f"Template '{template}' not found, retrying in 1 second...")
                     time.sleep(1)
                     screenshot = self.capture_window_screenshot()
+                    # If we had text coordinates but couldn't find the template, try to find the text again
+                    if near_text:
+                        text_coords = self.find_text_in_screenshot(near_text, screenshot)
             
             print(f"Error: Could not find template '{template}' after {self.retry_count} attempts")
             return False
@@ -747,9 +812,16 @@ class SmartAutoclicker:
                 # Perform the action
                 success = self.perform_action(action)
                 
+                # Handle required actions
                 if not success and action.get('required', False):
-                    print(f"Required action failed, stopping automation")
-                    break
+                    if self.continuous_mode:
+                        print(f"Required action failed, will retry in 2 seconds (continuous mode)")
+                        time.sleep(2)
+                        # Stay on the same action index to retry
+                        continue
+                    else:
+                        print(f"Required action failed, stopping automation")
+                        break
                 
                 # Move to next action (cycling through the list if loop is enabled)
                 action_index = (action_index + 1) % len(self.actions)
@@ -769,34 +841,143 @@ class SmartAutoclicker:
             # Clean up X display connection
             self.display.close()
     
-    def load_config(self, config_file):
-        """Load automation configuration from JSON file"""
+    def get_config_files(self, config_dir=None):
+        """List all available configuration files"""
+        if config_dir is None:
+            # Default to ~/.config/smart_autoclicker/
+            config_dir = os.path.expanduser("~/.config/smart_autoclicker")
+        
+        # Create config directory if it doesn't exist
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+            print(f"Created configuration directory: {config_dir}")
+            return []
+    
+        # Get all JSON files in the config directory
+        config_files = [f for f in os.listdir(config_dir) if f.endswith('.json')]
+        config_files.sort()
+        
+        # Return full paths
+        return [os.path.join(config_dir, f) for f in config_files]
+    
+    def get_config_metadata(self, config_file):
+        """Get basic metadata about a configuration file"""
         try:
             with open(config_file, 'r') as f:
                 config = json.load(f)
             
+            # Get basic info
+            name = config.get('name', os.path.basename(config_file))
+            num_actions = len(config.get('actions', []))
+            created = config.get('created', 'Unknown')
+            modified = config.get('modified', 'Unknown')
+            description = config.get('description', '')
+            
+            return {
+                'path': config_file,
+                'name': name, 
+                'num_actions': num_actions,
+                'created': created,
+                'modified': modified,
+                'description': description
+            }
+        except Exception as e:
+            return {
+                'path': config_file,
+                'name': os.path.basename(config_file),
+                'error': str(e)
+            }
+    
+    def list_config_files(self):
+        """Display a list of available configuration files"""
+        config_files = self.get_config_files()
+        
+        if not config_files:
+            print("No saved configurations found.")
+            print(f"Configurations will be saved to: {os.path.expanduser('~/.config/smart_autoclicker')}")
+            return None
+        
+        print("\nAvailable Configurations:")
+        print("-------------------------")
+        
+        for i, config_file in enumerate(config_files):
+            metadata = self.get_config_metadata(config_file)
+            print(f"{i+1}. {metadata['name']}")
+            if 'error' in metadata:
+                print(f"   [Error: {metadata['error']}]")
+            else:
+                print(f"   Actions: {metadata['num_actions']}")
+                if metadata['description']:
+                    print(f"   Description: {metadata['description']}")
+                print(f"   Path: {metadata['path']}")
+        
+        return config_files
+    
+    def interactive_load_config(self):
+        """Interactive menu to load a configuration"""
+        config_files = self.list_config_files()
+        
+        if not config_files:
+            return None
+        
+        while True:
+            choice = input("\nEnter number to load (or 'q' to cancel): ")
+            if choice.lower() == 'q':
+                return None
+            
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(config_files):
+                    return config_files[idx]
+                else:
+                    print(f"Invalid choice. Please enter a number between 1 and {len(config_files)}")
+            except ValueError:
+                print("Invalid input. Please enter a number or 'q' to cancel.")
+    
+    def load_config(self, config_file=None):
+        """Load automation configuration from JSON file"""
+        # If no config file specified, show interactive menu
+        if config_file is None:
+            config_file = self.interactive_load_config()
+            if config_file is None:
+                return False
+        
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            
+            print(f"Loading configuration from: {config_file}")
+            
             # Set configuration parameters
             if 'interval' in config:
                 self.click_interval = config['interval']
+                print(f"  Interval: {self.click_interval} seconds")
             
             if 'activate_window' in config:
                 self.activate_window = config['activate_window']
+                print(f"  Activate window: {self.activate_window}")
             
             if 'retry_count' in config:
                 self.retry_count = config['retry_count']
+                print(f"  Retry count: {self.retry_count}")
             
             if 'debug_mode' in config:
                 self.debug_mode = config['debug_mode']
-            
+                print(f"  Debug mode: {self.debug_mode}")
+                
             if 'loop_actions' in config:
                 self.loop_actions = config['loop_actions']
             else:
                 self.loop_actions = True
+            print(f"  Loop actions: {self.loop_actions}")
             
             # Load actions
             if 'actions' in config and isinstance(config['actions'], list):
                 self.actions = config['actions']
-                print(f"Loaded {len(self.actions)} actions from configuration")
+                print(f"  Loaded {len(self.actions)} actions")
+                
+                # Store the current config file path
+                self.config_file = config_file
                 return True
             else:
                 print("Error: No actions found in configuration")
@@ -804,16 +985,66 @@ class SmartAutoclicker:
             
         except Exception as e:
             print(f"Error loading configuration: {e}")
+            traceback.print_exc()  # More detailed error information
             return False
     
-    def save_config(self, config_file):
+    def save_config(self, config_file=None, name=None, description=None):
         """Save automation configuration to JSON file"""
+        if config_file is None:
+            # Use default config directory
+            config_dir = os.path.expanduser("~/.config/smart_autoclicker")
+            # Create directory if it doesn't exist
+            if not os.path.exists(config_dir):
+                os.makedirs(config_dir)
+            
+            # Interactive naming if not provided
+            if name is None:
+                name = input("Enter a name for this configuration: ")
+            
+            # Generate filename from name (replacing spaces with underscores)
+            safe_name = name.replace(" ", "_").replace("/", "").replace("\\", "")
+            filename = f"{safe_name}.json"
+            config_file = os.path.join(config_dir, filename)
+            
+            # If file exists, confirm overwrite
+            if os.path.exists(config_file):
+                confirm = input(f"Configuration '{name}' already exists. Overwrite? (y/n): ")
+                if confirm.lower() != 'y':
+                    print("Save canceled.")
+                    return False
+            
+            # Interactive description if not provided
+            if description is None:
+                description = input("Enter a description (optional): ")
+        
+        # Current timestamp for metadata
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Check if this is a new file or an update
+        is_new = not os.path.exists(config_file)
+        
+        # If updating existing file, try to preserve some metadata
+        created_timestamp = timestamp
+        if not is_new:
+            try:
+                with open(config_file, 'r') as f:
+                    old_config = json.load(f)
+                    created_timestamp = old_config.get('created', timestamp)
+            except Exception:
+                pass  # If reading fails, use current time for created
+        
+        # Assemble config with metadata
         config = {
+            'name': name or os.path.basename(config_file).replace('.json', ''),
+            'description': description or '',
+            'created': created_timestamp,
+            'modified': timestamp,
             'interval': self.click_interval,
             'activate_window': self.activate_window,
             'retry_count': self.retry_count,
             'debug_mode': self.debug_mode,
             'loop_actions': self.loop_actions,
+            'continuous_mode': self.continuous_mode,
             'actions': self.actions
         }
         
@@ -821,10 +1052,26 @@ class SmartAutoclicker:
             with open(config_file, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"Configuration saved to {config_file}")
+            self.config_file = config_file  # Store current config file
             return True
         except Exception as e:
             print(f"Error saving configuration: {e}")
+            traceback.print_exc()  # More detailed error information
             return False
+            
+    def interactive_save_config(self):
+        """Interactive menu to save a configuration"""
+        if not self.actions:
+            print("No actions to save. Please create at least one action first.")
+            return False
+        
+        print("\nSave Configuration")
+        print("-----------------")
+        
+        name = input("Enter a name for this configuration: ")
+        description = input("Enter a description (optional): ")
+        
+        return self.save_config(name=name, description=description)
     
     def create_action_interactively(self):
         """Create an action interactively"""
@@ -1066,13 +1313,18 @@ def select_window_by_id(window_id):
 def main():
     parser = argparse.ArgumentParser(description="Smart XTest Autoclicker - find and click UI elements without moving your cursor")
     parser.add_argument("--config", type=str, help="Path to configuration file")
+    parser.add_argument("--list-windows", action="store_true", help="List all available windows with their IDs")
     parser.add_argument("--window-name", type=str, help="Select window by name instead of clicking on it")
     parser.add_argument("--window-id", type=str, help="Directly specify window ID (useful for i3 and other tiling managers)")
-    parser.add_argument("--list-windows", action="store_true", help="List all available windows with their IDs")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--no-activate", action="store_true", help="Don't activate the window before clicking")
     parser.add_argument("--test-click", action="store_true", help="Perform a test click to verify XTest functionality")
     parser.add_argument("--i3", action="store_true", help="Use i3-specific window handling methods")
+    parser.add_argument("--continuous", action="store_true", help="Continuous mode - keep retrying actions until they succeed")
+    # Configuration management options
+    parser.add_argument("--list-configs", action="store_true", help="List all available saved configurations")
+    parser.add_argument("--save", action="store_true", help="Save current configuration interactively")
+    parser.add_argument("--load", action="store_true", help="Load configuration interactively")
     
     args = parser.parse_args()
     
@@ -1088,7 +1340,7 @@ def main():
     if args.list_windows:
         list_all_windows()
         return 0
-    
+        
     try:
         # Check if tesseract is installed
         subprocess.run(["tesseract", "--version"], capture_output=True, check=True)
@@ -1096,9 +1348,32 @@ def main():
         print("Warning: tesseract is not found. Text recognition will not work.")
         print("  Install it with: sudo apt-get install tesseract-ocr")
     
+    # Initialize the clicker
     clicker = SmartAutoclicker()
     clicker.debug_mode = args.debug
     clicker.activate_window = not args.no_activate
+    
+    # Handle configuration management options first
+    if args.list_configs:
+        clicker.list_config_files()
+        return 0
+        
+    if args.load:
+        if clicker.interactive_load_config():
+            print("Configuration loaded successfully.")
+        else:
+            print("Configuration loading was cancelled or failed.")
+            return 1
+            
+    if args.config:
+        if not clicker.load_config(args.config):
+            print(f"Failed to load configuration from {args.config}")
+            return 1
+        print(f"Loaded configuration from {args.config}")
+        
+    if args.continuous:
+        clicker.continuous_mode = True
+        print("Continuous mode enabled - will keep retrying actions until they succeed")
     
     # Setup window
     window_selected = False
@@ -1157,25 +1432,52 @@ def main():
             print("Cannot perform test click without window geometry information.")
             return 1
     
-    # Load configuration if specified
-    if args.config:
-        if os.path.exists(args.config):
-            if clicker.load_config(args.config):
-                if not window_selected:
-                    # If window not selected by name, select it now
-                    window_selected = clicker.select_window_by_click()
-                
-                if window_selected:
-                    clicker.run_automation()
-        else:
-            print(f"Configuration file '{args.config}' not found")
-    else:
-        # Run interactive setup
+    # Check if we're just doing a save operation
+    if args.save and not window_selected:
+        if not clicker.actions:
+            print("No actions to save. Please create some actions first.")
+            print("Run without --save flag to set up actions first.")
+            return 1
+        return clicker.interactive_save_config()
+    
+    # If we have actions from a loaded config but no window selected, select one now
+    if clicker.actions and not window_selected:
+        print("Configuration loaded, but no window selected.")
+        if clicker.select_window_by_click():
+            window_selected = True
+            clicker.window_geometry = clicker.get_window_geometry(clicker.selected_window) or \
+                                    clicker.get_window_geometry_alternative(clicker.selected_window) or \
+                                    clicker.get_i3_window_geometry(clicker.selected_window)
+            print("Window selected. Ready to run automation.")
+    
+    # If window is selected and we have actions, we can run the automation
+    if window_selected and clicker.actions:
+        # If save flag is set, save the config before running
+        if args.save:
+            clicker.interactive_save_config()
+        clicker.run_automation()
+        return 0
+    
+    # If no actions loaded and window selected, run interactive setup
+    if window_selected and not clicker.actions:
+        print("No actions defined. Running interactive setup...")
+        if clicker.interactive_setup():
+            # Offer to save if we created actions
+            if args.save or input("\nSave this configuration? (y/n): ").lower() == 'y':
+                clicker.interactive_save_config()
+            clicker.run_automation()
+            return 0
+    
+    # If we haven't done anything specific yet, show the default interface
+    if not (args.config or args.load or args.save or args.list_configs):
         print("Smart XTest Autoclicker")
         print("----------------------")
         print("This tool can find and click UI elements without moving your cursor")
         
         if clicker.interactive_setup():
+            # Offer to save if we created actions
+            if input("\nSave this configuration? (y/n): ").lower() == 'y':
+                clicker.interactive_save_config()
             clicker.run_automation()
     
     return 0
