@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Audacity
+Icon=/home/kblack0610/.local/share/cursor/cursor.png
+Exec=/home/kblack0610/bin/Audio/mixing/audacity-linux-3.7.1-x64-22.04.AppImage
+Type=Application
+Terminal=false
