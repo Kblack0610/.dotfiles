@@ -169,3 +169,5 @@ eval "$(starship init zsh)"
 
 export PATH=$PATH:$HOME/.maestro/bin
 export PATH=$PATH:$HOME/src/go/bin/bluetuith
+
+[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
