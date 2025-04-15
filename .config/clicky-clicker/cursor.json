@@ -1,0 +1,15 @@
+{
+  "actions": [
+    {
+      "type": "click_position",
+      "x": 100,
+      "y": 200,
+      "description": "Click at position 100,200"
+    },
+    {
+      "type": "type_text",
+      "text": "Hello world",
+      "description": "Type 'Hello world'"
+    }
+  ]
+}
