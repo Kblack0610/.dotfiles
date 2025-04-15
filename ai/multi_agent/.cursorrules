@@ -6,8 +6,8 @@ You are a multi-agent system coordinator, playing two roles in this environment:
 
 1. Planner
 
-    * Responsibilities: Perform high-level analysis, break down tasks, define success criteria, evaluate current progress. When doing planning, always use high-intelligence models (OpenAI o1 via `tools/plan_exec_llm.py`). Don't rely on your own capabilities to do the planning.
-    * Actions: Invoke the Planner by calling `.venv/bin/python tools/plan_exec_llm.py --prompt {any prompt}`. You can also include content from a specific file in the analysis by using the `--file` option: `.venv/bin/python tools/plan_exec_llm.py --prompt {any prompt} --file {path/to/file}`. It will print out a plan on how to revise the `.cursorrules` file. You then need to actually do the changes to the file. And then reread the file to see what's the next step.
+    * Responsibilities: Perform high-level analysis, break down tasks, define success criteria, evaluate current progress. When doing planning, always use high-intelligence models (OpenAI o1 via `multi-agent/tools/plan_exec_llm.py`). Don't rely on your own capabilities to do the planning.
+    * Actions: Invoke the Planner by calling `.venv/bin/python multi-agent/tools/plan_exec_llm.py --prompt {any prompt}`. You can also include content from a specific file in the analysis by using the `--file` option: `.venv/bin/python multi-agent/tools/plan_exec_llm.py --prompt {any prompt} --file {path/to/file}`. It will print out a plan on how to revise the `.cursorrules` file. You then need to actually do the changes to the file. And then reread the file to see what's the next step.
 
 2) Executor
 
@@ -24,8 +24,8 @@ You are a multi-agent system coordinator, playing two roles in this environment:
 ## Workflow Guidelines
 
 * After you receive an initial prompt for a new task, update the "Background and Motivation" section, and then invoke the Planner to do the planning.
-* When thinking as a Planner, always use the local command line `python tools/plan_exec_llm.py --prompt {any prompt}` to call the o1 model for deep analysis, recording results in sections like "Key Challenges and Analysis" or "High-level Task Breakdown". Also update the "Background and Motivation" section.
-* When you as an Executor receive new instructions, use the existing cursor tools and workflow to execute those tasks. After completion, write back to the "Current Status / Progress Tracking" and "Executor's Feedback or Assistance Requests" sections in the `Multi-Agent Scratchpad`.
+* When thinking as a Planner, always use the local command line `python multi-agent/tools/plan_exec_llm.py --prompt {any prompt}` to call the o1 model for deep analysis, recording results in sections like "Key Challenges and Analysis" or "High-level Task Breakdown". Also update the "Background and Motivation" section.
+* When you as an Executor receive new instructions, use the existing cursor multi-agent/tools and workflow to execute those tasks. After completion, write back to the "Current Status / Progress Tracking" and "Executor's Feedback or Assistance Requests" sections in the `Multi-Agent Scratchpad`.
 * If unclear whether Planner or Executor is speaking, declare your current role in the output prompt.
 * Continue the cycle unless the Planner explicitly indicates the entire project is complete or stopped. Communication between Planner and Executor is conducted through writing to or modifying the `Multi-Agent Scratchpad` section.
 
@@ -34,82 +34,9 @@ Please note:
 * Note the task completion should only be announced by the Planner, not the Executor. If the Executor thinks the task is done, it should ask the Planner for confirmation. Then the Planner needs to do some cross-checking.
 * Avoid rewriting the entire document unless necessary;
 * Avoid deleting records left by other roles; you can append new paragraphs or mark old paragraphs as outdated;
-* When new external information is needed, you can use command line tools (like search_engine.py, llm_api.py), but document the purpose and results of such requests;
+* When new external information is needed, you can use command line multi-agent/tools (like search_engine.py, llm_api.py), but document the purpose and results of such requests;
 * Before executing any large-scale changes or critical functionality, the Executor should first notify the Planner in "Executor's Feedback or Assistance Requests" to ensure everyone understands the consequences.
 * During you interaction with the user, if you find anything reusable in this project (e.g. version of a library, model name), especially about a fix to a mistake you made or a correction you received, you should take note in the `Lessons` section in the `.cursorrules` file so you will not make the same mistake again. 
-
-# Tools
-
-Note all the tools are in python. So in the case you need to do batch processing, you can always consult the python files and write your own script.
-
-## Screenshot Verification
-The screenshot verification workflow allows you to capture screenshots of web pages and verify their appearance using LLMs. The following tools are available:
-
-1. Screenshot Capture:
-```bash
-.venv/bin/python tools/screenshot_utils.py URL [--output OUTPUT] [--width WIDTH] [--height HEIGHT]
-```
-
-2. LLM Verification with Images:
-```bash
-.venv/bin/python tools/llm_api.py --prompt "Your verification question" --provider {openai|anthropic} --image path/to/screenshot.png
-```
-
-Example workflow:
-```python
-from screenshot_utils import take_screenshot_sync
-from llm_api import query_llm
-
-# Take a screenshot
-screenshot_path = take_screenshot_sync('https://example.com', 'screenshot.png')
-
-# Verify with LLM
-response = query_llm(
-    "What is the background color and title of this webpage?",
-    provider="openai",  # or "anthropic"
-    image_path=screenshot_path
-)
-print(response)
-```
-
-## LLM
-
-You always have an LLM at your side to help you with the task. For simple tasks, you could invoke the LLM by running the following command:
-```
-.venv/bin/python ./tools/llm_api.py --prompt "What is the capital of France?" --provider "anthropic"
-```
-
-The LLM API supports multiple providers:
-- OpenAI (default, model: gpt-4o)
-- Azure OpenAI (model: configured via AZURE_OPENAI_MODEL_DEPLOYMENT in .env file, defaults to gpt-4o-ms)
-- DeepSeek (model: deepseek-chat)
-- Anthropic (model: claude-3-sonnet-20240229)
-- Gemini (model: gemini-pro)
-- Local LLM (model: Qwen/Qwen2.5-32B-Instruct-AWQ)
-
-But usually it's a better idea to check the content of the file and use the APIs in the `tools/llm_api.py` file to invoke the LLM if needed.
-
-## Web browser
-
-You could use the `tools/web_scraper.py` file to scrape the web.
-```
-.venv/bin/python ./tools/web_scraper.py --max-concurrent 3 URL1 URL2 URL3
-```
-This will output the content of the web pages.
-
-## Search engine
-
-You could use the `tools/search_engine.py` file to search the web.
-```
-.venv/bin/python ./tools/search_engine.py "your search keywords"
-```
-This will output the search results in the following format:
-```
-URL: https://example.com
-Title: This is the title of the search result
-Snippet: This is a snippet of the search result
-```
-If needed, you can further use the `web_scraper.py` file to scrape the web page content.
 
 # Lessons
 
@@ -126,36 +53,186 @@ If needed, you can further use the `web_scraper.py` file to scrape the web page 
 - Add debug information to stderr while keeping the main output clean in stdout for better pipeline integration
 - When using seaborn styles in matplotlib, use 'seaborn-v0_8' instead of 'seaborn' as the style name due to recent seaborn version changes
 - Use `gpt-4o` as the model name for OpenAI. It is the latest GPT model and has vision capabilities as well. `o1` is the most advanced and expensive model from OpenAI. Use it when you need to do reasoning, planning, or get blocked.
-- Use `claude-3-5-sonnet-20241022` as the model name for Claude. It is the latest Claude model and has vision capabilities as well.
-- When running Python scripts that import from other local modules, use `PYTHONPATH=.` to ensure Python can find the modules. For example: `PYTHONPATH=. python tools/plan_exec_llm.py` instead of just `python tools/plan_exec_llm.py`. This is especially important when using relative imports.
+- Use `claude-3-7-sonnet-latest` or if not available use `claude-3-5-sonnet-20241022` as the model name for Claude. It is the latest Claude model and has vision capabilities as well.
+- When running Python scripts that import from other local modules, use `PYTHONPATH=.` to ensure Python can find the modules. For example: `PYTHONPATH=. python multi-agent/tools/plan_exec_llm.py` instead of just `python multi-agent/tools/plan_exec_llm.py`. This is especially important when using relative imports.
+- Use Playwright MCP tools as the first option for web interaction tasks (navigation, screenshots, scraping) as they work reliably without dependency issues. Fall back to Python-based tools only when necessary.
+- When using pytest, always set up proper test categories and markers to organize tests effectively
+- Use fixtures in conftest.py for shared test setup and teardown
+- Implement proper error handling and validation in test fixtures
+- Use parameterized tests to test multiple scenarios efficiently
+- Add performance benchmarking capabilities to test suites
+- Implement proper cleanup in test fixtures using yield and finalizers
+- Use pytest.ini for consistent test configuration across the project
+- Add coverage reporting to track test coverage effectively
+- Implement proper test isolation to prevent test interference
+- Use proper test naming conventions for better organization
+- Create comprehensive test fixtures that handle resource cleanup
+- Use context managers for managing test resources
+- Implement proper error handling in file operations
+- Add performance tests for large file operations
+- Test concurrent file operations for thread safety
+- Add proper validation for file paths and operations
+- Use pathlib.Path for consistent file path handling
+- Implement proper permission handling in file operations
+- Add proper symlink handling in file operations
+- Test file operations with various path formats
 
 # Multi-Agent Scratchpad
 
 ## Background and Motivation
 
-(Planner writes: User/business requirements, macro objectives, why this problem needs to be solved)
-The executor has access to three tools: invoking 3rd party LLM, invoking web browser, invoking search engine.
+The project has a robust tool registry implementation with two test files:
+1. test_tool_registry.py - Core functionality tests
+2. test_tool_registration.py - Extended registration and management tests
+
+Current test coverage includes:
+- Basic tool creation and validation
+- Tool registry operations
+- Parameter validation
+- Tool discovery
+- Dependency management
+- Serialization/deserialization
+- Tool versioning and categories
 
 ## Key Challenges and Analysis
 
-(Planner: Records of technical barriers, resource constraints, potential risks)
+1. Test Organization
+   - Two overlapping test files with some redundant coverage
+   - Need to consolidate and organize tests more efficiently
+   - Should separate unit and integration tests clearly
 
-## Verifiable Success Criteria
+2. Test Infrastructure
+   - Using pytest effectively with fixtures
+   - Good use of parametrized tests
+   - Missing performance and stress testing
 
-(Planner: List measurable or verifiable goals to be achieved)
-
-## High-level Task Breakdown
-
-(Planner: List subtasks by phase, or break down into modules)
+3. Coverage Areas
+   - Core functionality well covered
+   - Need more edge cases and error scenarios
+   - Missing concurrency testing
+   - Need more integration tests with actual tools
 
 ## Current Status / Progress Tracking
 
-(Executor: Update completion status after each subtask. If needed, use bullet points or tables to show Done/In progress/Blocked status)
+Status: Test Suite Verification Complete
+Current Focus: Phase 1F - Performance Tuning
 
-## Next Steps and Action Items
+**Test Suite Implementation and Verification** (2025-04-09):
 
-(Planner: Specific arrangements for the Executor)
+1. **Test Suite Implementation**:
+   - Created comprehensive test suite in `tests/unit/core/test_tool_registry_unified.py` ✓
+   - Implemented all test categories:
+     - Unit Tests (Tool Creation and Registry Operations) ✓
+     - Integration Tests (Dependencies and Execution) ✓
+     - Performance Tests (Bulk Operations and Lookup) ✓
+     - Concurrency Tests (Parallel Registration and Execution) ✓
+     - Error Handling Tests (Various Error Scenarios) ✓
+     - Serialization Tests (JSON Import/Export) ✓
+   - Added comprehensive fixtures for test setup ✓
+   - Included detailed docstrings and comments ✓
+
+2. **Test Suite Verification**:
+   - All 27 tests passing successfully ✓
+   - Achieved 90% code coverage ✓
+   - Fixed issues with:
+     - Tool creation parameter validation ✓
+     - Concurrent execution timing ✓
+     - JSON schema validation ✓
+     - Optional fields in serialization ✓
+   - Remaining uncovered code (8 lines) in error handling paths
+
+3. **Performance Test Results** (2025-04-09):
+   - Tool Lookup: 9.98 μs mean (100,000 ops/sec) ✓
+   - Concurrent Operations: 258.29 μs mean (3,872 ops/sec) ✓
+   - Bulk Registration: 1.99 ms mean (503 ops/sec) ✓
+   - Large Scale Registration: 211.35 ms mean (4.73 ops/sec) ✓
+   - Memory Usage: 516.28 ms mean (1.94 ops/sec) ✓
+   - All performance tests within acceptable thresholds
+   - No memory leaks detected
+   - Good scalability characteristics
 
 ## Executor's Feedback or Assistance Requests
 
-(Executor: Write here when encountering blockers, questions, or need for more information during execution)
+1. **Verification Results**:
+   - All test categories implemented and passing
+   - Good code coverage achieved (90%)
+   - Performance tests within acceptable thresholds
+   - Concurrency tests working reliably
+   - Error handling comprehensive and effective
+
+2. **Technical Considerations**:
+   - Added more robust parameter validation
+   - Improved error messages for invalid schemas
+   - Enhanced concurrency test timing tolerance
+   - Made serialization more resilient with defaults
+
+3. **Next Steps Request**:
+   - Should we proceed with performance tuning?
+   - Do we need to improve code coverage further?
+   - Are there additional edge cases to test?
+   - Should we add stress testing scenarios?
+
+## Next Steps and Action Items
+
+1. **Performance Optimization** (Priority: High):
+   - [x] Analyze benchmark results
+     - [x] Review timing thresholds
+     - [x] Check resource usage
+     - [x] Optimize slow tests
+   - [ ] Enhance concurrency tests
+     - [ ] Add more parallel scenarios
+     - [ ] Test different load levels
+     - [ ] Measure scalability
+
+2. **Coverage Improvement** (Priority: Medium):
+   - [ ] Review uncovered code paths
+     - [ ] Add tests for error conditions
+     - [ ] Test edge cases
+     - [ ] Verify recovery paths
+   - [ ] Add stress tests
+     - [ ] Test with large data sets
+     - [ ] Test with high concurrency
+     - [ ] Test resource limits
+
+3. **Documentation Update** (Priority: High):
+   - [ ] Document performance results
+     - [ ] Create performance baseline
+     - [ ] Document optimization targets
+     - [ ] Add performance SLAs
+   - [ ] Update test documentation
+     - [ ] Add performance test guide
+     - [ ] Document test categories
+     - [ ] Add troubleshooting guide
+
+## Performance Analysis and Next Steps
+
+Based on the performance test results, we have established the following baselines:
+
+1. **Fast Operations** (< 1ms):
+   - Tool lookup: ~10μs (excellent)
+   - Concurrent operations: ~260μs (good)
+
+2. **Medium Operations** (1-10ms):
+   - Bulk registration: ~2ms (acceptable)
+
+3. **Heavy Operations** (>100ms):
+   - Large scale registration: ~211ms (monitor)
+   - Memory usage operations: ~516ms (optimize)
+
+Recommendations:
+1. Optimize large scale registration by:
+   - Implementing batch processing
+   - Adding caching for frequent operations
+   - Reducing memory allocations
+
+2. Improve memory usage by:
+   - Implementing object pooling
+   - Reducing temporary object creation
+   - Adding memory usage limits
+
+3. Add monitoring for:
+   - Operation timing trends
+   - Resource usage patterns
+   - Performance degradation alerts
+
+Please proceed with implementing these optimizations while maintaining current functionality.
