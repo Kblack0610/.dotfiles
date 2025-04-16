@@ -1,13 +1,26 @@
 return {
-    "ThePrimeagen/harpoon",
+    "Kblack0610/harpoon",
     lazy = false,
-    branch = "harpoon2",
+    branch = "format_path-option",
     config = function()
         local harpoon = require "harpoon"
         harpoon:setup {
             settings = {
                 save_on_toggle = true, -- Save items deleted/changed on the UI when you close
             },
+            format_path = function(path)
+                path = path:gsub("\\", "/")
+                local segments = {}
+                for seg in string.gmatch(path, "[^/]+") do
+                    table.insert(segments, seg)
+                end
+                local n = #segments
+                if n >= 2 then
+                    return segments[n-1] .. "/" .. segments[n]
+                else
+                    return segments[n]
+                end
+            end,
             -- need to look at new harpoon syntax
             -- display = {
             --     width = vim.api.nvim_win_get_width(0),
