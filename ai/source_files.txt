@@ -1,7 +1,0 @@
-# multi agent
-/home/kblack0610/.dotfiles/ai/multi_agent/*
-
-# agent
-/home/kblack0610/.dotfiles/ai/agent/*
-
-
