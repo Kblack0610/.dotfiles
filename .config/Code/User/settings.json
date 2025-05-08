@@ -1,0 +1,14 @@
+{
+  "terminal.integrated.profiles.linux": {
+    "Minimal ZSH": {
+      "path": "/bin/zsh",
+      "args": ["-c", "source /home/kblack0610/.vscode-minimal-zsh.sh && exec zsh --no-rcs"],
+      "icon": "terminal-bash"
+    },
+    "bash": {
+      "path": "bash",
+      "icon": "terminal-bash"
+    }
+  },
+  "terminal.integrated.defaultProfile.linux": "Minimal ZSH"
+}
