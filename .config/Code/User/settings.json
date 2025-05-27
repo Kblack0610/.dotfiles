@@ -10,5 +10,5 @@
       "icon": "terminal-bash"
     }
   },
-  "terminal.integrated.defaultProfile.linux": "Minimal ZSH"
+  "terminal.integrated.defaultProfile.linux": "bash"
 }

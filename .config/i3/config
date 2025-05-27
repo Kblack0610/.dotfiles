@@ -37,7 +37,7 @@ bindsym $mod+Shift+z	gaps outer current minus 5
 
 ## Monitors
 # Put second monitor above
-exec "xrandr --output DP-5 --auto --right-of HDMI-0"
+exec "xrandr --output DP-5 --auto --right-of DP-3"
 # keybinding to lock screen
 bindsym Control+$mod+l exec "i3lock -c 000000"
 
@@ -79,8 +79,8 @@ floating_modifier $mod
 # start a terminal
 bindsym $mod+Return exec kitty
 bindsym $mod+c exec flatpak run one.ablaze.floorp
-bindsym $mod+n exec flatpak run org.kde.dolphin
-# bindsym $mod+n exec nautilus
+# bindsym $mod+n exec flatpak run org.kde.dolphin
+bindsym $mod+n exec nautilus
 bindsym $mod+u exec unityhub 
 
 # kill focused window
@@ -151,7 +151,7 @@ set $ws10 "10:getting-weird"
 #can also use:
 #xrandr --output <output> --primary), and use this syntax:
 set $primary_display "DP-5"
-set $secondary_display "HDMI-0"
+set $secondary_display "DP-3"
 
 workspace $ws1 output $primary_display
 workspace $ws2 output $primary_display
