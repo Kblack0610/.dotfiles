@@ -100,10 +100,10 @@ alias nvr="nvr . -s"
 alias n="nvim ."
 alias g="git"
 # . important else it will execute in subshell
-alias fz='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
+alias f='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
 # alias fzd='$HOME/.local/bin/term_scripts/improved-fzf/fzf_dev.sh'
-source /home/kblack0610/.dotfiles/.local/bin/term_scripts/fuzzy-drunk-finder/fuzzy-drunk-finder.sh
-alias f='fdf --hidden --unlimited /home/kblack0610'
+# source /home/kblack0610/.dotfiles/.local/bin/term_scripts/fuzzy-drunk-finder/fuzzy-drunk-finder.sh
+# alias f='fdf --hidden --unlimited /home/kblack0610'
 # Alias fzf search zsh_history
 alias h='. $HOME/.local/bin/term_scripts/fzf_history.sh'
 alias e='exit'
