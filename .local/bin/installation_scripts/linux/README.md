@@ -4,6 +4,24 @@ have various build scripts to install tools and dependencies. need to clean up f
 
 Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
 
+# Packages:
+- git
+- zsh
+- zsh-autosuggestions
+- zsh-syntax-highlighting
+- fzf
+- ripgrep
+- stow
+- neovim
+- tmux
+- kitty
+- bluetuith
+
+For debugging:
+- gnome-disks
+- nvme-cli
+- glances
+
 # Audio
 - alsamixer
 - pavucontrol (volume control)
