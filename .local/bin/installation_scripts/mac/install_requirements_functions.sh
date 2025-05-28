@@ -205,8 +205,8 @@ function install_nvim(){
 	echo "Installing nvim"
 
 	#install neovim
-	sudo snap install nvim --classic 
-	# flatpak install flathub io.neovim.nvim
+	# sudo snap install nvim --classic 
+	flatpak install flathub io.neovim.nvim
 	# flatpak run io.neovim.nvim
 
 	#install my neovim requirements
