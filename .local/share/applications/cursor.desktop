@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Cursor
 Icon=/home/kblack0610/.local/share/cursor/cursor.png
-Exec=/home/kblack0610/bin/Cursor-0.48.7-x86_64.AppImage --no-sandbox %u
+Exec=/home/kblack0610/bin/Cursor-0.50.5-x86_64.AppImage --no-sandbox %u
 Type=Application
 Terminal=false
