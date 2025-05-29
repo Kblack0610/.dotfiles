@@ -216,26 +216,27 @@ function install_flatpak(){
 function install_nvim(){
 	echo "Installing nvim"
 
-	#install neovim
-	sudo snap install nvim --classic 
-	# flatpak install flathub io.neovim.nvim
-	# flatpak run io.neovim.nvim
-
-	#install my neovim requirements
-	# --- packer
-	#git clone --depth 1 https://github.com/wbthomason/packer.nvim\ ~/.local/share/nvim/site/pack/packer/start/packer.nvim 
-	# --- ripgrep
+	#neovim requirements
+  yes | sudo apt-get install ninja-build gettext libtool libtool-bin autoconf automake cmake g++ pkg-config unzip curl doxygen &> /dev/null
 	yes | sudo apt-get install ripgrep -y &> /dev/null  
 	yes | sudo apt-get install fzf -y &> /dev/null
 	yes | sudo apt-get install xsel -y &> /dev/null
+
+  #install neovim from source
+	git clone https://github.com/neovim/neovim.git
+	cd neovim
+  make CMAKE_BUILD_TYPE=RelWithDebInfo
+  sudo make install
 
 	echo "nvim installed"
 }
 
 function install_tmux(){
-    sudo apt install -y tmux
+  sudo apt install -y tmux
 	echo "tmux installed"
 }
+
+# going back to firefox on linux
 function install_browser(){
 	echo "Installing floorp browser"
 	if ! command -v floorp &> /dev/null 

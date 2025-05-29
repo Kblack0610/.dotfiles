@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. ~/.dotfiles/.local/bin/installation_scripts/linux/ubuntu/post_installation_scripts/install_requirements_functions.sh
+. ~/.dotfiles/.local/bin/installation_scripts/linux/debian/post_installation_scripts/install_requirements_functions.sh
 pids=""
 failures=0
 (install_reqs) 
@@ -9,7 +9,7 @@ failures=0
 (install_zsh) 
 (install_oh_my_zsh)
 (install_starship) 
-(install_flatpak)
+# (install_flatpak)
 (install_nerd_fonts)
 (install_tools) 
 (install_git)
@@ -19,5 +19,5 @@ failures=0
 (install_nvim)
 (install_tmux)
 (install_i3)
-(install_browser)
-# TODO pipewire/audio
+# (install_browser)
+# TODO pipewire/audio if needed, linux mint has it
