@@ -1,3 +1,5 @@
+#use xcompmgr now
+
 #this might work below, but you can just insall from apt
 sudo apt install picom
 # Debian specific command. The next few commands are for all distros
