@@ -4,6 +4,7 @@ return {
     -- optional: provides snippets for the snippet source
     dependencies = {
       {
+        'Exafunction/codeium.nvim',
         "L3MON4D3/LuaSnip",
         version = "v2.*",
         dependencies = { "rafamadriz/friendly-snippets" },
@@ -18,7 +19,6 @@ return {
     },
     -- use a release tag to download pre-built binaries
     version = "v0.*",
-
     opts = {
       keymap = { preset = "default" },
       appearance = {
@@ -29,8 +29,9 @@ return {
         preset = "luasnip",
       },
       sources = {
-        default = { "lsp", "path", "snippets", "buffer" },
+        default = { "lsp", "path", "snippets", "buffer", "codeium" },
         providers = {
+          codeium = { name = 'Codeium', module = 'codeium.blink', async = true },
           -- Below customizes the order/priority of recommendations
           -- https://cmp.saghen.dev/configuration/reference.html#providers
           lsp = {
