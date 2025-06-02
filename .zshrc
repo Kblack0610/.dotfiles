@@ -9,6 +9,7 @@ ZSH_DISABLE_COMPFIX="true"
 plugins=(
     git
     zsh-autosuggestions
+    ssh-agent
 )
 
 # NOTE: need to put bindkey -vi and plugins after importing oh-my-zsh
@@ -171,3 +172,9 @@ export PATH=$PATH:$HOME/.maestro/bin
 export PATH=$PATH:$HOME/src/go/bin/bluetuith
 
 [[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
+
+
+# SSH
+# For now adding ssh-agent to plugins works
+# I had this working on my old machine, it might be because ssh-add does not persist passowrd
+# This workaroudn also works, have to apt-get keychain: `eval $(keychain --eval id_ed25519)`
