@@ -178,3 +178,7 @@ export PATH=$PATH:$HOME/src/go/bin/bluetuith
 # For now adding ssh-agent to plugins works
 # I had this working on my old machine, it might be because ssh-add does not persist passowrd
 # This workaroudn also works, have to apt-get keychain: `eval $(keychain --eval id_ed25519)`
+
+# LAZYGIT
+export XDG_CONFIG_HOME="$HOME/.config"
+
