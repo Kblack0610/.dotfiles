@@ -21,7 +21,7 @@ require "kennethblack.autocmds"
 require("lazy").setup "kennethblack.plugins"
 
 -- colorscheme
-vim.cmd.colorscheme "gruvbox"
+vim.cmd.colorscheme "tokyonight"
 
 -- line number color custom
 -- vim.cmd [[
