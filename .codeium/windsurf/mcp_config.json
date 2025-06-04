@@ -8,14 +8,6 @@
       ],
       "env": {}
     },
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@executeautomation/playwright-mcp-server"
-      ],
-      "env": {}
-    },
     "filesystem": {
       "command": "npx",
       "args": [
@@ -52,6 +44,13 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-puppeteer"
+      ],
+      "env": {}
+    },
+    "git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git"
       ],
       "env": {}
     }
