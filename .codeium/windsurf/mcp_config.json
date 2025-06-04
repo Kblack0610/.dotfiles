@@ -39,18 +39,18 @@
         "MEMORY_FILE_PATH": ""
       }
     },
-    "puppeteer": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ],
-      "env": {}
-    },
     "git": {
       "command": "uvx",
       "args": [
         "mcp-server-git"
+      ],
+      "env": {}
+    },
+    "mcp-playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@executeautomation/playwright-mcp-server"
       ],
       "env": {}
     }
