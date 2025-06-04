@@ -14,8 +14,6 @@
         "-y",
         "@modelcontextprotocol/server-filesystem",
         "/Users/kenneth.black/Work",
-        "/Users/kenneth.black/Work/hy-vee-grocery",
-        "/Users/kenneth.black/Work/shop-application-backend",
         "/Users/kenneth.black/.dotfiles/"
       ]
     },
