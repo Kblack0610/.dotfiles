@@ -13,10 +13,10 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/home/kblack0610/dev/Games/",
-        "/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/",
-        "/home/kblack0610/dev/Games/HistoryTime_root/history-time/history-time/",
-        "/home/kblack0610/.dotfiles/"
+        "/Users/kenneth.black/Work",
+        "/Users/kenneth.black/Work/hy-vee-grocery",
+        "/Users/kenneth.black/Work/shop-application-backend",
+        "/Users/kenneth.black/.dotfiles/"
       ]
     },
     "memory": {
