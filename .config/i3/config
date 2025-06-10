@@ -142,7 +142,7 @@ bindsym $mod+a focus parent
 set $ws1 "1:main"
 set $ws2 "2:code"
 set $ws3 "3:browser"
-set $ws4 "4:home"
+set $ws4 "4:threads"
 set $ws5 "5:party"
 set $ws6 "6:notes"
 set $ws7 "7:media"
