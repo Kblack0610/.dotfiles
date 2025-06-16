@@ -182,3 +182,5 @@ export PATH=$PATH:$HOME/src/go/bin/bluetuith
 # LAZYGIT
 export XDG_CONFIG_HOME="$HOME/.config"
 
+export PATH=~/.npm-global/bin:$PATH
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion

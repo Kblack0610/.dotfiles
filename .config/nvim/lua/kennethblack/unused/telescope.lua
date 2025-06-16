@@ -1,13 +1,6 @@
 local builtin = require('telescope.builtin')
 local actions = require "telescope.actions"
 local utils = require("telescope.utils")
--- vim.api.nvim_create_autocmd("VimEnter", {
---   callback = function()
---     if vim.fn.argv(0) == "" then
---       require("telescope.builtin").find_files()
---     end
---   end,
--- })
 require('telescope').setup {
     pickers = {
         buffers = {
@@ -88,3 +81,13 @@ vim.keymap.set('n', '<leader>pb', builtin.buffers, {})
 -- vim.keymap.set('n', '<leader>ps', function()
 --     builtin.grep_string({ search = vim.fn.input("Grep > ") })
 -- end)
+
+
+---- vim.api.nvim_create_autocmd("VimEnter", {
+--   callback = function()
+--     if vim.fn.argv(0) == "" then
+--       require("telescope.builtin").find_files()
+--     end
+--   end,
+-- })
+

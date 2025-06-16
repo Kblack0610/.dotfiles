@@ -1,5 +1,8 @@
 Work off of different git worktrees.
 Always clean up any existing worktrees that don't have actively worked on features.
+Run validation.
+
+USE GH CLI to work with github for prs.
 
 Use mcps when available
 
