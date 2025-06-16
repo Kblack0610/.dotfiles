@@ -1,5 +1,8 @@
 .oh-my-zsh/
-.config/nvim/lazy-lock.json
+
+bin/
+src/
+
 Media/Pictures
 Media/Videos
 Media/Music
@@ -11,7 +14,5 @@ Media/Music
 .config/unity3d/Unity
 .config/unity3d/Unity/*
 .config/unity3d/*.log
-
-
 
 .config/nvim/lazy-lock.json

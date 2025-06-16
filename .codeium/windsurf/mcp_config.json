@@ -25,7 +25,8 @@
       ],
       "env": {
         "MDB_MCP_CONNECTION_STRING": "mongodb://localhost:27017/"
-      }
+      },
+      "disabled": true
     },
     "memory": {
       "command": "npx",
@@ -35,15 +36,8 @@
       ],
       "env": {
         "MEMORY_FILE_PATH": ""
-      }
-    },
-    "puppeteer": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ],
-      "env": {}
+      },
+      "disabled": true
     },
     "git": {
       "command": "uvx",
@@ -51,6 +45,20 @@
         "mcp-server-git"
       ],
       "env": {}
+    },
+    "mcp-playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@executeautomation/playwright-mcp-server"
+      ],
+      "env": {},
+      "disabledTools": [
+        "playwright_console_logs",
+        "playwright_custom_user_agent",
+        "playwright_save_as_pdf",
+        "playwright_drag"
+      ]
     }
   }
 }
