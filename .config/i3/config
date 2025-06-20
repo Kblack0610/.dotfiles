@@ -47,8 +47,10 @@ bindsym Control+$mod+l exec "i3lock -c 000000"
 
 ## Screenshots
 bindsym F7 exec --no-startup-id maim --select "/home/$USER/Media/Pictures/$(date).jpg" 
-bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date).jpg"
-bindsym F9 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date).jpg"
+bindsym F8 exec --no-startup-id maim "/home/$USER/Media/Pictures/$(date).jpg"
+
+# xdo tool
+# bindsym F8 exec --no-startup-id maim --window $(xdotool getactivewindow) "/home/$USER/Media/Pictures/$(date).jpg"
 
 ## Clipboard Screenshots
 bindsym Ctrl+F7 exec --no-startup-id maim | xclip -selection clipboard -t image/png
@@ -167,6 +169,16 @@ workspace $ws8 output $secondary_display
 workspace $ws9 output $secondary_display
 workspace $ws10 output $secondary_display
 
+#switch display with autorandr (can use arandr for GUI)
+# ~/.config/i3/config  (excerpt)
+# set $displaymode mode "display" {
+#     bindsym 1 exec --no-startup-id autorandr --load single, mode "default"
+#     bindsym 2 exec --no-startup-id autorandr --load dual, mode "default"
+#     bindsym --release Escape mode "default"
+# }
+#
+# # Enter the mode with $mod+F8
+# bindsym $mod+q $displaymode
 
 #https://www.reddit.com/r/i3wm/comments/85scgq/for_window_and_multiple_wm_classes/
 #explains here to use instance or assign or by title instead of class for only using first instance. With assign it only activates when window property changes 
@@ -221,10 +233,10 @@ bindsym $mod+Shift+e exec "i3-nagbar -t warning -m 'You pressed the exit shortcu
 mode "resize" {
         # These bindings trigger as soon as you enter the resize mode
 
-        # Pressing left will shrink the window’s width.
-        # Pressing right will grow the window’s width.
-        # Pressing up will shrink the window’s height.
-        # Pressing down will grow the window’s height.
+        # Pressing left will shrink the window's width.
+        # Pressing right will grow the window's width.
+        # Pressing up will shrink the window's height.
+        # Pressing down will grow the window's height.
         bindsym j resize shrink width 10 px or 10 ppt
         bindsym k resize grow height 10 px or 10 ppt
         bindsym l resize shrink height 10 px or 10 ppt
