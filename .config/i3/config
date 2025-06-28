@@ -79,7 +79,7 @@ floating_modifier $mod
 # bindsym $mod+Return exec --no-startup-id i3-msg 'workspace $ws2\; exec kitty'
 
 # start a terminal
-bindsym $mod+Return exec kitty
+bindsym $mod+Return exec --no-startup-id /home/kblack0610/.local/kitty.app/bin/kitty
 #bindsym $mod+c exec flatpak run one.ablaze.floorp
 bindsym $mod+c exec firefox
 # bindsym $mod+n exec flatpak run org.kde.dolphin
