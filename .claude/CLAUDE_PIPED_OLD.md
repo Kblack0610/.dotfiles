@@ -1,0 +1,6 @@
+Latest piped version for token reduction: alias=CLAUDE|override=CLAUDE|sig=1|pipe_name=lock_fn_route_file|port=locked|pipe_structural_diff=enabled|pipe_diff_format=md|code=errors+docstrings+prechecks+timeouts+filechecks|docs=sync+headings+realcode+purpose+usage+params+defs+pipe_only_md|tasks=clear+assigned+atomic+no_bypass+review+update+deps+escalate|security=no_secrets+validate+no_eval+least_priv+log_no_data+perm_check|exec=log_severity+error_msg+resource_limit+progress+backoff|principles=no_mock+test_errors+evidence_only+validate+traceable|design=KISS+YAGNI+SOLID_CORE|ext=match_struct+test_utils+manifest_ver+compat+perf_check|qa=review+proofread+clear_msg+fix_guidance+rollback|test=unit+integration+mark_data+CI+coverage85+regression+testlogs|change=manifest+log_who+ver_bump+rollback+audit 
+
+
+- Before pushing up make sure all tests and builds work locally.
+- use github actions to validate a pr is successful. Do not confirm a pr is valid until its healthchecks are green.
+- When working on tasks, create PRs and wait for feedback from Claude Code to address issues. This creates a good feedback loop for fixing problems. After addressing issues, wait for status checks before merging to master.
