@@ -1,6 +1,6 @@
 .oh-my-zsh/
 
-bin/
+./bin/
 src/
 
 Media/Pictures
