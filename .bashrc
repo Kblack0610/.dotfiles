@@ -102,7 +102,6 @@ if [ `id -u` -eq 0 ]; then
     printf "\n"
 fi
 
-
 ## Path & Applications ##
 ##################################
 
@@ -117,18 +116,6 @@ export FrameworkPathOverride=/lib/mono/4.8-api
 source /usr/share/autojump/autojump.bash
 
 ulimit -n 4000
-
-## Useful info?
-#Test to pass params
-#https://unix.stackexchange.com/questions/3773/how-to-pass-parameters-to-an-alias
-#alias wrap_args='f(){ echo before "$@" after;  unset -f f; }; f'
-
-#Wrapping in function:
-#https://stackoverflow.com/questions/19359049/user-input-to-bash-alias
-
-#Submit after password:
-#https://daniel-ellis.medium.com/shell-script-submitting-a-password-after-a-prompt-690bcf144c0e
-
 
 export PATH=$PATH:/home/kblack0610/.spicetify
 export PATH=$PATH:$HOME/.maestro/bin
