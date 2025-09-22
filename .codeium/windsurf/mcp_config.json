@@ -19,17 +19,6 @@
         "/home/kblack0610/.dotfiles/"
       ]
     },
-    "mongodb-mcp-server": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mongodb-mcp-server"
-      ],
-      "env": {
-        "MDB_MCP_CONNECTION_STRING": "mongodb://localhost:27017/"
-      },
-      "disabled": true
-    },
     "memory": {
       "command": "npx",
       "args": [
