@@ -29,6 +29,7 @@ function install_reqs() {
 	$PACKAGE_INSTALL_CMD fuse2 &> /dev/null
 	$PACKAGE_INSTALL_CMD neofetch &> /dev/null
 
+
   #Screenshots - maim equivalent on Arch
   $PACKAGE_INSTALL_CMD maim &> /dev/null
 
@@ -48,6 +49,7 @@ function install_tools() {
 	$PACKAGE_INSTALL_CMD autojump &> /dev/null
 	$PACKAGE_INSTALL_CMD glances &> /dev/null
 
+	$PACKAGE_INSTALL_CMD rofi &> /dev/null
 	echo "tools installed"
 }
 
@@ -245,50 +247,35 @@ function install_stow(){
 	echo "stow installed"
 }	
 
-function install_i3(){
-	echo "Installing i3"
-	if ! command -v i3 &> /dev/null 
-	then 
-		echo "i3 could not be found, installing" 
-		#install i3
-		$PACKAGE_INSTALL_CMD i3-wm i3status i3lock dmenu &> /dev/null
-		$PACKAGE_INSTALL_CMD rofi &> /dev/null
-	  echo "i3 installed"
-	  i3-msg restart
-	else
-		echo "i3 already installed"
-	fi
-}
+# function install_dotfiles(){
+# 	echo "Installing dotfiles"
+# 	#install dotfiles
+# 	# if [ ! -f ~/.zshrc ] && [ ! -f ~/.config/i3/config ]; then
+# 		echo "dotfiles not stowed, installing"
+# 		rm -f ~/.bashrc
+# 		rm -f ~/.config/i3/config
+# 		rm -f ~/.zshrc
+# 		# git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
+# 		cd ~/.dotfiles
+# 		stow . 
+# 	  echo "dotfile installed"
+# 	# else
+# 		# echo "dotfiles already installed"
+# 	# fi
+# }
 
-function install_dotfiles(){
-	echo "Installing dotfiles"
-	#install dotfiles
-	# if [ ! -f ~/.zshrc ] && [ ! -f ~/.config/i3/config ]; then
-		echo "dotfiles not stowed, installing"
-		rm -f ~/.bashrc
-		rm -f ~/.config/i3/config
-		rm -f ~/.zshrc
-		# git clone git@github.com:Kblack0610/.dotfiles.git ~/.dotfiles 
-		cd ~/.dotfiles
-		stow . 
-	  echo "dotfile installed"
-	# else
-		# echo "dotfiles already installed"
-	# fi
-}
-
-function install_aur_helper(){
-	echo "Installing AUR helper (yay)"
-	if ! command -v yay &> /dev/null 
-	then 
-		echo "yay could not be found, installing" 
-		cd /tmp
-		git clone https://aur.archlinux.org/yay.git
-		cd yay
-		makepkg -si --noconfirm
-		cd ~/.dotfiles
-	  echo "yay installed"
-	else
-		echo "yay already installed"
-	fi
-} 
+# function install_aur_helper(){
+# 	echo "Installing AUR helper (yay)"
+# 	if ! command -v yay &> /dev/null 
+# 	then 
+# 		echo "yay could not be found, installing" 
+# 		cd /tmp
+# 		git clone https://aur.archlinux.org/yay.git
+# 		cd yay
+# 		makepkg -si --noconfirm
+# 		cd ~/.dotfiles
+# 	  echo "yay installed"
+# 	else
+# 		echo "yay already installed"
+# 	fi
+# } 

@@ -26,7 +26,6 @@ echo "Starting Arch Linux installation..."
 (install_lazygit)
 
 # Desktop environment
-(install_i3)
 (install_kitty)
 
 # Fonts and appearance
