@@ -1,0 +1,10 @@
+matches:
+  - trigger: ":noice"
+    replace: "hey!"
+  - trigger: ":greet"
+    form: |
+      **Idea: [[idea]]**
+      **Status:** Backlog
+      **Concept:** [[concept]]
+      [View Details]([[idea]]/README.md)
+...
