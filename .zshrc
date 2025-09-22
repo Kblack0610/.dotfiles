@@ -1,3 +1,6 @@
+# Source the common settings file if it exists.
+[ -f "$HOME/.commonrc" ] && source "$HOME/.commonrc"
+
 # This is my personal Zsh configuration file.
 # It is organized for clarity and easy management.
 
@@ -52,26 +55,6 @@ bindkey '^P' up-line-or-beginning-search
 bindkey '^N' down-line-or-beginning-search
 bindkey '^R' history-incremental-search-backward
 
-# --- Aliases & Functions ---
-# Custom aliases and functions for common tasks.
-
-# Neovim aliases.
-alias nvr="nvr . -s"
-alias n="nvim ."
-alias vi='nvim --listen /tmp/nvim-server.pipe'
-
-# Other common aliases.
-alias g="git"
-alias e='exit'
-alias lg='lazygit'
-alias python='/usr/bin/python3'
-alias ct='kitty @ set-tab-title'
-alias sysz='$HOME/.bin/sysz'
-
-# Custom script aliases.
-alias f='. $HOME/.local/bin/term_scripts/fzf_dev.sh'
-alias h='. $HOME/.local/bin/term_scripts/fzf_history.sh'
-
 # Wrapper function for copy/paste using xclip (Linux) or pbcopy (macOS).
 function x11-clip-wrap-widgets() {
     local copy_or_paste=$1
@@ -120,9 +103,6 @@ export PATH="$HOME/src/go/bin/bluetuith:$PATH"
 if [ -d "/usr/local/go/bin" ]; then
     export PATH=$PATH:/usr/local/go/bin
 fi
-
-# Unity path.
-export UNITY_PATH="$HOME/src/Unity/Hub/Editor/6000.0.43f1/Editor/Unity"
 
 # Neovim-related environment variables.
 export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'

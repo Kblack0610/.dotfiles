@@ -1,0 +1,59 @@
+# --- Path and Environment Variables ---
+
+# Add custom directories to PATH
+export PATH="$HOME/.local/bin:$HOME/Utilities:$PATH"
+export PATH="$PATH:$HOME/.maestro/bin"
+export PATH="$PATH:$HOME/.spicetify"
+
+# Set up local NPM packages
+export NPM_PACKAGES="$HOME/.npm-packages"
+export NODE_PATH="$NPM_PACKAGES/lib/node_modules:$NODE_PATH"
+export PATH="$NPM_PACKAGES/bin:$PATH"
+unset MANPATH
+export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
+
+# Other environment variables
+export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
+export MANWIDTH=999
+export XDG_CONFIG_HOME="$HOME/.config"
+
+# --- Sourcing Scripts ---
+
+# Source autojump for directory jumping functionality
+[ -f /usr/share/autojump/autojump.bash ] && source /usr/share/autojump/autojump.bash
+
+# Check for cowsay and fortune at startup
+if [ -x /usr/games/cowsay ] && [ -x /usr/games/fortune ]; then
+    fortune | cowsay
+elif [ -x /opt/homebrew/bin/cowsay ] && [ -x /opt/homebrew/bin/fortune ]; then
+    fortune | cowsay
+fi
+
+# --- Aliases ---
+
+# General purpose aliases
+alias nvr="nvr . -s"
+alias n="nvim ."
+alias g="git"
+alias vi="nvim --listen /tmp/nvim-server.pipe"
+alias refreshfontcache="fc-cache -fv"
+alias e="exit"
+alias lg="lazygit"
+alias sysz="$HOME/.bin/sysz"
+alias python="/usr/bin/python3"
+
+# Aliases for specific tools and scripts
+alias f=". $HOME/.local/bin/term_scripts/fzf_dev.sh"
+alias h=". $HOME/.local/bin/term_scripts/fzf_history.sh"
+alias killUnity="kill -9 $(pgrep Unity)"
+
+# Aliases for system commands
+alias setbright="sudo brightnessctl set "
+alias unmute="amixer -D pulse sset Master unmute"
+alias setSound="amixer -D pulse sset Master 50%"
+
+# Aliases for specific projects or tasks
+alias gametodo="nvim $HOME/.config/life/todos/game_todo"
+alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
+alias unitylaptop="env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/"
+
