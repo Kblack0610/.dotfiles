@@ -1,12 +1,3 @@
-# Default config for sway
-#
-# Copy this to ~/.config/sway/config and edit it to your liking.
-#
-# Read `man 5 sway` for a complete reference.
-
-
-# Bind workspaces 1 and 2 to your main laptop display
-
 workspace 1 output DP-3
 workspace 2 output DP-3
 workspace 3 output DP-3
@@ -19,13 +10,21 @@ workspace 8 output DP-2
 workspace 9 output DP-2
 workspace 10 output DP-2
 
+assign [class="kitty"] → 2
+assign [class="firefox"] → 3
+
+# exec "wlr-randr --output DP-3 --right-of DP-2"
+
+# Default config for sway
+#
+# Copy this to ~/.config/sway/config and edit it to your liking.
+#
+# Read `man 5 sway` for a complete reference.
 
 ### Variables
 #
 # Logo key. Use Mod1 for Alt.
 set $mod Mod4
-
-exec "wlr-randr --output DP-3 --right-of DP-2"
 
 # Home row direction keys, like vim
 set $left h
