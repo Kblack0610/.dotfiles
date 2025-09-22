@@ -7,6 +7,21 @@ source /usr/share/cachyos-fish-config/cachyos-config.fish
 #end
 
 # Fish Shell Configuration
+
+#SSH
+# if test -z (pgrep ssh-agent)
+#     eval (ssh-agent -c)
+#     set -Ux SSH_AUTH_SOCK $SSH_AUTH_SOCK
+#     set -Ux SSH_AGENT_PID $SSH_AGENT_PID
+# end
+trap "kill $SSH_AGENT_PID" exit
+trap "ssh-agent -k" exit
+if test -z (pgrep ssh-agent | string collect)
+    eval (ssh-agent -c)
+    set -Ux SSH_AUTH_SOCK $SSH_AUTH_SOCK
+    set -Ux SSH_AGENT_PID $SSH_AGENT_PID
+end
+
 # This file is based on the user's .zshrc settings.
 
 # --- Zsh-like Configuration ---
@@ -110,3 +125,12 @@ end
 # if test -f "$HOME/.bash_profile"
 #     source "$HOME/.bash_profile"
 # end
+
+# Set local NPM package directory and add to path
+set -x NPM_PACKAGES "$HOME/.npm-packages"
+set -x NODE_PATH "$NPM_PACKAGES/lib/node_modules" $NODE_PATH
+set -x PATH "$NPM_PACKAGES/bin" $PATH
+
+# Manually unset and set MANPATH
+set -e MANPATH
+set -x MANPATH "$NPM_PACKAGES/share/man" (manpath)
