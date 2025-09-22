@@ -1,1 +1,0 @@
-/home/kblack0610/.dotfiles/.local/bin/term_scripts/frizbee/frizbee_dir_search/target/debug/frizbee_dir_search: /home/kblack0610/.dotfiles/.local/bin/term_scripts/frizbee/frizbee_dir_search/src/main.rs
