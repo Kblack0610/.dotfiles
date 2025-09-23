@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-. ~/.dotfiles/.local/bin/installation_scripts/linux/arch/post_installation_scripts/install_requirements_functions.sh
+. ~/.dotfiles/.local/bin/installation_scripts/general/install_requirements_functions.sh
+. ~/.dotfiles/.local/bin/installation_scripts/linux/arch/install_requirements_functions.sh
 pids=""
 failures=0
 
@@ -35,10 +36,7 @@ echo "Starting Arch Linux installation..."
 (install_tools) 
 (install_prompt_reqs) 
 
-# Optional components (uncomment as needed)
-# (install_flatpak)
-# (install_browser)
-
+(install_ai_tools) 
 echo "Arch Linux installation completed!"
 echo "Please reboot your system to ensure all changes take effect."
 echo "Don't forget to configure your display manager and enable any needed services."
