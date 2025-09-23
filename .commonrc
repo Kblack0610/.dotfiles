@@ -24,13 +24,12 @@ fi
 
 # --- Sourcing Scripts ---
 
-# Source autojump for directory jumping functionality
-[ -f /usr/share/autojump/autojump.bash ] && source /usr/share/autojump/autojump.bash
-
-# Check for cowsay and fortune at startup
-if [ -x /usr/games/cowsay ] && [ -x /usr/games/fortune ]; then
+# # Display a fortune cookie if cowsay is available.
+if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
     fortune | cowsay
-elif [ -x /opt/homebrew/bin/cowsay ] && [ -x /opt/homebrew/bin/fortune ]; then
+elif [ -x /usr/sbin/cowsay -a -x /usr/sbin/fortune ]; then
+    fortune | cowsay
+elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
     fortune | cowsay
 fi
 

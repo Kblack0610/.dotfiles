@@ -48,3 +48,4 @@ ulimit -n 4000
 # --- Third-Party and Application Sourcing ---
 # Source autojump for directory jumping functionality.
 [ -f /usr/share/autojump/autojump.bash ] && source /usr/share/autojump/autojump.bash
+. "$HOME/.cargo/env"

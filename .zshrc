@@ -57,19 +57,15 @@ KEYTIMEOUT=1
 
 # # --- Path & Environment Variables ---
 
-
 # # Neovim-related environment variables.
 # export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
 # export MANWIDTH=999
-#
-# # Lazygit configuration.
-# export XDG_CONFIG_HOME="$HOME/.config"
 #
 # # --- Third-Party Tool & Plugin Loading ---
 # # Source other configuration files and tools.
 #
 # # Source the starship prompt.
-# eval "$(starship init zsh)"
+eval "$(starship init zsh)"
 #
 # # Source zsh-syntax-highlighting.
 # [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
@@ -83,22 +79,15 @@ KEYTIMEOUT=1
 # # Source autojump.
 [ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
 [ -f /usr/share/autojump/autojump.zsh ] && source /usr/share/autojump/autojump.zsh
-#
+
 # # Source FZF.
 # [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 #
 # # Source VS Code shell integration.
 # [[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
 #
-# # Source .bash_profile.
-# if [ -f "$HOME/.bash_profile" ]; then
-#     . "$HOME/.bash_profile"
-# fi
-#
-# # Display a fortune cookie if cowsay is available.
-# if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
-#     fortune | cowsay
-# elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
-#     fortune | cowsay
-# fi
-#
+# Source .bash_profile.
+if [ -f "$HOME/.bash_profile" ]; then
+    . "$HOME/.bash_profile"
+fi
+
