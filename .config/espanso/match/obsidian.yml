@@ -1,10 +1,13 @@
 matches:
   - trigger: ":noice"
     replace: "hey!"
-  - trigger: ":greet"
+  - trigger: ":project"
     form: |
-      **Idea: [[idea]]**
+      **[[project]]**
       **Status:** Backlog
       **Concept:** [[concept]]
-      [View Details]([[idea]]/README.md)
+      [View Details]([[project]]/README.md)
+    form_fields:
+      concept:
+        multiline: true 
 ...

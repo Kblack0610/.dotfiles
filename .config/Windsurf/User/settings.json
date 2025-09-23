@@ -2,7 +2,6 @@
   "windsurf.autoExecutionPolicy": "turbo",
   "windsurf.cascadeCommandsAllowList": [],
   "windsurf.autoOpenEditedFiles": true,
-  "workbench.colorTheme": "SynthWave84",
   "terminal.integrated.profiles.linux": {
     "Minimal ZSH": {
       "path": "/bin/zsh",
@@ -19,6 +18,5 @@
   },
   "terminal.integrated.defaultProfile.linux": "bash",
   "editor.renderWhitespace": "all",
-  "workbench.auxiliaryActivityBar.location": "default",
-
+  "workbench.auxiliaryActivityBar.location": "default"
 }

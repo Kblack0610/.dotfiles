@@ -51,99 +51,54 @@ bindkey -v
 KEYTIMEOUT=1
 
 # Custom key bindings.
-bindkey '^P' up-line-or-beginning-search
-bindkey '^N' down-line-or-beginning-search
-bindkey '^R' history-incremental-search-backward
+# bindkey '^P' up-line-or-beginning-search
+# bindkey '^N' down-line-or-beginning-search
+# bindkey '^R' history-incremental-search-backward
 
-# Wrapper function for copy/paste using xclip (Linux) or pbcopy (macOS).
-function x11-clip-wrap-widgets() {
-    local copy_or_paste=$1
-    shift
-    local copy_cmd='xclip -in -selection clipboard'
-    local paste_cmd='xclip -out -selection clipboard'
-    if [[ "$(uname)" == "Darwin" ]]; then
-        copy_cmd='pbcopy'
-        paste_cmd='pbpaste'
-    fi
+# # --- Path & Environment Variables ---
 
-    for widget in "$@"; do
-        local wrapper_func="_x11-clip-wrapped-$widget"
-        if [[ $copy_or_paste == "copy" ]]; then
-            eval "
-            function $wrapper_func() {
-                zle .$widget
-                echo -n \$CUTBUFFER | $copy_cmd
-            }"
-        else
-            eval "
-            function $wrapper_func() {
-                CUTBUFFER=\$($paste_cmd)
-                zle .$widget
-            }"
-        fi
-        zle -N $widget $wrapper_func
-    done
-}
-local copy_widgets=(
-    vi-yank vi-yank-eol vi-delete vi-backward-kill-word vi-change-whole-line
-)
-local paste_widgets=(
-    vi-put-{before,after}
-)
-x11-clip-wrap-widgets copy $copy_widgets
-x11-clip-wrap-widgets paste $paste_widgets
 
-# --- Path & Environment Variables ---
-# Add directories to the PATH.
-export PATH="$HOME/.npm-global/bin:$PATH"
-export PATH="$HOME/.maestro/bin:$PATH"
-export PATH="$HOME/src/go/bin/bluetuith:$PATH"
-
-# Add Go to the PATH if it's installed.
-if [ -d "/usr/local/go/bin" ]; then
-    export PATH=$PATH:/usr/local/go/bin
-fi
-
-# Neovim-related environment variables.
-export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
-export MANWIDTH=999
-
-# Lazygit configuration.
-export XDG_CONFIG_HOME="$HOME/.config"
-
-# --- Third-Party Tool & Plugin Loading ---
-# Source other configuration files and tools.
-
-# Source the starship prompt.
-eval "$(starship init zsh)"
-
-# Source zsh-syntax-highlighting.
-[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-[ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-
-# Source NVM (Node Version Manager).
-export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" # This loads nvm bash_completion
-
-# Source autojump.
+# # Neovim-related environment variables.
+# export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
+# export MANWIDTH=999
+#
+# # Lazygit configuration.
+# export XDG_CONFIG_HOME="$HOME/.config"
+#
+# # --- Third-Party Tool & Plugin Loading ---
+# # Source other configuration files and tools.
+#
+# # Source the starship prompt.
+# eval "$(starship init zsh)"
+#
+# # Source zsh-syntax-highlighting.
+# [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+# [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+#
+# # Source NVM (Node Version Manager).
+# export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
+# [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
+# [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" # This loads nvm bash_completion
+#
+# # Source autojump.
 [ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
 [ -f /usr/share/autojump/autojump.zsh ] && source /usr/share/autojump/autojump.zsh
-
-# Source FZF.
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-
-# Source VS Code shell integration.
-[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
-
-# Source .bash_profile.
-if [ -f "$HOME/.bash_profile" ]; then
-    . "$HOME/.bash_profile"
-fi
-
-# Display a fortune cookie if cowsay is available.
-if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
-    fortune | cowsay
-elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
-    fortune | cowsay
-fi
+#
+# # Source FZF.
+# [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+#
+# # Source VS Code shell integration.
+# [[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
+#
+# # Source .bash_profile.
+# if [ -f "$HOME/.bash_profile" ]; then
+#     . "$HOME/.bash_profile"
+# fi
+#
+# # Display a fortune cookie if cowsay is available.
+# if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
+#     fortune | cowsay
+# elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
+#     fortune | cowsay
+# fi
+#
