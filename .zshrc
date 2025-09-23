@@ -1,5 +1,6 @@
 # Source the common settings file if it exists.
 [ -f "$HOME/.commonrc" ] && source "$HOME/.commonrc"
+[ -f "$HOME/.workrc" ] && source "$HOME/.workrc"
 
 # This is my personal Zsh configuration file.
 # It is organized for clarity and easy management.
