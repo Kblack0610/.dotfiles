@@ -4,6 +4,12 @@ have various build scripts to install tools and dependencies. need to clean up f
 
 Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
 
+# Bluetooth
+
+NOTE:
+- need to turn FastConnection to on in /etc/bluetooth/main.conf
+- need to turn off autosuspend for bluetooth in grub
+
 # Packages:
 - git
 - zsh
@@ -39,3 +45,4 @@ Going to use one of the many methods here to load up linux
 -- after ubuntu config is scripted set up autoinstall:
 https://askubuntu.com/questions/1314705/where-to-copy-autoinstall-yaml-file-in-iso-image-in-ubuntu-20-04-for-auto-instal
 https://canonical-subiquity.readthedocs-hosted.com/en/latest/intro-to-autoinstall.html
+
