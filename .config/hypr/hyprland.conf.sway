@@ -1,0 +1,327 @@
+###############################################################################
+### Monitor Configuration
+###############################################################################
+# Configure monitors - adjust to your setup
+monitor=DP-3,preferred,0x0,1
+monitor=DP-2,preferred,1920x0,1
+monitor=DP-5,preferred,auto,1,mirror,DP-3
+
+###############################################################################
+### Environment Variables
+###############################################################################
+env = XCURSOR_SIZE,24
+env = QT_QPA_PLATFORMTHEME,qt5ct
+
+###############################################################################
+### Startup Applications
+###############################################################################
+exec-once = nm-applet
+exec-once = waybar
+exec-once = swaybg -m fill -i ~/Media/Wallpapers/*
+exec = hyprctl setcursor Breeze_Snow 24
+
+# Lock screen setup (like xss-lock in i3)
+exec-once = swayidle -w timeout 300 'swaylock -f -c 000000' timeout 600 'hyprctl dispatch dpms off' resume 'hyprctl dispatch dpms on' before-sleep 'swaylock -f -c 000000'
+
+###############################################################################
+### Input Configuration
+###############################################################################
+input {
+    kb_layout = us
+    kb_variant =
+    kb_model =
+    kb_options =
+    kb_rules =
+
+    follow_mouse = 1
+    sensitivity = 0 # -1.0 - 1.0, 0 means no modification
+
+    touchpad {
+        natural_scroll = no
+    }
+}
+
+###############################################################################
+### General Configuration
+###############################################################################
+general {
+    gaps_in = 10
+    gaps_out = 10
+    border_size = 1
+    col.active_border = rgba(81a1c1ee) rgba(88c0d0ee) 45deg
+    col.inactive_border = rgba(4c566aaa)
+
+    layout = dwindle
+    allow_tearing = false
+}
+
+###############################################################################
+### Decoration
+###############################################################################
+decoration {
+    rounding = 0
+
+    blur {
+        enabled = true
+        size = 3
+        passes = 1
+    }
+
+    drop_shadow = yes
+    shadow_range = 4
+    shadow_render_power = 3
+    col.shadow = rgba(1a1a1aee)
+}
+
+###############################################################################
+### Animations
+###############################################################################
+animations {
+    enabled = yes
+    bezier = myBezier, 0.05, 0.9, 0.1, 1.05
+    animation = windows, 1, 7, myBezier
+    animation = windowsOut, 1, 7, default, popin 80%
+    animation = border, 1, 10, default
+    animation = borderangle, 1, 8, default
+    animation = fade, 1, 7, default
+    animation = workspaces, 1, 6, default
+}
+
+###############################################################################
+### Layout Configuration
+###############################################################################
+dwindle {
+    pseudotile = yes
+    preserve_split = yes
+}
+
+master {
+    new_status = master
+}
+
+gestures {
+    workspace_swipe = off
+}
+
+misc {
+    force_default_wallpaper = 0
+}
+
+###############################################################################
+### Variables
+###############################################################################
+$mainMod = SUPER
+$term = alacritty
+$menu = wofi --show drun
+$browser = firefox
+$fileManager = caja
+
+###############################################################################
+### Workspace Configuration
+###############################################################################
+# Workspace names (matching i3 config)
+workspace = 1, name:main, monitor:DP-5
+workspace = 2, name:code, monitor:DP-5
+workspace = 3, name:browser, monitor:DP-5
+workspace = 4, name:threads, monitor:DP-5
+workspace = 5, name:party, monitor:DP-5
+workspace = 6, name:notes, monitor:DP-3
+workspace = 7, name:media, monitor:DP-3
+workspace = 8, name:test, monitor:DP-3
+workspace = 9, name:home, monitor:DP-3
+workspace = 10, name:getting-weird, monitor:DP-3
+
+###############################################################################
+### Window Rules
+###############################################################################
+# Window rules for automatic workspace assignment
+windowrule = workspace 2 silent, ^(Alacritty)$
+windowrule = workspace 3 silent, ^(firefox)$
+windowrule = workspace 6 silent, ^(obsidian)$
+windowrule = workspace 7 silent, ^(Spotify)$
+windowrule = workspace 7 silent, ^(discord)$
+windowrule = workspace 1 silent, ^(unityhub)$
+windowrule = workspace 1 silent, ^(Unity)$
+
+# Floating windows
+windowrulev2 = float, class:^(pavucontrol)$
+windowrulev2 = float, class:^(nm-connection-editor)$
+
+###############################################################################
+### Keybindings - Basic
+###############################################################################
+# Terminal, browser, file manager
+bind = $mainMod, RETURN, exec, $term
+bind = $mainMod, C, exec, $browser
+bind = $mainMod, N, exec, $fileManager
+bind = $mainMod, U, exec, unityhub
+
+# Application launcher
+bind = $mainMod, D, exec, $menu
+
+# Window management
+bind = $mainMod SHIFT, Q, killactive
+bind = $mainMod SHIFT, E, exit
+bind = $mainMod, F, fullscreen
+bind = $mainMod SHIFT, SPACE, togglefloating
+bind = $mainMod, P, pseudo # dwindle
+bind = $mainMod, V, togglesplit # dwindle
+
+# Lock screen
+bind = CTRL $mainMod, L, exec, swaylock -c 000000
+
+###############################################################################
+### Keybindings - Focus Movement (vim-style + arrows)
+###############################################################################
+# Focus with vim keys (matching i3: j=left, k=down, l=up, semicolon=right)
+bind = $mainMod, J, movefocus, l
+bind = $mainMod, K, movefocus, d
+bind = $mainMod, L, movefocus, u
+bind = $mainMod, SEMICOLON, movefocus, r
+
+# Focus with arrow keys
+bind = $mainMod, left, movefocus, l
+bind = $mainMod, right, movefocus, r
+bind = $mainMod, up, movefocus, u
+bind = $mainMod, down, movefocus, d
+
+###############################################################################
+### Keybindings - Window Movement
+###############################################################################
+# Move with vim keys
+bind = $mainMod SHIFT, J, movewindow, l
+bind = $mainMod SHIFT, K, movewindow, d
+bind = $mainMod SHIFT, L, movewindow, u
+bind = $mainMod SHIFT, SEMICOLON, movewindow, r
+
+# Move with arrow keys
+bind = $mainMod SHIFT, left, movewindow, l
+bind = $mainMod SHIFT, right, movewindow, r
+bind = $mainMod SHIFT, up, movewindow, u
+bind = $mainMod SHIFT, down, movewindow, d
+
+###############################################################################
+### Keybindings - Workspaces
+###############################################################################
+# Switch workspaces
+bind = $mainMod, 1, workspace, 1
+bind = $mainMod, 2, workspace, 2
+bind = $mainMod, 3, workspace, 3
+bind = $mainMod, 4, workspace, 4
+bind = $mainMod, 5, workspace, 5
+bind = $mainMod, 6, workspace, 6
+bind = $mainMod, 7, workspace, 7
+bind = $mainMod, 8, workspace, 8
+bind = $mainMod, 9, workspace, 9
+bind = $mainMod, 0, workspace, 10
+
+# Move active window to workspace
+bind = $mainMod SHIFT, 1, movetoworkspace, 1
+bind = $mainMod SHIFT, 2, movetoworkspace, 2
+bind = $mainMod SHIFT, 3, movetoworkspace, 3
+bind = $mainMod SHIFT, 4, movetoworkspace, 4
+bind = $mainMod SHIFT, 5, movetoworkspace, 5
+bind = $mainMod SHIFT, 6, movetoworkspace, 6
+bind = $mainMod SHIFT, 7, movetoworkspace, 7
+bind = $mainMod SHIFT, 8, movetoworkspace, 8
+bind = $mainMod SHIFT, 9, movetoworkspace, 9
+bind = $mainMod SHIFT, 0, movetoworkspace, 10
+
+# Move workspace to output (matching i3 config)
+bind = $mainMod SHIFT, P, movecurrentworkspacetomonitor, DP-5
+bind = $mainMod SHIFT, O, movecurrentworkspacetomonitor, DP-3
+
+###############################################################################
+### Keybindings - Layout
+###############################################################################
+# Layout modes (matching i3)
+bind = $mainMod, S, exec, hyprctl keyword general:layout "master"
+bind = $mainMod, W, exec, hyprctl keyword general:layout "dwindle"
+bind = $mainMod, E, togglesplit
+
+# Split orientation (matching i3)
+bind = $mainMod, H, splitratio, -0.1
+bind = $mainMod, V, splitratio, +0.1
+
+###############################################################################
+### Keybindings - Resize
+###############################################################################
+# Resize mode (submap similar to i3 mode)
+bind = $mainMod, R, submap, resize
+submap = resize
+
+# Resize with vim keys
+binde = , J, resizeactive, -10 0
+binde = , K, resizeactive, 0 10
+binde = , L, resizeactive, 0 -10
+binde = , SEMICOLON, resizeactive, 10 0
+
+# Resize with arrow keys
+binde = , left, resizeactive, -10 0
+binde = , right, resizeactive, 10 0
+binde = , up, resizeactive, 0 -10
+binde = , down, resizeactive, 0 10
+
+# Exit resize mode
+bind = , escape, submap, reset
+bind = , RETURN, submap, reset
+submap = reset
+
+# Fine control resize (matching i3 Ctrl bindings)
+binde = $mainMod CTRL, left, resizeactive, -1 0
+binde = $mainMod CTRL, right, resizeactive, 1 0
+binde = $mainMod CTRL, up, resizeactive, 0 -1
+binde = $mainMod CTRL, down, resizeactive, 0 1
+
+# Coarse control resize (matching i3 Ctrl+Shift bindings)
+binde = $mainMod CTRL SHIFT, left, resizeactive, -10 0
+binde = $mainMod CTRL SHIFT, right, resizeactive, 10 0
+binde = $mainMod CTRL SHIFT, up, resizeactive, 0 -10
+binde = $mainMod CTRL SHIFT, down, resizeactive, 0 10
+
+###############################################################################
+### Keybindings - Gaps (matching i3)
+###############################################################################
+bind = $mainMod, Z, exec, hyprctl keyword general:gaps_out $(($(hyprctl getoption general:gaps_out | grep int | awk '{print $2}') + 5))
+bind = $mainMod SHIFT, Z, exec, hyprctl keyword general:gaps_out $(($(hyprctl getoption general:gaps_out | grep int | awk '{print $2}') - 5))
+
+###############################################################################
+### Keybindings - Screenshots (matching i3)
+###############################################################################
+# Screenshot bindings using grim and slurp
+bind = , F7, exec, grim -g "$(slurp)" ~/Media/Pictures/$(date +'%Y-%m-%d_%H-%M-%S').png
+bind = , F8, exec, grim ~/Media/Pictures/$(date +'%Y-%m-%d_%H-%M-%S').png
+
+# Clipboard screenshots
+bind = CTRL, F7, exec, grim - | wl-copy
+bind = CTRL, F8, exec, grim -g "$(slurp)" - | wl-copy
+bind = CTRL SHIFT, Print, exec, grim -g "$(slurp)" - | wl-copy
+
+###############################################################################
+### Keybindings - Media Controls
+###############################################################################
+# Volume control
+binde = , XF86AudioRaiseVolume, exec, wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+
+binde = , XF86AudioLowerVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+bind = , XF86AudioMute, exec, wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+bind = , XF86AudioMicMute, exec, wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
+
+# Brightness control
+binde = , XF86MonBrightnessUp, exec, brightnessctl set 5%+
+binde = , XF86MonBrightnessDown, exec, brightnessctl set 5%-
+
+###############################################################################
+### Keybindings - Scratchpad
+###############################################################################
+bind = $mainMod, MINUS, togglespecialworkspace, magic
+bind = $mainMod SHIFT, MINUS, movetoworkspace, special:magic
+
+###############################################################################
+### Keybindings - Reload/Restart
+###############################################################################
+bind = $mainMod SHIFT, C, exec, hyprctl reload
+bind = $mainMod SHIFT, R, exec, hyprctl reload
+
+# Notification for task complete (matching i3)
+bind = $mainMod SHIFT, N, exec, notify-send "Task Complete" "Cursor and Windsurf have finished working"
+1
