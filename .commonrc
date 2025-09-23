@@ -17,6 +17,11 @@ export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
 export MANWIDTH=999
 export XDG_CONFIG_HOME="$HOME/.config"
 
+# Add Go to the PATH if it's installed.
+if [ -d "/usr/local/go/bin" ]; then
+    export PATH=$PATH:/usr/local/go/bin
+fi
+
 # --- Sourcing Scripts ---
 
 # Source autojump for directory jumping functionality
