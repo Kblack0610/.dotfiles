@@ -92,3 +92,9 @@ if [ -f "$HOME/.bash_profile" ]; then
     . "$HOME/.bash_profile"
 fi
 
+# SuperClaude alias (wrapper in .local/bin)
+alias superclaude="~/.local/bin/superclaude"
+
+
+# Add .local/bin to PATH if not already present
+[[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
