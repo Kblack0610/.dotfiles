@@ -7,7 +7,7 @@
       "path": "/bin/zsh",
       "args": [
         "-c",
-        "source /home/kblack0610/.vscode-minimal-zsh.sh && exec zsh --no-rcs"
+        "source /home/kblack0610/.config/Code/User/.vscode-minimal-zsh.sh && exec zsh --no-rcs"
       ],
       "icon": "terminal-bash"
     },
