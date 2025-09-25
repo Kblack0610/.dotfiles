@@ -35,9 +35,9 @@
     ],
     // Modules configuration
      "hyprland/workspaces": {
-      //   "disable-scroll": true,
-         "all-outputs": true,
-      //   "warp-on-scroll": false,
+         //"disable-scroll": true,
+         "all-outputs": false,
+         //"warp-on-scroll": false,
          "format": "{name}: {icon}",
          "format-icons": {
              "1": "",
@@ -47,7 +47,8 @@
              "5": "",
              "urgent": "",
              "focused": "",
-             "default": ""
+             "default": "",
+             "active": "",
          }
      },
     "keyboard-state": {
