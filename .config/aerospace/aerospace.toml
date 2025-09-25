@@ -110,17 +110,17 @@ shift-cmd-9 = 'move-node-to-workspace 9'
 
 
 #NOTE: to find bundle id of app: osascript -e 'id of app "kitty"'           
-[[on-window-detected]]
-    if.app-id = 'com.todesktop.230313mzl4w4u92' #Cursor
-    run = 'move-node-to-workspace 1'
+# [[on-window-detected]]
+#     if.app-id = 'com.todesktop.230313mzl4w4u92' #Cursor
+#     run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
     if.app-id = 'net.kovidgoyal.kitty'
-    run = 'move-node-to-workspace 2'
+    run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
-    if.app-id = 'org.mozilla.floorp'
-    run = 'move-node-to-workspace 3'
+    if.app-id = 'org.mozilla.firefox'
+    run = 'move-node-to-workspace 2'
 
 [[on-window-detected]]
     if.app-id = 'com.google.android.studio' 
