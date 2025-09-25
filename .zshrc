@@ -51,11 +51,6 @@ bindkey -v
 # Fix the small delay when entering vi-mode.
 KEYTIMEOUT=1
 
-# Custom key bindings.
-# bindkey '^P' up-line-or-beginning-search
-# bindkey '^N' down-line-or-beginning-search
-# bindkey '^R' history-incremental-search-backward
-
 # # --- Path & Environment Variables ---
 
 # # Neovim-related environment variables.
