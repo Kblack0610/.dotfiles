@@ -7,6 +7,8 @@ Media/Pictures
 Media/Videos
 Media/Music
 
+.local/bin
+
 .config/jesseduffield/lazygit/state.yml
 
 .config/unity3d/DefaultCompany
@@ -16,6 +18,9 @@ Media/Music
 .config/unity3d/*.log
 
 .config/nvim/lazy-lock.json
+
+.config/Windsurf/User
+!.config/Windsurf/User/settings.json
 
 .codeium/*
 !.codeium/windsurf/mcp_config.json

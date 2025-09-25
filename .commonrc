@@ -47,8 +47,8 @@ alias sysz="$HOME/.bin/sysz"
 alias python="/usr/bin/python3"
 
 # Aliases for specific tools and scripts
-alias f=". $HOME/.local/bin/term_scripts/fzf_dev.sh"
-alias h=". $HOME/.local/bin/term_scripts/fzf_history.sh"
+alias f=". $HOME/.local/src/term_scripts/fzf_dev.sh"
+alias h=". $HOME/.local/src/term_scripts/fzf_history.sh"
 alias killUnity="kill -9 $(pgrep Unity)"
 
 # Aliases for system commands
