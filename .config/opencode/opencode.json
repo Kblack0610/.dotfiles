@@ -117,5 +117,11 @@
         "~/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
       ]
     },
+    "github": {
+      "type": "local",
+      "command": [
+        "~/.config/opencode/mcp/github-mcp-wrapper.sh"
+      ]
+    }
   }
 }
