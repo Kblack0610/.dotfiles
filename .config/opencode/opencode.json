@@ -34,6 +34,16 @@
         "bash": "allow",
         "webfetch": "allow"
       }
+    },
+    "code-reviewer": {
+      "description": "Reviews code for best practices and potential issues",
+      "mode": "subagent",
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "prompt": "You are a code reviewer. Focus on security, performance, and maintainability.",
+      "tools": {
+        "write": false,
+        "edit": false
+      }
     }
   },
   "mcp": {
@@ -81,21 +91,6 @@
         "start-mcp-server",
         "--context",
         "ide-assistant"
-      ]
-    },
-    "ssh-mcp": {
-      "type": "local",
-      "command": [
-        "npx",
-        "ssh-mcp",
-        "-y",
-        "--",
-        "--host=1.2.3.4",
-        "--port=22",
-        "--user=root",
-        "--password=pass",
-        "--key=path/to/key",
-        "--timeout=30000"
       ]
     },
     "docker-mcp": {
