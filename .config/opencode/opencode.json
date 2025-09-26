@@ -88,6 +88,42 @@
         "--context",
         "ide-assistant"
       ],
-    }
+    },
+    "ssh-mcp": {
+      "type": "local",
+      "command": [
+        "npx",
+        "ssh-mcp",
+        "-y",
+        "--",
+        "--host=1.2.3.4",
+        "--port=22",
+        "--user=root",
+        "--password=pass",
+        "--key=path/to/key",
+        "--timeout=30000"
+      ]
+    },
+    "docker-mcp": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "docker-mcp"
+      ]
+    },
+    "digitalocean": {
+      "type": "local",
+      "command": [
+        "npx",
+        "@digitalocean/mcp"
+      ],
+      "environment": {
+        "DIGITALOCEAN_API_TOKEN": "${DIGITALOCEAN_API_TOKEN}"
+      }
+    },
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
   }
 }
