@@ -1,5 +1,8 @@
 # --- Path and Environment Variables ---
 
+# Add .NET tools for Unity to PATH
+export PATH="$PATH:/home/kblack0610/.dotnet/tools"
+
 # Add custom directories to PATH
 export PATH="$HOME/.local/bin:$HOME/Utilities:$PATH"
 export PATH="$PATH:$HOME/.maestro/bin"
@@ -8,9 +11,13 @@ export PATH="$PATH:$HOME/.spicetify"
 # Set up local NPM packages
 export NPM_PACKAGES="$HOME/.npm-packages"
 export NODE_PATH="$NPM_PACKAGES/lib/node_modules:$NODE_PATH"
+export NODE_ENV=development
 export PATH="$NPM_PACKAGES/bin:$PATH"
 unset MANPATH
 export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
+
+# Set up Android SDK (for Mac, ideally can separate this)
+export ANDROID_HOME=~/Library/Android/sdk/
 
 # Other environment variables
 export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
@@ -21,6 +28,9 @@ export XDG_CONFIG_HOME="$HOME/.config"
 if [ -d "/usr/local/go/bin" ]; then
     export PATH=$PATH:/usr/local/go/bin
 fi
+
+# Rust? (might remove)
+. "$HOME/.cargo/env"
 
 # --- Sourcing Scripts ---
 
