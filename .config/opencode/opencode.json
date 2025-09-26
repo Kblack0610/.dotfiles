@@ -69,14 +69,6 @@
         "@playwright/mcp@latest"
       ]
     },
-    "magic": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@21st-dev/magic"
-      ]
-    },
     "serena": {
       "type": "local",
       "command": [
