@@ -114,13 +114,13 @@
     "digitalocean": {
       "type": "local",
       "command": [
-        "~/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
+        "home/kblack0610/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
       ]
     },
     "github": {
       "type": "local",
       "command": [
-        "~/.config/opencode/mcp/github-mcp-wrapper.sh"
+        "home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh"
       ]
     }
   }
