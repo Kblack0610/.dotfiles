@@ -43,7 +43,7 @@
         "npx",
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
-      ],
+      ]
     },
     "morphllm-fast-apply": {
       "type": "local",
@@ -51,7 +51,7 @@
         "npx",
         "-y",
         "@morph-llm/morph-fast-apply"
-      ],
+      ]
     },
     "context7": {
       "type": "local",
@@ -59,7 +59,7 @@
         "npx",
         "-y",
         "@upstash/context7-mcp"
-      ],
+      ]
     },
     "playwright": {
       "type": "local",
@@ -67,7 +67,7 @@
         "npx",
         "-y",
         "@playwright/mcp@latest"
-      ],
+      ]
     },
     "magic": {
       "type": "local",
@@ -87,7 +87,7 @@
         "start-mcp-server",
         "--context",
         "ide-assistant"
-      ],
+      ]
     },
     "ssh-mcp": {
       "type": "local",
@@ -123,7 +123,8 @@
     },
     "github": {
       "type": "remote",
-      "url": "https://api.githubcopilot.com/mcp/"
-    },
+      "url": "https://api.githubcopilot.com/mcp/",
+      "enabled": true
+    }
   }
 }
