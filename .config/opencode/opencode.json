@@ -114,12 +114,8 @@
     "digitalocean": {
       "type": "local",
       "command": [
-        "npx",
-        "@digitalocean/mcp"
-      ],
-      "environment": {
-        "DIGITALOCEAN_API_TOKEN": "${DIGITALOCEAN_API_TOKEN}"
-      }
+        "~/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
+      ]
     },
     "github": {
       "type": "remote",
