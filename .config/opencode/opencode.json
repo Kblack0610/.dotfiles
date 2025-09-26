@@ -117,10 +117,5 @@
         "~/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
       ]
     },
-    "github": {
-      "type": "remote",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "enabled": true
-    }
   }
 }
