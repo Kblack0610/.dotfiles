@@ -60,18 +60,24 @@ create_directories() {
     log_info "Directory structure created"
 }
 
-# Update system packages
-update_system() {
-    log_section "Updating system"
-    log_info "No default implementation - override in OS-specific file"
-}
-
 # Install basic requirements
 install_basics() {
     log_section "Installing basic requirements"
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Update system packages
+update_system() {
+    log_section "Updating system"
+    log_info "No default implementation - override in OS-specific file"
+}
+
+
+# Install basic requirements
+install_os_reqs() {
+    log_section "Installing basic requirements"
+    log_info "No default implementation - override in OS-specific file"
+}
 # Install development tools
 install_tools() {
     log_section "Installing development tools"
@@ -208,6 +214,26 @@ install_lazygit() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Install Rust
+install_rust() {
+    log_section "Installing Rust"
+    
+    if command -v rustc &>/dev/null; then
+        log_info "Rust already installed ($(rustc --version))"
+        return 0
+    fi
+    
+    log_info "Downloading and installing Rust..."
+    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
+        # Source cargo environment
+        source "$HOME/.cargo/env"
+        log_info "✓ Rust installed successfully"
+    else
+        log_error "Failed to install Rust"
+        return 1
+    fi
+}
+
 # Setup Git configuration
 setup_git() {
     log_section "Configuring Git"
@@ -296,6 +322,7 @@ install_all() {
     install_tmux
     install_lazygit
     install_kitty
+    install_rust
     
     # GUI (if applicable)
     install_gui
@@ -315,6 +342,6 @@ export -f log_info log_error log_warning log_section
 export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
-export -f install_nvim install_tmux install_kitty install_lazygit
+export -f install_nvim install_tmux install_kitty install_lazygit install_rust
 export -f install_fonts setup_git apply_dotfiles install_npm_packages
 export -f install_all
