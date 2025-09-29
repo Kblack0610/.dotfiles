@@ -5,44 +5,48 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
-      ],
-      "env": {}
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/home/kblack0610/dev/Games/",
-        "/home/kblack0610/dev/Games/DodginBalls_root/DodginBalls/",
-        "/home/kblack0610/dev/Games/HistoryTime_root/history-time/history-time/",
-        "/home/kblack0610/.dotfiles/"
       ]
     },
-    "memory": {
+    "context7": {
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-memory"
-      ],
-      "env": {
-        "MEMORY_FILE_PATH": ""
-      }
+        "@upstash/context7-mcp"
+      ]
     },
-    "puppeteer": {
+    "playwright": {
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ],
-      "env": {}
+        "@playwright/mcp@latest",
+        "--browser",
+        "firefox"
+      ]
     },
-    "git": {
+    "serena": {
       "command": "uvx",
       "args": [
-        "mcp-server-git"
-      ],
-      "env": {}
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant"
+      ]
+    },
+    "docker-mcp": {
+      "command": "uvx",
+      "args": [
+        "docker-mcp"
+      ]
+    },
+    "digitalocean": {
+      "command": "/home/kblack0610/.config/opencode/mcp/digitalocean-mcp-wrapper.sh",
+      "args": []
+    },
+    "github": {
+      "command": "/home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh",
+      "args": []
     },
     "linear": {
       "command": "npx",

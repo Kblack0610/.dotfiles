@@ -47,6 +47,14 @@
     "github": {
       "command": "/home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh",
       "args": []
+    },
+    "linear": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/sse"
+      ]
     }
   }
 }
