@@ -55,14 +55,6 @@
         "@modelcontextprotocol/server-sequential-thinking"
       ]
     },
-    "morphllm-fast-apply": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@morph-llm/morph-fast-apply"
-      ]
-    },
     "context7": {
       "type": "local",
       "command": [
