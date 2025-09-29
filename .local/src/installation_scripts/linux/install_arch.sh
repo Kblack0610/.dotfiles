@@ -113,6 +113,8 @@ install_tools() {
         "fd"
         "bat"
         "exa"
+        "obsidian"
+        "dbeaver"
     )
     
     for tool in "${tools[@]}"; do
