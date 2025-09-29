@@ -73,44 +73,35 @@ init_system() {
 }
 
 # Package mapping for different systems
-declare -A PACKAGE_MAP
-
-# Initialize package mappings
-init_package_map() {
-    # Format: PACKAGE_MAP["generic_name:system"]="actual_package_name"
-
-    # libfuse2 mappings
-    PACKAGE_MAP["libfuse2:debian"]="libfuse2"
-    PACKAGE_MAP["libfuse2:arch"]="fuse2"
-    PACKAGE_MAP["libfuse2:mac"]=""  # Not needed on Mac
-    PACKAGE_MAP["libfuse2:android"]=""  # Not available on Android
-
-    # fortune mappings
-    PACKAGE_MAP["fortune:debian"]="fortune"
-    PACKAGE_MAP["fortune:arch"]="fortune-mod"
-    PACKAGE_MAP["fortune:mac"]="fortune"
-    PACKAGE_MAP["fortune:android"]="fortune"
-
-    # i3 window manager
-    PACKAGE_MAP["i3:debian"]="i3-wm"
-    PACKAGE_MAP["i3:arch"]="i3-wm"
-    PACKAGE_MAP["i3:mac"]=""  # Not available on Mac
-    PACKAGE_MAP["i3:android"]=""  # Not available on Android
-
-    # Add more mappings as needed
-}
+# Using a function-based approach for compatibility
 
 # Get the correct package name for the current system
 get_package_name() {
     local generic_name="$1"
-    local key="${generic_name}:${SYSTEM_TYPE}"
-
-    if [[ -v PACKAGE_MAP[$key] ]]; then
-        echo "${PACKAGE_MAP[$key]}"
-    else
-        # If no mapping exists, assume the generic name is correct
-        echo "$generic_name"
-    fi
+    local system_type="${SYSTEM_TYPE}"
+    
+    case "${generic_name}:${system_type}" in
+        # libfuse2 mappings
+        "libfuse2:debian") echo "libfuse2" ;;
+        "libfuse2:arch") echo "fuse2" ;;
+        "libfuse2:mac") echo "" ;;  # Not needed on Mac
+        "libfuse2:android") echo "" ;;  # Not available on Android
+        
+        # fortune mappings
+        "fortune:debian") echo "fortune" ;;
+        "fortune:arch") echo "fortune-mod" ;;
+        "fortune:mac") echo "fortune" ;;
+        "fortune:android") echo "fortune" ;;
+        
+        # i3 window manager
+        "i3:debian") echo "i3-wm" ;;
+        "i3:arch") echo "i3-wm" ;;
+        "i3:mac") echo "" ;;  # Not available on Mac
+        "i3:android") echo "" ;;  # Not available on Android
+        
+        # Default: return the generic name
+        *) echo "$generic_name" ;;
+    esac
 }
 
 # Install a package with system-specific command
@@ -606,7 +597,6 @@ install_all() {
 
     # Initialize system
     init_system "$system_type"
-    init_package_map
 
     # Run all installation functions
     install_system_settings
@@ -635,7 +625,6 @@ install_all() {
 
 # Export functions for use in other scripts
 export -f init_system
-export -f init_package_map
 export -f get_package_name
 export -f install_package
 export -f update_system

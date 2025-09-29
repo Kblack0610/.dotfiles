@@ -9,7 +9,6 @@ source "$SCRIPT_DIR/../install_requirements_agnostic.sh"
 
 # Initialize for macOS
 init_system "mac"
-init_package_map
 
 # macOS-specific overrides
 

@@ -112,52 +112,8 @@ main() {
         exit 0
     fi
 
-    # Source the agnostic script
-    source "$SCRIPT_DIR/install_requirements_agnostic.sh"
-
-    # Run installation based on system type
-    case "$os_type" in
-        debian)
-            if [ -f "$SCRIPT_DIR/linux/debian/install_requirements_functions_new.sh" ]; then
-                source "$SCRIPT_DIR/linux/debian/install_requirements_functions_new.sh"
-                install_all_debian
-            else
-                # Fallback to agnostic installation
-                install_all "debian"
-            fi
-            ;;
-        arch)
-            if [ -f "$SCRIPT_DIR/linux/arch/install_requirements_functions_new.sh" ]; then
-                source "$SCRIPT_DIR/linux/arch/install_requirements_functions_new.sh"
-                install_all_arch
-            else
-                # Fallback to agnostic installation
-                install_all "arch"
-            fi
-            ;;
-        mac)
-            if [ -f "$SCRIPT_DIR/mac/install_requirements_functions_new.sh" ]; then
-                source "$SCRIPT_DIR/mac/install_requirements_functions_new.sh"
-                install_all_mac
-            else
-                # Fallback to agnostic installation
-                install_all "mac"
-            fi
-            ;;
-        android)
-            if [ -f "$SCRIPT_DIR/android/install_android_functions_new.sh" ]; then
-                source "$SCRIPT_DIR/android/install_android_functions_new.sh"
-                install_all_termux
-            else
-                # Fallback to agnostic installation
-                install_all "android"
-            fi
-            ;;
-        *)
-            echo -e "${RED}Unsupported system: $os_type${NC}"
-            exit 1
-            ;;
-    esac
+    # Run the agnostic installer
+    "$SCRIPT_DIR/install_agnostic.sh" "$os_type"
 
     echo ""
     echo -e "${GREEN}================================================${NC}"
