@@ -33,7 +33,7 @@ function install_tools() {
 	#install tools
 	brew install autojump -y &> /dev/null
 	brew install glances -y &> /dev/null
-
+  brew install --cask karabiner-elements &> /dev/null
 	echo "tools installed"
 }
 
@@ -106,14 +106,7 @@ function install_nerd_fonts() {
   # 
   # fc-cache -fv
 }
-function install_prompt_reqs() {
-	echo "Installing prompt requirements"
-	#bash requirements
-	yes | sudo apt install cowsay -y &> /dev/null
-	yes | sudo apt install fortune -y &> /dev/null
-	yes | sudo apt install feh -y &> /dev/null
-	echo "prompt requirements installed"
-}
+
 function install_zsh() {
 	echo "Installing zsh"
 	if ! command -v zsh &> /dev/null 
@@ -191,14 +184,6 @@ function install_lazygit(){
 	tar xf lazygit.tar.gz lazygit 
 	sudo install lazygit /usr/local/bin
 	echo "Lazygit installed"
-}
-
-function install_flatpak(){
-	echo "Installing flatpak"
-	yes | sudo apt install flatpak -y &> /dev/null
-	yes | flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-
-	echo "flatpak installed"
 }
 
 function install_nvim(){

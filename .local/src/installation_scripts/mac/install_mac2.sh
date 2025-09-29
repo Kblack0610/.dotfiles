@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. ~/.dotfiles/.local/bin/installation_scripts/mac/install_requirements_functions.sh
+. ~/.dotfiles/.local/src/installation_scripts/mac/install_requirements_functions_new.sh
 pids=""
 failures=0
 (install_reqs) 
@@ -9,7 +9,6 @@ failures=0
 (install_oh_my_zsh)
 (install_starship) 
 (install_dotfiles)
-(install_flatpak)
 (install_nerd_fonts)
 (install_tools) 
 (install_git)
