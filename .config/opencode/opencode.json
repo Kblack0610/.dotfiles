@@ -111,6 +111,15 @@
       "command": [
         "home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh"
       ]
+    },
+    "linear": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/sse"
+      ],
+      "enabled": false
     }
   }
 }
