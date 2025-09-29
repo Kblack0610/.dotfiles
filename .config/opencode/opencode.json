@@ -88,14 +88,27 @@
     "digitalocean": {
       "type": "local",
       "command": [
-        "home/kblack0610/.config/opencode/mcp/digitalocean-mcp-wrapper.sh"
-      ]
+        "npx",
+        "@digitalocean/mcp"
+      ],
+      "environment": {
+        "DIGITALOCEAN_API_TOKEN": "$DIGITALOCEAN_API_TOKEN"
+      }
     },
     "github": {
       "type": "local",
       "command": [
-        "home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh"
-      ]
+        "docker",
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
+      }
     },
     "docker-mcp": {
       "type": "local",
