@@ -135,11 +135,9 @@ install_gui() {
     log_section "Installing GUI applications"
     
     # These should be in Brewfile, but provide fallback
+    # Note: Kitty is installed separately via install_kitty() from source
     local casks=(
-        "kitty"
         "firefox"
-        "visual-studio-code"
-        "rectangle"
     )
     
     for app in "${casks[@]}"; do
@@ -164,6 +162,7 @@ install_runtime() {
     if ! command -v python3 &>/dev/null; then
         log_info "Installing Python..."
         brew install python@3.12 &>/dev/null
+        brew install uv &>/dev/null
     fi
     
     # Rust
@@ -198,31 +197,25 @@ install_nvim() {
     fi
 }
 
-# Override: Install tmux
-install_tmux() {
-    log_section "Installing tmux"
-    
-    if ! brew list --formula 2>/dev/null | grep -q "^tmux$"; then
-        brew install tmux &>/dev/null
-        log_info "tmux installed"
-    else
-        log_info "tmux already installed"
-    fi
-}
-
 # Override: Install Kitty
 install_kitty() {
     log_section "Installing Kitty Terminal"
     
-    if brew list --cask 2>/dev/null | grep -q "^kitty$"; then
+    if command -v kitty &>/dev/null; then
         log_info "Kitty already installed"
-    elif ! brew install --cask kitty &>/dev/null; then
-        # Fallback to manual installation
-        log_info "Installing Kitty manually..."
-        curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin
-        mkdir -p ~/.local/bin
-        ln -sf ~/.local/kitty.app/bin/kitty ~/.local/bin/
+        return 0
     fi
+    
+    # Install from official source
+    log_info "Installing Kitty from official installer..."
+    curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin
+    
+    # Create symlinks for easy terminal access
+    mkdir -p ~/.local/bin
+    ln -sf ~/.local/kitty.app/bin/kitty ~/.local/bin/
+    ln -sf ~/.local/kitty.app/bin/kitten ~/.local/bin/
+    
+    log_info "Kitty installed from source"
 }
 
 # Override: Install Lazygit
