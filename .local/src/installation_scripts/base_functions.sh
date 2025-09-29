@@ -275,14 +275,14 @@ apply_dotfiles() {
     # Env Substitute local files
     
     # Configure MCPs
-    rm ../.config/opencode/opencode.json
+    rm .config/opencode/opencode.json
     envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.config/opencode/opencode.json | sponge .config/opencode/opencode.json
 
-    rm ../.codeium/windsurf/mcp_config.json
-    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.codeium/windsurf/mcp_config.json | sponge .config/codeium/windsurf/mcp_config.json
+    rm .codeium/windsurf/mcp_config.json
+    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.codeium/windsurf/mcp_config.json | sponge .codeium/windsurf/mcp_config.json
 
-    rm ../.cursor/mcp.json
-    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.cursor/mcp.json | sponge .config/cursor/mcp.json
+    rm .cursor/mcp.json
+    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.cursor/mcp.json | sponge .cursor/mcp.json
 
     log_info "Dotfiles applied"
 }
