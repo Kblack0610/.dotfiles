@@ -119,7 +119,6 @@
         "mcp-remote",
         "https://mcp.linear.app/sse"
       ],
-      "enabled": false
     }
   }
 }
