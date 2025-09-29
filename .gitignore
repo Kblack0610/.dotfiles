@@ -24,6 +24,7 @@ Media/Music
 !.config/Windsurf/User/settings.json
 
 .codeium/*
+!.codeium/windsurf
 !.codeium/windsurf/mcp_config.json
 !.codeium/windsurf/user_settings.pb
 
