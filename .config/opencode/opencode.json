@@ -105,12 +105,13 @@
       ]
     },
     "linear": {
-      "command": "npx",
-      "args": [
+      "type": "local",
+      "command": [
+        "npx",
         "-y",
         "mcp-remote",
         "https://mcp.linear.app/sse"
-      ],
+      ]
     }
   }
 }
