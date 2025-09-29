@@ -52,7 +52,7 @@ install_from_brewfile() {
     fi
     
     log_info "Installing from Brewfile..."
-    if brew bundle install --file="$BREWFILE_PATH" --no-lock; then
+    if brew bundle install --file="$BREWFILE_PATH"; then
         log_info "✓ Brewfile packages installed"
         return 0
     else
