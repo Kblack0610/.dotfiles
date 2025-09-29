@@ -21,7 +21,8 @@ A unified, configuration-based installation system for setting up development en
 
 - **`install.sh`** - Main entry point with OS auto-detection
 - **`install_agnostic.sh`** - Universal installer that works across all systems
-- **`packages.conf`** - Configuration file defining all packages and settings
+- **`packages.conf`** - Configuration file for Linux/Android packages
+- **`.config/brewfile/Brewfile`** - macOS package definitions (Homebrew native format)
 
 ### Configuration Structure
 
@@ -54,6 +55,21 @@ Packages are organized into logical groups:
 
 ### Adding New Packages
 
+#### For macOS
+
+Edit the Brewfile directly or use the utility:
+
+```bash
+# Add packages and dump current state
+brew install new-package
+./mac/brewfile-utils.sh dump
+
+# Or edit Brewfile directly
+./mac/brewfile-utils.sh edit
+```
+
+#### For Linux/Android
+
 Edit `packages.conf` and add packages to the appropriate group:
 
 ```bash
@@ -61,7 +77,7 @@ Edit `packages.conf` and add packages to the appropriate group:
 PACKAGES_DEV="$PACKAGES_DEV new-tool"
 
 # Add only to specific OS
-PACKAGES_DEV_MAC="$PACKAGES_DEV_MAC mac-only-tool"
+PACKAGES_DEV_DEBIAN="$PACKAGES_DEV_DEBIAN debian-only-tool"
 ```
 
 ### Blacklisting Packages
@@ -88,9 +104,30 @@ The installer automatically handles:
 ## OS-Specific Notes
 
 ### macOS
+- **Uses Brewfile** instead of packages.conf for better macOS integration
+- Brewfile location: `~/.dotfiles/.config/brewfile/Brewfile`
 - Automatically installs Homebrew if not present
-- GUI apps installed via `brew cask`
+- Supports taps, formulae, casks, and services
 - Handles Apple Silicon path setup
+
+#### Managing macOS Packages
+
+```bash
+# Update Brewfile with currently installed packages
+./mac/brewfile-utils.sh dump
+
+# Install from Brewfile
+./mac/brewfile-utils.sh install
+
+# Remove packages not in Brewfile
+./mac/brewfile-utils.sh cleanup
+
+# Check differences between system and Brewfile
+./mac/brewfile-utils.sh diff
+
+# Edit Brewfile
+./mac/brewfile-utils.sh edit
+```
 
 ### Linux (Debian/Arch)
 - Supports both apt and pacman

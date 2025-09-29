@@ -112,8 +112,28 @@ main() {
         exit 0
     fi
 
-    # Run the agnostic installer
-    "$SCRIPT_DIR/install_agnostic.sh" "$os_type"
+    # Run the appropriate OS-specific installer
+    case "$os_type" in
+        debian)
+            source "$SCRIPT_DIR/linux/install_debian.sh"
+            ;;
+        arch)
+            source "$SCRIPT_DIR/linux/install_arch.sh"
+            ;;
+        mac)
+            source "$SCRIPT_DIR/mac/install_mac.sh"
+            ;;
+        android)
+            source "$SCRIPT_DIR/android/install_android.sh"
+            ;;
+        *)
+            echo -e "${RED}Unsupported system: $os_type${NC}"
+            exit 1
+            ;;
+    esac
+
+    # Run the installation
+    install_all
 
     echo ""
     echo -e "${GREEN}================================================${NC}"

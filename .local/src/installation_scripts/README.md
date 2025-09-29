@@ -1,100 +1,109 @@
-# Installation Scripts
+# Dotfiles Installation Scripts
 
-This directory contains installation scripts for setting up development environments across different operating systems and distributions.
+A modular, function-based installation system for setting up development environments across different operating systems.
 
-## Structure
-
-```
-installation_scripts/
-├── install_os_template.sh              # Generic OS installation template
-├── detect_package_manager.sh           # Package manager detection utility
-├── linux/
-│   ├── install_linux_template.sh       # Linux-specific installation template
-│   ├── shared_functions.sh             # Shared functions across Linux distros
-│   ├── debian/
-│   │   ├── install_debian.sh           # Debian/Ubuntu installation script
-│   │   └── post_installation_scripts/
-│   │       └── install_requirements_functions.sh
-│   └── arch/
-│       ├── install_arch.sh             # Arch Linux installation script
-│       ├── README.md                   # Arch-specific documentation
-│       └── post_installation_scripts/
-│           └── install_requirements_functions.sh
-└── mac/                                 # macOS installation scripts (existing)
-```
-
-## Key Features
-
-### Package Manager Abstraction
-All Linux distribution scripts now use package manager variables for better maintainability:
+## Quick Start
 
 ```bash
-PACKAGE_MANAGER="pacman"                    # or "apt", "dnf", etc.
-PACKAGE_INSTALL_CMD="sudo pacman -S --noconfirm"
-PACKAGE_UPDATE_CMD="sudo pacman -Syu --noconfirm"
-PACKAGE_SEARCH_CMD="pacman -Ss"
+# Automatic OS detection and installation
+./install.sh
+
+# Or run OS-specific installers directly
+./mac/install_mac.sh
+./linux/install_debian.sh
+./linux/install_arch.sh
+./android/install_android.sh
 ```
 
-### Shared Functions
-Common functionality is abstracted into `shared_functions.sh` including:
-- Distribution detection
-- Nerd Fonts installation
-- Oh My Zsh setup
-- Starship installation
-- Git configuration
+## Architecture
 
-### Template-Based Approach
-- `install_os_template.sh` - Base template for any operating system
-- `install_linux_template.sh` - Linux-specific template
-- Distribution-specific scripts inherit from these templates
+### Function-Based Override System
 
-## Usage
+The installation system uses a **base + override** pattern, similar to object-oriented inheritance:
 
-### Automatic Detection
-Use the package manager detection utility:
+```
+base_functions.sh          # Base "class" with default implementations
+    ↓
+OS-specific scripts        # "Subclasses" that override specific methods
+    ├── mac/install_mac.sh
+    ├── linux/install_debian.sh
+    ├── linux/install_arch.sh
+    └── android/install_android.sh
+```
+
+### Key Benefits
+
+✅ **No switch statements** - Each OS has its own clean implementation
+✅ **Easy to extend** - Add new functions to base, override where needed
+✅ **DRY principle** - Common logic stays in base_functions.sh
+✅ **Clear structure** - Each function has one purpose, easy to find and modify
+
+## Function Reference
+
+Each OS script can override these base functions:
+
 ```bash
-source ~/.dotfiles/.local/bin/installation_scripts/detect_package_manager.sh
-detect_package_manager
+# System management
+update_system()          # Update package manager
+install_basics()         # Core system tools
+install_tools()          # Development tools
+install_terminal()       # Terminal enhancements
+install_gui()           # Desktop applications
+install_runtime()        # Language runtimes
+
+# Specific tools
+install_zsh()           # Z shell
+install_oh_my_zsh()     # Oh My Zsh (usually not overridden)
+install_starship()      # Starship prompt (usually not overridden)
+install_nvim()          # Neovim
+install_tmux()          # Terminal multiplexer
+install_kitty()         # Kitty terminal
+install_lazygit()       # Git UI
+install_fonts()         # Nerd Fonts
+
+# Setup functions
+setup_git()             # Git configuration (usually not overridden)
+apply_dotfiles()        # Stow dotfiles (usually not overridden)
+install_npm_packages()  # NPM global packages
+
+# Main orchestrator
+install_all()           # Calls all functions in order
 ```
 
-### Distribution-Specific Installation
+## OS-Specific Notes
 
-#### Debian/Ubuntu
+### macOS
+- Uses Brewfile at `~/.dotfiles/.config/brewfile/Brewfile`
+- Installs Homebrew if needed
+- Manages with `brewfile-utils.sh`
+
+### Linux (Debian/Arch)
+- Package manager specific implementations
+- Desktop environment support (i3, rofi)
+- AUR support on Arch
+
+### Android/Termux
+- Terminal-only environment
+- Limited package availability
+- Storage permission setup
+
+## Benefits Over Switch Statements
+
+Instead of:
 ```bash
-chmod +x ~/.dotfiles/.local/bin/installation_scripts/linux/debian/install_debian.sh
-~/.dotfiles/.local/bin/installation_scripts/linux/debian/install_debian.sh
+case "$OS" in
+    mac) brew install tool ;;
+    debian) apt install tool ;;
+    arch) pacman -S tool ;;
+esac
 ```
 
-#### Arch Linux
+We have:
 ```bash
-chmod +x ~/.dotfiles/.local/bin/installation_scripts/linux/arch/install_arch.sh
-~/.dotfiles/.local/bin/installation_scripts/linux/arch/install_arch.sh
+# Each OS defines its own clean implementation
+install_tool() {
+    brew install tool  # in mac/install_mac.sh
+}
 ```
 
-## What Gets Installed
-
-All scripts install a common set of tools:
-- **Development Tools**: git, neovim, tmux, lazygit
-- **Shell Environment**: zsh, oh-my-zsh, starship
-- **Desktop Environment**: i3wm, rofi (Linux only)
-- **Terminal**: kitty
-- **Fonts**: Nerd Fonts
-- **Utilities**: vim, wget, curl, fzf, ripgrep, etc.
-
-## Creating New Distribution Support
-
-1. Create a new directory under `linux/` (e.g., `linux/fedora/`)
-2. Copy the `install_linux_template.sh` as your base
-3. Create `post_installation_scripts/install_requirements_functions.sh`
-4. Set the appropriate package manager variables
-5. Adapt package names for your distribution
-6. Add distribution-specific optimizations
-
-## TODO
-
-- [ ] Add Fedora/RHEL support
-- [ ] Add openSUSE support
-- [ ] Create unified installation script that auto-detects distribution
-- [ ] Add error handling and rollback capabilities
-- [ ] Add configuration validation
-- [ ] Create testing framework for installation scripts 
+This approach eliminates complex conditionals and makes each OS implementation self-contained and easy to understand.

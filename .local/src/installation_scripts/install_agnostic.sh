@@ -196,26 +196,57 @@ install_homebrew() {
     fi
 }
 
-# Install Cask applications (macOS only)
-install_cask_apps() {
-    if [[ "$SYSTEM_TYPE" != "mac" ]] || [[ -z "$CASK_APPS" ]]; then
+# Install from Brewfile (macOS only)
+install_brewfile() {
+    if [[ "$SYSTEM_TYPE" != "mac" ]]; then
         return 0
     fi
     
-    log_section "Installing macOS GUI applications"
+    log_section "Installing packages from Brewfile"
     
-    for app in $CASK_APPS; do
-        if brew list --cask 2>/dev/null | grep -q "^${app}$"; then
-            log_info "$app is already installed"
-        else
-            log_info "Installing $app..."
-            if $PACKAGE_CASK_CMD "$app" &>/dev/null; then
-                log_info "✓ $app installed"
-            else
-                log_warning "✗ Failed to install $app"
-            fi
-        fi
-    done
+    # Look for Brewfile in multiple locations
+    local brewfile=""
+    if [[ -f "$HOME/.dotfiles/.config/brewfile/Brewfile" ]]; then
+        brewfile="$HOME/.dotfiles/.config/brewfile/Brewfile"
+    elif [[ -f "$SCRIPT_DIR/mac/Brewfile" ]]; then
+        brewfile="$SCRIPT_DIR/mac/Brewfile"
+    elif [[ -f "$HOME/.Brewfile" ]]; then
+        brewfile="$HOME/.Brewfile"
+    fi
+    
+    if [[ -z "$brewfile" ]]; then
+        log_warning "No Brewfile found, falling back to packages.conf"
+        # Fallback to package groups
+        for group in $INSTALL_GROUPS; do
+            install_package_group "$group"
+        done
+        return 0
+    fi
+    
+    log_info "Using Brewfile: $brewfile"
+    
+    # Install from Brewfile
+    if brew bundle install --file="$brewfile" --no-lock; then
+        log_info "✓ Brewfile installation completed"
+    else
+        log_warning "✗ Some Brewfile packages failed to install"
+    fi
+    
+    # Also install any additional tools from packages.conf not in Brewfile
+    # This allows for packages.conf to supplement the Brewfile
+    if [[ -n "$PACKAGES_BASIC_MAC" ]] || [[ -n "$PACKAGES_DEV_MAC" ]]; then
+        log_info "Installing additional macOS packages from config..."
+        for group in $INSTALL_GROUPS; do
+            local packages_os_var="PACKAGES_${group^^}_MAC"
+            local packages="${!packages_os_var}"
+            
+            for package in $packages; do
+                if [[ -n "$package" ]] && ! brew list --formula 2>/dev/null | grep -q "^${package}$"; then
+                    install_package "$package"
+                fi
+            done
+        done
+    fi
 }
 
 # Install NPM packages globally
@@ -423,13 +454,15 @@ install_all() {
     # Update system
     update_system
     
-    # Install package groups in order
-    for group in $INSTALL_GROUPS; do
-        install_package_group "$group"
-    done
-    
-    # Special installations
-    install_cask_apps
+    # macOS uses Brewfile, others use package groups
+    if [[ "$SYSTEM_TYPE" == "mac" ]]; then
+        install_brewfile
+    else
+        # Install package groups in order
+        for group in $INSTALL_GROUPS; do
+            install_package_group "$group"
+        done
+    fi
     install_oh_my_zsh
     install_starship
     install_nerd_fonts
