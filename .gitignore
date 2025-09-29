@@ -2,6 +2,7 @@
 
 ./bin/
 src/
+!.local/src
 
 Media/Pictures
 Media/Videos
