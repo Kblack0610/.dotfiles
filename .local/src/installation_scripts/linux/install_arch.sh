@@ -34,36 +34,36 @@ install_pacman_package() {
 install_aur_package() {
     local package="$1"
     
-    if ! command -v yay &>/dev/null; then
-        install_yay
+    if ! command -v paru &>/dev/null; then
+        install_paru
     fi
     
-    if yay -Q "$package" &>/dev/null; then
+    if paru -Q "$package" &>/dev/null; then
         log_info "$package already installed"
         return 0
     fi
     
     log_info "Installing $package from AUR..."
-    if yay -S --noconfirm "$package" &>/dev/null; then
+    if paru -S --noconfirm "$package" &>/dev/null; then
         log_info "✓ $package installed"
     else
         log_warning "✗ Failed to install $package"
     fi
 }
 
-# Install yay AUR helper
-install_yay() {
-    if command -v yay &>/dev/null; then
+# Install paru AUR helper
+install_paru() {
+    if command -v paru &>/dev/null; then
         return 0
     fi
     
-    log_info "Installing yay AUR helper..."
+    log_info "Installing paru AUR helper..."
     cd /tmp
-    git clone https://aur.archlinux.org/yay.git
-    cd yay
+    git clone https://aur.archlinux.org/paru.git
+    cd paru
     makepkg -si --noconfirm
     cd ~
-    rm -rf /tmp/yay
+    rm -rf /tmp/paru
 }
 
 # Override: Update system
@@ -230,7 +230,7 @@ install_lazygit() {
 install_aur_packages() {
     log_section "Installing AUR packages"
     
-    install_yay
+    install_paru
     
     local aur_packages=(
         "visual-studio-code-bin"
