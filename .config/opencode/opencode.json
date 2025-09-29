@@ -85,13 +85,6 @@
         "ide-assistant"
       ]
     },
-    "docker-mcp": {
-      "type": "local",
-      "command": [
-        "uvx",
-        "docker-mcp"
-      ]
-    },
     "digitalocean": {
       "type": "local",
       "command": [
@@ -104,6 +97,14 @@
         "home/kblack0610/.config/opencode/mcp/github-mcp-wrapper.sh"
       ]
     },
+    "docker-mcp": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "docker-mcp"
+      ],
+      "enabled": false
+    },
     "linear": {
       "type": "local",
       "command": [
@@ -111,7 +112,8 @@
         "-y",
         "mcp-remote",
         "https://mcp.linear.app/sse"
-      ]
+      ],
+      "enabled": false
     }
   }
 }
