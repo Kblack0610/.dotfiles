@@ -65,10 +65,10 @@ preset = 'qwerty'
 ################################################################################
 # FOCUS, not necessary now that I'm using 
 # See: https://nikitabobko.github.io/AeroSpace/commands#focus
-cmd-j = 'focus left --boundaries-action wrap-around-the-workspace'
-cmd-k = 'focus down'
-# cmd-l = 'focus up'
-cmd-semicolon = 'focus right --boundaries-action wrap-around-the-workspace'
+cmd-h = 'focus left --boundaries-action wrap-around-the-workspace'
+cmd-j = 'focus down'
+cmd-k = 'focus up'
+cmd-l= 'focus right --boundaries-action wrap-around-the-workspace'
 shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
 ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 
@@ -81,8 +81,7 @@ shift-cmd-l = 'focus-monitor next'
 ################################################################################
 # LAYOUTS
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
-cmd-h = 'layout tiles horizontal'
-cmd-g = 'layout accordion horizontal'
+cmd-g = 'layout tiles accordion' 
 
 ################################################################################
 # WORKSPACES
