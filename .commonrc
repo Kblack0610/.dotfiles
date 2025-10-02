@@ -19,6 +19,8 @@ export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
 # Set up Android SDK (for Mac, ideally can separate this)
 export ANDROID_HOME=~/Library/Android/sdk/
 
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
+
 # Other environment variables
 export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
 export MANWIDTH=999
