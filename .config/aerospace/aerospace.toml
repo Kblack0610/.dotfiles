@@ -73,11 +73,11 @@ shift-cmd-tab = 'focus right --boundaries-action wrap-around-the-workspace'
 ctrl-shift-cmd-c = 'focus right --boundaries-action wrap-around-the-workspace'
 
 ## On I3, I usually use other monitor for workspaces 6 and 7. since aerospace works a little differently, I'll have 6 and 7 switch between the two workspaces. I only really need 5 or 6 workspaces on mac.
-shift-cmd-j = 'focus-monitor prev' 
-shift-cmd-semicolon = 'focus-monitor next' 
+shift-cmd-h = 'focus-monitor prev' 
+shift-cmd-l = 'focus-monitor next' 
 
-shift-cmd-l= "move-node-to-monitor next"
-shift-cmd-k= "move-node-to-monitor prev"
+# shift-cmd-j= "move-node-to-monitor next"
+# shift-cmd-k= "move-node-to-monitor prev"
 ################################################################################
 # LAYOUTS
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
