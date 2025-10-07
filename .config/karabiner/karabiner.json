@@ -15,6 +15,14 @@
                 {
                     "identifiers": { "is_keyboard": true },
                     "ignore": true
+                },
+                {
+                    "identifiers": {
+                        "is_keyboard": true,
+                        "product_id": 1,
+                        "vendor_id": 18003
+                    },
+                    "ignore": true
                 }
             ],
             "name": "Default profile",
