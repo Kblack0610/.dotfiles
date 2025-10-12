@@ -4,6 +4,7 @@
 export PATH="$PATH:/home/kblack0610/.dotnet/tools"
 
 # Add custom directories to PATH
+export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.local/bin:$HOME/Utilities:$PATH"
 export PATH="$PATH:$HOME/.maestro/bin"
 export PATH="$PATH:$HOME/.spicetify"
@@ -22,7 +23,7 @@ export ANDROID_HOME=~/Library/Android/sdk/
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
 
 # Other environment variables
-export MANPAGER='/snap/nvim/current/usr/bin/nvim +Man!'
+export MANPAGER='/usr/sbin/nvim +Man!'
 export MANWIDTH=999
 export XDG_CONFIG_HOME="$HOME/.config"
 
