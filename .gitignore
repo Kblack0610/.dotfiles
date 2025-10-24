@@ -1,6 +1,7 @@
 .oh-my-zsh/
 
 ./bin/
+
 src/
 !.local/src
 
@@ -8,7 +9,8 @@ Media/Pictures
 Media/Videos
 Media/Music
 
-.local/bin
+.local/bin/*
+!.local/bin/setup
 
 .config/jesseduffield/lazygit/state.yml
 
