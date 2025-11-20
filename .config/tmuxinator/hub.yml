@@ -11,29 +11,7 @@ root: ~/
 
 windows:
   - dashboard:
-      layout: main-vertical
+      layout: main
       panes:
         - editor: 
-            - nvim daily_notes.md  # Replace with your actual notes file
-        - files:
-            - ls -la # Or your file manager like 'ranger' or 'yazi'
-            
-  - systems:
-      layout: even-horizontal
-      panes:
-        - network:
-            - ping 8.8.8.8 # Replace with 'iftop' or 'nload' if installed
-        - resources:
-            - htop
-
-  - ai_lab:
-      root: ~/projects/ai_project # Change to your actual project path
-      layout: 84e3,210x55,0,0{130x55,0,0,3,79x55,131,0[79x27,131,0,4,79x27,131,28,5]} # Custom split preference
-      panes:
-        - editor:
-            - nvim . 
-        - gpu_monitor:
-            - nvtop # Essential for watching VRAM usage
-        - shell:
-            - echo "Ready for training..."
-            - # python train.py
+            - nvim ~/.notes  # Replace with your actual notes file

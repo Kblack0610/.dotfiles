@@ -1,0 +1,9 @@
+name: systems
+root: ~/
+
+windows:
+  - systems:
+      layout: main
+      panes:
+        - resources:
+            - glances

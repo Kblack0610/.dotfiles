@@ -1,0 +1,18 @@
+# ~/.config/tmuxinator/platform.yml
+
+name: platform
+root: ~/
+
+# for platform projects
+
+windows:
+  - agent:
+      layout: main
+      panes:
+        - agent:
+            - claude --dangerously-skip-permissions
+  - nvim:
+        layout: main
+        panes:
+          - resources:
+              - nvim ~/dev/BlackNBrownStudios/platform/
