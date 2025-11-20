@@ -19,11 +19,6 @@ layout {
                 command "nvim"
                 args "daily_notes.md"
             }
-            pane name="Files" size="30%" {
-                // If you don't have ranger, just remove the command block to get a shell
-                command "ls" 
-                args "-la"
-            }
         }
     }
 
@@ -33,16 +28,28 @@ layout {
             pane name="HTOP" {
                 command "htop"
             }
-            pane name="Network" {
-                // Example: continuously ping or run 'iftop'
-                command "ping"
-                args "1.1.1.1"
-            }
+            // pane name="Network" {
+            //     // Example: continuously ping or run 'iftop'
+            //     command "ping"
+            //     args "1.1.1.1"
+            // }
         }
     }
 
-    // Tab 3: AI Project Work
-    tab name="AI Lab" cwd="~/projects/ai_project" {
+    // Tab 3: Platform
+    tab name="Platform" cwd="~/dev/BlackNBrownStudios/platform" {
+            pane name="master_agent" {
+                command "claude"
+                args "--dangerously-skip-permissions"
+            }
+            pane name="nvim" {
+                command "nvim"
+                args "."
+            }
+    }
+
+    // Tab 3: Home Project Work
+    tab name="Home Lab" cwd="~/projects/ai_project" {
         pane split_direction="vertical" {
             pane name="Code" size="60%" {
                 command "nvim"
