@@ -23,18 +23,18 @@ layout {
     }
 
     // Tab 2: Network & System Monitoring
-    tab name="Systems" {
-        pane split_direction="vertical" {
-            pane name="HTOP" {
-                command "htop"
-            }
-            // pane name="Network" {
-            //     // Example: continuously ping or run 'iftop'
-            //     command "ping"
-            //     args "1.1.1.1"
-            // }
-        }
-    }
+    // tab name="Systems" {
+    //     pane split_direction="vertical" {
+    //         pane name="HTOP" {
+    //             command "htop"
+    //         }
+    //         // pane name="Network" {
+    //         //     // Example: continuously ping or run 'iftop'
+    //         //     command "ping"
+    //         //     args "1.1.1.1"
+    //         // }
+    //     }
+    // }
 
     // Tab 3: Platform
     tab name="Platform" cwd="~/dev/BlackNBrownStudios/platform" {
