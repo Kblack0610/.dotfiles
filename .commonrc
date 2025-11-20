@@ -17,10 +17,21 @@ export PATH="$NPM_PACKAGES/bin:$PATH"
 unset MANPATH
 export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
 
-# Set up Android SDK (for Mac, ideally can separate this)
-export ANDROID_HOME=~/Library/Android/sdk/
+# Detect OS and set appropriate base paths
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    LIBRARY_BASE="$HOME/Library"
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # Linux
+    LIBRARY_BASE="$HOME/.local/share"
+fi
 
-export JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
+# Set up Android SDK
+export ANDROID_HOME=$LIBRARY_BASE/Android/sdk
+export PATH="$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+# Set up Java (Zulu JDK)
+export JAVA_HOME=$LIBRARY_BASE/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
 
 # Other environment variables
 export MANPAGER='/usr/sbin/nvim +Man!'
@@ -50,6 +61,8 @@ fi
 
 # General purpose aliases
 alias nvr="nvr . -s"
+alias t="tmux"
+alias z="zellij --layout hub"
 alias n="nvim ."
 alias g="git"
 alias vi="nvim --listen /tmp/nvim-server.pipe"
@@ -58,6 +71,7 @@ alias e="exit"
 alias lg="lazygit"
 alias sysz="$HOME/.bin/sysz"
 alias python="/usr/bin/python3"
+alias o="nvim $HOME/.notes"
 
 # Aliases for specific tools and scripts
 alias f=". $HOME/.local/src/term_scripts/fzf_dev.sh"
@@ -73,7 +87,7 @@ alias setSound="amixer -D pulse sset Master 50%"
 alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
 alias unitylaptop="env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/"
-
-if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
-  exec tmux
-fi
+#
+# if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
+#   exec tmux
+# fi

@@ -51,15 +51,16 @@ layout {
     // Tab 3: Home Project Work
     tab name="Home Lab" cwd="~/projects/ai_project" {
         pane split_direction="vertical" {
-            pane name="Code" size="60%" {
-                command "nvim"
-                args "."
+            pane name="processes" size="60%" {
+                    // If nvtop isn't found, Zellij will just show a shell saying command not found
+                    command "glances" 
             }
             pane split_direction="horizontal" {
                 pane name="GPU Monitor" {
                     // If nvtop isn't found, Zellij will just show a shell saying command not found
                     command "nvtop" 
                 }
+                
                 pane name="Shell" {
                     // Empty shell for running scripts
                 }
