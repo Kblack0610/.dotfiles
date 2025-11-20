@@ -27,9 +27,20 @@ Media/Music
 
 .codeium/*
 !.codeium/windsurf/
+.codeium/windsurf/cascade
+.codeium/windsurf/implicit
+.codeium/windsurf/installation_id
 !.codeium/windsurf/mcp_config.json
 !.codeium/windsurf/user_settings.pb
 
 .cursor/*
 !.cursor/mcp.json
 !.cursor/user_settings.pb
+
+#claude
+.claude/*
+!.claude/agents
+!.claude/commands
+!.claude/settings.json
+!.claude/history.jsonl
+!.claude/projects

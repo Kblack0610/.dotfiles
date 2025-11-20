@@ -1,0 +1,68 @@
+# Mako notification daemon configuration
+# Styled to match your Hyprland theme
+
+# General appearance
+font=JetBrains Mono 11
+width=350
+height=100
+margin=10
+padding=15
+border-size=2
+border-radius=10
+icons=1
+icon-path=/usr/share/icons/Papirus-Dark
+max-icon-size=48
+markup=1
+actions=1
+history=1
+text-color=#e0e0e0ff
+background-color=#1a1a1aee
+
+# Border color (matches your Hyprland active border)
+border-color=#33ccffee
+
+# Progress indicator
+progress-color=#00ff99ee
+
+# Positioning (top-right corner)
+anchor=top-right
+
+# Grouping
+group-by=app-name
+
+# Urgency settings
+[urgency=low]
+border-color=#595959aa
+default-timeout=3000
+
+[urgency=normal]
+border-color=#33ccffee
+default-timeout=5000
+
+[urgency=critical]
+border-color=#ff3333ee
+background-color=#2a1a1aee
+text-color=#ffffffee
+default-timeout=0
+
+# App-specific settings for Claude Code
+[app-name="claude-code"]
+border-color=#00ff99ee
+default-timeout=7000
+
+[app-name="Claude Code"]
+border-color=#00ff99ee
+default-timeout=7000
+
+# Firefox notifications
+[app-name="firefox"]
+border-color=#ff7f00ee
+default-timeout=5000
+
+# System notifications
+[app-name="systemd"]
+border-color=#ffff00ee
+default-timeout=10000
+
+# Sound (optional - uncomment if you want notification sounds)
+# on-notify=exec mpv /usr/share/sounds/freedesktop/stereo/message.oga

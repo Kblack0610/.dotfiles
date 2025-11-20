@@ -1,0 +1,15 @@
+{
+  "alwaysThinkingEnabled": true,
+  "hooks": {
+    "Stop": [
+      {
+        "commands": [
+          {
+            "type": "command",
+            "command": "notify-send -u normal 'Claude Code' 'Task Finished'"
+          }
+        ]
+      }
+    ]
+  }
+}
