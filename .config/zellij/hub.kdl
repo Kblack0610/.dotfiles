@@ -1,0 +1,62 @@
+// ~/.config/zellij/layouts/hub.kdl
+
+layout {
+    // Define the default tab template with the status bar
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    // Tab 1: Daily Notes & File Management
+    tab name="Notes" focus=true {
+        pane split_direction="vertical" {
+            pane name="Editor" {
+                command "nvim"
+                args "daily_notes.md"
+            }
+            pane name="Files" size="30%" {
+                // If you don't have ranger, just remove the command block to get a shell
+                command "ls" 
+                args "-la"
+            }
+        }
+    }
+
+    // Tab 2: Network & System Monitoring
+    tab name="Systems" {
+        pane split_direction="vertical" {
+            pane name="HTOP" {
+                command "htop"
+            }
+            pane name="Network" {
+                // Example: continuously ping or run 'iftop'
+                command "ping"
+                args "1.1.1.1"
+            }
+        }
+    }
+
+    // Tab 3: AI Project Work
+    tab name="AI Lab" cwd="~/projects/ai_project" {
+        pane split_direction="vertical" {
+            pane name="Code" size="60%" {
+                command "nvim"
+                args "."
+            }
+            pane split_direction="horizontal" {
+                pane name="GPU Monitor" {
+                    // If nvtop isn't found, Zellij will just show a shell saying command not found
+                    command "nvtop" 
+                }
+                pane name="Shell" {
+                    // Empty shell for running scripts
+                }
+            }
+        }
+    }
+}
