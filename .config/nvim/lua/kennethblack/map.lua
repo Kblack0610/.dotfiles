@@ -58,7 +58,7 @@ vim.keymap.set("n", "<leader><leader>", function()
 end)
 
 -- Edit and reload nvim config file quickly
-vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.dotfiles/.config/nvim/ <bar> tcd %:h<cr>", {
+vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.dotfiles <bar> tcd %:h<cr>", {
   silent = true,
   desc = "open init.lua",
 })

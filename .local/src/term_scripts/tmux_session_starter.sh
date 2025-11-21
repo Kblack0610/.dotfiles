@@ -4,7 +4,7 @@
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
 # 1. Select project
-PROJECT=$(find ~/.config/tmuxinator -name "*.yml" | xargs -n 1 basename -s .yml | fzf --reverse --border --prompt='Select Project > ')
+PROJECT=$(find -L ~/.config/tmuxinator -name "*.yml" | xargs -n 1 basename -s .yml | fzf --reverse --border --prompt='Select Project > ')
 
 # 2. Exit if cancelled
 [[ -z "$PROJECT" ]] && exit 0

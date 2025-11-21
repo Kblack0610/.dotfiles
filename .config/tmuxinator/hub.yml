@@ -13,5 +13,9 @@ windows:
   - dashboard:
       layout: main
       panes:
+        - main: 
+  - notes:
+      layout: main
+      panes:
         - editor: 
             - nvim ~/.notes  # Replace with your actual notes file
