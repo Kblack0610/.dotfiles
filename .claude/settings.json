@@ -3,7 +3,7 @@
   "hooks": {
     "Stop": [
       {
-        "commands": [
+        "hooks": [
           {
             "type": "command",
             "command": "notify-send -u normal 'Claude Code' 'Task Finished'"
@@ -13,3 +13,4 @@
     ]
   }
 }
+
