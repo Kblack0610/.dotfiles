@@ -1,0 +1,66 @@
+{
+  "version": "1.0.0",
+  "mode": "code",
+  "telemetry": true,
+  "provider": "default",
+  "providers": [
+    {
+      "id": "default",
+      "provider": "ollama",
+      "ollamaBaseUrl": "http://192.168.1.4:11434",
+      "ollamaModelId": "llama3.1:70b"
+    }
+  ],
+  "autoApproval": {
+    "enabled": true,
+    "read": {
+      "enabled": true,
+      "outside": true
+    },
+    "write": {
+      "enabled": true,
+      "outside": true,
+      "protected": false
+    },
+    "browser": {
+      "enabled": false
+    },
+    "retry": {
+      "enabled": false,
+      "delay": 10
+    },
+    "mcp": {
+      "enabled": true
+    },
+    "mode": {
+      "enabled": true
+    },
+    "subtasks": {
+      "enabled": true
+    },
+    "execute": {
+      "enabled": true,
+      "allowed": [
+        "ls",
+        "cat",
+        "echo",
+        "pwd"
+      ],
+      "denied": [
+        "rm -rf",
+        "sudo rm",
+        "mkfs",
+        "dd if="
+      ]
+    },
+    "question": {
+      "enabled": false,
+      "timeout": 60
+    },
+    "todo": {
+      "enabled": true
+    }
+  },
+  "theme": "dark",
+  "customThemes": {}
+}

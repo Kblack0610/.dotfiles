@@ -1,0 +1,193 @@
+{
+  "defaultCommandsMigrationCompleted": true,
+  "allowedCommands": [],
+  "codebaseIndexModels": {
+    "openai": {
+      "text-embedding-3-small": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "text-embedding-3-large": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "text-embedding-ada-002": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      }
+    },
+    "ollama": {
+      "nomic-embed-text": {
+        "dimension": 768,
+        "scoreThreshold": 0.4
+      },
+      "nomic-embed-code": {
+        "dimension": 3584,
+        "scoreThreshold": 0.15,
+        "queryPrefix": "Represent this query for searching relevant code: "
+      },
+      "mxbai-embed-large": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "all-minilm": {
+        "dimension": 384,
+        "scoreThreshold": 0.4
+      }
+    },
+    "openai-compatible": {
+      "text-embedding-3-small": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "text-embedding-3-large": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "text-embedding-ada-002": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "nomic-embed-code": {
+        "dimension": 3584,
+        "scoreThreshold": 0.15,
+        "queryPrefix": "Represent this query for searching relevant code: "
+      }
+    },
+    "gemini": {
+      "text-embedding-004": {
+        "dimension": 768
+      },
+      "gemini-embedding-001": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      }
+    },
+    "mistral": {
+      "codestral-embed-2505": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      }
+    },
+    "vercel-ai-gateway": {
+      "openai/text-embedding-3-small": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "openai/text-embedding-3-large": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "openai/text-embedding-ada-002": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "cohere/embed-v4.0": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "google/gemini-embedding-001": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "google/text-embedding-005": {
+        "dimension": 768,
+        "scoreThreshold": 0.4
+      },
+      "google/text-multilingual-embedding-002": {
+        "dimension": 768,
+        "scoreThreshold": 0.4
+      },
+      "amazon/titan-embed-text-v2": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "mistral/codestral-embed": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "mistral/mistral-embed": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      }
+    },
+    "openrouter": {
+      "openai/text-embedding-3-small": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "openai/text-embedding-3-large": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "openai/text-embedding-ada-002": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "google/gemini-embedding-001": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "mistralai/mistral-embed-2312": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "mistralai/codestral-embed-2505": {
+        "dimension": 3072,
+        "scoreThreshold": 0.4
+      },
+      "qwen/qwen3-embedding-8b": {
+        "dimension": 4096,
+        "scoreThreshold": 0.4
+      }
+    }
+  },
+  "ghostServiceSettings": {
+    "enableAutoTrigger": true,
+    "enableQuickInlineTaskKeybinding": true,
+    "enableSmartInlineTaskKeybinding": true
+  },
+  "firstInstallCompleted": true,
+  "customModes": [],
+  "listApiConfigMeta": [
+    {
+      "name": "default",
+      "id": "32qihlyp27i",
+      "apiProvider": "ollama",
+      "modelId": "llama3.1:70b"
+    }
+  ],
+  "mode": "code",
+  "currentApiConfigName": "default",
+  "apiProvider": "ollama",
+  "telemetrySetting": "enabled",
+  "experiments": {
+    "morphFastApply": false,
+    "multiFileApplyDiff": false,
+    "powerSteering": false,
+    "preventFocusDisruption": false,
+    "imageGeneration": false,
+    "runSlashCommand": false
+  },
+  "yoloMode": false,
+  "kilocodePosthogApiKey": "phc_GK2Pxl0HPj5ZPfwhLRjXrtdz8eD7e9MKnXiFrOqnB6z",
+  "baseUrl": "http://192.168.1.4:11434",
+  "mcpHubInstanceId": "1764063991750",
+  "ollamaBaseUrl": "http://192.168.1.4:11434",
+  "ollamaModelId": "llama3.1:70b",
+  "taskHistory": [
+    {
+      "id": "725a6a62-9eb3-428d-9e94-bb5984a52b56",
+      "number": 1,
+      "ts": 1764063995997,
+      "task": "please describe this codebase",
+      "tokensIn": 0,
+      "tokensOut": 0,
+      "totalCost": 0,
+      "size": 119,
+      "workspace": "/home/kblack0610/dev/BlackNBrownStudios/platform",
+      "mode": "code"
+    }
+  ],
+  "globalWorkflowToggles": {}
+}
