@@ -88,7 +88,7 @@ function dashboard() {
 
     # 2. Define the Columns (Process Substitution variables)
     # Col 1: Cowsay (Removed 'cut' so words aren't sliced. 'fortune -s' keeps it short)
-    local C1="fortune -s | cowsay -W 30"
+    local C1="fortune -s | cut -c 1-200 | cowsay -W 30"
     
     # Col 2: System (Removed '--stdout' to try and keep formatting, added '--force_color' if you switch to fastfetch)
     # Note: Standard neofetch loses color in pipes. 
