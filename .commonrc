@@ -21,9 +21,11 @@ export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     LIBRARY_BASE="$HOME/Library"
+    JAVA_LIBRARY_BASE="$LIBRARY_BASE/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home"
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     # Linux
     LIBRARY_BASE="$HOME/.local/share"
+    JAVA_LIBRARY_BASE="/usr/lib/jvm/zulu-17"
 fi
 
 # Set up Android SDK
@@ -31,7 +33,7 @@ export ANDROID_HOME=$LIBRARY_BASE/Android/Sdk
 export PATH="$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools:$PATH"
 
 # Set up Java (Zulu JDK)
-export JAVA_HOME=$LIBRARY_BASE/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
+export JAVA_HOME=$JAVA_LIBRARY_BASE
 
 # Other environment variables
 export MANPAGER='/usr/sbin/nvim +Man!'
@@ -48,19 +50,19 @@ fi
 
 # --- Sourcing Scripts ---
 # NEW display a crisp prompt of: cowsay+fortune, syst info, and today tasks
-paste <(fortune | cut -c 1-200 | cowsay -W 30) <(neofetch --off --color_blocks off) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
+# paste <(fortune | cut -c 1-200 | cowsay -W 30) <(neofetch --off --color_blocks off) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
 
 # paste <(fortune | cowsay -W 30) <(fastfetch --pipe --logo none) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
 
 
 # # Display a fortune cookie if cowsay is available.
-# if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
-#     fortune | cowsay
-# elif [ -x /usr/sbin/cowsay -a -x /usr/sbin/fortune ]; then
-#     fortune | cowsay
-# elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
-#     fortune | cowsay
-# fi
+if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
+    fortune | cut -c 1-200 | cowsay
+elif [ -x /usr/sbin/cowsay -a -x /usr/sbin/fortune ]; then
+    fortune | cut -c 1-200 | cowsay
+elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
+    fortune | cut -c 1-200 | cowsay
+fi
 
 # 1. Helper: Ensure the daily note exists
 function ensure_daily_note() {
