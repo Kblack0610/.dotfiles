@@ -48,7 +48,7 @@ fi
 
 # --- Sourcing Scripts ---
 # NEW display a crisp prompt of: cowsay+fortune, syst info, and today tasks
-paste <(fortune | cowsay -W 30) <(neofetch --off --color_blocks off) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
+paste <(fortune | cut -c 1-200 | cowsay -W 30) <(neofetch --off --color_blocks off) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
 
 # paste <(fortune | cowsay -W 30) <(fastfetch --pipe --logo none) <(grep -F -- "- [ ]" ~/.notes/journal/daily/$(date +%Y-%m-%d).md 2>/dev/null | head -n 15 || echo "No tasks today") | column -t -s $'\t' -o '  |  '
 
