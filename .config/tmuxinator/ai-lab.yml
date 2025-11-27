@@ -1,6 +1,6 @@
-# ~/.config/tmuxinator/hub.yml
+# ~/.config/tmuxinator/ai-lab.yml
 
-name: hub
+name: ai-lab
 root: ~/
 
 # Optional: specific tmux socket or options
@@ -10,19 +10,8 @@ root: ~/
 # pre: conda activate my_ai_env 
 
 windows:
-  - dashboard:
+  - ultra-m3:
       layout: main
       panes:
         - editor: 
-            - nvim ~/.notes  # Replace with your actual notes file
-  - ai_lab:
-      root: ~/projects/ai_project # Change to your actual project path
-      layout: 84e3,210x55,0,0{130x55,0,0,3,79x55,131,0[79x27,131,0,4,79x27,131,28,5]} # Custom split preference
-      panes:
-        - editor:
-            - nvim . 
-        - gpu_monitor:
-            - nvtop # Essential for watching VRAM usage
-        - shell:
-            - echo "Ready for training..."
-            - # python train.py
+            - ssh 192.168.1.4

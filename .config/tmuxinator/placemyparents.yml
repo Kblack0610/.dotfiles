@@ -6,13 +6,10 @@ root: ~/
 # for platform projects
 
 windows:
-  - agent:
-      layout: main
+  - server:
+      layout: even-horizontal
       panes:
-        - agent:
-            - cd ~/dev/BlackNBrownStudios/platform && claude --dangerously-skip-permissions
-  - nvim:
-        layout: main
-        panes:
-          - resources:
-              - nvim ~/dev/BlackNBrownStudios/platform/
+        - api:
+            - cd ~/dev/BlackNBrownStudios/platform/apps/placemyparents/api/ && pnpm run dev
+        - web:
+            - cd ~/dev/BlackNBrownStudios/platform/apps/placemyparents/web/ && pnpm run dev

@@ -10,12 +10,8 @@ root: ~/
 # pre: conda activate my_ai_env 
 
 windows:
-  - dashboard:
-      layout: main
-      panes:
-        - main: 
   - notes:
       layout: main
       panes:
         - editor: 
-            - nvim ~/.notes  # Replace with your actual notes file
+            - cd ~/.notes && nvim .  # Replace with your actual notes file

@@ -6,13 +6,14 @@ root: ~/
 # for platform projects
 
 windows:
+  - nvim:
+        root: ~/dev/BlackNBrownStudios/platform 
+        layout: main
+        panes:
+          - resources:
+              - nvim ~/dev/BlackNBrownStudios/platform/
   - agent:
       layout: main
       panes:
         - agent:
             - cd ~/dev/BlackNBrownStudios/platform && claude --dangerously-skip-permissions
-  - nvim:
-        layout: main
-        panes:
-          - resources:
-              - nvim ~/dev/BlackNBrownStudios/platform/
