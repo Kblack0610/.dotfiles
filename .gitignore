@@ -44,3 +44,4 @@ Media/Music
 !.claude/settings.json
 !.claude/history.jsonl
 !.claude/projects
+.aider*
