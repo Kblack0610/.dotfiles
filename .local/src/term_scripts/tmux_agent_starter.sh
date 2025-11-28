@@ -11,11 +11,14 @@ TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d 2>/dev/null | fzf --reverse 
 # 2. Exit if cancelled
 [[ -z "$TARGET" ]] && exit 0
 
+# TMUX_WINDOW_COUNT=$(tmux list-windows -t platform | wc -l)
+TMUX_WINDOW_COUNT=$(tmux display-message -p '#{session_windows}')
+TMUX_WINDOW_COUNT=$((TMUX_WINDOW_COUNT + 1))
 
 # 3. Setup Paths & Names
 # Ensure absolute path for tmuxinator and sanitize directory name for session title
 ROOT=$(cd "$TARGET" && pwd)
-NAME="$(basename "$ROOT" | tr ' .:' '_')_agent"
+NAME="$(basename "$ROOT" | tr ' .:' '_')_agent_$TMUX_WINDOW_COUNT"
 
 # 4. Switch or Start
 # If we are in tmux, tell tmuxinator to switch the client, not attach inside the popup
