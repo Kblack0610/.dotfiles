@@ -1,0 +1,6 @@
+customCommands:
+  containers:
+    - name: "Set restart policy to 'no'"
+      attach: false
+      command: "docker update --restart no {{ .Container.ID }}"
+      serviceNames: []
