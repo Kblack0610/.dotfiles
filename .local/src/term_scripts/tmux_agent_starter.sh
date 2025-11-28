@@ -28,8 +28,9 @@ if [ -n "$TMUX" ]; then
   # -c: Sets the directory
   # -n: Names the window "agent"
   # \; split-window -h: Immediately splits it (giving you that agent/editor view)
-    tmux switch-client -t agent
+    tmux switch-client -t $TARGET 
     tmux new-window -c "$TARGET" -n "$NAME" \
+    claude --dangerously-skip-permissions \
     # # Pass the 'root' and 'name' variables to the agent.yml template
     # tmuxinator start agent root="$ROOT" name="$NAME" --no-attach
     # # Manually switch to the session tmuxinator just created
