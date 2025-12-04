@@ -8,6 +8,34 @@
     {
       "prompt": "/config",
       "timestamp": 1764064003884
+    },
+    {
+      "prompt": "/model",
+      "timestamp": 1764064287130
+    },
+    {
+      "prompt": "describe this codebase",
+      "timestamp": 1764064758806
+    },
+    {
+      "prompt": "/model",
+      "timestamp": 1764064821145
+    },
+    {
+      "prompt": "describe this repo",
+      "timestamp": 1764064957571
+    },
+    {
+      "prompt": "/model",
+      "timestamp": 1764065080076
+    },
+    {
+      "prompt": "describe thie repo",
+      "timestamp": 1764065190641
+    },
+    {
+      "prompt": "/config",
+      "timestamp": 1764065200437
     }
   ],
   "maxSize": 500

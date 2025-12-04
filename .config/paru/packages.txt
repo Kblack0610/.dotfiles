@@ -1,0 +1,95 @@
+# ============================================================================
+# Paru/Pacman Package List for CachyOS/Arch
+# Install with: paru -S --needed - < ~/.config/paru/packages.txt
+# ============================================================================
+
+# --- Core System ---
+base-devel
+git
+curl
+wget
+unzip
+openssh
+ufw
+
+# --- Shell & Terminal ---
+zsh
+zsh-autosuggestions
+zsh-syntax-highlighting
+starship
+tmux
+zellij
+alacritty
+kitty
+
+# --- Editor ---
+neovim
+neovim-remote
+
+# --- CLI Tools ---
+ripgrep
+fd
+fzf
+bat
+eza
+jq
+yq
+autojump
+stow
+htop
+btop
+lazygit
+lazydocker
+
+# --- Kubernetes & Containers ---
+docker
+docker-compose
+kubectl
+kubectx
+k9s
+k3d
+helm
+stern
+
+# --- Development ---
+nodejs
+npm
+yarn
+python
+python-pip
+go
+rust
+rustup
+
+# --- Fonts ---
+ttf-hack-nerd
+ttf-jetbrains-mono-nerd
+noto-fonts
+noto-fonts-emoji
+
+# --- Desktop (Hyprland) ---
+hyprland
+waybar
+wofi
+dunst
+swww
+grim
+slurp
+wl-clipboard
+xdg-desktop-portal-hyprland
+brightnessctl
+pamixer
+
+# --- Apps ---
+firefox
+obsidian
+dbeaver
+spotify-launcher
+
+# --- Gaming/Streaming ---
+sunshine
+moonlight-qt
+
+# --- AUR Packages (require paru/yay) ---
+visual-studio-code-bin
+zulu-17-bin

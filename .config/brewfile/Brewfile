@@ -1,36 +1,50 @@
+# Taps
 tap "nikitabobko/tap"
+tap "jesseduffield/lazydocker"
+tap "jesseduffield/lazygit"
+
+# --- Core CLI Tools ---
 brew "asdf"
 brew "autojump"
-brew "cocoapods"
-brew "docker"
 brew "git-lfs"
 brew "lazygit"
-brew "mkcert"
 brew "neovim"
+brew "ripgrep"
+brew "starship"
+brew "stow"
+brew "tmux"
+brew "uv"
+brew "zsh-autosuggestions"
+
+# --- Kubernetes & Container Tools ---
+brew "kubectl"
+brew "kubectx"           # Context/namespace switcher (kx, kn)
+brew "k9s"               # Terminal UI for Kubernetes
+brew "k3d"               # k3s in Docker for local dev
+brew "helm"              # Kubernetes package manager
+brew "stern"             # Multi-pod log tailing
+brew "docker"
+
+# --- Development ---
+brew "cocoapods"
+brew "mkcert"
 brew "node"
 brew "nss"
 brew "nvm"
 brew "postgresql@14", restart_service: :changed
 brew "protobuf"
-brew "ripgrep"
-brew "starship"
-brew "stow"
-brew "tmux"
 brew "yarn"
-brew "zsh-autosuggestions"
-brew "uv"
-tap "jesseduffield/lazydocker"
-tap "jesseduffield/lazygit"
-cask "dbeaver-community"
-cask "obsidian"
-cask "raycast"
+
+# --- Casks (GUI Apps) ---
 cask "aerospace"
 cask "android-commandlinetools"
 cask "android-platform-tools"
+cask "cursor"
 cask "dbeaver-community"
 cask "font-hack"
 cask "font-symbols-only-nerd-font"
 cask "karabiner-elements"
+cask "obsidian"
+cask "raycast"
 cask "windsurf"
-cask "cursor"
 cask "zulu@17"

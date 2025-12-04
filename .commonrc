@@ -164,6 +164,9 @@ alias k9local="k9s --context k3d-local"
 
 # Cluster setup
 alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
+
+# Dotfiles setup
+alias dotfiles-setup="$HOME/.local/bin/setup/setup.sh"
 #
 # if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
 #   exec tmuxinator start hub
