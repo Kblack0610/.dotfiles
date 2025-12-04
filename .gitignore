@@ -19,6 +19,7 @@ Media/Music
 .config/unity3d/Unity
 .config/unity3d/Unity/*
 .config/unity3d/*.log
+.config/unity3d/Preferences/Editor-5.x/
 
 .config/nvim/lazy-lock.json
 
@@ -33,6 +34,7 @@ Media/Music
 .codeium/windsurf/cascade
 .codeium/windsurf/implicit
 .codeium/windsurf/installation_id
+.codeium/windsurf/codemaps/
 !.codeium/windsurf/mcp_config.json
 !.codeium/windsurf/user_settings.pb
 
@@ -45,10 +47,28 @@ Media/Music
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
-# Never track: credentials, history, session artifacts (todos, debug, file-history, shell-snapshots, statsig)
+!.claude/history.jsonl
+# Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig)
+# Note: history.jsonl contains absolute paths - run sed to fix on new machine:
+#   sed -i 's|/home/olduser|/home/newuser|g' ~/.claude/history.jsonl
 .aider*
 
 # DBeaver - only track connection configs
 .local/share/DBeaverData/drivers/
 .local/share/DBeaverData/workspace6/.metadata/
 !.local/share/DBeaverData/workspace6/General/.dbeaver/
+
+# k9s - ignore cluster state (may contain sensitive data)
+.config/k9s/clusters/
+
+# Kilocode - only track config, not history/logs/workspaces
+.kilocode/cli/history.json
+.kilocode/cli/logs/
+.kilocode/cli/workspaces/
+
+# Playwright MCP runtime
+.playwright-mcp/
+
+# Misc
+*.bak
+test_notifications.sh
