@@ -221,12 +221,44 @@ install_kitty() {
 # Override: Install Lazygit
 install_lazygit() {
     log_section "Installing Lazygit"
-    
+
     if ! brew list --formula 2>/dev/null | grep -q "^lazygit$"; then
         brew install jesseduffield/lazygit/lazygit &>/dev/null
         log_info "Lazygit installed"
     else
         log_info "Lazygit already installed"
+    fi
+}
+
+# Override: Install Kubernetes tools
+install_kubernetes() {
+    log_section "Installing Kubernetes & Container tools"
+
+    # These should be in Brewfile, but ensure they're installed
+    local k8s_tools=(
+        "docker"
+        "kubectl"
+        "kubectx"
+        "k9s"
+        "k3d"
+        "helm"
+        "stern"
+    )
+
+    for tool in "${k8s_tools[@]}"; do
+        if ! brew list --formula 2>/dev/null | grep -q "^${tool}$"; then
+            log_info "Installing $tool..."
+            brew install "$tool" &>/dev/null
+        else
+            log_info "$tool already installed"
+        fi
+    done
+
+    # Docker Desktop needs to be started manually on macOS
+    if [[ -d "/Applications/Docker.app" ]]; then
+        log_info "Docker Desktop found - start it to enable Docker daemon"
+    else
+        log_info "Consider installing Docker Desktop from https://docker.com"
     fi
 }
 

@@ -220,12 +220,43 @@ install_kitty() {
 # Override: Install Lazygit
 install_lazygit() {
     log_section "Installing Lazygit"
-    
+
     # Try official repo first
     if ! install_pacman_package "lazygit"; then
         # Fall back to AUR
         install_aur_package "lazygit"
     fi
+}
+
+# Override: Install Kubernetes tools
+install_kubernetes() {
+    log_section "Installing Kubernetes & Container tools"
+
+    # Container runtime
+    install_pacman_package "docker"
+    install_pacman_package "docker-compose"
+
+    # Enable docker service
+    if command -v docker &>/dev/null; then
+        sudo systemctl enable --now docker
+        sudo usermod -aG docker "$USER"
+        log_info "Docker enabled (re-login required for group membership)"
+    fi
+
+    # Core Kubernetes tools
+    install_pacman_package "kubectl"
+    install_pacman_package "kubectx"      # Context/namespace switcher
+    install_pacman_package "k9s"          # Terminal UI
+    install_pacman_package "helm"         # Package manager
+
+    # k3d (k3s in Docker) - from AUR
+    install_aur_package "k3d"
+
+    # stern (multi-pod log tailing) - from AUR
+    install_aur_package "stern"
+
+    # lazydocker for container management
+    install_pacman_package "lazydocker"
 }
 
 # Arch-specific: Install from AUR
@@ -249,39 +280,43 @@ install_aur_packages() {
 install_all() {
     # Create structure
     create_directories
-    
+
     # System updates
     update_system
-    
+
     # Core installations
     install_basics
     install_tools
     install_terminal
     install_runtime
-    
+
     # Shell setup
     install_zsh
     install_oh_my_zsh
     install_starship
-    
+
     # Development tools
     install_nvim
     install_tmux
     install_lazygit
     install_kitty
-    
+
+    # Kubernetes & Containers
+    install_kubernetes
+    setup_kubernetes
+
     # Desktop environment
     install_gui
-    
+
     # AUR packages
     install_aur_packages
-    
+
     # Additional setup
     install_fonts
     setup_git
     install_npm_packages
     apply_dotfiles
-    
+
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
 }

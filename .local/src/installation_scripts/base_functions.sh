@@ -214,6 +214,36 @@ install_lazygit() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Install Kubernetes tools (kubectl, k9s, k3d, helm, stern, kubectx)
+install_kubernetes() {
+    log_section "Installing Kubernetes tools"
+    log_info "No default implementation - override in OS-specific file"
+}
+
+# Setup Kubernetes directories and run cluster wizard
+setup_kubernetes() {
+    log_section "Setting up Kubernetes environment"
+
+    # Create kubeconfig directory for multi-cluster configs
+    mkdir -p "$HOME/.kube/clusters"
+
+    # Create k9s directories
+    mkdir -p "$HOME/.local/share/k9s/screen-dumps"
+
+    log_info "Kubernetes directories created"
+
+    # Offer to run cluster setup wizard
+    local k8s_setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
+    if [[ -x "$k8s_setup" ]]; then
+        echo ""
+        read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            "$k8s_setup"
+        fi
+    fi
+}
+
 # Install Rust
 install_rust() {
     log_section "Installing Rust"
@@ -315,37 +345,41 @@ install_npm_packages() {
 install_all() {
     # Create structure
     create_directories
-    
+
     # System updates
     update_system
-    
+
     # Core installations
     install_basics
     install_tools
     install_terminal
     install_runtime
-    
+
     # Shell setup
     install_zsh
     install_oh_my_zsh
     install_starship
-    
+
     # Development tools
     install_nvim
     install_tmux
     install_lazygit
     install_kitty
     install_rust
-    
+
+    # Kubernetes & Containers
+    install_kubernetes
+    setup_kubernetes
+
     # GUI (if applicable)
     install_gui
-    
+
     # Additional setup
     install_fonts
     setup_git
     install_npm_packages
     apply_dotfiles
-    
+
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
 }
@@ -356,5 +390,6 @@ export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust
+export -f install_kubernetes setup_kubernetes
 export -f install_fonts setup_git apply_dotfiles install_npm_packages
 export -f install_all
