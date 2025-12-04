@@ -141,6 +141,29 @@ alias setSound="amixer -D pulse sset Master 50%"
 alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
 alias unitylaptop="env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/"
+
+# --- Kubernetes Aliases ---
+alias k="kubectl"
+alias kx="kubectx"
+alias kn="kubens"
+alias kgp="kubectl get pods"
+alias kgd="kubectl get deployments"
+alias kgs="kubectl get services"
+alias kga="kubectl get all"
+alias kaf="kubectl apply -f"
+alias kdf="kubectl delete -f"
+alias kdp="kubectl describe pod"
+alias kl="kubectl logs -f"
+alias kex="kubectl exec -it"
+
+# k9s cluster shortcuts
+alias k9="k9s"
+alias k9do="k9s --context do-nyc3-placemyparents-k8s-prod"
+alias k9home="k9s --context home-k3s"
+alias k9local="k9s --context k3d-local"
+
+# Cluster setup
+alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
 #
 # if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
 #   exec tmuxinator start hub
