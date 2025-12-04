@@ -1,0 +1,84 @@
+# K9s Hotkeys Configuration
+# Quick navigation shortcuts
+
+hotkeys:
+  # ─────────────────────────────────────────────────────────────────────
+  # Navigation Hotkeys (press key to jump to resource)
+  # ─────────────────────────────────────────────────────────────────────
+
+  # Workloads
+  shift-1:
+    shortCut: Shift-1
+    description: "Pods"
+    command: pods
+
+  shift-2:
+    shortCut: Shift-2
+    description: "Deployments"
+    command: deployments
+
+  shift-3:
+    shortCut: Shift-3
+    description: "Services"
+    command: services
+
+  shift-4:
+    shortCut: Shift-4
+    description: "ConfigMaps"
+    command: configmaps
+
+  shift-5:
+    shortCut: Shift-5
+    description: "Secrets"
+    command: secrets
+
+  shift-6:
+    shortCut: Shift-6
+    description: "Ingresses"
+    command: ingresses
+
+  shift-7:
+    shortCut: Shift-7
+    description: "StatefulSets"
+    command: statefulsets
+
+  shift-8:
+    shortCut: Shift-8
+    description: "DaemonSets"
+    command: daemonsets
+
+  shift-9:
+    shortCut: Shift-9
+    description: "Jobs"
+    command: jobs
+
+  shift-0:
+    shortCut: Shift-0
+    description: "CronJobs"
+    command: cronjobs
+
+  # Cluster Resources
+  ctrl-n:
+    shortCut: Ctrl-N
+    description: "Nodes"
+    command: nodes
+
+  ctrl-e:
+    shortCut: Ctrl-E
+    description: "Events"
+    command: events
+
+  ctrl-s:
+    shortCut: Ctrl-S
+    description: "Namespaces"
+    command: namespaces
+
+  ctrl-p:
+    shortCut: Ctrl-P
+    description: "PVCs"
+    command: persistentvolumeclaims
+
+  ctrl-h:
+    shortCut: Ctrl-H
+    description: "HPAs"
+    command: horizontalpodautoscalers
