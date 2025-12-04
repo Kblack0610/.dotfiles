@@ -8,7 +8,8 @@
       "id": "default",
       "provider": "ollama",
       "ollamaBaseUrl": "http://192.168.1.4:11434",
-      "ollamaModelId": "llama3.1:70b"
+      "ollamaModelId": "llama3.1:70b",
+      "contextWindow": "131072"
     }
   ],
   "autoApproval": {
@@ -62,5 +63,6 @@
     }
   },
   "theme": "dark",
-  "customThemes": {}
+  "customThemes": {},
+  "contextWindow": 131072
 }
