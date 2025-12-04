@@ -1,17 +1,3 @@
-// 1. Set the default layout to the one we just made
-default_layout "minimal"
-
-// 2. Configure the compact-bar to support toggling hints
-plugins {
-    compact-bar location="zellij:compact-bar" {
-        // This key combo toggles the full keybinding helper
-        tooltip_toggle "Ctrl b" 
-    }
-}
-
-// 3. Optional: Pick a clean theme (Catppuccin or Nord are great)
-theme "catppuccin-mocha"
-
 keybinds clear-defaults=true {
     locked {
         bind "Ctrl g" { SwitchToMode "normal"; }
