@@ -1,6 +1,6 @@
 k9s:
-  liveViewAutoRefresh: false
-  screenDumpDir: /Users/tommy.mallis/Library/Application Support/k9s/screen-dumps
+  liveViewAutoRefresh: true
+  screenDumpDir: /home/kblack0610/.local/share/k9s/screen-dumps
   refreshRate: 2
   maxConnRetry: 5
   readOnly: false
@@ -10,29 +10,30 @@ k9s:
     headless: false
     logoless: false
     crumbsless: false
-    reactive: false
+    reactive: true
     noIcons: false
     defaultsToFullScreen: false
     skin: tokyonight
   skipLatestRevCheck: false
   disablePodCounting: false
+  # Debug shell pod for exec into nodes/debugging
   shellPod:
-    image: busybox:1.35.0
+    image: nicolaka/netshoot:latest
     namespace: default
     limits:
-      cpu: 100m
-      memory: 100Mi
+      cpu: 200m
+      memory: 256Mi
   imageScans:
     enable: false
     exclusions:
       namespaces: []
       labels: {}
   logger:
-    tail: 100
-    buffer: 5000
-    sinceSeconds: -1
-    textWrap: false
-    showTime: false
+    tail: 500
+    buffer: 10000
+    sinceSeconds: 300
+    textWrap: true
+    showTime: true
   thresholds:
     cpu:
       critical: 90
