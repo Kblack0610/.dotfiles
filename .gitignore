@@ -22,6 +22,9 @@ Media/Music
 
 .config/nvim/lazy-lock.json
 
+.config/OrcaSlicer
+!.config/OrcaSlicer/OrcaSlicer.conf
+
 .config/Windsurf/User
 !.config/Windsurf/User/settings.json
 
@@ -37,11 +40,15 @@ Media/Music
 !.cursor/mcp.json
 !.cursor/user_settings.pb
 
-#claude
+# Claude Code
 .claude/*
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
-!.claude/history.jsonl
-!.claude/projects
+# Never track: credentials, history, session artifacts (todos, debug, file-history, shell-snapshots, statsig)
 .aider*
+
+# DBeaver - only track connection configs
+.local/share/DBeaverData/drivers/
+.local/share/DBeaverData/workspace6/.metadata/
+!.local/share/DBeaverData/workspace6/General/.dbeaver/

@@ -1,0 +1,109 @@
+{
+	"folders": {
+		"PlaceMyParents": {
+			"description": "PlaceMyParents database connections"
+		}
+	},
+	"connections": {
+		"postgres-jdbc-19a514e18b0-4d3eb11bb85bebb3": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "Local",
+			"save-password": true,
+			"folder": "PlaceMyParents",
+			"configuration": {
+				"host": "localhost",
+				"port": "55432",
+				"database": "placemyparents_dev",
+				"url": "jdbc:postgresql://localhost:55432/placemyparents_dev",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"closeIdleConnection": true,
+				"provider-properties": {
+					"@dbeaver-show-non-default-db@": "false"
+				},
+				"auth-model": "native"
+			}
+		},
+		"postgres-jdbc-19a84779245-641b92a15582e5c6": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "Staging",
+			"save-password": true,
+			"folder": "PlaceMyParents",
+			"configuration": {
+				"host": "192.168.1.124",
+				"port": "5432",
+				"database": "placemyparents_dev",
+				"url": "jdbc:postgresql://192.168.1.124:5432/placemyparents_dev",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"closeIdleConnection": true,
+				"provider-properties": {
+					"@dbeaver-show-non-default-db@": "false"
+				},
+				"auth-model": "native"
+			}
+		},
+		"postgres-jdbc-19ac286274e-450e9b77a7a27ddd": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "Production",
+			"save-password": true,
+			"folder": "PlaceMyParents",
+			"configuration": {
+				"host": "placemyparents-db-prod-do-user-25388471-0.f.db.ondigitalocean.com",
+				"port": "25060",
+				"database": "placemyparents",
+				"url": "jdbc:postgresql://placemyparents-db-prod-do-user-25388471-0.f.db.ondigitalocean.com:25060/placemyparents",
+				"configurationType": "MANUAL",
+				"type": "prod",
+				"closeIdleConnection": true,
+				"provider-properties": {
+					"@dbeaver-show-non-default-db@": "false",
+					"@dbeaver-chosen-role@": "",
+					"@dbeaver-show-template-db@": "false",
+					"@dbeaver-show-unavailable-db@": "false",
+					"show-database-statistics": "false",
+					"@dbeaver-read-all-data-types-db@": "false",
+					"read-keys-with-columns": "false",
+					"replace-legacy-timezone": "false",
+					"@dbeaver-use-prepared-statements-db@": "false",
+					"postgresql.dd.plain.string": "false",
+					"postgresql.dd.tag.string": "false"
+				},
+				"auth-model": "native"
+			}
+		}
+	},
+	"connection-types": {
+		"dev": {
+			"name": "Development",
+			"color": "170,255,170",
+			"description": "Development database",
+			"auto-commit": true,
+			"confirm-execute": false,
+			"confirm-data-change": false,
+			"smart-commit": false,
+			"smart-commit-recover": true,
+			"auto-close-transactions": true,
+			"close-transactions-period": 1800,
+			"auto-close-connections": true,
+			"close-connections-period": 14400
+		},
+		"prod": {
+			"name": "Production",
+			"color": "255,170,170",
+			"description": "Production database - be careful!",
+			"auto-commit": false,
+			"confirm-execute": true,
+			"confirm-data-change": true,
+			"smart-commit": false,
+			"smart-commit-recover": true,
+			"auto-close-transactions": true,
+			"close-transactions-period": 1800,
+			"auto-close-connections": true,
+			"close-connections-period": 14400
+		}
+	}
+}
