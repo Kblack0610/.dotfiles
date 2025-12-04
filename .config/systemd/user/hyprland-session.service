@@ -1,0 +1,16 @@
+[Unit]
+Description=Headless Hyprland session for Sunshine
+After=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Hyprland
+Restart=no
+Environment="WLR_DRM_DEVICES=/dev/dri/card0"
+Environment="XDG_RUNTIME_DIR=%t"
+Environment="WLR_RENDERER_ALLOW_SOFTWARE=1"
+ExecStartPre=/usr/bin/sleep 1
+
+[Install]
+WantedBy=default.target
+
