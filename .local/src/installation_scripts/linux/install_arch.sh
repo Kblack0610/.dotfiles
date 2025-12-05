@@ -108,7 +108,6 @@ install_tools() {
         "htop"
         "neofetch"
         "xsel"
-        "autojump"
         "glances"
         "fd"
         "bat"
@@ -116,11 +115,13 @@ install_tools() {
         "obsidian"
         "dbeaver"
     )
-    
+
     for tool in "${tools[@]}"; do
         install_pacman_package "$tool"
     done
 
+    # AUR packages
+    install_aur_package "autojump"
 }
 
 # Override: Install terminal enhancements

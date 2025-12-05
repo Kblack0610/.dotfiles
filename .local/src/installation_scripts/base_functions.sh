@@ -127,7 +127,7 @@ install_oh_my_zsh() {
     
     for plugin_repo in "${plugins[@]}"; do
         local plugin_name="${plugin_repo##*/}"
-        local plugin_dir="${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/$plugin_name"
+        local plugin_dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/$plugin_name"
 
         if [[ ! -d "$plugin_dir" ]]; then
             log_info "Installing $plugin_name..."
