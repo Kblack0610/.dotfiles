@@ -120,6 +120,7 @@ install_tools() {
     for tool in "${tools[@]}"; do
         install_pacman_package "$tool"
     done
+
 }
 
 # Override: Install terminal enhancements
@@ -182,14 +183,30 @@ install_runtime() {
 # Override: Install Zsh
 install_zsh() {
     log_section "Installing Zsh"
-    
+
     install_pacman_package "zsh"
     install_pacman_package "zsh-completions"
-    
+
     # Set as default shell if not already
-    if [[ "$SHELL" != "$(which zsh)" ]]; then
-        log_info "Setting Zsh as default shell..."
-        chsh -s "$(which zsh)"
+    local zsh_path
+    zsh_path="$(command -v zsh)"
+
+    if [[ -z "$zsh_path" ]]; then
+        log_error "zsh not found in PATH"
+        return 1
+    fi
+
+    # Check if current shell is already zsh
+    if [[ "$SHELL" == *zsh ]]; then
+        log_info "Zsh is already the default shell"
+        return 0
+    fi
+
+    log_info "Setting Zsh as default shell..."
+    if chsh -s "$zsh_path"; then
+        log_info "✓ Default shell changed to zsh (restart terminal to apply)"
+    else
+        log_error "✗ Failed to change default shell - try running: sudo chsh -s $zsh_path $USER"
     fi
 }
 

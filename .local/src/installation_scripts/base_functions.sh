@@ -128,11 +128,16 @@ install_oh_my_zsh() {
     for plugin_repo in "${plugins[@]}"; do
         local plugin_name="${plugin_repo##*/}"
         local plugin_dir="${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/$plugin_name"
-        
+
         if [[ ! -d "$plugin_dir" ]]; then
             log_info "Installing $plugin_name..."
-            git clone "https://github.com/$plugin_repo" "$plugin_dir" &>/dev/null
-            log_info "✓ $plugin_name installed"
+            if git clone "https://github.com/$plugin_repo" "$plugin_dir"; then
+                log_info "✓ $plugin_name installed"
+            else
+                log_error "✗ Failed to install $plugin_name"
+            fi
+        else
+            log_info "$plugin_name already installed"
         fi
     done
 }
@@ -155,12 +160,10 @@ install_fonts() {
     
     local fonts=(
         "Hack"
-        "3270"
-        "0xProto"
         "SymbolsOnly"
     )
     
-    local version='3.0.2'
+    local version='3.4.0'
     local fonts_dir="${HOME}/.local/share/fonts"
     
     [[ ! -d "$fonts_dir" ]] && mkdir -p "$fonts_dir"
@@ -171,7 +174,7 @@ install_fonts() {
         
         log_info "Downloading $font font..."
         if wget -q "$download_url" -O "/tmp/${zip_file}"; then
-            unzip -q "/tmp/${zip_file}" -d "$fonts_dir" && rm "/tmp/${zip_file}"
+            unzip -o -q "/tmp/${zip_file}" -d "$fonts_dir" && rm "/tmp/${zip_file}"
             log_info "✓ $font installed"
         else
             log_warning "✗ Failed to download $font"
