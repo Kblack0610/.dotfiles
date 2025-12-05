@@ -10,7 +10,6 @@ Media/Videos
 Media/Music
 
 .local/bin/*
-!.local/bin/setup
 
 .config/jesseduffield/lazygit/state.yml
 

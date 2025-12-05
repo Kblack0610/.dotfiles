@@ -233,7 +233,7 @@ setup_kubernetes() {
     log_info "Kubernetes directories created"
 
     # Offer to run cluster setup wizard
-    local k8s_setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
+    local k8s_setup="$SCRIPT_DIR/linux/k8s-clusters-setup.sh"
     if [[ -x "$k8s_setup" ]]; then
         echo ""
         read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
@@ -288,19 +288,23 @@ setup_git() {
 # Apply dotfiles with stow
 apply_dotfiles() {
     log_section "Applying dotfiles"
-    
+
     if ! command -v stow &>/dev/null; then
         log_warning "stow not installed, skipping dotfiles"
         return 0
     fi
-    
+
     cd ~/.dotfiles
-    
+
     # Remove existing configs
     [[ -f ~/.bashrc ]] && rm -f ~/.bashrc
     [[ -f ~/.zshrc ]] && rm -f ~/.zshrc
-    
+
     stow .
+
+    # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
+    git config core.hooksPath .githooks
+    log_info "Git hooks configured"
 
     # Env Substitute local files
     
