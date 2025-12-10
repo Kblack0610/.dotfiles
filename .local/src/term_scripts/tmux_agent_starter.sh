@@ -1,40 +1,36 @@
 #!/bin/bash
 
-# Ensure we can find user installed binaries (cargo, brew, etc)
+# Spawns a claude agent in a new window within a selected session
+# Allows multiple agents per session
+
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
-# 1. Select project
-# PROJECT=$(find -L ~/.config/tmuxinator -name "*.yml" | xargs -n 1 basename -s .yml | fzf --reverse --border --prompt='Select Agent dir> ')
-TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d 2>/dev/null | fzf --reverse --border --prompt='Spawn Agent In > ')
-
+# 1. Select from existing tmux sessions
+SESSION=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | \
+          fzf --reverse --border --prompt='Spawn agent in session > ')
 
 # 2. Exit if cancelled
+[[ -z "$SESSION" ]] && exit 0
+
+# 3. Select target directory
+TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d 2>/dev/null | \
+         fzf --reverse --border --prompt='Select directory > ')
+
+# 4. Exit if cancelled
 [[ -z "$TARGET" ]] && exit 0
 
-# TMUX_WINDOW_COUNT=$(tmux list-windows -t platform | wc -l)
-TMUX_WINDOW_COUNT=$(tmux display-message -p '#{session_windows}')
-TMUX_WINDOW_COUNT=$((TMUX_WINDOW_COUNT + 1))
-
-# 3. Setup Paths & Names
-# Ensure absolute path for tmuxinator and sanitize directory name for session title
+# 5. Setup Paths & Names
 ROOT=$(cd "$TARGET" && pwd)
-NAME="$(basename "$ROOT" | tr ' .:' '_')_agent_$TMUX_WINDOW_COUNT"
+WINDOW_COUNT=$(tmux list-windows -t "$SESSION" 2>/dev/null | wc -l)
+WINDOW_COUNT=$((WINDOW_COUNT + 1))
+NAME="$(basename "$ROOT" | tr ' .:' '_')_agent_$WINDOW_COUNT"
 
-# 4. Switch or Start
-# If we are in tmux, tell tmuxinator to switch the client, not attach inside the popup
+# 6. Create new window with claude in the selected session
 if [ -n "$TMUX" ]; then
-  notify-send "Spawning Agent in $ROOT"
-    # 3. Create the window
-  # -c: Sets the directory
-  # -n: Names the window "agent"
-  # \; split-window -h: Immediately splits it (giving you that agent/editor view)
-    tmux switch-client -t $TARGET 
-    tmux new-window -c "$TARGET" -n "$NAME" \
-    claude --dangerously-skip-permissions \
-    # # Pass the 'root' and 'name' variables to the agent.yml template
-    # tmuxinator start agent root="$ROOT" name="$NAME" --no-attach
-    # # Manually switch to the session tmuxinator just created
-    # tmux switch-client -t "$NAME"
+    notify-send "Spawning Agent in $ROOT ($SESSION)" 2>/dev/null || true
+    tmux new-window -t "$SESSION" -c "$ROOT" -n "$NAME" "claude --dangerously-skip-permissions"
+    tmux switch-client -t "$SESSION"
 else
-    tmuxinator start agent root="$ROOT" name="$NAME"
+    echo "Not in a tmux session."
+    exit 1
 fi
