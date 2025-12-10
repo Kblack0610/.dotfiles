@@ -30,24 +30,24 @@ fi
 # 6. Create window name
 NAME="nvim_$(basename "$ROOT" | tr ' .:' '_')"
 
-# 7. Check if a window running nvim already exists in that session
-# Look for windows where the pane is running nvim
-EXISTING_WINDOW=$(tmux list-windows -t "$SESSION" -F "#{window_index}:#{pane_current_command}" 2>/dev/null | \
+# 7. Check if any pane in the session is running nvim (actual process, not session name)
+# List ALL panes in the session and check their running command
+EXISTING_WINDOW=$(tmux list-panes -t "$SESSION" -s -F "#{window_index}:#{pane_current_command}" 2>/dev/null | \
                   grep -E ":n?vim$" | head -1 | cut -d: -f1)
 
-if [ -n "$TMUX" ]; then
-    if [[ -n "$EXISTING_WINDOW" ]]; then
-        # Switch to existing nvim window
-        notify-send "Switching to nvim window in $SESSION" 2>/dev/null || true
-        tmux select-window -t "$SESSION:$EXISTING_WINDOW"
-        tmux switch-client -t "$SESSION"
-    else
-        # Create new nvim window
-        notify-send "Opening nvim at $ROOT in $SESSION" 2>/dev/null || true
-        tmux new-window -t "$SESSION" -c "$ROOT" -n "$NAME" "nvim ."
-        tmux switch-client -t "$SESSION"
-    fi
+if [[ -n "$EXISTING_WINDOW" ]]; then
+    # Switch to existing nvim window
+    notify-send "Switching to nvim window in $SESSION" 2>/dev/null || true
+    tmux select-window -t "$SESSION:$EXISTING_WINDOW"
 else
-    echo "Not in a tmux session."
-    exit 1
+    # Create new nvim window
+    notify-send "Opening nvim at $ROOT in $SESSION" 2>/dev/null || true
+    tmux new-window -t "$SESSION" -c "$ROOT" -n "$NAME" "nvim ."
+fi
+
+# Attach or switch based on whether we're inside tmux
+if [ -n "$TMUX" ]; then
+    tmux switch-client -t "$SESSION"
+else
+    tmux attach-session -t "$SESSION"
 fi
