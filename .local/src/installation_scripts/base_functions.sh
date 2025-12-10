@@ -41,22 +41,46 @@ load_config() {
 # Create directory structure
 create_directories() {
     log_section "Creating directory structure"
-    
+
     local dirs=(
-        ~/.local/bin
-        ~/.local/share/fonts
-        ~/.config
-        ~/Media/Pictures
-        ~/Media/Videos
-        ~/Media/Music
-        ~/Documents
-        ~/Projects
+        "$HOME/.local/bin"
+        "$HOME/.local/share/fonts"
+        "$HOME/.config"
+        "$HOME/dev"
+        "$HOME/Downloads"
+        "$HOME/Media/Pictures"
+        "$HOME/Media/Videos"
+        "$HOME/Media/Music"
     )
-    
+
     for dir in "${dirs[@]}"; do
         [[ ! -d "$dir" ]] && mkdir -p "$dir"
     done
-    
+
+    # Remove default XDG directories we don't use
+    local remove_dirs=(
+        "$HOME/Desktop"
+        "$HOME/Documents"
+        "$HOME/Public"
+        "$HOME/Templates"
+        "$HOME/Music"
+        "$HOME/Pictures"
+        "$HOME/Videos"
+        "$HOME/Projects"
+        "$HOME/~"  # Common mistake from bad tilde expansion
+    )
+
+    for dir in "${remove_dirs[@]}"; do
+        if [[ -d "$dir" && ! -L "$dir" ]]; then
+            # Only remove if empty
+            if [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
+                rmdir "$dir" 2>/dev/null && log_info "Removed empty $dir"
+            else
+                log_warning "$dir is not empty, skipping removal"
+            fi
+        fi
+    done
+
     log_info "Directory structure created"
 }
 
@@ -223,6 +247,12 @@ install_kubernetes() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Setup printing (CUPS with network printer discovery)
+setup_printing() {
+    log_section "Setting up printing (CUPS + network discovery)"
+    log_info "No default implementation - override in OS-specific file"
+}
+
 # Setup Kubernetes directories and run cluster wizard
 setup_kubernetes() {
     log_section "Setting up Kubernetes environment"
@@ -309,19 +339,90 @@ apply_dotfiles() {
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
 
-    # Env Substitute local files
-    
-    # Configure MCPs
-    rm .config/opencode/opencode.json
-    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.config/opencode/opencode.json | sponge .config/opencode/opencode.json
+    # Env Substitute local files - replace symlinks with actual files containing secrets
+    local dotfiles_dir="$HOME/.dotfiles"
+    local mcp_files=(
+        ".config/opencode/opencode.json"
+        ".codeium/windsurf/mcp_config.json"
+        ".cursor/mcp.json"
+    )
 
-    rm .codeium/windsurf/mcp_config.json
-    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.codeium/windsurf/mcp_config.json | sponge .codeium/windsurf/mcp_config.json
+    for mcp_file in "${mcp_files[@]}"; do
+        local target="$HOME/$mcp_file"
+        local source="$dotfiles_dir/$mcp_file"
 
-    rm .cursor/mcp.json
-    envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < .dotfiles/.cursor/mcp.json | sponge .cursor/mcp.json
+        if [[ -f "$source" ]]; then
+            rm -f "$target"
+            envsubst '${GITHUB_PERSONAL_ACCESS_TOKEN} ${DIGITALOCEAN_API_TOKEN}' < "$source" > "$target"
+            log_info "✓ Configured $mcp_file"
+        fi
+    done
 
     log_info "Dotfiles applied"
+}
+
+# Setup Claude Code MCP servers
+setup_claude_mcp() {
+    log_section "Setting up Claude Code MCP servers"
+
+    if ! command -v claude &>/dev/null; then
+        log_warning "Claude CLI not found, skipping MCP setup"
+        log_info "Install with: npm install -g @anthropic-ai/claude-code"
+        return 0
+    fi
+
+    # Define MCP servers to install
+    # Format: "name|command"
+    local servers=(
+        "sequential-thinking|npx -y @modelcontextprotocol/server-sequential-thinking"
+        "context7|npx -y @upstash/context7-mcp"
+        "playwright|npx -y @playwright/mcp@latest --browser firefox"
+        "serena|uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context ide-assistant"
+        "docker-mcp|uvx docker-mcp"
+        "linear|npx -y mcp-remote https://mcp.linear.app/sse"
+    )
+
+    # Servers requiring environment variables
+    local env_servers=(
+        "digitalocean|npx -y @digitalocean/mcp|DIGITALOCEAN_API_TOKEN"
+        "github|docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server|GITHUB_PERSONAL_ACCESS_TOKEN"
+    )
+
+    for server_def in "${servers[@]}"; do
+        local name="${server_def%%|*}"
+        local cmd="${server_def#*|}"
+
+        if claude mcp list 2>/dev/null | grep -q "$name"; then
+            log_info "$name already installed"
+        else
+            log_info "Installing $name..."
+            if claude mcp add --scope user "$name" -- $cmd 2>/dev/null; then
+                log_info "✓ $name installed"
+            else
+                log_warning "✗ Failed to install $name"
+            fi
+        fi
+    done
+
+    # Handle servers with env vars
+    for server_def in "${env_servers[@]}"; do
+        IFS='|' read -r name cmd env_var <<< "$server_def"
+
+        if claude mcp list 2>/dev/null | grep -q "$name"; then
+            log_info "$name already installed"
+        elif [[ -z "${!env_var}" ]]; then
+            log_warning "Skipping $name - $env_var not set"
+        else
+            log_info "Installing $name..."
+            if claude mcp add --scope user --env "$env_var=${!env_var}" "$name" -- $cmd 2>/dev/null; then
+                log_info "✓ $name installed"
+            else
+                log_warning "✗ Failed to install $name"
+            fi
+        fi
+    done
+
+    log_info "Claude MCP setup complete"
 }
 
 # Install NPM packages
@@ -378,6 +479,9 @@ install_all() {
     install_kubernetes
     setup_kubernetes
 
+    # Printing
+    setup_printing
+
     # GUI (if applicable)
     install_gui
 
@@ -386,6 +490,7 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
+    setup_claude_mcp
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
@@ -397,6 +502,6 @@ export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust
-export -f install_kubernetes setup_kubernetes
-export -f install_fonts setup_git apply_dotfiles install_npm_packages
+export -f install_kubernetes setup_kubernetes setup_printing
+export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_claude_mcp
 export -f install_all

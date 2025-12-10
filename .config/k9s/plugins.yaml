@@ -1,13 +1,8 @@
-# K9s Plugins Configuration
-# These add custom actions to resources in k9s
-# Press Ctrl+Shift+<key> to run these actions
+# K9s Plugins - Trimmed essentials
+# See: https://k9scli.io/topics/plugins/
 
 plugins:
-  # ─────────────────────────────────────────────────────────────────────
-  # Pod Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Stern - multi-pod log tailing (requires: stern)
+  # Multi-pod log tailing (requires: stern)
   stern:
     shortCut: Shift-L
     description: "Tail logs with stern"
@@ -24,72 +19,21 @@ plugins:
       - $NAMESPACE
       - $FILTER
 
-  # Watch logs with timestamps
-  log-timestamps:
-    shortCut: Shift-T
-    description: "Logs with timestamps"
+  # Decode secret and view
+  decode-secret:
+    shortCut: Shift-X
+    description: "Decode secret"
     scopes:
-      - pods
-      - containers
-    command: kubectl
+      - secrets
+    command: bash
     background: false
     args:
-      - logs
-      - -f
-      - --timestamps
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - $NAME
-      - --tail
-      - "200"
+      - -c
+      - |
+        kubectl get secret $NAME --context $CONTEXT -n $NAMESPACE -o json | \
+        jq -r '.data | to_entries[] | "\(.key):\n\(.value | @base64d)\n"' | less
 
-  # Previous container logs (for crash debugging)
-  log-previous:
-    shortCut: Shift-P
-    description: "Previous container logs"
-    scopes:
-      - pods
-    command: kubectl
-    background: false
-    args:
-      - logs
-      - --previous
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - $NAME
-      - --tail
-      - "500"
-
-  # Debug container with netshoot
-  debug-netshoot:
-    shortCut: Shift-D
-    description: "Debug with netshoot"
-    scopes:
-      - pods
-    command: kubectl
-    background: false
-    args:
-      - debug
-      - -it
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - $NAME
-      - --image=nicolaka/netshoot
-      - --target=$NAME
-      - --
-      - /bin/bash
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Deployment Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Restart deployment (rollout restart)
+  # Rollout restart
   restart:
     shortCut: Shift-R
     description: "Rollout restart"
@@ -109,190 +53,23 @@ plugins:
       - $NAMESPACE
       - $RESOURCE_NAME/$NAME
 
-  # Watch rollout status
-  rollout-status:
-    shortCut: Shift-S
-    description: "Rollout status"
+  # Debug with netshoot
+  debug-netshoot:
+    shortCut: Shift-D
+    description: "Debug with netshoot"
     scopes:
-      - deployments
-      - daemonsets
-      - statefulsets
-    command: kubectl
-    background: false
-    args:
-      - rollout
-      - status
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - $RESOURCE_NAME/$NAME
-      - --watch
-
-  # View deployment history
-  rollout-history:
-    shortCut: Shift-H
-    description: "Rollout history"
-    scopes:
-      - deployments
-      - daemonsets
-      - statefulsets
-    command: kubectl
-    background: false
-    args:
-      - rollout
-      - history
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - $RESOURCE_NAME/$NAME
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Node Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # SSH into node (for debugging)
-  node-shell:
-    shortCut: Shift-S
-    description: "SSH into node"
-    scopes:
-      - nodes
+      - pods
     command: kubectl
     background: false
     args:
       - debug
-      - node/$NAME
       - -it
       - --context
       - $CONTEXT
-      - --image=alpine
+      - --namespace
+      - $NAMESPACE
+      - $NAME
+      - --image=nicolaka/netshoot
+      - --target=$NAME
       - --
-      - chroot
-      - /host
-      - /bin/sh
-
-  # Drain node
-  drain:
-    shortCut: Shift-D
-    description: "Drain node"
-    scopes:
-      - nodes
-    command: kubectl
-    background: false
-    confirm: true
-    args:
-      - drain
-      - $NAME
-      - --context
-      - $CONTEXT
-      - --ignore-daemonsets
-      - --delete-emptydir-data
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Service Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Port forward service
-  port-forward-svc:
-    shortCut: Shift-F
-    description: "Port forward (8080:target)"
-    scopes:
-      - services
-    command: kubectl
-    background: true
-    args:
-      - port-forward
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-      - svc/$NAME
-      - "8080"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Secret Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Decode secret and view
-  decode-secret:
-    shortCut: Shift-X
-    description: "Decode secret"
-    scopes:
-      - secrets
-    command: bash
-    background: false
-    args:
-      - -c
-      - |
-        kubectl get secret $NAME --context $CONTEXT -n $NAMESPACE -o json | \
-        jq -r '.data | to_entries[] | "\(.key):\n\(.value | @base64d)\n"' | less
-
-  # ─────────────────────────────────────────────────────────────────────
-  # ConfigMap Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Edit configmap
-  edit-cm:
-    shortCut: Shift-E
-    description: "Edit configmap"
-    scopes:
-      - configmaps
-    command: kubectl
-    background: false
-    args:
-      - edit
-      - configmap
-      - $NAME
-      - --context
-      - $CONTEXT
-      - --namespace
-      - $NAMESPACE
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Generic Plugins
-  # ─────────────────────────────────────────────────────────────────────
-
-  # Get events for resource
-  get-events:
-    shortCut: Shift-V
-    description: "View related events"
-    scopes:
-      - pods
-      - deployments
-      - services
-      - statefulsets
-      - daemonsets
-    command: bash
-    background: false
-    args:
-      - -c
-      - |
-        kubectl get events --context $CONTEXT -n $NAMESPACE \
-          --field-selector involvedObject.name=$NAME \
-          --sort-by='.lastTimestamp' | less
-
-  # Copy resource name to clipboard
-  copy-name:
-    shortCut: Shift-C
-    description: "Copy name to clipboard"
-    scopes:
-      - all
-    command: bash
-    background: true
-    args:
-      - -c
-      - "echo -n $NAME | xclip -selection clipboard"
-
-  # Export resource as YAML
-  export-yaml:
-    shortCut: Shift-Y
-    description: "Export as YAML"
-    scopes:
-      - all
-    command: bash
-    background: false
-    args:
-      - -c
-      - |
-        kubectl get $RESOURCE_NAME $NAME --context $CONTEXT -n $NAMESPACE -o yaml | less
+      - /bin/bash

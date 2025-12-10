@@ -227,6 +227,7 @@ install_nvim() {
 install_tmux() {
     log_section "Installing tmux"
     install_pacman_package "tmux"
+    install_pacman_package "tmuxinator"
 }
 
 # Override: Install Kitty
@@ -277,6 +278,61 @@ install_kubernetes() {
     install_pacman_package "lazydocker"
 }
 
+# Override: Setup printing (CUPS with network printer discovery)
+# Enables printing to network printers (e.g., Brother MFC-J1360DW) via mDNS/Avahi
+setup_printing() {
+    log_section "Setting up printing (CUPS + network discovery)"
+
+    # Install CUPS and network discovery packages
+    local packages=(
+        "cups"
+        "cups-pdf"
+        "avahi"
+        "nss-mdns"
+    )
+
+    for pkg in "${packages[@]}"; do
+        install_pacman_package "$pkg"
+    done
+
+    # Enable and start services
+    log_info "Enabling CUPS and Avahi services..."
+    sudo systemctl enable --now cups
+    sudo systemctl enable --now avahi-daemon
+
+    # Configure nsswitch.conf for mDNS hostname resolution
+    local nsswitch="/etc/nsswitch.conf"
+    if grep -q "mdns_minimal" "$nsswitch"; then
+        log_info "mDNS already configured in nsswitch.conf"
+    else
+        log_info "Configuring mDNS in nsswitch.conf..."
+        # Add mdns_minimal [NOTFOUND=return] after mymachines in the hosts line
+        # Using perl to avoid sed escaping issues with brackets
+        sudo perl -i -pe 's/^(hosts:\s+mymachines)(?!\s+mdns_minimal)/$1 mdns_minimal [NOTFOUND=return]/' "$nsswitch"
+        log_info "✓ mDNS configured"
+    fi
+
+    # Restart services to apply changes
+    sudo systemctl restart avahi-daemon cups
+
+    # Check for discovered printers
+    log_info "Checking for network printers..."
+    sleep 2
+    if command -v avahi-browse &>/dev/null; then
+        local printers
+        printers=$(avahi-browse -a -t 2>/dev/null | grep -i "_printer\|_ipp" | head -5)
+        if [[ -n "$printers" ]]; then
+            log_info "Discovered printers:"
+            echo "$printers"
+        else
+            log_warning "No network printers discovered (they may appear later)"
+        fi
+    fi
+
+    log_info "Printing setup complete"
+    log_info "Access CUPS web interface at: http://localhost:631"
+}
+
 # Arch-specific: Install from AUR
 install_aur_packages() {
     log_section "Installing AUR packages"
@@ -322,6 +378,9 @@ install_all() {
     # Kubernetes & Containers
     install_kubernetes
     setup_kubernetes
+
+    # Printing
+    setup_printing
 
     # Desktop environment
     install_gui
