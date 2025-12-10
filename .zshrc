@@ -96,3 +96,5 @@ export PATH="/Users/kblack0610/.codeium/windsurf/bin:$PATH"
 export PATH="/opt/homebrew/bin:$PATH"
 alias zephyr-env="source ~/zephyr-env/bin/activate"
 export PATH="$HOME/.local/bin:$PATH"
+
+. "$HOME/.local/share/../bin/env"
