@@ -1,0 +1,20 @@
+# ~/.config/tmuxinator/game.yml
+
+name: game
+root: ~/
+
+# for game projects
+
+windows:
+  - core:
+        root: ~/dev/bnb/games/unity-core/
+        layout: main
+        panes:
+          - resources:
+              - nvim ~/dev/bnb/games/unity-core/
+  - dodginballs:
+        root: ~/dev/bnb/games/dodginballs/
+        layout: main
+        panes:
+          - resources:
+              - nvim ~/dev/bnb/games/dodginballs/

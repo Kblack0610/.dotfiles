@@ -10,6 +10,6 @@ windows:
       layout: even-horizontal
       panes:
         - api:
-            - cd ~/dev/BlackNBrownStudios/platform/apps/placemyparents/api/ && pnpm run dev
+            - cd ~/dev/bnb/platform/apps/placemyparents/api/ && pnpm run dev
         - web:
-            - cd ~/dev/BlackNBrownStudios/platform/apps/placemyparents/web/ && pnpm run dev
+            - cd ~/dev/bnb/platform/apps/placemyparents/web/ && pnpm run dev
