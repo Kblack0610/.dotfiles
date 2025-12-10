@@ -25,7 +25,10 @@ Media/Music
 .config/OrcaSlicer
 !.config/OrcaSlicer/OrcaSlicer.conf
 
-.config/Windsurf/User
+# Windsurf - ignore everything except settings
+.config/Windsurf/*
+!.config/Windsurf/User/
+.config/Windsurf/User/*
 !.config/Windsurf/User/settings.json
 
 .codeium/*

@@ -49,3 +49,5 @@ ulimit -n 4000
 # Source autojump for directory jumping functionality.
 [ -f /usr/share/autojump/autojump.bash ] && source /usr/share/autojump/autojump.bash
 . "$HOME/.cargo/env"
+
+. "$HOME/.local/share/../bin/env"

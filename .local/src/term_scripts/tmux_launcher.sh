@@ -9,11 +9,12 @@ SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
 # Menu options
 OPTIONS="Spawn Project (new session with nvim)
-Spawn Server (api + web dev servers)
 Spawn Agent (claude in directory)
-Open nvim (new window in current session)
+Open nvim (repo root in current session)
 Select Session (existing tmuxinator configs)
-Switch Session (existing tmux sessions)"
+Switch Session (existing tmux sessions)
+---
+Spawn Server (api + web dev servers)"
 
 # 1. Show menu
 CHOICE=$(echo "$OPTIONS" | fzf --reverse --border --prompt='Tmux Launcher > ' --height=40%)
