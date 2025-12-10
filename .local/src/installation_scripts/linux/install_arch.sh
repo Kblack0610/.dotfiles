@@ -84,6 +84,7 @@ install_basics() {
         "wget"
         "curl"
         "git"
+        "git-lfs"
         "tmux"
         "stow"
         "base-devel"
