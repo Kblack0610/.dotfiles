@@ -11,6 +11,8 @@ Media/Music
 
 .local/bin/*
 
+!.local/bin/claude-notify
+
 .config/jesseduffield/lazygit/state.yml
 
 .config/unity3d/DefaultCompany
@@ -50,9 +52,7 @@ Media/Music
 !.claude/commands
 !.claude/settings.json
 !.claude/history.jsonl
-# Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig)
-# Note: history.jsonl contains absolute paths - run sed to fix on new machine:
-#   sed -i 's|/home/olduser|/home/newuser|g' ~/.claude/history.jsonl
+# Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig, history)
 .aider*
 
 # DBeaver - only track connection configs
@@ -63,10 +63,11 @@ Media/Music
 # k9s - ignore cluster state (may contain sensitive data)
 .config/k9s/clusters/
 
-# Kilocode - only track config, not history/logs/workspaces
+# Kilocode - only track config, not history/logs/workspaces/cache
 .kilocode/cli/history.json
 .kilocode/cli/logs/
 .kilocode/cli/workspaces/
+.kilocode/cli/global/cache/
 
 # Playwright MCP runtime
 .playwright-mcp/
