@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "notify-send -u normal 'Claude Code' 'Task Finished'"
+            "command": "~/.local/bin/claude-notify"
           }
         ]
       }
