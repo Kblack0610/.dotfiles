@@ -84,3 +84,4 @@ token_count_estimator: TIKTOKEN_GPT4O
 # NOTE: Make sure there are no name collisions in the names of registered projects.
 projects:
 - /home/kblack0610/dev/bnb/platform
+- /home/kblack0610/dev/home/binks-agent-orchestrator

@@ -16,9 +16,11 @@
         "hyprland/window"
     ],
     "modules-right": [
+        "custom/claude-agents",
         "mpd",
         "idle_inhibitor",
         "pulseaudio",
+        "custom/bluetooth",
         "network",
         "power-profiles-daemon",
         "cpu",
@@ -174,6 +176,11 @@
         "format-disconnected": "Disconnected ⚠",
         "format-alt": "{ifname}: {ipaddr}/{cidr}"
     },
+    "custom/bluetooth": {
+        "format": "",
+        "tooltip-format": "Bluetooth - Click to open bluetuith",
+        "on-click": "kitty --class floating-term -e bluetuith"
+    },
     "pulseaudio": {
         // "scroll-step": 1, // %, can be a float
         "format": "{volume}% {icon} {format_source}",
@@ -216,5 +223,13 @@
 			"suspend": "systemctl suspend",
 			"hibernate": "systemctl hibernate"
 		}
+    },
+    "custom/claude-agents": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 3,
+        "exec": "$HOME/.config/waybar/claude_agents.sh",
+        "on-click": "kitty --class floating-term -e $HOME/.local/src/term_scripts/tmux_claude_viewer.sh",
+        "tooltip": true
     }
 }

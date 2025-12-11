@@ -111,6 +111,32 @@
         "scoreThreshold": 0.4
       }
     },
+    "bedrock": {
+      "amazon.titan-embed-text-v1": {
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "amazon.titan-embed-text-v2:0": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "amazon.titan-embed-image-v1": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "amazon.nova-2-multimodal-embeddings-v1:0": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "cohere.embed-english-v3": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "cohere.embed-multilingual-v3": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      }
+    },
     "openrouter": {
       "openai/text-embedding-3-small": {
         "dimension": 1536,
@@ -133,7 +159,15 @@
         "scoreThreshold": 0.4
       },
       "mistralai/codestral-embed-2505": {
-        "dimension": 3072,
+        "dimension": 1536,
+        "scoreThreshold": 0.4
+      },
+      "qwen/qwen3-embedding-0.6b": {
+        "dimension": 1024,
+        "scoreThreshold": 0.4
+      },
+      "qwen/qwen3-embedding-4b": {
+        "dimension": 2560,
         "scoreThreshold": 0.4
       },
       "qwen/qwen3-embedding-8b": {
@@ -172,7 +206,7 @@
   "yoloMode": false,
   "kilocodePosthogApiKey": "phc_GK2Pxl0HPj5ZPfwhLRjXrtdz8eD7e9MKnXiFrOqnB6z",
   "baseUrl": "http://192.168.1.4:11434",
-  "mcpHubInstanceId": "1764063991750",
+  "mcpHubInstanceId": "1765346768409",
   "ollamaBaseUrl": "http://192.168.1.4:11434",
   "ollamaModelId": "llama3.1:70b",
   "taskHistory": [
@@ -189,5 +223,6 @@
       "mode": "code"
     }
   ],
-  "globalWorkflowToggles": {}
+  "globalWorkflowToggles": {},
+  "contextWindow": "131072"
 }

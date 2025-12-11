@@ -36,6 +36,38 @@
     {
       "prompt": "/config",
       "timestamp": 1764065200437
+    },
+    {
+      "prompt": "/model",
+      "timestamp": 1765340991996
+    },
+    {
+      "prompt": "describe this repo",
+      "timestamp": 1765341004205
+    },
+    {
+      "prompt": "describe this codebase",
+      "timestamp": 1765341064456
+    },
+    {
+      "prompt": "what",
+      "timestamp": 1765341068867
+    },
+    {
+      "prompt": "hello",
+      "timestamp": 1765341249715
+    },
+    {
+      "prompt": "/model",
+      "timestamp": 1765346771286
+    },
+    {
+      "prompt": "list",
+      "timestamp": 1765346772014
+    },
+    {
+      "prompt": "/model list",
+      "timestamp": 1765346775141
     }
   ],
   "maxSize": 500

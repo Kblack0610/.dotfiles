@@ -1,89 +1,34 @@
 #!/bin/bash
-# Claude Code completion notification with context
-# Reads hook JSON from stdin, parses transcript for last message state
+# Claude Code completion notification
+# Reads hook JSON from stdin
 
-# Read JSON input from stdin
 input=$(cat)
 
-# Debug: log what we receive
+# Debug log
 echo "$input" > /tmp/claude-hook-debug.json
 
-# Parse hook data
-transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
+# Check for loop prevention
 stop_hook_active=$(echo "$input" | jq -r '.stop_hook_active // false')
-
-# Prevent infinite loops
 if [ "$stop_hook_active" = "true" ]; then
     exit 0
 fi
 
-# Get tmux context (fallback if not in tmux)
+# Get tmux context
 if tmux display-message -p '#{session_name}' &>/dev/null; then
-    WINDOW=$(tmux display-message -p '#{session_name}:#{window_name}')
+    SESSION=$(tmux display-message -p '#{session_name}')
+    WINDOW=$(tmux display-message -p '#{window_name}')
     DIR=$(basename "$(tmux display-message -p '#{pane_current_path}')")
 else
-    WINDOW="standalone"
+    SESSION="claude"
+    WINDOW=""
     DIR=$(basename "$PWD")
 fi
 
-# Default status
-STATUS="done"
-BODY="Task finished"
-URGENCY="normal"
-ICON=""
-
-# Parse transcript for last message context if available
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    # Get the last assistant message
-    last_assistant=$(tac "$transcript_path" 2>/dev/null | grep -m1 '"type":"assistant"' || true)
-
-    if [ -n "$last_assistant" ]; then
-        # Check for tool use (still processing)
-        if echo "$last_assistant" | grep -q '"type":"tool_use"'; then
-            tool_name=$(echo "$last_assistant" | jq -r '.message.content[] | select(.type=="tool_use") | .name' 2>/dev/null | tail -1)
-            STATUS="tools"
-            BODY="Using: ${tool_name:-tool}"
-            URGENCY="low"
-            ICON="🔧"
-        else
-            # Get the text content
-            text=$(echo "$last_assistant" | jq -r '.message.content[] | select(.type=="text") | .text' 2>/dev/null | tail -500)
-
-            if [ -n "$text" ]; then
-                # Check if ends with a question
-                if echo "$text" | tail -c 200 | grep -qE '\?[[:space:]]*$'; then
-                    STATUS="question"
-                    # Extract last question
-                    question=$(echo "$text" | grep -oE '[^.!?]*\?[[:space:]]*$' | tail -1 | head -c 80)
-                    BODY="${question:-Claude has a question}"
-                    URGENCY="critical"
-                    ICON="❓"
-                # Check for common "waiting for input" patterns
-                elif echo "$text" | tail -c 300 | grep -qiE '(let me know|would you like|shall I|want me to|ready to|waiting for)'; then
-                    STATUS="waiting"
-                    BODY="Waiting for your input"
-                    URGENCY="normal"
-                    ICON="⏳"
-                # Check for completion indicators
-                elif echo "$text" | tail -c 300 | grep -qiE '(done|completed|finished|all set|ready|implemented|fixed|updated)'; then
-                    STATUS="done"
-                    BODY="Task completed successfully"
-                    URGENCY="normal"
-                    ICON="✅"
-                else
-                    STATUS="done"
-                    BODY="Claude finished"
-                    URGENCY="normal"
-                    ICON="📝"
-                fi
-            fi
-        fi
-    fi
+# Build title
+if [ -n "$WINDOW" ]; then
+    TITLE="Claude done - $SESSION:$WINDOW"
 else
-    # No transcript available
-    ICON="🤖"
+    TITLE="Claude done - $SESSION"
 fi
 
-# Send notification with icon
-notify-send -u "$URGENCY" "$ICON Claude [$STATUS] - $WINDOW" "$BODY
-📁 $DIR"
+notify-send -u normal "$TITLE" "📁 $DIR"
