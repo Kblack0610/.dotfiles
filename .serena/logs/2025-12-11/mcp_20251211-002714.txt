@@ -1,0 +1,108 @@
+INFO  2025-12-11 00:27:14,432 [MainThread] serena.cli:start_mcp_server:170 - Initializing Serena MCP server
+INFO  2025-12-11 00:27:14,432 [MainThread] serena.cli:start_mcp_server:171 - Storing logs in /home/kblack0610/.serena/logs/2025-12-11/mcp_20251211-002714.txt
+WARNING 2025-12-11 00:27:14,432 [MainThread] serena.config.context_mode:from_name:186 - Context name 'ide-assistant' is deprecated and has been renamed to 'claude-code'. Please update your configuration; refer to the configuration guide for more details: https://oraios.github.io/serena/02-usage/050_configuration.html#contexts
+INFO  2025-12-11 00:27:14,433 [MainThread] serena.config.serena_config:from_config_file:450 - Loading Serena configuration from /home/kblack0610/.serena/serena_config.yml
+INFO  2025-12-11 00:27:14,442 [MainThread] serena.agent:__init__:222 - Will record tool usage statistics with token count estimator: TIKTOKEN_GPT4O.
+INFO  2025-12-11 00:27:14,443 [MainThread] serena.analytics:__init__:39 - Loading tiktoken encoding for model gpt-4o, this may take a while on the first run.
+INFO  2025-12-11 00:27:14,605 [MainThread] serena.agent:__init__:226 - Starting Serena server (version=0.1.4-f245bd54-dirty, process id=318936, parent process id=318886)
+INFO  2025-12-11 00:27:14,605 [MainThread] serena.agent:__init__:227 - Configuration file: /home/kblack0610/.serena/serena_config.yml
+INFO  2025-12-11 00:27:14,605 [MainThread] serena.agent:__init__:228 - Available projects: binks, platform
+INFO  2025-12-11 00:27:14,605 [MainThread] serena.agent:__init__:229 - Loaded tools (38): read_file, create_text_file, list_dir, find_file, replace_content, delete_lines, replace_lines, insert_at_line, search_for_pattern, restart_language_server, get_symbols_overview, find_symbol, find_referencing_symbols, replace_symbol_body, insert_after_symbol, insert_before_symbol, rename_symbol, write_memory, read_memory, list_memories, delete_memory, edit_memory, execute_shell_command, activate_project, remove_project, switch_modes, get_current_config, check_onboarding_performed, onboarding, think_about_collected_information, think_about_task_adherence, think_about_whether_you_are_done, summarize_changes, prepare_for_new_conversation, initial_instructions, jet_brains_find_symbol, jet_brains_find_referencing_symbols, jet_brains_get_symbols_overview
+INFO  2025-12-11 00:27:14,606 [MainThread] serena.agent:apply:128 - SerenaAgentContext[name='claude-code'] excluded 5 tools: create_text_file, read_file, execute_shell_command, prepare_for_new_conversation, replace_content
+INFO  2025-12-11 00:27:14,606 [MainThread] serena.agent:__init__:243 - Number of exposed tools: 23
+INFO  2025-12-11 00:27:14,614 [MainThread] serena.agent:_update_active_tools:477 - Active tools (23): activate_project, check_onboarding_performed, delete_memory, edit_memory, find_file, find_referencing_symbols, find_symbol, get_current_config, get_symbols_overview, initial_instructions, insert_after_symbol, insert_before_symbol, list_dir, list_memories, onboarding, read_memory, rename_symbol, replace_symbol_body, search_for_pattern, think_about_collected_information, think_about_task_adherence, think_about_whether_you_are_done, write_memory
+INFO  2025-12-11 00:27:14,614 [MainThread] serena.agent:create_system_prompt:444 - Generating system prompt with available_tools=(see exposed tools), available_markers={'InitialInstructionsTool', 'FindReferencingSymbolsTool', 'ToolMarkerDoesNotRequireActiveProject', 'FindSymbolTool', 'ActivateProjectTool', 'InsertAfterSymbolTool', 'ToolMarkerCanEdit', 'InsertBeforeSymbolTool', 'ReplaceSymbolBodyTool', 'RenameSymbolTool', 'ToolMarkerSymbolicRead', 'ToolMarkerSymbolicEdit', 'GetSymbolsOverviewTool'}
+INFO  2025-12-11 00:27:14,615 [MainThread] serena.agent:create_system_prompt:456 - System prompt:
+You are a professional coding agent. 
+You have access to semantic coding tools upon which you rely heavily for all your work.
+You operate in a resource-efficient and intelligent manner, always keeping in mind to not read or generate
+content that is not needed for the task at hand.
+
+Some tasks may require you to understand the architecture of large parts of the codebase, while for others,
+it may be enough to read a small set of symbols or a single file.
+You avoid reading entire files unless it is absolutely necessary, instead relying on intelligent step-by-step 
+acquisition of information. Once you have read a full file, it does not make
+sense to analyse it with the symbolic read tools; you already have the information.
+
+You can achieve intelligent reading of code by using the symbolic tools for getting an overview of symbols and
+the relations between them, and then only reading the bodies of symbols that are necessary to complete the task at hand. 
+You can use the standard tools like list_dir, find_file and search_for_pattern if you need to.
+Where appropriate, you pass the `relative_path` parameter to restrict the search to a specific file or directory.
+
+If you are unsure about a symbol's name or location (to the extent that substring_matching for the symbol name is not enough), you can use the `search_for_pattern` tool, which allows fast
+and flexible search for patterns in the codebase. In this way, you can first find candidates for symbols or files,
+and then proceed with the symbolic tools.
+
+
+
+Symbols are identified by their `name_path` and `relative_path` (see the description of the `find_symbol` tool).
+You can get information about the symbols in a file by using the `get_symbols_overview` tool or use the `find_symbol` to search. 
+You only read the bodies of symbols when you need to (e.g. if you want to fully understand or edit it).
+For example, if you are working with Python code and already know that you need to read the body of the constructor of the class Foo, you can directly
+use `find_symbol` with name path pattern `Foo/__init__` and `include_body=True`. If you don't know yet which methods in `Foo` you need to read or edit,
+you can use `find_symbol` with name path pattern `Foo`, `include_body=False` and `depth=1` to get all (top-level) methods of `Foo` before proceeding
+to read the desired methods with `include_body=True`.
+You can understand relationships between symbols by using the `find_referencing_symbols` tool.
+
+
+
+You generally have access to memories and it may be useful for you to read them.
+You infer whether memories are relevant based on their names.
+
+
+The context and modes of operation are described below. These determine how to interact with your user
+and which kinds of interactions are expected of you.
+
+Context description:
+You are running in a CLI coding agent context where file operations, basic (line-based) edits and reads 
+as well as shell commands are handled by your own, internal tools.
+
+If Serena's tools can be used to achieve your task, you should prioritize them.
+In particular, it is important that you avoid reading entire source code files unless it is strictly necessary!
+Instead, for exploring and reading code in a token-efficient manner, use Serena's overview and symbolic search tools.
+For non-code files or for reads where you don't know the symbol's name path, you can use the pattern search tool.
+
+Modes descriptions:
+
+You are operating in interactive mode. You should engage with the user throughout the task, asking for clarification
+whenever anything is unclear, insufficiently specified, or ambiguous.
+
+Break down complex tasks into smaller steps and explain your thinking at each stage. When you're uncertain about
+a decision, present options to the user and ask for guidance rather than making assumptions.
+
+Focus on providing informative results for intermediate steps, such that the user can follow along with your progress and
+provide feedback as needed.
+
+You are operating in editing mode. You can edit files with the provided tools.
+You adhere to the project's code style and patterns.
+
+Use symbolic editing tools whenever possible for precise code modifications.
+If no explicit editing task has yet been provided, wait for the user to provide one. Do not be overly eager.
+
+When writing new code, think about where it belongs best. Don't generate new files if you don't plan on actually
+properly integrating them into the codebase.
+
+You have two main approaches for editing code: (a) editing at the symbol level and (b) file-based editing.
+The symbol-based approach is appropriate if you need to adjust an entire symbol, e.g. a method, a class, a function, etc.
+It is not appropriate if you need to adjust just a few lines of code within a larger symbol.
+
+**Symbolic editing**
+Use symbolic retrieval tools to identify the symbols you need to edit.
+If you need to replace the definition of a symbol, use the `replace_symbol_body` tool.
+If you want to add some new code at the end of the file, use the `insert_after_symbol` tool with the last top-level symbol in the file. 
+Similarly, you can use `insert_before_symbol` with the first top-level symbol in the file to insert code at the beginning of a file.
+You can understand relationships between symbols by using the `find_referencing_symbols` tool. If not explicitly requested otherwise by the user,
+you make sure that when you edit a symbol, the change is either backward-compatible or you find and update all references as needed.
+The `find_referencing_symbols` tool will give you code snippets around the references as well as symbolic information.
+You can assume that all symbol editing tools are reliable, so you never need to verify the results if the tools return without error.
+
+
+
+
+You have hereby read the 'Serena Instructions Manual' and do not need to read it again.
+INFO  2025-12-11 00:27:14,616 [MainThread] serena.cli:start_mcp_server:189 - Starting MCP server …
+INFO  2025-12-11 00:27:14,639 [MainThread] serena.mcp:_set_mcp_tools:243 - Starting MCP server with 23 tools: ['list_dir', 'find_file', 'search_for_pattern', 'get_symbols_overview', 'find_symbol', 'find_referencing_symbols', 'replace_symbol_body', 'insert_after_symbol', 'insert_before_symbol', 'rename_symbol', 'write_memory', 'read_memory', 'list_memories', 'delete_memory', 'edit_memory', 'activate_project', 'get_current_config', 'check_onboarding_performed', 'onboarding', 'think_about_collected_information', 'think_about_task_adherence', 'think_about_whether_you_are_done', 'initial_instructions']
+INFO  2025-12-11 00:27:14,639 [MainThread] serena.mcp:server_lifespan:350 - MCP server lifetime setup complete
+INFO  2025-12-11 00:27:14,642 [MainThread] mcp.server.lowlevel.server:_handle_request:625 - Processing request of type ListToolsRequest
+INFO  2025-12-11 00:27:14,642 [MainThread] mcp.server.lowlevel.server:_handle_request:625 - Processing request of type ListPromptsRequest
+INFO  2025-12-11 00:27:14,643 [MainThread] mcp.server.lowlevel.server:_handle_request:625 - Processing request of type ListResourcesRequest
