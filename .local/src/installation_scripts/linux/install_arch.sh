@@ -115,6 +115,7 @@ install_tools() {
         "exa"
         "obsidian"
         "dbeaver"
+        "grimblast"
     )
 
     for tool in "${tools[@]}"; do
