@@ -17,24 +17,37 @@ get_claude_status() {
         if [[ "$pane_cmd" == "claude" ]]; then
             seen_windows[$window_key]=1
 
+            # Capture last lines to detect state
+            last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
+
             # Get activity status
             last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
             now=$(date +%s)
-
+            activity_diff=9999
             if [ -n "$last_activity" ]; then
-                diff=$((now - last_activity))
-                if [ $diff -lt 60 ]; then
-                    # Active - recently responded
-                    status="✓"
-                    tooltip_status="●"
-                else
-                    # Idle - waiting for input or thinking
-                    status="✗"
-                    tooltip_status="○"
-                fi
+                activity_diff=$((now - last_activity))
+            fi
+
+            # Determine state based on content and activity
+            # Priority 1: Interactive questions needing input
+            if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
+                status="!"  # Needs attention
+                tooltip_status="⚠"
+            # Priority 2: Actively working (recent output within 3 seconds)
+            elif [ $activity_diff -lt 3 ]; then
+                status="~"  # Working
+                tooltip_status="◐"
+            # Priority 3: At prompt or showing status bar (DONE)
+            elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
+                status="✓"  # Done, waiting for input
+                tooltip_status="●"
+            # Fallback: No recent activity = done
+            elif [ $activity_diff -gt 10 ]; then
+                status="✓"
+                tooltip_status="●"
             else
-                status="?"
-                tooltip_status="?"
+                status="~"  # Probably working
+                tooltip_status="◐"
             fi
 
             # Build session agents list
@@ -49,7 +62,7 @@ get_claude_status() {
                 esac
             fi
 
-            # Build tooltip
+            # Build tooltip with state description
             dir_name=$(basename "$pane_path" 2>/dev/null || echo "~")
             tooltip+="${tooltip_status} ${session}:${window_idx}:${window_name} [${dir_name}]\\n"
         fi
