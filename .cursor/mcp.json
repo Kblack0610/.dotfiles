@@ -58,7 +58,7 @@
         "ghcr.io/github/github-mcp-server"
       ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN_G2I"
       }
     },
     "linear": {
@@ -66,7 +66,7 @@
       "args": [
         "-y",
         "mcp-remote",
-        "https://mcp.linear.app/sse"
+        "https://mcp.linear.app/mcp"
       ]
     }
   }
