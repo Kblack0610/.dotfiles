@@ -1,54 +1,228 @@
 {
   "mcpServers": {
-    "sequential-thinking": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
-    },
     "context7": {
-      "command": "npx",
       "args": [
         "-y",
         "@upstash/context7-mcp"
-      ]
-    },
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@playwright/mcp@latest",
-        "--browser",
-        "firefox"
-      ]
-    },
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/oraios/serena",
-        "serena",
-        "start-mcp-server",
-        "--context",
-        "ide-assistant"
-      ]
-    },
-    "docker-mcp": {
-      "command": "uvx",
-      "args": [
-        "docker-mcp"
-      ]
+      ],
+      "command": "npx"
     },
     "digitalocean": {
+      "args": [
+        "@digitalocean/mcp"
+      ],
       "command": "npx",
-      "args": ["@digitalocean/mcp"],
+      "disabledTools": [
+        "1-click-kubernetes-app-install",
+        "1-click-list",
+        "account-get-information",
+        "action-get",
+        "action-list",
+        "alert-policy-create",
+        "alert-policy-delete",
+        "alert-policy-get",
+        "alert-policy-list",
+        "alert-policy-update",
+        "apps-create-app-from-spec",
+        "apps-delete",
+        "apps-get-deployment-status",
+        "apps-get-info",
+        "apps-get-logs",
+        "apps-list",
+        "apps-update",
+        "balance-get",
+        "billing-history-list",
+        "byoip-prefix-create",
+        "byoip-prefix-delete",
+        "byoip-prefix-get",
+        "byoip-prefix-list",
+        "byoip-prefix-resources-get",
+        "certificate-delete",
+        "certificate-get",
+        "certificate-list",
+        "change-kernel-droplet",
+        "custom-certificate-create",
+        "db-cluster-create",
+        "db-cluster-create-topic",
+        "db-cluster-create-user",
+        "db-cluster-delete",
+        "db-cluster-delete-topic",
+        "db-cluster-delete-user",
+        "db-cluster-get",
+        "db-cluster-get-ca",
+        "db-cluster-get-firewall-rules",
+        "db-cluster-get-kafka-config",
+        "db-cluster-get-migration",
+        "db-cluster-get-mongodb-config",
+        "db-cluster-get-mysql-config",
+        "db-cluster-get-opensearch-config",
+        "db-cluster-get-postgresql-config",
+        "db-cluster-get-redis-config",
+        "db-cluster-get-sql-mode",
+        "db-cluster-get-topic",
+        "db-cluster-get-user",
+        "db-cluster-list",
+        "db-cluster-list-backups",
+        "db-cluster-list-options",
+        "db-cluster-list-topics",
+        "db-cluster-list-users",
+        "db-cluster-resize",
+        "db-cluster-set-sql-mode",
+        "db-cluster-start-online-migration",
+        "db-cluster-stop-online-migration",
+        "db-cluster-update-firewall-rules",
+        "db-cluster-update-kafka-config",
+        "db-cluster-update-mongodb-config",
+        "db-cluster-update-mysql-config",
+        "db-cluster-update-os-config",
+        "db-cluster-update-psql-config",
+        "db-cluster-update-redis-config",
+        "db-cluster-update-topic",
+        "db-cluster-update-user",
+        "db-cluster-upgrade-major-version",
+        "disable-backups-droplet",
+        "disable-backups-droplets-tag",
+        "doks-create-cluster",
+        "doks-create-nodepool",
+        "doks-delete-cluster",
+        "doks-delete-node",
+        "doks-delete-nodepool",
+        "doks-get-cluster",
+        "doks-get-cluster-upgrades",
+        "doks-get-credentials",
+        "doks-get-kubeconfig",
+        "doks-get-nodepool",
+        "doks-list-clusters",
+        "doks-list-nodepools",
+        "doks-list-options",
+        "doks-recycle-nodes",
+        "doks-update-cluster",
+        "doks-update-nodepool",
+        "doks-upgrade-cluster",
+        "domain-create",
+        "domain-delete",
+        "domain-get",
+        "domain-list",
+        "domain-record-create",
+        "domain-record-delete",
+        "domain-record-edit",
+        "domain-record-get",
+        "domain-record-list",
+        "droplet-action",
+        "droplet-backup-policy",
+        "droplet-create",
+        "droplet-delete",
+        "droplet-enable-private-net",
+        "droplet-get",
+        "droplet-kernels",
+        "droplet-list",
+        "enable-backups-droplet",
+        "enable-backups-droplets-tag",
+        "enable-ipv6-droplet",
+        "enable-ipv6-droplets-tag",
+        "enable-private-net-droplets-tag",
+        "firewall-add-droplets",
+        "firewall-add-rules",
+        "firewall-add-tags",
+        "firewall-create",
+        "firewall-delete",
+        "firewall-get",
+        "firewall-list",
+        "firewall-remove-droplets",
+        "firewall-remove-rules",
+        "firewall-remove-tags",
+        "get-invoice",
+        "image-action-convert",
+        "image-action-get",
+        "image-action-transfer",
+        "image-create",
+        "image-delete",
+        "image-get",
+        "image-list",
+        "image-update",
+        "invoice-list",
+        "key-create",
+        "key-delete",
+        "key-get",
+        "key-list",
+        "lb-add-droplets",
+        "lb-add-fwd-rules",
+        "lb-create",
+        "lb-delete",
+        "lb-delete-cache",
+        "lb-get",
+        "lb-list",
+        "lb-remove-droplets",
+        "lb-remove-fwd-rules",
+        "lb-update",
+        "lets-encrypt-certificate-create",
+        "power-cycle-droplet",
+        "power-cycle-droplets-tag",
+        "power-off-droplet",
+        "power-off-droplets-tag",
+        "power-on-droplet",
+        "power-on-droplets-tag",
+        "reboot-droplet",
+        "rebuild-droplet",
+        "rebuild-droplet-by-slug",
+        "region-list",
+        "rename-droplet",
+        "reserved-ip-assign",
+        "reserved-ip-get",
+        "reserved-ip-list",
+        "reserved-ip-release",
+        "reserved-ip-reserve",
+        "reserved-ip-unassign",
+        "reset-droplet-password",
+        "resize-droplet",
+        "restore-droplet",
+        "shutdown-droplet",
+        "shutdown-droplets-tag",
+        "size-list",
+        "snapshot-droplet",
+        "snapshot-droplets-tag",
+        "spaces-cdn-create",
+        "spaces-cdn-delete",
+        "spaces-cdn-flush-cache",
+        "spaces-cdn-get",
+        "spaces-cdn-list",
+        "spaces-key-create",
+        "spaces-key-delete",
+        "spaces-key-get",
+        "spaces-key-list",
+        "spaces-key-update",
+        "uptimecheck-alert-create",
+        "uptimecheck-alert-delete",
+        "uptimecheck-alert-get",
+        "uptimecheck-alert-list",
+        "uptimecheck-alert-update",
+        "uptimecheck-create",
+        "uptimecheck-delete",
+        "uptimecheck-get",
+        "uptimecheck-get-state",
+        "uptimecheck-list",
+        "uptimecheck-update",
+        "vpc-create",
+        "vpc-delete",
+        "vpc-get",
+        "vpc-list",
+        "vpc-list-members",
+        "vpc-peering-create",
+        "vpc-peering-delete",
+        "vpc-peering-get",
+        "vpc-peering-list"
+      ],
       "env": {
         "DIGITALOCEAN_API_TOKEN": "$DIGITALOCEAN_API_TOKEN"
       }
     },
+    "docker-mcp": {
+      "args": [
+        "docker-mcp"
+      ],
+      "command": "uvx"
+    },
     "github": {
-      "command": "docker",
       "args": [
         "run",
         "-i",
@@ -57,17 +231,45 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN",
         "ghcr.io/github/github-mcp-server"
       ],
+      "command": "docker",
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
       }
     },
     "linear": {
-      "command": "npx",
       "args": [
         "-y",
         "mcp-remote",
         "https://mcp.linear.app/sse"
-      ]
+      ],
+      "command": "npx"
+    },
+    "playwright": {
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser",
+        "firefox"
+      ],
+      "command": "npx"
+    },
+    "sequential-thinking": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "command": "npx"
+    },
+    "serena": {
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant"
+      ],
+      "command": "uvx"
     }
   }
 }
