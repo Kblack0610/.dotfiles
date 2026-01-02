@@ -68,9 +68,16 @@ get_claude_status() {
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
 
-    # Build display text
+    # Build display text (in tmux session order)
     local display=""
-    for session in "${!session_agents[@]}"; do
+    local session_order=()
+
+    # Get sessions in tmux order
+    while IFS= read -r session; do
+        [[ -n "${session_agents[$session]}" ]] && session_order+=("$session")
+    done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null)
+
+    for session in "${session_order[@]}"; do
         short="${session_short[$session]}"
         agents="${session_agents[$session]}"
         if [ -n "$display" ]; then

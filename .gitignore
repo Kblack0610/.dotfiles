@@ -48,10 +48,10 @@ Media/Music
 
 # Claude Code
 .claude/*
+.claude/history.jsonl
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
-# !.claude/history.jsonl
 # Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig, history)
 .aider*
 
