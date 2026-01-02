@@ -51,7 +51,7 @@ Media/Music
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
-!.claude/history.jsonl
+# !.claude/history.jsonl
 # Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig, history)
 .aider*
 
