@@ -335,6 +335,22 @@ setup_printing() {
     log_info "Access CUPS web interface at: http://localhost:631"
 }
 
+# Install Tailscale VPN
+install_tailscale() {
+    log_section "Installing Tailscale VPN"
+
+    install_pacman_package "tailscale"
+
+    # Enable and start the tailscale daemon
+    if command -v tailscale &>/dev/null; then
+        log_info "Enabling tailscaled service..."
+        sudo systemctl enable --now tailscaled
+
+        log_info "✓ Tailscale installed and service enabled"
+        log_info "Run 'sudo tailscale up' to authenticate and connect"
+    fi
+}
+
 # Arch-specific: Install from AUR
 install_aur_packages() {
     log_section "Installing AUR packages"
@@ -383,6 +399,9 @@ install_all() {
 
     # Printing
     setup_printing
+
+    # Networking
+    install_tailscale
 
     # Desktop environment
     install_gui
