@@ -52,6 +52,12 @@ Media/Music
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
+
+# Serena 
+.serena/*
+!.serena/serena_config.yml 
+
+
 # Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig, history)
 .aider*
 
