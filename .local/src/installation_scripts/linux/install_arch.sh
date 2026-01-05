@@ -532,6 +532,7 @@ install_all() {
 
     # Game streaming
     setup_sunshine
+    install_moonlight
 
     # Networking
     install_tailscale

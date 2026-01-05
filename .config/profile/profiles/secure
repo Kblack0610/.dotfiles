@@ -1,0 +1,18 @@
+# Secure Profile
+# Manual login required, optional GUI
+
+PROFILE_NAME="secure"
+PROFILE_DESCRIPTION="Manual login, prompts for Hyprland start"
+
+# Login behavior
+PROFILE_AUTOLOGIN=false
+
+# Session startup - "ask" means prompt user
+PROFILE_START_HYPRLAND=ask
+
+# Services to enable
+PROFILE_START_SUNSHINE=false
+PROFILE_START_WAYBAR=true
+
+# Additional options
+PROFILE_ENABLE_SSH=true

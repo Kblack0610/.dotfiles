@@ -1,0 +1,18 @@
+# Headless Profile
+# Server mode, SSH-only access
+
+PROFILE_NAME="headless"
+PROFILE_DESCRIPTION="Server mode, no GUI, SSH access only"
+
+# Login behavior
+PROFILE_AUTOLOGIN=true
+
+# Session startup
+PROFILE_START_HYPRLAND=false
+
+# Services to enable
+PROFILE_START_SUNSHINE=false
+PROFILE_START_WAYBAR=false
+
+# Additional options
+PROFILE_ENABLE_SSH=true

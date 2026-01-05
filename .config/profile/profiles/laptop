@@ -1,0 +1,18 @@
+# Laptop Profile
+# Portable desktop with battery awareness
+
+PROFILE_NAME="laptop"
+PROFILE_DESCRIPTION="Laptop mode with Hyprland, optional Sunshine"
+
+# Login behavior
+PROFILE_AUTOLOGIN=true
+
+# Session startup
+PROFILE_START_HYPRLAND=true
+
+# Services to enable
+PROFILE_START_SUNSHINE=false
+PROFILE_START_WAYBAR=true
+
+# Additional options
+PROFILE_ENABLE_SSH=true

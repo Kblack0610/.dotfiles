@@ -1,0 +1,18 @@
+# Desktop Profile
+# Full desktop environment with remote access capabilities
+
+PROFILE_NAME="desktop"
+PROFILE_DESCRIPTION="Full desktop with Hyprland and remote access (Sunshine)"
+
+# Login behavior
+PROFILE_AUTOLOGIN=true
+
+# Session startup
+PROFILE_START_HYPRLAND=true
+
+# Services to enable
+PROFILE_START_SUNSHINE=true
+PROFILE_START_WAYBAR=true
+
+# Additional options
+PROFILE_ENABLE_SSH=true

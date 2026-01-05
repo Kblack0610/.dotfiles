@@ -320,6 +320,51 @@ dump_brewfile() {
     log_info "Brewfile updated at $BREWFILE_PATH"
 }
 
+# Override main installation for macOS
+install_all() {
+    # Create structure
+    create_directories
+
+    # System updates
+    update_system
+
+    # Core installations
+    install_basics
+    install_tools
+    install_terminal
+    install_runtime
+
+    # Shell setup
+    install_zsh
+    install_oh_my_zsh
+    install_starship
+
+    # Development tools
+    install_nvim
+    install_tmux
+    install_lazygit
+    install_kitty
+
+    # Kubernetes & Containers
+    install_kubernetes
+
+    # Game streaming
+    setup_sunshine
+    install_moonlight
+
+    # GUI applications
+    install_gui
+
+    # Additional setup
+    install_fonts
+    setup_git
+    install_npm_packages
+    apply_dotfiles
+
+    log_section "Installation Complete!"
+    log_info "Please restart your terminal or run: source ~/.zshrc"
+}
+
 # Run if executed directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     install_all

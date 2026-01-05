@@ -479,6 +479,7 @@ install_all() {
 
     # Game streaming
     setup_sunshine
+    install_moonlight
 
     # Desktop environment
     install_gui
