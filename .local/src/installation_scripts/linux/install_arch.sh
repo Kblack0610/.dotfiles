@@ -335,6 +335,115 @@ setup_printing() {
     log_info "Access CUPS web interface at: http://localhost:631"
 }
 
+# Override: Setup Sunshine game streaming with GPU auto-detection
+setup_sunshine() {
+    log_section "Setting up Sunshine (game streaming)"
+
+    # Install sunshine from AUR
+    install_aur_package "sunshine"
+
+    # Install and configure UFW
+    install_pacman_package "ufw"
+
+    # Enable UFW if not already enabled
+    if ! sudo ufw status | grep -q "Status: active"; then
+        log_info "Enabling UFW..."
+        sudo ufw --force enable
+    fi
+
+    # Add Sunshine firewall rules
+    log_info "Configuring firewall rules for Sunshine..."
+
+    # TCP ports
+    sudo ufw allow 47984/tcp comment 'Sunshine HTTPS'
+    sudo ufw allow 47989/tcp comment 'Sunshine HTTP'
+    sudo ufw allow 48010/tcp comment 'Sunshine RTSP'
+
+    # UDP ports
+    sudo ufw allow 47998/udp comment 'Sunshine Video'
+    sudo ufw allow 47999/udp comment 'Sunshine Control'
+    sudo ufw allow 48000/udp comment 'Sunshine Audio'
+    sudo ufw allow 48002/udp comment 'Sunshine Mic'
+    sudo ufw allow 48010/udp comment 'Sunshine RTSP'
+
+    # Detect GPU and install appropriate drivers
+    install_sunshine_gpu_drivers_arch
+
+    # Generate configuration using sunshine-configure
+    if [[ -x "$HOME/.local/bin/sunshine-configure" ]]; then
+        log_info "Generating Sunshine configuration..."
+        "$HOME/.local/bin/sunshine-configure"
+    else
+        log_warning "sunshine-configure not found - run 'stow .local' first, then 'sunshine-configure'"
+    fi
+
+    # Add user to input group for input passthrough
+    if ! groups "$USER" | grep -q '\binput\b'; then
+        log_info "Adding $USER to input group..."
+        sudo usermod -aG input "$USER"
+    fi
+
+    # Enable Sunshine service for current user
+    log_info "Enabling Sunshine service..."
+    systemctl --user enable sunshine
+
+    log_info "Sunshine configured"
+    log_info "Access web UI at: https://localhost:47990"
+    log_info "NOTE: Log out and back in for input group changes to take effect"
+    log_info "To reconfigure GPU settings anytime: sunshine-configure"
+}
+
+# Helper: Install GPU-specific drivers for Sunshine on Arch
+install_sunshine_gpu_drivers_arch() {
+    log_info "Detecting GPU for driver installation..."
+
+    local gpu_info gpu_type
+
+    # Try to detect GPU
+    if [[ -x "$HOME/.local/bin/detect-gpu" ]]; then
+        gpu_info=$("$HOME/.local/bin/detect-gpu" 2>/dev/null || echo "TYPE=unknown")
+    else
+        log_warning "detect-gpu not available, installing common packages"
+        gpu_info="TYPE=unknown"
+    fi
+
+    gpu_type=$(echo "$gpu_info" | grep "^TYPE=" | cut -d= -f2)
+    log_info "Detected GPU type: $gpu_type"
+
+    case "$gpu_type" in
+        amd)
+            log_info "Installing AMD VAAPI drivers..."
+            install_pacman_package "libva-mesa-driver"
+            install_pacman_package "mesa"
+            install_pacman_package "vulkan-radeon"
+            ;;
+        nvidia)
+            log_info "Installing NVIDIA drivers..."
+            # Check if nvidia is already installed (either proprietary or open)
+            if ! pacman -Q nvidia &>/dev/null && ! pacman -Q nvidia-open &>/dev/null; then
+                log_info "NVIDIA driver not found - installing nvidia package"
+                install_pacman_package "nvidia"
+                install_pacman_package "nvidia-utils"
+            else
+                log_info "NVIDIA driver already installed"
+            fi
+            # Optional: VAAPI support via NVIDIA
+            install_aur_package "libva-nvidia-driver" || log_warning "libva-nvidia-driver not installed (optional)"
+            ;;
+        intel)
+            log_info "Installing Intel VAAPI drivers..."
+            install_pacman_package "intel-media-driver"
+            install_pacman_package "libva-intel-driver"
+            install_pacman_package "mesa"
+            ;;
+        *)
+            log_warning "Unknown GPU type ($gpu_type), installing common VA-API packages..."
+            install_pacman_package "libva"
+            install_pacman_package "mesa"
+            ;;
+    esac
+}
+
 # Install Tailscale VPN
 install_tailscale() {
     log_section "Installing Tailscale VPN"
@@ -399,6 +508,9 @@ install_all() {
 
     # Printing
     setup_printing
+
+    # Game streaming
+    setup_sunshine
 
     # Networking
     install_tailscale

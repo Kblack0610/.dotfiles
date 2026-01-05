@@ -256,12 +256,160 @@ install_lazygit() {
     fi
 }
 
+# Helper: Install GPU-specific drivers for Sunshine on Debian/Ubuntu
+install_sunshine_gpu_drivers_debian() {
+    log_info "Detecting GPU for driver installation..."
+
+    local gpu_info gpu_type
+
+    # Try to detect GPU
+    if [[ -x "$HOME/.local/bin/detect-gpu" ]]; then
+        gpu_info=$("$HOME/.local/bin/detect-gpu" 2>/dev/null || echo "TYPE=unknown")
+    else
+        log_warning "detect-gpu not available, installing common packages"
+        gpu_info="TYPE=unknown"
+    fi
+
+    gpu_type=$(echo "$gpu_info" | grep "^TYPE=" | cut -d= -f2)
+    log_info "Detected GPU type: $gpu_type"
+
+    case "$gpu_type" in
+        amd)
+            log_info "Installing AMD VAAPI drivers..."
+            install_apt_package "mesa-va-drivers"
+            install_apt_package "libva2"
+            install_apt_package "libva-drm2"
+            install_apt_package "mesa-vulkan-drivers"
+            ;;
+        nvidia)
+            log_info "Installing NVIDIA drivers..."
+            # Check if nvidia driver is already installed
+            if ! dpkg -l | grep -q "^ii.*nvidia-driver"; then
+                log_info "NVIDIA driver not found - installing"
+                install_apt_package "nvidia-driver"
+            else
+                log_info "NVIDIA driver already installed"
+            fi
+            # VAAPI support via NVIDIA (may not be in all repos)
+            install_apt_package "nvidia-vaapi-driver" || log_warning "nvidia-vaapi-driver not available (optional)"
+            ;;
+        intel)
+            log_info "Installing Intel VAAPI drivers..."
+            install_apt_package "intel-media-va-driver"
+            install_apt_package "libva2"
+            install_apt_package "mesa-utils"
+            ;;
+        rpi)
+            log_info "Installing Raspberry Pi V4L2 support..."
+            install_apt_package "libv4l-0"
+            # V4L2M2M is built into the kernel, no extra drivers needed
+            ;;
+        *)
+            log_warning "Unknown GPU type ($gpu_type), installing common VA-API packages..."
+            install_apt_package "libva2"
+            install_apt_package "mesa-utils"
+            ;;
+    esac
+}
+
+# Override: Setup Sunshine game streaming with GPU auto-detection
+setup_sunshine() {
+    log_section "Setting up Sunshine (game streaming)"
+
+    # Install Sunshine from GitHub releases (.deb)
+    if ! command -v sunshine &>/dev/null; then
+        log_info "Installing Sunshine from GitHub releases..."
+
+        # Detect architecture
+        local arch
+        arch=$(dpkg --print-architecture)
+        case "$arch" in
+            amd64|x86_64) arch="amd64" ;;
+            arm64|aarch64) arch="arm64" ;;
+            armhf) arch="armhf" ;;
+            *)
+                log_error "Unsupported architecture: $arch"
+                return 1
+                ;;
+        esac
+
+        # Get latest release URL
+        local release_url
+        release_url=$(curl -s "https://api.github.com/repos/LizardByte/Sunshine/releases/latest" | \
+            grep -oP "https://.*sunshine.*${arch}.*\.deb" | head -1)
+
+        if [[ -z "$release_url" ]]; then
+            log_error "Could not find Sunshine .deb for $arch"
+            return 1
+        fi
+
+        log_info "Downloading Sunshine..."
+        curl -Lo /tmp/sunshine.deb "$release_url"
+
+        log_info "Installing Sunshine..."
+        sudo apt install -y /tmp/sunshine.deb
+        rm /tmp/sunshine.deb
+    else
+        log_info "Sunshine already installed"
+    fi
+
+    # Install and configure UFW
+    install_apt_package "ufw"
+
+    # Enable UFW if not already enabled
+    if ! sudo ufw status | grep -q "Status: active"; then
+        log_info "Enabling UFW..."
+        sudo ufw --force enable
+    fi
+
+    # Add Sunshine firewall rules
+    log_info "Configuring firewall rules for Sunshine..."
+
+    # TCP ports
+    sudo ufw allow 47984/tcp comment 'Sunshine HTTPS'
+    sudo ufw allow 47989/tcp comment 'Sunshine HTTP'
+    sudo ufw allow 48010/tcp comment 'Sunshine RTSP'
+
+    # UDP ports
+    sudo ufw allow 47998/udp comment 'Sunshine Video'
+    sudo ufw allow 47999/udp comment 'Sunshine Control'
+    sudo ufw allow 48000/udp comment 'Sunshine Audio'
+    sudo ufw allow 48002/udp comment 'Sunshine Mic'
+    sudo ufw allow 48010/udp comment 'Sunshine RTSP'
+
+    # Detect GPU and install appropriate drivers
+    install_sunshine_gpu_drivers_debian
+
+    # Generate configuration using sunshine-configure
+    if [[ -x "$HOME/.local/bin/sunshine-configure" ]]; then
+        log_info "Generating Sunshine configuration..."
+        "$HOME/.local/bin/sunshine-configure"
+    else
+        log_warning "sunshine-configure not found - run 'stow .local' first, then 'sunshine-configure'"
+    fi
+
+    # Add user to input group for input passthrough
+    if ! groups "$USER" | grep -q '\binput\b'; then
+        log_info "Adding $USER to input group..."
+        sudo usermod -aG input "$USER"
+    fi
+
+    # Enable Sunshine service for current user
+    log_info "Enabling Sunshine service..."
+    systemctl --user enable sunshine
+
+    log_info "Sunshine configured"
+    log_info "Access web UI at: https://localhost:47990"
+    log_info "NOTE: Log out and back in for input group changes to take effect"
+    log_info "To reconfigure GPU settings anytime: sunshine-configure"
+}
+
 # Debian-specific: Install Flatpak
 install_flatpak() {
     log_section "Installing Flatpak"
-    
+
     install_apt_package "flatpak"
-    
+
     if command -v flatpak &>/dev/null; then
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
         log_info "Flatpak configured"
@@ -292,7 +440,10 @@ install_all() {
     install_tmux
     install_lazygit
     install_kitty
-    
+
+    # Game streaming
+    setup_sunshine
+
     # Desktop environment
     install_gui
     install_flatpak

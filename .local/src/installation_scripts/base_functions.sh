@@ -253,6 +253,12 @@ setup_printing() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Setup Sunshine game streaming with firewall rules
+setup_sunshine() {
+    log_section "Setting up Sunshine (game streaming)"
+    log_info "No default implementation - override in OS-specific file"
+}
+
 # Setup Kubernetes directories and run cluster wizard
 setup_kubernetes() {
     log_section "Setting up Kubernetes environment"
@@ -502,6 +508,6 @@ export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust
-export -f install_kubernetes setup_kubernetes setup_printing
+export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_claude_mcp
 export -f install_all
