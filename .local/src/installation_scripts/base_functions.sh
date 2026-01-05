@@ -259,6 +259,12 @@ setup_sunshine() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# Install Moonlight game streaming client
+install_moonlight() {
+    log_section "Installing Moonlight (game streaming client)"
+    log_info "No default implementation - override in OS-specific file"
+}
+
 # Setup Kubernetes directories and run cluster wizard
 setup_kubernetes() {
     log_section "Setting up Kubernetes environment"

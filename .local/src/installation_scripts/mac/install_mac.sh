@@ -293,6 +293,26 @@ setup_sunshine() {
     log_info "To reconfigure anytime: sunshine-configure"
 }
 
+# Override: Install Moonlight game streaming client
+install_moonlight() {
+    log_section "Installing Moonlight (game streaming client)"
+
+    if command -v moonlight &>/dev/null || [[ -d "/Applications/Moonlight.app" ]]; then
+        log_info "Moonlight already installed"
+        return 0
+    fi
+
+    # Install Moonlight via Homebrew cask
+    log_info "Installing Moonlight..."
+    if brew install --cask moonlight; then
+        log_info "✓ Moonlight installed"
+        log_info "Open Moonlight.app from Applications"
+        log_info "Pair with Sunshine host by adding your host IP in the app"
+    else
+        log_warning "Moonlight installation failed"
+    fi
+}
+
 # macOS-specific: Dump current state to Brewfile
 dump_brewfile() {
     log_info "Dumping current Homebrew state..."

@@ -404,6 +404,42 @@ setup_sunshine() {
     log_info "To reconfigure GPU settings anytime: sunshine-configure"
 }
 
+# Override: Install Moonlight game streaming client
+install_moonlight() {
+    log_section "Installing Moonlight (game streaming client)"
+
+    if command -v moonlight &>/dev/null; then
+        log_info "Moonlight already installed"
+        return 0
+    fi
+
+    # Ensure Flatpak is available
+    if ! command -v flatpak &>/dev/null; then
+        log_info "Installing Flatpak first..."
+        install_apt_package "flatpak"
+        flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+    fi
+
+    # Install Moonlight via Flatpak (most reliable for Debian/Ubuntu)
+    log_info "Installing Moonlight via Flatpak..."
+    if flatpak install -y flathub com.moonlight_stream.Moonlight; then
+        log_info "✓ Moonlight installed"
+        log_info "Run with: flatpak run com.moonlight_stream.Moonlight"
+        log_info "Or pair via CLI: flatpak run com.moonlight_stream.Moonlight pair <host-ip>"
+
+        # Create convenience wrapper script
+        mkdir -p "$HOME/.local/bin"
+        cat > "$HOME/.local/bin/moonlight" << 'EOF'
+#!/bin/bash
+exec flatpak run com.moonlight_stream.Moonlight "$@"
+EOF
+        chmod +x "$HOME/.local/bin/moonlight"
+        log_info "Created 'moonlight' wrapper in ~/.local/bin"
+    else
+        log_warning "Moonlight Flatpak installation failed"
+    fi
+}
+
 # Debian-specific: Install Flatpak
 install_flatpak() {
     log_section "Installing Flatpak"

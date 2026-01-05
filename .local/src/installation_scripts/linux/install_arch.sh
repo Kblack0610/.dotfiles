@@ -444,6 +444,27 @@ install_sunshine_gpu_drivers_arch() {
     esac
 }
 
+# Override: Install Moonlight game streaming client
+install_moonlight() {
+    log_section "Installing Moonlight (game streaming client)"
+
+    if command -v moonlight &>/dev/null; then
+        log_info "Moonlight already installed"
+        return 0
+    fi
+
+    # moonlight-qt is in the community repository
+    install_pacman_package "moonlight-qt"
+
+    if command -v moonlight &>/dev/null; then
+        log_info "✓ Moonlight installed"
+        log_info "Pair with Sunshine host using: moonlight pair <host-ip>"
+        log_info "Stream games with: moonlight stream <host-ip>"
+    else
+        log_warning "Moonlight installation failed"
+    fi
+}
+
 # Install Tailscale VPN
 install_tailscale() {
     log_section "Installing Tailscale VPN"
