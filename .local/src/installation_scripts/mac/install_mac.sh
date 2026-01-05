@@ -262,6 +262,37 @@ install_kubernetes() {
     fi
 }
 
+# Override: Setup Sunshine game streaming
+setup_sunshine() {
+    log_section "Setting up Sunshine (game streaming)"
+
+    # Install Sunshine via Homebrew cask
+    if ! brew list --cask 2>/dev/null | grep -q "^sunshine$"; then
+        log_info "Installing Sunshine..."
+        brew install --cask sunshine
+    else
+        log_info "Sunshine already installed"
+    fi
+
+    # Generate configuration using sunshine-configure
+    if [[ -x "$HOME/.local/bin/sunshine-configure" ]]; then
+        log_info "Generating Sunshine configuration..."
+        "$HOME/.local/bin/sunshine-configure"
+    else
+        log_warning "sunshine-configure not found - run 'stow .local' first, then 'sunshine-configure'"
+    fi
+
+    log_info "Sunshine configured"
+    log_info "Access web UI at: https://localhost:47990"
+    log_info ""
+    log_info "IMPORTANT: macOS requires additional permissions:"
+    log_info "  1. System Settings > Privacy & Security > Screen Recording > Enable Sunshine"
+    log_info "  2. System Settings > Privacy & Security > Accessibility > Enable Sunshine"
+    log_info "  3. System Settings > Privacy & Security > Input Monitoring > Enable Sunshine"
+    log_info ""
+    log_info "To reconfigure anytime: sunshine-configure"
+}
+
 # macOS-specific: Dump current state to Brewfile
 dump_brewfile() {
     log_info "Dumping current Homebrew state..."
