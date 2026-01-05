@@ -18,5 +18,6 @@
   },
   "terminal.integrated.defaultProfile.linux": "bash",
   "editor.renderWhitespace": "all",
-  "workbench.auxiliaryActivityBar.location": "default"
+  "workbench.auxiliaryActivityBar.location": "default",
+  "editor.fontSize": 18
 }
