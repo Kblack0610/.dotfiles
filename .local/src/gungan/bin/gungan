@@ -125,6 +125,12 @@ transcribe_audio() {
         log_warn "wl-copy not found, skipping clipboard"
     fi
 
+    # Type into active window if --type flag was set
+    if [[ "${GUNGAN_TYPE:-}" == "1" ]] && command -v wtype &>/dev/null; then
+        wtype -d 10 "$text"
+        log_success "Typed into active window"
+    fi
+
     # Cleanup temp audio file
     rm -f "$audio_file" 2>/dev/null
 
@@ -257,7 +263,10 @@ show_help() {
 gungan - Voice-to-text CLI using whisper-cpp
 
 USAGE:
-    gungan <command> [args]
+    gungan [--type] <command> [args]
+
+FLAGS:
+    --type, -t          Type transcribed text into active window (via wtype)
 
 COMMANDS:
     health              Check all dependencies are installed
@@ -272,10 +281,18 @@ EXAMPLES:
     gungan test 10                # 10-second test
     gungan record                 # Start recording
     gungan record                 # Stop and transcribe
+    gungan --type record          # Record and TYPE into active window
     gungan transcribe audio.wav   # Transcribe existing file
 
 OUTPUT:
-    Transcribed text is printed to stdout AND copied to clipboard (via wl-copy)
+    Transcribed text is:
+    - Printed to stdout (terminal)
+    - Copied to clipboard (wl-copy)
+    - Typed into active window (wtype) if --type flag is used
+
+HYPRLAND HOTKEY:
+    Add to ~/.config/hypr/hyprland.conf:
+    bind = $mainMod, V, exec, gungan --type record
 
 CONFIGURATION:
     Model: ~/.local/share/whisper-models/ggml-large-v3-turbo.bin
@@ -290,6 +307,19 @@ EOF
 # =============================================================================
 
 main() {
+    # Parse global flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type|-t)
+                export GUNGAN_TYPE=1
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     local cmd="${1:-help}"
     shift || true
 
