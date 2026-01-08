@@ -484,18 +484,71 @@ install_tailscale() {
 # Arch-specific: Install from AUR
 install_aur_packages() {
     log_section "Installing AUR packages"
-    
+
     install_paru
-    
+
     local aur_packages=(
         "visual-studio-code-bin"
         "spotify"
         "discord"
     )
-    
+
     for pkg in "${aur_packages[@]}"; do
         install_aur_package "$pkg"
     done
+}
+
+# Setup startup profile
+setup_profile() {
+    log_section "Setting up startup profile"
+
+    local profile_switch="$HOME/.local/bin/profile-switch"
+    local profiles_dir="$HOME/.config/profile/profiles"
+
+    # Check if profile-switch exists
+    if [[ ! -x "$profile_switch" ]]; then
+        log_warning "profile-switch not found - skipping profile setup"
+        log_info "Run 'profile-switch <profile>' manually after installation"
+        return 0
+    fi
+
+    # Check if profiles exist
+    if [[ ! -d "$profiles_dir" ]]; then
+        log_warning "Profiles directory not found - skipping profile setup"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${GREEN}Available profiles:${NC}"
+    echo "  1) desktop  - Full desktop with Hyprland + Sunshine (auto-login)"
+    echo "  2) laptop   - Laptop mode with Hyprland (auto-login, no Sunshine)"
+    echo "  3) terminal - TTY-only, no GUI (auto-login)"
+    echo "  4) secure   - Manual login, prompts for Hyprland"
+    echo "  5) headless - Server mode, SSH-only (auto-login)"
+    echo "  6) Skip     - Don't set a profile now"
+    echo ""
+
+    read -p "Select profile [1-6]: " -n 1 -r choice
+    echo ""
+
+    local profile=""
+    case $choice in
+        1) profile="desktop" ;;
+        2) profile="laptop" ;;
+        3) profile="terminal" ;;
+        4) profile="secure" ;;
+        5) profile="headless" ;;
+        6|*)
+            log_info "Skipping profile setup"
+            log_info "Run 'profile-switch <profile>' to set one later"
+            return 0
+            ;;
+    esac
+
+    if [[ -n "$profile" ]]; then
+        log_info "Setting profile to: $profile"
+        "$profile_switch" "$profile"
+    fi
 }
 
 # Override main installation to include AUR
@@ -548,6 +601,9 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
+
+    # Setup startup profile (must come after apply_dotfiles)
+    setup_profile
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
