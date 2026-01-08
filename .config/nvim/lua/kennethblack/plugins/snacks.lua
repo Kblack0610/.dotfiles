@@ -164,7 +164,13 @@ return {
     { "<leader>su", function() Snacks.picker.undo() end,                                                                                 desc = "Undo History" },
     { "<leader>uC", function() Snacks.picker.colorschemes() end,                                                                         desc = "Colorschemes" },
     -- LSP
-    { "gd",         function() Snacks.picker.lsp_definitions() end,                                                                      desc = "Goto Definition" },
+    { "gd", function()
+      if vim.bo.filetype == "cs" then
+        require("omnisharp_extended").lsp_definition()
+      else
+        Snacks.picker.lsp_definitions()
+      end
+    end, desc = "Goto Definition" },
     { "gD",         function() Snacks.picker.lsp_declarations() end,                                                                     desc = "Goto Declaration" },
     { "<leader>lr", function() Snacks.picker.lsp_references() end,                                                                       nowait = true,                  desc = "References" },
     { "gi",         function() Snacks.picker.lsp_implementations() end,                                                                  desc = "Goto Implementation" },
