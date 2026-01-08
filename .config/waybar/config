@@ -36,23 +36,29 @@
         "custom/power"
     ],
     // Modules configuration
-     "hyprland/workspaces": {
-         //"disable-scroll": true,
-         "all-outputs": false,
-         //"warp-on-scroll": false,
-         "format": "{name}: {icon}",
-         "format-icons": {
-             "1": "",
-             "2": "",
-             "3": "",
-             "4": "",
-             "5": "",
-             "urgent": "",
-             "focused": "",
-             "default": "",
-             "active": "",
-         }
-     },
+    "hyprland/workspaces": {
+        "all-outputs": false,
+        "format": "{name}: {icon}",
+        "format-icons": {
+            "1": " term",
+            "2": " web",
+            "3": " gfx",
+            "4": " gfx",
+            "5": " social",
+            "6": " agent",
+            "7": " agent",
+            "8": " misc",
+            "9": " misc",
+            "active": "",
+            "urgent": "",
+            "default": ""
+        }
+    },
+    "hyprland/window": {
+        "max-length": 50,
+        "separate-outputs": true,
+        "format": "  {title}  "
+    },
     "keyboard-state": {
         "numlock": true,
         "capslock": true,
