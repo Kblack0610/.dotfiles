@@ -49,6 +49,33 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Helper Functions
 # =============================================================================
 
+# Send desktop notification
+# Usage: notify "title" "message" [icon] [timeout_ms]
+notify() {
+    local title="$1"
+    local message="$2"
+    local icon="${3:-audio-input-microphone}"
+    local timeout="${4:-3000}"
+
+    if command -v notify-send &>/dev/null; then
+        notify-send -t "$timeout" -i "$icon" "$title" "$message" 2>/dev/null || true
+    fi
+}
+
+# Signal waybar to update recording indicator
+signal_waybar() {
+    pkill -RTMIN+9 waybar 2>/dev/null || true
+}
+
+# Waybar status output (for custom module)
+cmd_status() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        echo '{"text": "🎤", "tooltip": "Gungan: Recording...", "class": "recording"}'
+    else
+        echo '{"text": "", "tooltip": "", "class": ""}'
+    fi
+}
+
 check_dependency() {
     local name="$1"
     local path="$2"
@@ -130,6 +157,11 @@ transcribe_audio() {
         wtype -d 10 "$text"
         log_success "Typed into active window"
     fi
+
+    # Show completion notification with preview
+    local preview="${text:0:50}"
+    [[ ${#text} -gt 50 ]] && preview="${preview}..."
+    notify "Gungan" "✓ $preview" "audio-input-microphone" 5000
 
     # Cleanup temp audio file
     rm -f "$audio_file" 2>/dev/null
@@ -216,21 +248,26 @@ cmd_record() {
     if [[ -f "$LOCK_FILE" ]]; then
         # Stop recording
         log_info "Stopping recording..."
+        notify "Gungan" "Stopping recording..." "audio-input-microphone"
 
         # Kill pw-record
         pkill -f "pw-record.*${AUDIO_FILE}" 2>/dev/null || true
 
         rm -f "$LOCK_FILE"
+        signal_waybar
 
         # Small delay to ensure file is written
         sleep 0.5
 
+        notify "Gungan" "Transcribing..." "audio-input-microphone"
         transcribe_audio "$AUDIO_FILE"
     else
         # Start recording
         log_info "Starting recording... Run 'gungan record' again to stop."
+        notify "Gungan" "🎤 Recording... Press hotkey again to stop" "audio-input-microphone" 0
 
         touch "$LOCK_FILE"
+        signal_waybar
 
         pw-record --format=s16 --rate=16000 --channels=1 "$AUDIO_FILE" &
 
@@ -335,6 +372,9 @@ main() {
             ;;
         transcribe)
             cmd_transcribe "${1:-}"
+            ;;
+        status)
+            cmd_status
             ;;
         help|--help|-h)
             show_help
