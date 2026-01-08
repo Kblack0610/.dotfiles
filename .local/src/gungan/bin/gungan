@@ -28,7 +28,6 @@ MODEL_DIR="${HOME}/.local/share/whisper-models"
 MODEL="${MODEL_DIR}/ggml-large-v3-turbo.bin"
 AUDIO_FILE="/tmp/gungan_recording.wav"
 LOCK_FILE="/tmp/gungan_recording.lock"
-WHISPER_OUT="/tmp/gungan_output.txt"
 
 # =============================================================================
 # Colors and Output
@@ -91,19 +90,15 @@ transcribe_audio() {
 
     log_info "Transcribing..."
 
-    # Run whisper-cpp with speed optimizations
-    "$WHISPER_BIN" \
+    # Run whisper-cpp and capture stdout directly
+    local text
+    text=$("$WHISPER_BIN" \
         -m "$MODEL" \
         -f "$audio_file" \
         -nt \
         -l en \
-        --speed-up \
-        -of "$WHISPER_OUT" \
-        2>/dev/null
-
-    # Read and clean output
-    local text
-    text=$(cat "${WHISPER_OUT}.txt" 2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        -np \
+        2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
     # Auto-punctuation: capitalize first letter, add period if missing
     if [[ -n "$text" ]]; then
@@ -130,8 +125,8 @@ transcribe_audio() {
         log_warn "wl-copy not found, skipping clipboard"
     fi
 
-    # Cleanup
-    rm -f "${WHISPER_OUT}.txt" "$audio_file" 2>/dev/null
+    # Cleanup temp audio file
+    rm -f "$audio_file" 2>/dev/null
 
     return 0
 }
@@ -155,6 +150,24 @@ cmd_health() {
     echo ""
     echo -e "${BLUE}Model:${NC}"
     check_file "ggml-large-v3-turbo" "$MODEL" || all_ok=false
+
+    echo ""
+    echo -e "${BLUE}Audio Input:${NC}"
+    if command -v pactl &>/dev/null; then
+        local default_source
+        default_source=$(pactl get-default-source 2>/dev/null || echo "unknown")
+        # Get a friendly name
+        local source_desc
+        source_desc=$(pactl list sources 2>/dev/null | grep -A1 "Name: ${default_source}$" | grep "Description:" | cut -d: -f2- | sed 's/^[[:space:]]*//' || echo "")
+        if [[ -n "$source_desc" ]]; then
+            log_success "Mic: ${source_desc}"
+        else
+            log_success "Mic: ${default_source}"
+        fi
+        echo -e "       ${YELLOW}(change with pavucontrol or: pactl set-default-source <name>)${NC}"
+    else
+        log_warn "pactl not found - cannot detect default microphone"
+    fi
 
     echo ""
     if $all_ok; then
