@@ -49,9 +49,10 @@
             "7": " agent",
             "8": " misc",
             "9": " misc",
-            "active": "",
-            "urgent": "",
-            "default": ""
+            "urgent": "",
+            "focused": "",
+            "default": "",
+            "active": "",
         }
     },
     "hyprland/window": {
