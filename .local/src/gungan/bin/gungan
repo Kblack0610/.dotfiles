@@ -49,7 +49,7 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Helper Functions
 # =============================================================================
 
-# Send desktop notification
+# Send desktop notification (replaces previous gungan notifications)
 # Usage: notify "title" "message" [icon] [timeout_ms]
 notify() {
     local title="$1"
@@ -58,7 +58,11 @@ notify() {
     local timeout="${4:-3000}"
 
     if command -v notify-send &>/dev/null; then
-        notify-send -t "$timeout" -i "$icon" "$title" "$message" 2>/dev/null || true
+        # Use hints to replace previous notifications (works with dunst, mako, etc.)
+        notify-send -t "$timeout" -i "$icon" \
+            -h string:x-dunst-stack-tag:gungan \
+            -h string:x-canonical-private-synchronous:gungan \
+            "$title" "$message" 2>/dev/null || true
     fi
 }
 
