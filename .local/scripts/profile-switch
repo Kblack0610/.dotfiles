@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# profile-switch - Switch between startup profiles
+#
+# Usage:
+#   profile-switch <profile-name>  Switch to a profile
+#   profile-switch --list          List available profiles
+#   profile-switch --current       Show current profile
+#   profile-switch --help          Show help
+
+set -euo pipefail
+
+# Profile directory locations
+PROFILE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/profile"
+PROFILES_DIR="$PROFILE_DIR/profiles"
+CURRENT_LINK="$PROFILE_DIR/current"
+
+# Getty autologin configuration
+GETTY_OVERRIDE_DIR="/etc/systemd/system/getty@tty1.service.d"
+GETTY_OVERRIDE_FILE="$GETTY_OVERRIDE_DIR/autologin.conf"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[info]${NC} $1"; }
+log_success() { echo -e "${GREEN}[ok]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
+log_error() { echo -e "${RED}[error]${NC} $1"; }
+
+show_help() {
+    cat << EOF
+${BOLD}profile-switch${NC} - Manage startup profiles
+
+${BOLD}USAGE:${NC}
+    profile-switch <profile-name>    Switch to a profile
+    profile-switch --list, -l        List available profiles
+    profile-switch --current, -c     Show current profile
+    profile-switch --help, -h        Show this help
+
+${BOLD}PROFILES:${NC}
+    desktop     Full desktop with Hyprland and Sunshine (remote access)
+    laptop      Laptop mode with Hyprland, no Sunshine
+    terminal    TTY-only, no graphical environment
+    secure      Manual login, prompts for Hyprland
+    headless    Server mode, SSH-only
+
+${BOLD}EXAMPLES:${NC}
+    profile-switch desktop     # Switch to full desktop mode
+    profile-switch terminal    # Switch to terminal-only mode
+    profile-switch --list      # See all profiles
+
+${BOLD}NOTES:${NC}
+    - Switching profiles may require sudo for getty configuration
+    - Changes take effect on next login/reboot
+    - SSH service is enabled for all profiles by default
+EOF
+}
+
+list_profiles() {
+    echo -e "${BOLD}Available Profiles:${NC}"
+    echo ""
+
+    local current_name=""
+    if [[ -L "$CURRENT_LINK" && -f "$CURRENT_LINK" ]]; then
+        current_name=$(basename "$(readlink -f "$CURRENT_LINK")")
+    fi
+
+    for profile in "$PROFILES_DIR"/*; do
+        [[ -f "$profile" ]] || continue
+
+        local name desc autologin hyprland
+        name=$(basename "$profile")
+
+        # Source profile to get values
+        (
+            source "$profile"
+            desc="${PROFILE_DESCRIPTION:-No description}"
+            autologin="${PROFILE_AUTOLOGIN:-false}"
+            hyprland="${PROFILE_START_HYPRLAND:-false}"
+
+            # Format output
+            if [[ "$name" == "$current_name" ]]; then
+                echo -e "  ${GREEN}*${NC} ${BOLD}$name${NC} ${GREEN}(current)${NC}"
+            else
+                echo -e "    ${BOLD}$name${NC}"
+            fi
+            echo -e "      $desc"
+            echo -e "      Auto-login: ${CYAN}$autologin${NC}, Hyprland: ${CYAN}$hyprland${NC}"
+            echo ""
+        )
+    done
+}
+
+show_current() {
+    if [[ -L "$CURRENT_LINK" && -f "$CURRENT_LINK" ]]; then
+        local name
+        name=$(basename "$(readlink -f "$CURRENT_LINK")")
+
+        source "$CURRENT_LINK"
+        echo -e "${BOLD}Current Profile:${NC} ${GREEN}$name${NC}"
+        echo -e "  ${PROFILE_DESCRIPTION:-No description}"
+        echo ""
+        echo -e "  Auto-login:  ${CYAN}${PROFILE_AUTOLOGIN:-false}${NC}"
+        echo -e "  Hyprland:    ${CYAN}${PROFILE_START_HYPRLAND:-false}${NC}"
+        echo -e "  Sunshine:    ${CYAN}${PROFILE_START_SUNSHINE:-false}${NC}"
+    else
+        log_warn "No profile currently set"
+        echo "Run 'profile-switch <name>' to set one"
+    fi
+}
+
+configure_display_manager() {
+    local enable_autologin="$1"
+
+    # Check for common display managers
+    local dm=""
+    for check_dm in sddm gdm lightdm greetd; do
+        if systemctl is-enabled "$check_dm" &>/dev/null; then
+            dm="$check_dm"
+            break
+        fi
+    done
+
+    if [[ -n "$dm" ]]; then
+        if [[ "$enable_autologin" == "true" ]]; then
+            log_info "Disabling display manager ($dm) for TTY autologin..."
+            sudo systemctl disable --now "$dm"
+            log_success "Display manager disabled"
+        fi
+    else
+        if [[ "$enable_autologin" == "false" ]]; then
+            # Re-enable SDDM if disabling autologin and no DM is active
+            if command -v sddm &>/dev/null; then
+                log_info "Re-enabling SDDM..."
+                sudo systemctl enable sddm
+                log_success "SDDM will start on next boot"
+            fi
+        fi
+    fi
+}
+
+configure_autologin() {
+    local enable="$1"
+    local username
+    username=$(whoami)
+
+    # Handle display manager first
+    configure_display_manager "$enable"
+
+    if [[ "$enable" == "true" ]]; then
+        log_info "Enabling auto-login for $username..."
+
+        # Create override directory if needed
+        if [[ ! -d "$GETTY_OVERRIDE_DIR" ]]; then
+            sudo mkdir -p "$GETTY_OVERRIDE_DIR"
+        fi
+
+        # Write autologin configuration
+        sudo tee "$GETTY_OVERRIDE_FILE" > /dev/null << EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin $username %I \$TERM
+EOF
+        log_success "Auto-login enabled"
+    else
+        log_info "Disabling auto-login..."
+
+        # Remove autologin override if it exists
+        if [[ -f "$GETTY_OVERRIDE_FILE" ]]; then
+            sudo rm -f "$GETTY_OVERRIDE_FILE"
+            # Remove directory if empty
+            sudo rmdir "$GETTY_OVERRIDE_DIR" 2>/dev/null || true
+        fi
+        log_success "Auto-login disabled"
+    fi
+
+    # Reload systemd
+    sudo systemctl daemon-reload
+}
+
+configure_services() {
+    local sunshine_enable="$1"
+
+    # Sunshine user service
+    if [[ "$sunshine_enable" == "true" ]]; then
+        if systemctl --user list-unit-files sunshine.service &>/dev/null; then
+            log_info "Enabling Sunshine service..."
+            systemctl --user enable sunshine.service 2>/dev/null || true
+        fi
+    else
+        if systemctl --user list-unit-files sunshine.service &>/dev/null; then
+            log_info "Disabling Sunshine service..."
+            systemctl --user disable sunshine.service 2>/dev/null || true
+        fi
+    fi
+}
+
+switch_profile() {
+    local profile_name="$1"
+    local profile_path="$PROFILES_DIR/$profile_name"
+
+    # Validate profile exists
+    if [[ ! -f "$profile_path" ]]; then
+        log_error "Profile '$profile_name' not found"
+        echo ""
+        echo "Available profiles:"
+        ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/^/  /'
+        exit 1
+    fi
+
+    # Load profile settings
+    source "$profile_path"
+
+    echo -e "${BOLD}Switching to profile:${NC} ${GREEN}$profile_name${NC}"
+    echo -e "  ${PROFILE_DESCRIPTION:-No description}"
+    echo ""
+
+    # Ensure profile directory exists
+    mkdir -p "$PROFILE_DIR"
+
+    # Update current profile symlink
+    log_info "Setting current profile..."
+    ln -sf "$profile_path" "$CURRENT_LINK"
+    log_success "Profile set to: $profile_name"
+
+    # Configure auto-login
+    local autologin="${PROFILE_AUTOLOGIN:-false}"
+    configure_autologin "$autologin"
+
+    # Configure services
+    local sunshine="${PROFILE_START_SUNSHINE:-false}"
+    configure_services "$sunshine"
+
+    # Enable SSH if specified
+    local ssh_enable="${PROFILE_ENABLE_SSH:-true}"
+    if [[ "$ssh_enable" == "true" ]]; then
+        if ! systemctl is-enabled sshd &>/dev/null; then
+            log_info "Enabling SSH service..."
+            sudo systemctl enable sshd
+            sudo systemctl start sshd
+            log_success "SSH enabled"
+        fi
+    fi
+
+    echo ""
+    log_success "Profile '$profile_name' configured!"
+    echo ""
+
+    # Summary
+    echo -e "${BOLD}Summary:${NC}"
+    echo -e "  Auto-login: ${CYAN}$autologin${NC}"
+    echo -e "  Hyprland:   ${CYAN}${PROFILE_START_HYPRLAND:-false}${NC}"
+    echo -e "  Sunshine:   ${CYAN}$sunshine${NC}"
+    echo ""
+
+    # Prompt for reboot
+    echo -n "Reboot now to apply changes? [y/N] "
+    read -r response
+    if [[ "$response" =~ ^[Yy] ]]; then
+        log_info "Rebooting..."
+        sudo reboot
+    else
+        echo ""
+        log_info "Changes will take effect on next login/reboot"
+        echo "  - Run 'logout' or 'reboot' when ready"
+    fi
+}
+
+# Main
+main() {
+    # Ensure profiles directory exists
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        log_error "Profiles directory not found: $PROFILES_DIR"
+        echo "Run 'stow .' from your dotfiles directory to set up profiles"
+        exit 1
+    fi
+
+    # Parse arguments
+    case "${1:-}" in
+        --help|-h|"")
+            show_help
+            ;;
+        --list|-l)
+            list_profiles
+            ;;
+        --current|-c)
+            show_current
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            echo "Run 'profile-switch --help' for usage"
+            exit 1
+            ;;
+        *)
+            switch_profile "$1"
+            ;;
+    esac
+}
+
+main "$@"
