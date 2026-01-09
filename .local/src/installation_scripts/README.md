@@ -107,3 +107,80 @@ install_tool() {
 ```
 
 This approach eliminates complex conditionals and makes each OS implementation self-contained and easy to understand.
+
+## Startup Profiles
+
+The profile system controls how your machine boots - auto-login behavior, Hyprland startup, Sunshine streaming, and more. Profiles are machine-specific, so you can have different configurations for your desktop, laptop, and servers.
+
+### Available Profiles
+
+| Profile   | Auto-login | Hyprland | Sunshine | Use Case                         |
+|-----------|------------|----------|----------|----------------------------------|
+| desktop   | ✓          | ✓        | ✓        | Full workstation + game streaming|
+| laptop    | ✓          | ✓        | ✗        | Portable, battery-friendly       |
+| terminal  | ✓          | ✗        | ✗        | TTY-only, for server work        |
+| secure    | ✗          | prompt   | ✗        | Manual login required            |
+| headless  | ✓          | ✗        | ✗        | SSH-only server                  |
+
+### Usage
+
+```bash
+# Set a profile (configures autologin, disables display manager if needed)
+profile-switch desktop
+
+# List all available profiles with descriptions
+profile-switch --list
+
+# Show currently active profile
+profile-switch --current
+```
+
+### How It Works
+
+1. **Profile Selection**: `profile-switch <name>` creates a symlink at `~/.config/profile/current` pointing to the selected profile
+2. **Display Manager**: If autologin is enabled, any active display manager (SDDM, GDM, etc.) is automatically disabled
+3. **Getty Autologin**: Configures systemd getty service to auto-login on TTY1
+4. **Login Flow**: On boot, getty auto-logs you into TTY1, which runs `.zprofile`
+5. **Profile Apply**: `.zprofile` sources `profile-apply`, which reads the current profile and:
+   - Sets up Wayland environment variables
+   - Detects GPU and configures appropriate drivers
+   - Starts Hyprland (if enabled)
+   - Starts Sunshine in the background (if enabled)
+
+### Profile Configuration
+
+Profiles are stored in `~/.config/profile/profiles/` and are simple bash files with configuration variables:
+
+```bash
+# Example: desktop profile
+PROFILE_NAME="desktop"
+PROFILE_DESCRIPTION="Full desktop with Hyprland and remote access (Sunshine)"
+
+PROFILE_AUTOLOGIN=true
+PROFILE_START_HYPRLAND=true      # true, false, or "ask"
+PROFILE_START_SUNSHINE=true
+PROFILE_START_WAYBAR=true
+PROFILE_ENABLE_SSH=true
+```
+
+### Creating Custom Profiles
+
+1. Copy an existing profile: `cp ~/.config/profile/profiles/desktop ~/.config/profile/profiles/myprofile`
+2. Edit the configuration variables as needed
+3. Switch to it: `profile-switch myprofile`
+
+### Troubleshooting
+
+**Profile not working after reboot?**
+- Check if a display manager is still enabled: `systemctl is-enabled sddm gdm lightdm`
+- Verify the current symlink exists: `ls -la ~/.config/profile/current`
+- Check getty autologin config: `cat /etc/systemd/system/getty@tty1.service.d/autologin.conf`
+
+**Sunshine not starting?**
+- Verify `PROFILE_START_SUNSHINE=true` in your profile
+- Check service status: `systemctl --user status sunshine`
+- Sunshine starts 3 seconds after Hyprland to allow initialization
+
+**Want to go back to SDDM?**
+- Switch to a non-autologin profile: `profile-switch secure`
+- Or manually: `sudo systemctl enable sddm`
