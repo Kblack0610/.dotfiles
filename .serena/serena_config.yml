@@ -75,6 +75,7 @@ token_count_estimator: TIKTOKEN_GPT4O
 # instruct Serena to activate the project by its path for first-time activation.
 # NOTE: Make sure there are no name collisions in the names of registered projects.
 projects:
+- /home/kblack0610/.dotfiles/.local/src/gungan
 - /home/kblack0610/dev/bnb/g2i/gheeggle
 - /home/kblack0610/dev/bnb/games/dodginballs
 - /home/kblack0610/dev/bnb/platform
