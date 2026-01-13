@@ -16,6 +16,45 @@ load_config
 # macOS-specific variables
 BREWFILE_PATH="$HOME/.dotfiles/.config/brewfile/Brewfile"
 
+# Override: Setup Git with macOS Keychain
+setup_git() {
+    log_section "Configuring Git"
+
+    git config --global user.name "Kenneth"
+    git config --global user.email "kblack0610@gmail.com"
+
+    # Use macOS Keychain for credentials (not plaintext store)
+    git config --global credential.helper osxkeychain
+
+    # SSH key setup
+    if [[ ! -f ~/.ssh/id_ed25519 ]]; then
+        log_info "Generating SSH key..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        ssh-keygen -t ed25519 -C "kblack0610@gmail.com" -N "" -f ~/.ssh/id_ed25519
+
+        # Add to macOS Keychain
+        eval "$(ssh-agent -s)" &>/dev/null
+        ssh-add --apple-use-keychain ~/.ssh/id_ed25519 2>/dev/null || ssh-add ~/.ssh/id_ed25519
+
+        log_info "SSH key generated: ~/.ssh/id_ed25519.pub"
+        log_info "Add this key to GitHub: gh ssh-key add ~/.ssh/id_ed25519.pub"
+    else
+        log_info "SSH key already exists"
+        # Ensure key is in agent
+        ssh-add --apple-use-keychain ~/.ssh/id_ed25519 2>/dev/null || true
+    fi
+
+    # Authenticate with GitHub CLI if available
+    if command -v gh &>/dev/null; then
+        if ! gh auth status &>/dev/null; then
+            log_info "GitHub CLI not authenticated. Run: gh auth login"
+        else
+            log_info "GitHub CLI already authenticated"
+        fi
+    fi
+}
+
 # Install Homebrew if needed
 install_homebrew() {
     if ! command -v brew &>/dev/null; then
