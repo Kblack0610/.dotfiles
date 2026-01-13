@@ -301,16 +301,41 @@ install_kubernetes() {
     fi
 }
 
-# Override: Setup Sunshine game streaming (NOT SUPPORTED on macOS)
+# Override: Setup Sunshine game streaming
 setup_sunshine() {
-    log_section "Sunshine (game streaming) - SKIPPED"
-    log_info "Sunshine is not supported on macOS:"
-    log_info "  - No official macOS builds available"
-    log_info "  - No gamepad/controller support on macOS"
-    log_info "  - Installation broken on Apple Silicon/Sequoia"
+    log_section "Setting up Sunshine (game streaming)"
+
+    # Add LizardByte tap and install Sunshine
+    if ! brew tap | grep -q "lizardbyte/homebrew"; then
+        log_info "Adding LizardByte tap..."
+        brew tap lizardbyte/homebrew
+    fi
+
+    if ! brew list sunshine &>/dev/null; then
+        log_info "Installing Sunshine..."
+        brew install lizardbyte/homebrew/sunshine
+    else
+        log_info "Sunshine already installed"
+    fi
+
+    # Start Sunshine service (auto-starts at login)
+    if ! brew services list | grep -q "sunshine.*started"; then
+        log_info "Starting Sunshine service..."
+        brew services start lizardbyte/homebrew/sunshine
+    else
+        log_info "Sunshine service already running"
+    fi
+
     log_info ""
-    log_info "Use your Arch or Windows machine as the Sunshine HOST"
-    log_info "Use this Mac as a Moonlight CLIENT to stream games"
+    log_info "Sunshine installed! Access web UI at: https://localhost:47990"
+    log_info ""
+    log_info "IMPORTANT - macOS limitations:"
+    log_info "  - Gamepads are NOT supported on macOS"
+    log_info "  - For system audio: install BlackHole or Soundflower"
+    log_info ""
+    log_info "Grant permissions in System Settings > Privacy & Security:"
+    log_info "  - Screen Recording"
+    log_info "  - Accessibility"
 }
 
 # Override: Install Moonlight game streaming client

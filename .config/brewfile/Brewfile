@@ -2,6 +2,7 @@
 tap "nikitabobko/tap"
 tap "jesseduffield/lazydocker"
 tap "jesseduffield/lazygit"
+tap "lizardbyte/homebrew"
 
 # --- Core CLI Tools ---
 brew "asdf"
@@ -56,6 +57,6 @@ cask "discord"
 cask "spotify"
 
 # --- Game Streaming ---
-# Note: Sunshine doesn't work on macOS (no official builds, no gamepad support)
-# Use this Mac as a Moonlight CLIENT to stream FROM your Arch/Windows machine
+# Note: Sunshine on macOS is experimental (no gamepad support, needs BlackHole for audio)
+brew "lizardbyte/homebrew/sunshine"
 cask "moonlight"
