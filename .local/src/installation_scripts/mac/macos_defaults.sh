@@ -114,6 +114,12 @@ defaults write com.apple.screencapture type -string "png"
 # Disable shadow in screenshots
 defaults write com.apple.screencapture disable-shadow -bool true
 
+# Set F7 as shortcut for "Copy picture of selected area to clipboard"
+# Symbolic hotkey 31 = screenshot area to clipboard, keycode 98 = F7, modifiers 0 = none
+defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 31 "<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>98</integer><integer>98</integer><integer>0</integer></array><key>type</key><string>standard</string></dict></dict>"
+
+echo "  - Screenshot area to clipboard set to F7"
+
 ###############################################################################
 # Trackpad & Mouse                                                            #
 ###############################################################################
