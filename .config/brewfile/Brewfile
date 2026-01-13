@@ -54,3 +54,8 @@ cask "zulu@17"
 cask "tailscale"
 cask "discord"
 cask "spotify"
+
+# --- Game Streaming ---
+# Note: Sunshine doesn't work on macOS (no official builds, no gamepad support)
+# Use this Mac as a Moonlight CLIENT to stream FROM your Arch/Windows machine
+cask "moonlight"

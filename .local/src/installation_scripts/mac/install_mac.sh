@@ -301,35 +301,16 @@ install_kubernetes() {
     fi
 }
 
-# Override: Setup Sunshine game streaming
+# Override: Setup Sunshine game streaming (NOT SUPPORTED on macOS)
 setup_sunshine() {
-    log_section "Setting up Sunshine (game streaming)"
-
-    # Install Sunshine via Homebrew cask
-    if ! brew list --cask 2>/dev/null | grep -q "^sunshine$"; then
-        log_info "Installing Sunshine..."
-        brew install --cask sunshine
-    else
-        log_info "Sunshine already installed"
-    fi
-
-    # Generate configuration using sunshine-configure
-    if [[ -x "$HOME/.local/bin/sunshine-configure" ]]; then
-        log_info "Generating Sunshine configuration..."
-        "$HOME/.local/bin/sunshine-configure"
-    else
-        log_warning "sunshine-configure not found - run 'stow .local' first, then 'sunshine-configure'"
-    fi
-
-    log_info "Sunshine configured"
-    log_info "Access web UI at: https://localhost:47990"
+    log_section "Sunshine (game streaming) - SKIPPED"
+    log_info "Sunshine is not supported on macOS:"
+    log_info "  - No official macOS builds available"
+    log_info "  - No gamepad/controller support on macOS"
+    log_info "  - Installation broken on Apple Silicon/Sequoia"
     log_info ""
-    log_info "IMPORTANT: macOS requires additional permissions:"
-    log_info "  1. System Settings > Privacy & Security > Screen Recording > Enable Sunshine"
-    log_info "  2. System Settings > Privacy & Security > Accessibility > Enable Sunshine"
-    log_info "  3. System Settings > Privacy & Security > Input Monitoring > Enable Sunshine"
-    log_info ""
-    log_info "To reconfigure anytime: sunshine-configure"
+    log_info "Use your Arch or Windows machine as the Sunshine HOST"
+    log_info "Use this Mac as a Moonlight CLIENT to stream games"
 }
 
 # Override: Install Moonlight game streaming client
