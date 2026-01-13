@@ -320,6 +320,18 @@ dump_brewfile() {
     log_info "Brewfile updated at $BREWFILE_PATH"
 }
 
+# macOS-specific: Configure system defaults
+configure_macos_defaults() {
+    log_section "Configuring macOS system defaults"
+
+    local defaults_script="$SCRIPT_DIR/macos_defaults.sh"
+    if [[ -x "$defaults_script" ]]; then
+        "$defaults_script"
+    else
+        log_warning "macos_defaults.sh not found or not executable"
+    fi
+}
+
 # Override main installation for macOS
 install_all() {
     # Create structure
@@ -361,8 +373,17 @@ install_all() {
     install_npm_packages
     apply_dotfiles
 
+    # System configuration
+    configure_macos_defaults
+
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
+    log_info ""
+    log_info "MANUAL STEPS REQUIRED:"
+    log_info "  1. Open AeroSpace from Applications → Grant Accessibility permission"
+    log_info "  2. Open Raycast from Applications → Grant Accessibility permission"
+    log_info "  3. Open Tailscale and sign in"
+    log_info "  4. Log out and back in for all system settings to take effect"
 }
 
 # Run if executed directly
