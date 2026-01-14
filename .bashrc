@@ -46,8 +46,8 @@ export FrameworkPathOverride=/lib/mono/4.8-api
 ulimit -n 4000
 
 # --- Third-Party and Application Sourcing ---
-# Source autojump for directory jumping functionality.
-[ -f /usr/share/autojump/autojump.bash ] && source /usr/share/autojump/autojump.bash
+# Initialize zoxide (smarter cd command)
+eval "$(zoxide init bash)"
 . "$HOME/.cargo/env"
 
 . "$HOME/.local/share/../bin/env"

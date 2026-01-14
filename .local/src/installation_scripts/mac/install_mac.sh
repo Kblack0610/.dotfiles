@@ -156,7 +156,7 @@ install_terminal() {
     local packages=(
         "zsh"
         "starship"
-        "autojump"
+        "zoxide"
         "cowsay"
         "fortune"
     )

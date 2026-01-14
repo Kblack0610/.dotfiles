@@ -116,7 +116,7 @@ function dashboard() {
 # General purpose aliases
 alias nvr="nvr . -s"
 alias t="tmuxinator start hub"
-alias z="zellij --layout hub"
+# alias z="zellij --layout hub"
 alias n="nvim ."
 alias g="git"
 alias vi="nvim --listen /tmp/nvim-server.pipe"

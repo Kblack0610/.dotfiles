@@ -122,8 +122,8 @@ install_tools() {
         install_pacman_package "$tool"
     done
 
-    # AUR packages
-    install_aur_package "autojump"
+    # Zoxide - smarter cd (Rust-based autojump replacement)
+    install_pacman_package "zoxide"
 }
 
 # Override: Install terminal enhancements

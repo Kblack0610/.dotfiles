@@ -6,7 +6,7 @@ tap "lizardbyte/homebrew"
 
 # --- Core CLI Tools ---
 brew "asdf"
-brew "autojump"
+brew "zoxide"
 brew "git-lfs"
 brew "lazygit"
 brew "neovim"

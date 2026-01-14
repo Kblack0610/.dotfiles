@@ -80,7 +80,7 @@ install_tools() {
         "htop"
         "neofetch"
         "xsel"
-        "autojump"
+        "zoxide"
         "glances"
     )
     

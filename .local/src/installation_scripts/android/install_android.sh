@@ -75,7 +75,7 @@ install_tools() {
         "tree"
         "htop"
         "neofetch"
-        "autojump"
+        "zoxide"
         "fd"
         "bat"
         "exa"

@@ -72,9 +72,8 @@ eval "$(starship init zsh)"
 # [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
 # [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" # This loads nvm bash_completion
 #
-# # Source autojump.
-[ -f /opt/homebrew/etc/profile.d/autojump.sh ] && . /opt/homebrew/etc/profile.d/autojump.sh
-[ -f /usr/share/autojump/autojump.zsh ] && source /usr/share/autojump/autojump.zsh
+# Initialize zoxide (smarter cd command)
+eval "$(zoxide init zsh)"
 
 # # Source FZF.
 # [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
