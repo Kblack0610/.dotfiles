@@ -1,30 +1,37 @@
 {
   "mcpServers": {
-    "sequential-thinking": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
-    },
     "context7": {
-      "command": "npx",
       "args": [
         "-y",
         "@upstash/context7-mcp"
-      ]
+      ],
+      "command": "npx"
+    },
+    "linear": {
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/mcp"
+      ],
+      "command": "npx"
     },
     "playwright": {
-      "command": "npx",
       "args": [
         "-y",
         "@playwright/mcp@latest",
         "--browser",
         "firefox"
-      ]
+      ],
+      "command": "npx"
+    },
+    "sequential-thinking": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "command": "npx"
     },
     "serena": {
-      "command": "uvx",
       "args": [
         "--from",
         "git+https://github.com/oraios/serena",
@@ -32,25 +39,8 @@
         "start-mcp-server",
         "--context",
         "ide-assistant"
-      ]
-    },
-    "docker-mcp": {
-      "command": "uvx",
-      "args": [
-        "docker-mcp"
-      ]
-    },
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/"
-    },
-    "linear": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://mcp.linear.app/mcp"
-      ]
+      ],
+      "command": "uvx"
     }
   }
 }
