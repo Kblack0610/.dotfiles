@@ -1,5 +1,5 @@
 ---
-name: linear-implementer
+name: kb-linear-implementer
 description: >-
   Implements Linear tickets with isolated context - fetches ticket, implements,
   and creates PR
