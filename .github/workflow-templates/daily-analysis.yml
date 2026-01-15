@@ -1,0 +1,137 @@
+# Daily Repository Analysis Workflow
+# Copy this file to .github/workflows/daily-analysis.yml in any repo you want to analyze
+#
+# Requirements:
+# - SLACK_BOT_TOKEN secret (org-level recommended)
+# - LINEAR_API_KEY secret (org-level recommended)
+# - Claude Code installed on runner (self-hosted) OR use claude-code-action
+#
+# To enable for a repo, also add the GitHub topic: auto-analysis
+#   gh repo edit owner/repo --add-topic auto-analysis
+
+name: Daily Analysis
+
+on:
+  # Triggered by orchestrator or manually
+  workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: 'Trigger source (orchestrator/manual)'
+        default: 'manual'
+      dry_run:
+        description: 'Dry run - no PRs or tickets'
+        type: boolean
+        default: false
+      skip_pr:
+        description: 'Skip auto-fix PR creation'
+        type: boolean
+        default: false
+      skip_tickets:
+        description: 'Skip Linear ticket creation'
+        type: boolean
+        default: false
+
+  # Can also run on schedule directly (alternative to orchestrator)
+  # Uncomment if you want per-repo scheduling instead of central orchestration
+  # schedule:
+  #   - cron: '0 6 * * *'  # 6 AM UTC daily
+
+  # Trigger via repository_dispatch from orchestrator
+  repository_dispatch:
+    types: [daily-analysis]
+
+env:
+  DRY_RUN: ${{ inputs.dry_run || github.event.client_payload.dry_run || 'false' }}
+  SKIP_PR: ${{ inputs.skip_pr || github.event.client_payload.skip_pr || 'false' }}
+  SKIP_TICKETS: ${{ inputs.skip_tickets || github.event.client_payload.skip_tickets || 'false' }}
+
+jobs:
+  analyze:
+    name: Run Analysis
+    runs-on: self-hosted  # Requires Claude Code installed; change to ubuntu-latest if using claude-code-action
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      - name: Setup Node.js (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+        continue-on-error: true
+
+      # Option A: Self-hosted runner with Claude Code installed
+      - name: Run Daily Analysis (Self-hosted)
+        if: runner.name != 'GitHub Actions'  # Only on self-hosted
+        id: analysis-self-hosted
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Build arguments based on inputs
+          ARGS=""
+          if [[ "$DRY_RUN" == "true" ]]; then ARGS="$ARGS --dry-run"; fi
+          if [[ "$SKIP_PR" == "true" ]]; then ARGS="$ARGS --skip-pr"; fi
+          if [[ "$SKIP_TICKETS" == "true" ]]; then ARGS="$ARGS --skip-tickets"; fi
+
+          # Run Claude Code in headless mode
+          claude --dangerously-skip-permissions \
+            --output-format json \
+            --max-turns 50 \
+            -p "/daily:analysis $ARGS" \
+            > analysis-output.json 2>&1 || true
+
+          # Extract the JSON result if present
+          if [[ -f ".claude/cache/analysis-$(date +%Y-%m-%d).json" ]]; then
+            cp ".claude/cache/analysis-$(date +%Y-%m-%d).json" analysis-results.json
+          else
+            echo '{"error": "No analysis results generated"}' > analysis-results.json
+          fi
+
+      # Option B: GitHub-hosted runner using claude-code-action
+      # Uncomment this block if not using self-hosted runner
+      # - name: Run Daily Analysis (GitHub-hosted)
+      #   if: runner.name == 'GitHub Actions'
+      #   uses: anthropics/claude-code-action@v1
+      #   with:
+      #     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      #     prompt: |
+      #       Run /daily:analysis with these flags:
+      #       - dry_run: ${{ env.DRY_RUN }}
+      #       - skip_pr: ${{ env.SKIP_PR }}
+      #       - skip_tickets: ${{ env.SKIP_TICKETS }}
+      #     allowed_tools: "Bash,Read,Write,Edit,Grep,Glob,mcp__github__*,mcp__linear__*"
+      #     max_turns: 50
+
+      - name: Upload Analysis Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
+          path: |
+            analysis-results.json
+            analysis-output.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Summary
+        run: |
+          echo "## Daily Analysis Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ inputs.triggered_by || github.event.client_payload.triggered_by || 'schedule' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** ${{ env.DRY_RUN }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ -f analysis-results.json ]]; then
+            echo "### Results" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat analysis-results.json | head -50 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

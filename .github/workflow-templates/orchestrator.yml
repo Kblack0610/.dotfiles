@@ -1,0 +1,153 @@
+# Daily Analysis Orchestrator
+# This workflow discovers all repos with the 'auto-analysis' topic and triggers analysis on each.
+#
+# Setup:
+# 1. Create a dedicated repo (e.g., 'analysis-hub') or use your dotfiles repo
+# 2. Copy this file to .github/workflows/orchestrator.yml
+# 3. Create a PAT with 'repo' and 'workflow' scopes, store as ANALYSIS_PAT secret
+# 4. Add 'auto-analysis' topic to repos you want analyzed:
+#    gh repo edit owner/repo --add-topic auto-analysis
+
+name: Daily Analysis Orchestrator
+
+on:
+  # Run daily at 6 AM UTC
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Manual trigger with options
+  workflow_dispatch:
+    inputs:
+      repo_filter:
+        description: 'Filter repos by name (regex pattern, empty=all)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run - no PRs or tickets in child workflows'
+        type: boolean
+        default: false
+      max_repos:
+        description: 'Maximum repos to analyze (0=all)'
+        type: number
+        default: 0
+
+jobs:
+  discover-repos:
+    name: Discover Tagged Repositories
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.discover.outputs.repos }}
+      count: ${{ steps.discover.outputs.count }}
+
+    steps:
+      - name: Discover repositories with auto-analysis topic
+        id: discover
+        env:
+          GH_TOKEN: ${{ secrets.ANALYSIS_PAT }}
+          REPO_FILTER: ${{ inputs.repo_filter }}
+          MAX_REPOS: ${{ inputs.max_repos || 0 }}
+        run: |
+          # Search for repos with auto-analysis topic owned by the current user/org
+          echo "Searching for repositories with 'auto-analysis' topic..."
+
+          # Get the owner from this repo
+          OWNER="${{ github.repository_owner }}"
+
+          # Search GitHub API for repos with the topic
+          REPOS=$(gh api search/repositories \
+            -f q="topic:auto-analysis user:${OWNER}" \
+            --jq '.items | map({
+              name: .name,
+              owner: .owner.login,
+              full_name: .full_name,
+              default_branch: .default_branch
+            })')
+
+          # Apply regex filter if provided
+          if [[ -n "$REPO_FILTER" ]]; then
+            echo "Applying filter: $REPO_FILTER"
+            REPOS=$(echo "$REPOS" | jq --arg filter "$REPO_FILTER" '[.[] | select(.name | test($filter))]')
+          fi
+
+          # Apply max limit if provided
+          if [[ "$MAX_REPOS" -gt 0 ]]; then
+            echo "Limiting to $MAX_REPOS repos"
+            REPOS=$(echo "$REPOS" | jq ".[:$MAX_REPOS]")
+          fi
+
+          # Get count
+          COUNT=$(echo "$REPOS" | jq 'length')
+          echo "Found $COUNT repositories to analyze"
+
+          # Output for next job
+          echo "repos=$(echo "$REPOS" | jq -c '.')" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+          # Log discovered repos
+          echo "### Discovered Repositories" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "$REPOS" | jq -r '.[] | "- \(.full_name)"' >> $GITHUB_STEP_SUMMARY
+
+  trigger-analysis:
+    name: Trigger Analysis
+    needs: discover-repos
+    if: needs.discover-repos.outputs.count > 0
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        repo: ${{ fromJson(needs.discover-repos.outputs.repos) }}
+      max-parallel: 5  # Rate limiting - max 5 concurrent analyses
+      fail-fast: false  # Continue even if some repos fail
+
+    steps:
+      - name: Trigger daily-analysis workflow
+        env:
+          GH_TOKEN: ${{ secrets.ANALYSIS_PAT }}
+        run: |
+          echo "Triggering analysis for ${{ matrix.repo.full_name }}..."
+
+          # Check if the workflow exists in the target repo
+          WORKFLOW_EXISTS=$(gh api repos/${{ matrix.repo.full_name }}/actions/workflows \
+            --jq '.workflows[] | select(.name == "Daily Analysis") | .id' 2>/dev/null || echo "")
+
+          if [[ -n "$WORKFLOW_EXISTS" ]]; then
+            # Trigger via workflow_dispatch
+            gh workflow run daily-analysis.yml \
+              --repo ${{ matrix.repo.full_name }} \
+              -f triggered_by=orchestrator \
+              -f dry_run=${{ inputs.dry_run || 'false' }}
+
+            echo "Triggered workflow_dispatch for ${{ matrix.repo.full_name }}"
+          else
+            # Fallback to repository_dispatch
+            gh api repos/${{ matrix.repo.full_name }}/dispatches \
+              -f event_type=daily-analysis \
+              -f client_payload='{"triggered_by":"orchestrator","dry_run":${{ inputs.dry_run || false }}}'
+
+            echo "Triggered repository_dispatch for ${{ matrix.repo.full_name }}"
+          fi
+
+      - name: Log trigger status
+        run: |
+          echo "- ${{ matrix.repo.full_name }}: Triggered" >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    name: Orchestration Summary
+    needs: [discover-repos, trigger-analysis]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Daily Analysis Orchestration Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Repositories Found:** ${{ needs.discover-repos.outputs.count }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** ${{ inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check individual repository workflow runs for detailed results." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "The aggregate-analysis workflow will run after all analyses complete to generate the daily summary." >> $GITHUB_STEP_SUMMARY

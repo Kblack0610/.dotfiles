@@ -95,8 +95,30 @@ Reviews Given:
 - `$ARGUMENTS` can be a date in YYYY-MM-DD format to fetch summary for a specific day
 - Default: today
 
+### 5. Repository Analysis (if available)
+
+Check for today's analysis results and include if present:
+
+```bash
+ANALYSIS_FILE="$HOME/.claude/cache/analysis-$(date +%Y-%m-%d).json"
+if [[ -f "$ANALYSIS_FILE" ]]; then
+  # Include analysis summary
+fi
+```
+
+Add to output format if analysis data exists:
+```
+🔍 REPOSITORY ANALYSIS
+───────────────────────────────────────────────────────
+Security: {critical} critical, {high} high, {medium} medium
+Quality: {issues} issues ({auto_fixed} auto-fixed)
+Dependencies: {outdated} outdated ({major} major updates)
+Actions: {prs} PRs created, {tickets} Linear tickets
+```
+
 ## Notes
 
 - Uses MCP servers directly - no external API keys needed for Linear/GitHub
 - Linear API key comes from Linear MCP server config
 - GitHub token comes from GitHub MCP server config
+- Analysis data from `/daily:analysis` is automatically included if available

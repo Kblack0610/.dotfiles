@@ -1,0 +1,381 @@
+# Daily Analysis Aggregator
+# Collects analysis results from all repos and posts a summary to Slack.
+#
+# Setup:
+# 1. Place in same repo as orchestrator.yml
+# 2. Requires SLACK_BOT_TOKEN secret (same as platform uses)
+# 3. Optionally configure SLACK_CHANNEL_ID for target channel
+
+name: Aggregate Daily Analysis
+
+on:
+  # Run after orchestrator completes
+  workflow_run:
+    workflows: ["Daily Analysis Orchestrator"]
+    types: [completed]
+
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      slack_channel:
+        description: 'Slack channel to post to (e.g., #dev-updates)'
+        default: '#dev-updates'
+      dry_run:
+        description: 'Dry run - generate but do not post to Slack'
+        type: boolean
+        default: false
+
+env:
+  SLACK_CHANNEL: ${{ inputs.slack_channel || vars.SLACK_ANALYSIS_CHANNEL || '#dev-updates' }}
+
+jobs:
+  aggregate:
+    name: Aggregate Analysis Results
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
+    outputs:
+      summary_json: ${{ steps.aggregate.outputs.summary }}
+      has_findings: ${{ steps.aggregate.outputs.has_findings }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download analysis artifacts
+        env:
+          GH_TOKEN: ${{ secrets.ANALYSIS_PAT }}
+        run: |
+          mkdir -p analysis-results
+
+          # Get today's date for filtering
+          TODAY=$(date +%Y-%m-%d)
+
+          # Find workflow runs from today
+          echo "Searching for analysis artifacts from $TODAY..."
+
+          # List all repos with auto-analysis topic
+          OWNER="${{ github.repository_owner }}"
+          REPOS=$(gh api search/repositories \
+            -f q="topic:auto-analysis user:${OWNER}" \
+            --jq '.items[].full_name')
+
+          # Download artifacts from each repo's latest workflow run
+          for REPO in $REPOS; do
+            echo "Checking $REPO for artifacts..."
+
+            # Get the latest successful daily-analysis run
+            RUN_ID=$(gh api repos/${REPO}/actions/workflows/daily-analysis.yml/runs \
+              --jq ".workflow_runs[] | select(.status == \"completed\" and .conclusion == \"success\" and (.created_at | startswith(\"$TODAY\"))) | .id" \
+              2>/dev/null | head -1 || echo "")
+
+            if [[ -n "$RUN_ID" ]]; then
+              echo "Found run $RUN_ID for $REPO"
+
+              # Download artifacts
+              gh run download $RUN_ID \
+                --repo $REPO \
+                --dir "analysis-results/${REPO//\//-}" \
+                2>/dev/null || echo "No artifacts for $REPO"
+            fi
+          done
+
+          # List what we got
+          echo "Downloaded artifacts:"
+          find analysis-results -name "*.json" -type f
+
+      - name: Aggregate results
+        id: aggregate
+        run: |
+          # Create aggregation script
+          cat > aggregate.js << 'SCRIPT'
+          const fs = require('fs');
+          const path = require('path');
+
+          const resultsDir = './analysis-results';
+          const today = new Date().toISOString().split('T')[0];
+
+          const summary = {
+            date: today,
+            generated_at: new Date().toISOString(),
+            repos_analyzed: 0,
+            security: {
+              total_findings: 0,
+              critical: 0,
+              high: 0,
+              medium: 0,
+              low: 0,
+              secrets_found: 0
+            },
+            quality: {
+              total_issues: 0,
+              auto_fixed: 0,
+              type_errors: 0
+            },
+            dependencies: {
+              outdated_total: 0,
+              major_updates: 0,
+              security_advisories: 0
+            },
+            actions: {
+              prs_created: [],
+              tickets_created: []
+            },
+            repos: []
+          };
+
+          // Find all analysis result files
+          function findFiles(dir, files = []) {
+            if (!fs.existsSync(dir)) return files;
+            const items = fs.readdirSync(dir);
+            for (const item of items) {
+              const fullPath = path.join(dir, item);
+              if (fs.statSync(fullPath).isDirectory()) {
+                findFiles(fullPath, files);
+              } else if (item === 'analysis-results.json') {
+                files.push(fullPath);
+              }
+            }
+            return files;
+          }
+
+          const files = findFiles(resultsDir);
+          console.log(`Found ${files.length} analysis result files`);
+
+          for (const file of files) {
+            try {
+              const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+              summary.repos_analyzed++;
+
+              // Aggregate security
+              if (data.security) {
+                summary.security.total_findings += data.security.findings?.length || 0;
+                summary.security.critical += data.security.vulnerabilities?.critical || 0;
+                summary.security.high += data.security.vulnerabilities?.high || 0;
+                summary.security.medium += data.security.vulnerabilities?.medium || 0;
+                summary.security.low += data.security.vulnerabilities?.low || 0;
+                summary.security.secrets_found += data.security.secrets_found || 0;
+              }
+
+              // Aggregate quality
+              if (data.quality) {
+                summary.quality.total_issues += (data.quality.lint_errors || 0) + (data.quality.lint_warnings || 0);
+                summary.quality.auto_fixed += data.quality.auto_fixable || 0;
+                summary.quality.type_errors += data.quality.type_errors || 0;
+              }
+
+              // Aggregate dependencies
+              if (data.dependencies) {
+                summary.dependencies.outdated_total += data.dependencies.outdated_total || 0;
+                summary.dependencies.major_updates += data.dependencies.major_updates || 0;
+                summary.dependencies.security_advisories += data.dependencies.security_advisories || 0;
+              }
+
+              // Aggregate actions
+              if (data.actions_taken) {
+                if (data.actions_taken.pr_created) {
+                  summary.actions.prs_created.push({
+                    repo: data.repo,
+                    pr: data.actions_taken.pr_created
+                  });
+                }
+                if (data.actions_taken.tickets_created) {
+                  summary.actions.tickets_created.push(...data.actions_taken.tickets_created.map(t => ({
+                    repo: data.repo,
+                    ticket: t
+                  })));
+                }
+              }
+
+              // Add repo summary
+              summary.repos.push({
+                name: data.repo,
+                security_findings: data.security?.findings?.length || 0,
+                quality_issues: (data.quality?.lint_errors || 0) + (data.quality?.lint_warnings || 0),
+                outdated_deps: data.dependencies?.outdated_total || 0
+              });
+
+            } catch (err) {
+              console.error(`Error processing ${file}: ${err.message}`);
+            }
+          }
+
+          // Write summary
+          fs.writeFileSync('daily-summary.json', JSON.stringify(summary, null, 2));
+          console.log('Summary written to daily-summary.json');
+          console.log(JSON.stringify(summary, null, 2));
+          SCRIPT
+
+          node aggregate.js
+
+          # Set outputs
+          if [[ -f daily-summary.json ]]; then
+            SUMMARY=$(cat daily-summary.json | jq -c '.')
+            echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+
+            # Check if there are any findings
+            HAS_FINDINGS=$(cat daily-summary.json | jq '.repos_analyzed > 0')
+            echo "has_findings=$HAS_FINDINGS" >> $GITHUB_OUTPUT
+          else
+            echo "summary={}" >> $GITHUB_OUTPUT
+            echo "has_findings=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload aggregated summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-analysis-summary-${{ github.run_id }}
+          path: daily-summary.json
+          retention-days: 90
+
+  notify-slack:
+    name: Post to Slack
+    needs: aggregate
+    if: needs.aggregate.outputs.has_findings == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate Slack payload
+        id: payload
+        run: |
+          SUMMARY='${{ needs.aggregate.outputs.summary_json }}'
+          DATE=$(echo "$SUMMARY" | jq -r '.date')
+          REPOS=$(echo "$SUMMARY" | jq -r '.repos_analyzed')
+
+          # Security stats
+          SEC_CRIT=$(echo "$SUMMARY" | jq -r '.security.critical')
+          SEC_HIGH=$(echo "$SUMMARY" | jq -r '.security.high')
+          SEC_MED=$(echo "$SUMMARY" | jq -r '.security.medium')
+          SEC_SECRETS=$(echo "$SUMMARY" | jq -r '.security.secrets_found')
+
+          # Quality stats
+          QUAL_ISSUES=$(echo "$SUMMARY" | jq -r '.quality.total_issues')
+          QUAL_FIXED=$(echo "$SUMMARY" | jq -r '.quality.auto_fixed')
+          TYPE_ERRORS=$(echo "$SUMMARY" | jq -r '.quality.type_errors')
+
+          # Dependency stats
+          DEPS_OUTDATED=$(echo "$SUMMARY" | jq -r '.dependencies.outdated_total')
+          DEPS_MAJOR=$(echo "$SUMMARY" | jq -r '.dependencies.major_updates')
+          DEPS_SEC=$(echo "$SUMMARY" | jq -r '.dependencies.security_advisories')
+
+          # Actions
+          PRS=$(echo "$SUMMARY" | jq -r '.actions.prs_created | length')
+          TICKETS=$(echo "$SUMMARY" | jq -r '.actions.tickets_created | length')
+
+          # Determine overall color
+          if [[ "$SEC_CRIT" -gt 0 ]] || [[ "$SEC_SECRETS" -gt 0 ]]; then
+            COLOR="danger"
+            EMOJI=":rotating_light:"
+          elif [[ "$SEC_HIGH" -gt 0 ]] || [[ "$DEPS_SEC" -gt 0 ]]; then
+            COLOR="warning"
+            EMOJI=":warning:"
+          else
+            COLOR="good"
+            EMOJI=":white_check_mark:"
+          fi
+
+          # Build per-repo summary
+          REPO_SUMMARY=$(echo "$SUMMARY" | jq -r '.repos[] | "• \(.name): \(.security_findings) sec, \(.quality_issues) quality, \(.outdated_deps) deps"' | head -10)
+
+          # Create payload using same pattern as platform CI/CD
+          cat > slack-payload.json << EOF
+          {
+            "channel": "${{ env.SLACK_CHANNEL }}",
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${EMOJI} Daily Analysis Summary - ${DATE}",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Repos Analyzed:*\n${REPOS}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Actions Taken:*\n${PRS} PRs, ${TICKETS} Tickets"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*:lock: Security*\nCritical: ${SEC_CRIT} | High: ${SEC_HIGH} | Medium: ${SEC_MED}\nSecrets Found: ${SEC_SECRETS}"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*:white_check_mark: Quality*\nTotal Issues: ${QUAL_ISSUES} | Auto-fixed: ${QUAL_FIXED}\nType Errors: ${TYPE_ERRORS}"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*:package: Dependencies*\nOutdated: ${DEPS_OUTDATED} | Major Updates: ${DEPS_MAJOR}\nSecurity Advisories: ${DEPS_SEC}"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*Per-Repo Summary:*\n${REPO_SUMMARY}"
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Full Report>"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          cat slack-payload.json
+
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload-file-path: ./slack-payload.json
+
+  summary:
+    name: Workflow Summary
+    needs: [aggregate, notify-slack]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Daily Analysis Aggregation Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Slack Posted:** ${{ needs.notify-slack.result == 'success' && 'Yes' || 'No' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See artifacts for full analysis summary." >> $GITHUB_STEP_SUMMARY

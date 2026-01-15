@@ -52,6 +52,13 @@ Generate a Slack-formatted daily summary and optionally post it via webhook.
       }
     },
     {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*🔍 Analysis* (if available)\n• Security: 0 critical, 1 high\n• Quality: 5 issues (3 auto-fixed)\n• Deps: 8 outdated"
+      }
+    },
+    {
       "type": "context",
       "elements": [
         {

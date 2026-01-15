@@ -13,6 +13,7 @@ Commands for generating daily activity summaries and standup reports.
 | `/daily:summary` | Full daily activity summary (Linear, GitHub PRs, commits, reviews) |
 | `/daily:standup` | Concise standup format (yesterday, today, blockers) |
 | `/daily:slack` | Slack-formatted summary with optional webhook posting |
+| `/daily:analysis` | Repo analysis (security, quality, deps) with auto-PRs and Linear tickets |
 | `/daily:help` | This help message |
 
 ## Data Sources
@@ -38,6 +39,15 @@ All `/daily` commands pull from:
 
 # Summary for a specific date
 /daily:summary 2025-01-14
+
+# Run repo analysis (security, quality, dependencies)
+/daily:analysis
+
+# Analysis dry-run (no PRs or tickets created)
+/daily:analysis --dry-run
+
+# Headless analysis for automation
+claude --dangerously-skip-permissions -p "/daily:analysis"
 ```
 
 ## Requirements
