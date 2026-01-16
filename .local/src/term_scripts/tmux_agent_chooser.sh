@@ -5,15 +5,16 @@
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
-# Build list of windows with claude agents
+# Build list of windows with AI agents
 declare -A seen_windows
 agent_list=""
+AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
 while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
     window_key="${session}:${window_idx}"
     [[ -n "${seen_windows[$window_key]}" ]] && continue
 
-    if [[ "$pane_cmd" == "claude" ]]; then
+    if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
         seen_windows[$window_key]=1
 
         # Get status indicator
@@ -54,33 +55,12 @@ fi
 sorted=$(echo -e "$agent_list" | sort -t' ' -k1,1)
 
 # Select with fzf
-# g = lazygit (fullscreen window), s = toggle search, Enter = jump
-# --expect=g captures if g was pressed (returns key on first line, selection on second)
-result=$(echo -e "$sorted" | fzf --reverse --border \
+selected=$(echo -e "$sorted" | fzf --reverse --border \
     --prompt='Select agent > ' \
-    --header=$'Enter=jump | g=lazygit | s=search (esc=exit)\n! needs input | ~ working | ✓ idle' \
-    --ansi \
-    --disabled \
-    --bind 's:enable-search' \
-    --bind 'esc:disable-search+clear-query' \
-    --expect=g)
-
-[[ -z "$result" ]] && exit 0
-
-# Parse result: first line is key pressed (or empty for Enter), second is selection
-key=$(echo "$result" | head -1)
-selected=$(echo "$result" | tail -1)
+    --header=$'Enter=jump (esc=exit)\n! needs input | ~ working | ✓ idle' \
+    --ansi)
 
 [[ -z "$selected" ]] && exit 0
-
-# Check if lazygit was requested
-if [[ "$key" == "g" ]]; then
-    # Extract full path from brackets
-    dir=$(echo "$selected" | sed 's/.*\[\(.*\)\]/\1/')
-    # Open lazygit in a new fullscreen window (closes when lazygit exits)
-    tmux new-window -n "lazygit" -c "$dir" "lazygit"
-    exit 0
-fi
 
 # Extract session:window_idx
 target=$(echo "$selected" | awk '{print $2}')

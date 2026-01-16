@@ -8,13 +8,14 @@ get_claude_status() {
     declare -A session_agents  # session -> list of statuses
     declare -A session_short   # session -> short name
     local tooltip=""
+    local AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
     while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
         window_key="${session}:${window_idx}"
         [[ -n "${seen_windows[$window_key]}" ]] && continue
 
-        # Only count panes where claude is the direct command
-        if [[ "$pane_cmd" == "claude" ]]; then
+        # Count panes running AI agents
+        if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
             seen_windows[$window_key]=1
 
             # Capture last lines to detect state
