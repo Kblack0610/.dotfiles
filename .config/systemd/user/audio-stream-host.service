@@ -1,0 +1,14 @@
+[Unit]
+Description=Network Audio Stream Receiver for Mic Passthrough
+Documentation=man:pactl(1)
+After=pipewire-pulse.service pulseaudio.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/audio-stream --receive
+ExecStop=%h/.local/bin/audio-stream --stop
+
+[Install]
+WantedBy=default.target

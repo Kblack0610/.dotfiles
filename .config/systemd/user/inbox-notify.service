@@ -1,0 +1,6 @@
+[Unit]
+Description=Send notification for inbox activity
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/inbox-notify
