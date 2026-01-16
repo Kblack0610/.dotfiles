@@ -1,13 +1,16 @@
 #!/bin/bash
 
 # Waybar module for Claude agents
-# Shows shorthand session status: ai-lab: ✓✓✗ | pmp: ✓✓
+# Shows status with icons:  lab ● ◐ |  pmp ●
 
 get_claude_status() {
     declare -A seen_windows
     declare -A session_agents  # session -> list of statuses
     declare -A session_short   # session -> short name
+    declare -A session_classes # session -> class for urgent highlighting
     local tooltip=""
+    local has_urgent=false
+    local has_working=false
     local AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
     while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
@@ -32,23 +35,26 @@ get_claude_status() {
             # Determine state based on content and activity
             # Priority 1: Interactive questions needing input
             if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
-                status="!"  # Needs attention
-                tooltip_status="⚠"
+                status=""  # Needs attention (bell icon)
+                tooltip_status="⚠ NEEDS INPUT"
+                has_urgent=true
             # Priority 2: Actively working (recent output within 3 seconds)
             elif [ $activity_diff -lt 3 ]; then
-                status="~"  # Working
-                tooltip_status="◐"
+                status="◐"  # Working (half-filled circle)
+                tooltip_status="◐ Working"
+                has_working=true
             # Priority 3: At prompt or showing status bar (DONE)
             elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
-                status="✓"  # Done, waiting for input
-                tooltip_status="●"
+                status="●"  # Done, waiting for input (filled circle)
+                tooltip_status="● Ready"
             # Fallback: No recent activity = done
             elif [ $activity_diff -gt 10 ]; then
-                status="✓"
-                tooltip_status="●"
+                status="●"
+                tooltip_status="● Idle"
             else
-                status="~"  # Probably working
-                tooltip_status="◐"
+                status="◐"  # Probably working
+                tooltip_status="◐ Working"
+                has_working=true
             fi
 
             # Build session agents list
@@ -59,6 +65,7 @@ get_claude_status() {
                 case "$session" in
                     placemyparents) session_short[$session]="pmp" ;;
                     ai-lab) session_short[$session]="lab" ;;
+                    dotfiles) session_short[$session]="dot" ;;
                     *) session_short[$session]="${session:0:3}" ;;
                 esac
             fi
@@ -82,18 +89,28 @@ get_claude_status() {
         short="${session_short[$session]}"
         agents="${session_agents[$session]}"
         if [ -n "$display" ]; then
-            display+=" | "
+            display+=" │ "
         fi
-        display+="${short}: ${agents}"
+        display+="${short} ${agents}"
     done
 
     # Remove trailing newline from tooltip
     tooltip="${tooltip%\\n}"
 
+    # Determine class based on state priority
+    local css_class="idle"
+    if $has_urgent; then
+        css_class="urgent"
+    elif $has_working; then
+        css_class="working"
+    elif [ -n "$display" ]; then
+        css_class="ready"
+    fi
+
     if [ -n "$display" ]; then
-        echo "{\"text\": \"${display}\", \"tooltip\": \"Claude Agents:\\n${tooltip}\", \"class\": \"active\"}"
+        echo "{\"text\": \" ${display}\", \"tooltip\": \"Claude Agents:\\n${tooltip}\", \"class\": \"${css_class}\"}"
     else
-        echo "{\"text\": \"\", \"tooltip\": \"No Claude agents running\", \"class\": \"inactive\"}"
+        echo "{\"text\": \" \", \"tooltip\": \"No Claude agents running\", \"class\": \"inactive\"}"
     fi
 }
 
