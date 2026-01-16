@@ -1,0 +1,12 @@
+[Unit]
+Description=System Health Check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/src/system/system-health-check.sh
+# Uncomment when ready:
+# Environment="SLACK_WEBHOOK_URL=https://hooks.slack.com/..."
+
+[Install]
+WantedBy=default.target

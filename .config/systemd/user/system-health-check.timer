@@ -1,0 +1,11 @@
+[Unit]
+Description=Run System Health Check 3x Daily
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+OnCalendar=*-*-* 11:00:00
+OnCalendar=*-*-* 14:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
