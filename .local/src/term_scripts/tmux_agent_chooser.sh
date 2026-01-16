@@ -38,9 +38,17 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
             status="~"
         fi
 
-        # Format: status session:window window_name (short_path) [full_path]
+        # Format: status session:window [project_name if different]
         short_path=$(basename "$pane_path")
-        agent_list+="${status} ${session}:${window_idx} ${window_name} (${short_path}) [${pane_path}]\n"
+        # Normalize names for comparison (strip leading . or _)
+        norm_session="${session#[._]}"
+        norm_path="${short_path#[._]}"
+        # Only show project name if it differs from session name (avoids redundancy)
+        if [[ "$norm_path" != "$norm_session" ]]; then
+            agent_list+="${status} ${session}:${window_idx} ${short_path}\n"
+        else
+            agent_list+="${status} ${session}:${window_idx}\n"
+        fi
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
 
