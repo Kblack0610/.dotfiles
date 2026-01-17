@@ -3,7 +3,7 @@
  * Install: Copy chrome/ folder to ~/.mozilla/firefox/<profile>/chrome/
  */
 
-/* Move entire tab bar to bottom */
+/* Move tab bar to bottom */
 #navigator-toolbox {
     display: flex;
     flex-direction: column;
@@ -21,13 +21,41 @@
     order: 3 !important;
 }
 
-/* Alternative approach: Just move tabs below content */
+/* Move entire toolbar below content */
 #browser {
     order: 0 !important;
 }
 
 #navigator-toolbox {
     order: 1 !important;
+}
+
+/* Search suggestions appear ABOVE the URL bar */
+#urlbar .urlbarView {
+    position: absolute !important;
+    bottom: 100% !important;
+    top: auto !important;
+    margin-bottom: 4px !important;
+}
+
+#urlbar[open] .urlbarView-body-outer {
+    border-radius: 8px 8px 0 0 !important;
+}
+
+/* Flip the results order so best match is at bottom (closest to input) */
+#urlbar .urlbarView-results {
+    display: flex !important;
+    flex-direction: column-reverse !important;
+}
+
+/* Panel positioning override */
+#urlbar-container,
+#urlbar {
+    position: relative !important;
+}
+
+.urlbarView-row {
+    flex-direction: row !important;
 }
 
 /* Tab bar styling - Catppuccin Mocha */
