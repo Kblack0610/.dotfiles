@@ -25,19 +25,19 @@ CHOICE=$(echo "$OPTIONS" | fzf --reverse --border --prompt='Tmux Launcher > ' --
 # 3. Execute based on choice
 case "$CHOICE" in
     "Spawn Project"*)
-        exec "$SCRIPT_DIR/tmux_spawn_project.sh"
+        exec "$SCRIPT_DIR/spawn-project.sh"
         ;;
     "Spawn Server"*)
-        exec "$SCRIPT_DIR/tmux_spawn_server.sh"
+        exec "$SCRIPT_DIR/../archive/tmux_spawn_server.sh"
         ;;
     "Spawn Agent"*)
-        exec "$SCRIPT_DIR/tmux_agent_starter.sh"
+        exec "$SCRIPT_DIR/agent-starter.sh"
         ;;
     "Open nvim"*)
-        exec "$SCRIPT_DIR/tmux_nvim_spawner.sh"
+        exec "$SCRIPT_DIR/../archive/tmux_nvim_spawner.sh"
         ;;
     "Select Session"*)
-        exec "$SCRIPT_DIR/tmux_session_starter.sh"
+        exec "$SCRIPT_DIR/../archive/tmux_session_starter.sh"
         ;;
     "Switch Session"*)
         # Quick switch between existing tmux sessions

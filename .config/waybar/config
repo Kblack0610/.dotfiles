@@ -236,7 +236,7 @@
         "return-type": "json",
         "interval": 3,
         "exec": "$HOME/.config/waybar/claude_agents.sh",
-        "on-click": "kitty --class floating-term -e $HOME/.local/src/term_scripts/tmux_claude_viewer.sh",
+        "on-click": "kitty --class floating-term -e $HOME/.local/src/archive/tmux_claude_viewer.sh",
         "tooltip": true
     }
 }
