@@ -77,9 +77,14 @@ token_count_estimator: TIKTOKEN_GPT4O
 projects:
 - /home/kblack0610/.dotfiles/.local/src/gungan
 - /home/kblack0610/dev/bnb/g2i/gheeggle
+- /home/kblack0610/dev/bnb/g2i/shack
+- /home/kblack0610/dev/bnb/g2i/shack-agent-2
 - /home/kblack0610/dev/bnb/games/dodginballs
 - /home/kblack0610/dev/bnb/games/dodginballs_agent2
 - /home/kblack0610/dev/bnb/platform
 - /home/kblack0610/dev/bnb/platform-ci-fixes
 - /home/kblack0610/dev/home/binks-agent-orchestrator
 language_backend: LSP
+fixed_tools: []
+web_dashboard_listen_address: 127.0.0.1
+jetbrains_plugin_server_address: 127.0.0.1
