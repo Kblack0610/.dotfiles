@@ -33,6 +33,8 @@ Media/Music
 .config/Windsurf/User/*
 !.config/Windsurf/User/settings.json
 
+.config/Code/*
+
 .codeium/*
 !.codeium/windsurf/
 .codeium/windsurf/cascade
@@ -52,6 +54,7 @@ Media/Music
 !.claude/agents
 !.claude/commands
 !.claude/settings.json
+!.claude/.mcp.json
 
 # Serena 
 .serena/*

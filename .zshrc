@@ -87,16 +87,9 @@ if [ -f "$HOME/.bash_profile" ]; then
 fi
 
 
-# Add .local/bin to PATH if not already present
-[[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
+# PATH is now managed in .commonrc with conditional helpers
 
-# Added by Windsurf
-export PATH="/Users/kblack0610/.codeium/windsurf/bin:$PATH"
-export PATH="/opt/homebrew/bin:$PATH"
 alias zephyr-env="source ~/zephyr-env/bin/activate"
-export PATH="$HOME/.local/bin:$PATH"
-
-. "$HOME/.local/share/../bin/env"
 
 export OLLAMA_HOST=192.168.1.4:11434
 

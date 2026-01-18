@@ -1,19 +1,23 @@
 # --- Path and Environment Variables ---
 
-# Add .NET tools for Unity to PATH
-export PATH="$PATH:/home/kblack0610/.dotnet/tools"
+# === PATH Helper Functions ===
+# Only add paths that exist and aren't already in PATH
+path_prepend() {
+    for dir in "$@"; do
+        [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]] && PATH="$dir:$PATH"
+    done
+}
 
-# Add custom directories to PATH
-export PATH="$HOME/.local/bin:$PATH"
-export PATH="$HOME/.local/bin:$HOME/Utilities:$PATH"
-export PATH="$PATH:$HOME/.maestro/bin"
-export PATH="$PATH:$HOME/.spicetify"
+path_append() {
+    for dir in "$@"; do
+        [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]] && PATH="$PATH:$dir"
+    done
+}
 
-# Set up local NPM packages
+# Set up local NPM packages (needs to be before PATH additions)
 export NPM_PACKAGES="$HOME/.npm-packages"
 export NODE_PATH="$NPM_PACKAGES/lib/node_modules:$NODE_PATH"
 export NODE_ENV=development
-export PATH="$NPM_PACKAGES/bin:$PATH"
 unset MANPATH
 export MANPATH="$NPM_PACKAGES/share/man:$(manpath)"
 
@@ -25,12 +29,18 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     # Linux
     LIBRARY_BASE="$HOME/.local/share"
-    JAVA_LIBRARY_BASE="/usr/lib/jvm/zulu-17"
+    # Use default JVM or zulu-17 if available
+    if [ -d "/usr/lib/jvm/zulu-17" ]; then
+        JAVA_LIBRARY_BASE="/usr/lib/jvm/zulu-17"
+    elif [ -d "/usr/lib/jvm/default" ]; then
+        JAVA_LIBRARY_BASE="/usr/lib/jvm/default"
+    else
+        JAVA_LIBRARY_BASE="/usr/lib/jvm/java-25-openjdk"
+    fi
 fi
 
 # Set up Android SDK
 export ANDROID_HOME=$LIBRARY_BASE/Android/Sdk
-export PATH="$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools:$PATH"
 
 # Set up Java (Zulu JDK)
 export JAVA_HOME=$JAVA_LIBRARY_BASE
@@ -40,13 +50,37 @@ export MANPAGER='/usr/sbin/nvim +Man!'
 export MANWIDTH=999
 export XDG_CONFIG_HOME="$HOME/.config"
 
-# Add Go to the PATH if it's installed.
-if [ -d "/usr/local/go/bin" ]; then
-    export PATH=$PATH:/usr/local/go/bin
-fi
+# === Consolidated PATH Configuration ===
+# High priority (prepend) - checked for existence
+path_prepend "$HOME/.local/bin"
+path_prepend "$HOME/Utilities"
+path_prepend "$HOME/.cargo/bin"
+path_prepend "$NPM_PACKAGES/bin"
 
-# Rust? (might remove)
-. "$HOME/.cargo/env"
+# Lower priority (append) - checked for existence
+path_append "$HOME/.dotnet/tools"
+path_append "$HOME/.maestro/bin"
+path_append "$HOME/.spicetify"
+path_append "/usr/local/go/bin"
+
+# Android SDK paths
+path_append "$ANDROID_HOME/tools"
+path_append "$ANDROID_HOME/tools/bin"
+path_append "$ANDROID_HOME/platform-tools"
+
+# OS-specific paths
+case "$(uname -s)" in
+    Darwin)
+        path_prepend "/opt/homebrew/bin"
+        path_prepend "$HOME/.codeium/windsurf/bin"
+        ;;
+esac
+
+# Export final PATH
+export PATH
+
+# Source cargo env for other settings (PATH already handled above)
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 # --- Sourcing Scripts ---
 # NEW display a crisp prompt of: cowsay+fortune, syst info, and today tasks
@@ -56,13 +90,14 @@ fi
 
 
 # # Display a fortune cookie if cowsay is available.
-if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
-    fortune | cut -c 1-200 | cowsay
-elif [ -x /usr/sbin/cowsay -a -x /usr/sbin/fortune ]; then
-    fortune | cut -c 1-200 | cowsay
-elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
-    fortune | cut -c 1-200 | cowsay
-fi
+# NOTE: Moved to bottom-prompt function in .zshrc for ergonomic bottom prompt
+# if [ -x /usr/games/cowsay -a -x /usr/games/fortune ]; then
+#     fortune | cut -c 1-200 | cowsay
+# elif [ -x /usr/sbin/cowsay -a -x /usr/sbin/fortune ]; then
+#     fortune | cut -c 1-200 | cowsay
+# elif [ -x /opt/homebrew/bin/cowsay -a -x /opt/homebrew/bin/fortune ]; then
+#     fortune | cut -c 1-200 | cowsay
+# fi
 
 # 1. Helper: Ensure the daily note exists
 function ensure_daily_note() {
@@ -171,3 +206,10 @@ alias dotfiles-setup="$HOME/.local/src/installation_scripts/install.sh"
 # if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
 #   exec tmuxinator start hub
 # fi
+
+# --- Network Audio Streaming (Sunshine/Moonlight mic passthrough) ---
+alias mic-stream="audio-stream --send"
+alias mic-receive="audio-stream --receive"
+alias mic-stop="audio-stream --stop"
+alias mic-status="audio-stream --status"
+alias mic-list="audio-stream --list"
