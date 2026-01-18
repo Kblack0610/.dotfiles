@@ -22,6 +22,15 @@ reqs for installation (not complete):
 
 once stow is installed, run "stow ." to symlink
 
+# Post-stow setup
+
+Some configs can't be symlinked (random profile names). Run these after stow:
+
+```bash
+# Firefox/Floorp - bottom tabs + Catppuccin theme
+~/.dotfiles/.config/firefox/install.sh
+```
+
 # Keyboards 
 -- make sure to set up in src file
 qmk setup kblack0610/qmk_firmware -H ~/src/qmk_firmware
