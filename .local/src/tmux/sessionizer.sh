@@ -4,14 +4,14 @@ if [[ $# -eq 1 ]]; then
     selected=$1
 else
     dirs=(
-      "$HOME/.dotfiles"
       "$HOME/dev"
-      "$HOME/Work"
       "$HOME/bin"
+      "$HOME/src"
       "$HOME/dev/*"
-      "$HOME/Work/*"
-      "$HOME/Documents"
+      "$HOME/.agent"
       # Add more directories as needed
+      # comment out till I add a blacklist to hide bad files
+      # "$HOME/.dotfiles"
     )
 
     selected=$(find "${dirs[@]}" -maxdepth 4 -type d -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
