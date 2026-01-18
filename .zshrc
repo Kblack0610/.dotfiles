@@ -97,3 +97,31 @@ alias zephyr-env="source ~/zephyr-env/bin/activate"
 export PATH="$HOME/.local/bin:$PATH"
 
 . "$HOME/.local/share/../bin/env"
+
+export OLLAMA_HOST=192.168.1.4:11434
+
+# --- Bottom Prompt (Ergonomic) ---
+# Push prompt to bottom of terminal on new shell
+# Helps reduce neck strain by looking down instead of up
+bottom-prompt() {
+    # Calculate lines needed (leave room for cowsay ~10 lines + prompt)
+    local cowsay_height=12
+    local lines=$((LINES - cowsay_height))
+
+    # Clear screen and print newlines to push to bottom
+    clear
+    printf '\n%.0s' {1..$lines}
+
+    # Print cowsay at the bottom
+    if command -v cowsay &>/dev/null && command -v fortune &>/dev/null; then
+        fortune | cut -c 1-200 | cowsay
+    fi
+}
+
+# Run on shell startup
+if [[ -z "$INSIDE_EMACS" && -t 1 ]]; then
+    bottom-prompt
+fi
+
+# Alias to manually push prompt down anytime
+alias bp='bottom-prompt'
