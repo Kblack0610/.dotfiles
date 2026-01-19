@@ -1,0 +1,14 @@
+[Unit]
+Description=Git Auto Sync for Agent Plans
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/src/git/git-sync-agent.sh
+TimeoutStartSec=120
+# Don't fail the service if the script exits non-zero (e.g., network issues)
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=default.target

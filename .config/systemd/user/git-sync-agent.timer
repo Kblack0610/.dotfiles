@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Agent Sync every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
