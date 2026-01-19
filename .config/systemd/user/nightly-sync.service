@@ -1,0 +1,18 @@
+[Unit]
+Description=Nightly Memory Sync via Claude CLI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="PATH=/home/kblack0610/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/kblack0610"
+
+# Run the /remember command via Claude CLI
+ExecStart=/bin/bash -c 'cd /home/kblack0610 && claude -p "Run /remember to sync memories from today'\''s activity. Be thorough but selective." --allowedTools "Bash,Read,Write,Glob,Grep,mcp__memory__*,mcp__serena__*,mcp__linear__*,mcp__inbox__*" 2>&1 | tee -a /home/kblack0610/.local/log/nightly-sync.log'
+
+# Timeout after 10 minutes
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

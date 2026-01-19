@@ -1,0 +1,15 @@
+[Unit]
+Description=Run nightly memory sync at 11pm
+
+[Timer]
+# Run at 11:00 PM local time
+OnCalendar=*-*-* 23:00:00
+
+# Catch up if missed (e.g., machine was off)
+Persistent=true
+
+# Random delay up to 5 minutes to avoid exact timing
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
