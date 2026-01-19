@@ -437,6 +437,31 @@ setup_claude_mcp() {
     log_info "Claude MCP setup complete"
 }
 
+# Setup Claude plans directory symlink
+setup_claude_plans() {
+    log_section "Setting up Claude plans directory"
+
+    local PLANS_TARGET="$HOME/.agent/plans"
+    local PLANS_LINK="$HOME/.claude/plans"
+
+    # Create target directory if it doesn't exist
+    mkdir -p "$PLANS_TARGET"
+
+    # Handle existing plans directory
+    if [ -L "$PLANS_LINK" ]; then
+        log_info "Plans symlink already exists"
+        return 0
+    elif [ -d "$PLANS_LINK" ]; then
+        # Backup existing plans
+        log_info "Backing up existing plans to ~/.claude/plans.bak"
+        mv "$PLANS_LINK" "${PLANS_LINK}.bak"
+    fi
+
+    # Create symlink
+    ln -s "$PLANS_TARGET" "$PLANS_LINK"
+    log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
+}
+
 # Install NPM packages
 install_npm_packages() {
     if ! command -v npm &>/dev/null; then
@@ -503,6 +528,7 @@ install_all() {
     install_npm_packages
     apply_dotfiles
     setup_claude_mcp
+    setup_claude_plans
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
@@ -515,5 +541,5 @@ export -f install_basics install_tools install_terminal install_gui install_runt
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_claude_mcp
+export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_claude_mcp setup_claude_plans
 export -f install_all
