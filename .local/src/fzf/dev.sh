@@ -21,7 +21,7 @@ blacklist_dirs=(
 )
 
 # Build the find command with exclusions
-find_cmd="find ${dirs[@]} -not -path \"*/\.git/*\" -not -path \"*/\node_modules/*\""
+find_cmd="find ${dirs[@]} -not -path \"*/\.git/*\" -not -path \"*/\node_modules/*\" -not -path \"*/\.claude/projects/*\""
 
 # Add blacklist directories to exclusions
 for blacklist_dir in "${blacklist_dirs[@]}"; do
