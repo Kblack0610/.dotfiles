@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Waybar module for Claude agents
-# Shows status with icons:  lab ● ◐ |  pmp ●
+# Shows status with icons:  lab ✓ ~ |  pmp !
+# ✓ = ready/good, ! = needs attention, ~ = in progress
 
 get_claude_status() {
     declare -A seen_windows
@@ -35,25 +36,25 @@ get_claude_status() {
             # Determine state based on content and activity
             # Priority 1: Interactive questions needing input
             if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
-                status=""  # Needs attention (bell icon)
-                tooltip_status="⚠ NEEDS INPUT"
+                status="!"  # Needs attention
+                tooltip_status="! NEEDS INPUT"
                 has_urgent=true
             # Priority 2: Actively working (recent output within 3 seconds)
             elif [ $activity_diff -lt 3 ]; then
-                status="◐"  # Working (half-filled circle)
-                tooltip_status="◐ Working"
+                status="~"  # Working (in progress)
+                tooltip_status="~ Working"
                 has_working=true
             # Priority 3: At prompt or showing status bar (DONE)
             elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
-                status="●"  # Done, waiting for input (filled circle)
-                tooltip_status="● Ready"
+                status="✓"  # Done, ready (checkmark)
+                tooltip_status="✓ Ready"
             # Fallback: No recent activity = done
             elif [ $activity_diff -gt 10 ]; then
-                status="●"
-                tooltip_status="● Idle"
+                status="✓"
+                tooltip_status="✓ Idle"
             else
-                status="◐"  # Probably working
-                tooltip_status="◐ Working"
+                status="~"  # Probably working
+                tooltip_status="~ Working"
                 has_working=true
             fi
 
