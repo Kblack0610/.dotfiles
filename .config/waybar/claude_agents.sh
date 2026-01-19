@@ -1,14 +1,34 @@
 #!/bin/bash
 
 # Waybar module for Claude agents
-# Shows status with icons:  lab ✓ ~ |  pmp !
+# Shows status with icons:  ghe ✓~! | shk ✓ | dot ~
+# Groups agents by PROJECT (working directory) not session
 # ✓ = ready/good, ! = needs attention, ~ = in progress
+
+# Extract project short name from working directory path
+get_project_from_path() {
+    local path="$1"
+    local dir_name=$(basename "$path")
+
+    # Strip agent suffixes (gheeggle-agent-2 -> gheeggle)
+    dir_name=$(echo "$dir_name" | sed -E 's/-agent-?[0-9]*$//')
+
+    # Apply project mapping
+    case "$dir_name" in
+        gheeggle*) echo "ghe" ;;
+        shack) echo "shk" ;;
+        dotfiles|.dotfiles) echo "dot" ;;
+        binks*) echo "bnk" ;;
+        placemyparents) echo "pmp" ;;
+        ai-lab) echo "lab" ;;
+        *) echo "${dir_name:0:3}" ;;
+    esac
+}
 
 get_claude_status() {
     declare -A seen_windows
-    declare -A session_agents  # session -> list of statuses
-    declare -A session_short   # session -> short name
-    declare -A session_classes # session -> class for urgent highlighting
+    declare -A project_agents    # project -> list of statuses
+    declare -A project_sessions  # project -> list of session:window for tooltip
     local tooltip=""
     local has_urgent=false
     local has_working=false
@@ -21,6 +41,9 @@ get_claude_status() {
         # Count panes running AI agents
         if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
             seen_windows[$window_key]=1
+
+            # Extract project from working directory
+            project=$(get_project_from_path "$pane_path")
 
             # Capture last lines to detect state
             last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -37,64 +60,51 @@ get_claude_status() {
             # Priority 1: Interactive questions needing input
             if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
                 status="!"  # Needs attention
-                tooltip_status="! NEEDS INPUT"
+                tooltip_status="!"
                 has_urgent=true
             # Priority 2: Actively working (recent output within 3 seconds)
             elif [ $activity_diff -lt 3 ]; then
                 status="~"  # Working (in progress)
-                tooltip_status="~ Working"
+                tooltip_status="~"
                 has_working=true
             # Priority 3: At prompt or showing status bar (DONE)
             elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
                 status="✓"  # Done, ready (checkmark)
-                tooltip_status="✓ Ready"
+                tooltip_status="✓"
             # Fallback: No recent activity = done
             elif [ $activity_diff -gt 10 ]; then
                 status="✓"
-                tooltip_status="✓ Idle"
+                tooltip_status="✓"
             else
                 status="~"  # Probably working
-                tooltip_status="~ Working"
+                tooltip_status="~"
                 has_working=true
             fi
 
-            # Build session agents list
-            session_agents[$session]+="$status"
+            # Build project agents list
+            project_agents[$project]+="$status"
 
-            # Create short session name (first 3 chars or abbreviation)
-            if [ -z "${session_short[$session]}" ]; then
-                case "$session" in
-                    placemyparents) session_short[$session]="pmp" ;;
-                    ai-lab) session_short[$session]="lab" ;;
-                    dotfiles) session_short[$session]="dot" ;;
-                    *) session_short[$session]="${session:0:3}" ;;
-                esac
-            fi
-
-            # Build tooltip with state description
-            dir_name=$(basename "$pane_path" 2>/dev/null || echo "~")
-            tooltip+="${tooltip_status} ${session}:${window_idx}:${window_name} [${dir_name}]\\n"
+            # Track session:window for tooltip
+            project_sessions[$project]+="${tooltip_status} ${session}:${window_idx}\\n"
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
 
-    # Build display text (in tmux session order)
+    # Build display text (sorted alphabetically by project)
     local display=""
-    local session_order=()
+    local sorted_projects=($(echo "${!project_agents[@]}" | tr ' ' '\n' | sort))
 
-    # Get sessions in tmux order
-    while IFS= read -r session; do
-        [[ -n "${session_agents[$session]}" ]] && session_order+=("$session")
-    done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null)
-
-    for session in "${session_order[@]}"; do
-        short="${session_short[$session]}"
-        agents="${session_agents[$session]}"
+    for project in "${sorted_projects[@]}"; do
+        agents="${project_agents[$project]}"
         if [ -n "$display" ]; then
             display+=" │ "
         fi
-        display+="${short} ${agents}"
+        display+="${project} ${agents}"
     done
 
+    # Build tooltip with project grouping
+    for project in "${sorted_projects[@]}"; do
+        tooltip+="${project}:\\n${project_sessions[$project]}"
+    done
     # Remove trailing newline from tooltip
     tooltip="${tooltip%\\n}"
 
