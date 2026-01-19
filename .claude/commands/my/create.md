@@ -46,9 +46,23 @@ allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task, WebFetch, WebSearch]
 <prompt content here>
 ```
 
-### 4. Confirm and run
+### 4. Ensure symlinks are in place
 
-1. Tell the user the skill was created at the path
+After creating the file in `~/.dotfiles/.claude/commands/my/`, ensure it's available at `~/.claude/commands/my/`.
+
+**If `~/.claude` is already symlinked to `~/.dotfiles/.claude`:**
+- Files are immediately available, no action needed
+
+**Otherwise, run stow to create symlinks:**
+```bash
+cd ~/.dotfiles && stow -v -t ~ .claude
+```
+
+**Note:** Claude Code may need to be restarted or the session refreshed to pick up new skills.
+
+### 5. Confirm and run
+
+1. Tell the user the skill was created and symlinked
 2. Immediately invoke the new skill using the Skill tool:
    ```
    Skill tool with skill: "my:<name>"
