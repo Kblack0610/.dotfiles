@@ -9,9 +9,9 @@ else
       "$HOME/src"
       "$HOME/dev/*"
       "$HOME/.agent"
+      "$HOME/.dotfiles"
       # Add more directories as needed
       # comment out till I add a blacklist to hide bad files
-      # "$HOME/.dotfiles"
     )
 
     selected=$(find "${dirs[@]}" -maxdepth 4 -type d -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
