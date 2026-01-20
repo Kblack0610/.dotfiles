@@ -20,11 +20,38 @@ personas: [qa-specialist]
 ```
 
 ## Behavioral Flow
-1. **Discover**: Identify project type and load project config from `/projects/testing/g2i/{project}/`
-2. **Setup**: Reset database with test data via State API
-3. **Navigate**: Use Playwright MCP to interact with UI
-4. **Verify**: Take snapshots, check elements, validate behavior
-5. **Report**: Document pass/fail for each test scenario
+1. **Startup**: Ensure app is running (Docker preferred for port 80 consistency)
+2. **Discover**: Identify project type and load project config from `/projects/testing/g2i/{project}/`
+3. **Setup**: Reset database with test data via State API
+4. **Navigate**: Use Playwright MCP to interact with UI
+5. **Verify**: Take snapshots, check elements, validate behavior
+6. **Report**: Document pass/fail for each test scenario
+
+## Step 0: App Startup (Required)
+
+### Check if Running
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost/api/status
+# 200 = running, otherwise start the app
+```
+
+### Start with Docker (Recommended)
+```bash
+cd /path/to/project
+docker build -t {project}:latest .
+docker rm -f {project}-test 2>/dev/null
+docker run -d --name {project}-test -p 80:80 {project}:latest
+# Wait for startup
+sleep 5
+curl http://localhost/api/status
+```
+
+### Start with Dev Server (Alternative)
+```bash
+cd /path/to/project
+pnpm dev
+# Uses port 3000 instead of 80
+```
 
 ## Project Configurations
 
