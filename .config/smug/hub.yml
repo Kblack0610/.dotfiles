@@ -1,0 +1,8 @@
+session: hub
+root: ~/
+
+windows:
+  - name: notes
+    root: ~/.notes
+    commands:
+      - nvim .

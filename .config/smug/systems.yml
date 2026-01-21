@@ -1,0 +1,7 @@
+session: systems
+root: ~/
+
+windows:
+  - name: systems
+    commands:
+      - glances

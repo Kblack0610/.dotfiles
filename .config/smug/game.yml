@@ -1,0 +1,12 @@
+session: game
+root: ~/dev/bnb/games
+
+windows:
+  - name: core
+    root: ~/dev/bnb/games/unity-core
+    commands:
+      - nvim .
+  - name: dodginballs
+    root: ~/dev/bnb/games/dodginballs
+    commands:
+      - nvim .

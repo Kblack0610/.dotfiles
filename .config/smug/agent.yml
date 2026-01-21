@@ -1,0 +1,8 @@
+session: agent
+root: ~/
+
+windows:
+  - name: agent_runner
+    layout: main-horizontal
+    commands:
+      - nvim .

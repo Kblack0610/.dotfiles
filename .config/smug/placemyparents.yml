@@ -1,0 +1,13 @@
+session: placemyparents
+root: ~/dev/bnb/platform/apps/placemyparents
+
+windows:
+  - name: server
+    layout: even-horizontal
+    panes:
+      - root: ~/dev/bnb/platform/apps/placemyparents/api
+        commands:
+          - pnpm run dev
+      - root: ~/dev/bnb/platform/apps/placemyparents/web
+        commands:
+          - pnpm run dev
