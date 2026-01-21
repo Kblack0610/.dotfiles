@@ -5,7 +5,7 @@
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
-# Extract project short name from working directory path
+# Extract project name from working directory path
 get_project_from_path() {
     local path="$1"
     local dir_name=$(basename "$path")
@@ -13,22 +13,16 @@ get_project_from_path() {
     # Strip agent suffixes (gheeggle-agent-2 -> gheeggle)
     dir_name=$(echo "$dir_name" | sed -E 's/-agent-?[0-9]*$//')
 
-    # Apply project mapping
+    # Normalize common variations
     case "$dir_name" in
-        gheeggle*) echo "ghe" ;;
-        shack) echo "shk" ;;
-        dotfiles|.dotfiles|_dotfiles) echo "dot" ;;
-        binks*) echo "bnk" ;;
-        placemyparents) echo "pmp" ;;
-        ai-lab) echo "lab" ;;
-        *) echo "${dir_name:0:3}" ;;
+        .dotfiles|_dotfiles) echo "dotfiles" ;;
+        *) echo "$dir_name" ;;
     esac
 }
 
 # Build list of windows with AI agents
 declare -A seen_windows
-declare -A project_session_agents  # "project|session" -> list of "status|session:window|name"
-declare -A all_projects            # track unique projects
+declare -A project_agents  # project -> list of "status|session:window"
 AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
 while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
@@ -40,7 +34,6 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
 
         # Get project from working directory
         project=$(get_project_from_path "$pane_path")
-        all_projects[$project]=1
 
         # Get status indicator
         last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -63,14 +56,13 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
             status="~"
         fi
 
-        # Add to project|session group: "status|session:window|display_name"
-        short_name=$(basename "$pane_path")
-        project_session_agents["${project}|${session}"]+="${status}|${session}:${window_idx}|${short_name}\n"
+        # Add to project group: "status|session:window"
+        project_agents[$project]+="${status}|${session}:${window_idx}\n"
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
 
 # Check if any agents found
-if [ ${#project_session_agents[@]} -eq 0 ]; then
+if [ ${#project_agents[@]} -eq 0 ]; then
     echo "No claude agents running"
     read -n 1 -s -r -p "Press any key to exit..."
     exit 0
@@ -78,46 +70,30 @@ fi
 
 # Build grouped output for fzf
 agent_list=""
-sorted_projects=($(echo "${!all_projects[@]}" | tr ' ' '\n' | sort))
+sorted_projects=($(echo "${!project_agents[@]}" | tr ' ' '\n' | sort))
 
 for project in "${sorted_projects[@]}"; do
-    # Find all sessions for this project
-    sessions_for_project=()
-    for key in "${!project_session_agents[@]}"; do
-        if [[ "$key" == "${project}|"* ]]; then
-            session_name="${key#*|}"
-            sessions_for_project+=("$session_name")
-        fi
-    done
-    sorted_sessions=($(printf '%s\n' "${sessions_for_project[@]}" | sort -u))
+    agents="${project_agents[$project]}"
 
-    # Count total agents and collect statuses for namespace header
-    total_count=0
-    all_statuses=""
-    for sess in "${sorted_sessions[@]}"; do
-        agents="${project_session_agents[${project}|${sess}]}"
-        while IFS='|' read -r status target name; do
-            [ -z "$status" ] && continue
-            ((total_count++))
-            all_statuses+="$status"
-        done <<< "$(echo -e "$agents")"
-    done
+    # Count agents and collect statuses
+    count=0
+    statuses=""
+    while IFS='|' read -r status target; do
+        [ -z "$status" ] && continue
+        ((count++))
+        statuses+="$status"
+    done <<< "$(echo -e "$agents")"
 
     # Project header line (not selectable, just visual)
-    agent_list+="─── ${project} ${all_statuses} (${total_count}) ───\n"
+    agent_list+="─── ${project} ${statuses} (${count}) ───\n"
 
-    # Each session under this project
-    for sess in "${sorted_sessions[@]}"; do
-        # Session sub-header
-        agent_list+="  ─ ${sess} ─\n"
-
-        # Individual agents under session
-        agents="${project_session_agents[${project}|${sess}]}"
-        while IFS='|' read -r status target name; do
-            [ -z "$status" ] && continue
-            agent_list+="    ${status} ${target}\n"
-        done <<< "$(echo -e "$agents")"
-    done
+    # Individual agents numbered sequentially
+    agent_num=1
+    while IFS='|' read -r status target; do
+        [ -z "$status" ] && continue
+        agent_list+="  ${status} agent-${agent_num}  ${target}\n"
+        ((agent_num++))
+    done <<< "$(echo -e "$agents")"
 done
 
 # Position memory
@@ -139,13 +115,13 @@ selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
 
 [[ -z "$selected" ]] && exit 0
 
-# Skip if header line selected (namespace or session headers)
-if [[ "$selected" =~ ^[[:space:]]*─ ]]; then
+# Skip if header line selected
+if [[ "$selected" == ───* ]]; then
     exit 0
 fi
 
-# Extract session:window_idx (second field after status)
-target=$(echo "$selected" | awk '{print $2}')
+# Extract session:window_idx (third field: status agent-N target)
+target=$(echo "$selected" | awk '{print $3}')
 
 # Save position for next time
 echo "$target" > "$POSITION_FILE"
