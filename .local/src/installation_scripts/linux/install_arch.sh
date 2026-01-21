@@ -229,7 +229,7 @@ install_nvim() {
 install_tmux() {
     log_section "Installing tmux"
     install_pacman_package "tmux"
-    install_pacman_package "tmuxinator"
+    install_aur_package "smug"  # tmux session manager (Go binary, no deps)
 }
 
 # Override: Install Kitty

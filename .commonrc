@@ -150,7 +150,7 @@ function dashboard() {
 
 # General purpose aliases
 alias nvr="nvr . -s"
-alias t="tmuxinator start hub"
+alias t="smug start hub"
 # alias z="zellij --layout hub"
 alias n="nvim ."
 alias g="git"
@@ -202,10 +202,6 @@ alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
 
 # Dotfiles setup (full installation)
 alias dotfiles-setup="$HOME/.local/src/installation_scripts/install.sh"
-#
-# if command -v tmux &> /dev/null && [ -n "$PS1" ] && [[ ! "$TERM" =~ screen ]] && [[ ! "$TERM" =~ tmux ]] && [ -z "$TMUX" ]; then
-#   exec tmuxinator start hub
-# fi
 
 # --- Network Audio Streaming (Sunshine/Moonlight mic passthrough) ---
 alias mic-stream="audio-stream --send"

@@ -27,7 +27,8 @@ get_project_from_path() {
 
 # Build list of windows with AI agents
 declare -A seen_windows
-declare -A project_agents  # project -> list of "status session:window"
+declare -A project_session_agents  # "project|session" -> list of "status|session:window|name"
+declare -A all_projects            # track unique projects
 AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
 while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
@@ -39,6 +40,7 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
 
         # Get project from working directory
         project=$(get_project_from_path "$pane_path")
+        all_projects[$project]=1
 
         # Get status indicator
         last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -61,14 +63,14 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
             status="~"
         fi
 
-        # Add to project group: "status|session:window|display_name"
+        # Add to project|session group: "status|session:window|display_name"
         short_name=$(basename "$pane_path")
-        project_agents[$project]+="${status}|${session}:${window_idx}|${short_name}\n"
+        project_session_agents["${project}|${session}"]+="${status}|${session}:${window_idx}|${short_name}\n"
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
 
 # Check if any agents found
-if [ ${#project_agents[@]} -eq 0 ]; then
+if [ ${#project_session_agents[@]} -eq 0 ]; then
     echo "No claude agents running"
     read -n 1 -s -r -p "Press any key to exit..."
     exit 0
@@ -76,46 +78,77 @@ fi
 
 # Build grouped output for fzf
 agent_list=""
-sorted_projects=($(echo "${!project_agents[@]}" | tr ' ' '\n' | sort))
+sorted_projects=($(echo "${!all_projects[@]}" | tr ' ' '\n' | sort))
 
 for project in "${sorted_projects[@]}"; do
-    agents="${project_agents[$project]}"
+    # Find all sessions for this project
+    sessions_for_project=()
+    for key in "${!project_session_agents[@]}"; do
+        if [[ "$key" == "${project}|"* ]]; then
+            session_name="${key#*|}"
+            sessions_for_project+=("$session_name")
+        fi
+    done
+    sorted_sessions=($(printf '%s\n' "${sessions_for_project[@]}" | sort -u))
 
-    # Count agents and collect statuses
-    count=0
-    statuses=""
-    while IFS='|' read -r status target name; do
-        [ -z "$status" ] && continue
-        ((count++))
-        statuses+="$status"
-    done <<< "$(echo -e "$agents")"
+    # Count total agents and collect statuses for namespace header
+    total_count=0
+    all_statuses=""
+    for sess in "${sorted_sessions[@]}"; do
+        agents="${project_session_agents[${project}|${sess}]}"
+        while IFS='|' read -r status target name; do
+            [ -z "$status" ] && continue
+            ((total_count++))
+            all_statuses+="$status"
+        done <<< "$(echo -e "$agents")"
+    done
 
     # Project header line (not selectable, just visual)
-    agent_list+="─── ${project} ${statuses} (${count}) ───\n"
+    agent_list+="─── ${project} ${all_statuses} (${total_count}) ───\n"
 
-    # Individual agents under project
-    while IFS='|' read -r status target name; do
-        [ -z "$status" ] && continue
-        agent_list+="  ${status} ${target} ${name}\n"
-    done <<< "$(echo -e "$agents")"
+    # Each session under this project
+    for sess in "${sorted_sessions[@]}"; do
+        # Session sub-header
+        agent_list+="  ─ ${sess} ─\n"
+
+        # Individual agents under session
+        agents="${project_session_agents[${project}|${sess}]}"
+        while IFS='|' read -r status target name; do
+            [ -z "$status" ] && continue
+            agent_list+="    ${status} ${target}\n"
+        done <<< "$(echo -e "$agents")"
+    done
 done
 
+# Position memory
+POSITION_FILE="/tmp/agent-chooser-position"
+restore_pos=""
+if [[ -f "$POSITION_FILE" ]]; then
+    last_target=$(cat "$POSITION_FILE")
+    line_num=$(echo -e "$agent_list" | grep -nF "$last_target" | head -1 | cut -d: -f1)
+    [[ -n "$line_num" ]] && restore_pos="--bind load:pos($line_num)"
+fi
+
 # Select with fzf
-selected=$(echo -e "$agent_list" | fzf --reverse --border \
+selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --prompt='Select agent > ' \
     --header=$'Enter=jump (esc=exit)\n! needs input | ~ working | ✓ idle' \
     --ansi \
-    --no-sort)
+    --no-sort \
+    $restore_pos)
 
 [[ -z "$selected" ]] && exit 0
 
-# Skip if header line selected
-if [[ "$selected" == ───* ]]; then
+# Skip if header line selected (namespace or session headers)
+if [[ "$selected" =~ ^[[:space:]]*─ ]]; then
     exit 0
 fi
 
 # Extract session:window_idx (second field after status)
 target=$(echo "$selected" | awk '{print $2}')
+
+# Save position for next time
+echo "$target" > "$POSITION_FILE"
 
 # Jump to it
 if [ -n "$TMUX" ]; then

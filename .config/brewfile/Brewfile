@@ -14,7 +14,7 @@ brew "ripgrep"
 brew "starship"
 brew "stow"
 brew "tmux"
-brew "tmuxinator"
+brew "smug"  # tmux session manager (replaced tmuxinator)
 brew "uv"
 brew "btop"
 brew "lazydocker"

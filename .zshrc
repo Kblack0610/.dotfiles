@@ -75,6 +75,23 @@ eval "$(starship init zsh)"
 # Initialize zoxide (smarter cd command)
 eval "$(zoxide init zsh)"
 
+# --- Tmux Window Naming ---
+# Show git branch if in repo, otherwise directory name
+# Uses precmd so it updates after git checkout, not just cd
+_tmux_rename_window() {
+    [[ -n "$TMUX" ]] || return
+    local name
+    if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+        name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    else
+        name=${PWD##*/}
+    fi
+    tmux rename-window "$name"
+}
+
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _tmux_rename_window
+
 # # Source FZF.
 # [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 #
@@ -118,3 +135,4 @@ fi
 
 # Alias to manually push prompt down anytime
 alias bp='bottom-prompt'
+export PATH="$HOME/.local/bin:$PATH"
