@@ -48,13 +48,37 @@ Media/Music
 !.cursor/mcp.json
 !.cursor/user_settings.pb
 
-# Claude Code
+# Claude Code - comprehensive ignore
 .claude/*
-.claude/history.jsonl
-!.claude/agents
-!.claude/commands
+!.claude/CLAUDE.md
+!.claude/agents/
+!.claude/commands/
+!.claude/hooks/
 !.claude/settings.json
 !.claude/.mcp.json
+!.claude/mcp.json
+!.claude/setup-personal-mcp.sh
+
+# Explicitly never track Claude session/cache data
+.claude/.credentials.json
+.claude/credentials.json
+.claude/profiles/
+.claude/debug/
+.claude/projects/
+.claude/todos/
+.claude/history.jsonl
+.claude/plugins/
+.claude/cache/
+.claude/statsig/
+.claude/telemetry/
+.claude/file-history/
+.claude/shell-snapshots/
+.claude/paste-cache/
+.claude/session-env/
+.claude/stats-cache.json
+.claude/plans/
+.claude/plans.bak/
+.claude/downloads/
 
 # Serena 
 .serena/*
