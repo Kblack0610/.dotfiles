@@ -1,0 +1,64 @@
+# Nightly Sync Configuration
+# Controls what the nightly memory sync agent scans
+
+[general]
+# Enable/disable the entire nightly sync
+enabled = true
+
+# How many days back to scan (default: 1)
+lookback_days = 1
+
+# Report destination
+report_to_inbox = true
+
+[sources]
+# Scan git commits across projects
+git_commits = true
+
+# Scan Linear for updated issues
+linear_activity = true
+
+# Scan inbox messages
+inbox_messages = true
+
+# Scan daily journal entries
+daily_journal = true
+
+[git]
+# Project directories to scan for git activity
+# Uses /projects/ as base path
+projects = [
+    "gheegle",
+    "shack",
+    "binks-agent",
+    "bnb-platform",
+    "dotfiles",
+    "home-config"
+]
+
+[linear]
+# Teams to scan (empty = all teams)
+teams = []
+
+# Only scan issues assigned to me
+my_issues_only = true
+
+[paths]
+# Base path for projects
+projects_base = "/projects"
+
+# Journal location
+journal_path = "~/.notes/journal"
+
+# Inbox location
+inbox_path = "~/.notes/inbox"
+
+[memory]
+# Update Knowledge Graph MCP
+knowledge_graph = true
+
+# Update Serena project memories
+serena_memories = true
+
+# Auto-create entities for new projects discovered
+auto_create_entities = false
