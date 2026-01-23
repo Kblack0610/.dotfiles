@@ -31,7 +31,8 @@
         "sway/language",
         "battery",
         "battery#bat2",
-        "clock",
+        "clock#date",
+        "clock#time",
         "tray",
         "custom/power"
     ],
@@ -120,10 +121,15 @@
         //   "TelegramDesktop": "$HOME/.local/share/icons/hicolor/16x16/apps/telegram.png"
         // }
     },
-    "clock": {
-        // "timezone": "America/New_York",
+    "clock#date": {
+        "format": "{:%a %b %d}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
         "format-alt": "{:%Y-%m-%d}"
+    },
+    "clock#time": {
+        "format": "{:%H:%M}",
+        "tooltip-format": "{:%H:%M:%S}",
+        "format-alt": "{:%I:%M %p}"
     },
     "cpu": {
         "format": "{usage}% ",
