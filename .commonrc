@@ -99,23 +99,36 @@ export PATH
 #     fortune | cut -c 1-200 | cowsay
 # fi
 
-# 1. Helper: Ensure the daily note exists
+# 1. Helper: Ensure the daily note exists with task carryforward
 function ensure_daily_note() {
-    # 1. Ensure the daily note exists (Create if missing)
     local DATE=$(date +%Y-%m-%d)
     local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
 
     if [ ! -f "$NOTE_FILE" ]; then
         echo "Creating entry: $NOTE_FILE"
         mkdir -p "$(dirname "$NOTE_FILE")"
+
+        # Get carried forward tasks (if available)
+        local CARRIED=""
+        if command -v journal-carryforward &> /dev/null; then
+            CARRIED=$(journal-carryforward 2>/dev/null || true)
+        fi
+
+        # Create note with template
         {
             echo "# Daily Log: $DATE"
             echo ""
             echo "## Focus"
             echo "- [ ] "
             echo ""
+            if [ -n "$CARRIED" ]; then
+                echo "$CARRIED"
+                echo ""
+            fi
             echo "## Notes"
         } > "$NOTE_FILE"
+
+        [ -n "$CARRIED" ] && echo "  -> Carried forward tasks from yesterday"
     fi
 }
 

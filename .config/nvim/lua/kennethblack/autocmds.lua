@@ -128,3 +128,57 @@ autocmd("VimLeave", {
   group = omnisharp_group,
   callback = kill_omnisharp,
 })
+
+-- ============================================
+-- Daily Journal Harpoon Integration
+-- Sets harpoon slot 1 to today's journal when in ~/.notes
+-- ============================================
+local journal_harpoon_group = augroup("journal_harpoon", { clear = true })
+
+local function is_in_notes_dir()
+  local cwd = vim.fn.getcwd()
+  local notes_dir = vim.fn.expand("~/.notes")
+  return cwd:find(notes_dir, 1, true) == 1
+end
+
+local function get_today_journal()
+  return vim.fn.expand("~/.notes/journal/daily/" .. os.date("%Y-%m-%d") .. ".md")
+end
+
+local function set_journal_as_slot_1()
+  if not is_in_notes_dir() then return end
+
+  vim.defer_fn(function()
+    local ok, harpoon = pcall(require, "harpoon")
+    if not ok then return end
+
+    local journal_path = get_today_journal()
+    local list = harpoon:list()
+    local items = list.items
+
+    -- Skip if already set
+    if items[1] and items[1].value == journal_path then return end
+
+    -- Remove existing entries for today's journal
+    for i = #items, 1, -1 do
+      if items[i].value == journal_path then
+        table.remove(items, i)
+      end
+    end
+
+    -- Insert at position 1
+    table.insert(items, 1, { value = journal_path })
+  end, 100)
+end
+
+autocmd("DirChanged", {
+  desc = "Set harpoon slot 1 to today's journal in notes directory",
+  group = journal_harpoon_group,
+  callback = set_journal_as_slot_1,
+})
+
+autocmd("VimEnter", {
+  desc = "Set harpoon slot 1 to today's journal if starting in notes",
+  group = journal_harpoon_group,
+  callback = set_journal_as_slot_1,
+})
