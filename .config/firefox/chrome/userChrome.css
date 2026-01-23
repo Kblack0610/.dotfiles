@@ -138,3 +138,23 @@
 #nav-bar-customization-target {
     background-color: transparent !important;
 }
+
+/* === HIDE UI BLOAT === */
+
+/* Firefox View button */
+#firefox-view-button { display: none !important; }
+
+/* Pocket button in toolbar */
+#save-to-pocket-button { display: none !important; }
+
+/* Firefox Account button */
+#fxa-toolbar-menu-button { display: none !important; }
+
+/* Sponsored shortcuts on new tab */
+.top-site-outer[sponsored] { display: none !important; }
+
+/* "Import bookmarks" button */
+#import-button { display: none !important; }
+
+/* List all tabs button (arrow at end of tab bar) */
+#alltabs-button { display: none !important; }
