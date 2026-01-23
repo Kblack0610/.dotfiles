@@ -83,6 +83,7 @@ projects:
 - /home/kblack0610/dev/bnb/games/dodginballs_agent2
 - /home/kblack0610/dev/bnb/platform
 - /home/kblack0610/dev/bnb/platform-ci-fixes
+- /home/kblack0610/dev/bnb/platform/apps/binks-chat
 - /home/kblack0610/dev/home/binks-agent-orchestrator
 language_backend: LSP
 fixed_tools: []
