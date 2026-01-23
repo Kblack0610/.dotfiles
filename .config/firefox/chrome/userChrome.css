@@ -30,7 +30,7 @@
     order: 1 !important;
 }
 
-/* Search suggestions appear ABOVE the URL bar */
+/* Search suggestions appear ABOVE the URL bar (no flip - arrow keys work normally) */
 #urlbar .urlbarView {
     position: absolute !important;
     bottom: 100% !important;
@@ -40,37 +40,12 @@
 
 #urlbar[open] .urlbarView-body-outer {
     border-radius: 8px 8px 0 0 !important;
-    background-color: #1e1e2e !important;
-    border: 1px solid #45475a !important;
 }
 
-/* Search suggestions background */
-.urlbarView {
-    background-color: #1e1e2e !important;
-}
-
-.urlbarView-row:hover {
-    background-color: #313244 !important;
-}
-
-.urlbarView-row[selected] {
-    background-color: #45475a !important;
-}
-
-/* Flip the results order so best match is at bottom (closest to input) */
-#urlbar .urlbarView-results {
-    display: flex !important;
-    flex-direction: column-reverse !important;
-}
-
-/* Panel positioning override */
+/* Panel positioning */
 #urlbar-container,
 #urlbar {
     position: relative !important;
-}
-
-.urlbarView-row {
-    flex-direction: row !important;
 }
 
 /* Tab bar styling - Catppuccin Mocha */
