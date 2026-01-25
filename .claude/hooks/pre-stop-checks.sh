@@ -4,6 +4,12 @@
 
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Skip if no uncommitted changes (nothing to validate)
+if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
+  echo "No changes detected - skipping CI checks" >&2
+  exit 0
+fi
+
 echo "=== Running CI checks before completing ===" >&2
 
 FAILED=0
