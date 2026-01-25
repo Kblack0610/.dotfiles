@@ -49,20 +49,6 @@ button:hover {
     color: #f38ba8;
 }
 
-/* Window title - centered with accent color */
-#window {
-    background-color: rgba(137, 180, 250, 0.15);
-    color: #89b4fa;
-    padding: 2px 16px;
-    margin: 5px 8px;
-    border-radius: 8px;
-    font-weight: bold;
-}
-
-window#waybar.empty #window {
-    background-color: transparent;
-}
-
 /* Claude Agents Module - The star of the show */
 #custom-claude-agents {
     padding: 2px 16px;

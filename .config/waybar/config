@@ -12,9 +12,6 @@
         "hyprland/scratchpad",
         "custom/media"
     ],
-    "modules-center": [
-        "hyprland/window"
-    ],
     "modules-right": [
         "custom/claude-agents",
         "mpd",
@@ -27,8 +24,6 @@
         "memory",
         "temperature",
         "backlight",
-        "keyboard-state",
-        "sway/language",
         "battery",
         "battery#bat2",
         "clock#date",
