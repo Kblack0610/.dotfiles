@@ -132,6 +132,7 @@ autocmd("VimLeave", {
 -- ============================================
 -- Daily Journal Harpoon Integration
 -- Sets harpoon slot 1 to today's journal when in ~/.notes
+-- Creates journal with template and yesterday's incomplete tasks
 -- ============================================
 local journal_harpoon_group = augroup("journal_harpoon", { clear = true })
 
@@ -141,14 +142,115 @@ local function is_in_notes_dir()
   return cwd:find(notes_dir, 1, true) == 1
 end
 
+local function get_journal_path(date_str)
+  return vim.fn.expand("~/.notes/journal/daily/" .. date_str .. ".md")
+end
+
 local function get_today_journal()
-  return vim.fn.expand("~/.notes/journal/daily/" .. os.date("%Y-%m-%d") .. ".md")
+  return get_journal_path(os.date("%Y-%m-%d"))
+end
+
+local function get_yesterday_journal()
+  local yesterday = os.time() - 86400
+  return get_journal_path(os.date("%Y-%m-%d", yesterday))
+end
+
+local function file_exists(path)
+  local stat = vim.uv.fs_stat(path)
+  return stat ~= nil
+end
+
+local function read_file(path)
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local content = file:read("*all")
+  file:close()
+  return content
+end
+
+local function write_file(path, content)
+  local file = io.open(path, "w")
+  if not file then return false end
+  file:write(content)
+  file:close()
+  return true
+end
+
+local function extract_incomplete_tasks(content)
+  if not content then return {} end
+  local tasks = {}
+  for line in content:gmatch("[^\n]+") do
+    -- Match unchecked tasks: - [ ] task
+    if line:match("^%s*%- %[ %]") then
+      table.insert(tasks, line)
+    end
+  end
+  return tasks
+end
+
+local function create_daily_journal()
+  local today = os.date("%Y-%m-%d")
+  local month = os.date("%Y-%m")
+  local journal_path = get_today_journal()
+
+  -- Don't recreate if exists
+  if file_exists(journal_path) then return end
+
+  -- Get yesterday's incomplete tasks
+  local yesterday_content = read_file(get_yesterday_journal())
+  local incomplete_tasks = extract_incomplete_tasks(yesterday_content)
+
+  -- Build template
+  local lines = {
+    "---",
+    "date: " .. today,
+    "tags: [daily]",
+    "---",
+    "",
+    "# Daily Log: " .. today,
+    "",
+    "## Focus",
+  }
+
+  -- Add yesterday's incomplete tasks or empty task
+  if #incomplete_tasks > 0 then
+    table.insert(lines, "<!-- Carried over from yesterday -->")
+    for _, task in ipairs(incomplete_tasks) do
+      table.insert(lines, task)
+    end
+    table.insert(lines, "")
+    table.insert(lines, "<!-- New tasks for today -->")
+  end
+  table.insert(lines, "- [ ] ")
+
+  -- Add rest of template
+  local rest = {
+    "",
+    "## Notes",
+    "- ",
+    "",
+    "## Journal",
+    "<!-- Your thoughts, reflections, and experiences for the day -->",
+    "",
+    "",
+    "---",
+    "*This note will be included in the monthly summary for " .. month .. "*",
+    "",
+  }
+  for _, line in ipairs(rest) do
+    table.insert(lines, line)
+  end
+
+  write_file(journal_path, table.concat(lines, "\n"))
 end
 
 local function set_journal_as_slot_1()
   if not is_in_notes_dir() then return end
 
   vim.defer_fn(function()
+    -- Create the journal file if it doesn't exist
+    create_daily_journal()
+
     local ok, harpoon = pcall(require, "harpoon")
     if not ok then return end
 
