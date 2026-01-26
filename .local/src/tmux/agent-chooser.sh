@@ -96,12 +96,11 @@ for project in "${sorted_projects[@]}"; do
     done <<< "$(echo -e "$agents")"
 done
 
-# Position memory
-POSITION_FILE="/tmp/agent-chooser-position"
+# Position cursor on currently active agent
 restore_pos=""
-if [[ -f "$POSITION_FILE" ]]; then
-    last_target=$(cat "$POSITION_FILE")
-    line_num=$(echo -e "$agent_list" | grep -nF "$last_target" | head -1 | cut -d: -f1)
+if [[ -n "$TMUX" ]]; then
+    current_target=$(tmux display-message -p "#{session_name}:#{window_index}")
+    line_num=$(echo -e "$agent_list" | grep -nF "$current_target" | head -1 | cut -d: -f1)
     [[ -n "$line_num" ]] && restore_pos="--bind load:pos($line_num)"
 fi
 
@@ -122,9 +121,6 @@ fi
 
 # Extract session:window_idx (third field: status agent-N target)
 target=$(echo "$selected" | awk '{print $3}')
-
-# Save position for next time
-echo "$target" > "$POSITION_FILE"
 
 # Jump to it
 if [ -n "$TMUX" ]; then
