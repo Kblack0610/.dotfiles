@@ -2,8 +2,14 @@
 
 # Lists all tmux windows running claude agents
 # Groups by PROJECT (working directory) and lets you jump via fzf
+# Usage: agent-chooser.sh [-n|--next]
+#   -n, --next  Jump to next agent needing attention (or next in list)
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
+
+# Parse arguments
+NEXT_MODE=false
+[[ "$1" == "-n" || "$1" == "--next" ]] && NEXT_MODE=true
 
 # Extract project name from working directory path
 get_project_from_path() {
@@ -23,9 +29,10 @@ get_project_from_path() {
 # Build list of windows with AI agents
 declare -A seen_windows
 declare -A project_agents  # project -> list of "status|session:window"
+declare -a all_agents      # flat list of all "status|target" for next mode
 AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
 
-while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
+while IFS=: read -r session window_idx _ pane_cmd pane_path; do
     window_key="${session}:${window_idx}"
     [[ -n "${seen_windows[$window_key]}" ]] && continue
 
@@ -43,7 +50,6 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
         [ -n "$last_activity" ] && activity_diff=$((now - last_activity))
 
         # Determine status
-        status="·"
         if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?|Allow.*once|Allow.*always|Deny|Do you want to'; then
             status="!"
         elif [ $activity_diff -lt 3 ]; then
@@ -56,15 +62,59 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path; do
             status="~"
         fi
 
-        # Add to project group: "status|session:window"
+        # Add to project group and flat list
         project_agents[$project]+="${status}|${session}:${window_idx}\n"
+        all_agents+=("${status}|${session}:${window_idx}")
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
 
 # Check if any agents found
 if [ ${#project_agents[@]} -eq 0 ]; then
     echo "No claude agents running"
-    read -n 1 -s -r -p "Press any key to exit..."
+    $NEXT_MODE || read -n 1 -s -r -p "Press any key to exit..."
+    exit 0
+fi
+
+# Handle next mode - jump directly without fzf
+if $NEXT_MODE; then
+    current_target=""
+    [[ -n "$TMUX" ]] && current_target=$(tmux display-message -p "#{session_name}:#{window_index}")
+
+    # Find current index in list
+    current_idx=-1
+    for i in "${!all_agents[@]}"; do
+        if [[ "${all_agents[$i]}" == *"|$current_target" ]]; then
+            current_idx=$i
+            break
+        fi
+    done
+
+    # First, look for next agent needing attention (!) after current position
+    target=""
+    total=${#all_agents[@]}
+    for ((i=1; i<=total; i++)); do
+        idx=$(( (current_idx + i) % total ))
+        entry="${all_agents[$idx]}"
+        if [[ "$entry" == "!|"* ]]; then
+            target="${entry#*|}"
+            break
+        fi
+    done
+
+    # If no attention needed, just go to next agent
+    if [[ -z "$target" ]]; then
+        next_idx=$(( (current_idx + 1) % total ))
+        target="${all_agents[$next_idx]#*|}"
+    fi
+
+    # Jump
+    if [[ -n "$target" ]]; then
+        if [ -n "$TMUX" ]; then
+            tmux switch-client -t "$target"
+        else
+            tmux attach -t "$target"
+        fi
+    fi
     exit 0
 fi
 
@@ -107,9 +157,10 @@ fi
 # Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --prompt='Select agent > ' \
-    --header=$'Enter=jump (esc=exit)\n! needs input | ~ working | ✓ idle' \
+    --header=$'Enter=jump | n=next needing attention | esc=exit\n! needs input | ~ working | ✓ idle' \
     --ansi \
     --no-sort \
+    --bind "n:execute-silent($0 -n)+abort" \
     $restore_pos)
 
 [[ -z "$selected" ]] && exit 0
