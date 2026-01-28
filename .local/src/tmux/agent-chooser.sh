@@ -78,8 +78,13 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path; do
             status="~"
         fi
 
+        # Read cached ollama summary (if daemon is running)
+        summary=""
+        summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
+        [[ -f "$summary_file" ]] && summary=$(head -c 35 "$summary_file")
+
         # Add to project group and flat list
-        project_agents[$project]+="${status}|${session}:${window_idx}\n"
+        project_agents[$project]+="${status}|${session}:${window_idx}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
@@ -144,7 +149,7 @@ for project in "${sorted_projects[@]}"; do
     # Count agents and collect statuses
     count=0
     statuses=""
-    while IFS='|' read -r status target; do
+    while IFS='|' read -r status target _summary; do
         [ -z "$status" ] && continue
         ((count++))
         statuses+="$(colorize_status "$status")"
@@ -155,10 +160,14 @@ for project in "${sorted_projects[@]}"; do
 
     # Individual agents numbered sequentially
     agent_num=1
-    while IFS='|' read -r status target; do
+    while IFS='|' read -r status target summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
-        agent_list+="  ${colored} agent-${agent_num}  ${target}\n"
+        if [[ -n "$summary" ]]; then
+            agent_list+="  ${colored} agent-${agent_num}  ${target}  ${summary}\n"
+        else
+            agent_list+="  ${colored} agent-${agent_num}  ${target}\n"
+        fi
         ((agent_num++))
     done <<< "$(echo -e "$agents")"
 done
