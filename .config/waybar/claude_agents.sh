@@ -5,6 +5,12 @@
 # Groups agents by PROJECT (working directory) not session
 # ✓ = ready/good, ! = needs attention, ~ = in progress
 
+# Pango color spans for per-status coloring (Catppuccin theme)
+C_RED="<span color='#f38ba8'>"    # ! needs attention
+C_YEL="<span color='#f9e2af'>"   # ~ working
+C_GRN="<span color='#a6e3a1'>"   # ✓ ready/idle
+C_END="</span>"
+
 # Extract project short name from working directory path
 get_project_from_path() {
     local path="$1"
@@ -59,24 +65,24 @@ get_claude_status() {
             # Determine state based on content and activity
             # Priority 1: Interactive questions needing input
             if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
-                status="!"  # Needs attention
+                status="${C_RED}!${C_END}"
                 tooltip_status="!"
                 has_urgent=true
             # Priority 2: Actively working (recent output within 3 seconds)
             elif [ $activity_diff -lt 3 ]; then
-                status="~"  # Working (in progress)
+                status="${C_YEL}~${C_END}"
                 tooltip_status="~"
                 has_working=true
             # Priority 3: At prompt or showing status bar (DONE)
             elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
-                status="✓"  # Done, ready (checkmark)
+                status="${C_GRN}✓${C_END}"
                 tooltip_status="✓"
             # Fallback: No recent activity = done
             elif [ $activity_diff -gt 10 ]; then
-                status="✓"
+                status="${C_GRN}✓${C_END}"
                 tooltip_status="✓"
             else
-                status="~"  # Probably working
+                status="${C_YEL}~${C_END}"
                 tooltip_status="~"
                 has_working=true
             fi
