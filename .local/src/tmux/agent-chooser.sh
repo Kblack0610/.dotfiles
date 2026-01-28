@@ -7,6 +7,22 @@
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
+# ANSI color codes for status indicators
+COLOR_RED='\033[1;31m'
+COLOR_YELLOW='\033[1;33m'
+COLOR_GREEN='\033[1;32m'
+COLOR_RESET='\033[0m'
+
+# Colorize a status character for display
+colorize_status() {
+    case "$1" in
+        '!') printf "${COLOR_RED}!${COLOR_RESET}" ;;
+        '~') printf "${COLOR_YELLOW}~${COLOR_RESET}" ;;
+        '✓') printf "${COLOR_GREEN}✓${COLOR_RESET}" ;;
+        *)   printf "%s" "$1" ;;
+    esac
+}
+
 # Parse arguments
 NEXT_MODE=false
 [[ "$1" == "-n" || "$1" == "--next" ]] && NEXT_MODE=true
@@ -131,7 +147,7 @@ for project in "${sorted_projects[@]}"; do
     while IFS='|' read -r status target; do
         [ -z "$status" ] && continue
         ((count++))
-        statuses+="$status"
+        statuses+="$(colorize_status "$status")"
     done <<< "$(echo -e "$agents")"
 
     # Project header line (not selectable, just visual)
@@ -141,7 +157,8 @@ for project in "${sorted_projects[@]}"; do
     agent_num=1
     while IFS='|' read -r status target; do
         [ -z "$status" ] && continue
-        agent_list+="  ${status} agent-${agent_num}  ${target}\n"
+        colored=$(colorize_status "$status")
+        agent_list+="  ${colored} agent-${agent_num}  ${target}\n"
         ((agent_num++))
     done <<< "$(echo -e "$agents")"
 done
@@ -157,7 +174,7 @@ fi
 # Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --prompt='Select agent > ' \
-    --header=$'Enter=jump | n=next needing attention | esc=exit\n! needs input | ~ working | ✓ idle' \
+    --header=$'Enter=jump | n=next needing attention | esc=exit\n\033[1;31m!\033[0m needs input | \033[1;33m~\033[0m working | \033[1;32m✓\033[0m idle' \
     --ansi \
     --no-sort \
     --bind "n:execute-silent($0 -n)+abort" \
