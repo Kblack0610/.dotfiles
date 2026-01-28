@@ -91,3 +91,24 @@ When saving plans:
 1. Always read and write from the `/projects/plans/` directory
 2. Optionally save a copy to `.claude/plans/` in the current repository
 
+
+## Compact Instructions
+
+When compacting context, always preserve:
+- List of modified files and their purpose
+- Test commands run and their results
+- Key architectural decisions made
+- Current task progress and next steps
+- Active plan file location (if following a plan)
+- Error patterns encountered and their resolutions
+
+**Proactive compaction workflow:**
+- Run `/compact` at logical checkpoints (feature complete, bug fixed, etc.)
+- Target 85-90% context usage - don't wait for auto-compaction at 95%
+- Use `/compact focus on X` to emphasize specific aspects
+- Use `/context` to monitor context consumption
+
+**Between unrelated tasks:**
+- Use `/clear` for full reset when switching projects
+- Use `/compact` when continuing related work but trimming verbose history
+
