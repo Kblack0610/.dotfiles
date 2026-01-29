@@ -1,37 +1,30 @@
 {
-  "mcpServers": {
+  "mcpservers": {
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
     "context7": {
+      "command": "npx",
       "args": [
         "-y",
         "@upstash/context7-mcp"
-      ],
-      "command": "npx"
-    },
-    "linear": {
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://mcp.linear.app/mcp"
-      ],
-      "command": "npx"
+      ]
     },
     "playwright": {
+      "command": "npx",
       "args": [
         "-y",
         "@playwright/mcp@latest",
         "--browser",
         "firefox"
-      ],
-      "command": "npx"
-    },
-    "sequential-thinking": {
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ],
-      "command": "npx"
+      ]
     },
     "serena": {
+      "command": "uvx",
       "args": [
         "--from",
         "git+https://github.com/oraios/serena",
@@ -39,8 +32,72 @@
         "start-mcp-server",
         "--context",
         "ide-assistant"
+      ]
+    },
+    "docker-mcp": {
+      "command": "uvx",
+      "args": [
+        "docker-mcp"
+      ]
+    },
+    "digitalocean": {
+      "command": "npx",
+      "args": [
+        "@digitalocean/mcp"
       ],
-      "command": "uvx"
+      "env": {
+        "digitalocean_api_token": "$digitalocean_api_token"
+      }
+    },
+    "linear": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/mcp"
+      ]
+    },
+    "filesystem": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--mount",
+        "type=bind,src=/home/kblack0610/.agent/plans,dst=/projects/plans",
+        "--mount",
+        "type=bind,src=/home/kblack0610/dev,dst=/projects/dev,ro",
+        "--mount",
+        "type=bind,src=/home/kblack0610/.config,dst=/projects/dotfiles,ro",
+        "mcp/filesystem",
+        "/projects"
+      ]
+    },
+    "memory": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "-v",
+        "claude-memory:/app/dist",
+        "--rm",
+        "mcp/memory"
+      ]
+    },
+    "github-gh": {
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp",
+      "args": [],
+      "env": {
+        "rust_log": "info"
+      }
+    },
+    "web-search": {
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp",
+      "args": [],
+      "env": {
+        "searxng_url": "http://localhost:8080",
+        "rust_log": "info"
+      }
     }
   }
 }
