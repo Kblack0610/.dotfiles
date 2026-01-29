@@ -1,6 +1,0 @@
-2026-01-12 13:20:49.914 [info] ChatSessionStore: Migrating 0 chat sessions from storage service to file system
-2026-01-12 13:20:50.099 [info] Started local extension host with pid 2776051.
-2026-01-12 13:20:50.180 [info] Started initializing default profile extensions in extensions installation folder. file:///home/kblack0610/.vscode/extensions
-2026-01-12 13:20:50.367 [info] Completed initializing default profile extensions in extensions installation folder. file:///home/kblack0610/.vscode/extensions
-2026-01-12 13:20:51.185 [info] MCP Registry configured: https://api.mcp.github.com
-2026-01-12 13:20:51.217 [info] Settings Sync: Account status changed from uninitialized to unavailable

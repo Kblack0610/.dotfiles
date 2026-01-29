@@ -15,12 +15,8 @@ Media/Music
 
 .config/jesseduffield/lazygit/state.yml
 
-.config/unity3d/DefaultCompany
-.config/unity3d/DefaultCompany/*
-.config/unity3d/Unity
-.config/unity3d/Unity/*
-.config/unity3d/*.log
-.config/unity3d/Preferences/Editor-5.x/
+# Unity3d - ignore all editor state
+.config/unity3d/
 
 .config/nvim/lazy-lock.json
 
@@ -104,6 +100,13 @@ Media/Music
 
 # Playwright MCP runtime
 .playwright-mcp/
+
+# Spicetify - keep CustomApps, ignore generated content
+.config/spicetify/Extracted/
+.config/spicetify/Backup/
+
+# Gungan - has its own repo at github.com/Kblack0610/gungan-speak
+.local/src/gungan/
 
 # Misc
 *.bak
