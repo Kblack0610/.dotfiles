@@ -1,0 +1,85 @@
+# Xiaomi/MIUI Debloat List
+# Xiaomi, Redmi, and POCO specific bloatware
+
+# Xiaomi System Apps
+com.miui.analytics
+com.miui.msa.global
+com.xiaomi.mipicks
+com.miui.hybrid
+com.miui.hybrid.accessory
+
+# Xiaomi Browser (if using Chrome/Firefox)
+com.mi.globalbrowser
+com.android.browser
+
+# Xiaomi Cloud (if using Google backup)
+com.miui.cloudservice
+com.miui.cloudservicesframework
+com.miui.newmidrive
+
+# Xiaomi Games
+com.xiaomi.gamecenter
+com.xiaomi.gamecenter.sdk.service
+
+# Xiaomi AI/Voice
+com.miui.voiceassist
+com.xiaomi.aiasst.service
+com.xiaomi.aiasst.wakeup
+
+# Xiaomi Sharing/Transfer
+com.miui.misound
+com.xiaomi.midrop
+com.xiaomi.mi_connect_service
+
+# Xiaomi Apps
+com.miui.video
+com.miui.player
+com.miui.yellowpage
+com.miui.bugreport
+com.miui.miservice
+
+# Xiaomi Themes
+com.android.thememanager
+com.android.wallpaper
+
+# Xiaomi Weather (if using third-party)
+com.miui.weather2
+com.miui.providers.weather
+
+# Xiaomi Notes (if using other notes app)
+com.miui.notes
+
+# Xiaomi Cleaner (aggressive, can cause issues)
+com.miui.cleanmaster
+com.miui.securitycenter
+com.miui.securityadd
+
+# Mi Fit/Xiaomi Wearables (if not used)
+com.xiaomi.wearable
+
+# Mi Pay (if not used)
+com.mipay.wallet.in
+com.mipay.wallet
+
+# Xiaomi Quick Apps (web wrappers)
+com.miui.quickappCenter
+
+# MIUI System (bloat)
+com.miui.personalassistant
+com.miui.touchassistant
+com.miui.virtualsim
+com.miui.vsimcore
+
+# Xiaomi Ads/Tracking
+com.miui.systemAdSolution
+com.xiaomi.glgm
+com.xiaomi.xmsf
+
+# App Vault
+com.miui.newhome
+
+# Scanner (if using Google Lens)
+com.xiaomi.scanner
+
+# ShareMe (if using other transfer app)
+com.xiaomi.midrop

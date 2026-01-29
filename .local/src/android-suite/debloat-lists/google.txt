@@ -1,0 +1,36 @@
+# Google Apps Debloat List
+# Google apps you might want to remove
+# WARNING: Some apps are required for Play Store/Services to work
+
+# Google Bloatware (safe to remove)
+com.google.android.apps.magazines
+com.google.android.apps.tachyon        # Google Duo/Meet
+com.google.android.apps.podcasts
+com.google.android.apps.youtube.music
+com.google.android.videos              # Google TV
+com.google.android.apps.books
+com.google.android.apps.docs
+com.google.android.apps.docs.editors.slides
+com.google.android.apps.docs.editors.sheets
+com.google.android.apps.wellbeing
+com.google.android.apps.nbu.files      # Files by Google
+com.google.android.apps.subscriptions.red  # Google One
+com.google.android.apps.googleassistant    # Standalone Assistant app
+com.google.android.feedback
+com.google.android.printservice.recommendation
+com.google.android.apps.turbo          # Device Health Services
+
+# Google Games (if you don't use them)
+com.google.android.play.games
+
+# Google AR (unless you use AR apps)
+com.google.ar.core
+
+# Carrier Services (unless you use RCS)
+com.google.android.ims
+
+# DO NOT REMOVE (will break things):
+# com.google.android.gms                # Play Services (REQUIRED)
+# com.google.android.gsf                # Google Services Framework
+# com.android.vending                   # Play Store
+# com.google.android.gms.setup

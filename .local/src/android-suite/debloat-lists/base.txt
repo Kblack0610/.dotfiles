@@ -1,0 +1,32 @@
+# Base Debloat List
+# Universal bloatware found on most Android devices
+# These are safe to remove on any device
+
+# Carrier bloatware (generic)
+com.android.carrierdefaultapp
+com.android.carrierconfig
+
+# Printing services (rarely used)
+com.android.printspooler
+com.google.android.printservice.recommendation
+
+# Accessibility demo/tutorial apps
+com.android.accessibilityservice
+com.android.dreams.basic
+com.android.dreams.phototable
+
+# Unused input methods
+com.android.inputmethod.pinyin
+com.android.inputmethod.japanese
+
+# Cloud print (deprecated by Google)
+com.google.android.apps.cloudprint
+
+# Enterprise/MDM (unless work device)
+com.android.managedprovisioning
+com.android.providers.partnerbookmarks
+
+# Default apps rarely used
+com.android.egg
+com.android.stk
+com.android.ons
