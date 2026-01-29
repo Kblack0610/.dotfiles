@@ -40,15 +40,6 @@
         "docker-mcp"
       ]
     },
-    "digitalocean": {
-      "command": "npx",
-      "args": [
-        "@digitalocean/mcp"
-      ],
-      "env": {
-        "DIGITALOCEAN_API_TOKEN": "$DIGITALOCEAN_API_TOKEN"
-      }
-    },
     "linear": {
       "command": "npx",
       "args": [
