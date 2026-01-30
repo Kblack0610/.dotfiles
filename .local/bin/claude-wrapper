@@ -60,10 +60,22 @@ is_rate_limited() {
 }
 
 # Mark account as rate limited
+# This is the ONLY place current_index should be advanced
 mark_rate_limited() {
     local account="$1"
     local until=$(($(now) + COOLDOWN_SECONDS))
     state_set ".rate_limited[\"$account\"] = $until"
+
+    # Advance to next account for future invocations
+    local accounts=($(get_configured_accounts))
+    local count=${#accounts[@]}
+    if [[ $count -gt 1 ]]; then
+        local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
+        local next_idx=$(( (current_idx + 1) % count ))
+        state_set ".current_index = $next_idx"
+        log_event "rotated_to_next" "${accounts[$next_idx]}" "from=$account"
+    fi
+
     log_event "rate_limited" "$account" "cooldown_until=$until"
 }
 
@@ -85,6 +97,8 @@ get_configured_accounts() {
 }
 
 # Select next account using round-robin with rate-limit skip
+# NOTE: This function does NOT advance current_index - that only happens
+# in mark_rate_limited() when a rate limit is actually detected.
 select_account() {
     local accounts=($(get_configured_accounts))
     local count=${#accounts[@]}
@@ -95,15 +109,21 @@ select_account() {
     fi
 
     local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
-    local tried=0
 
+    # Try current account first (don't advance index)
+    local current_account="${accounts[$current_idx]}"
+    if ! is_rate_limited "$current_account"; then
+        echo "$current_account"
+        return
+    fi
+
+    # Current account is rate limited, find next available
+    local tried=1
     while [[ $tried -lt $count ]]; do
         local idx=$(( (current_idx + tried) % count ))
         local account="${accounts[$idx]}"
 
         if ! is_rate_limited "$account"; then
-            # Advance index for next session
-            state_set ".current_index = $(( (current_idx + tried + 1) % count ))"
             echo "$account"
             return
         fi
@@ -155,6 +175,15 @@ show_status() {
     local accounts=($(get_configured_accounts))
     local count=${#accounts[@]}
 
+    # Calculate usage stats from log (last 24 hours)
+    local cutoff=$(($(now) - 86400))
+    declare -A usage_24h
+    if [[ -f "$LOG_FILE" ]]; then
+        for i in $(seq 1 "$MAX_ACCOUNTS"); do
+            usage_24h[$i]=$(jq -r "select(.ts >= $cutoff and .event == \"session_start\" and .account == \"$i\") | .account" "$LOG_FILE" 2>/dev/null | wc -l)
+        done
+    fi
+
     for i in $(seq 1 "$MAX_ACCOUNTS"); do
         local creds="$PROFILES_DIR/${i}.credentials.json"
         if [[ -f "$creds" ]]; then
@@ -185,6 +214,7 @@ show_status() {
             echo "[$i] $sub ($tier)$next_marker"
             echo "    Token: ...$token_suffix | Expires: $expiry_date"
             echo "    Status: $status"
+            echo "    Usage (24h): ${usage_24h[$i]:-0} sessions"
         else
             echo "[$i] Not configured"
         fi
