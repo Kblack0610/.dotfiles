@@ -4,9 +4,6 @@
 [submodule ".local/src/tmux"]
 	path = .local/src/tmux
 	url = git@github.com:Kblack0610/tmux-suite.git
-[submodule ".claude"]
-	path = .claude
-	url = git@github.com:Kblack0610/claude-config.git
 [submodule "tools/claude-wrapper"]
 	path = tools/claude-wrapper
 	url = git@github.com:Kblack0610/claude-wrapper.git
