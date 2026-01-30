@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Claude Multi-Account Rotation Wrapper
+# Automatically rotates between up to 4 Claude.ai OAuth accounts with rate-limit fallback.
+#
+# Usage: claude [-p|--profile N] [claude args...]
+#   -p N    Force specific account (1-4)
+#   --status  Show account status and exit
+#
+# Environment variable CLAUDE_CODE_OAUTH_TOKEN is used for token injection,
+# allowing concurrent sessions with different accounts.
+
+set -euo pipefail
+
+CLAUDE_DIR="$HOME/.claude"
+PROFILES_DIR="$CLAUDE_DIR/profiles"
+ROTATION_DIR="$CLAUDE_DIR/rotation"
+STATE_FILE="$ROTATION_DIR/state.json"
+LOG_FILE="$ROTATION_DIR/log.jsonl"
+REAL_CLAUDE="$HOME/.local/bin/claude-real"
+MAX_ACCOUNTS=4
+COOLDOWN_SECONDS=300  # 5 minutes
+
+# Ensure directories exist
+mkdir -p "$ROTATION_DIR"
+
+# Initialize state file if missing
+if [[ ! -f "$STATE_FILE" ]]; then
+    echo '{"current_index": 0, "rate_limited": {}}' > "$STATE_FILE"
+fi
+
+# Log event to jsonl
+log_event() {
+    local event="$1"
+    local account="${2:-}"
+    local details="${3:-}"
+    echo "{\"ts\":$(date +%s),\"event\":\"$event\",\"account\":\"$account\",\"details\":\"$details\"}" >> "$LOG_FILE"
+}
+
+# Get current unix timestamp
+now() {
+    date +%s
+}
+
+# Read JSON value using jq
+json_get() {
+    jq -r "$1" "$2" 2>/dev/null || echo ""
+}
+
+# Update state file
+state_set() {
+    local tmp=$(mktemp)
+    jq "$1" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+# Check if account is rate limited (cooldown not expired)
+is_rate_limited() {
+    local account="$1"
+    local until=$(json_get ".rate_limited[\"$account\"] // 0" "$STATE_FILE")
+    [[ "$until" -gt "$(now)" ]]
+}
+
+# Mark account as rate limited
+mark_rate_limited() {
+    local account="$1"
+    local until=$(($(now) + COOLDOWN_SECONDS))
+    state_set ".rate_limited[\"$account\"] = $until"
+    log_event "rate_limited" "$account" "cooldown_until=$until"
+}
+
+# Clear rate limit for account
+clear_rate_limit() {
+    local account="$1"
+    state_set "del(.rate_limited[\"$account\"])"
+}
+
+# Get list of configured accounts
+get_configured_accounts() {
+    local accounts=()
+    for i in $(seq 1 "$MAX_ACCOUNTS"); do
+        if [[ -f "$PROFILES_DIR/${i}.credentials.json" ]]; then
+            accounts+=("$i")
+        fi
+    done
+    echo "${accounts[@]}"
+}
+
+# Select next account using round-robin with rate-limit skip
+select_account() {
+    local accounts=($(get_configured_accounts))
+    local count=${#accounts[@]}
+
+    if [[ $count -eq 0 ]]; then
+        echo ""
+        return
+    fi
+
+    local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
+    local tried=0
+
+    while [[ $tried -lt $count ]]; do
+        local idx=$(( (current_idx + tried) % count ))
+        local account="${accounts[$idx]}"
+
+        if ! is_rate_limited "$account"; then
+            # Advance index for next session
+            state_set ".current_index = $(( (current_idx + tried + 1) % count ))"
+            echo "$account"
+            return
+        fi
+        tried=$((tried + 1))
+    done
+
+    # All accounts rate limited - find one with earliest cooldown expiry
+    local earliest_account="${accounts[0]}"
+    local earliest_time=$(json_get ".rate_limited[\"${accounts[0]}\"] // 999999999999" "$STATE_FILE")
+
+    for account in "${accounts[@]}"; do
+        local until=$(json_get ".rate_limited[\"$account\"] // 999999999999" "$STATE_FILE")
+        if [[ "$until" -lt "$earliest_time" ]]; then
+            earliest_time="$until"
+            earliest_account="$account"
+        fi
+    done
+
+    echo "$earliest_account"
+}
+
+# Get OAuth token from credentials file
+get_token() {
+    local account="$1"
+    local creds="$PROFILES_DIR/${account}.credentials.json"
+    json_get ".claudeAiOauth.accessToken // empty" "$creds"
+}
+
+# Get token expiry timestamp (ms)
+get_token_expiry() {
+    local account="$1"
+    local creds="$PROFILES_DIR/${account}.credentials.json"
+    json_get ".claudeAiOauth.expiresAt // 0" "$creds"
+}
+
+# Check if token is expired
+is_token_expired() {
+    local account="$1"
+    local expiry_ms=$(get_token_expiry "$account")
+    local now_ms=$(($(now) * 1000))
+    [[ "$expiry_ms" -lt "$now_ms" ]]
+}
+
+# Show status of all accounts
+show_status() {
+    echo "=== Claude Account Status ==="
+    echo ""
+    local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
+    local accounts=($(get_configured_accounts))
+    local count=${#accounts[@]}
+
+    for i in $(seq 1 "$MAX_ACCOUNTS"); do
+        local creds="$PROFILES_DIR/${i}.credentials.json"
+        if [[ -f "$creds" ]]; then
+            local sub=$(json_get ".claudeAiOauth.subscriptionType // \"unknown\"" "$creds")
+            local tier=$(json_get ".claudeAiOauth.rateLimitTier // \"unknown\"" "$creds")
+            local token_suffix=$(json_get ".claudeAiOauth.accessToken // \"\"" "$creds" | tail -c 9)
+            local expiry_ms=$(get_token_expiry "$i")
+            local expiry_date=$(date -d "@$((expiry_ms / 1000))" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
+
+            local status="OK"
+            if is_rate_limited "$i"; then
+                local until=$(json_get ".rate_limited[\"$i\"] // 0" "$STATE_FILE")
+                local remaining=$(( until - $(now) ))
+                status="RATE LIMITED (${remaining}s remaining)"
+            elif is_token_expired "$i"; then
+                status="TOKEN EXPIRED"
+            fi
+
+            # Check if this is next in rotation
+            local next_marker=""
+            if [[ $count -gt 0 ]]; then
+                local next_idx=$(( current_idx % count ))
+                if [[ "${accounts[$next_idx]}" == "$i" ]]; then
+                    next_marker=" <- NEXT"
+                fi
+            fi
+
+            echo "[$i] $sub ($tier)$next_marker"
+            echo "    Token: ...$token_suffix | Expires: $expiry_date"
+            echo "    Status: $status"
+        else
+            echo "[$i] Not configured"
+        fi
+        echo ""
+    done
+}
+
+# Main execution
+PROFILE=""
+SHOW_STATUS=false
+
+# Parse our flags (must be first arguments)
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--profile)
+            PROFILE="$2"
+            shift 2
+            ;;
+        --status)
+            SHOW_STATUS=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# Handle status request
+if [[ "$SHOW_STATUS" == "true" ]]; then
+    show_status
+    exit 0
+fi
+
+# Determine which account to use
+if [[ -n "$PROFILE" ]]; then
+    # Manual profile selection
+    ACCOUNT="$PROFILE"
+    if [[ ! -f "$PROFILES_DIR/${ACCOUNT}.credentials.json" ]]; then
+        echo "Error: Profile $ACCOUNT not found at $PROFILES_DIR/${ACCOUNT}.credentials.json" >&2
+        echo "Available profiles:" >&2
+        ls "$PROFILES_DIR"/*.credentials.json 2>/dev/null | xargs -I{} basename {} .credentials.json | sed 's/^/  /' >&2
+        exit 1
+    fi
+else
+    # Auto-select via rotation
+    ACCOUNT=$(select_account)
+    if [[ -z "$ACCOUNT" ]]; then
+        echo "Error: No accounts configured. Run 'claude-rotate-setup' first." >&2
+        exit 1
+    fi
+fi
+
+# Get token for selected account
+TOKEN=$(get_token "$ACCOUNT")
+if [[ -z "$TOKEN" ]]; then
+    echo "Error: No token found for account $ACCOUNT" >&2
+    exit 1
+fi
+
+# Check for token expiry - if expired, try to refresh via symlink method
+if is_token_expired "$ACCOUNT"; then
+    echo "Token expired for account $ACCOUNT, attempting refresh..." >&2
+    # Use symlink swap so claude can refresh the token
+    ln -sf "$PROFILES_DIR/${ACCOUNT}.credentials.json" "$CLAUDE_DIR/.credentials.json"
+    # Run a minimal command to trigger refresh
+    "$REAL_CLAUDE" --version >/dev/null 2>&1 || true
+    # Copy refreshed token back
+    cp "$CLAUDE_DIR/.credentials.json" "$PROFILES_DIR/${ACCOUNT}.credentials.json" 2>/dev/null || true
+    # Re-read token
+    TOKEN=$(get_token "$ACCOUNT")
+fi
+
+# Display which account is being used
+SUB_TYPE=$(json_get ".claudeAiOauth.subscriptionType // \"unknown\"" "$PROFILES_DIR/${ACCOUNT}.credentials.json")
+TOKEN_SUFFIX=$(echo "$TOKEN" | tail -c 9)
+echo "Using account $ACCOUNT ($SUB_TYPE, token: ...$TOKEN_SUFFIX)" >&2
+
+log_event "session_start" "$ACCOUNT"
+
+# Run claude with token injected via environment
+# This allows multiple concurrent sessions with different accounts
+export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+
+# Create temp file for stderr capture
+STDERR_TMP=$(mktemp)
+trap "rm -f '$STDERR_TMP'" EXIT
+
+# Run claude, capturing stderr for rate limit detection
+"$REAL_CLAUDE" "$@" 2> >(tee "$STDERR_TMP" >&2)
+EXIT_CODE=$?
+
+# Check for rate limiting indicators
+if grep -qiE "(rate.?limit|overloaded|429|too many requests)" "$STDERR_TMP" 2>/dev/null; then
+    echo "" >&2
+    echo "Rate limit detected for account $ACCOUNT, marking for cooldown..." >&2
+    mark_rate_limited "$ACCOUNT"
+
+    # If not manually selected, suggest retry
+    if [[ -z "$PROFILE" ]]; then
+        NEXT_ACCOUNT=$(select_account)
+        if [[ -n "$NEXT_ACCOUNT" && "$NEXT_ACCOUNT" != "$ACCOUNT" ]]; then
+            echo "Retry with: claude $*" >&2
+            echo "(Will use account $NEXT_ACCOUNT)" >&2
+        fi
+    fi
+fi
+
+log_event "session_end" "$ACCOUNT" "exit_code=$EXIT_CODE"
+
+exit $EXIT_CODE
