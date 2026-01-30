@@ -1,6 +1,47 @@
-# For installation
+# Dotfiles
 
-dotfiles, use stow to symlink to proper config locations
+Personal dotfiles managed with GNU Stow and git submodules.
+
+## Submodules
+
+This repo uses git submodules for reusable tools:
+
+| Submodule | Location | Description |
+|-----------|----------|-------------|
+| [claude-config](https://github.com/Kblack0610/claude-config) | `.claude/` | Claude Code configuration with 27 agents, 26+ commands, and MCP servers |
+| [claude-wrapper](https://github.com/Kblack0610/claude-wrapper) | `tools/claude-wrapper/` | Multi-account rotation wrapper for Claude CLI |
+| [android-suite](https://github.com/Kblack0610/android-suite) | `.local/src/android-suite/` | Android device provisioning and debloating suite |
+| [tmux-suite](https://github.com/Kblack0610/tmux-suite) | `.local/src/tmux/` | Tmux productivity scripts (1800+ lines) for agent orchestration and session management |
+
+## Installation
+
+Clone with submodules:
+
+```bash
+git clone --recursive https://github.com/Kblack0610/dotfiles.git ~/.dotfiles
+cd ~/.dotfiles
+stow .
+```
+
+Or if already cloned, initialize submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+## Updating Submodules
+
+```bash
+# Update all submodules to latest
+git submodule update --remote --merge
+
+# Or update specific submodule
+git submodule update --remote .claude
+```
+
+## For installation
+
+Dotfiles use stow to symlink to proper config locations
 
 reqs for installation (not complete):
 - Install [Floorp (firefox based browser)](https://floorp.app/en)
