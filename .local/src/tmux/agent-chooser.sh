@@ -44,15 +44,46 @@ get_project_from_path() {
 
 # Build list of windows with AI agents
 declare -A seen_windows
-declare -A project_agents  # project -> list of "status|session:window"
+declare -A project_agents  # project -> list of "status|session:window|agent_type"
 declare -a all_agents      # flat list of all "status|target" for next mode
 AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
+
+# Detect agent type from pane (returns type or empty)
+detect_agent_type() {
+    local session="$1"
+    local window_idx="$2"
+    local pane_cmd="$3"
+
+    # Direct match
+    if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
+        echo "$pane_cmd"
+        return 0
+    fi
+
+    # Check if shell (bash/zsh) is running claude wrapper
+    # Look for ✳ in title (Claude's task indicator)
+    if [[ "$pane_cmd" =~ ^(bash|zsh)$ ]]; then
+        local title=$(tmux display-message -p -t "${session}:${window_idx}" "#{pane_title}" 2>/dev/null)
+
+        # Check for Claude's ✳ indicator in title
+        if [[ "$title" =~ ✳ ]]; then
+            # If we see ✳, it's a claude session (wrapped by default now)
+            echo "claude-wrapped"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 
 while IFS=: read -r session window_idx _ pane_cmd pane_path; do
     window_key="${session}:${window_idx}"
     [[ -n "${seen_windows[$window_key]}" ]] && continue
 
-    if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
+    # Detect agent type
+    agent_type=$(detect_agent_type "$session" "$window_idx" "$pane_cmd")
+
+    if [[ -n "$agent_type" ]]; then
         seen_windows[$window_key]=1
 
         # Get project from working directory
@@ -81,10 +112,21 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path; do
         # Read cached ollama summary (if daemon is running)
         summary=""
         summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
-        [[ -f "$summary_file" ]] && summary=$(head -c 35 "$summary_file")
+        [[ -f "$summary_file" ]] && summary=$(head -c 35 "$summary_file" 2>/dev/null)
+
+        # Format agent type label
+        agent_label=""
+        case "$agent_type" in
+            claude-wrapped) agent_label="[claude]" ;;
+            claude-real)    agent_label="[direct]" ;;
+            claude)         agent_label="[claude]" ;;
+            aider)          agent_label="[aider]" ;;
+            opencode)       agent_label="[opencode]" ;;
+            *)              agent_label="[${agent_type}]" ;;
+        esac
 
         # Add to project group and flat list
-        project_agents[$project]+="${status}|${session}:${window_idx}|${summary}\n"
+        project_agents[$project]+="${status}|${session}:${window_idx}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
@@ -149,7 +191,7 @@ for project in "${sorted_projects[@]}"; do
     # Count agents and collect statuses
     count=0
     statuses=""
-    while IFS='|' read -r status target _summary; do
+    while IFS='|' read -r status target agent_label _summary; do
         [ -z "$status" ] && continue
         ((count++))
         statuses+="$(colorize_status "$status")"
@@ -160,13 +202,13 @@ for project in "${sorted_projects[@]}"; do
 
     # Individual agents numbered sequentially
     agent_num=1
-    while IFS='|' read -r status target summary; do
+    while IFS='|' read -r status target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
         if [[ -n "$summary" ]]; then
-            agent_list+="  ${colored} agent-${agent_num}  ${target}  ${summary}\n"
+            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}  ${summary}\n"
         else
-            agent_list+="  ${colored} agent-${agent_num}  ${target}\n"
+            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}\n"
         fi
         ((agent_num++))
     done <<< "$(echo -e "$agents")"
@@ -196,8 +238,8 @@ if [[ "$selected" == ───* ]]; then
     exit 0
 fi
 
-# Extract session:window_idx (third field: status agent-N target)
-target=$(echo "$selected" | awk '{print $3}')
+# Extract session:window_idx (fourth field: status agent-N agent_label target)
+target=$(echo "$selected" | awk '{print $4}')
 
 # Jump to it
 if [ -n "$TMUX" ]; then
