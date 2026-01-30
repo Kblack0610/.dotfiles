@@ -1,3 +1,6 @@
 [submodule ".local/src/android-suite"]
 	path = .local/src/android-suite
 	url = git@github.com:Kblack0610/android-suite.git
+[submodule ".local/src/tmux"]
+	path = .local/src/tmux
+	url = git@github.com:Kblack0610/tmux-suite.git
