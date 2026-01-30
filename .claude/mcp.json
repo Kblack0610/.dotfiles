@@ -49,20 +49,11 @@
       ]
     },
     "filesystem": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "--mount",
-        "type=bind,src=/home/kblack0610/.agent/plans,dst=/projects/plans",
-        "--mount",
-        "type=bind,src=/home/kblack0610/dev,dst=/projects/dev,ro",
-        "--mount",
-        "type=bind,src=/home/kblack0610/.config,dst=/projects/dotfiles,ro",
-        "mcp/filesystem",
-        "/projects"
-      ]
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp",
+      "args": [],
+      "env": {
+        "RUST_LOG": "info"
+      }
     },
     "memory": {
       "command": "docker",
@@ -87,6 +78,15 @@
       "args": [],
       "env": {
         "SEARXNG_URL": "http://localhost:8080",
+        "RUST_LOG": "info"
+      }
+    },
+    "agent": {
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/agent",
+      "args": [
+        "serve"
+      ],
+      "env": {
         "RUST_LOG": "info"
       }
     }
