@@ -96,9 +96,9 @@ get_configured_accounts() {
     echo "${accounts[@]}"
 }
 
-# Select next account using round-robin with rate-limit skip
-# NOTE: This function does NOT advance current_index - that only happens
-# in mark_rate_limited() when a rate limit is actually detected.
+# Select account with lowest total usage from non-rate-limited accounts
+# Counts session_start events in log file for each account and picks the one
+# with the least usage, providing better load balancing.
 select_account() {
     local accounts=($(get_configured_accounts))
     local count=${#accounts[@]}
@@ -108,27 +108,37 @@ select_account() {
         return
     fi
 
-    local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
+    # Get usage counts for all accounts (24h window)
+    local cutoff=$(($(now) - 86400))
+    declare -A usage_counts
 
-    # Try current account first (don't advance index)
-    local current_account="${accounts[$current_idx]}"
-    if ! is_rate_limited "$current_account"; then
-        echo "$current_account"
+    for account in "${accounts[@]}"; do
+        if [[ -f "$LOG_FILE" ]]; then
+            usage_counts[$account]=$(jq -r "select(.ts >= $cutoff and .event == \"session_start\" and .account == \"$account\") | .account" "$LOG_FILE" 2>/dev/null | wc -l)
+        else
+            usage_counts[$account]=0
+        fi
+    done
+
+    # Find account with lowest usage that's not rate limited
+    local selected_account=""
+    local min_usage=999999
+
+    for account in "${accounts[@]}"; do
+        if ! is_rate_limited "$account"; then
+            local usage=${usage_counts[$account]:-0}
+            if [[ $usage -lt $min_usage ]]; then
+                min_usage=$usage
+                selected_account="$account"
+            fi
+        fi
+    done
+
+    # If we found a non-rate-limited account, use it
+    if [[ -n "$selected_account" ]]; then
+        echo "$selected_account"
         return
     fi
-
-    # Current account is rate limited, find next available
-    local tried=1
-    while [[ $tried -lt $count ]]; do
-        local idx=$(( (current_idx + tried) % count ))
-        local account="${accounts[$idx]}"
-
-        if ! is_rate_limited "$account"; then
-            echo "$account"
-            return
-        fi
-        tried=$((tried + 1))
-    done
 
     # All accounts rate limited - find one with earliest cooldown expiry
     local earliest_account="${accounts[0]}"
