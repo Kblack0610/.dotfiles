@@ -25,17 +25,33 @@ return {
   },
   {
     "williamboman/mason-lspconfig.nvim",
-    dependencies = { "williamboman/mason.nvim", "neovim/nvim-lspconfig" },
+    dependencies = { "williamboman/mason.nvim" },
     opts = {
       ensure_installed = ensure_installed,
     },
-    config = function(_, opts)
-      require("mason-lspconfig").setup(opts)
-
+  },
+  {
+    "neovim/nvim-lspconfig",
+    dependencies = { "saghen/blink.cmp", "williamboman/mason-lspconfig.nvim" },
+    config = function()
       -- Get capabilities from blink.cmp
       local capabilities = require("blink.cmp").get_lsp_capabilities()
 
-      -- Border setup
+      -- Set border for shift+k
+      -- also ignore "no information found" when multiple lsps attached and trying hover
+      vim.lsp.handlers["textDocument/hover"] = function(_, result, ctx, config)
+        if not (result and result.contents and result.contents.value ~= "") then
+          return -- Suppress "no information available" notifications
+        end
+        -- merge config table if it exists
+        return vim.lsp.handlers.hover(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
+      end
+      -- Set border for signature help <leader>lh
+      vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
+        border = "rounded",
+      })
+
+      -- Border setup for omnisharp
       local rounded_border_handlers = {
         ["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, { border = "rounded" }),
         ["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, { border = "rounded" }),
@@ -44,7 +60,7 @@ return {
       local pid = vim.fn.getpid()
       local omnisharp_bin = "/opt/omnisharp-roslyn/run"
 
-      -- Use mason-lspconfig's automatic setup (modern pattern, no deprecated framework)
+      -- Use mason-lspconfig's automatic setup (modern pattern)
       require("mason-lspconfig").setup_handlers({
         -- Default handler for all servers
         function(server_name)
@@ -126,25 +142,6 @@ return {
             },
           })
         end,
-      })
-    end,
-  },
-  {
-    "neovim/nvim-lspconfig",
-    dependencies = { "saghen/blink.cmp" },
-    config = function()
-      -- Set border for shift+k
-      -- also ignore "no information found" when multiple lsps attached and trying hover
-      vim.lsp.handlers["textDocument/hover"] = function(_, result, ctx, config)
-        if not (result and result.contents and result.contents.value ~= "") then
-          return -- Suppress "no information available" notifications
-        end
-        -- merge config table if it exists
-        return vim.lsp.handlers.hover(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
-      end
-      -- Set border for signature help <leader>lh
-      vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
-        border = "rounded",
       })
 
       -- lint/formatters
