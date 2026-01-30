@@ -1,0 +1,3 @@
+[submodule ".local/src/android-suite"]
+	path = .local/src/android-suite
+	url = git@github.com:Kblack0610/android-suite.git
