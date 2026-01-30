@@ -1,11 +1,8 @@
 -- NOTE: this should only be for general mappings, try to define plugin specific mapping in the lazy setup under "keys"
 -- NOTE: A LOT of mappings are in snacks.nvim
 
--- replacing with telescope file browser for now
--- vim.keymap.set("n", "<leader>pv", vim.cmd.Ex)
 -- Leader key mapping
 vim.g.mapleader = " "
--- vim.g.maplocalleader = "\\" (what this do?)
 
 -- better j and k
 vim.keymap.set(
@@ -39,14 +36,12 @@ vim.keymap.set("i", "<C-c>", "<Esc>")
 vim.keymap.set("n", "Q", "<nop>")
 vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww tmux-sessionizer<CR>")
 vim.keymap.set("n", "<leader>f", vim.lsp.buf.format)
--- vim.keymap.set("n", "<leader>e", vim.lsp.diagnostic.show_line_diagnostics)
 
 vim.keymap.set("n", "<C-k>", "<cmd>cnext<CR>zz")
 vim.keymap.set("n", "<C-j>", "<cmd>cprev<CR>zz")
 vim.keymap.set("n", "<leader>k", "<cmd>lnext<CR>zz")
 vim.keymap.set("n", "<leader>j", "<cmd>lprev<CR>zz")
 
--- vim.keymap.set("n", "<leader>s", [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
 vim.keymap.set("n", "<leader>x", "<cmd>!chmod +x %<CR>", { silent = true })
 
 vim.keymap.set("n", "<leader>vpp", "<cmd>e ~/.dotfiles/.config/nvim/lua/kennethblack/lazy.lua<CR>");
@@ -63,10 +58,6 @@ vim.keymap.set("n", "<leader>se", "<cmd>tabnew ~/.dotfiles <bar> tcd %:h<cr>", {
   desc = "open init.lua",
 })
 
--- Go to start or end of line easier
--- vim.keymap.set({ "n", "x" }, "H", "^")
--- vim.keymap.set({ "n", "x" }, "L", "g_")
-
 -- Quit all opened buffers
 vim.keymap.set("n", "<leader>Q", "<cmd>qa!<cr>", { silent = true, desc = "quit nvim" })
 
@@ -76,10 +67,6 @@ vim.keymap.set("i", "<C-E>", "<END>")
 
 vim.keymap.set("n", "L", "<C-w>w")
 vim.keymap.set("n", "H", "<C-w>W")
-
--- nnoremap <Leader><Enter> :norm 0<CR>:.s/\[ ]/\[x]/g<CR>:.s/$/ ✅ /g<CR>:.s/$/\=strftime("%Y-%m-%d")/g<CR>:nohl<CR>
--- nnoremap <Leader>w :norm 0<CR>:.s/\[ ]/\[ ] 🚧️/g<CR>:nohl<CR>
---
 
 -- NOTE: go throgh these anre remove unnecessary
 --- need to look through and update
