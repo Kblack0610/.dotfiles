@@ -26,9 +26,6 @@ return {
   {
     "williamboman/mason-lspconfig.nvim",
     dependencies = { "williamboman/mason.nvim" },
-    opts = {
-      ensure_installed = ensure_installed,
-    },
   },
   {
     "neovim/nvim-lspconfig",
@@ -60,8 +57,14 @@ return {
       local pid = vim.fn.getpid()
       local omnisharp_bin = "/opt/omnisharp-roslyn/run"
 
+      -- Ensure mason-lspconfig is set up before calling setup_handlers
+      local mason_lspconfig = require("mason-lspconfig")
+      mason_lspconfig.setup({
+        ensure_installed = ensure_installed,
+      })
+
       -- Use mason-lspconfig's automatic setup (modern pattern)
-      require("mason-lspconfig").setup_handlers({
+      mason_lspconfig.setup_handlers({
         -- Default handler for all servers
         function(server_name)
           require("lspconfig")[server_name].setup({
