@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# journal-carryforward: Extract incomplete tasks from yesterday and summarize with local LLM
+# Usage: journal-carryforward
+
+set -euo pipefail
+
+OLLAMA_URL="${OLLAMA_URL:-http://192.168.1.4:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-coder:30b}"
+NOTES_DIR="$HOME/.notes/journal/daily"
+
+TODAY=$(date +%Y-%m-%d)
+YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v -1d +%Y-%m-%d)
+YESTERDAY_FILE="$NOTES_DIR/$YESTERDAY.md"
+
+# Exit silently if no yesterday's note
+[[ ! -f "$YESTERDAY_FILE" ]] && exit 0
+
+# Extract incomplete tasks (- [ ] items, not - [x] or - [X])
+INCOMPLETE=$(grep -E '^\s*-\s*\[\s*\]' "$YESTERDAY_FILE" 2>/dev/null || true)
+[[ -z "$INCOMPLETE" ]] && exit 0
+
+TASK_COUNT=$(echo "$INCOMPLETE" | wc -l)
+
+# Build LLM prompt
+PROMPT="Incomplete tasks from $YESTERDAY to carry forward to $TODAY.
+Prioritize, group related items, keep markdown checkbox format (- [ ]).
+Just output the task list, no explanations.
+
+Tasks:
+$INCOMPLETE
+
+Carried forward:"
+
+# Call OLLAMA
+RESPONSE=$(curl -s --max-time 30 "$OLLAMA_URL/api/generate" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg m "$OLLAMA_MODEL" --arg p "$PROMPT" \
+        '{model: $m, prompt: $p, stream: false}')" 2>/dev/null || true)
+
+SUMMARY=$(echo "$RESPONSE" | jq -r '.response // empty' 2>/dev/null || true)
+
+# Fallback to raw tasks if LLM fails
+[[ -z "$SUMMARY" ]] && SUMMARY="$INCOMPLETE"
+
+cat << EOF
+## Carried Forward
+<!-- $TASK_COUNT tasks from $YESTERDAY -->
+$SUMMARY
+EOF

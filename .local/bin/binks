@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Binks Agent CLI wrapper
+
+AGENT_BIN="${HOME}/dev/home/binks-agent-orchestrator/agent/target/release/agent"
+
+export OLLAMA_URL="${OLLAMA_URL:-http://192.168.1.4:11434}"
+export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-coder:30b}"
+
+exec "$AGENT_BIN" "$@"

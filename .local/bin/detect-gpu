@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# detect-gpu - Detect primary GPU for Sunshine and other applications
+# Outputs key=value pairs for easy parsing
+#
+# Usage: detect-gpu
+# Output (Linux):
+#   CARD=card2
+#   RENDER=/dev/dri/renderD129
+#   VENDOR=0x1002
+#   TYPE=amd
+#   CONNECTOR=DP-5
+#
+# Output (macOS):
+#   CARD=none
+#   RENDER=videotoolbox
+#   VENDOR=apple
+#   TYPE=apple_silicon OR TYPE=intel_mac
+#   CONNECTOR=builtin
+
+set -euo pipefail
+
+# Detect operating system
+detect_os() {
+    case "$(uname -s)" in
+        Darwin) echo "macos" ;;
+        Linux) echo "linux" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Vendor ID to type mapping (Linux)
+get_vendor_type() {
+    local vendor="$1"
+    case "$vendor" in
+        0x1002) echo "amd" ;;
+        0x10de) echo "nvidia" ;;
+        0x8086) echo "intel" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Detect GPU on macOS
+detect_macos_gpu() {
+    local chip_type
+
+    # Check if Apple Silicon (arm64) or Intel (x86_64)
+    local arch
+    arch=$(uname -m)
+
+    if [[ "$arch" == "arm64" ]]; then
+        # Apple Silicon - get chip name
+        chip_type=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
+        echo "CARD=none"
+        echo "RENDER=videotoolbox"
+        echo "VENDOR=apple"
+        echo "TYPE=apple_silicon"
+        echo "CONNECTOR=builtin"
+        echo "CHIP=$chip_type"
+    else
+        # Intel Mac - check for discrete GPU
+        local gpu_info
+        gpu_info=$(system_profiler SPDisplaysDataType 2>/dev/null || echo "")
+
+        if echo "$gpu_info" | grep -qi "AMD\|Radeon"; then
+            echo "CARD=none"
+            echo "RENDER=videotoolbox"
+            echo "VENDOR=amd"
+            echo "TYPE=intel_mac_amd"
+            echo "CONNECTOR=builtin"
+        elif echo "$gpu_info" | grep -qi "NVIDIA\|GeForce"; then
+            echo "CARD=none"
+            echo "RENDER=videotoolbox"
+            echo "VENDOR=nvidia"
+            echo "TYPE=intel_mac_nvidia"
+            echo "CONNECTOR=builtin"
+        else
+            # Intel integrated graphics
+            echo "CARD=none"
+            echo "RENDER=videotoolbox"
+            echo "VENDOR=intel"
+            echo "TYPE=intel_mac"
+            echo "CONNECTOR=builtin"
+        fi
+    fi
+}
+
+# Check if running on Raspberry Pi
+detect_raspberry_pi() {
+    # Check device tree model
+    if [[ -f /sys/firmware/devicetree/base/model ]]; then
+        if grep -qi "raspberry pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Fallback: check /proc/cpuinfo for Broadcom
+    if grep -qi "BCM2" /proc/cpuinfo 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Find the GPU with an active display connected
+find_active_gpu() {
+    # Iterate through DRM cards
+    for card in /sys/class/drm/card[0-9]*; do
+        [[ -d "$card" ]] || continue
+
+        local cardname
+        cardname=$(basename "$card")
+
+        # Skip render-only nodes (they don't have connectors)
+        [[ "$cardname" =~ ^renderD ]] && continue
+
+        # Check each connector on this card
+        for conn in "$card"/"$cardname"-*; do
+            [[ -d "$conn" ]] || continue
+
+            local connbase
+            connbase=$(basename "$conn")
+
+            # Skip Writeback connectors (virtual, not real displays)
+            case "$connbase" in
+                *Writeback*) continue ;;
+            esac
+
+            # Check connection status
+            local status
+            status=$(cat "$conn/status" 2>/dev/null || echo "")
+
+            if [[ "$status" == "connected" ]]; then
+                # Found a connected display - get card details
+                local vendor
+                vendor=$(cat "$card/device/vendor" 2>/dev/null || echo "unknown")
+
+                # Get PCI address from card symlink
+                local card_path card_pci
+                card_path=$(readlink -f "$card")
+                card_pci=$(echo "$card_path" | grep -oP '\d{4}:\d{2}:\d{2}\.\d' | tail -1 || echo "")
+
+                # Find matching render node by PCI address
+                for render in /sys/class/drm/renderD*; do
+                    [[ -d "$render" ]] || continue
+
+                    local render_path render_pci
+                    render_path=$(readlink -f "$render")
+                    render_pci=$(echo "$render_path" | grep -oP '\d{4}:\d{2}:\d{2}\.\d' | tail -1 || echo "")
+
+                    if [[ -n "$card_pci" && "$render_pci" == "$card_pci" ]]; then
+                        local render_name
+                        render_name=$(basename "$render")
+
+                        echo "CARD=$cardname"
+                        echo "RENDER=/dev/dri/$render_name"
+                        echo "VENDOR=$vendor"
+                        echo "TYPE=$(get_vendor_type "$vendor")"
+                        echo "CONNECTOR=${connbase#"$cardname"-}"
+                        return 0
+                    fi
+                done
+
+                # Fallback if render node not found via PCI matching
+                # Try to find render node with same card number
+                local card_num="${cardname#card}"
+                local render_num=$((128 + card_num))
+                if [[ -e "/dev/dri/renderD$render_num" ]]; then
+                    echo "CARD=$cardname"
+                    echo "RENDER=/dev/dri/renderD$render_num"
+                    echo "VENDOR=$vendor"
+                    echo "TYPE=$(get_vendor_type "$vendor")"
+                    echo "CONNECTOR=${connbase#"$cardname"-}"
+                    return 0
+                fi
+            fi
+        done
+    done
+
+    return 1
+}
+
+main() {
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        macos)
+            detect_macos_gpu
+            exit 0
+            ;;
+        linux)
+            # Check for Raspberry Pi first
+            if detect_raspberry_pi; then
+                echo "CARD=none"
+                echo "RENDER=/dev/video10"
+                echo "VENDOR=broadcom"
+                echo "TYPE=rpi"
+                echo "CONNECTOR=hdmi"
+                exit 0
+            fi
+
+            # Find active GPU
+            if find_active_gpu; then
+                exit 0
+            fi
+
+            # Fallback: no active display found
+            echo "CARD=none"
+            echo "RENDER=none"
+            echo "VENDOR=unknown"
+            echo "TYPE=software"
+            echo "CONNECTOR=none"
+            echo "ERROR=no_active_display" >&2
+            exit 1
+            ;;
+        *)
+            echo "CARD=none"
+            echo "RENDER=none"
+            echo "VENDOR=unknown"
+            echo "TYPE=software"
+            echo "CONNECTOR=none"
+            echo "ERROR=unsupported_os" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

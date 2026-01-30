@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# audio-stream - Network audio streaming for mic passthrough
+#
+# Usage:
+#   audio-stream --receive [--port PORT]     # Host: accept incoming audio
+#   audio-stream --send HOST [--port PORT]   # Client: stream mic to host
+#   audio-stream --stop                       # Stop streaming
+#   audio-stream --status                     # Show connection status
+
+set -euo pipefail
+
+DEFAULT_PORT=4713
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/audio-stream"
+STATE_FILE="$CONFIG_DIR/state"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+
+# Check dependencies
+check_deps() {
+    local missing=()
+    for cmd in pactl; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing dependencies: ${missing[*]}"
+        log_error "Install with: sudo pacman -S pulseaudio-utils"
+        exit 1
+    fi
+}
+
+# Initialize config directory
+init_config() {
+    mkdir -p "$CONFIG_DIR"
+}
+
+# Get local IP address
+get_local_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 | awk '{print $7; exit}'
+}
+
+# Start receiver (host mode)
+start_receiver() {
+    local port="${1:-$DEFAULT_PORT}"
+
+    log_info "Starting audio receiver on port $port..."
+
+    # Unload existing TCP module if loaded
+    if pactl list modules short | grep -q "module-native-protocol-tcp"; then
+        log_warn "TCP module already loaded, reloading..."
+        pactl unload-module module-native-protocol-tcp 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # Load TCP module to accept connections
+    # auth-anonymous=1 for trusted LAN, change to auth-ip-acl for security
+    if ! pactl load-module module-native-protocol-tcp port="$port" auth-anonymous=1; then
+        log_error "Failed to load TCP module"
+        log_error "Try: pactl list modules | grep tcp"
+        exit 1
+    fi
+
+    echo "receive:$port:$(date +%s)" > "$STATE_FILE"
+
+    local local_ip
+    local_ip=$(get_local_ip)
+
+    log_info "Audio receiver started on port $port"
+    echo ""
+    echo -e "${CYAN}Clients can connect with:${NC}"
+    echo "  audio-stream --send $local_ip"
+    echo ""
+    echo -e "${CYAN}Or set PULSE_SERVER directly:${NC}"
+    echo "  export PULSE_SERVER=tcp:$local_ip:$port"
+}
+
+# Start sender (client mode)
+start_sender() {
+    local host="$1"
+    local port="${2:-$DEFAULT_PORT}"
+
+    log_info "Connecting to audio host at $host:$port..."
+
+    # Test connection first
+    if ! timeout 3 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+        log_error "Cannot connect to $host:$port"
+        log_error "Make sure the host is running: audio-stream --receive"
+        exit 1
+    fi
+
+    log_info "Connection successful!"
+
+    echo "send:$host:$port:$(date +%s)" > "$STATE_FILE"
+
+    echo ""
+    echo -e "${GREEN}Your microphone is now available on $host${NC}"
+    echo ""
+    echo -e "${CYAN}To use audio streaming in this shell:${NC}"
+    echo "  export PULSE_SERVER=tcp:$host:$port"
+    echo ""
+    echo -e "${CYAN}To make it persistent, add to your shell rc:${NC}"
+    echo "  echo 'export PULSE_SERVER=tcp:$host:$port' >> ~/.bashrc"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} Each app needs PULSE_SERVER set to use the remote server."
+    echo "For whisper.cpp, run it with:"
+    echo "  PULSE_SERVER=tcp:$host:$port whisper-cli --capture"
+}
+
+# Stop streaming
+stop_streaming() {
+    log_info "Stopping audio streaming..."
+
+    # Unload TCP module if loaded
+    if pactl list modules short | grep -q "module-native-protocol-tcp"; then
+        pactl unload-module module-native-protocol-tcp 2>/dev/null || true
+        log_info "Unloaded TCP module"
+    else
+        log_info "TCP module was not loaded"
+    fi
+
+    rm -f "$STATE_FILE"
+    log_info "Audio streaming stopped"
+    echo ""
+    log_info "Remember to unset PULSE_SERVER if you set it:"
+    echo "  unset PULSE_SERVER"
+}
+
+# Show status
+show_status() {
+    echo -e "${CYAN}=== Audio Stream Status ===${NC}"
+    echo ""
+
+    # Check if TCP module is loaded (receiver mode)
+    if pactl list modules short | grep -q "module-native-protocol-tcp"; then
+        local module_info
+        module_info=$(pactl list modules | grep -A10 "module-native-protocol-tcp" || true)
+        local port
+        port=$(echo "$module_info" | grep -oP 'port=\K[0-9]+' || echo "$DEFAULT_PORT")
+
+        echo -e "Mode:     ${GREEN}RECEIVER (HOST)${NC}"
+        echo -e "Port:     $port"
+        echo -e "Local IP: $(get_local_ip)"
+        echo ""
+        echo -e "Clients connect with: ${CYAN}audio-stream --send $(get_local_ip)${NC}"
+    elif [[ -n "${PULSE_SERVER:-}" ]]; then
+        echo -e "Mode:     ${GREEN}SENDER (CLIENT)${NC}"
+        echo -e "Target:   $PULSE_SERVER"
+    elif [[ -f "$STATE_FILE" ]]; then
+        local state
+        state=$(cat "$STATE_FILE")
+        echo -e "Last state: $state"
+        echo -e "Mode:     ${YELLOW}CONFIGURED (may need PULSE_SERVER export)${NC}"
+    else
+        echo -e "Mode:     ${YELLOW}NOT ACTIVE${NC}"
+        echo ""
+        echo "Start with:"
+        echo "  Host:   audio-stream --receive"
+        echo "  Client: audio-stream --send <host-ip>"
+    fi
+
+    echo ""
+    echo -e "${CYAN}=== Audio Sources (Microphones) ===${NC}"
+    pactl list sources short 2>/dev/null | grep -v "\.monitor$" || echo "No sources found"
+
+    echo ""
+    echo -e "${CYAN}=== Listening on Port $DEFAULT_PORT ===${NC}"
+    ss -tlnp 2>/dev/null | grep -E "LISTEN.*:$DEFAULT_PORT" | head -5 || echo "Not listening"
+}
+
+# List available sources (mics)
+list_sources() {
+    echo -e "${CYAN}=== Available Audio Sources ===${NC}"
+    echo ""
+
+    pactl list sources | while read -r line; do
+        if [[ "$line" =~ ^Source\ \# ]]; then
+            echo -e "${GREEN}$line${NC}"
+        elif [[ "$line" =~ Name:\ (.+) ]]; then
+            echo "  Name: ${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ Description:\ (.+) ]]; then
+            echo "  Desc: ${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ State:\ (.+) ]]; then
+            echo "  State: ${BASH_REMATCH[1]}"
+            echo ""
+        fi
+    done
+
+    echo -e "${CYAN}For whisper.cpp, use the source name:${NC}"
+    echo "  whisper-cli --capture --device <source-name>"
+}
+
+# Usage
+usage() {
+    cat << EOF
+audio-stream - Network audio streaming for mic passthrough
+
+Usage:
+  audio-stream --receive [--port PORT]     Start as host (accept audio)
+  audio-stream --send HOST [--port PORT]   Stream mic to host
+  audio-stream --stop                      Stop streaming
+  audio-stream --status                    Show connection status
+  audio-stream --list                      List audio sources
+
+Options:
+  -r, --receive    Host mode: accept incoming audio streams
+  -s, --send HOST  Client mode: stream microphone to HOST
+  -p, --port PORT  Port to use (default: $DEFAULT_PORT)
+  -h, --help       Show this help
+
+Examples:
+  # On the HOST (Sunshine machine):
+  audio-stream --receive
+
+  # On the CLIENT (where your mic is):
+  audio-stream --send 192.168.1.100
+
+  # Check status on either machine:
+  audio-stream --status
+
+Sunshine/Moonlight Setup:
+  1. On host: audio-stream --receive
+  2. On client: audio-stream --send <host-ip>
+  3. On client: export PULSE_SERVER=tcp:<host-ip>:4713
+  4. On host: whisper-cli will now see the remote mic
+
+Security:
+  Default uses auth-anonymous=1 (trusted LAN).
+  Edit the script to use auth-ip-acl for IP restriction.
+EOF
+}
+
+# Main
+main() {
+    check_deps
+    init_config
+
+    local mode=""
+    local host=""
+    local port="$DEFAULT_PORT"
+
+    # Handle no arguments
+    if [[ $# -eq 0 ]]; then
+        usage
+        exit 0
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -r|--receive)
+                mode="receive"
+                shift
+                ;;
+            -s|--send)
+                mode="send"
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Host IP required for --send"
+                    exit 1
+                fi
+                host="$2"
+                shift 2
+                ;;
+            -p|--port)
+                port="$2"
+                shift 2
+                ;;
+            --stop)
+                stop_streaming
+                exit 0
+                ;;
+            --status)
+                show_status
+                exit 0
+                ;;
+            --list)
+                list_sources
+                exit 0
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                # Allow bare IP as shorthand for --send
+                if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    mode="send"
+                    host="$1"
+                    shift
+                else
+                    log_error "Unknown option: $1"
+                    usage
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+
+    case "$mode" in
+        receive)
+            start_receiver "$port"
+            ;;
+        send)
+            if [[ -z "$host" ]]; then
+                log_error "Host IP required for --send"
+                exit 1
+            fi
+            start_sender "$host" "$port"
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
