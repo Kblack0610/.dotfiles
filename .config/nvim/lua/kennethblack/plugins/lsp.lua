@@ -32,9 +32,8 @@ return {
   {
     "neovim/nvim-lspconfig",
     -- Remove if you want to go back to nvim-cmp
-    dependencies = { "saghen/blink.cmp" },
+    dependencies = { "saghen/blink.cmp", "williamboman/mason-lspconfig.nvim" },
     config = function()
-      local lspconfig = require "lspconfig"
       -- If you want to go back to nvim-cmp
       --   local capabilities = require("cmp_nvim_lsp").default_capabilities()
       local capabilities = require("blink.cmp").get_lsp_capabilities()
@@ -58,9 +57,19 @@ return {
       }
       local pid = vim.fn.getpid()
       local omnisharp_bin = "/opt/omnisharp-roslyn/run"
-      for _, value in ipairs(ensure_installed) do
-        if value == "ts_ls" then
-          lspconfig[value].setup {
+
+      -- Use mason-lspconfig's automatic setup (modern pattern, no deprecated framework)
+      require("mason-lspconfig").setup_handlers({
+        -- Default handler for all servers
+        function(server_name)
+          require("lspconfig")[server_name].setup({
+            capabilities = capabilities,
+          })
+        end,
+
+        -- Custom handler for ts_ls
+        ["ts_ls"] = function()
+          require("lspconfig").ts_ls.setup({
             capabilities = capabilities,
             on_attach = function(client, _)
               -- Disable formatting capability for tsserver
@@ -68,17 +77,23 @@ return {
               client.server_capabilities.documentFormattingProvider = false
               client.server_capabilities.documentRangeFormattingProvider = false
             end,
-          }
-        elseif value == "emmet_language_server" then
-          lspconfig[value].setup {
+          })
+        end,
+
+        -- Custom handler for emmet_language_server
+        ["emmet_language_server"] = function()
+          require("lspconfig").emmet_language_server.setup({
             capabilities = capabilities,
             filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
-          }
-        elseif value == "omnisharp" then
+          })
+        end,
+
+        -- Custom handler for omnisharp
+        ["omnisharp"] = function()
           -- Unity-compatible OmniSharp setup
           -- Requires: OmniSharp v1.39.6 (installed via setup-unity-omnisharp.sh)
           -- Run: ~/.dotfiles/.local/src/installation_scripts/setup-unity-omnisharp.sh
-          lspconfig[value].setup {
+          require("lspconfig").omnisharp.setup({
             capabilities = capabilities,
             root_dir = function(fname)
               local util = require("lspconfig.util")
@@ -123,26 +138,21 @@ return {
                 projectLoadTimeout = 120,
               },
             },
-          }
-        else
-          lspconfig[value].setup {
-            capabilities = capabilities,
-
-          }
-        end
-      end
+          })
+        end,
+      })
 
       -- lint/formatters
       -- https://github.com/neovim/nvim-lspconfig/blob/master/doc/configs.md#eslint
       -- NOTE: need to install npm install -g vscode-langservers-extracted (eslint globally) for lsp to work
       -- eslint also needs to be installed locally in js/ts project
       -- this is ONLY for eslint projects
-      lspconfig.eslint.setup {
+      require("lspconfig").eslint.setup({
         settings = {
           format = false,
         },
-      }
-      lspconfig.biome.setup {}
+      })
+      require("lspconfig").biome.setup({})
 
       -- key bindings
       vim.api.nvim_create_autocmd("LspAttach", {
