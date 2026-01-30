@@ -60,22 +60,10 @@ is_rate_limited() {
 }
 
 # Mark account as rate limited
-# This is the ONLY place current_index should be advanced
 mark_rate_limited() {
     local account="$1"
     local until=$(($(now) + COOLDOWN_SECONDS))
     state_set ".rate_limited[\"$account\"] = $until"
-
-    # Advance to next account for future invocations
-    local accounts=($(get_configured_accounts))
-    local count=${#accounts[@]}
-    if [[ $count -gt 1 ]]; then
-        local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
-        local next_idx=$(( (current_idx + 1) % count ))
-        state_set ".current_index = $next_idx"
-        log_event "rotated_to_next" "${accounts[$next_idx]}" "from=$account"
-    fi
-
     log_event "rate_limited" "$account" "cooldown_until=$until"
 }
 
@@ -181,7 +169,6 @@ is_token_expired() {
 show_status() {
     echo "=== Claude Account Status ==="
     echo ""
-    local current_idx=$(json_get ".current_index // 0" "$STATE_FILE")
     local accounts=($(get_configured_accounts))
     local count=${#accounts[@]}
 
@@ -193,6 +180,9 @@ show_status() {
             usage_24h[$i]=$(jq -r "select(.ts >= $cutoff and .event == \"session_start\" and .account == \"$i\") | .account" "$LOG_FILE" 2>/dev/null | wc -l)
         done
     fi
+
+    # Determine which account will be selected next (lowest usage, non-rate-limited)
+    local next_account=$(select_account)
 
     for i in $(seq 1 "$MAX_ACCOUNTS"); do
         local creds="$PROFILES_DIR/${i}.credentials.json"
@@ -212,13 +202,10 @@ show_status() {
                 status="TOKEN EXPIRED"
             fi
 
-            # Check if this is next in rotation
+            # Check if this account will be selected next (based on lowest usage)
             local next_marker=""
-            if [[ $count -gt 0 ]]; then
-                local next_idx=$(( current_idx % count ))
-                if [[ "${accounts[$next_idx]}" == "$i" ]]; then
-                    next_marker=" <- NEXT"
-                fi
+            if [[ "$next_account" == "$i" ]]; then
+                next_marker=" <- NEXT (lowest usage)"
             fi
 
             echo "[$i] $sub ($tier)$next_marker"
