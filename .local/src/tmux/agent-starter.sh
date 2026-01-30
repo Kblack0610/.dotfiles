@@ -5,6 +5,31 @@
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
+get_blacklist() {
+    cat <<EOF
+.git
+node_modules
+.venv
+venv
+__pycache__
+build
+dist
+target
+out
+.next
+.cache
+.npm
+.cargo
+.pytest_cache
+.idea
+.vscode
+.vs
+.DS_Store
+.tmp
+.temp
+EOF
+}
+
 # 1. Select from existing tmux sessions
 SESSION=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | \
           fzf --reverse --border --prompt='Spawn agent in session > ')
@@ -12,8 +37,14 @@ SESSION=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | \
 # 2. Exit if cancelled
 [[ -z "$SESSION" ]] && exit 0
 
-# 3. Select target directory
-TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d 2>/dev/null | \
+# 3. Select target directory with blacklist
+exclude_args=()
+while IFS= read -r pattern; do
+    [[ -z "$pattern" ]] && continue
+    exclude_args+=(-not -path "*/$pattern/*")
+done < <(get_blacklist)
+
+TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d "${exclude_args[@]}" 2>/dev/null | \
          fzf --reverse --border --prompt='Select directory > ')
 
 # 4. Exit if cancelled

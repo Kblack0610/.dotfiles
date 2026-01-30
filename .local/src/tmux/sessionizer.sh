@@ -1,20 +1,53 @@
 #!/usr/bin/env bash
 
+get_whitelist() {
+    echo "$HOME/dev"
+    echo "$HOME/bin"
+    echo "$HOME/src"
+    echo "$HOME/dev/*"
+    echo "$HOME/.agent"
+    echo "$HOME/.dotfiles"
+    # Add more directories as needed
+}
+
+get_blacklist() {
+    cat <<EOF
+.git
+node_modules
+.venv
+venv
+__pycache__
+build
+dist
+target
+out
+.next
+.cache
+.npm
+.cargo
+.pytest_cache
+.idea
+.vscode
+.vs
+.DS_Store
+.tmp
+.temp
+EOF
+}
+
 if [[ $# -eq 1 ]]; then
     selected=$1
 else
-    dirs=(
-      "$HOME/dev"
-      "$HOME/bin"
-      "$HOME/src"
-      "$HOME/dev/*"
-      "$HOME/.agent"
-      "$HOME/.dotfiles"
-      # Add more directories as needed
-      # comment out till I add a blacklist to hide bad files
-    )
+    mapfile -t dirs < <(get_whitelist)
 
-    selected=$(find "${dirs[@]}" -maxdepth 4 -type d -not -path "*/\.git/*" -not -path "*/\node_modules/*" -print 2> /dev/null | fzf)
+    # Build exclude arguments from blacklist
+    exclude_args=()
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        exclude_args+=(-not -path "*/$pattern/*")
+    done < <(get_blacklist)
+
+    selected=$(find "${dirs[@]}" -maxdepth 4 -type d "${exclude_args[@]}" -print 2> /dev/null | fzf)
 fi
 
 if [[ -z $selected ]]; then
