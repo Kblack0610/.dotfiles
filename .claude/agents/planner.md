@@ -1,1 +1,1 @@
-/projects/agents/planner.md
+/home/kblack0610/.agent/agents/planner.md

@@ -1,1 +1,1 @@
-/projects/agents/monitor.md
+/home/kblack0610/.agent/agents/monitor.md
