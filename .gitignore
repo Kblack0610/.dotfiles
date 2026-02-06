@@ -107,6 +107,9 @@ Media/Music
 # Gungan - has its own repo at github.com/Kblack0610/gungan-speak
 .local/src/gungan/
 
+# Profile - machine-specific (each machine sets its own via profile-switch)
+.config/profile/current
+
 # Misc
 *.bak
 test_notifications.sh
