@@ -40,14 +40,6 @@
         "docker-mcp"
       ]
     },
-    "linear": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://mcp.linear.app/mcp"
-      ]
-    },
     "filesystem": {
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp",
       "args": [],
