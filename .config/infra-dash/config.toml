@@ -1,0 +1,102 @@
+# Infrastructure Dashboard Configuration
+# Services grouped by location/host
+
+[settings]
+cache_dir = "~/.cache/infra-dash"
+cache_ttl_seconds = 60
+k8s_context = "home-k3s"
+
+# ─────────────────────────────────────────
+# WORKSTATION - Local systemd timers
+# ─────────────────────────────────────────
+
+[locations.workstation]
+name = "Workstation"
+icon = "wks"
+order = 1
+
+[[locations.workstation.services]]
+name = "nightly-sync"
+type = "systemd-user"
+unit = "nightly-sync.timer"
+
+[[locations.workstation.services]]
+name = "git-sync-agent"
+type = "systemd-user"
+unit = "git-sync-agent.timer"
+
+[[locations.workstation.services]]
+name = "git-sync-notes"
+type = "systemd-user"
+unit = "git-sync-notes.timer"
+
+[[locations.workstation.services]]
+name = "system-health-check"
+type = "systemd-user"
+unit = "system-health-check.timer"
+
+# ─────────────────────────────────────────
+# HOME K3S CLUSTER
+# ─────────────────────────────────────────
+
+[locations.k3s]
+name = "Home K3s"
+icon = "k8s"
+order = 2
+
+[[locations.k3s.services]]
+name = "home-assistant"
+type = "k8s"
+namespace = "home-assistant"
+resource = "deployment/home-assistant"
+
+[[locations.k3s.services]]
+name = "adguard-home"
+type = "k8s"
+namespace = "adguard-home"
+resource = "deployment/adguard-home"
+
+[[locations.k3s.services]]
+name = "actual-budget"
+type = "k8s"
+namespace = "actual-budget"
+resource = "deployment/actual-budget"
+
+[[locations.k3s.services]]
+name = "grafana"
+type = "k8s"
+namespace = "monitoring"
+resource = "deployment/kube-prometheus-stack-grafana"
+
+[[locations.k3s.services]]
+name = "registry"
+type = "k8s"
+namespace = "registry"
+resource = "deployment/registry"
+
+[[locations.k3s.services]]
+name = "cloudflared"
+type = "k8s"
+namespace = "apps"
+resource = "deployment/cloudflared"
+
+[[locations.k3s.services]]
+name = "litellm"
+type = "k8s"
+namespace = "ai-gateway"
+resource = "deployment/litellm"
+
+# ─────────────────────────────────────────
+# PI3 - Remote Raspberry Pi
+# ─────────────────────────────────────────
+
+[locations.pi3]
+name = "Pi3"
+icon = "rpi"
+order = 3
+ssh_host = "pi3"
+
+[[locations.pi3.services]]
+name = "pi3-adguard-home"
+type = "ssh-systemd"
+unit = "adguard-home"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Infrastructure Dashboard Collector
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/src/infra-dash/collect.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
