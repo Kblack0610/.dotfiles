@@ -213,6 +213,11 @@ alias k9local="k9s --context k3d-local"
 # Cluster setup
 alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
 
+# Infrastructure dashboard
+alias infra="$HOME/.local/src/infra-dash/display.sh"
+alias infra-collect="$HOME/.local/src/infra-dash/collect.sh"
+alias infra-json="$HOME/.local/src/infra-dash/display.sh -j"
+
 # Dotfiles setup (full installation)
 alias dotfiles-setup="$HOME/.local/src/installation_scripts/install.sh"
 
@@ -222,3 +227,19 @@ alias mic-receive="audio-stream --receive"
 alias mic-stop="audio-stream --stop"
 alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
+
+alias cl="claude --dangerously-skip-permissions"
+alias co="codex"
+alias cb="agent" # need to rename to agent
+
+# --- Claude Code Profiles ---
+# Interactive profiles
+alias cmt="claude-profile manual-test"    # Browser testing (Playwright, Docker)
+alias cim="claude-profile implement"      # Coding (Serena, GitHub, Linear, Context7)
+alias cfl="claude-profile full"           # All MCP servers
+alias cmn="claude-profile minimal"        # Fast startup (filesystem + memory)
+
+# Headless profiles (for scripting / calling from within Claude)
+alias cmt-h="claude-profile manual-test --headless"
+alias cim-h="claude-profile implement --headless"
+alias cmn-h="claude-profile minimal --headless"

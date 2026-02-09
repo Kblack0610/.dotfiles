@@ -71,7 +71,7 @@ eval "$(starship init zsh)"
 # export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
 # [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
 # [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" # This loads nvm bash_completion
-#
+
 # Initialize zoxide (smarter cd command)
 eval "$(zoxide init zsh)"
 
@@ -136,3 +136,10 @@ fi
 # Alias to manually push prompt down anytime
 alias bp='bottom-prompt'
 export PATH="$HOME/.local/bin:$PATH"
+
+# bun completions
+[ -s "/home/kblack0610/.bun/_bun" ] && source "/home/kblack0610/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
