@@ -17,17 +17,17 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Logging functions
-log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
-log_warning() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+# Logging functions - all go to stderr to avoid polluting function return values
+log_info()    { echo -e "${BLUE}[INFO]${NC} $*" >&2; }
+log_success() { echo -e "${GREEN}[OK]${NC} $*" >&2; }
+log_warning() { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-log_debug()   { [[ "${DEBUG:-0}" == "1" ]] && echo -e "${CYAN}[DEBUG]${NC} $*"; }
+log_debug()   { [[ "${DEBUG:-0}" == "1" ]] && echo -e "${CYAN}[DEBUG]${NC} $*" >&2; }
 
 log_section() {
-    echo ""
-    echo -e "${BOLD}${BLUE}=== $* ===${NC}"
-    echo ""
+    echo "" >&2
+    echo -e "${BOLD}${BLUE}=== $* ===${NC}" >&2
+    echo "" >&2
 }
 
 # Network helpers

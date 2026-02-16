@@ -57,7 +57,7 @@ get_latest_iso_info() {
 
     local mirror_url="$CACHYOS_MIRROR/$CACHYOS_EDITION/"
 
-    # Fetch the mirror listing and find the latest ISO
+    # Fetch the mirror listing to find dated directories (e.g., 260124/)
     local listing
     listing=$(curl -sL "$mirror_url" 2>/dev/null)
 
@@ -66,33 +66,50 @@ get_latest_iso_info() {
         return 1
     fi
 
-    # Extract ISO filename (pattern: cachyos-desktop-linux-YYYYMMDD.iso)
-    local iso_name
-    iso_name=$(echo "$listing" | grep -oP 'cachyos-'"$CACHYOS_EDITION"'-linux-[0-9]+\.iso' | sort -V | tail -1)
+    # Find the latest dated directory (format: YYMMDD/)
+    local latest_dir
+    latest_dir=$(echo "$listing" | grep -oP 'href="[0-9]{6}/"' | grep -oP '[0-9]{6}' | sort -V | tail -1)
 
-    if [[ -z "$iso_name" ]]; then
-        # Try alternate naming patterns
-        iso_name=$(echo "$listing" | grep -oP 'cachyos-[^"]+\.iso' | grep -v '.sig' | sort -V | tail -1)
-    fi
-
-    if [[ -z "$iso_name" ]]; then
-        log_error "Could not find CachyOS ISO on mirror"
+    if [[ -z "$latest_dir" ]]; then
+        log_error "Could not find dated directory on mirror"
         log_info "Mirror URL: $mirror_url"
         return 1
     fi
 
-    echo "$iso_name"
+    log_info "Latest release directory: $latest_dir"
+
+    # Now fetch that directory to find the ISO
+    local dir_listing
+    dir_listing=$(curl -sL "${mirror_url}${latest_dir}/" 2>/dev/null)
+
+    # Extract ISO filename
+    local iso_name
+    iso_name=$(echo "$dir_listing" | grep -oP 'cachyos-'"$CACHYOS_EDITION"'-linux-[0-9]+\.iso' | head -1)
+
+    if [[ -z "$iso_name" ]]; then
+        # Try alternate naming patterns
+        iso_name=$(echo "$dir_listing" | grep -oP 'cachyos-[^"]+\.iso' | grep -v '.sig' | head -1)
+    fi
+
+    if [[ -z "$iso_name" ]]; then
+        log_error "Could not find CachyOS ISO in $latest_dir"
+        return 1
+    fi
+
+    # Return both directory and filename separated by /
+    echo "${latest_dir}/${iso_name}"
 }
 
 download_iso() {
-    local iso_name="$1"
-    local iso_url="$CACHYOS_MIRROR/$CACHYOS_EDITION/$iso_name"
-    local iso_path="$IMAGES_DIR/$iso_name"
+    local iso_remote_path="$1"
+    local iso_name="${iso_remote_path##*/}"
+    local iso_url="$CACHYOS_MIRROR/$CACHYOS_EDITION/$iso_remote_path"
+    local iso_local_path="$IMAGES_DIR/$iso_name"
 
     mkdir -p "$IMAGES_DIR"
 
     # Check if ISO already exists
-    if [[ -f "$iso_path" ]] && [[ "$FORCE_DOWNLOAD" != "true" ]]; then
+    if [[ -f "$iso_local_path" ]] && [[ "$FORCE_DOWNLOAD" != "true" ]]; then
         log_info "ISO already exists: $iso_name"
         log_info "Use --force to re-download"
         return 0
@@ -100,21 +117,21 @@ download_iso() {
 
     log_section "Downloading CachyOS ISO"
     log_info "URL: $iso_url"
-    log_info "Destination: $iso_path"
+    log_info "Destination: $iso_local_path"
     log_info "This may take a while (~3-4 GB)..."
 
     # Download with progress
-    if ! curl -L --progress-bar -o "$iso_path.tmp" "$iso_url"; then
+    if ! curl -L --progress-bar -o "$iso_local_path.tmp" "$iso_url"; then
         log_error "Download failed"
-        rm -f "$iso_path.tmp"
+        rm -f "$iso_local_path.tmp"
         return 1
     fi
 
     # Move to final location
-    mv "$iso_path.tmp" "$iso_path"
+    mv "$iso_local_path.tmp" "$iso_local_path"
 
     local size
-    size=$(du -h "$iso_path" | cut -f1)
+    size=$(du -h "$iso_local_path" | cut -f1)
     log_success "Download complete: $size"
 }
 
@@ -253,13 +270,14 @@ main() {
         return 0
     fi
 
-    # Get latest ISO info
-    local iso_name
-    iso_name=$(get_latest_iso_info)
+    # Get latest ISO info (returns path like "260124/cachyos-desktop-linux-260124.iso")
+    local iso_path
+    iso_path=$(get_latest_iso_info)
+    local iso_name="${iso_path##*/}"
     log_info "Latest ISO: $iso_name"
 
     # Download ISO
-    download_iso "$iso_name"
+    download_iso "$iso_path"
 
     # Extract boot files
     extract_boot_files "$IMAGES_DIR/$iso_name"
