@@ -23,7 +23,11 @@ return {
       },
     },
     notifier = {
-      enabled = true
+      enabled = true,
+      width = { min = 40, max = 0.7 },  -- wider notifications (70% screen max)
+      height = { min = 1, max = 0.8 },  -- taller if needed
+      timeout = 5000,  -- 5 seconds (more time to read errors)
+      style = "compact",
     },
     bigfile = { enabled = true },
     debug = { enabled = true },
@@ -62,7 +66,14 @@ return {
         width = 0.99,
         height = 0.99,
         border = "rounded",
-      }
+      },
+      -- Notification style - enable wrap so long messages aren't cut off
+      notification = {
+        wo = {
+          wrap = true,
+          conceallevel = 2,
+        },
+      },
     }
   },
   keys = {

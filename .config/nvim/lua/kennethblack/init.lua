@@ -18,7 +18,13 @@ require "kennethblack.map"
 require "kennethblack.autocmds"
 
 -- Load plugins, lazy will do this automagically if string is in lua/{your dir here}. I use 'plugins'
-require("lazy").setup "kennethblack.plugins"
+require("lazy").setup("kennethblack.plugins", {
+  ui = {
+    size = { width = 0.9, height = 0.9 },  -- larger window for errors
+    wrap = true,  -- wrap long lines so nothing is cut off
+    border = "rounded",
+  },
+})
 
 -- colorscheme
 vim.cmd.colorscheme "tokyonight"

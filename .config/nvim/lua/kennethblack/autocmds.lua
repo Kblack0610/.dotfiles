@@ -190,7 +190,6 @@ end
 
 local function create_daily_journal()
   local today = os.date("%Y-%m-%d")
-  local month = os.date("%Y-%m")
   local journal_path = get_today_journal()
 
   -- Don't recreate if exists
@@ -200,46 +199,32 @@ local function create_daily_journal()
   local yesterday_content = read_file(get_yesterday_journal())
   local incomplete_tasks = extract_incomplete_tasks(yesterday_content)
 
-  -- Build template
+  -- Build clean template
   local lines = {
     "---",
     "date: " .. today,
     "tags: [daily]",
     "---",
     "",
-    "# Daily Log: " .. today,
+    "# " .. today,
     "",
     "## Focus",
   }
 
-  -- Add yesterday's incomplete tasks or empty task
+  -- Add yesterday's incomplete tasks
   if #incomplete_tasks > 0 then
-    table.insert(lines, "<!-- Carried over from yesterday -->")
     for _, task in ipairs(incomplete_tasks) do
       table.insert(lines, task)
     end
-    table.insert(lines, "")
-    table.insert(lines, "<!-- New tasks for today -->")
   end
   table.insert(lines, "- [ ] ")
 
   -- Add rest of template
-  local rest = {
-    "",
-    "## Notes",
-    "- ",
-    "",
-    "## Journal",
-    "<!-- Your thoughts, reflections, and experiences for the day -->",
-    "",
-    "",
-    "---",
-    "*This note will be included in the monthly summary for " .. month .. "*",
-    "",
-  }
-  for _, line in ipairs(rest) do
-    table.insert(lines, line)
-  end
+  table.insert(lines, "")
+  table.insert(lines, "## Notes")
+  table.insert(lines, "")
+  table.insert(lines, "## Log")
+  table.insert(lines, "")
 
   write_file(journal_path, table.concat(lines, "\n"))
 end
