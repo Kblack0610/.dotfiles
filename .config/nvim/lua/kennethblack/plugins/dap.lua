@@ -42,12 +42,6 @@ return {
       dap.listeners.before.event_terminated["dapui_config"] = function() dapui.close() end
       dap.listeners.before.event_exited["dapui_config"] = function() dapui.close() end
 
-      -- vim.keymap.set('n', '<leader>db', dap.toggle_breakpoint)
-      -- vim.keymap.set('n', '<leader>dc', dap.continue)
-      -- vim.keymap.set('n', '<leader>do', dap.step_over)
-      -- vim.keymap.set('n', '<leader>di', dap.step_into)
-      -- vim.keymap.set('n', '<leader>dg', dap.repl.open)
-      --
       -- Keybindings
       vim.keymap.set("n", "<leader>da", dap.continue, { desc = "Start/Continue Debugging" })
       vim.keymap.set("n", "<leader>dO", dap.step_over, { desc = "Step Over" })

@@ -26,11 +26,23 @@ return {
   {
     "williamboman/mason-lspconfig.nvim",
     dependencies = { "williamboman/mason.nvim" },
+    config = function()
+      require("mason-lspconfig").setup({
+        ensure_installed = ensure_installed,
+      })
+    end,
   },
   {
     "neovim/nvim-lspconfig",
     dependencies = { "saghen/blink.cmp", "williamboman/mason-lspconfig.nvim" },
     config = function()
+      -- Suppress deprecation warnings for now (lspconfig migration to vim.lsp.config)
+      vim.g.lspconfig_suppress_deprecation_warnings = true
+
+      -- Add Mason bin to PATH so lspconfig can find Mason-installed servers
+      local mason_bin = vim.fn.stdpath("data") .. "/mason/bin"
+      vim.env.PATH = mason_bin .. ":" .. vim.env.PATH
+
       -- Get capabilities from blink.cmp
       local capabilities = require("blink.cmp").get_lsp_capabilities()
 
@@ -57,94 +69,81 @@ return {
       local pid = vim.fn.getpid()
       local omnisharp_bin = "/opt/omnisharp-roslyn/run"
 
-      -- Ensure mason-lspconfig is set up before calling setup_handlers
-      local mason_lspconfig = require("mason-lspconfig")
-      mason_lspconfig.setup({
-        ensure_installed = ensure_installed,
+      local lspconfig = require("lspconfig")
+
+      -- Setup servers with default config
+      local default_servers = { "lua_ls", "jsonls", "bashls", "html", "cssls", "sqlls", "yamlls", "pyright" }
+      for _, server in ipairs(default_servers) do
+        lspconfig[server].setup({
+          capabilities = capabilities,
+        })
+      end
+
+      -- ts_ls with custom config
+      lspconfig.ts_ls.setup({
+        capabilities = capabilities,
+        on_attach = function(client, _)
+          -- Disable formatting capability for tsserver
+          -- This conflicts with other formatters
+          client.server_capabilities.documentFormattingProvider = false
+          client.server_capabilities.documentRangeFormattingProvider = false
+        end,
       })
 
-      -- Use mason-lspconfig's automatic setup (modern pattern)
-      mason_lspconfig.setup_handlers({
-        -- Default handler for all servers
-        function(server_name)
-          require("lspconfig")[server_name].setup({
-            capabilities = capabilities,
-          })
-        end,
+      -- emmet_language_server with custom filetypes
+      lspconfig.emmet_language_server.setup({
+        capabilities = capabilities,
+        filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
+      })
 
-        -- Custom handler for ts_ls
-        ["ts_ls"] = function()
-          require("lspconfig").ts_ls.setup({
-            capabilities = capabilities,
-            on_attach = function(client, _)
-              -- Disable formatting capability for tsserver
-              -- This conflicts with other formatters
-              client.server_capabilities.documentFormattingProvider = false
-              client.server_capabilities.documentRangeFormattingProvider = false
-            end,
-          })
+      -- omnisharp for Unity/C#
+      -- Requires: OmniSharp v1.39.6 (installed via setup-unity-omnisharp.sh)
+      -- Run: ~/.dotfiles/.local/src/installation_scripts/setup-unity-omnisharp.sh
+      lspconfig.omnisharp.setup({
+        capabilities = capabilities,
+        root_dir = function(fname)
+          local util = require("lspconfig.util")
+          -- Prefer .sln files, fallback to .csproj
+          local primary = util.root_pattern("*.sln")(fname)
+          local fallback = util.root_pattern("*.csproj")(fname)
+          return primary or fallback
         end,
-
-        -- Custom handler for emmet_language_server
-        ["emmet_language_server"] = function()
-          require("lspconfig").emmet_language_server.setup({
-            capabilities = capabilities,
-            filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
-          })
-        end,
-
-        -- Custom handler for omnisharp
-        ["omnisharp"] = function()
-          -- Unity-compatible OmniSharp setup
-          -- Requires: OmniSharp v1.39.6 (installed via setup-unity-omnisharp.sh)
-          -- Run: ~/.dotfiles/.local/src/installation_scripts/setup-unity-omnisharp.sh
-          require("lspconfig").omnisharp.setup({
-            capabilities = capabilities,
-            root_dir = function(fname)
-              local util = require("lspconfig.util")
-              -- Prefer .sln files, fallback to .csproj
-              local primary = util.root_pattern("*.sln")(fname)
-              local fallback = util.root_pattern("*.csproj")(fname)
-              return primary or fallback
-            end,
-            -- Use Mono for Unity (NOT modern .NET)
-            use_mono = true,
-            flags = {
-              debounce_text_changes = 150,
-            },
-            cmd = { omnisharp_bin, "--languageserver", "--hostPID", tostring(pid) },
-            handlers = vim.tbl_extend("force", rounded_border_handlers, {
-              ["textDocument/definition"] = require("omnisharp_extended").handler,
-            }),
-            settings = {
-              FormattingOptions = {
-                EnableEditorConfigSupport = true,
-                OrganizeImports = true,
-              },
-              MsBuild = {
-                -- Load projects on demand for faster startup
-                LoadProjectsOnDemand = true,
-              },
-              RoslynExtensionsOptions = {
-                -- Disable heavy analyzers for better performance with Unity
-                EnableAnalyzersSupport = false,
-                EnableImportCompletion = true,
-                AnalyzeOpenDocumentsOnly = true,
-                EnableDecompilationSupport = true,
-              },
-              Sdk = {
-                IncludePrereleases = false,
-              },
-              omnisharp = {
-                -- CRITICAL: Use Mono, not modern .NET (Unity requirement)
-                useModernNet = false,
-                analyzeOpenDocumentsOnly = true,
-                enableMsBuildLoadProjectsOnDemand = true,
-                projectLoadTimeout = 120,
-              },
-            },
-          })
-        end,
+        -- Use Mono for Unity (NOT modern .NET)
+        use_mono = true,
+        flags = {
+          debounce_text_changes = 150,
+        },
+        cmd = { omnisharp_bin, "--languageserver", "--hostPID", tostring(pid) },
+        handlers = vim.tbl_extend("force", rounded_border_handlers, {
+          ["textDocument/definition"] = require("omnisharp_extended").handler,
+        }),
+        settings = {
+          FormattingOptions = {
+            EnableEditorConfigSupport = true,
+            OrganizeImports = true,
+          },
+          MsBuild = {
+            -- Load projects on demand for faster startup
+            LoadProjectsOnDemand = true,
+          },
+          RoslynExtensionsOptions = {
+            -- Disable heavy analyzers for better performance with Unity
+            EnableAnalyzersSupport = false,
+            EnableImportCompletion = true,
+            AnalyzeOpenDocumentsOnly = true,
+            EnableDecompilationSupport = true,
+          },
+          Sdk = {
+            IncludePrereleases = false,
+          },
+          omnisharp = {
+            -- CRITICAL: Use Mono, not modern .NET (Unity requirement)
+            useModernNet = false,
+            analyzeOpenDocumentsOnly = true,
+            enableMsBuildLoadProjectsOnDemand = true,
+            projectLoadTimeout = 120,
+          },
+        },
       })
 
       -- lint/formatters
