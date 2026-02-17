@@ -19,8 +19,6 @@ YESTERDAY_FILE="$NOTES_DIR/$YESTERDAY.md"
 INCOMPLETE=$(grep -E '^\s*-\s*\[\s*\]' "$YESTERDAY_FILE" 2>/dev/null || true)
 [[ -z "$INCOMPLETE" ]] && exit 0
 
-TASK_COUNT=$(echo "$INCOMPLETE" | wc -l)
-
 # Build LLM prompt
 PROMPT="Incomplete tasks from $YESTERDAY to carry forward to $TODAY.
 Prioritize, group related items, keep markdown checkbox format (- [ ]).
@@ -44,6 +42,5 @@ SUMMARY=$(echo "$RESPONSE" | jq -r '.response // empty' 2>/dev/null || true)
 
 cat << EOF
 ## Carried Forward
-<!-- $TASK_COUNT tasks from $YESTERDAY -->
 $SUMMARY
 EOF

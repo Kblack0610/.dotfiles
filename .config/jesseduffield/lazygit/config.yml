@@ -1,4 +1,3 @@
-
 # https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md
 #Default path for the global config file:
 
@@ -39,3 +38,25 @@ gui:
 os:
   editCommand: 'nvim'
   openCommand: 'kitty nvim .'
+customCommands:
+  # Create worktree and open new terminal there
+  - key: 'W'
+    context: 'localBranches'
+    description: 'Create worktree from branch and open terminal there'
+    prompts:
+      - type: 'input'
+        title: 'Worktree path:'
+        key: 'Path'
+        initialValue: '../{{.SelectedLocalBranch.Name}}'
+    command: 'git worktree add "{{.Form.Path}}" "{{.SelectedLocalBranch.Name}}" && kitty --detach --directory "$(realpath {{.Form.Path}})"'
+  # Create worktree and switch lazygit to it (replaces current session)
+  - key: '<c-w>'
+    context: 'localBranches'
+    description: 'Create worktree and switch to it (replaces lazygit)'
+    prompts:
+      - type: 'input'
+        title: 'Worktree path:'
+        key: 'Path'
+        initialValue: '../{{.SelectedLocalBranch.Name}}'
+    command: 'git worktree add "{{.Form.Path}}" "{{.SelectedLocalBranch.Name}}" && cd "{{.Form.Path}}" && lazygit'
+    output: terminal

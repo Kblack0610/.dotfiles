@@ -69,7 +69,7 @@
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp",
       "args": [],
       "env": {
-        "SEARXNG_URL": "http://localhost:8080",
+        "SEARXNG_URL": "http://localhost:8888",
         "RUST_LOG": "info"
       }
     },
