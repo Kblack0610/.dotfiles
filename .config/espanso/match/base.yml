@@ -1,5 +1,0 @@
-matches:
-  # Test
-  - trigger: ":espanso"
-    replace: "Hi there!"
-...
