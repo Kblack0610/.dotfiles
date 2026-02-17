@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PXE_LOG_DIR="/tmp/pxe-server"
 DNSMASQ_PID="$PXE_LOG_DIR/dnsmasq.pid"
 HTTP_PID="$PXE_LOG_DIR/http.pid"
-HTTP_PORT="${PXE_HTTP_PORT:-8080}"
+HTTP_PORT="${PXE_HTTP_PORT:-9080}"
 HTTP_ROOT="$SCRIPT_DIR/../http"
 
 # Check service status

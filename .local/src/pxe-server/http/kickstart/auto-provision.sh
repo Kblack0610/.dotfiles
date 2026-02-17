@@ -15,7 +15,7 @@
 #   pxe_autoinstall=<0|1>   - Whether to auto-install
 #
 # Usage (from live environment):
-#   curl -sL http://<pxe-server>:8080/kickstart/auto-provision.sh | bash
+#   curl -sL http://<pxe-server>:9080/kickstart/auto-provision.sh | bash
 #
 
 set -euo pipefail
@@ -196,7 +196,7 @@ apply_profile() {
     log_section "Applying Profile: $PXE_PROFILE"
 
     # Try to fetch and run profile-specific script from PXE server
-    local profile_url="http://$PXE_SERVER:8080/kickstart/profiles/${PXE_PROFILE}.sh"
+    local profile_url="http://$PXE_SERVER:9080/kickstart/profiles/${PXE_PROFILE}.sh"
 
     log "Checking for profile script at $profile_url..."
 

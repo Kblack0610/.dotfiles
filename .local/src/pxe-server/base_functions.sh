@@ -124,7 +124,7 @@ PXE_DNSMASQ_LOG="$PXE_LOG_DIR/dnsmasq.log"
 PXE_HTTP_LOG="$PXE_LOG_DIR/http.log"
 
 # Default ports
-PXE_HTTP_PORT="${PXE_HTTP_PORT:-8080}"
+PXE_HTTP_PORT="${PXE_HTTP_PORT:-9080}"
 PXE_TFTP_PORT="${PXE_TFTP_PORT:-69}"
 
 # Ensure runtime directory exists

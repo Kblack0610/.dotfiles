@@ -36,7 +36,7 @@ source "$SCRIPT_DIR/base_functions.sh"
 SERVER_IP="${PXE_SERVER_IP:-$(get_local_ip)}"
 SERVER_INTERFACE="${PXE_INTERFACE:-$(get_lan_interface)}"
 SERVER_SUBNET="${PXE_SUBNET:-$(get_lan_subnet | cut -d'/' -f1)}"
-HTTP_PORT="${PXE_HTTP_PORT:-8080}"
+HTTP_PORT="${PXE_HTTP_PORT:-9080}"
 
 # =============================================================================
 # Helper Functions

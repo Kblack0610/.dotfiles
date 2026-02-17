@@ -14,7 +14,7 @@
 # Server settings (automatically set by DHCP or can be overridden)
 isset ${next-server} || set next-server ${dhcp-server}
 set pxe-server ${next-server}
-set http-root http://${pxe-server}:8080
+set http-root http://${pxe-server}:9080
 
 # Retry settings
 set retry-count 3

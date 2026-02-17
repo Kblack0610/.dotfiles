@@ -203,7 +203,7 @@ TIMEOUT 30
 LABEL ipxe
     MENU LABEL Boot iPXE
     KERNEL ipxe.lkrn
-    APPEND dhcp && chain http://${next-server}:8080/ipxe/menu.ipxe
+    APPEND dhcp && chain http://${next-server}:9080/ipxe/menu.ipxe
 EOF
 
     log_success "PXELINUX configured"
