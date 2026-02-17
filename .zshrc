@@ -108,6 +108,10 @@ fi
 
 alias zephyr-env="source ~/zephyr-env/bin/activate"
 
+# Webcam snapshot to clipboard (Wayland)
+# Uses 5th frame for better exposure/brightness
+alias websnap='ffmpeg -f v4l2 -i /dev/video0 -vf "select=gte(n\,5)" -frames:v 1 -f image2pipe -c:v png - 2>/dev/null | wl-copy'
+
 export OLLAMA_HOST=192.168.1.4:11434
 
 # --- Bottom Prompt (Ergonomic) ---
