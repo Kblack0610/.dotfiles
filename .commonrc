@@ -99,10 +99,52 @@ export PATH
 #     fortune | cut -c 1-200 | cowsay
 # fi
 
-# 1. Helper: Ensure the daily note exists with task carryforward
+# 1a. Helper: Link refs to daily note (wiki-style links)
+function link_refs_to_daily() {
+    local DATE=$(date +%Y-%m-%d)
+    local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
+    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
+
+    # Skip if no refs folder or no note
+    [[ ! -d "$REFS_DIR" ]] && return
+    [[ ! -f "$NOTE_FILE" ]] && return
+
+    # Get list of ref files
+    local refs=($(find "$REFS_DIR" -type f -name "*.md" 2>/dev/null))
+    [[ ${#refs[@]} -eq 0 ]] && return
+
+    # Check if ## Refs section already exists
+    if grep -q "^## Refs$" "$NOTE_FILE"; then
+        # Section exists - check which refs are already linked
+        for ref in "${refs[@]}"; do
+            local name=$(basename "$ref" .md)
+            local link="[[journal/refs/$DATE/$name]]"
+            if ! grep -qF "$link" "$NOTE_FILE"; then
+                # Add new ref link under ## Refs section
+                sed -i "/^## Refs$/a - $link" "$NOTE_FILE"
+            fi
+        done
+    else
+        # Add ## Refs section at end of file
+        {
+            echo ""
+            echo "## Refs"
+            for ref in "${refs[@]}"; do
+                local name=$(basename "$ref" .md)
+                echo "- [[journal/refs/$DATE/$name]]"
+            done
+        } >> "$NOTE_FILE"
+    fi
+}
+
+# 1b. Helper: Ensure the daily note exists with task carryforward + refs folder
 function ensure_daily_note() {
     local DATE=$(date +%Y-%m-%d)
     local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
+    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
+
+    # Create refs folder for today (inside journal/)
+    mkdir -p "$REFS_DIR"
 
     if [ ! -f "$NOTE_FILE" ]; then
         echo "Creating entry: $NOTE_FILE"
@@ -114,22 +156,32 @@ function ensure_daily_note() {
             CARRIED=$(journal-carryforward 2>/dev/null || true)
         fi
 
-        # Create note with template
+        # Create note with clean template
         {
-            echo "# Daily Log: $DATE"
+            echo "---"
+            echo "date: $DATE"
+            echo "tags: [daily]"
+            echo "---"
+            echo ""
+            echo "# $DATE"
             echo ""
             echo "## Focus"
-            echo "- [ ] "
-            echo ""
             if [ -n "$CARRIED" ]; then
                 echo "$CARRIED"
-                echo ""
             fi
+            echo "- [ ] "
+            echo ""
             echo "## Notes"
+            echo ""
+            echo "## Log"
+            echo ""
         } > "$NOTE_FILE"
 
-        [ -n "$CARRIED" ] && echo "  -> Carried forward tasks from yesterday"
+        [ -n "$CARRIED" ] && echo "  -> Carried forward tasks"
     fi
+
+    # Link any refs to the daily note
+    link_refs_to_daily
 }
 
 # 2. Main: The Dashboard
@@ -174,6 +226,21 @@ alias lg="lazygit"
 alias sysz="$HOME/.bin/sysz"
 alias python="/usr/bin/python3"
 alias o="nvim $HOME/.notes"
+
+# Journal helpers (refs are inside journal/)
+alias ref='cd ~/.notes/journal/refs/$(date +%Y-%m-%d) && ls -la'
+alias refs="cd ~/.notes/journal/refs && ls -la"
+alias today='nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md'
+alias k="nvim ~/.notes/knowledge"
+
+# Quick ref note creation (inside journal/refs/)
+refnote() {
+    local DATE=$(date +%Y-%m-%d)
+    local NAME="${1:-note}"
+    local FILE="$HOME/.notes/journal/refs/$DATE/$NAME.md"
+    mkdir -p "$(dirname "$FILE")"
+    nvim "$FILE"
+}
 
 # Aliases for specific tools and scripts
 alias f=". $HOME/.local/src/fzf/dev.sh"

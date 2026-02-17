@@ -1,6 +1,7 @@
 -- Trigger autoread when files change on disk
 vim.opt.autoread = true
 
+
 -- Create an autocommand group for file change detection
 local augroup = vim.api.nvim_create_augroup("AutoReloadGroup", { clear = true })
 

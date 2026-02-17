@@ -269,3 +269,44 @@ autocmd("VimEnter", {
   group = journal_harpoon_group,
   callback = set_journal_as_slot_1,
 })
+
+-- ============================================
+-- Link current buffer to daily note
+-- Adds a [[wiki link]] to today's journal and jumps there
+-- ============================================
+local function link_to_daily()
+  local current_file = vim.fn.expand("%:p")
+  local notes_dir = vim.fn.expand("~/.notes")
+
+  -- Create relative link if in notes dir, otherwise use filename
+  local link_text
+  if current_file:find(notes_dir, 1, true) then
+    link_text = current_file:sub(#notes_dir + 2):gsub("%.md$", "")
+  else
+    link_text = vim.fn.expand("%:t:r") -- filename without extension
+  end
+
+  -- Ensure journal exists
+  create_daily_journal()
+
+  local journal_path = get_today_journal()
+  local content = read_file(journal_path) or ""
+
+  -- Append link under ## Notes section
+  local link_line = "- [[" .. link_text .. "]]"
+  local new_content = content:gsub("(## Notes\n)", "%1" .. link_line .. "\n")
+
+  write_file(journal_path, new_content)
+
+  -- Jump to daily via harpoon slot 1
+  local ok, harpoon = pcall(require, "harpoon")
+  if ok then
+    harpoon:list():select(1)
+  else
+    vim.cmd("edit " .. journal_path)
+  end
+
+  vim.notify("Linked: " .. link_text, vim.log.levels.INFO)
+end
+
+vim.keymap.set("n", "<leader>nl", link_to_daily, { desc = "Link to daily note" })
