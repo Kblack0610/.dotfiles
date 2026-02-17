@@ -8,10 +8,24 @@ return {
             settings = {
                 save_on_toggle = true, -- Save items deleted/changed on the UI when you close
             },
-            -- need to look at new harpoon syntax
-            -- display = {
-            --     width = vim.api.nvim_win_get_width(0),
-            -- }
+            default = {
+                select = function(list_item, list, options)
+                    if list_item == nil then
+                        return
+                    end
+                    local bufnr = vim.fn.bufnr(list_item.value)
+                    local set_position = false
+                    if bufnr == -1 then
+                        set_position = true
+                        bufnr = vim.fn.bufadd(list_item.value)
+                    end
+                    vim.api.nvim_set_current_buf(bufnr)
+                    vim.bo[bufnr].buflisted = true
+                    if set_position and list_item.context and list_item.context.row and list_item.context.col then
+                        vim.api.nvim_win_set_cursor(0, { list_item.context.row, list_item.context.col })
+                    end
+                end,
+            },
         }
 
         local harpoon_extensions = require("harpoon.extensions")
