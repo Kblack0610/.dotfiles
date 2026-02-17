@@ -1,0 +1,17 @@
+[Unit]
+Description=PXE Boot Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+ExecStart=/home/kblack0610/.dotfiles/.local/src/pxe-server/pxe-server.sh start
+ExecStop=/home/kblack0610/.dotfiles/.local/src/pxe-server/pxe-server.sh stop
+ExecReload=/home/kblack0610/.dotfiles/.local/src/pxe-server/pxe-server.sh restart
+PIDFile=/tmp/pxe-server/dnsmasq.pid
+Restart=on-failure
+RestartSec=5
+Environment="HOME=/home/kblack0610"
+
+[Install]
+WantedBy=default.target
