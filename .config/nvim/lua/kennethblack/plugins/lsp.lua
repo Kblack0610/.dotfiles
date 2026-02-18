@@ -26,19 +26,18 @@ return {
   {
     "williamboman/mason-lspconfig.nvim",
     dependencies = { "williamboman/mason.nvim" },
-    config = function()
-      require("mason-lspconfig").setup({
-        ensure_installed = ensure_installed,
-      })
-    end,
+    opts = {
+      ensure_installed = ensure_installed,
+      -- Automatically call vim.lsp.enable() for installed servers
+      automatic_enable = {
+        exclude = { "omnisharp" }, -- We handle omnisharp lazily
+      },
+    },
   },
   {
     "neovim/nvim-lspconfig",
     dependencies = { "saghen/blink.cmp", "williamboman/mason-lspconfig.nvim" },
     config = function()
-      -- Suppress deprecation warnings for now (lspconfig migration to vim.lsp.config)
-      vim.g.lspconfig_suppress_deprecation_warnings = true
-
       -- Add Mason bin to PATH so lspconfig can find Mason-installed servers
       local mason_bin = vim.fn.stdpath("data") .. "/mason/bin"
       vim.env.PATH = mason_bin .. ":" .. vim.env.PATH
@@ -46,133 +45,123 @@ return {
       -- Get capabilities from blink.cmp
       local capabilities = require("blink.cmp").get_lsp_capabilities()
 
-      -- Set border for shift+k
-      -- also ignore "no information found" when multiple lsps attached and trying hover
+      -- Global capabilities for ALL servers
+      vim.lsp.config("*", {
+        capabilities = capabilities,
+      })
+
+      -- Global hover handler with rounded border
+      -- Also suppresses "no information available" when multiple LSPs attached
       vim.lsp.handlers["textDocument/hover"] = function(_, result, ctx, config)
         if not (result and result.contents and result.contents.value ~= "") then
-          return -- Suppress "no information available" notifications
+          return
         end
-        -- merge config table if it exists
         return vim.lsp.handlers.hover(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
       end
-      -- Set border for signature help <leader>lh
+
+      -- Global signature help with rounded border
       vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
         border = "rounded",
       })
 
-      -- Border setup for omnisharp
-      local rounded_border_handlers = {
-        ["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, { border = "rounded" }),
-        ["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, { border = "rounded" }),
-      }
-
-      local pid = vim.fn.getpid()
-      local omnisharp_bin = "/opt/omnisharp-roslyn/run"
-
-      local lspconfig = require("lspconfig")
-
-      -- Setup servers with default config
-      local default_servers = { "lua_ls", "jsonls", "bashls", "html", "cssls", "sqlls", "yamlls", "pyright" }
-      for _, server in ipairs(default_servers) do
-        lspconfig[server].setup({
-          capabilities = capabilities,
-        })
-      end
-
-      -- ts_ls with custom config
-      lspconfig.ts_ls.setup({
-        capabilities = capabilities,
+      -- Server-specific configs (mason-lspconfig auto-enables these)
+      vim.lsp.config("ts_ls", {
         on_attach = function(client, _)
-          -- Disable formatting capability for tsserver
-          -- This conflicts with other formatters
+          -- Disable formatting capability for tsserver (conflicts with other formatters)
           client.server_capabilities.documentFormattingProvider = false
           client.server_capabilities.documentRangeFormattingProvider = false
         end,
       })
 
-      -- emmet_language_server with custom filetypes
-      lspconfig.emmet_language_server.setup({
-        capabilities = capabilities,
+      vim.lsp.config("emmet_language_server", {
         filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
-      })
-
-      -- omnisharp for Unity/C#
-      -- Requires: OmniSharp v1.39.6 (installed via setup-unity-omnisharp.sh)
-      -- Run: ~/.dotfiles/.local/src/installation_scripts/setup-unity-omnisharp.sh
-      lspconfig.omnisharp.setup({
-        capabilities = capabilities,
-        root_dir = function(fname)
-          local util = require("lspconfig.util")
-          -- Prefer .sln files, fallback to .csproj
-          local primary = util.root_pattern("*.sln")(fname)
-          local fallback = util.root_pattern("*.csproj")(fname)
-          return primary or fallback
-        end,
-        -- Use Mono for Unity (NOT modern .NET)
-        use_mono = true,
-        flags = {
-          debounce_text_changes = 150,
-        },
-        cmd = { omnisharp_bin, "--languageserver", "--hostPID", tostring(pid) },
-        handlers = vim.tbl_extend("force", rounded_border_handlers, {
-          ["textDocument/definition"] = require("omnisharp_extended").handler,
-        }),
-        settings = {
-          FormattingOptions = {
-            EnableEditorConfigSupport = true,
-            OrganizeImports = true,
-          },
-          MsBuild = {
-            -- Load projects on demand for faster startup
-            LoadProjectsOnDemand = true,
-          },
-          RoslynExtensionsOptions = {
-            -- Disable heavy analyzers for better performance with Unity
-            EnableAnalyzersSupport = false,
-            EnableImportCompletion = true,
-            AnalyzeOpenDocumentsOnly = true,
-            EnableDecompilationSupport = true,
-          },
-          Sdk = {
-            IncludePrereleases = false,
-          },
-          omnisharp = {
-            -- CRITICAL: Use Mono, not modern .NET (Unity requirement)
-            useModernNet = false,
-            analyzeOpenDocumentsOnly = true,
-            enableMsBuildLoadProjectsOnDemand = true,
-            projectLoadTimeout = 120,
-          },
-        },
       })
 
       -- lint/formatters
       -- https://github.com/neovim/nvim-lspconfig/blob/master/doc/configs.md#eslint
       -- NOTE: need to install npm install -g vscode-langservers-extracted (eslint globally) for lsp to work
       -- eslint also needs to be installed locally in js/ts project
-      -- this is ONLY for eslint projects
-      require("lspconfig").eslint.setup({
-        settings = {
-          format = false,
-        },
+      vim.lsp.config("eslint", {
+        settings = { format = false },
       })
-      require("lspconfig").biome.setup({})
 
-      -- key bindings
+      -- biome uses defaults
+      vim.lsp.config("biome", {})
+
+      -- omnisharp for Unity/C# - only setup when opening C# files
+      -- Requires: OmniSharp v1.39.6 (installed via setup-unity-omnisharp.sh)
+      -- Run: ~/.dotfiles/.local/src/installation_scripts/setup-unity-omnisharp.sh
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = { "cs" },
+        once = true,
+        callback = function()
+          local pid = vim.fn.getpid()
+          local omnisharp_bin = "/opt/omnisharp-roslyn/run"
+
+          vim.lsp.config("omnisharp", {
+            cmd = { omnisharp_bin, "--languageserver", "--hostPID", tostring(pid) },
+            root_dir = function(bufnr, on_dir)
+              -- Prefer .sln files, fallback to .csproj
+              local sln = vim.fs.root(bufnr, function(name)
+                return name:match("%.sln$")
+              end)
+              local csproj = vim.fs.root(bufnr, function(name)
+                return name:match("%.csproj$")
+              end)
+              on_dir(sln or csproj)
+            end,
+            -- Use Mono for Unity (NOT modern .NET)
+            use_mono = true,
+            flags = {
+              debounce_text_changes = 150,
+            },
+            handlers = {
+              ["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, { border = "rounded" }),
+              ["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, { border = "rounded" }),
+              ["textDocument/definition"] = require("omnisharp_extended").handler,
+            },
+            settings = {
+              FormattingOptions = {
+                EnableEditorConfigSupport = true,
+                OrganizeImports = true,
+              },
+              MsBuild = {
+                -- Load projects on demand for faster startup
+                LoadProjectsOnDemand = true,
+              },
+              RoslynExtensionsOptions = {
+                -- Disable heavy analyzers for better performance with Unity
+                EnableAnalyzersSupport = false,
+                EnableImportCompletion = true,
+                AnalyzeOpenDocumentsOnly = true,
+                EnableDecompilationSupport = true,
+              },
+              Sdk = {
+                IncludePrereleases = false,
+              },
+              omnisharp = {
+                -- CRITICAL: Use Mono, not modern .NET (Unity requirement)
+                useModernNet = false,
+                analyzeOpenDocumentsOnly = true,
+                enableMsBuildLoadProjectsOnDemand = true,
+                projectLoadTimeout = 120,
+              },
+            },
+          })
+          vim.lsp.enable("omnisharp")
+        end,
+      })
+
+      -- Key bindings
       vim.api.nvim_create_autocmd("LspAttach", {
         group = vim.api.nvim_create_augroup("LspKeybindings", { clear = true }),
         callback = function(event)
           local opts = { buffer = event.buf }
           vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-
-          -- vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
           vim.keymap.set("n", "<leader>lR", vim.lsp.buf.rename, opts)
           vim.keymap.set("n", "<leader>lh", vim.lsp.buf.signature_help, opts)
           vim.keymap.set("n", "gK", vim.lsp.buf.signature_help, opts)
           vim.keymap.set({ "n", "v" }, "<leader>la", vim.lsp.buf.code_action, opts)
-          -- using conform now
-          -- vim.keymap.set("n", "<leader>lf", function() vim.lsp.buf.format { async = true } end, opts)
-          --
         end,
       })
     end,
