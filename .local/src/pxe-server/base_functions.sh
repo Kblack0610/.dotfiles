@@ -49,6 +49,24 @@ get_lan_subnet() {
     ip addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+/\d+' | head -1
 }
 
+get_network_address() {
+    # Convert host IP to network address (e.g., 192.168.1.2/24 -> 192.168.1.0)
+    local ip_cidr
+    ip_cidr=$(get_lan_subnet)
+    local ip="${ip_cidr%/*}"
+    local cidr="${ip_cidr#*/}"
+
+    # Calculate network address using bitwise AND with netmask
+    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+    local mask=$((0xFFFFFFFF << (32 - cidr) & 0xFFFFFFFF))
+    local m1=$((mask >> 24 & 255))
+    local m2=$((mask >> 16 & 255))
+    local m3=$((mask >> 8 & 255))
+    local m4=$((mask & 255))
+
+    echo "$((o1 & m1)).$((o2 & m2)).$((o3 & m3)).$((o4 & m4))"
+}
+
 # Check if a port is in use
 port_in_use() {
     local port="$1"

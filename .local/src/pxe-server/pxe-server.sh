@@ -35,7 +35,7 @@ source "$SCRIPT_DIR/base_functions.sh"
 # Auto-detect network settings
 SERVER_IP="${PXE_SERVER_IP:-$(get_local_ip)}"
 SERVER_INTERFACE="${PXE_INTERFACE:-$(get_lan_interface)}"
-SERVER_SUBNET="${PXE_SUBNET:-$(get_lan_subnet | cut -d'/' -f1)}"
+SERVER_SUBNET="${PXE_SUBNET:-$(get_network_address)}"
 HTTP_PORT="${PXE_HTTP_PORT:-9080}"
 
 # =============================================================================
