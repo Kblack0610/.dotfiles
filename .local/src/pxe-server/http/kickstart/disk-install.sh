@@ -133,6 +133,37 @@ safety_checks() {
         exit 1
     fi
 
+    # Prevent boot-loop: skip if target disk already has a valid installation
+    local candidate_disk
+    candidate_disk=$(lsblk -dpno NAME,TYPE,TRAN,RM \
+        | awk '$2 == "disk" && $4 == "0" && $3 != "usb" {print $1}' \
+        | head -1)
+    if [[ -n "$candidate_disk" ]]; then
+        local part1
+        if [[ "$candidate_disk" == *nvme* ]] || [[ "$candidate_disk" == *mmcblk* ]]; then
+            part1="${candidate_disk}p1"
+        else
+            part1="${candidate_disk}1"
+        fi
+        if [[ -b "$part1" ]] && blkid "$part1" 2>/dev/null | grep -q 'TYPE="vfat"'; then
+            # Check if there's a bootloader installed
+            local tmp_mnt="/tmp/pxe-boot-check"
+            mkdir -p "$tmp_mnt"
+            if mount -o ro "$part1" "$tmp_mnt" 2>/dev/null; then
+                if [[ -f "$tmp_mnt/loader/loader.conf" ]] || [[ -f "$tmp_mnt/EFI/systemd/systemd-bootx64.efi" ]]; then
+                    umount "$tmp_mnt" 2>/dev/null
+                    rmdir "$tmp_mnt" 2>/dev/null
+                    log_warning "Existing installation detected on $candidate_disk"
+                    log_warning "systemd-boot already installed - skipping to prevent boot-loop"
+                    log_warning "To force reinstall, wipe the disk first or pass pxe_disk=<device>"
+                    exit 0
+                fi
+                umount "$tmp_mnt" 2>/dev/null
+            fi
+            rmdir "$tmp_mnt" 2>/dev/null
+        fi
+    fi
+
     # Must be root
     if [[ $EUID -ne 0 ]]; then
         log_error "Must be run as root. Aborting."

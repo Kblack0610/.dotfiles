@@ -53,6 +53,7 @@ done
 # QEMU settings
 QEMU_MEM="4096"
 QEMU_CPUS="2"
+export QEMU_DISABLE_IO_URING=1
 
 # Find OVMF firmware for UEFI
 find_ovmf() {
@@ -86,7 +87,7 @@ setup_disk() {
 
     if [[ ! -f "$VM_DISK" ]]; then
         log_info "Creating virtual disk: $VM_DISK ($VM_DISK_SIZE)"
-        qemu-img create -f qcow2 "$VM_DISK" "$VM_DISK_SIZE"
+        QEMU_DISABLE_IO_URING=1 qemu-img create -f qcow2 "$VM_DISK" "$VM_DISK_SIZE"
     else
         log_info "Using existing virtual disk: $VM_DISK"
         log_info "  Delete $VM_DISK to start fresh"
