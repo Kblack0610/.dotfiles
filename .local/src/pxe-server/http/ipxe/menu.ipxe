@@ -20,6 +20,10 @@ set http-root http://${pxe-server}:9080
 set retry-count 3
 set retry-delay 2
 
+# Installation defaults
+set dryrun 0
+set disk auto
+
 # =============================================================================
 # Main Menu
 # =============================================================================
@@ -33,6 +37,7 @@ item cachyos-desktop      [1] Desktop - Full (Hyprland + Sunshine)
 item cachyos-laptop       [2] Laptop - Optimized (no Sunshine)
 item cachyos-headless     [3] Server - Headless (SSH only)
 item cachyos-manual       [4] Manual - Interactive archiso
+item cachyos-dryrun       [5] Dry Run - Test autoinstall (no disk writes)
 item --gap --             ----------------------------------------
 item --gap --             Utilities
 item --gap --             ----------------------------------------
@@ -84,6 +89,17 @@ set profile manual
 set autoinstall 0
 goto cachyos-boot
 
+:cachyos-dryrun
+echo
+echo Selected: CachyOS Dry Run (no disk writes)
+echo Autoinstall will run but skip all destructive operations.
+echo Check /tmp/autoinstall.log for results.
+echo
+set profile desktop
+set autoinstall 1
+set dryrun 1
+goto cachyos-boot
+
 # =============================================================================
 # CachyOS Boot Process
 # =============================================================================
@@ -96,6 +112,8 @@ echo ============================================
 echo  Server:      ${pxe-server}
 echo  Profile:     ${profile}
 echo  Auto-install: ${autoinstall}
+echo  Dry-run:     ${dryrun}
+echo  Disk:        ${disk}
 echo ============================================
 echo
 
@@ -114,7 +132,9 @@ imgargs vmlinuz-linux-cachyos \
     copytoram=n \
     pxe_server=${pxe-server} \
     pxe_profile=${profile} \
-    pxe_autoinstall=${autoinstall}
+    pxe_autoinstall=${autoinstall} \
+    pxe_dryrun=${dryrun} \
+    pxe_disk=${disk}
 
 echo
 echo Booting CachyOS...

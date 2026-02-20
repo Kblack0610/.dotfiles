@@ -5,12 +5,13 @@
 # Tests PXE booting using QEMU with either UEFI or BIOS mode.
 # Uses QEMU's built-in TFTP server for isolated testing.
 #
-# Usage: test-vm.sh [uefi|bios] [--network]
+# Usage: test-vm.sh [uefi|bios] [--network] [--disk]
 #
 # Options:
 #   uefi      Test UEFI boot (default)
 #   bios      Test legacy BIOS boot
 #   --network Use actual network instead of QEMU's built-in TFTP
+#   --disk    Attach a 20G virtual disk for install testing
 #
 
 set -euo pipefail
@@ -31,12 +32,20 @@ source "$SCRIPT_DIR/../base_functions.sh"
 
 MODE="${1:-uefi}"
 USE_NETWORK=false
+USE_DISK=false
+
+# Virtual disk for install testing
+VM_DISK="/tmp/pxe-test-disk.qcow2"
+VM_DISK_SIZE="20G"
 
 # Parse arguments
 for arg in "$@"; do
     case "$arg" in
         --network)
             USE_NETWORK=true
+            ;;
+        --disk)
+            USE_DISK=true
             ;;
     esac
 done
@@ -67,6 +76,30 @@ find_ovmf() {
 }
 
 # =============================================================================
+# Virtual Disk
+# =============================================================================
+
+setup_disk() {
+    if [[ "$USE_DISK" != "true" ]]; then
+        return 0
+    fi
+
+    if [[ ! -f "$VM_DISK" ]]; then
+        log_info "Creating virtual disk: $VM_DISK ($VM_DISK_SIZE)"
+        qemu-img create -f qcow2 "$VM_DISK" "$VM_DISK_SIZE"
+    else
+        log_info "Using existing virtual disk: $VM_DISK"
+        log_info "  Delete $VM_DISK to start fresh"
+    fi
+}
+
+get_disk_args() {
+    if [[ "$USE_DISK" == "true" ]]; then
+        echo "-drive file=$VM_DISK,format=qcow2,if=virtio"
+    fi
+}
+
+# =============================================================================
 # Test Functions
 # =============================================================================
 
@@ -78,10 +111,12 @@ test_uefi_local() {
 
     log_info "Using OVMF: $ovmf"
     log_info "Boot directory: $PXE_BOOT_DIR"
+    [[ "$USE_DISK" == "true" ]] && log_info "Virtual disk: $VM_DISK"
     echo ""
     log_warning "Press Ctrl+A then X to exit QEMU"
     echo ""
 
+    # shellcheck disable=SC2046
     qemu-system-x86_64 \
         -enable-kvm \
         -m "$QEMU_MEM" \
@@ -90,6 +125,7 @@ test_uefi_local() {
         -bios "$ovmf" \
         -netdev user,id=net0,tftp="$PXE_BOOT_DIR",bootfile=uefi/ipxe.efi \
         -device virtio-net-pci,netdev=net0 \
+        $(get_disk_args) \
         -nographic
 }
 
@@ -97,10 +133,12 @@ test_bios_local() {
     log_section "Testing BIOS PXE Boot (Local TFTP)"
 
     log_info "Boot directory: $PXE_BOOT_DIR"
+    [[ "$USE_DISK" == "true" ]] && log_info "Virtual disk: $VM_DISK"
     echo ""
     log_warning "Press Ctrl+A then X to exit QEMU"
     echo ""
 
+    # shellcheck disable=SC2046
     qemu-system-x86_64 \
         -enable-kvm \
         -m "$QEMU_MEM" \
@@ -108,6 +146,7 @@ test_bios_local() {
         -smp "$QEMU_CPUS" \
         -netdev user,id=net0,tftp="$PXE_BOOT_DIR",bootfile=bios/pxelinux.0 \
         -device virtio-net-pci,netdev=net0,bootindex=1 \
+        $(get_disk_args) \
         -nographic
 }
 
@@ -121,12 +160,14 @@ test_uefi_network() {
 
     log_info "Using OVMF: $ovmf"
     log_info "PXE Server: $server_ip"
+    [[ "$USE_DISK" == "true" ]] && log_info "Virtual disk: $VM_DISK"
     log_warning "Make sure pxe-server is running!"
     echo ""
     log_warning "Press Ctrl+A then X to exit QEMU"
     echo ""
 
     # Bridge mode requires elevated privileges
+    # shellcheck disable=SC2046
     qemu-system-x86_64 \
         -enable-kvm \
         -m "$QEMU_MEM" \
@@ -135,6 +176,7 @@ test_uefi_network() {
         -bios "$ovmf" \
         -netdev user,id=net0 \
         -device virtio-net-pci,netdev=net0,romfile= \
+        $(get_disk_args) \
         -nographic
 }
 
@@ -145,11 +187,13 @@ test_bios_network() {
     server_ip=$(get_local_ip)
 
     log_info "PXE Server: $server_ip"
+    [[ "$USE_DISK" == "true" ]] && log_info "Virtual disk: $VM_DISK"
     log_warning "Make sure pxe-server is running!"
     echo ""
     log_warning "Press Ctrl+A then X to exit QEMU"
     echo ""
 
+    # shellcheck disable=SC2046
     qemu-system-x86_64 \
         -enable-kvm \
         -m "$QEMU_MEM" \
@@ -157,6 +201,7 @@ test_bios_network() {
         -smp "$QEMU_CPUS" \
         -netdev user,id=net0 \
         -device virtio-net-pci,netdev=net0 \
+        $(get_disk_args) \
         -nographic
 }
 
@@ -173,11 +218,14 @@ Modes:
 Options:
   --network Use actual network (requires pxe-server running)
             Without this, uses QEMU's built-in TFTP for isolated testing
+  --disk    Attach a 20G virtual disk for install testing
+            Creates /tmp/pxe-test-disk.qcow2 on first use
 
 Examples:
-  test-vm.sh                  # UEFI with local TFTP
-  test-vm.sh bios             # BIOS with local TFTP
-  test-vm.sh uefi --network   # UEFI with network PXE
+  test-vm.sh                        # UEFI with local TFTP
+  test-vm.sh bios                   # BIOS with local TFTP
+  test-vm.sh uefi --network         # UEFI with network PXE
+  test-vm.sh uefi --network --disk  # Full install test with virtual disk
 
 Requirements:
   - qemu-system-x86_64
@@ -187,6 +235,7 @@ Requirements:
 Notes:
   - Local TFTP mode tests boot files without needing the server running
   - Network mode tests the full PXE flow but may need bridge networking
+  - Delete /tmp/pxe-test-disk.qcow2 to reset the virtual disk
   - Press Ctrl+A then X to exit QEMU
 EOF
 }
@@ -201,6 +250,8 @@ if ! command_exists qemu-system-x86_64; then
     log_info "Install with: sudo pacman -S qemu-full"
     exit 1
 fi
+
+setup_disk
 
 case "$MODE" in
     uefi)

@@ -3,10 +3,11 @@
 # CachyOS PXE Image Preparation
 # Downloads the latest CachyOS ISO and extracts boot files for PXE
 #
-# Usage: prepare-images.sh [--force]
+# Usage: prepare-images.sh [--force] [--no-inject]
 #
 # Options:
-#   --force    Re-download and extract even if files exist
+#   --force      Re-download and extract even if files exist
+#   --no-inject  Skip injecting pxe-autoinstall.service into squashfs
 #
 
 set -euo pipefail
@@ -36,10 +37,15 @@ MOUNT_POINT="/tmp/cachyos-iso-mount"
 
 # Parse arguments
 FORCE_DOWNLOAD=false
+NO_INJECT=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --force|-f)
             FORCE_DOWNLOAD=true
+            shift
+            ;;
+        --no-inject)
+            NO_INJECT=true
             shift
             ;;
         *)
@@ -217,6 +223,81 @@ extract_boot_files() {
     ls -lh "$HTTP_CACHYOS_DIR/"
 }
 
+inject_autoinstall_service() {
+    local sfs_path="$HTTP_CACHYOS_DIR/airootfs.sfs"
+    local service_src="$PXE_HTTP_DIR/kickstart/pxe-autoinstall.service"
+    local tmp_dir="/tmp/cachyos-squashfs-edit"
+
+    log_section "Injecting Autoinstall Service into SquashFS"
+
+    # Validate inputs
+    if [[ ! -f "$sfs_path" ]]; then
+        log_error "airootfs.sfs not found at: $sfs_path"
+        return 1
+    fi
+
+    if [[ ! -f "$service_src" ]]; then
+        log_error "pxe-autoinstall.service not found at: $service_src"
+        return 1
+    fi
+
+    # Check for squashfs-tools
+    if ! command_exists unsquashfs || ! command_exists mksquashfs; then
+        log_error "squashfs-tools not installed"
+        log_info "Install with: sudo pacman -S squashfs-tools"
+        return 1
+    fi
+
+    # Backup original
+    if [[ ! -f "${sfs_path}.orig" ]]; then
+        log_info "Backing up original squashfs..."
+        cp "$sfs_path" "${sfs_path}.orig"
+        log_success "Backup: ${sfs_path}.orig"
+    fi
+
+    # Clean up any previous extraction
+    sudo rm -rf "$tmp_dir"
+
+    # Extract squashfs
+    log_info "Extracting squashfs (this may take a while)..."
+    sudo unsquashfs -d "$tmp_dir" "$sfs_path"
+
+    # Cleanup on failure
+    trap "sudo rm -rf '$tmp_dir'" ERR
+
+    # Copy service file
+    log_info "Injecting pxe-autoinstall.service..."
+    sudo cp "$service_src" "$tmp_dir/etc/systemd/system/pxe-autoinstall.service"
+    sudo chmod 644 "$tmp_dir/etc/systemd/system/pxe-autoinstall.service"
+
+    # Enable the service (create symlink in multi-user.target.wants)
+    sudo mkdir -p "$tmp_dir/etc/systemd/system/multi-user.target.wants"
+    sudo ln -sf /etc/systemd/system/pxe-autoinstall.service \
+        "$tmp_dir/etc/systemd/system/multi-user.target.wants/pxe-autoinstall.service"
+
+    log_success "Service injected and enabled"
+
+    # Repack squashfs
+    log_info "Repacking squashfs with zstd compression (this will take a while)..."
+    sudo rm -f "$sfs_path"
+    sudo mksquashfs "$tmp_dir" "$sfs_path" -comp zstd -Xcompression-level 15 -b 1M
+
+    # Set permissions
+    sudo chmod 644 "$sfs_path"
+
+    # Cleanup temp directory
+    sudo rm -rf "$tmp_dir"
+    trap - ERR
+
+    # Show size comparison
+    local orig_size new_size
+    orig_size=$(du -h "${sfs_path}.orig" | cut -f1)
+    new_size=$(du -h "$sfs_path" | cut -f1)
+    log_success "Squashfs repacked"
+    log_info "  Original: $orig_size"
+    log_info "  Modified: $new_size"
+}
+
 verify_files() {
     log_section "Verifying Boot Files"
 
@@ -258,7 +339,11 @@ main() {
     log_section "CachyOS PXE Image Preparation"
 
     # Check dependencies
-    if ! check_dependencies curl; then
+    local deps=(curl)
+    if [[ "$NO_INJECT" != "true" ]]; then
+        deps+=(unsquashfs mksquashfs)
+    fi
+    if ! check_dependencies "${deps[@]}"; then
         exit 1
     fi
 
@@ -281,6 +366,13 @@ main() {
 
     # Extract boot files
     extract_boot_files "$IMAGES_DIR/$iso_name"
+
+    # Inject autoinstall service into squashfs
+    if [[ "$NO_INJECT" != "true" ]]; then
+        inject_autoinstall_service
+    else
+        log_info "Skipping autoinstall service injection (--no-inject)"
+    fi
 
     # Verify
     verify_files
