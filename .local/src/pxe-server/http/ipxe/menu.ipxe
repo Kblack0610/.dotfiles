@@ -108,7 +108,7 @@ initrd ${http-root}/cachyos/initramfs-linux-cachyos.img || goto initrd-failed
 echo Configuring boot parameters...
 imgargs vmlinuz-linux-cachyos \
     archisobasedir=cachyos \
-    archiso_http_srv=${http-root}/cachyos/ \
+    archiso_http_srv=${http-root}/ \
     ip=dhcp \
     cow_spacesize=4G \
     copytoram=n \
