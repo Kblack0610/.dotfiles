@@ -80,15 +80,27 @@ start_dnsmasq() {
 }
 
 stop_dnsmasq() {
-    if [[ -f "$PXE_DNSMASQ_PID" ]]; then
-        local pid
-        pid=$(cat "$PXE_DNSMASQ_PID")
-        if kill -0 "$pid" 2>/dev/null; then
-            sudo kill "$pid"
-            log_info "dnsmasq stopped (PID: $pid)"
+    # Kill all dnsmasq processes started by this script (using our config file)
+    local pids
+    pids=$(pgrep -f "dnsmasq.*pxe-server" 2>/dev/null)
+
+    if [[ -n "$pids" ]]; then
+        for pid in $pids; do
+            if sudo kill "$pid" 2>/dev/null; then
+                log_info "dnsmasq stopped (PID: $pid)"
+            fi
+        done
+        # Give processes time to die
+        sleep 1
+        # Force kill any remaining
+        pids=$(pgrep -f "dnsmasq.*pxe-server" 2>/dev/null)
+        if [[ -n "$pids" ]]; then
+            sudo kill -9 $pids 2>/dev/null
+            log_warning "Force killed remaining dnsmasq processes"
         fi
-        rm -f "$PXE_DNSMASQ_PID"
     fi
+
+    rm -f "$PXE_DNSMASQ_PID"
 }
 
 start_http() {
