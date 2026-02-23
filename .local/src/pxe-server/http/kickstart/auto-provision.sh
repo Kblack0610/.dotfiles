@@ -21,6 +21,17 @@
 set -euo pipefail
 
 # =============================================================================
+# Argument Parsing
+# =============================================================================
+
+FORCE_CHROOT=false
+for arg in "$@"; do
+    case "$arg" in
+        --chroot) FORCE_CHROOT=true ;;
+    esac
+done
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
@@ -77,15 +88,22 @@ preflight_check() {
     log "Profile:       $PXE_PROFILE"
     log "Auto-install:  $PXE_AUTOINSTALL"
     log "Target User:   $TARGET_USER"
+    log "Force chroot:  $FORCE_CHROOT"
     echo ""
 
-    # Check if we're in a chroot (installed system) or live environment
-    if [[ -d "/mnt" ]] && mountpoint -q /mnt 2>/dev/null; then
+    # Determine environment
+    if [[ "$FORCE_CHROOT" == "true" ]]; then
+        # Called with --chroot from disk-install.sh's arch-chroot
+        # We're already inside the chroot — run commands directly
+        log "Detected: Running in chroot (--chroot flag)"
+        INSTALL_ROOT=""
+        IN_CHROOT=true
+    elif [[ -d "/mnt" ]] && mountpoint -q /mnt 2>/dev/null; then
         log "Detected: Running in live environment with /mnt mounted"
         INSTALL_ROOT="/mnt"
         IN_CHROOT=false
     elif [[ "$(stat -c %d:%i /)" != "$(stat -c %d:%i /proc/1/root/.)" ]] 2>/dev/null; then
-        log "Detected: Running in chroot"
+        log "Detected: Running in chroot (auto-detected)"
         INSTALL_ROOT=""
         IN_CHROOT=true
     else
@@ -115,14 +133,13 @@ setup_user() {
 
     local user_home="${INSTALL_ROOT}${TARGET_HOME}"
 
-    # Check if user exists
-    if id "$TARGET_USER" &>/dev/null || grep -q "^${TARGET_USER}:" "${INSTALL_ROOT}/etc/passwd" 2>/dev/null; then
-        log "User $TARGET_USER already exists"
+    # Check if user already exists (bootstrap_access may have created it)
+    if grep -q "^${TARGET_USER}:" "${INSTALL_ROOT:-}/etc/passwd" 2>/dev/null; then
+        log "User $TARGET_USER already exists — skipping creation"
     else
         log "Creating user $TARGET_USER..."
 
         if [[ -n "$INSTALL_ROOT" ]]; then
-            # Creating user in chroot
             arch-chroot "$INSTALL_ROOT" useradd -m -G wheel,docker,input,video,audio -s /bin/zsh "$TARGET_USER" 2>/dev/null || \
             arch-chroot "$INSTALL_ROOT" useradd -m -G wheel -s /bin/bash "$TARGET_USER"
         else
@@ -131,20 +148,24 @@ setup_user() {
         fi
 
         log_success "User created"
+
+        # Only set password for newly created users
+        log "Setting temporary password (please change on first login)..."
+        if [[ -n "$INSTALL_ROOT" ]]; then
+            echo "$TARGET_USER:changeme" | arch-chroot "$INSTALL_ROOT" chpasswd
+        else
+            echo "$TARGET_USER:changeme" | chpasswd
+        fi
     fi
 
-    # Set temporary password
-    log "Setting temporary password (please change on first login)..."
-    if [[ -n "$INSTALL_ROOT" ]]; then
-        echo "$TARGET_USER:changeme" | arch-chroot "$INSTALL_ROOT" chpasswd
-    else
-        echo "$TARGET_USER:changeme" | chpasswd
-    fi
-
-    # Enable passwordless sudo for initial setup
+    # Ensure passwordless sudo for initial setup
     log "Enabling passwordless sudo for wheel group..."
-    echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > "${INSTALL_ROOT}/etc/sudoers.d/wheel-nopasswd"
-    chmod 440 "${INSTALL_ROOT}/etc/sudoers.d/wheel-nopasswd"
+    if [[ -f "${INSTALL_ROOT:-}/etc/sudoers.d/wheel-nopasswd" ]]; then
+        log "Passwordless sudo already configured"
+    else
+        echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > "${INSTALL_ROOT:-}/etc/sudoers.d/wheel-nopasswd"
+        chmod 440 "${INSTALL_ROOT:-}/etc/sudoers.d/wheel-nopasswd"
+    fi
 
     log_success "User setup complete"
 }

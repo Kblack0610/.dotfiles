@@ -47,6 +47,7 @@ PXE_PROFILE=$(get_cmdline_param "pxe_profile" "desktop")
 PXE_AUTOINSTALL=$(get_cmdline_param "pxe_autoinstall" "0")
 PXE_DRYRUN=$(get_cmdline_param "pxe_dryrun" "0")
 PXE_DISK=$(get_cmdline_param "pxe_disk" "auto")
+PXE_FORCE=$(get_cmdline_param "pxe_force" "0")
 
 # Installation target
 INSTALL_ROOT="/mnt"
@@ -119,6 +120,7 @@ safety_checks() {
     log "Auto-install:   $PXE_AUTOINSTALL"
     log "Dry-run:        $PXE_DRYRUN"
     log "Disk selection: $PXE_DISK"
+    log "Force install:  $PXE_FORCE"
     echo ""
 
     # Must have pxe_autoinstall=1
@@ -134,33 +136,36 @@ safety_checks() {
     fi
 
     # Prevent boot-loop: skip if target disk already has a valid installation
-    local candidate_disk
-    candidate_disk=$(lsblk -dpno NAME,TYPE,TRAN,RM \
-        | awk '$2 == "disk" && $4 == "0" && $3 != "usb" {print $1}' \
-        | head -1)
-    if [[ -n "$candidate_disk" ]]; then
-        local part1
-        if [[ "$candidate_disk" == *nvme* ]] || [[ "$candidate_disk" == *mmcblk* ]]; then
-            part1="${candidate_disk}p1"
-        else
-            part1="${candidate_disk}1"
-        fi
-        if [[ -b "$part1" ]] && blkid "$part1" 2>/dev/null | grep -q 'TYPE="vfat"'; then
-            # Check if there's a bootloader installed
-            local tmp_mnt="/tmp/pxe-boot-check"
-            mkdir -p "$tmp_mnt"
-            if mount -o ro "$part1" "$tmp_mnt" 2>/dev/null; then
-                if [[ -f "$tmp_mnt/loader/loader.conf" ]] || [[ -f "$tmp_mnt/EFI/systemd/systemd-bootx64.efi" ]]; then
-                    umount "$tmp_mnt" 2>/dev/null
-                    rmdir "$tmp_mnt" 2>/dev/null
-                    log_warning "Existing installation detected on $candidate_disk"
-                    log_warning "systemd-boot already installed - skipping to prevent boot-loop"
-                    log_warning "To force reinstall, wipe the disk first or pass pxe_disk=<device>"
-                    exit 0
-                fi
-                umount "$tmp_mnt" 2>/dev/null
+    if [[ "$PXE_FORCE" == "1" ]]; then
+        log_warning "pxe_force=1 — skipping boot-loop prevention check"
+    else
+        local candidate_disk
+        candidate_disk=$(lsblk -dpno NAME,TYPE,TRAN,RM \
+            | awk '$2 == "disk" && $4 == "0" && $3 != "usb" {print $1}' \
+            | head -1)
+        if [[ -n "$candidate_disk" ]]; then
+            local part1
+            if [[ "$candidate_disk" == *nvme* ]] || [[ "$candidate_disk" == *mmcblk* ]]; then
+                part1="${candidate_disk}p1"
+            else
+                part1="${candidate_disk}1"
             fi
-            rmdir "$tmp_mnt" 2>/dev/null
+            if [[ -b "$part1" ]] && blkid "$part1" 2>/dev/null | grep -q 'TYPE="vfat"'; then
+                local tmp_mnt="/tmp/pxe-boot-check"
+                mkdir -p "$tmp_mnt"
+                if mount -o ro "$part1" "$tmp_mnt" 2>/dev/null; then
+                    if [[ -f "$tmp_mnt/loader/loader.conf" ]] || [[ -f "$tmp_mnt/EFI/systemd/systemd-bootx64.efi" ]]; then
+                        umount "$tmp_mnt" 2>/dev/null
+                        rmdir "$tmp_mnt" 2>/dev/null
+                        log_warning "Existing installation detected on $candidate_disk"
+                        log_warning "systemd-boot already installed - skipping to prevent boot-loop"
+                        log_warning "To force reinstall, pass pxe_force=1"
+                        exit 0
+                    fi
+                    umount "$tmp_mnt" 2>/dev/null
+                fi
+                rmdir "$tmp_mnt" 2>/dev/null
+            fi
         fi
     fi
 
@@ -411,6 +416,64 @@ EOF
 }
 
 # =============================================================================
+# Bootstrap Access (guaranteed login regardless of auto-provision outcome)
+# =============================================================================
+
+bootstrap_access() {
+    log_section "Bootstrapping Access"
+
+    if [[ "$PXE_DRYRUN" == "1" ]]; then
+        log "[DRY-RUN] Would bootstrap root/user access, SSH keys, and services"
+        return 0
+    fi
+
+    # Root password
+    log "Setting root password..."
+    echo "root:changeme" | arch-chroot "$INSTALL_ROOT" chpasswd
+
+    # Create user (with fallback groups if some don't exist yet)
+    log "Creating user kblack0610..."
+    if ! grep -q "^kblack0610:" "$INSTALL_ROOT/etc/passwd"; then
+        arch-chroot "$INSTALL_ROOT" useradd -m -G wheel -s /bin/zsh kblack0610
+        # Add optional groups individually (don't fail if they don't exist)
+        for grp in docker input video audio; do
+            arch-chroot "$INSTALL_ROOT" usermod -aG "$grp" kblack0610 2>/dev/null || true
+        done
+        log_success "User created"
+    else
+        log "User kblack0610 already exists"
+    fi
+
+    # User password
+    log "Setting user password..."
+    echo "kblack0610:changeme" | arch-chroot "$INSTALL_ROOT" chpasswd
+
+    # Passwordless sudo
+    log "Enabling passwordless sudo for wheel..."
+    echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > "$INSTALL_ROOT/etc/sudoers.d/wheel-nopasswd"
+    chmod 440 "$INSTALL_ROOT/etc/sudoers.d/wheel-nopasswd"
+
+    # SSH key injection
+    log "Injecting SSH authorized key..."
+    local ssh_dir="$INSTALL_ROOT/home/kblack0610/.ssh"
+    mkdir -p "$ssh_dir"
+    # Embed the workstation's public key
+    cat > "$ssh_dir/authorized_keys" <<'SSHEOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6yTlK3GCzXC2+njcPtTucjwxb53Sb0+JT+TuTD78Jh kblack0610@gmail.com
+SSHEOF
+    chmod 700 "$ssh_dir"
+    chmod 600 "$ssh_dir/authorized_keys"
+    arch-chroot "$INSTALL_ROOT" chown -R kblack0610:kblack0610 /home/kblack0610/.ssh
+
+    # Enable essential services
+    log "Enabling sshd and NetworkManager..."
+    arch-chroot "$INSTALL_ROOT" systemctl enable sshd 2>/dev/null || true
+    arch-chroot "$INSTALL_ROOT" systemctl enable NetworkManager 2>/dev/null || true
+
+    log_success "Bootstrap access configured (root + kblack0610 + SSH key + services)"
+}
+
+# =============================================================================
 # Bootloader (systemd-boot)
 # =============================================================================
 
@@ -485,7 +548,7 @@ run_provisioning() {
     # Copy kernel cmdline params so auto-provision.sh can read them in chroot
     # The script reads /proc/cmdline, but in chroot it sees the host's cmdline - which is correct here
     log "Running provisioning in chroot..."
-    arch-chroot "$INSTALL_ROOT" bash /tmp/auto-provision.sh || {
+    arch-chroot "$INSTALL_ROOT" bash /tmp/auto-provision.sh --chroot || {
         log_warning "Auto-provisioning reported errors (non-fatal)"
     }
 
@@ -544,6 +607,7 @@ main() {
     install_base
     generate_fstab
     configure_system
+    bootstrap_access
     install_bootloader
     run_provisioning
     cleanup_and_reboot

@@ -273,6 +273,159 @@ cmd_all() {
     fi
 }
 
+# HP Victus MAC address
+VICTUS_MAC="e0:73:e7:f3:5b:65"
+
+cmd_verify() {
+    log_section "Post-Install Verification"
+
+    local target_ip=""
+
+    # Step 1: Find Victus IP via ARP/neighbor table
+    log_info "Looking for Victus MAC ($VICTUS_MAC) on the network..."
+    target_ip=$(ip neigh show | grep -i "${VICTUS_MAC}" | awk '{print $1}' | head -1)
+
+    # Fallback: nmap ping scan of local subnet
+    if [[ -z "$target_ip" ]]; then
+        log_warning "Not in ARP cache, running nmap ping scan..."
+        local subnet
+        subnet=$(get_lan_subnet)
+        if [[ -n "$subnet" ]] && command_exists nmap; then
+            # Ping scan to populate ARP, then check again
+            sudo nmap -sn "$subnet" &>/dev/null
+            target_ip=$(ip neigh show | grep -i "${VICTUS_MAC}" | awk '{print $1}' | head -1)
+        fi
+    fi
+
+    if [[ -z "$target_ip" ]]; then
+        log_error "Could not find Victus on the network"
+        log_info "Make sure the machine has booted and is connected to the LAN"
+        return 1
+    fi
+
+    log_success "Found Victus at: $target_ip"
+    echo ""
+
+    # Step 2: SSH in and run checks
+    log_info "Connecting via SSH..."
+    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+    local ssh_key="$HOME/.ssh/id_ed25519"
+    local ssh_cmd="ssh $ssh_opts -i $ssh_key kblack0610@$target_ip"
+
+    local checks=(
+        "hostname"
+        "whoami"
+        "cat /etc/os-release | head -3"
+        "systemctl is-active sshd"
+        "systemctl is-active NetworkManager"
+        "sudo -n whoami"
+    )
+
+    local pass=0
+    local fail=0
+
+    for check in "${checks[@]}"; do
+        local result
+        if result=$(eval "$ssh_cmd '$check'" 2>/dev/null); then
+            log_success "$check → $result"
+            ((pass++))
+        else
+            log_error "$check → FAILED"
+            ((fail++))
+        fi
+    done
+
+    echo ""
+    if [[ $fail -eq 0 ]]; then
+        log_success "All $pass checks passed!"
+    else
+        log_warning "$pass passed, $fail failed"
+        return 1
+    fi
+}
+
+cmd_reinstall() {
+    log_section "Full Autonomous Reinstall Cycle"
+
+    # Step 1: Ensure PXE server is running
+    cmd_ensure_server
+
+    # Step 2: WoL the Victus
+    log_info "Sending WoL to Victus ($VICTUS_MAC)..."
+    if ! command_exists wakeonlan; then
+        log_error "wakeonlan not installed. Run: sudo pacman -S wakeonlan"
+        return 1
+    fi
+    wakeonlan "$VICTUS_MAC"
+    log_success "WoL packet sent"
+
+    # Step 3: Wait for live environment to boot (watch for airootfs.sfs request)
+    echo ""
+    log_info "Waiting for Victus to PXE boot and fetch airootfs.sfs..."
+    log_info "(This typically takes 2-3 minutes)"
+    local http_log="$PXE_HTTP_LOG"
+    local wait_boot=0
+    local max_boot=300  # 5 minutes max
+
+    while [[ $wait_boot -lt $max_boot ]]; do
+        if [[ -f "$http_log" ]] && grep -q "airootfs.sfs" "$http_log" 2>/dev/null; then
+            log_success "Live environment is booting (airootfs.sfs requested)"
+            break
+        fi
+        sleep 5
+        ((wait_boot += 5))
+        printf "\r  Waiting... %ds / %ds" "$wait_boot" "$max_boot"
+    done
+    echo ""
+
+    if [[ $wait_boot -ge $max_boot ]]; then
+        log_error "Timeout waiting for PXE boot"
+        return 1
+    fi
+
+    # Step 4: Wait for install to complete and system to reboot
+    # The install takes ~10-15 min, then the machine reboots with a new IP
+    echo ""
+    log_info "Waiting for installation to complete and Victus to reboot..."
+    log_info "(This typically takes 10-15 minutes for pacstrap + configure)"
+    local wait_install=0
+    local max_install=1200  # 20 minutes max
+
+    # Wait a minimum of 5 minutes before polling (pacstrap takes time)
+    log_info "Minimum wait: 5 minutes for pacstrap..."
+    sleep 300
+    wait_install=300
+
+    while [[ $wait_install -lt $max_install ]]; do
+        # Check if Victus MAC appeared in ARP (means it rebooted into new system)
+        local new_ip
+        new_ip=$(ip neigh show | grep -i "${VICTUS_MAC}" | awk '{print $1}' | head -1)
+        if [[ -n "$new_ip" ]]; then
+            # Try SSH to confirm it's the new system (not still the live env)
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                   -o ConnectTimeout=5 -i "$HOME/.ssh/id_ed25519" \
+                   "kblack0610@$new_ip" "test -f /etc/machine-id" 2>/dev/null; then
+                log_success "Victus rebooted into new system at $new_ip"
+                break
+            fi
+        fi
+        sleep 15
+        ((wait_install += 15))
+        printf "\r  Waiting... %ds / %ds" "$wait_install" "$max_install"
+    done
+    echo ""
+
+    if [[ $wait_install -ge $max_install ]]; then
+        log_error "Timeout waiting for Victus to come back online"
+        log_info "Try manually: setup-autoinstall.sh verify"
+        return 1
+    fi
+
+    # Step 5: Run verification
+    echo ""
+    cmd_verify
+}
+
 show_help() {
     cat <<'EOF'
 PXE Autoinstall Setup & Test
@@ -286,6 +439,8 @@ Commands:
   test-full             QEMU test with full install to virtual disk
   wol <MAC>             Wake HP Victus via Wake-on-LAN
   all [MAC]             Full pipeline: inject -> server -> dry-run -> wol
+  verify                SSH into Victus and verify install (find IP by MAC)
+  reinstall             Full autonomous cycle: WoL -> install -> verify
 
 Examples:
   setup-autoinstall.sh status
@@ -293,9 +448,11 @@ Examples:
   setup-autoinstall.sh test-dryrun
   setup-autoinstall.sh wol AA:BB:CC:DD:EE:FF
   setup-autoinstall.sh all AA:BB:CC:DD:EE:FF
+  setup-autoinstall.sh verify
+  setup-autoinstall.sh reinstall
 
 Prerequisites:
-  sudo pacman -S squashfs-tools qemu-full edk2-ovmf wakeonlan
+  sudo pacman -S squashfs-tools qemu-full edk2-ovmf wakeonlan nmap
 EOF
 }
 
@@ -315,6 +472,8 @@ case "$CMD" in
                 cmd_test_full ;;
     wol)        cmd_wol "$@" ;;
     all)        cmd_all "$@" ;;
+    verify)     cmd_verify ;;
+    reinstall)  cmd_reinstall ;;
     help|--help|-h)
                 show_help ;;
     *)

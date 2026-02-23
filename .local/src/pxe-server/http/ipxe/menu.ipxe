@@ -23,6 +23,7 @@ set retry-delay 2
 # Installation defaults
 set dryrun 0
 set disk auto
+set force 0
 
 # =============================================================================
 # Main Menu
@@ -46,7 +47,7 @@ item shell                [S] iPXE Shell
 item localboot            [L] Boot from Local Disk
 item reboot               [R] Reboot
 item --gap --             ========================================
-choose --timeout 30000 --default cachyos-desktop selected || goto localboot
+choose --timeout 10000 --default localboot selected || goto localboot
 goto ${selected}
 
 # =============================================================================
@@ -60,6 +61,7 @@ echo Profile includes: Hyprland, Sunshine streaming, full development tools
 echo
 set profile desktop
 set autoinstall 1
+set force 1
 goto cachyos-boot
 
 :cachyos-laptop
@@ -69,6 +71,7 @@ echo Profile includes: Hyprland, battery optimization, no Sunshine
 echo
 set profile laptop
 set autoinstall 1
+set force 1
 goto cachyos-boot
 
 :cachyos-headless
@@ -78,6 +81,7 @@ echo Profile includes: SSH, Docker, minimal packages
 echo
 set profile headless
 set autoinstall 1
+set force 1
 goto cachyos-boot
 
 :cachyos-manual
@@ -134,7 +138,8 @@ imgargs vmlinuz-linux-cachyos \
     pxe_profile=${profile} \
     pxe_autoinstall=${autoinstall} \
     pxe_dryrun=${dryrun} \
-    pxe_disk=${disk}
+    pxe_disk=${disk} \
+    pxe_force=${force}
 
 echo
 echo Booting CachyOS...
