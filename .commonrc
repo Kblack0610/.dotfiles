@@ -158,6 +158,14 @@ function ensure_daily_note() {
             CARRIED=$(journal-carryforward 2>/dev/null || true)
         fi
 
+        # Pull carry over section from yesterday's note
+        local YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v -1d +%Y-%m-%d)
+        local YESTERDAY_FILE="$HOME/.notes/journal/daily/$YESTERDAY.md"
+        local CARRYOVER=""
+        if [ -f "$YESTERDAY_FILE" ]; then
+            CARRYOVER=$(sed -n '/^## Carry Over$/,/^## /{ /^## /d; p; }' "$YESTERDAY_FILE" | sed '/^$/d')
+        fi
+
         # Create note with clean template
         {
             echo "---"
@@ -177,9 +185,15 @@ function ensure_daily_note() {
             echo ""
             echo "## Log"
             echo ""
+            echo "## Carry Over"
+            if [ -n "$CARRYOVER" ]; then
+                echo "$CARRYOVER"
+            fi
+            echo ""
         } > "$NOTE_FILE"
 
         [ -n "$CARRIED" ] && echo "  -> Carried forward tasks"
+        [ -n "$CARRYOVER" ] && echo "  -> Carried over persistent items"
     fi
 
     # Link any refs to the daily note
@@ -247,6 +261,7 @@ refnote() {
 # Aliases for specific tools and scripts
 alias f=". $HOME/.local/src/fzf/dev.sh"
 alias h=". $HOME/.local/src/fzf/history.sh"
+alias db="dbconnect"
 alias killUnity="kill -9 $(pgrep Unity)"
 
 # Aliases for system commands
