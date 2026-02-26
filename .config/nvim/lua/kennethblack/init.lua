@@ -27,4 +27,4 @@ require("lazy").setup("kennethblack.plugins", {
 })
 
 -- colorscheme
-vim.cmd.colorscheme "tokyonight"
+vim.cmd.colorscheme "jackie-brown"

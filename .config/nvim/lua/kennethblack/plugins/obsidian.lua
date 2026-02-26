@@ -35,6 +35,30 @@ return {
         end,
         opts = { buffer = true },
       },
+      -- Quick binary toggle ([ ] ↔ [x])
+      ["<leader>ct"] = {
+        action = function()
+          local line = vim.api.nvim_get_current_line()
+          local new_line
+          if line:match("%- %[ %]") then
+            new_line = line:gsub("%- %[ %]", "- [x]", 1)
+          elseif line:match("%- %[x%]") then
+            new_line = line:gsub("%- %[x%]", "- [ ]", 1)
+          else
+            return
+          end
+          vim.api.nvim_set_current_line(new_line)
+        end,
+        opts = { buffer = true, desc = "Quick toggle checkbox" },
+      },
+      -- Quick create task
+      ["<leader>ta"] = {
+        action = function()
+          vim.api.nvim_put({ "- [ ] " }, "l", true, true)
+          vim.cmd("startinsert!")
+        end,
+        opts = { buffer = true, desc = "Add new task" },
+      },
     },
     ui = { enable = false }, -- using render-markdown.nvim instead
   },

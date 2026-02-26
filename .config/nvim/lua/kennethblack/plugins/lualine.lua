@@ -44,7 +44,7 @@ return {
             {
               "branch",
               icon = git_icons.GitBranch,
-              color = { fg = "#bb9af7", gui = "bold" },
+              color = { fg = "#ffcc2f", gui = "bold" },
             },
             { "filetype", icon_only = true, separator = "", padding = { right = 0, left = 1 } },
             {

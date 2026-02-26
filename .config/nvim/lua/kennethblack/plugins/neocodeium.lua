@@ -3,7 +3,11 @@ return {
   event = "VeryLazy",
   config = function()
     local neocodeium = require("neocodeium")
-    neocodeium.setup()
+    neocodeium.setup({
+      filetypes = {
+        markdown = false,
+      },
+    })
     vim.keymap.set("i", "<C-l>", neocodeium.accept)
   end,
 }
