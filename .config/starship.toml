@@ -8,7 +8,7 @@ $character"""
 
 [fill]
 symbol = "─"
-style = "#845fa0"
+style = "#666666"
 
 [nodejs]
 symbol = " "
@@ -18,24 +18,24 @@ detect_extensions = []
 detect_files = ['package.json', '.node-version', '.nvmrc']
 
 [character]
-success_symbol = "[❯](bold #9ece6a)"  # Use the desired color here
-error_symbol = "[❯](bold #db4b4b)"   # Use the desired color here
-vimcmd_symbol = "[❮](bold #9ece6a)"  # Replace with your desired color
+success_symbol = "[❯](bold #2baf2b)"
+error_symbol = "[❯](bold #ef5734)"
+vimcmd_symbol = "[❮](bold #2baf2b)"
 
 [git_branch]
 symbol = " "
 format = '[$symbol$branch]($style) '
-style = 'bold #9ece6a'
+style = 'bold #2baf2b'
 
 [directory]
 read_only = " 󰌾"
-style = "#7aa2f7"
+style = "#ffcc2f"
 truncation_symbol = ""
 truncation_length = 10
 
 [cmd_duration]
 min_time = 30_000
-style = "#ff9e64"
+style = "#ae8c20"
 format = '[$duration]($style) '
 
 [line_break]
