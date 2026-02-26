@@ -3,6 +3,7 @@
 # Sourced by theme-switch to apply colors across all tools.
 
 THEME_NAME="jackie-brown"
+THEME_WALLPAPER_PREFIX="jackie-brown"  # matches wallpapers/jackie-brown-*.{jpg,png,webp}
 THEME_NVIM_COLORSCHEME="jackie-brown"
 
 # ── Core ──────────────────────────────────────────────────────────────

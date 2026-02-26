@@ -3,6 +3,7 @@
 # Sourced by theme-switch to apply colors across all tools.
 
 THEME_NAME="tokyonight"
+THEME_WALLPAPER_PREFIX="tokyo-night"  # matches wallpapers/tokyo-night-*.{jpg,png,webp}
 THEME_NVIM_COLORSCHEME="tokyonight"
 
 # ── Core ──────────────────────────────────────────────────────────────

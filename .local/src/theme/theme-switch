@@ -3,7 +3,7 @@
 # theme-switch — Unified theme switcher for dotfiles
 #
 # Applies a named color theme across all configured tools at once:
-#   kitty, nvim, lualine, neo-tree, starship, lazygit, waybar, hyprland
+#   kitty, nvim, lualine, neo-tree, starship, lazygit, waybar, hyprland, wallpaper
 #
 # Usage:
 #   theme-switch <theme-name>                  Apply theme to all tools
@@ -38,7 +38,8 @@ DOTFILES="$HOME/.dotfiles"
 STATE_FILE="$HOME/.config/theme/current"
 DRY_RUN=false
 ONLY_TOOLS=()
-ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar hyprland)
+WALLPAPER_DIR="$SCRIPT_DIR/wallpapers"
+ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar hyprland wallpaper)
 
 # ─── Color output helpers ─────────────────────────────────────────────────────
 
@@ -303,6 +304,80 @@ apply_hyprland() {
     fi
 }
 
+apply_wallpaper() {
+    # Collect wallpapers matching the theme prefix: wallpapers/<prefix>-*.{jpg,png,webp}
+    # THEME_WALLPAPER_PREFIX allows decoupling wallpaper naming from theme name
+    # (e.g. theme "tokyonight" can match wallpapers named "tokyo-night-*")
+    local prefix="${THEME_WALLPAPER_PREFIX:-$THEME_NAME}"
+    local candidates=()
+    for ext in jpg jpeg png webp; do
+        for f in "$WALLPAPER_DIR/${prefix}"-*."$ext"; do
+            [[ -f "$f" ]] && candidates+=("$f")
+        done
+    done
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        warn "wallpaper: no images found matching '${prefix}-*' in $WALLPAPER_DIR"
+        return
+    fi
+
+    # Pick a random wallpaper from the candidates
+    local pick="${candidates[$((RANDOM % ${#candidates[@]}))]}"
+
+    if $DRY_RUN; then
+        dry "wallpaper: would set $(basename "$pick") (${#candidates[@]} available)"
+        return
+    fi
+
+    # Detect backend: swww > swaybg > hyprpaper
+    if command -v swww &>/dev/null; then
+        # Start daemon if not running
+        if ! pgrep -x swww-daemon &>/dev/null; then
+            swww-daemon &>/dev/null &
+            disown
+            sleep 0.5  # brief wait for daemon startup
+            info "wallpaper: started swww daemon"
+        fi
+        swww img "$pick" \
+            --transition-type grow \
+            --transition-duration 1.5 \
+            --transition-fps 60 \
+            --transition-pos center
+        info "wallpaper: $(basename "$pick") via swww (${#candidates[@]} available)"
+
+    elif command -v swaybg &>/dev/null; then
+        # Kill existing swaybg, start new one
+        pkill -x swaybg 2>/dev/null || true
+        swaybg -m fill -i "$pick" &>/dev/null &
+        disown
+        info "wallpaper: $(basename "$pick") via swaybg (${#candidates[@]} available)"
+
+    elif command -v hyprpaper &>/dev/null; then
+        # Write hyprpaper config and reload
+        local hpconf="$HOME/.config/hypr/hyprpaper.conf"
+        mkdir -p "$(dirname "$hpconf")"
+        cat > "$hpconf" <<HPEOF
+preload = $pick
+wallpaper = ,$pick
+HPEOF
+        if pgrep -x hyprpaper &>/dev/null; then
+            killall hyprpaper 2>/dev/null || true
+            sleep 0.3
+        fi
+        hyprpaper &>/dev/null &
+        disown
+        info "wallpaper: $(basename "$pick") via hyprpaper (${#candidates[@]} available)"
+    else
+        warn "wallpaper: no backend found (install swww, swaybg, or hyprpaper)"
+        warn "wallpaper: selected $(basename "$pick") — install a backend to apply"
+        return
+    fi
+
+    # Save which wallpaper was picked for reference
+    mkdir -p "$(dirname "$STATE_FILE")"
+    echo "$pick" > "${STATE_FILE}.wallpaper"
+}
+
 # ─── State tracking ──────────────────────────────────────────────────────────
 
 save_state() {
@@ -336,18 +411,29 @@ TOOLS MANAGED
   lazygit    11 theme color values in config.yml
   waybar     Full CSS replacement + SIGUSR2 reload
   hyprland   Border + shadow rgba colors + hyprctl reload
+  wallpaper  Random wallpaper from wallpapers/<theme>-*.{jpg,png,webp}
+             Backends: swww (preferred) > swaybg > hyprpaper
 
 ADDING A NEW THEME
   1. Create palettes/<name>.sh   (copy existing, change values)
   2. Create templates/kitty/<name>.conf
   3. Create templates/waybar/<name>.css
-  4. Run: theme-switch <name>
+  4. Add wallpapers as wallpapers/<name>-1.jpg, <name>-2.jpg, etc.
+  5. Run: theme-switch <name>
+
+WALLPAPERS
+  Stored in:  ~/.dotfiles/.local/src/theme/wallpapers/
+  Naming:     <theme-name>-<number>.{jpg,png,webp}
+  Examples:   jackie-brown-1.jpg, tokyo-night-2.jpg
+  A random matching wallpaper is picked each time you switch.
+  The selected wallpaper is tracked in ~/.config/theme/current.wallpaper
 
 FILES
-  Palettes:   ~/.dotfiles/.local/src/theme/palettes/*.sh
-  Templates:  ~/.dotfiles/.local/src/theme/templates/<tool>/<name>.*
-  State:      ~/.config/theme/current
-  Symlink:    ~/.local/bin/theme-switch → ../src/theme/theme-switch
+  Palettes:    ~/.dotfiles/.local/src/theme/palettes/*.sh
+  Templates:   ~/.dotfiles/.local/src/theme/templates/<tool>/<name>.*
+  Wallpapers:  ~/.dotfiles/.local/src/theme/wallpapers/<name>-*.*
+  State:       ~/.config/theme/current
+  Symlink:     ~/.local/bin/theme-switch → ../src/theme/theme-switch
 EOF
 }
 
@@ -418,6 +504,7 @@ main() {
                 lazygit)   apply_lazygit ;;
                 waybar)    apply_waybar ;;
                 hyprland)  apply_hyprland ;;
+                wallpaper) apply_wallpaper ;;
             esac
             applied=$((applied + 1))
         fi
