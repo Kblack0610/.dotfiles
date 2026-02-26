@@ -12,7 +12,7 @@ return {
     local git_icons = icons.git
     local diagnostics = icons.diagnostics
     -- Set modified highlight color
-    vim.api.nvim_set_hl(0, "NeoTreeModified", { fg = "#c0caf5" })
+    vim.api.nvim_set_hl(0, "NeoTreeModified", { fg = "#ae8c20" })
     -- get autocommand to open neotree on load working
     return {
       source_selector = {
