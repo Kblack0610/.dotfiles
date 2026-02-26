@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+#
+# theme-switch — Unified theme switcher for dotfiles
+#
+# Applies a named color theme across all configured tools at once:
+#   kitty, nvim, lualine, neo-tree, starship, lazygit, waybar, hyprland
+#
+# Usage:
+#   theme-switch <theme-name>                  Apply theme to all tools
+#   theme-switch <theme-name> --dry-run        Show what would change, don't write
+#   theme-switch <theme-name> --only t1,t2     Apply to specific tools only
+#   theme-switch --list                        List available themes
+#   theme-switch --current                     Show active theme
+#   theme-switch --help                        Show this help
+#
+# Palette files live in palettes/<name>.sh — shell-sourceable color variables.
+# Templates (full-file replacements) live in templates/<tool>/<name>.<ext>.
+#
+# State is tracked in ~/.config/theme/current (single-line file).
+#
+# Examples:
+#   theme-switch jackie-brown
+#   theme-switch tokyonight --only kitty,starship
+#   theme-switch tokyonight --dry-run
+#
+# Adding a new theme:
+#   1. Create palettes/<name>.sh  (copy an existing one, change values)
+#   2. Create templates/kitty/<name>.conf
+#   3. Create templates/waybar/<name>.css
+#   4. Run: theme-switch <name>
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES="$HOME/.dotfiles"
+STATE_FILE="$HOME/.config/theme/current"
+DRY_RUN=false
+ONLY_TOOLS=()
+ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar hyprland)
+
+# ─── Color output helpers ─────────────────────────────────────────────────────
+
+green()  { printf '\033[32m%s\033[0m' "$1"; }
+yellow() { printf '\033[33m%s\033[0m' "$1"; }
+red()    { printf '\033[31m%s\033[0m' "$1"; }
+dim()    { printf '\033[2m%s\033[0m' "$1"; }
+bold()   { printf '\033[1m%s\033[0m' "$1"; }
+
+info()  { echo "  $(green "✓") $1"; }
+warn()  { echo "  $(yellow "⚠") $1"; }
+err()   { echo "  $(red "✗") $1" >&2; }
+dry()   { echo "  $(dim "dry") $1"; }
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+list_themes() {
+    echo "Available themes:"
+    for f in "$SCRIPT_DIR"/palettes/*.sh; do
+        local name
+        name="$(basename "$f" .sh)"
+        local current=""
+        if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$name" ]]; then
+            current=" $(green "(active)")"
+        fi
+        echo "  - ${name}${current}"
+    done
+}
+
+show_current() {
+    if [[ -f "$STATE_FILE" ]]; then
+        echo "Current theme: $(bold "$(cat "$STATE_FILE")")"
+    else
+        echo "No theme set yet (state file missing: $STATE_FILE)"
+    fi
+}
+
+should_apply() {
+    local tool="$1"
+    if [[ ${#ONLY_TOOLS[@]} -eq 0 ]]; then
+        return 0  # no filter → apply all
+    fi
+    for t in "${ONLY_TOOLS[@]}"; do
+        [[ "$t" == "$tool" ]] && return 0
+    done
+    return 1
+}
+
+# Portable sed -i (macOS vs Linux)
+sedi() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
+# ─── Per-tool apply functions ─────────────────────────────────────────────────
+#
+# Each function receives no arguments — it reads from the sourced palette
+# variables (THEME_*) and writes to the target config file.
+#
+# On --dry-run, functions print what they would do but don't write.
+
+apply_kitty() {
+    local src="$SCRIPT_DIR/templates/kitty/${THEME_NAME}.conf"
+    local dst="$DOTFILES/.config/kitty/current-theme.conf"
+
+    if [[ ! -f "$src" ]]; then
+        warn "kitty: template not found: $src"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "kitty: would copy $src → $dst"
+        return
+    fi
+
+    cp "$src" "$dst"
+    info "kitty: applied template"
+
+    # Live reload: send SIGUSR1 to all kitty instances
+    if pgrep -x kitty &>/dev/null; then
+        kill -SIGUSR1 "$(pgrep -x kitty)" 2>/dev/null || true
+        info "kitty: sent SIGUSR1 (live reload)"
+    fi
+}
+
+apply_nvim() {
+    local file="$DOTFILES/.config/nvim/lua/kennethblack/init.lua"
+
+    if [[ ! -f "$file" ]]; then
+        warn "nvim: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "nvim: would set colorscheme to '$THEME_NVIM_COLORSCHEME' in $file"
+        return
+    fi
+
+    # Replace the colorscheme line: vim.cmd.colorscheme "X"
+    sedi "s/vim\.cmd\.colorscheme \"[^\"]*\"/vim.cmd.colorscheme \"${THEME_NVIM_COLORSCHEME}\"/" "$file"
+    info "nvim: set colorscheme → $THEME_NVIM_COLORSCHEME"
+    warn "nvim: run $(bold ":colorscheme $THEME_NVIM_COLORSCHEME") in open nvim instances"
+}
+
+apply_lualine() {
+    local file="$DOTFILES/.config/nvim/lua/kennethblack/plugins/lualine.lua"
+
+    if [[ ! -f "$file" ]]; then
+        warn "lualine: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "lualine: would set branch fg to '$THEME_BRANCH_LUALINE' in $file"
+        return
+    fi
+
+    # Target the branch color line: color = { fg = "#hex", gui = "bold" }
+    sedi "s/color = { fg = \"#[0-9a-fA-F]\{6\}\", gui = \"bold\" }/color = { fg = \"${THEME_BRANCH_LUALINE}\", gui = \"bold\" }/" "$file"
+    info "lualine: branch fg → $THEME_BRANCH_LUALINE"
+}
+
+apply_neo_tree() {
+    local file="$DOTFILES/.config/nvim/lua/kennethblack/plugins/neo-tree.lua"
+
+    if [[ ! -f "$file" ]]; then
+        warn "neo-tree: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "neo-tree: would set NeoTreeModified fg to '$THEME_NEOTREE_MODIFIED' in $file"
+        return
+    fi
+
+    # Target: vim.api.nvim_set_hl(0, "NeoTreeModified", { fg = "#hex" })
+    sedi "s/{ fg = \"#[0-9a-fA-F]\{6\}\" }/{ fg = \"${THEME_NEOTREE_MODIFIED}\" }/" "$file"
+    info "neo-tree: NeoTreeModified fg → $THEME_NEOTREE_MODIFIED"
+}
+
+apply_starship() {
+    local file="$DOTFILES/.config/starship.toml"
+
+    if [[ ! -f "$file" ]]; then
+        warn "starship: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "starship: would update 7 color values in $file"
+        return
+    fi
+
+    # [fill] style
+    sedi "/^\[fill\]$/,/^\[/ s/^style = \"#[0-9a-fA-F]\{6\}\"/style = \"${THEME_FILL}\"/" "$file"
+
+    # [character] success/error/vimcmd symbols — match the hex inside brackets
+    sedi "s/success_symbol = \"\[❯\](bold #[0-9a-fA-F]\{6\})\"/success_symbol = \"[❯](bold ${THEME_SUCCESS})\"/" "$file"
+    sedi "s/error_symbol = \"\[❯\](bold #[0-9a-fA-F]\{6\})\"/error_symbol = \"[❯](bold ${THEME_ERROR})\"/" "$file"
+    sedi "s/vimcmd_symbol = \"\[❮\](bold #[0-9a-fA-F]\{6\})\"/vimcmd_symbol = \"[❮](bold ${THEME_SUCCESS})\"/" "$file"
+
+    # [git_branch] style
+    sedi "/^\[git_branch\]$/,/^\[/ s/^style = 'bold #[0-9a-fA-F]\{6\}'/style = 'bold ${THEME_GIT_BRANCH}'/" "$file"
+
+    # [directory] style
+    sedi "/^\[directory\]$/,/^\[/ s/^style = \"#[0-9a-fA-F]\{6\}\"/style = \"${THEME_DIRECTORY}\"/" "$file"
+
+    # [cmd_duration] style
+    sedi "/^\[cmd_duration\]$/,/^\[/ s/^style = \"#[0-9a-fA-F]\{6\}\"/style = \"${THEME_DURATION}\"/" "$file"
+
+    info "starship: updated 7 color values (next prompt redraws automatically)"
+}
+
+apply_lazygit() {
+    local file="$DOTFILES/.config/jesseduffield/lazygit/config.yml"
+
+    if [[ ! -f "$file" ]]; then
+        warn "lazygit: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "lazygit: would update 11 color values in $file"
+        return
+    fi
+
+    # Each theme key in lazygit config has the color on the next line as:
+    #       - "#hexval"
+    # We match the key line and replace the hex on the following line.
+
+    sedi "/activeBorderColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_ACTIVE_BORDER}\"/;}" "$file"
+    sedi "/inactiveBorderColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_INACTIVE_BORDER}\"/;}" "$file"
+    sedi "/searchingActiveBorderColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_SEARCH_ACTIVE}\"/;}" "$file"
+    sedi "/optionsTextColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_OPTIONS}\"/;}" "$file"
+    sedi "/selectedLineBgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_SELECTED_BG}\"/;}" "$file"
+    sedi "/cherryPickedCommitFgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_CHERRY_FG}\"/;}" "$file"
+    sedi "/cherryPickedCommitBgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_CHERRY_BG}\"/;}" "$file"
+    sedi "/markedBaseCommitFgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_MARKED_FG}\"/;}" "$file"
+    sedi "/markedBaseCommitBgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_MARKED_BG}\"/;}" "$file"
+    sedi "/unstagedChangesColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_UNSTAGED}\"/;}" "$file"
+    sedi "/defaultFgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_DEFAULT_FG}\"/;}" "$file"
+
+    info "lazygit: updated 11 color values"
+    warn "lazygit: restart lazygit to see changes"
+}
+
+apply_waybar() {
+    local src="$SCRIPT_DIR/templates/waybar/${THEME_NAME}.css"
+    local dst="$DOTFILES/.config/waybar/style.css"
+
+    if [[ ! -f "$src" ]]; then
+        warn "waybar: template not found: $src"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "waybar: would copy $src → $dst"
+        return
+    fi
+
+    cp "$src" "$dst"
+    info "waybar: applied template"
+
+    # Live reload: SIGUSR2 tells waybar to reload CSS
+    if pgrep -x waybar &>/dev/null; then
+        killall -SIGUSR2 waybar 2>/dev/null || true
+        info "waybar: sent SIGUSR2 (live reload)"
+    fi
+}
+
+apply_hyprland() {
+    local file="$DOTFILES/.config/hypr/hyprland.conf"
+
+    if [[ ! -f "$file" ]]; then
+        warn "hyprland: config not found: $file"
+        return
+    fi
+
+    if $DRY_RUN; then
+        dry "hyprland: would update 3 border colors + shadow in $file"
+        return
+    fi
+
+    # col.active_border = rgba(XXXXXXee) rgba(YYYYYYee) 45deg
+    sedi "s/col\.active_border = rgba([0-9a-fA-F]\{8\}) rgba([0-9a-fA-F]\{8\}) 45deg/col.active_border = rgba(${THEME_HYPR_ACTIVE1}) rgba(${THEME_HYPR_ACTIVE2}) 45deg/" "$file"
+
+    # col.inactive_border = rgba(XXXXXXaa)
+    sedi "s/col\.inactive_border = rgba([0-9a-fA-F]\{8\})/col.inactive_border = rgba(${THEME_HYPR_INACTIVE})/" "$file"
+
+    # Shadow color
+    sedi "s/color = rgba([0-9a-fA-F]\{8\})/color = rgba(${THEME_HYPR_SHADOW})/" "$file"
+
+    info "hyprland: updated border + shadow colors"
+
+    # Live reload
+    if command -v hyprctl &>/dev/null; then
+        hyprctl reload &>/dev/null || true
+        info "hyprland: reloaded config"
+    fi
+}
+
+# ─── State tracking ──────────────────────────────────────────────────────────
+
+save_state() {
+    mkdir -p "$(dirname "$STATE_FILE")"
+    echo "$THEME_NAME" > "$STATE_FILE"
+}
+
+# ─── Usage / help ─────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<'EOF'
+theme-switch — Unified theme switcher for dotfiles
+
+USAGE
+  theme-switch <theme-name> [OPTIONS]
+  theme-switch --list | --current | --help
+
+OPTIONS
+  --dry-run         Show what would change without writing anything
+  --only t1,t2      Only apply to listed tools (comma-separated)
+  --list            List available themes
+  --current         Show the active theme
+  --help            Show this help
+
+TOOLS MANAGED
+  kitty      Terminal colors (full template replacement + SIGUSR1 reload)
+  nvim       Colorscheme name in init.lua
+  lualine    Branch highlight color in lualine.lua
+  neo-tree   NeoTreeModified highlight color in neo-tree.lua
+  starship   7 color values across prompt sections
+  lazygit    11 theme color values in config.yml
+  waybar     Full CSS replacement + SIGUSR2 reload
+  hyprland   Border + shadow rgba colors + hyprctl reload
+
+ADDING A NEW THEME
+  1. Create palettes/<name>.sh   (copy existing, change values)
+  2. Create templates/kitty/<name>.conf
+  3. Create templates/waybar/<name>.css
+  4. Run: theme-switch <name>
+
+FILES
+  Palettes:   ~/.dotfiles/.local/src/theme/palettes/*.sh
+  Templates:  ~/.dotfiles/.local/src/theme/templates/<tool>/<name>.*
+  State:      ~/.config/theme/current
+  Symlink:    ~/.local/bin/theme-switch → ../src/theme/theme-switch
+EOF
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+main() {
+    local theme=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --list)     list_themes; exit 0 ;;
+            --current)  show_current; exit 0 ;;
+            --help|-h)  usage; exit 0 ;;
+            --dry-run)  DRY_RUN=true; shift ;;
+            --only)
+                IFS=',' read -ra ONLY_TOOLS <<< "$2"
+                shift 2
+                ;;
+            -*)
+                err "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+            *)
+                theme="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$theme" ]]; then
+        err "No theme specified. Use --list to see available themes."
+        echo ""
+        usage
+        exit 1
+    fi
+
+    # Load palette
+    local palette="$SCRIPT_DIR/palettes/${theme}.sh"
+    if [[ ! -f "$palette" ]]; then
+        err "Theme '$theme' not found. Available:"
+        list_themes
+        exit 1
+    fi
+
+    # shellcheck source=/dev/null
+    source "$palette"
+
+    echo ""
+    if $DRY_RUN; then
+        echo "$(bold "DRY RUN") — Theme: $(bold "$THEME_NAME")"
+    else
+        echo "Applying theme: $(bold "$THEME_NAME")"
+    fi
+    echo ""
+
+    # Apply each tool
+    local applied=0
+    for tool in "${ALL_TOOLS[@]}"; do
+        if should_apply "$tool"; then
+            case "$tool" in
+                kitty)     apply_kitty ;;
+                nvim)      apply_nvim ;;
+                lualine)   apply_lualine ;;
+                neo-tree)  apply_neo_tree ;;
+                starship)  apply_starship ;;
+                lazygit)   apply_lazygit ;;
+                waybar)    apply_waybar ;;
+                hyprland)  apply_hyprland ;;
+            esac
+            applied=$((applied + 1))
+        fi
+    done
+
+    if [[ $applied -eq 0 ]]; then
+        err "No matching tools for --only filter: ${ONLY_TOOLS[*]}"
+        exit 1
+    fi
+
+    # Save state
+    if ! $DRY_RUN; then
+        save_state
+        echo ""
+        echo "Theme $(bold "$THEME_NAME") applied to $applied tool(s)."
+    else
+        echo ""
+        echo "$(dim "Dry run complete. No files were modified.")"
+    fi
+}
+
+main "$@"
