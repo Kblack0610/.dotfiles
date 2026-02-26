@@ -152,12 +152,6 @@ function ensure_daily_note() {
         echo "Creating entry: $NOTE_FILE"
         mkdir -p "$(dirname "$NOTE_FILE")"
 
-        # Get carried forward tasks (if available)
-        local CARRIED=""
-        if command -v journal-carryforward &> /dev/null; then
-            CARRIED=$(journal-carryforward 2>/dev/null || true)
-        fi
-
         # Pull carry over section from yesterday's note
         local YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v -1d +%Y-%m-%d)
         local YESTERDAY_FILE="$HOME/.notes/journal/daily/$YESTERDAY.md"
@@ -176,14 +170,9 @@ function ensure_daily_note() {
             echo "# $DATE"
             echo ""
             echo "## Focus"
-            if [ -n "$CARRIED" ]; then
-                echo "$CARRIED"
-            fi
             echo "- [ ] "
             echo ""
             echo "## Notes"
-            echo ""
-            echo "## Log"
             echo ""
             echo "## Carry Over"
             if [ -n "$CARRYOVER" ]; then
@@ -192,7 +181,6 @@ function ensure_daily_note() {
             echo ""
         } > "$NOTE_FILE"
 
-        [ -n "$CARRIED" ] && echo "  -> Carried forward tasks"
         [ -n "$CARRYOVER" ] && echo "  -> Carried over persistent items"
     fi
 
