@@ -161,14 +161,21 @@ echo "  - Sleep fully disabled (all power sources)"
 # Auto-Login                                                                   #
 ###############################################################################
 
+# Disable FileVault (full-disk encryption) if enabled
+# FileVault blocks auto-login and unattended restarts, making it incompatible
+# with headless/server use. Safe to disable for home LAN machines.
+if fdesetup status 2>/dev/null | grep -q "On"; then
+    echo "  - FileVault is enabled, disabling..."
+    sudo fdesetup disable 2>/dev/null || echo "  - WARNING: Failed to disable FileVault (may need manual intervention)"
+else
+    echo "  - FileVault already disabled"
+fi
+
 # Enable automatic login for the current user
-# NOTE: This is incompatible with FileVault. If FileVault is enabled,
-# disable it first: sudo fdesetup disable
 CURRENT_USER=$(whoami)
 sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "$CURRENT_USER" 2>/dev/null || true
 
-echo "  - Auto-login configured for $CURRENT_USER"
-echo "    (Requires FileVault to be disabled and a logout/restart to take effect)"
+echo "  - Auto-login configured for $CURRENT_USER (takes effect after restart)"
 
 ###############################################################################
 # Security                                                                     #
