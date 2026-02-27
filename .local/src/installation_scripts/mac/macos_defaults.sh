@@ -140,11 +140,35 @@ defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2.5
 # Energy & Performance                                                         #
 ###############################################################################
 
-# Disable machine sleep while charging
-sudo pmset -c sleep 0 2>/dev/null || true
+# Prevent system sleep entirely (all power sources)
+sudo pmset -a sleep 0 2>/dev/null || true
 
-# Set display sleep to 10 minutes on battery
-sudo pmset -b displaysleep 10 2>/dev/null || true
+# Prevent display sleep (all power sources)
+sudo pmset -a displaysleep 0 2>/dev/null || true
+
+# Disable idle sleep (prevents sleep even with no user activity)
+sudo pmset -a disablesleep 1 2>/dev/null || true
+
+# Disable hibernation (speeds up wake if sleep somehow triggers)
+sudo pmset -a hibernatemode 0 2>/dev/null || true
+
+# Prevent hard drive sleep
+sudo pmset -a disksleep 0 2>/dev/null || true
+
+echo "  - Sleep fully disabled (all power sources)"
+
+###############################################################################
+# Auto-Login                                                                   #
+###############################################################################
+
+# Enable automatic login for the current user
+# NOTE: This is incompatible with FileVault. If FileVault is enabled,
+# disable it first: sudo fdesetup disable
+CURRENT_USER=$(whoami)
+sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "$CURRENT_USER" 2>/dev/null || true
+
+echo "  - Auto-login configured for $CURRENT_USER"
+echo "    (Requires FileVault to be disabled and a logout/restart to take effect)"
 
 ###############################################################################
 # Security                                                                     #
