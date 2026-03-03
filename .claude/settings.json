@@ -3,7 +3,6 @@
     "commit": "",
     "pr": ""
   },
-  "model": "opus",
   "hooks": {
     "SessionStart": [
       {
@@ -20,5 +19,6 @@
   "enabledPlugins": {
     "rust-analyzer-lsp@claude-plugins-official": true,
     "clangd-lsp@claude-plugins-official": true
-  }
+  },
+  "skipDangerousModePermissionPrompt": true
 }
