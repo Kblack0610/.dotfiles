@@ -286,7 +286,8 @@ alias k9local="k9s --context k3d-local"
 alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
 
 # Infrastructure dashboard
-alias infra="$HOME/.local/src/infra-dash/display.sh"
+# 'infra' command provided by ~/.local/bin/infra (symlink to home-config/infrastructure/infra/infra.sh)
+alias infra-dash="$HOME/.local/src/infra-dash/display.sh"
 alias infra-collect="$HOME/.local/src/infra-dash/collect.sh"
 alias infra-json="$HOME/.local/src/infra-dash/display.sh -j"
 
