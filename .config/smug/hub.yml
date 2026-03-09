@@ -5,4 +5,4 @@ windows:
   - name: notes
     root: ~/.notes
     commands:
-      - nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+      - ensure_daily_note && nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md

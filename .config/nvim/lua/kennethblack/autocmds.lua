@@ -150,9 +150,18 @@ local function get_today_journal()
   return get_journal_path(os.date("%Y-%m-%d"))
 end
 
-local function get_yesterday_journal()
-  local yesterday = os.time() - 86400
-  return get_journal_path(os.date("%Y-%m-%d", yesterday))
+local function get_most_recent_journal()
+  local daily_dir = vim.fn.expand("~/.notes/journal/daily/")
+  local today = os.date("%Y-%m-%d")
+  local files = vim.fn.glob(daily_dir .. "*.md", false, true)
+  table.sort(files)
+  -- Find most recent that isn't today
+  for i = #files, 1, -1 do
+    if not files[i]:find(today, 1, true) then
+      return files[i]
+    end
+  end
+  return nil
 end
 
 local function file_exists(path)
@@ -176,16 +185,20 @@ local function write_file(path, content)
   return true
 end
 
-local function extract_incomplete_tasks(content)
+local function extract_carryover(content)
   if not content then return {} end
-  local tasks = {}
-  for line in content:gmatch("[^\n]+") do
-    -- Match unchecked tasks: - [ ] task
-    if line:match("^%s*%- %[ %]") then
-      table.insert(tasks, line)
+  local lines = {}
+  local in_carryover = false
+  for line in content:gmatch("[^\n]*") do
+    if line:match("^## Carry Over") then
+      in_carryover = true
+    elseif in_carryover and line:match("^## ") then
+      break
+    elseif in_carryover and line ~= "" then
+      table.insert(lines, line)
     end
   end
-  return tasks
+  return lines
 end
 
 local function create_daily_journal()
@@ -195,9 +208,10 @@ local function create_daily_journal()
   -- Don't recreate if exists
   if file_exists(journal_path) then return end
 
-  -- Get yesterday's incomplete tasks
-  local yesterday_content = read_file(get_yesterday_journal())
-  local incomplete_tasks = extract_incomplete_tasks(yesterday_content)
+  -- Get carry over content from most recent previous note
+  local prev_journal = get_most_recent_journal()
+  local prev_content = prev_journal and read_file(prev_journal) or nil
+  local carryover = extract_carryover(prev_content)
 
   -- Build clean template
   local lines = {
@@ -209,21 +223,19 @@ local function create_daily_journal()
     "# " .. today,
     "",
     "## Focus",
+    "- [ ] ",
+    "",
+    "## Notes",
+    "",
+    "## Carry Over",
   }
 
-  -- Add yesterday's incomplete tasks
-  if #incomplete_tasks > 0 then
-    for _, task in ipairs(incomplete_tasks) do
-      table.insert(lines, task)
+  -- Add yesterday's carry over items
+  if #carryover > 0 then
+    for _, line in ipairs(carryover) do
+      table.insert(lines, line)
     end
   end
-  table.insert(lines, "- [ ] ")
-
-  -- Add rest of template
-  table.insert(lines, "")
-  table.insert(lines, "## Notes")
-  table.insert(lines, "")
-  table.insert(lines, "## Log")
   table.insert(lines, "")
 
   write_file(journal_path, table.concat(lines, "\n"))
