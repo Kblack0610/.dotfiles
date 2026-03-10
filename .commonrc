@@ -41,6 +41,7 @@ fi
 
 # Set up Android SDK
 export ANDROID_HOME=$LIBRARY_BASE/Android/Sdk
+export ANDROID_AVD_HOME=$HOME/.config/.android/avd
 
 # Set up Java (Zulu JDK)
 export JAVA_HOME=$JAVA_LIBRARY_BASE
