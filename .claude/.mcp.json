@@ -1,12 +1,5 @@
 {
   "mcpServers": {
-    "sequential-thinking": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
-    },
     "context7": {
       "command": "npx",
       "args": [
@@ -34,29 +27,12 @@
         "ide-assistant"
       ]
     },
-    "docker-mcp": {
-      "command": "uvx",
-      "args": [
-        "docker-mcp"
-      ]
-    },
     "filesystem": {
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp",
       "args": [],
       "env": {
         "RUST_LOG": "info"
       }
-    },
-    "memory": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "-v",
-        "claude-memory:/app/dist",
-        "--rm",
-        "mcp/memory"
-      ]
     },
     "github-gh": {
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp",
@@ -70,15 +46,6 @@
       "args": [],
       "env": {
         "SEARXNG_URL": "http://localhost:8888",
-        "RUST_LOG": "info"
-      }
-    },
-    "agent": {
-      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/agent",
-      "args": [
-        "serve"
-      ],
-      "env": {
         "RUST_LOG": "info"
       }
     }
