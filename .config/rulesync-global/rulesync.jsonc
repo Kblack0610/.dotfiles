@@ -1,0 +1,23 @@
+{
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/config-schema.json",
+  "targets": [
+    "claudecode",
+    "codexcli",
+    "geminicli",
+    "opencode"
+  ],
+  "features": [
+    "rules",
+    "mcp"
+  ],
+  "baseDirs": [
+    "."
+  ],
+  "delete": true,
+  "verbose": false,
+  "silent": false,
+  "simulateCommands": false,
+  "simulateSubagents": false,
+  "simulateSkills": false
+}
+// Automated sync test
