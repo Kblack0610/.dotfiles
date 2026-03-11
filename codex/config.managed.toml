@@ -1,0 +1,33 @@
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest", "--browser", "firefox"]
+
+[mcp_servers.serena]
+command = "uvx"
+args = ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "ide-assistant"]
+
+[mcp_servers.filesystem]
+command = "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp"
+args = []
+
+[mcp_servers.filesystem.env]
+RUST_LOG = "info"
+
+[mcp_servers.github-gh]
+command = "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp"
+args = []
+
+[mcp_servers.github-gh.env]
+RUST_LOG = "info"
+
+[mcp_servers.web-search]
+command = "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp"
+args = []
+
+[mcp_servers.web-search.env]
+SEARXNG_URL = "http://localhost:8080"
+RUST_LOG = "info"
