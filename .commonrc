@@ -303,6 +303,7 @@ alias mic-list="audio-stream --list"
 
 alias cl="claude --dangerously-skip-permissions"
 alias co="codex"
+alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
 alias cb="agent" # need to rename to agent
 
 # --- Claude Code Profiles ---

@@ -3,9 +3,10 @@ set -euo pipefail
 
 DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-SOURCE_CONFIG="$DOTFILES_ROOT/codex/config.managed.toml"
+SOURCE_DIR="$DOTFILES_ROOT/.config/codex"
+SOURCE_CONFIG="$SOURCE_DIR/config.managed.toml"
 TARGET_CONFIG="$CODEX_HOME/config.toml"
-SKILLS_SOURCE_DIR="$DOTFILES_ROOT/codex/skills"
+SKILLS_SOURCE_DIR="$SOURCE_DIR/skills"
 SKILLS_TARGET_DIR="$CODEX_HOME/skills"
 START_MARKER="# >>> dotfiles codex managed start >>>"
 END_MARKER="# <<< dotfiles codex managed end <<<"
@@ -19,7 +20,8 @@ mkdir -p "$CODEX_HOME" "$SKILLS_TARGET_DIR"
 
 tmp_config="$(mktemp)"
 managed_tmp="$(mktemp)"
-trap 'rm -f "$tmp_config" "$managed_tmp"' EXIT
+features_tmp="$(mktemp)"
+trap 'rm -f "$tmp_config" "$managed_tmp" "$features_tmp"' EXIT
 
 {
     echo "$START_MARKER"
@@ -37,9 +39,6 @@ if [ -f "$TARGET_CONFIG" ]; then
 else
     : > "$tmp_config"
 fi
-
-features_tmp="$(mktemp)"
-trap 'rm -f "$tmp_config" "$managed_tmp" "$features_tmp"' EXIT
 
 awk '
     BEGIN { in_features=0; saw_features=0; saw_rmcp=0 }
