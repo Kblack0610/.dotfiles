@@ -1,9 +1,12 @@
 #!/bin/bash
 
-# Waybar module for Claude agents
+# Waybar module for AI agents
 # Shows status with icons:  ghe ✓~! | shk ✓ | dot ~
 # Groups agents by PROJECT (working directory) not session
 # ✓ = ready/good, ! = needs attention, ~ = in progress
+
+TMUX_SCRIPT_DIR="$HOME/.local/src/tmux"
+source "$TMUX_SCRIPT_DIR/agent-lib.sh"
 
 # Pango color spans for per-status coloring (Catppuccin theme)
 C_RED="<span color='#f38ba8'>"    # ! needs attention
@@ -31,61 +34,40 @@ get_project_from_path() {
     esac
 }
 
-get_claude_status() {
+get_ai_agent_status() {
     declare -A seen_windows
     declare -A project_agents    # project -> list of statuses
     declare -A project_sessions  # project -> list of session:window for tooltip
     local tooltip=""
     local has_urgent=false
     local has_working=false
-    local AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
-
     while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
         window_key="${session}:${window_idx}"
         [[ -n "${seen_windows[$window_key]}" ]] && continue
 
         # Count panes running AI agents
-        if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
+        if is_agent_pane "$session" "$window_idx" "$pane_cmd"; then
             seen_windows[$window_key]=1
 
             # Extract project from working directory
             project=$(get_project_from_path "$pane_path")
 
-            # Capture last lines to detect state
-            last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
-
-            # Get activity status
-            last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
-            now=$(date +%s)
-            activity_diff=9999
-            if [ -n "$last_activity" ]; then
-                activity_diff=$((now - last_activity))
-            fi
-
-            # Determine state based on content and activity
-            # Priority 1: Interactive questions needing input
-            if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|Allow.*once|Allow.*always|Deny|Do you want to'; then
-                status="${C_RED}!${C_END}"
-                tooltip_status="!"
-                has_urgent=true
-            # Priority 2: Actively working (recent output within 3 seconds)
-            elif [ $activity_diff -lt 3 ]; then
-                status="${C_YEL}~${C_END}"
-                tooltip_status="~"
-                has_working=true
-            # Priority 3: At prompt or showing status bar (DONE)
-            elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left until'; then
-                status="${C_GRN}✓${C_END}"
-                tooltip_status="✓"
-            # Fallback: No recent activity = done
-            elif [ $activity_diff -gt 10 ]; then
-                status="${C_GRN}✓${C_END}"
-                tooltip_status="✓"
-            else
-                status="${C_YEL}~${C_END}"
-                tooltip_status="~"
-                has_working=true
-            fi
+            case "$(get_agent_state "${session}:${window_idx}")" in
+                '!')
+                    status="${C_RED}!${C_END}"
+                    tooltip_status="!"
+                    has_urgent=true
+                    ;;
+                '~')
+                    status="${C_YEL}~${C_END}"
+                    tooltip_status="~"
+                    has_working=true
+                    ;;
+                *)
+                    status="${C_GRN}✓${C_END}"
+                    tooltip_status="✓"
+                    ;;
+            esac
 
             # Build project agents list
             project_agents[$project]+="$status"
@@ -125,10 +107,10 @@ get_claude_status() {
     fi
 
     if [ -n "$display" ]; then
-        echo "{\"text\": \" ${display}\", \"tooltip\": \"Claude Agents:\\n${tooltip}\", \"class\": \"${css_class}\"}"
+        echo "{\"text\": \" ${display}\", \"tooltip\": \"AI Agents:\\n${tooltip}\", \"class\": \"${css_class}\"}"
     else
-        echo "{\"text\": \" \", \"tooltip\": \"No Claude agents running\", \"class\": \"inactive\"}"
+        echo "{\"text\": \" \", \"tooltip\": \"No AI agents running\", \"class\": \"inactive\"}"
     fi
 }
 
-get_claude_status
+get_ai_agent_status
