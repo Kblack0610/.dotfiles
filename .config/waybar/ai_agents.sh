@@ -34,6 +34,15 @@ get_project_from_path() {
     esac
 }
 
+get_agent_summary() {
+    local session="$1"
+    local window_idx="$2"
+    local summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
+
+    [[ -f "$summary_file" ]] || return 1
+    head -c 60 "$summary_file" 2>/dev/null
+}
+
 get_ai_agent_status() {
     declare -A seen_windows
     declare -A project_agents    # project -> list of statuses
@@ -41,6 +50,7 @@ get_ai_agent_status() {
     local tooltip=""
     local has_urgent=false
     local has_working=false
+    local summary_count=0
     while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
         window_key="${session}:${window_idx}"
         [[ -n "${seen_windows[$window_key]}" ]] && continue
@@ -51,6 +61,9 @@ get_ai_agent_status() {
 
             # Extract project from working directory
             project=$(get_project_from_path "$pane_path")
+            agent_type=$(detect_agent_type "$session" "$window_idx" "$pane_cmd")
+            agent_label=$(get_agent_label "$agent_type")
+            summary=$(get_agent_summary "$session" "$window_idx" || true)
 
             case "$(get_agent_state "${session}:${window_idx}")" in
                 '!')
@@ -73,7 +86,12 @@ get_ai_agent_status() {
             project_agents[$project]+="$status"
 
             # Track session:window for tooltip
-            project_sessions[$project]+="${tooltip_status} ${session}:${window_idx}\\n"
+            if [[ -n "$summary" ]]; then
+                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx} - ${summary}\\n"
+                ((summary_count++))
+            else
+                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx}\\n"
+            fi
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
 
@@ -93,6 +111,9 @@ get_ai_agent_status() {
     for project in "${sorted_projects[@]}"; do
         tooltip+="${project}:\\n${project_sessions[$project]}"
     done
+    if [[ ${#sorted_projects[@]} -gt 0 && $summary_count -eq 0 ]]; then
+        tooltip+="\\n(no summaries cached; run agent-summary-daemon.sh start)"
+    fi
     # Remove trailing newline from tooltip
     tooltip="${tooltip%\\n}"
 
