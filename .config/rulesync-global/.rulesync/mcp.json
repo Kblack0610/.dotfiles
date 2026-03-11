@@ -1,0 +1,69 @@
+{
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/mcp-schema.json",
+  "mcpServers": {
+    "context7": {
+      "description": "Library documentation search server",
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "env": {}
+    },
+    "playwright": {
+      "description": "Browser automation MCP server",
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser",
+        "firefox"
+      ],
+      "env": {}
+    },
+    "serena": {
+      "description": "Semantic code search and editing MCP server",
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant"
+      ],
+      "env": {}
+    },
+    "filesystem": {
+      "description": "Filesystem MCP server from local orchestrator",
+      "type": "stdio",
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp",
+      "args": [],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    },
+    "github-gh": {
+      "description": "GitHub CLI-backed MCP server from local orchestrator",
+      "type": "stdio",
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp",
+      "args": [],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    },
+    "web-search": {
+      "description": "Local web search MCP server",
+      "type": "stdio",
+      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp",
+      "args": [],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8080",
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}

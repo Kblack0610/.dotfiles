@@ -121,3 +121,4 @@ Media/Music
 test_notifications.sh
 
 .local/src/pxe-server/images
+.gemini/
