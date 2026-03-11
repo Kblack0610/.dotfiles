@@ -55,7 +55,8 @@ git checkout -b <branch-name>
   - Features: `feat/<short-description>`
   - Fixes: `fix/<short-description>`
   - CI/infra: `chore/<short-description>`
-- If no task prompt is given, ask the user for a branch name
+- If no task prompt is given, create a throwaway temp branch: `tmp/YYYYMMDD-HHMMSS`
+  - Do NOT ask for a branch name — just create the temp one immediately
 
 ## Phase 4: Verify Environment
 
@@ -78,7 +79,7 @@ If `$ARGUMENTS` contains a task description (not empty):
 4. Write a plan and get user approval before implementing
 
 If no task prompt was provided:
-- Report that the environment is ready
+- Report that the environment is ready on the temp branch
 - Ask the user what they'd like to work on
 
 ## Guardrails

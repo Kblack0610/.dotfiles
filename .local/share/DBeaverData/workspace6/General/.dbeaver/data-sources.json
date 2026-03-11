@@ -79,8 +79,8 @@
 	"connection-types": {
 		"dev": {
 			"name": "Development",
-			"color": "170,255,170",
-			"description": "Development database",
+			"color": "255,255,255",
+			"description": "Regular development database",
 			"auto-commit": true,
 			"confirm-execute": false,
 			"confirm-data-change": false,
@@ -93,17 +93,17 @@
 		},
 		"prod": {
 			"name": "Production",
-			"color": "255,170,170",
-			"description": "Production database - be careful!",
+			"color": "org.jkiss.dbeaver.color.connectionType.prod.background",
+			"description": "Production database",
 			"auto-commit": false,
 			"confirm-execute": true,
 			"confirm-data-change": true,
 			"smart-commit": false,
-			"smart-commit-recover": true,
+			"smart-commit-recover": false,
 			"auto-close-transactions": true,
-			"close-transactions-period": 1800,
+			"close-transactions-period": 600,
 			"auto-close-connections": true,
-			"close-connections-period": 14400
+			"close-connections-period": 3600
 		}
 	}
 }

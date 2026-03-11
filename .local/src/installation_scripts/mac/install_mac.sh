@@ -27,10 +27,11 @@ setup_git() {
     git config --global credential.helper osxkeychain
 
     # SSH key setup
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+
     if [[ ! -f ~/.ssh/id_ed25519 ]]; then
         log_info "Generating SSH key..."
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
         ssh-keygen -t ed25519 -C "kblack0610@gmail.com" -N "" -f ~/.ssh/id_ed25519
 
         # Add to macOS Keychain
@@ -43,6 +44,17 @@ setup_git() {
         log_info "SSH key already exists"
         # Ensure key is in agent
         ssh-add --apple-use-keychain ~/.ssh/id_ed25519 2>/dev/null || true
+    fi
+
+    # Authorize workstation's public key for inbound SSH access
+    local authorized_keys="$HOME/.ssh/authorized_keys"
+    local workstation_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6yTlK3GCzXC2+njcPtTucjwxb53Sb0+JT+TuTD78Jh kblack0610@gmail.com"
+    if ! grep -qF "$workstation_key" "$authorized_keys" 2>/dev/null; then
+        echo "$workstation_key" >> "$authorized_keys"
+        chmod 600 "$authorized_keys"
+        log_info "Workstation SSH key added to authorized_keys"
+    else
+        log_info "Workstation SSH key already authorized"
     fi
 
     # Authenticate with GitHub CLI if available
@@ -269,6 +281,22 @@ install_lazygit() {
     fi
 }
 
+# Override: Install node_exporter for homelab monitoring
+install_node_exporter() {
+    log_section "Installing node_exporter monitoring"
+
+    if ! brew list --formula 2>/dev/null | grep -q "^node_exporter$"; then
+        log_info "Installing node_exporter..."
+        brew install node_exporter &>/dev/null
+        log_info "node_exporter installed"
+    else
+        log_info "node_exporter already installed"
+    fi
+
+    brew services start node_exporter 2>/dev/null
+    log_info "node_exporter service started (port 9100)"
+}
+
 # Override: Install Kubernetes tools
 install_kubernetes() {
     log_section "Installing Kubernetes & Container tools"
@@ -404,6 +432,9 @@ install_all() {
 
     # Kubernetes & Containers
     install_kubernetes
+
+    # Homelab monitoring
+    install_node_exporter
 
     # Game streaming
     setup_sunshine
