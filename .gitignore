@@ -76,6 +76,12 @@ Media/Music
 .claude/plans.bak/
 .claude/downloads/
 
+# Codex - keep repo-managed definitions, ignore local runtime state
+.codex/*
+!.codex/skills/
+!.codex/skills/.system/
+!.codex/skills/.system/.codex-system-skills.marker
+
 # Serena 
 .serena/*
 
