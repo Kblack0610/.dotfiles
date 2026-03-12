@@ -1,0 +1,157 @@
+{
+  logging: {
+    level: "info",
+    file: "~/.openclaw/logs/openclaw.log",
+    consoleLevel: "info",
+    consoleStyle: "pretty",
+    redactSensitive: "tools",
+  },
+
+  messages: {
+    ackReaction: "👀",
+  },
+
+  gateway: {
+    mode: "local",
+    port: 18789,
+    bind: "loopback",
+  },
+
+  agents: {
+    defaults: {
+      workspace: "~/.openclaw/workspace",
+      userTimezone: "America/Los_Angeles",
+      model: {
+        primary: "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+        fallbacks: [
+          "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          "mlx-reasoning/mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit",
+        ],
+      },
+      models: {
+        "mlx-code/mlx-community/Qwen3-Coder-Next-4bit": {
+          alias: "code",
+        },
+        "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ": {
+          alias: "smart",
+        },
+        "mlx-reasoning/mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit": {
+          alias: "reasoning",
+        },
+      },
+      thinkingDefault: "low",
+      timeoutSeconds: 600,
+      sandbox: {
+        mode: "off",
+      },
+    },
+    list: [
+      {
+        id: "ops-observer",
+        default: true,
+        name: "Ops Observer",
+        workspace: "~/.openclaw/workspace-ops-observer",
+        agentDir: "~/.openclaw/agents/ops-observer/agent",
+        model: {
+          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+        },
+        tools: {
+          deny: ["write", "edit", "apply_patch", "cron", "nodes"],
+        },
+      },
+      {
+        id: "ops-escalate",
+        name: "Ops Escalate",
+        workspace: "~/.openclaw/workspace-ops-escalate",
+        agentDir: "~/.openclaw/agents/ops-escalate/agent",
+        model: {
+          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+        },
+        tools: {
+          deny: ["write", "edit", "apply_patch"],
+        },
+      },
+      {
+        id: "pr-coordinator",
+        name: "PR Coordinator",
+        workspace: "~/.openclaw/workspace-pr-coordinator",
+        agentDir: "~/.openclaw/agents/pr-coordinator/agent",
+        model: {
+          primary: "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+          fallbacks: [
+            "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          ],
+        },
+      },
+    ],
+  },
+
+  tools: {
+    exec: {
+      host: "gateway",
+      security: "allowlist",
+      ask: "on-miss",
+      notifyOnExit: true,
+    },
+  },
+
+  models: {
+    mode: "merge",
+    providers: {
+      "mlx-code": {
+        baseUrl: "http://192.168.1.4:8080/v1",
+        apiKey: "local",
+        api: "openai-responses",
+        models: [
+          {
+            id: "mlx-community/Qwen3-Coder-Next-4bit",
+            name: "Qwen3 Coder Next 4bit",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 32768,
+          },
+        ],
+      },
+      "mlx-smart": {
+        baseUrl: "http://192.168.1.4:8081/v1",
+        apiKey: "local",
+        api: "openai-responses",
+        models: [
+          {
+            id: "mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+            name: "Qwen3 235B A22B 4bit DWQ",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 32768,
+          },
+        ],
+      },
+      "mlx-reasoning": {
+        baseUrl: "http://192.168.1.4:8082/v1",
+        apiKey: "local",
+        api: "openai-responses",
+        models: [
+          {
+            id: "mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit",
+            name: "DeepSeek R1 Distill Qwen 32B MLX 4Bit",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 64000,
+            maxTokens: 16384,
+          },
+        ],
+      },
+    },
+  },
+
+  cron: {
+    enabled: true,
+    maxConcurrentRuns: 2,
+    sessionRetention: "24h",
+  },
+}

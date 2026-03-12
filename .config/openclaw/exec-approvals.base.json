@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "socket": {},
+  "defaults": {},
+  "agents": {
+    "ops-observer": {
+      "allowlist": [
+        {
+          "pattern": "/usr/bin/kubectl"
+        },
+        {
+          "pattern": "/usr/local/bin/flux"
+        },
+        {
+          "pattern": "/usr/bin/docker"
+        },
+        {
+          "pattern": "/usr/bin/rg"
+        }
+      ]
+    },
+    "ops-escalate": {
+      "allowlist": [
+        {
+          "pattern": "/usr/bin/kubectl"
+        },
+        {
+          "pattern": "/usr/local/bin/flux"
+        },
+        {
+          "pattern": "/usr/bin/docker"
+        },
+        {
+          "pattern": "/usr/bin/rg"
+        }
+      ]
+    },
+    "pr-coordinator": {
+      "allowlist": [
+        {
+          "pattern": "/usr/bin/git"
+        },
+        {
+          "pattern": "/usr/bin/gh"
+        },
+        {
+          "pattern": "/usr/bin/rg"
+        }
+      ]
+    }
+  }
+}
