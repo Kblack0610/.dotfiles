@@ -51,18 +51,30 @@ maybe_allowlist() {
   fi
 }
 
+allowlist_many() {
+  local agent="$1"
+  shift
+  local bin_name
+  for bin_name in "$@"; do
+    maybe_allowlist "$agent" "$bin_name"
+  done
+}
+
 mkdir -p \
   "$OPENCLAW_HOME" \
   "$OPENCLAW_HOME/logs" \
   "$OPENCLAW_HOME/workspace" \
+  "$OPENCLAW_HOME/workspace-home-orchestrator" \
   "$OPENCLAW_HOME/workspace-ops-observer" \
   "$OPENCLAW_HOME/workspace-ops-escalate" \
   "$OPENCLAW_HOME/workspace-pr-coordinator" \
+  "$OPENCLAW_HOME/agents/home-orchestrator/agent" \
   "$OPENCLAW_HOME/agents/ops-observer/agent" \
   "$OPENCLAW_HOME/agents/ops-escalate/agent" \
   "$OPENCLAW_HOME/agents/pr-coordinator/agent"
 
 copy_if_missing_or_forced "$CONFIG_TEMPLATE" "$OPENCLAW_HOME/openclaw.json"
+copy_if_missing_or_forced "$TEMPLATE_DIR/workspaces/home-orchestrator/AGENTS.md" "$OPENCLAW_HOME/workspace-home-orchestrator/AGENTS.md"
 copy_if_missing_or_forced "$TEMPLATE_DIR/workspaces/ops-observer/AGENTS.md" "$OPENCLAW_HOME/workspace-ops-observer/AGENTS.md"
 copy_if_missing_or_forced "$TEMPLATE_DIR/workspaces/ops-escalate/AGENTS.md" "$OPENCLAW_HOME/workspace-ops-escalate/AGENTS.md"
 copy_if_missing_or_forced "$TEMPLATE_DIR/workspaces/pr-coordinator/AGENTS.md" "$OPENCLAW_HOME/workspace-pr-coordinator/AGENTS.md"
@@ -73,19 +85,9 @@ else
   echo "Keeping existing $OPENCLAW_HOME/exec-approvals.json"
 fi
 
-maybe_allowlist ops-observer kubectl
-maybe_allowlist ops-observer flux
-maybe_allowlist ops-observer docker
-maybe_allowlist ops-observer rg
-
-maybe_allowlist ops-escalate kubectl
-maybe_allowlist ops-escalate flux
-maybe_allowlist ops-escalate docker
-maybe_allowlist ops-escalate rg
-
-maybe_allowlist pr-coordinator git
-maybe_allowlist pr-coordinator gh
-maybe_allowlist pr-coordinator rg
+allowlist_many ops-observer kubectl flux docker rg find ls cat sed head tail jq
+allowlist_many ops-escalate kubectl flux docker rg find ls cat sed head tail jq
+allowlist_many pr-coordinator git gh rg find ls cat sed head tail jq
 
 run_openclaw config validate
 
@@ -97,8 +99,10 @@ Next steps:
   1. openclaw dashboard
   2. openclaw models auth login
   3. openclaw gateway run
+  4. use home-orchestrator as the default entrypoint
 
 Agents:
+  - home-orchestrator
   - ops-observer
   - ops-escalate
   - pr-coordinator

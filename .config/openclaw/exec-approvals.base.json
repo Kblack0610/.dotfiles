@@ -16,6 +16,27 @@
         },
         {
           "pattern": "/usr/bin/rg"
+        },
+        {
+          "pattern": "/usr/bin/find"
+        },
+        {
+          "pattern": "/usr/bin/ls"
+        },
+        {
+          "pattern": "/usr/bin/cat"
+        },
+        {
+          "pattern": "/usr/bin/sed"
+        },
+        {
+          "pattern": "/usr/bin/head"
+        },
+        {
+          "pattern": "/usr/bin/tail"
+        },
+        {
+          "pattern": "/usr/bin/jq"
         }
       ]
     },
@@ -32,6 +53,27 @@
         },
         {
           "pattern": "/usr/bin/rg"
+        },
+        {
+          "pattern": "/usr/bin/find"
+        },
+        {
+          "pattern": "/usr/bin/ls"
+        },
+        {
+          "pattern": "/usr/bin/cat"
+        },
+        {
+          "pattern": "/usr/bin/sed"
+        },
+        {
+          "pattern": "/usr/bin/head"
+        },
+        {
+          "pattern": "/usr/bin/tail"
+        },
+        {
+          "pattern": "/usr/bin/jq"
         }
       ]
     },
@@ -45,6 +87,27 @@
         },
         {
           "pattern": "/usr/bin/rg"
+        },
+        {
+          "pattern": "/usr/bin/find"
+        },
+        {
+          "pattern": "/usr/bin/ls"
+        },
+        {
+          "pattern": "/usr/bin/cat"
+        },
+        {
+          "pattern": "/usr/bin/sed"
+        },
+        {
+          "pattern": "/usr/bin/head"
+        },
+        {
+          "pattern": "/usr/bin/tail"
+        },
+        {
+          "pattern": "/usr/bin/jq"
         }
       ]
     }

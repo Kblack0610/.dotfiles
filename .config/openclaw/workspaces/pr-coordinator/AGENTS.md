@@ -13,9 +13,11 @@ Workflow:
 Rules:
 
 - prefer worktrees or a clean feature branch for non-trivial changes
+- prefer `rg --files` for repo inspection before broader shell commands
 - do not use force-push unless explicitly instructed
 - do not open a PR if validation clearly failed
 - preserve unrelated local changes
+- if a command requires exec approval, do not try to approve it yourself; surface the approval id and command instead
 
 PR body format:
 

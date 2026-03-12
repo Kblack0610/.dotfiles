@@ -41,14 +41,55 @@
       },
       thinkingDefault: "low",
       timeoutSeconds: 600,
+      subagents: {
+        maxSpawnDepth: 1,
+        maxChildrenPerAgent: 4,
+        maxConcurrent: 4,
+        runTimeoutSeconds: 900,
+        archiveAfterMinutes: 120,
+      },
       sandbox: {
         mode: "off",
       },
     },
     list: [
       {
-        id: "ops-observer",
+        id: "home-orchestrator",
         default: true,
+        name: "Home Orchestrator",
+        workspace: "~/.openclaw/workspace-home-orchestrator",
+        agentDir: "~/.openclaw/agents/home-orchestrator/agent",
+        model: {
+          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          fallbacks: [
+            "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+          ],
+        },
+        subagents: {
+          allowAgents: ["ops-observer", "ops-escalate", "pr-coordinator"],
+        },
+        tools: {
+          allow: [
+            "read",
+            "sessions_list",
+            "sessions_history",
+            "sessions_spawn",
+            "session_status",
+            "subagents",
+          ],
+          deny: [
+            "exec",
+            "process",
+            "write",
+            "edit",
+            "apply_patch",
+            "cron",
+            "nodes",
+          ],
+        },
+      },
+      {
+        id: "ops-observer",
         name: "Ops Observer",
         workspace: "~/.openclaw/workspace-ops-observer",
         agentDir: "~/.openclaw/agents/ops-observer/agent",
@@ -70,6 +111,9 @@
         tools: {
           deny: ["write", "edit", "apply_patch"],
         },
+        subagents: {
+          allowAgents: [],
+        },
       },
       {
         id: "pr-coordinator",
@@ -82,11 +126,21 @@
             "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
           ],
         },
+        subagents: {
+          allowAgents: [],
+        },
       },
     ],
   },
 
   tools: {
+    agentToAgent: {
+      enabled: true,
+      allow: ["home-orchestrator", "ops-observer", "ops-escalate", "pr-coordinator"],
+    },
+    sessions: {
+      visibility: "all",
+    },
     exec: {
       host: "gateway",
       security: "allowlist",
@@ -101,7 +155,7 @@
       "mlx-code": {
         baseUrl: "http://192.168.1.4:8080/v1",
         apiKey: "local",
-        api: "openai-responses",
+        api: "openai-completions",
         models: [
           {
             id: "mlx-community/Qwen3-Coder-Next-4bit",
@@ -117,7 +171,7 @@
       "mlx-smart": {
         baseUrl: "http://192.168.1.4:8081/v1",
         apiKey: "local",
-        api: "openai-responses",
+        api: "openai-completions",
         models: [
           {
             id: "mlx-community/Qwen3-235B-A22B-4bit-DWQ",
@@ -133,7 +187,7 @@
       "mlx-reasoning": {
         baseUrl: "http://192.168.1.4:8082/v1",
         apiKey: "local",
-        api: "openai-responses",
+        api: "openai-completions",
         models: [
           {
             id: "mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit",
