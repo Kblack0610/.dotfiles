@@ -15,7 +15,7 @@ return {
                     end
                     local stat = vim.uv.fs_stat(list_item.value)
                     if stat and stat.type == "directory" then
-                        vim.cmd("Neotree position=current dir=" .. vim.fn.fnameescape(list_item.value))
+                        vim.cmd("edit " .. vim.fn.fnameescape(list_item.value))
                         return
                     end
                     local bufnr = vim.fn.bufnr(list_item.value)
