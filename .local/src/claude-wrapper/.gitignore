@@ -1,0 +1,14 @@
+# User-specific files (don't commit tokens!)
+*.token
+profiles/
+
+# State files
+rotation/
+
+# Logs
+*.log
+*.jsonl
+
+# Backup files
+*.bak
+*~
