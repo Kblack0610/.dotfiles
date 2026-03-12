@@ -20,6 +20,10 @@ install_to_profile() {
     mkdir -p "$profile/chrome"
     cp "$SCRIPT_DIR/chrome/userChrome.css" "$profile/chrome/userChrome.css"
     echo "  - Installed chrome/userChrome.css"
+
+    # Install containers.json
+    cp "$SCRIPT_DIR/containers.json" "$profile/containers.json"
+    echo "  - Installed containers.json"
 }
 
 find_and_install() {
@@ -57,7 +61,36 @@ if [[ $installed -eq 0 ]]; then
     exit 1
 fi
 
+# Install policies.json to Firefox distribution directory
+install_policies() {
+    local firefox_dir=""
+    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox /snap/firefox/current/usr/lib/firefox; do
+        if [[ -d "$candidate" ]]; then
+            firefox_dir="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$firefox_dir" ]]; then
+        echo "Warning: Could not find Firefox install directory for policies.json"
+        echo "  You can manually copy policies.json to <firefox-dir>/distribution/policies.json"
+        return
+    fi
+
+    local dist_dir="$firefox_dir/distribution"
+    if [[ ! -d "$dist_dir" ]]; then
+        echo "Creating $dist_dir (requires sudo)"
+        sudo mkdir -p "$dist_dir"
+    fi
+    sudo cp "$SCRIPT_DIR/policies.json" "$dist_dir/policies.json"
+    echo "  - Installed policies.json to $dist_dir"
+}
+
+install_policies
+
 echo ""
 echo "Done! Restart browser(s) to apply changes."
-echo "  - Tab bar will be at bottom"
+echo "  - Session restore enabled (tabs persist across restarts)"
+echo "  - Tab groups enabled"
+echo "  - Containers synced"
 echo "  - Catppuccin Mocha theme applied"

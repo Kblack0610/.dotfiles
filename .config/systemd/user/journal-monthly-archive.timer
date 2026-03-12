@@ -1,0 +1,9 @@
+[Unit]
+Description=Run journal monthly archive on 2nd of each month
+
+[Timer]
+OnCalendar=*-*-02 01:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply day theme (jackie-brown)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/theme-auto
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-1

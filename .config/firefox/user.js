@@ -46,3 +46,10 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutConfig.showWarning", false);
 user_pref("browser.tabs.firefox-view", false);
 user_pref("identity.fxaccounts.enabled", false);
+
+// === SESSION RESTORE ===
+// Restore previous session (keeps tabs/tab groups across restarts)
+user_pref("browser.startup.page", 3);
+
+// === TAB GROUPS ===
+user_pref("browser.tabs.groups.enabled", true);

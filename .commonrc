@@ -302,9 +302,39 @@ alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
 
 alias cl="claude --dangerously-skip-permissions"
-alias co="codex"
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
 alias cb="agent" # need to rename to agent
+
+# --- Tmux pane title wrappers for AI tools ---
+# Sets ✳ in pane title so tmux agent detection works (like Claude does natively)
+_tmux_agent_wrap() {
+    local name="$1"; shift
+    [[ -n "$TMUX" ]] && printf '\033]2;✳ %s\033\\' "$name"
+    command "$name" "$@"
+    [[ -n "$TMUX" ]] && printf '\033]2;\033\\'
+}
+codex()    { _tmux_agent_wrap codex "$@"; }
+gemini()   { _tmux_agent_wrap gemini "$@"; }
+opencode() { _tmux_agent_wrap opencode "$@"; }
+aider()    { _tmux_agent_wrap aider "$@"; }
+openclaw() {
+    local bin=""
+    if bin="$(type -P openclaw 2>/dev/null)"; then
+        [[ -n "$TMUX" ]] && printf '\033]2;✳ openclaw\033\\'
+        command "$bin" "$@"
+    elif bin="$(type -P bunx 2>/dev/null)"; then
+        [[ -n "$TMUX" ]] && printf '\033]2;✳ openclaw\033\\'
+        command "$bin" openclaw "$@"
+    else
+        echo "openclaw requires either the openclaw binary or bunx" >&2
+        return 127
+    fi
+    local status=$?
+    [[ -n "$TMUX" ]] && printf '\033]2;\033\\'
+    return "$status"
+}
+alias co="codex"
+alias claw-setup="$HOME/.dotfiles/.config/openclaw/setup-openclaw.sh"
 
 # --- Claude Code Profiles ---
 # Interactive profiles

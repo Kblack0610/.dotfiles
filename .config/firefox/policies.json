@@ -1,0 +1,21 @@
+{
+  "policies": {
+    "Homepage": {
+      "URL": "about:home",
+      "StartPage": "previous-session",
+      "Additional": []
+    },
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "ExtensionSettings": {
+      "{c607c8df-14a7-4f28-894f-29e8722976af}": {
+        "installation_mode": "normal_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/temporary-containers/latest.xpi"
+      },
+      "@testpilot-containers": {
+        "installation_mode": "normal_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/multi-account-containers/latest.xpi"
+      }
+    }
+  }
+}

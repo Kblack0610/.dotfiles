@@ -1,0 +1,8 @@
+[Unit]
+Description=Archive daily journal entries monthly
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/kblack0610/.notes/journal/scripts/monthly_summarize_archive.py
+StandardOutput=append:/home/kblack0610/.notes/journal/scripts/monthly_archive.log
+StandardError=append:/home/kblack0610/.notes/journal/scripts/monthly_archive.log

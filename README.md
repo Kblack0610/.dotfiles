@@ -63,6 +63,34 @@ reqs for installation (not complete):
 
 once stow is installed, run "stow ." to symlink
 
+## Shared AI config
+
+Shared Codex, Claude, Gemini, and OpenCode rules/MCP config are generated from `.config/rulesync-global/`.
+
+Install Rulesync once:
+
+```bash
+curl -fsSL https://github.com/dyoshikawa/rulesync/releases/latest/download/install.sh | bash
+```
+
+Then sync the global AI config:
+
+```bash
+~/.dotfiles/.config/codex/sync-ai-global-config.sh
+```
+
+## OpenClaw
+
+OpenClaw has a separate local bootstrap path because its durable config is tracked here, while runtime state stays in `~/.openclaw/`.
+
+Bootstrap the current machine:
+
+```bash
+~/.dotfiles/.config/openclaw/setup-openclaw.sh
+```
+
+That installs the tracked base config, starter workspaces, and baseline exec approvals without touching provider auth tokens or other ephemeral OpenClaw state.
+
 # Post-stow setup
 
 Some configs can't be symlinked (random profile names). Run these after stow:

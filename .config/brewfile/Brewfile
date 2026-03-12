@@ -17,6 +17,7 @@ brew "tmux"
 brew "smug"  # tmux session manager (replaced tmuxinator)
 brew "uv"
 brew "btop"
+brew "bun"
 brew "lazydocker"
 brew "zsh-autosuggestions"
 

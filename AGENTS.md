@@ -2,7 +2,7 @@
 
 This repository is the source of truth for shared Codex behavior. Keep machine-local Codex runtime state in `~/.codex`, but manage reusable instructions, skills, and sync scripts from this repo.
 
-Canonical Codex assets live under `.config/codex/`. This root `AGENTS.md` stays here because Codex discovers project instructions from the repo root.
+Canonical Codex assets live under `.config/codex/`. Shared cross-agent Rulesync sources live under `.config/rulesync-global/`. This root `AGENTS.md` stays here because Codex discovers project instructions from the repo root.
 
 ## Core rules
 
@@ -41,8 +41,9 @@ Project mapping:
 
 ## MCP and local setup
 
-- MCP server definitions are managed from `.config/codex/config.managed.toml`.
-- Sync local Codex state with `.config/codex/sync-codex-config.sh`.
+- Shared AI rules and MCP server definitions are managed from `.config/rulesync-global/`.
+- Sync global Codex, Claude, Gemini, and OpenCode state with `.config/codex/sync-ai-global-config.sh`.
+- `.config/codex/sync-codex-config.sh` remains the compatibility entrypoint for Codex users and still syncs Codex skills.
 - Do not edit `~/.codex/auth.json`, history, logs, or sqlite state from automation.
 
 ## Compact handoff
