@@ -1,28 +1,62 @@
 {
   "provider": {
-    "ollama": {
+    "mlx-code": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (local)",
+      "name": "MLX Code",
       "options": {
-        "baseURL": "http://192.168.1.4:11434/v1"
+        "baseURL": "http://192.168.1.4:8080/v1"
       },
       "models": {
-        "gpt-oss:120b": {
-          "name": "gpt-oss:120b"
+        "mlx-community/Qwen3-Coder-Next-4bit": {
+          "name": "Qwen3 Coder Next 4bit"
+        }
+      }
+    },
+    "mlx-smart": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "MLX Smart",
+      "options": {
+        "baseURL": "http://192.168.1.4:8081/v1"
+      },
+      "models": {
+        "mlx-community/Qwen3-235B-A22B-4bit-DWQ": {
+          "name": "Qwen3 235B A22B 4bit DWQ"
+        }
+      }
+    },
+    "mlx-reasoning": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "MLX Reasoning",
+      "options": {
+        "baseURL": "http://192.168.1.4:8082/v1"
+      },
+      "models": {
+        "mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit": {
+          "name": "DeepSeek R1 Distill Qwen 32B MLX 4Bit"
+        }
+      }
+    },
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM",
+      "options": {
+        "baseURL": "https://llm.home.kennethblack.me/v1",
+        "apiKey": "{env:LITELLM_MASTER_KEY}"
+      },
+      "models": {
+        "code": {
+          "name": "code"
         },
-        "deepseek-r1:latest": {
-          "name": "deepseek-r1:latest"
+        "smart": {
+          "name": "smart"
         },
-        "qwen3-coder:480b": {
-          "name": "qwen3-coder:480b"
-        },
-        "llama3.1:8b": {
-          "name": "llama 3.1 8b"
-        },
+        "reasoning": {
+          "name": "reasoning"
+        }
       }
     }
   },
-  "model": "ollama/gpt-oss:120b",
+  "model": "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
   "agent": {
     "plan": {
       "tools": {
@@ -65,32 +99,6 @@
     }
   },
   "mcp": {
-    "sequential-thinking": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
-    },
-    "context7": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@upstash/context7-mcp"
-      ]
-    },
-    "playwright": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@playwright/mcp@latest",
-        "--browser",
-        "firefox"
-      ]
-    },
     "serena": {
       "type": "local",
       "command": [
@@ -101,50 +109,62 @@
         "start-mcp-server",
         "--context",
         "ide-assistant"
-      ]
-    },
-    "digitalocean": {
-      "type": "local",
-      "command": [
-        "npx",
-        "@digitalocean/mcp"
       ],
-      "environment": {
-        "DIGITALOCEAN_API_TOKEN": "$DIGITALOCEAN_API_TOKEN"
-      }
+      "enabled": true,
+      "environment": {}
     },
-    "github": {
-      "type": "local",
-      "command": [
-        "docker",
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "ghcr.io/github/github-mcp-server"
-      ],
-      "environment": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
-      }
-    },
-    "docker-mcp": {
-      "type": "local",
-      "command": [
-        "uvx",
-        "docker-mcp"
-      ],
-      "enabled": false
-    },
-    "linear": {
+    "context7": {
       "type": "local",
       "command": [
         "npx",
         "-y",
-        "mcp-remote",
-        "https://mcp.linear.app/sse"
+        "@upstash/context7-mcp"
       ],
-      "enabled": false
+      "enabled": true,
+      "environment": {}
+    },
+    "playwright": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser",
+        "firefox"
+      ],
+      "enabled": true,
+      "environment": {}
+    },
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "RUST_LOG": "info"
+      }
+    },
+    "github-gh": {
+      "type": "local",
+      "command": [
+        "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "RUST_LOG": "info"
+      }
+    },
+    "web-search": {
+      "type": "local",
+      "command": [
+        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "SEARXNG_URL": "http://localhost:8080",
+        "RUST_LOG": "info"
+      }
     }
   },
   "permission": {
