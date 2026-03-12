@@ -131,8 +131,8 @@ autocmd("VimLeave", {
 
 -- ============================================
 -- Daily Journal Harpoon Integration
--- Sets harpoon slot 1 to today's journal when in ~/.notes
--- Creates journal with template and yesterday's incomplete tasks
+-- Pins today's daily note and refs folder when in ~/.notes
+-- Creates journal with template and carry-over section
 -- ============================================
 local journal_harpoon_group = augroup("journal_harpoon", { clear = true })
 
@@ -148,6 +148,10 @@ end
 
 local function get_today_journal()
   return get_journal_path(os.date("%Y-%m-%d"))
+end
+
+local function get_today_refs_dir()
+  return vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d"))
 end
 
 local function get_most_recent_journal()
@@ -241,45 +245,52 @@ local function create_daily_journal()
   write_file(journal_path, table.concat(lines, "\n"))
 end
 
-local function set_journal_as_slot_1()
+local function ensure_today_refs_dir()
+  local refs_dir = get_today_refs_dir()
+  if file_exists(refs_dir) then return end
+  vim.fn.mkdir(refs_dir, "p")
+end
+
+local function is_daily_journal(path)
+  return path:match("/%.notes/journal/daily/%d%d%d%d%-%d%d%-%d%d%.md$") ~= nil
+end
+
+local function sync_notes_harpoon_slots()
   if not is_in_notes_dir() then return end
 
   vim.defer_fn(function()
-    -- Create the journal file if it doesn't exist
     create_daily_journal()
+    ensure_today_refs_dir()
 
     local ok, harpoon = pcall(require, "harpoon")
     if not ok then return end
 
     local journal_path = get_today_journal()
+    local refs_dir = get_today_refs_dir()
     local list = harpoon:list()
     local items = list.items
-
-    -- Skip if already set
-    if items[1] and items[1].value == journal_path then return end
-
-    -- Remove existing entries for today's journal
     for i = #items, 1, -1 do
-      if items[i].value == journal_path then
+      local value = items[i].value
+      if value == journal_path or value == refs_dir or is_daily_journal(value) then
         table.remove(items, i)
       end
     end
 
-    -- Insert at position 1
     table.insert(items, 1, { value = journal_path })
+    table.insert(items, 2, { value = refs_dir })
   end, 100)
 end
 
 autocmd("DirChanged", {
-  desc = "Set harpoon slot 1 to today's journal in notes directory",
+  desc = "Sync notes harpoon slots in notes directory",
   group = journal_harpoon_group,
-  callback = set_journal_as_slot_1,
+  callback = sync_notes_harpoon_slots,
 })
 
 autocmd("VimEnter", {
-  desc = "Set harpoon slot 1 to today's journal if starting in notes",
+  desc = "Sync notes harpoon slots if starting in notes",
   group = journal_harpoon_group,
-  callback = set_journal_as_slot_1,
+  callback = sync_notes_harpoon_slots,
 })
 
 -- ============================================
