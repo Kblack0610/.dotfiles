@@ -1,0 +1,20 @@
+#!/bin/bash
+# Post-commit hook to automatically sync AI rules and MCP config
+# when source files are changed.
+
+set -euo pipefail
+
+DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+SYNC_SCRIPT="$DOTFILES_ROOT/.config/codex/sync-ai-global-config.sh"
+SOURCE_DIR=".config/rulesync-global"
+
+# Only run if files in the rulesync source or the sync script itself changed in the last commit
+if git diff-tree --no-commit-id --name-only -r HEAD | grep -qE "^(${SOURCE_DIR}/|${SYNC_SCRIPT#$DOTFILES_ROOT/})"; then
+    echo "Changes detected in AI configuration source. Syncing..."
+    if [ -f "$SYNC_SCRIPT" ]; then
+        bash "$SYNC_SCRIPT"
+    else
+        echo "Error: Sync script not found at $SYNC_SCRIPT" >&2
+        exit 1
+    fi
+fi

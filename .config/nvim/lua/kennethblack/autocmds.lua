@@ -154,6 +154,10 @@ local function get_today_refs_dir()
   return vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d"))
 end
 
+local function get_projects_dir()
+  return vim.fn.expand("~/.notes/dev/projects")
+end
+
 local function get_most_recent_journal()
   local daily_dir = vim.fn.expand("~/.notes/journal/daily/")
   local today = os.date("%Y-%m-%d")
@@ -267,17 +271,19 @@ local function sync_notes_harpoon_slots()
 
     local journal_path = get_today_journal()
     local refs_dir = get_today_refs_dir()
+    local projects_dir = get_projects_dir()
     local list = harpoon:list()
     local items = list.items
     for i = #items, 1, -1 do
       local value = items[i].value
-      if value == journal_path or value == refs_dir or is_daily_journal(value) then
+      if value == journal_path or value == refs_dir or value == projects_dir or is_daily_journal(value) then
         table.remove(items, i)
       end
     end
 
     table.insert(items, 1, { value = journal_path })
     table.insert(items, 2, { value = refs_dir })
+    table.insert(items, 3, { value = projects_dir })
   end, 100)
 end
 
