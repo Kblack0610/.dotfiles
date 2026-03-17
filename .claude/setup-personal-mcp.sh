@@ -1,6 +1,9 @@
 #!/bin/bash
 # Auto-configure personal MCP servers and plans on first run
 
+# Clean stale compliance guard files from previous sessions
+rm -f /tmp/claude-rules-guards/compliance-* 2>/dev/null
+
 MARKER_FILE="$HOME/.claude-mcp-configured"
 PLANS_MARKER="$HOME/.claude-plans-configured"
 

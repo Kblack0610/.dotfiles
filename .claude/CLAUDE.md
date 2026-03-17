@@ -21,6 +21,13 @@ This dotfiles repository is the source of truth for shared AI assistant rules an
 - Run the smallest credible validation that proves the change.
 - Report what was verified and what could not be verified.
 
+## Infrastructure Questions
+
+- For infrastructure, cluster, deployment, ingress, or Kubernetes status questions, identify the target environment explicitly before answering.
+- Do not assume a default production cluster when multiple clusters may exist.
+- Prefer repo-local infrastructure docs and manifests for project-specific operational truth, then verify against the live target context when access is available.
+- If a repo distinguishes between a navigation hub and domain docs, treat the domain docs as the source of truth for operational details.
+
 ## Project Mapping
 
 - `gheegle`, `ghee-sheets`, `ghee-*` -> `~/.agent/plans/gheegle/`
