@@ -1,0 +1,25 @@
+{
+  "backend": "mlx",
+  "backends": {
+    "mlx": {
+      "base_url": "http://192.168.1.4:8081/v1",
+      "model": "mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+      "timeout_seconds": 30
+    },
+    "litellm": {
+      "base_url": "https://llm.home.kennethblack.me/v1",
+      "model": "smart",
+      "timeout_seconds": 45,
+      "api_key_env": "LITELLM_MASTER_KEY"
+    }
+  },
+  "transcript_tail_lines": 80,
+  "max_content_chars_per_message": 500,
+  "categories": {
+    "verification": "block",
+    "planning": "warn",
+    "lessons": "warn",
+    "infrastructure": "warn",
+    "ephemeral_state": "block"
+  }
+}
