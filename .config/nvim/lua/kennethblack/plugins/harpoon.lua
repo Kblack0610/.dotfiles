@@ -43,7 +43,7 @@ return {
                 })
             end
         )
-        vim.keymap.set("n", "<leader>nr", function() _G.open_today_refs_in_neotree() end, {
+        vim.keymap.set("n", "<C-n>", function() _G.open_today_refs_in_neotree() end, {
             desc = "Open today's refs in Neo-tree",
         })
         -- Kitty hack, these are bound to alt, but kitty is binding ctrl + KEY to send this as well
@@ -52,8 +52,6 @@ return {
         vim.keymap.set("n", "<C-j>", function() harpoon:list():select(2) end)
         vim.keymap.set("n", "<C-k>", function() harpoon:list():select(3) end)
         vim.keymap.set("n", "<C-l>", function() harpoon:list():select(4) end)
-        vim.keymap.set("n", "<C-n>", function() harpoon:list():select(5) end)
-        vim.keymap.set("n", "<C-m>", function() harpoon:list():select(6) end)
     end,
     dependencies = { "nvim-lua/plenary.nvim" },
 
