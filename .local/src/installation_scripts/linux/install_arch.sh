@@ -290,6 +290,7 @@ setup_printing() {
         "cups"
         "cups-pdf"
         "avahi"
+        "gvfs-smb"
         "nss-mdns"
     )
 
