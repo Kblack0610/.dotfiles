@@ -131,7 +131,7 @@ autocmd("VimLeave", {
 
 -- ============================================
 -- Daily Journal Harpoon Integration
--- Pins today's daily note and refs folder when in ~/.notes
+-- Pins today's daily note when in ~/.notes
 -- Creates journal with template and carry-over section
 -- ============================================
 local journal_harpoon_group = augroup("journal_harpoon", { clear = true })
@@ -152,10 +152,6 @@ end
 
 local function get_today_refs_dir()
   return vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d"))
-end
-
-local function get_projects_dir()
-  return vim.fn.expand("~/.notes/dev/projects")
 end
 
 local function get_most_recent_journal()
@@ -255,8 +251,28 @@ local function ensure_today_refs_dir()
   vim.fn.mkdir(refs_dir, "p")
 end
 
-local function is_daily_journal(path)
-  return path:match("/%.notes/journal/daily/%d%d%d%d%-%d%d%-%d%d%.md$") ~= nil
+local function get_today_refs_anchor()
+  return get_today_refs_dir() .. "/_index.md"
+end
+
+local function ensure_today_refs_anchor()
+  ensure_today_refs_dir()
+
+  local anchor = get_today_refs_anchor()
+  if file_exists(anchor) then return anchor end
+
+  local lines = {
+    "---",
+    "id: \"" .. os.date("%Y-%m-%d") .. "-refs\"",
+    "tags: [refs]",
+    "---",
+    "",
+    "# Refs " .. os.date("%Y-%m-%d"),
+    "",
+  }
+
+  write_file(anchor, table.concat(lines, "\n"))
+  return anchor
 end
 
 local function sync_notes_harpoon_slots()
@@ -270,20 +286,16 @@ local function sync_notes_harpoon_slots()
     if not ok then return end
 
     local journal_path = get_today_journal()
-    local refs_dir = get_today_refs_dir()
-    local projects_dir = get_projects_dir()
     local list = harpoon:list()
     local items = list.items
     for i = #items, 1, -1 do
       local value = items[i].value
-      if value == journal_path or value == refs_dir or value == projects_dir or is_daily_journal(value) then
+      if value == journal_path then
         table.remove(items, i)
       end
     end
 
-    table.insert(items, 1, { value = journal_path })
-    table.insert(items, 2, { value = refs_dir })
-    table.insert(items, 3, { value = projects_dir })
+    table.insert(items, 1, { value = journal_path, context = {} })
   end, 100)
 end
 
@@ -298,6 +310,13 @@ autocmd("VimEnter", {
   group = journal_harpoon_group,
   callback = sync_notes_harpoon_slots,
 })
+
+function _G.open_today_refs_in_neotree()
+  local anchor = ensure_today_refs_anchor()
+  vim.api.nvim_command(
+    "Neotree toggle current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
+  )
+end
 
 -- ============================================
 -- Link current buffer to daily note

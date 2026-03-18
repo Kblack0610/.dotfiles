@@ -13,11 +13,6 @@ return {
                     if list_item == nil then
                         return
                     end
-                    local stat = vim.uv.fs_stat(list_item.value)
-                    if stat and stat.type == "directory" then
-                        vim.cmd("edit " .. vim.fn.fnameescape(list_item.value))
-                        return
-                    end
                     local bufnr = vim.fn.bufnr(list_item.value)
                     local set_position = false
                     if bufnr == -1 then
@@ -26,8 +21,9 @@ return {
                     end
                     vim.api.nvim_set_current_buf(bufnr)
                     vim.bo[bufnr].buflisted = true
-                    if set_position and list_item.context and list_item.context.row and list_item.context.col then
-                        vim.api.nvim_win_set_cursor(0, { list_item.context.row, list_item.context.col })
+                    local context = list_item.context or {}
+                    if set_position and context.row and context.col then
+                        vim.api.nvim_win_set_cursor(0, { context.row, context.col })
                     end
                 end,
             },
@@ -47,6 +43,9 @@ return {
                 })
             end
         )
+        vim.keymap.set("n", "<leader>nr", function() _G.open_today_refs_in_neotree() end, {
+            desc = "Open today's refs in Neo-tree",
+        })
         -- Kitty hack, these are bound to alt, but kitty is binding ctrl + KEY to send this as well
         -- see kitty.conf
         vim.keymap.set("n", "<C-h>", function() harpoon:list():select(1) end)
