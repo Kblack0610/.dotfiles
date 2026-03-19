@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/rules-compliance-check.sh"
+            "command": "bash ~/.dotfiles/.config/shared-hooks/rules-compliance-check.sh"
           }
         ]
       },
