@@ -1,20 +1,16 @@
 #!/bin/bash
 
-# Lists all tmux windows running AI agents
+# Lists all tmux windows running claude agents
 # Groups by PROJECT (working directory) and lets you jump via fzf
 # Usage: agent-chooser.sh [-n|--next]
 #   -n, --next  Jump to next agent needing attention (or next in list)
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-source "$SCRIPT_DIR/agent-lib.sh"
-
 # ANSI color codes for status indicators
 COLOR_RED='\033[1;31m'
 COLOR_YELLOW='\033[1;33m'
 COLOR_GREEN='\033[1;32m'
-COLOR_DIM='\033[2m'
 COLOR_RESET='\033[0m'
 
 # Colorize a status character for display
@@ -23,17 +19,6 @@ colorize_status() {
         '!') printf "${COLOR_RED}!${COLOR_RESET}" ;;
         '~') printf "${COLOR_YELLOW}~${COLOR_RESET}" ;;
         '✓') printf "${COLOR_GREEN}✓${COLOR_RESET}" ;;
-        *)   printf "%s" "$1" ;;
-    esac
-}
-
-# Colorize a PR status character (CI or Review)
-colorize_pr_char() {
-    case "$1" in
-        'v') printf "${COLOR_GREEN}✓${COLOR_RESET}" ;;
-        '!') printf "${COLOR_RED}!${COLOR_RESET}" ;;
-        '~') printf "${COLOR_YELLOW}~${COLOR_RESET}" ;;
-        '.')  printf "${COLOR_DIM}·${COLOR_RESET}" ;;
         *)   printf "%s" "$1" ;;
     esac
 }
@@ -61,6 +46,35 @@ get_project_from_path() {
 declare -A seen_windows
 declare -A project_agents  # project -> list of "status|session:window|agent_type"
 declare -a all_agents      # flat list of all "status|target" for next mode
+AGENT_PATTERN="^(claude|claude-real|aider|opencode)$"
+
+# Detect agent type from pane (returns type or empty)
+detect_agent_type() {
+    local session="$1"
+    local window_idx="$2"
+    local pane_cmd="$3"
+
+    # Direct match
+    if [[ "$pane_cmd" =~ $AGENT_PATTERN ]]; then
+        echo "$pane_cmd"
+        return 0
+    fi
+
+    # Check if shell (bash/zsh) is running claude wrapper
+    # Look for ✳ in title (Claude's task indicator)
+    if [[ "$pane_cmd" =~ ^(bash|zsh)$ ]]; then
+        local title=$(tmux display-message -p -t "${session}:${window_idx}" "#{pane_title}" 2>/dev/null)
+
+        # Check for Claude's ✳ indicator in title
+        if [[ "$title" =~ ✳ ]]; then
+            # If we see ✳, it's a claude session (wrapped by default now)
+            echo "claude-wrapped"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 
 while IFS=: read -r session window_idx _ pane_cmd pane_path; do
     window_key="${session}:${window_idx}"
@@ -75,30 +89,51 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path; do
         # Get project from working directory
         project=$(get_project_from_path "$pane_path")
 
-        status=$(get_agent_state "${session}:${window_idx}")
+        # Get status indicator
+        last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
+        last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
+        now=$(date +%s)
+        activity_diff=9999
+        [ -n "$last_activity" ] && activity_diff=$((now - last_activity))
+
+        # Determine status
+        if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?|Allow.*once|Allow.*always|Deny|Do you want to'; then
+            status="!"
+        elif [ $activity_diff -lt 3 ]; then
+            status="~"
+        elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left'; then
+            status="✓"
+        elif [ $activity_diff -gt 10 ]; then
+            status="✓"
+        else
+            status="~"
+        fi
 
         # Read cached ollama summary (if daemon is running)
         summary=""
         summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
         [[ -f "$summary_file" ]] && summary=$(head -c 35 "$summary_file" 2>/dev/null)
 
-        # Read cached PR info (if daemon has cached it)
-        pr_info=""
-        pr_file="/tmp/agent-summaries/${session}_${window_idx}.pr"
-        [[ -f "$pr_file" ]] && pr_info=$(cat "$pr_file" 2>/dev/null)
-
         # Format agent type label
-        agent_label=$(get_agent_label "$agent_type")
+        agent_label=""
+        case "$agent_type" in
+            claude-wrapped) agent_label="[claude]" ;;
+            claude-real)    agent_label="[direct]" ;;
+            claude)         agent_label="[claude]" ;;
+            aider)          agent_label="[aider]" ;;
+            opencode)       agent_label="[opencode]" ;;
+            *)              agent_label="[${agent_type}]" ;;
+        esac
 
         # Add to project group and flat list
-        project_agents[$project]+="${status}|${session}:${window_idx}|${agent_label}|${summary}|${pr_info}\n"
+        project_agents[$project]+="${status}|${session}:${window_idx}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
     fi
 done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
 
 # Check if any agents found
 if [ ${#project_agents[@]} -eq 0 ]; then
-    echo "No AI agents running"
+    echo "No claude agents running"
     $NEXT_MODE || read -n 1 -s -r -p "Press any key to exit..."
     exit 0
 fi
@@ -156,34 +191,24 @@ for project in "${sorted_projects[@]}"; do
     # Count agents and collect statuses
     count=0
     statuses=""
-    while IFS='|' read -r status target agent_label _summary _pr_info; do
+    while IFS='|' read -r status target agent_label _summary; do
         [ -z "$status" ] && continue
         ((count++))
         statuses+="$(colorize_status "$status")"
     done <<< "$(echo -e "$agents")"
 
     # Project header line (not selectable, just visual)
-    # Tab-separated: hidden_target \t visible_line
-    agent_list+="\t─── ${project} ${statuses} (${count}) ───\n"
+    agent_list+="─── ${project} ${statuses} (${count}) ───\n"
 
     # Individual agents numbered sequentially
     agent_num=1
-    while IFS='|' read -r status target agent_label summary pr_num pr_ci pr_rv; do
+    while IFS='|' read -r status target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
-
-        # Build PR segment if available
-        pr_segment=""
-        if [[ -n "$pr_num" ]]; then
-            ci_colored=$(colorize_pr_char "$pr_ci")
-            rv_colored=$(colorize_pr_char "$pr_rv")
-            pr_segment=" #${pr_num} [${ci_colored}CI][${rv_colored}Rv]"
-        fi
-
         if [[ -n "$summary" ]]; then
-            agent_list+="${target}\t  ${colored} ${agent_num} ${agent_label}${pr_segment}  ${summary}\n"
+            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}  ${summary}\n"
         else
-            agent_list+="${target}\t  ${colored} ${agent_num} ${agent_label}${pr_segment}\n"
+            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}\n"
         fi
         ((agent_num++))
     done <<< "$(echo -e "$agents")"
@@ -197,24 +222,24 @@ if [[ -n "$TMUX" ]]; then
     [[ -n "$line_num" ]] && restore_pos="--bind load:pos($line_num)"
 fi
 
-# Select with fzf (--with-nth=2 hides the tab-separated target prefix)
+# Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --prompt='Select agent > ' \
     --header=$'Enter=jump | n=next needing attention | esc=exit\n\033[1;31m!\033[0m needs input | \033[1;33m~\033[0m working | \033[1;32m✓\033[0m idle' \
     --ansi \
     --no-sort \
-    --delimiter='\t' \
-    --with-nth=2 \
     --bind "n:execute-silent($0 -n)+abort" \
     $restore_pos)
 
 [[ -z "$selected" ]] && exit 0
 
-# Extract session:window target (first tab-separated field)
-target=$(echo "$selected" | cut -f1)
+# Skip if header line selected
+if [[ "$selected" == ───* ]]; then
+    exit 0
+fi
 
-# Skip if header line (empty target)
-[[ -z "$target" ]] && exit 0
+# Extract session:window_idx (fourth field: status agent-N agent_label target)
+target=$(echo "$selected" | awk '{print $4}')
 
 # Jump to it
 if [ -n "$TMUX" ]; then

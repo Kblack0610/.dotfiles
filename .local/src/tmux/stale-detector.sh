@@ -18,7 +18,7 @@ fi
 
 # Defaults
 STALE_THRESHOLD="${STALE_THRESHOLD:-900}"  # 15 minutes
-AGENT_WINDOW_PATTERNS="${AGENT_WINDOW_PATTERNS:-agent|claude|aider|codex|opencode|gemini}"
+AGENT_WINDOW_PATTERNS="${AGENT_WINDOW_PATTERNS:-agent|claude|aider}"
 OUTPUT_JSON=0
 
 # Parse args

@@ -9,7 +9,7 @@ SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
 # Menu options
 OPTIONS="Spawn Project (new session with nvim)
-Spawn Agent (choose CLI in directory)
+Spawn Agent (claude in directory)
 Open nvim (repo root in current session)
 Select Session (smug configs)
 Switch Session (existing tmux sessions)

@@ -12,7 +12,6 @@
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 CONFIG_FILE="$SCRIPT_DIR/tmux-manager.conf"
-source "$SCRIPT_DIR/agent-lib.sh"
 
 # Load config if exists
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -21,6 +20,7 @@ fi
 
 # Defaults
 DASHBOARD_REFRESH="${DASHBOARD_REFRESH:-3}"
+AGENT_PATTERNS="${AGENT_PATTERNS:-^(claude|claude-real|aider|opencode)$}"
 
 # Colors
 BOLD='\033[1m'
@@ -52,19 +52,32 @@ get_window_status() {
     local pane_cmd="$2"
 
     # Only check status for agent processes
-    local session="${target%%:*}"
-    local window_idx="${target##*:}"
-    if ! is_agent_pane "$session" "$window_idx" "$pane_cmd"; then
+    if ! [[ "$pane_cmd" =~ $AGENT_PATTERNS ]]; then
         echo ""
         return
     fi
 
-    case "$(get_agent_state "$target")" in
-        '!') echo -e "${RED}!${NC}" ;;
-        '~') echo -e "${YELLOW}~${NC}" ;;
-        '✓') echo -e "${GREEN}✓${NC}" ;;
-        *) echo "" ;;
-    esac
+    local last_lines=$(tmux capture-pane -t "$target" -p -S -15 2>/dev/null | tail -15)
+    local last_activity=$(tmux display-message -p -t "$target" "#{window_activity}" 2>/dev/null)
+    local now=$(date +%s)
+    local activity_diff=9999
+
+    if [[ -n "$last_activity" && "$last_activity" =~ ^[0-9]+$ ]]; then
+        activity_diff=$((now - last_activity))
+    fi
+
+    # Check states (same logic as claude-status.sh)
+    if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?|Allow.*once|Allow.*always|Deny|Do you want to'; then
+        echo -e "${RED}!${NC}"
+    elif [[ $activity_diff -lt 3 ]]; then
+        echo -e "${YELLOW}~${NC}"
+    elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left'; then
+        echo -e "${GREEN}✓${NC}"
+    elif [[ $activity_diff -gt 10 ]]; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${YELLOW}~${NC}"
+    fi
 }
 
 render_dashboard() {
@@ -124,9 +137,8 @@ render_dashboard() {
             local short_path=$(basename "$pane_path")
 
             # Determine display based on whether it's an agent
-            agent_type=$(detect_agent_type "$session" "$win_idx" "$pane_cmd")
-            if [[ -n "$agent_type" ]]; then
-                printf "    ${DIM}%s:${NC} %-18s ${MAGENTA}%-10s${NC} %s\n" "$win_idx" "$win_name" "$agent_type" "$status"
+            if [[ "$pane_cmd" =~ $AGENT_PATTERNS ]]; then
+                printf "    ${DIM}%s:${NC} %-18s ${MAGENTA}%-10s${NC} %s\n" "$win_idx" "$win_name" "$pane_cmd" "$status"
             else
                 printf "    ${DIM}%s:${NC} %-18s ${DIM}%-10s${NC}\n" "$win_idx" "$win_name" "$pane_cmd"
             fi

@@ -1,32 +1,9 @@
 #!/bin/bash
 
-# Spawns an agent CLI in a new tmux window within a selected session
+# Spawns a claude agent in a new window within a selected session
 # Allows multiple agents per session
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
-
-select_agent() {
-    local default_agent="${DEFAULT_AGENT_CLI:-claude}"
-    local options=()
-
-    for agent in "$default_agent" claude codex opencode gemini aider; do
-        [[ " ${options[*]} " == *" ${agent} "* ]] && continue
-        command -v "$agent" >/dev/null 2>&1 || continue
-        options+=("$agent")
-    done
-
-    [[ ${#options[@]} -eq 0 ]] && return 1
-
-    printf '%s\n' "${options[@]}" | \
-        fzf --reverse --border --prompt='Choose agent CLI > '
-}
-
-build_agent_command() {
-    case "$1" in
-        claude) echo "claude --dangerously-skip-permissions" ;;
-        *) echo "$1" ;;
-    esac
-}
 
 get_blacklist() {
     cat <<EOF
@@ -73,21 +50,16 @@ TARGET=$(find ~/dev -mindepth 1 -maxdepth 2 -type d "${exclude_args[@]}" 2>/dev/
 # 4. Exit if cancelled
 [[ -z "$TARGET" ]] && exit 0
 
-# 4.5 Select which agent CLI to start
-AGENT=$(select_agent)
-[[ -z "$AGENT" ]] && exit 0
-
 # 5. Setup Paths & Names
 ROOT=$(cd "$TARGET" && pwd)
 WINDOW_COUNT=$(tmux list-windows -t "$SESSION" 2>/dev/null | wc -l)
 WINDOW_COUNT=$((WINDOW_COUNT + 1))
-NAME="$(basename "$ROOT" | tr ' .:' '_')_${AGENT}_$WINDOW_COUNT"
-AGENT_CMD=$(build_agent_command "$AGENT")
+NAME="$(basename "$ROOT" | tr ' .:' '_')_agent_$WINDOW_COUNT"
 
-# 6. Create new window with the selected agent in the selected session
+# 6. Create new window with claude in the selected session
 if [ -n "$TMUX" ]; then
-    notify-send "Spawning $AGENT in $ROOT ($SESSION)" 2>/dev/null || true
-    tmux new-window -t "$SESSION" -c "$ROOT" -n "$NAME" "$AGENT_CMD"
+    notify-send "Spawning Agent in $ROOT ($SESSION)" 2>/dev/null || true
+    tmux new-window -t "$SESSION" -c "$ROOT" -n "$NAME" "claude --dangerously-skip-permissions"
     tmux switch-client -t "$SESSION"
 else
     echo "Not in a tmux session."

@@ -17,8 +17,6 @@ COLOR_RESET='\033[0m'
 # Configuration
 CONFIG_FILE="$HOME/.dotfiles/.local/src/tmux/pr-repos.conf"
 PR_LIMIT=50
-CACHE_DIR="/tmp/pr-viewer-cache"
-CACHE_TTL=120  # 2 minutes
 
 # Colorize a status character for display
 colorize_status() {
@@ -31,53 +29,23 @@ colorize_status() {
     esac
 }
 
-# Extract owner/repo from local git directory
-resolve_repo_from_path() {
-    local repo_path="$1"
-    local remote_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null)
-
-    if [[ -n "$remote_url" ]]; then
-        echo "$remote_url" | sed -E 's|.*github\.com[:/]||; s|\.git$||'
-    fi
-}
-
 # Load and validate repository configuration
-# Supports both local directory paths and owner/repo format
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo "Error: Config file not found: $CONFIG_FILE" >&2
-        echo "Create a config file with paths or owner/repo format (one per line)" >&2
+        echo "Error: Config file not found: $CONFIG_FILE"
+        echo "Create a config file with owner/repo format (one per line)"
         exit 1
     fi
 
     # Read config, filter comments and empty lines
-    while read -r line; do
-        # Check if it's a path (starts with / or ~)
-        if [[ "$line" =~ ^[~/] ]]; then
-            # Expand tilde
-            expanded_path="${line/#\~/$HOME}"
-
-            # Check if directory exists
-            if [[ -d "$expanded_path" ]]; then
-                # Extract owner/repo from git remote
-                repo=$(resolve_repo_from_path "$expanded_path")
-                if [[ -n "$repo" ]]; then
-                    echo "$repo"
-                else
-                    echo "Warning: No GitHub remote found in: $line" >&2
-                fi
-            else
-                echo "Warning: Directory not found: $line" >&2
-            fi
+    grep -v '^#' "$CONFIG_FILE" | grep -v '^[[:space:]]*$' | while read -r repo; do
+        # Validate format (owner/repo)
+        if [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
+            echo "$repo"
         else
-            # Validate owner/repo format
-            if [[ "$line" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
-                echo "$line"
-            else
-                echo "Warning: Invalid format: $line" >&2
-            fi
+            echo "Warning: Invalid repo format: $repo" >&2
         fi
-    done < <(grep -v '^#' "$CONFIG_FILE" | grep -v '^[[:space:]]*$')
+    done
 }
 
 # Calculate human-readable age from ISO timestamp
@@ -186,54 +154,6 @@ get_pr_status() {
     fi
 }
 
-# Get cache file path for a repository
-get_cache_path() {
-    local repo="$1"
-    local repo_safe="${repo//\//-}"
-    echo "$CACHE_DIR/$repo_safe"
-}
-
-# Check if cache is valid (exists and age < TTL)
-is_cache_valid() {
-    local repo="$1"
-    local cache_base=$(get_cache_path "$repo")
-    local meta_file="${cache_base}.meta"
-    local json_file="${cache_base}.json"
-
-    if [[ -f "$meta_file" ]] && [[ -f "$json_file" ]]; then
-        local timestamp=$(cat "$meta_file")
-        local now=$(date +%s)
-        local age=$((now - timestamp))
-
-        [[ $age -lt $CACHE_TTL ]]
-    else
-        return 1
-    fi
-}
-
-# Save PR data to cache with timestamp
-save_to_cache() {
-    local repo="$1"
-    local json_data="$2"
-    local cache_base=$(get_cache_path "$repo")
-
-    mkdir -p "$CACHE_DIR"
-    echo "$json_data" > "${cache_base}.json"
-    date +%s > "${cache_base}.meta"
-}
-
-# Load PR data from cache
-load_from_cache() {
-    local repo="$1"
-    local cache_base=$(get_cache_path "$repo")
-    cat "${cache_base}.json" 2>/dev/null
-}
-
-# Clear all cache files
-clear_all_cache() {
-    rm -rf "$CACHE_DIR"/*
-}
-
 # Fetch PRs from a repository
 fetch_prs() {
     local repo="$1"
@@ -243,26 +163,6 @@ fetch_prs() {
         --json number,title,author,createdAt,state,isDraft,reviewDecision,statusCheckRollup,url,headRefName \
         --limit "$PR_LIMIT" \
         --state open 2>/dev/null
-}
-
-# Fetch PRs with caching support
-fetch_prs_with_cache() {
-    local repo="$1"
-
-    # Check if we have valid cache
-    if is_cache_valid "$repo"; then
-        load_from_cache "$repo"
-        return 0
-    fi
-
-    # Fetch fresh data
-    local prs_json=$(fetch_prs "$repo")
-
-    # Save to cache if we got data
-    if [[ -n "$prs_json" ]] && [[ "$prs_json" != "[]" ]]; then
-        save_to_cache "$repo" "$prs_json"
-        echo "$prs_json"
-    fi
 }
 
 # Build PR list with loading progress
@@ -277,17 +177,10 @@ build_pr_list() {
     # Fetch PRs from each repo with progress
     for repo in "${repos[@]}"; do
         current=$((current + 1))
+        echo -ne "${COLOR_BLUE}Loading PRs from $repo... ($current/$total_repos)${COLOR_RESET}\r" >&2
 
-        # Check if using cache
-        local cache_indicator=""
-        if is_cache_valid "$repo"; then
-            cache_indicator=" ${COLOR_DIM}[cached]${COLOR_RESET}"
-        fi
-
-        echo -ne "${COLOR_BLUE}Loading PRs from $repo...${cache_indicator} ($current/$total_repos)${COLOR_RESET}\r" >&2
-
-        # Fetch PRs (from cache or API)
-        local prs_json=$(fetch_prs_with_cache "$repo")
+        # Fetch PRs
+        local prs_json=$(fetch_prs "$repo")
 
         if [[ -z "$prs_json" ]] || [[ "$prs_json" == "[]" ]]; then
             echo -ne "${COLOR_DIM}No PRs from $repo ($current/$total_repos)${COLOR_RESET}\r" >&2
@@ -474,8 +367,8 @@ main() {
         --delimiter=$'\t' \
         --with-nth=2.. \
         --prompt='Select PR > ' \
-        --header=$'r=reload | enter=open | ^d=details | esc=exit\n' \
-        --bind "r:reload(rm -rf $CACHE_DIR/* && bash $0)" \
+        --header=$'Enter=open in browser | ^d=details | ^r=reload | esc=exit\n' \
+        --bind "ctrl-r:reload(bash $0)" \
         --bind "ctrl-d:execute(echo {} | cut -f1 | IFS='|' read -r repo num; gh pr view \$num -R \$repo)")
 
     # Handle selection

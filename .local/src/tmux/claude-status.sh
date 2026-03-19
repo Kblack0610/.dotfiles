@@ -1,11 +1,8 @@
 #!/bin/bash
 
-# Tmux agent status - two modes:
+# Tmux Claude status - two modes:
 # 1. No args: returns status for current session (for status-left)
 # 2. --all: returns all sessions with status (for choose-tree)
-
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-source "$SCRIPT_DIR/agent-lib.sh"
 
 get_session_status() {
     local target_session="$1"
@@ -23,15 +20,48 @@ get_session_status() {
         window_key="${session}:${window_idx}"
         [[ -n "${seen_windows[$window_key]}" ]] && continue
 
-        if is_agent_pane "$session" "$window_idx" "$pane_cmd"; then
+        if [[ "$pane_cmd" == "claude" ]]; then
             seen_windows[$window_key]=1
             ((total++))
 
-            case "$(get_agent_state "${session}:${window_idx}")" in
-                '!') ((attention++)) ;;
-                '~') ((working++)) ;;
-                '✓') ((done++)) ;;
-            esac
+            # Capture last lines to detect state
+            local last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
+
+            # Check recent activity first - determines if Claude is actively outputting
+            local last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
+            local now=$(date +%s)
+            local activity_diff=9999
+            if [ -n "$last_activity" ]; then
+                activity_diff=$((now - last_activity))
+            fi
+
+            # Priority 1: Interactive questions needing input (Allow/Deny, Y/n)
+            if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?'; then
+                ((attention++))
+            # Priority 2: Permission prompts with Allow/Deny options
+            elif echo "$last_lines" | grep -qE 'Allow.*once|Allow.*always|Deny|Do you want to'; then
+                ((attention++))
+            # Priority 3: Check if actively working (recent output within 3 seconds)
+            elif [ $activity_diff -lt 3 ]; then
+                ((working++))
+            # Priority 4: At prompt waiting for input (DONE state)
+            # Claude shows "> " prompt line and "bypass permissions" or "Context left" in status
+            elif echo "$last_lines" | grep -qE '^> |^❯ '; then
+                # Has prompt - check if it's waiting (not mid-typing with recent activity)
+                if echo "$last_lines" | grep -qE 'bypass permissions|Context left'; then
+                    ((done++))
+                else
+                    ((done++))
+                fi
+            # Priority 5: Shows status bar indicators (Claude is idle/waiting)
+            elif echo "$last_lines" | grep -qE '⏵⏵|bypass permissions|Context left until'; then
+                ((done++))
+            # Fallback: If no recent activity, assume done
+            elif [ $activity_diff -gt 10 ]; then
+                ((done++))
+            else
+                ((working++))
+            fi
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
 
