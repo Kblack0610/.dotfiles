@@ -490,7 +490,6 @@ install_aur_packages() {
     install_paru
 
     local aur_packages=(
-        "visual-studio-code-bin"
         "spotify"
         "discord"
     )
