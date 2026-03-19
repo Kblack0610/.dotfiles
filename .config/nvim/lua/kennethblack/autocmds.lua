@@ -325,7 +325,7 @@ autocmd("VimEnter", {
 function _G.open_today_refs_in_neotree()
   local anchor = ensure_today_refs_anchor()
   vim.api.nvim_command(
-    "Neotree toggle current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
+    "Neotree show current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
   )
 end
 
@@ -363,7 +363,7 @@ end
 function _G.open_dev_projects_in_neotree()
   local anchor = ensure_projects_anchor()
   vim.api.nvim_command(
-    "Neotree toggle current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
+    "Neotree show current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
   )
 end
 
