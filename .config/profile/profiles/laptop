@@ -5,7 +5,7 @@ PROFILE_NAME="laptop"
 PROFILE_DESCRIPTION="Laptop mode with Hyprland, optional Sunshine"
 
 # Login behavior
-PROFILE_AUTOLOGIN=true
+PROFILE_AUTOLOGIN=false
 
 # Session startup
 PROFILE_START_HYPRLAND=true
