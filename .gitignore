@@ -7,6 +7,8 @@ src/
 !.local/src
 .local/src/pxe-server/images
 
+.fonts/.uuid
+
 
 Media/Pictures
 Media/Videos
