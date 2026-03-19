@@ -3,7 +3,10 @@
 ./bin/
 
 src/
+
 !.local/src
+.local/src/pxe-server/images
+
 
 Media/Pictures
 Media/Videos
@@ -110,9 +113,6 @@ Media/Music
 .config/spicetify/Extracted/
 .config/spicetify/Backup/
 
-# Gungan - has its own repo at github.com/Kblack0610/gungan-speak
-.local/src/gungan/
-
 # Profile - machine-specific (each machine sets its own via profile-switch)
 .config/profile/current
 
@@ -120,5 +120,4 @@ Media/Music
 *.bak
 test_notifications.sh
 
-.local/src/pxe-server/images
 .gemini/
