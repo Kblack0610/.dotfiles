@@ -329,8 +329,15 @@ apply_wallpaper() {
         return
     fi
 
-    # Detect backend: swww > swaybg > hyprpaper
-    if command -v swww &>/dev/null; then
+    # Detect backend: hyprpaper (preferred) > swww > swaybg
+    if command -v hyprctl &>/dev/null && pgrep -x hyprpaper &>/dev/null; then
+        # Use hyprpaper IPC — no restart needed
+        hyprctl hyprpaper unload all
+        hyprctl hyprpaper preload "$pick"
+        hyprctl hyprpaper wallpaper ",$pick"
+        info "wallpaper: $(basename "$pick") via hyprpaper IPC (${#candidates[@]} available)"
+
+    elif command -v swww &>/dev/null; then
         # Start daemon if not running
         if ! pgrep -x swww-daemon &>/dev/null; then
             swww-daemon &>/dev/null &
@@ -352,23 +359,8 @@ apply_wallpaper() {
         disown
         info "wallpaper: $(basename "$pick") via swaybg (${#candidates[@]} available)"
 
-    elif command -v hyprpaper &>/dev/null; then
-        # Write hyprpaper config and reload
-        local hpconf="$HOME/.config/hypr/hyprpaper.conf"
-        mkdir -p "$(dirname "$hpconf")"
-        cat > "$hpconf" <<HPEOF
-preload = $pick
-wallpaper = ,$pick
-HPEOF
-        if pgrep -x hyprpaper &>/dev/null; then
-            killall hyprpaper 2>/dev/null || true
-            sleep 0.3
-        fi
-        hyprpaper &>/dev/null &
-        disown
-        info "wallpaper: $(basename "$pick") via hyprpaper (${#candidates[@]} available)"
     else
-        warn "wallpaper: no backend found (install swww, swaybg, or hyprpaper)"
+        warn "wallpaper: no backend found (install hyprpaper, swww, or swaybg)"
         warn "wallpaper: selected $(basename "$pick") — install a backend to apply"
         return
     fi
@@ -412,7 +404,7 @@ TOOLS MANAGED
   waybar     Full CSS replacement + SIGUSR2 reload
   hyprland   Border + shadow rgba colors + hyprctl reload
   wallpaper  Random wallpaper from wallpapers/<theme>-*.{jpg,png,webp}
-             Backends: swww (preferred) > swaybg > hyprpaper
+             Backends: hyprpaper (preferred) > swww > swaybg
 
 ADDING A NEW THEME
   1. Create palettes/<name>.sh   (copy existing, change values)

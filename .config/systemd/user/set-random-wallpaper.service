@@ -1,7 +1,7 @@
 [Unit]
 Description=Set random wallpaper
 PartOf=graphical-session.target
-ConditionEnvironment=DISPLAY
+ConditionEnvironment=WAYLAND_DISPLAY
 
 [Service]
 Type=exec

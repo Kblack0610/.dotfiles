@@ -135,7 +135,6 @@ install_terminal() {
         "zsh"
         "cowsay"
         "fortune-mod"
-        "feh"
     )
     
     for pkg in "${packages[@]}"; do
@@ -155,6 +154,7 @@ install_gui() {
         "dunst"
         "picom"
         "nitrogen"
+        "hyprpaper"
         "firefox"
         "kitty"
     )
