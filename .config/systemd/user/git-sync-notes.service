@@ -1,9 +1,12 @@
 [Unit]
-Description=Git Auto Push and Pull Service
-After=network.target
+Description=Sync ~/.notes through NAS Git primary and backup remote
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
+WorkingDirectory=%h/.notes
+EnvironmentFile=-%h/.config/notes-sync.env
 ExecStart=%h/.local/src/git/git-sync-notes.sh
 
 [Install]

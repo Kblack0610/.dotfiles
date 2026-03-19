@@ -91,6 +91,8 @@ Bootstrap the current machine:
 
 That installs the tracked base config, starter workspaces, and baseline exec approvals without touching provider auth tokens or other ephemeral OpenClaw state.
 
+The intended runtime shape is one front-door `home-orchestrator` agent that delegates to worker agents for ops diagnosis, ops changes, and PR work.
+
 # Post-stow setup
 
 Some configs can't be symlinked (random profile names). Run these after stow:

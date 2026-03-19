@@ -1,9 +1,13 @@
 [Unit]
-Description=Run Git Auto Push and Pull periodically
+Description=Run notes sync automatically
 
 [Timer]
-OnCalendar=hourly
-AccuracySec=1
+OnBootSec=2m
+OnUnitActiveSec=1h
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=git-sync-notes.service
 
 [Install]
 WantedBy=timers.target

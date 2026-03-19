@@ -307,11 +307,22 @@ alias cb="agent" # need to rename to agent
 
 # --- Tmux pane title wrappers for AI tools ---
 # Sets ✳ in pane title so tmux agent detection works (like Claude does natively)
+# Exports TMUX_PANE_KEY so agents with event APIs can write structured state files
 _tmux_agent_wrap() {
     local name="$1"; shift
-    [[ -n "$TMUX" ]] && printf '\033]2;✳ %s\033\\' "$name"
+    if [[ -n "$TMUX" ]]; then
+        printf '\033]2;✳ %s\033\\' "$name"
+        local sess win
+        sess=$(tmux display-message -p '#{session_name}')
+        win=$(tmux display-message -p '#{window_index}')
+        export TMUX_PANE_KEY="${sess}_${win}"
+    fi
     command "$name" "$@"
-    [[ -n "$TMUX" ]] && printf '\033]2;\033\\'
+    if [[ -n "$TMUX" ]]; then
+        printf '\033]2;\033\\'
+        rm -f "/tmp/agent-events/${TMUX_PANE_KEY}.state.json" 2>/dev/null
+        unset TMUX_PANE_KEY
+    fi
 }
 codex()    { _tmux_agent_wrap codex "$@"; }
 gemini()   { _tmux_agent_wrap gemini "$@"; }

@@ -12,8 +12,8 @@ Usage:
   notes-sync-bootstrap.sh <nas-remote-url> [github-backup-url]
 
 Examples:
-  notes-sync-bootstrap.sh git@nas.local:/volume1/git/.notes.git
-  notes-sync-bootstrap.sh git@nas.local:/volume1/git/.notes.git git@github.com:Kblack0610/.notes.git
+  notes-sync-bootstrap.sh ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git
+  notes-sync-bootstrap.sh ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git git@github.com:Kblack0610/.notes.git
 EOF
 }
 
@@ -39,7 +39,6 @@ fi
 
 if [ -n "$existing_origin" ] && [ "$existing_origin" != "$NAS_REMOTE_URL" ] && ! git remote get-url "$BACKUP_REMOTE" >/dev/null 2>&1; then
     git remote rename "$PRIMARY_REMOTE" "$BACKUP_REMOTE"
-    existing_origin=""
     echo "Renamed existing $PRIMARY_REMOTE remote to $BACKUP_REMOTE"
 fi
 

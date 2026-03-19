@@ -37,10 +37,47 @@ get_project_from_path() {
 get_agent_summary() {
     local session="$1"
     local window_idx="$2"
-    local summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
+    local cache_key="${session}_${window_idx}"
+    local summary_file="/tmp/agent-summaries/${cache_key}.summary"
+
+    # Prefer structured event summary when available
+    if type -t read_event_state &>/dev/null; then
+        local event_data
+        if event_data=$(read_event_state "$cache_key"); then
+            local _state event_summary
+            IFS='|' read -r _state event_summary _ _ _ _ <<< "$event_data"
+            if [[ -n "$event_summary" ]]; then
+                echo "$event_summary"
+                return 0
+            fi
+        fi
+    fi
 
     [[ -f "$summary_file" ]] || return 1
     head -c 60 "$summary_file" 2>/dev/null
+}
+
+# Get event source and extra detail for tooltip enrichment
+get_event_detail() {
+    local session="$1"
+    local window_idx="$2"
+    local cache_key="${session}_${window_idx}"
+
+    if type -t read_event_state &>/dev/null; then
+        local event_data
+        if event_data=$(read_event_state "$cache_key"); then
+            local _state _summary current_tool source iteration blocked
+            IFS='|' read -r _state _summary current_tool source iteration blocked <<< "$event_data"
+            local detail=""
+            [[ -n "$current_tool" && "$current_tool" != "null" ]] && detail+=" tool:${current_tool}"
+            [[ "$iteration" -gt 0 ]] && detail+=" iter:${iteration}"
+            [[ -n "$blocked" && "$blocked" != "null" ]] && detail+=" [${blocked}]"
+            detail+=" (via ${source:-scrape})"
+            echo "$detail"
+            return 0
+        fi
+    fi
+    echo "(via scrape)"
 }
 
 get_ai_agent_status() {
@@ -65,7 +102,9 @@ get_ai_agent_status() {
             agent_label=$(get_agent_label "$agent_type")
             summary=$(get_agent_summary "$session" "$window_idx" || true)
 
-            case "$(get_agent_state "${session}:${window_idx}")" in
+            local agent_state
+            agent_state=$(get_agent_state "${session}:${window_idx}")
+            case "$agent_state" in
                 '!')
                     status="${C_RED}!${C_END}"
                     tooltip_status="!"
@@ -85,12 +124,14 @@ get_ai_agent_status() {
             # Build project agents list
             project_agents[$project]+="$status"
 
-            # Track session:window for tooltip
+            # Track session:window for tooltip (include event detail)
+            local event_detail
+            event_detail=$(get_event_detail "$session" "$window_idx")
             if [[ -n "$summary" ]]; then
-                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx} - ${summary}\\n"
+                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx} - ${summary}${event_detail}\\n"
                 ((summary_count++))
             else
-                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx}\\n"
+                project_sessions[$project]+="${tooltip_status} ${agent_label} ${session}:${window_idx}${event_detail}\\n"
             fi
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)

@@ -1,158 +1,98 @@
-# NAS-Backed Notes Sync Setup
+# Notes Sync Bootstrap
 
-This setup keeps `~/.notes` local on each machine and uses Git for synchronization:
+The repo now contains the reusable `~/.notes` sync tooling so a new device can be set up from the dotfiles checkout with one bootstrap command plus credentials.
 
-- `origin` is the NAS-hosted bare repo used for day-to-day sync
-- `backup` is GitHub and is pushed after a successful NAS sync
-- `notes-sync` is the supported manual command
-- `git-sync-notes.timer` provides hourly/background sync
+## Model
 
-## Why this shape
+- `~/.notes` stays local on each device
+- `origin` points to the NAS Git repo
+- `backup` points to GitHub
+- `notes-sync` handles fetch, auto-commit, rebase, push, and backup push
 
-Do not edit `~/.notes` directly from a mounted NAS share. Keep a local working tree on each device and sync through Git. This preserves fast local Neovim workflows, works offline, and reduces network filesystem edge cases.
+## Required inputs
 
-## Files
+You still need to provision two things outside Git:
 
-| Path | Purpose |
-| --- | --- |
-| `~/.local/src/git/git-sync-notes.sh` | Main sync script |
-| `~/.local/bin/notes-sync` | Manual command wrapper |
-| `~/.local/src/git/notes-sync-bootstrap.sh` | Remote migration/bootstrap helper |
-| `~/.config/systemd/user/git-sync-notes.service` | systemd service |
-| `~/.config/systemd/user/git-sync-notes.timer` | systemd timer |
-| `~/.config/notes-sync.env` | Optional per-machine overrides |
+- an SSH key that can reach the NAS Git repo
+- the NAS remote URL, for example `ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git`
 
-## 1. Create the NAS bare repo
+GitHub backup can stay `git@github.com:Kblack0610/.notes.git`.
 
-Create a bare Git repo on the NAS over SSH. Example:
+## Desktop bootstrap
+
+If `~/.notes` already exists and you only want the tooling installed:
 
 ```bash
-ssh your-nas 'mkdir -p /volume1/git/.notes.git && git init --bare /volume1/git/.notes.git'
+~/.dotfiles/.local/bin/notes-bootstrap
 ```
 
-Use the real host/path for your NAS. The result should be a reachable Git remote URL such as:
+If you want to clone or repoint the repo during bootstrap:
 
 ```bash
-git@your-nas:/volume1/git/.notes.git
+~/.dotfiles/.local/bin/notes-bootstrap \
+  --primary-url ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git \
+  --backup-url git@github.com:Kblack0610/.notes.git
 ```
 
-## 2. Set up SSH credentials
+What it does:
 
-Generate a dedicated key if you want notes sync isolated from other SSH access:
+- links managed scripts from `~/.dotfiles` into `~/.local` and `~/.config`
+- clones `~/.notes` if missing
+- or repoints remotes if `~/.notes` already exists
+- enables `git-sync-notes.timer` on desktop machines
+
+## Termux bootstrap
+
+After cloning the dotfiles repo in Termux:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_notes_sync -N "" -C "notes-sync-automated"
+~/.dotfiles/.local/bin/notes-termux-bootstrap \
+  --primary-url ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git \
+  --backup-url git@github.com:Kblack0610/.notes.git
 ```
 
-Install the public key on:
+What it does:
 
-- the NAS account that hosts the bare repo
-- GitHub, if `backup` uses SSH
+- installs `git`, `openssh`, `cronie`, `termux-services`, and `termux-tools`
+- links the managed notes scripts into the Termux home
+- clones or repoints `~/.notes`
+- installs an hourly `crond` entry for `notes-sync`
+- writes a `~/.termux/boot/notes-sync.sh` hook for unlock/boot sync
+
+## Credentials
+
+Bootstrap does not create or distribute secrets.
+
+Before the first real sync on a new device, make sure one of these is true:
+
+- `~/.ssh/id_notes_sync` is present and authorized on the NAS
+- or your normal SSH key already has access to the NAS repo
 
 The sync script automatically uses `~/.ssh/id_notes_sync` when it exists.
 
-## 3. Repoint your existing notes repo
+## Runtime overrides
 
-Your current setup already uses `~/.notes` as a Git repo. Reconfigure it so the NAS becomes `origin` and GitHub becomes `backup`:
+An example runtime config lives at `~/.config/notes-sync.env.example`.
 
-```bash
-~/.local/src/git/notes-sync-bootstrap.sh \
-  git@your-nas:/volume1/git/.notes.git \
-  git@github.com:Kblack0610/.notes.git
-```
+If needed, create `~/.config/notes-sync.env` and override:
 
-If your current `origin` is already GitHub, the bootstrap script will preserve it as `backup` when needed.
-
-Verify:
-
-```bash
-git -C ~/.notes remote -v
-```
-
-Expected shape:
-
-```text
-origin  git@your-nas:/volume1/git/.notes.git
-backup  git@github.com:Kblack0610/.notes.git
-```
-
-## 4. Optional per-machine overrides
-
-Most setups need no extra config. If a machine needs different settings, create `~/.config/notes-sync.env`:
-
-```bash
-NOTES_SYNC_SSH_KEY=$HOME/.ssh/id_notes_sync
-NOTES_SYNC_PRIMARY_REMOTE=origin
-NOTES_SYNC_BACKUP_REMOTE=backup
-```
-
-Supported overrides:
-
-- `NOTES_DIR`
-- `NOTES_SYNC_STATE_DIR`
 - `NOTES_SYNC_SSH_KEY`
 - `NOTES_SYNC_PRIMARY_REMOTE`
 - `NOTES_SYNC_BACKUP_REMOTE`
 - `NOTES_SYNC_BRANCH`
-- `NOTES_SYNC_HOSTNAME`
-
-## 5. Manual sync workflow
-
-Primary command:
-
-```bash
-notes-sync
-```
-
-The script:
-
-1. fetches from `origin`
-2. stages and auto-commits local changes when needed
-3. rebases on top of `origin` when histories diverge
-4. pushes to `origin`
-5. pushes the same branch to `backup` when configured
-
-If the rebase conflicts, the script stops and leaves the repo for manual resolution.
-
-## 6. Enable background sync
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now git-sync-notes.timer
-```
-
-Useful commands:
-
-```bash
-systemctl --user status git-sync-notes.timer
-systemctl --user start git-sync-notes.service
-journalctl --user -eu git-sync-notes.service
-```
-
-## 7. New machine bootstrap
-
-On a new machine:
-
-```bash
-git clone git@your-nas:/volume1/git/.notes.git ~/.notes
-git -C ~/.notes remote add backup git@github.com:Kblack0610/.notes.git
-systemctl --user enable --now git-sync-notes.timer
-notes-sync
-```
-
-If you use the dedicated SSH key, copy or provision `~/.ssh/id_notes_sync` first.
 
 ## Validation
 
-Test the full flow with two machines:
+After bootstrap:
 
-1. Edit a file on machine A and run `notes-sync`
-2. Run `notes-sync` on machine B and confirm the change appears
-3. Confirm `git -C ~/.notes log --oneline -n 3` shows the auto-commit when local changes were present
-4. Confirm `git -C ~/.notes remote -v` still lists both `origin` and `backup`
+```bash
+git -C ~/.notes remote -v
+notes-sync
+```
 
-## Failure modes
+Expected remotes:
 
-- If the NAS is unavailable, sync stops before any backup push.
-- If GitHub is unavailable, the `origin` push still completes but the backup push fails loudly.
-- If two machines edit the same note concurrently, the script stops on rebase conflict and requires manual resolution.
+```text
+origin  ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git
+backup  git@github.com:Kblack0610/.notes.git
+```
