@@ -46,6 +46,9 @@ return {
         vim.keymap.set("n", "<C-n>", function() _G.open_today_refs_in_neotree() end, {
             desc = "Open today's refs in Neo-tree",
         })
+        vim.keymap.set("n", "<C-p>", function() _G.open_dev_projects_in_neotree() end, {
+            desc = "Open /dev/projects in Neo-tree",
+        })
         -- Kitty hack, these are bound to alt, but kitty is binding ctrl + KEY to send this as well
         -- see kitty.conf
         vim.keymap.set("n", "<C-h>", function() harpoon:list():select(1) end)

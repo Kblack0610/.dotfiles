@@ -56,6 +56,17 @@ autocmd("BufWinEnter", {
   end,
 })
 
+-- IMPORTANT: Soft wrap for human-readable filetypes
+autocmd("FileType", {
+  desc = "Enable soft wrap for prose filetypes",
+  group = augroup("prose_wrap", { clear = true }),
+  pattern = { "markdown", "text", "gitcommit", "html", "latex", "tex", "rst", "asciidoc", "json", "jsonc" },
+  callback = function()
+    vim.opt_local.wrap = true
+    vim.opt_local.spell = true
+  end,
+})
+
 -- Quick highlight visual on yank
 autocmd("TextYankPost", {
   desc = "Highlight yanked text",
@@ -313,6 +324,44 @@ autocmd("VimEnter", {
 
 function _G.open_today_refs_in_neotree()
   local anchor = ensure_today_refs_anchor()
+  vim.api.nvim_command(
+    "Neotree toggle current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
+  )
+end
+
+local function get_projects_dir()
+  return vim.fn.expand("~/.notes/dev/projects")
+end
+
+local function get_projects_anchor()
+  return get_projects_dir() .. "/_index.md"
+end
+
+local function ensure_projects_anchor()
+  local projects_dir = get_projects_dir()
+  if not file_exists(projects_dir) then
+    vim.fn.mkdir(projects_dir, "p")
+  end
+
+  local anchor = get_projects_anchor()
+  if file_exists(anchor) then return anchor end
+
+  local lines = {
+    "---",
+    "id: \"dev-projects\"",
+    "tags: [projects]",
+    "---",
+    "",
+    "# Projects",
+    "",
+  }
+
+  write_file(anchor, table.concat(lines, "\n"))
+  return anchor
+end
+
+function _G.open_dev_projects_in_neotree()
+  local anchor = ensure_projects_anchor()
   vim.api.nvim_command(
     "Neotree toggle current reveal_force_cwd reveal_file=" .. vim.fn.fnameescape(anchor)
   )
