@@ -113,6 +113,7 @@ echo "" >&2
 
 echo "## Lessons" >&2
 echo "[ ] If user corrections occurred, captured lesson in ~/.agent/lessons/${PROJECT_NAME}.md" >&2
+echo "[ ] Reviewed lessons file and removed any entries that no longer apply" >&2
 echo "" >&2
 
 echo "─────────────────────────────────────────────────────────" >&2
