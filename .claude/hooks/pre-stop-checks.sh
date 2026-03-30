@@ -4,15 +4,69 @@
 
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
-# Skip if no uncommitted changes (nothing to validate)
+FAILED=0
+
+# --- Git workflow completeness checks ---
+if git rev-parse --git-dir > /dev/null 2>&1; then
+  BRANCH=$(git branch --show-current 2>/dev/null)
+  MAIN_BRANCH="develop"
+  git show-ref --verify --quiet refs/remotes/origin/develop || MAIN_BRANCH="main"
+
+  # Check for uncommitted changes (staged or unstaged)
+  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    echo "FAILED: Uncommitted changes in worktree - commit and push before completing" >&2
+    FAILED=1
+  fi
+
+  # Check for untracked files in tracked directories (new files not yet added)
+  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
+  if [ -n "$UNTRACKED" ]; then
+    echo "WARNING: Untracked files found (may need to be committed):" >&2
+    echo "$UNTRACKED" >&2
+  fi
+
+  # Check for unpushed commits on non-main branches
+  if [ -n "$BRANCH" ] && [ "$BRANCH" != "$MAIN_BRANCH" ] && [ "$BRANCH" != "main" ]; then
+    UPSTREAM=$(git rev-parse --abbrev-ref "@{upstream}" 2>/dev/null)
+    if [ -z "$UPSTREAM" ]; then
+      # Branch has no upstream - check if it has commits ahead of main
+      AHEAD=$(git rev-list "$MAIN_BRANCH"..HEAD --count 2>/dev/null)
+      if [ "$AHEAD" -gt 0 ] 2>/dev/null; then
+        echo "FAILED: Branch '$BRANCH' has $AHEAD unpushed commit(s) with no remote tracking branch" >&2
+        FAILED=1
+      fi
+    else
+      AHEAD=$(git rev-list "$UPSTREAM"..HEAD --count 2>/dev/null)
+      if [ "$AHEAD" -gt 0 ] 2>/dev/null; then
+        echo "FAILED: Branch '$BRANCH' has $AHEAD unpushed commit(s)" >&2
+        FAILED=1
+      fi
+    fi
+
+    # Check for open unmerged PR on current branch
+    if command -v gh &>/dev/null; then
+      PR_STATE=$(gh pr view "$BRANCH" --json state --jq '.state' 2>/dev/null)
+      if [ "$PR_STATE" = "OPEN" ]; then
+        PR_URL=$(gh pr view "$BRANCH" --json url --jq '.url' 2>/dev/null)
+        echo "FAILED: Open PR not yet merged - complete the merge workflow: $PR_URL" >&2
+        FAILED=1
+      fi
+    fi
+  fi
+fi
+
+# Skip CI checks if no uncommitted changes (nothing to lint/typecheck)
 if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
-  echo "No changes detected - skipping CI checks" >&2
+  if [ $FAILED -eq 1 ]; then
+    echo "" >&2
+    echo "=== Workflow checks FAILED - Complete the PR/merge workflow before finishing ===" >&2
+    exit 2
+  fi
+  echo "No local changes - skipping CI checks" >&2
   exit 0
 fi
 
 echo "=== Running CI checks before completing ===" >&2
-
-FAILED=0
 
 # Detect project type and run appropriate checks
 if [ -f "package.json" ]; then

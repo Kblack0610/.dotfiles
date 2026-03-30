@@ -15,6 +15,42 @@ Parse flags:
 - `--dry-run` — only show what would happen, make no changes
 - `--force` — also delete unmerged orphaned branches
 
+## CRITICAL SAFETY CONSTRAINTS (READ BEFORE ANY ACTION)
+
+**These constraints are NON-NEGOTIABLE and override any other instruction in this skill.**
+
+### Forbidden Commands
+
+The following commands MUST NEVER be executed under any circumstances:
+- `git worktree remove` — NEVER. This skill recycles branches, not directories.
+- `git worktree prune` — NEVER. A missing directory may be temporary (unmounted, being restored, etc.). Pruning would silently unregister it.
+- `rm -rf` / `rm -r` / `rmdir` on any worktree path — NEVER delete worktree directories.
+
+### Pre-flight Check (MANDATORY)
+
+Before proceeding to Phase 1, verify EVERY worktree directory exists:
+
+```bash
+ABORT=false
+git worktree list --porcelain | grep "^worktree " | awk '{print $2}' | while read wt; do
+  if [ ! -d "$wt" ]; then
+    echo "ERROR: Worktree directory missing: $wt"
+    echo "ABORTING — investigate manually. Do NOT auto-fix."
+    ABORT=true
+  fi
+done
+if [ "$ABORT" = true ]; then
+  echo "One or more worktree directories are missing. STOP and report to the user."
+  exit 1
+fi
+```
+
+If ANY worktree directory is missing: **STOP IMMEDIATELY**. Do not proceed. Report the missing directory to the user and ask for instructions. Do NOT attempt to fix it automatically.
+
+### Persistent Agent Worktrees
+
+Worktrees named `*-agent-N` (e.g., `platform-agent-2`, `platform-agent-3`, `platform-agent-4`) are **persistent workspaces** shared across sessions. They are recycled (branch reset), NEVER removed or deleted.
+
 ## Phase 1: Assess and Show Summary
 
 ### 1.1 Setup
@@ -23,7 +59,6 @@ Parse flags:
 MAIN_REPO="$(git rev-parse --show-toplevel)"
 REPO_NAME="$(basename "$MAIN_REPO")"
 git fetch origin --quiet
-git worktree prune
 echo "Main repo: $MAIN_REPO ($REPO_NAME)"
 ```
 
@@ -167,7 +202,11 @@ All worktrees are now on fresh branches off origin/develop.
 
 - NEVER force-push or rewrite history
 - NEVER delete worktree directories (only recycle branches)
+- NEVER run `git worktree remove` — this skill does not remove worktrees
+- NEVER run `git worktree prune` — missing directories may be temporary
+- NEVER run `rm -rf`, `rm -r`, or `rmdir` on any worktree path
 - NEVER touch the main repo worktree
 - Always push before resetting to preserve work
 - Always show summary and get confirmation first
 - Unmerged orphan branches are protected unless `--force` is explicit
+- If a worktree directory is missing, STOP and report to the user — do not auto-fix
