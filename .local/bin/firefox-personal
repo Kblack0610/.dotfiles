@@ -1,0 +1,6 @@
+#!/bin/bash
+# Open Firefox with personal tabs
+# Customize URLs below for your workflow
+firefox \
+  "https://mail.google.com" \
+  "https://calendar.google.com" &

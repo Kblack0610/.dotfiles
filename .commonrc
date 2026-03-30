@@ -142,49 +142,7 @@ function link_refs_to_daily() {
 
 # 1b. Helper: Ensure the daily note exists with task carryforward + refs folder
 function ensure_daily_note() {
-    local DATE=$(date +%Y-%m-%d)
-    local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
-    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
-
-    # Create refs folder for today (inside journal/)
-    mkdir -p "$REFS_DIR"
-
-    if [ ! -f "$NOTE_FILE" ]; then
-        echo "Creating entry: $NOTE_FILE"
-        mkdir -p "$(dirname "$NOTE_FILE")"
-
-        # Pull carry over section from most recent previous note
-        local PREV_FILE=$(ls -1 "$HOME/.notes/journal/daily/"*.md 2>/dev/null | sort | grep -v "$DATE" | tail -1)
-        local CARRYOVER=""
-        if [ -n "$PREV_FILE" ] && [ -f "$PREV_FILE" ]; then
-            CARRYOVER=$(sed -n '/^## Carry Over$/,/^## /{ /^## /d; p; }' "$PREV_FILE" | sed '/^$/d')
-        fi
-
-        # Create note with clean template
-        {
-            echo "---"
-            echo "date: $DATE"
-            echo "tags: [daily]"
-            echo "---"
-            echo ""
-            echo "# $DATE"
-            echo ""
-            echo "## Focus"
-            echo "- [ ] "
-            echo ""
-            echo "## Notes"
-            echo ""
-            echo "## Carry Over"
-            if [ -n "$CARRYOVER" ]; then
-                echo "$CARRYOVER"
-            fi
-            echo ""
-        } > "$NOTE_FILE"
-
-        [ -n "$CARRYOVER" ] && echo "  -> Carried over persistent items"
-    fi
-
-    # Link any refs to the daily note
+    journal-create
     link_refs_to_daily
 }
 

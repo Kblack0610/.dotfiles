@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+NOTES_DIR="${NOTES_DIR:-$HOME/.notes}"
+PRIMARY_URL="${NOTES_PRIMARY_REMOTE_URL:-}"
+BACKUP_URL="${NOTES_BACKUP_REMOTE_URL:-${NOTES_BACKUP_URL:-}}"
+MODE="${NOTES_BOOTSTRAP_MODE:-auto}"
+FORCE=0
+
+usage() {
+    cat <<'EOF'
+Usage:
+  notes-bootstrap [--force] [--primary-url URL] [--backup-url URL]
+
+Environment:
+  NOTES_PRIMARY_REMOTE_URL   NAS remote URL for ~/.notes
+  NOTES_BACKUP_REMOTE_URL    GitHub backup URL for ~/.notes
+  NOTES_DIR                  Override notes checkout location
+  DOTFILES_ROOT              Override dotfiles checkout root
+
+Examples:
+  notes-bootstrap
+  notes-bootstrap --primary-url ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git
+  NOTES_PRIMARY_REMOTE_URL=ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git notes-bootstrap
+EOF
+}
+
+is_termux() {
+    [[ "$MODE" == "termux" ]] || [[ "$OSTYPE" == "linux-android"* ]] || [[ -d /data/data/com.termux/files/usr ]]
+}
+
+ensure_dir() {
+    mkdir -p "$1"
+}
+
+copy_managed_file() {
+    local src="$1"
+    local dst="$2"
+
+    ensure_dir "$(dirname "$dst")"
+    if [[ -e "$dst" && ! -L "$dst" && "$FORCE" -ne 1 ]] && cmp -s "$src" "$dst"; then
+        return 0
+    fi
+
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        if [[ "$FORCE" -eq 1 ]]; then
+            rm -rf "$dst"
+        else
+            mv "$dst" "$dst.bak.$(date +%Y%m%d%H%M%S)"
+        fi
+    fi
+
+    cp "$src" "$dst"
+}
+
+link_managed_file() {
+    local src="$1"
+    local dst="$2"
+
+    ensure_dir "$(dirname "$dst")"
+    if [[ -L "$dst" ]]; then
+        local current
+        current="$(readlink "$dst")"
+        if [[ "$current" == "$src" ]]; then
+            return 0
+        fi
+    fi
+
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        if [[ "$FORCE" -eq 1 ]]; then
+            rm -rf "$dst"
+        else
+            mv "$dst" "$dst.bak.$(date +%Y%m%d%H%M%S)"
+        fi
+    fi
+
+    ln -s "$src" "$dst"
+}
+
+install_common_links() {
+    link_managed_file "$DOTFILES_ROOT/.local/src/git/git-sync-notes.sh" "$HOME/.local/src/git/git-sync-notes.sh"
+    link_managed_file "$DOTFILES_ROOT/.local/src/git/notes-sync-bootstrap.sh" "$HOME/.local/src/git/notes-sync-bootstrap.sh"
+    link_managed_file "$DOTFILES_ROOT/.local/src/git/NOTES_SYNC_SETUP.md" "$HOME/.local/src/git/NOTES_SYNC_SETUP.md"
+    link_managed_file "$DOTFILES_ROOT/.local/bin/notes-sync" "$HOME/.local/bin/notes-sync"
+    copy_managed_file "$DOTFILES_ROOT/.config/notes-sync.env.example" "$HOME/.config/notes-sync.env.example"
+}
+
+install_desktop_links() {
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.service" "$HOME/.config/systemd/user/git-sync-notes.service"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.timer" "$HOME/.config/systemd/user/git-sync-notes.timer"
+}
+
+configure_repo() {
+    if [[ -d "$NOTES_DIR/.git" ]]; then
+        if [[ -n "$PRIMARY_URL" ]]; then
+            "$HOME/.local/src/git/notes-sync-bootstrap.sh" "$PRIMARY_URL" "${BACKUP_URL:-}"
+        fi
+        return 0
+    fi
+
+    if [[ -z "$PRIMARY_URL" ]]; then
+        echo "ERROR: NOTES_PRIMARY_REMOTE_URL or --primary-url is required when $NOTES_DIR does not exist." >&2
+        exit 1
+    fi
+
+    git clone "$PRIMARY_URL" "$NOTES_DIR"
+    if [[ -n "$BACKUP_URL" ]]; then
+        git -C "$NOTES_DIR" remote add backup "$BACKUP_URL" 2>/dev/null || git -C "$NOTES_DIR" remote set-url backup "$BACKUP_URL"
+    fi
+}
+
+setup_systemd() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload
+        systemctl --user enable git-sync-notes.timer >/dev/null 2>&1 || true
+        systemctl --user start git-sync-notes.timer
+    fi
+}
+
+install_termux_packages() {
+    if ! command -v pkg >/dev/null 2>&1; then
+        echo "ERROR: Termux package manager not found." >&2
+        exit 1
+    fi
+
+    pkg update -y >/dev/null 2>&1 || true
+
+    local packages=(git openssh cronie termux-services termux-tools)
+    local package
+    for package in "${packages[@]}"; do
+        if ! pkg list-installed 2>/dev/null | grep -q "^${package}/"; then
+            pkg install -y "$package"
+        fi
+    done
+}
+
+setup_termux_cron() {
+    ensure_dir "$HOME/.termux/boot"
+
+    cat > "$HOME/.termux/boot/notes-sync.sh" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+sleep 15
+"$HOME/.local/bin/notes-sync" >/dev/null 2>&1
+EOF
+    chmod +x "$HOME/.termux/boot/notes-sync.sh"
+
+    if command -v crontab >/dev/null 2>&1; then
+        local existing
+        existing="$(crontab -l 2>/dev/null || true)"
+        if ! printf '%s\n' "$existing" | grep -Fq "$HOME/.local/bin/notes-sync"; then
+            {
+                printf '%s\n' "$existing" | sed '/^$/d'
+                printf '0 * * * * %s/.local/bin/notes-sync >/dev/null 2>&1\n' "$HOME"
+            } | crontab -
+        fi
+    fi
+
+    if command -v sv-enable >/dev/null 2>&1; then
+        sv-enable crond >/dev/null 2>&1 || true
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)
+            FORCE=1
+            ;;
+        --primary-url)
+            PRIMARY_URL="${2:-}"
+            shift
+            ;;
+        --backup-url)
+            BACKUP_URL="${2:-}"
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+install_common_links
+
+if is_termux; then
+    install_termux_packages
+    configure_repo
+    setup_termux_cron
+else
+    install_desktop_links
+    configure_repo
+    setup_systemd
+fi
+
+cat <<EOF
+Notes bootstrap complete.
+
+Mode: $(if is_termux; then echo termux; else echo desktop; fi)
+Notes dir: $NOTES_DIR
+Primary remote: ${PRIMARY_URL:-$(git -C "$NOTES_DIR" remote get-url origin 2>/dev/null || echo "unchanged")}
+Backup remote: ${BACKUP_URL:-$(git -C "$NOTES_DIR" remote get-url backup 2>/dev/null || echo "unchanged")}
+
+Next step:
+  Run notes-sync once after your SSH key is present on this device.
+EOF

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# archive-refs: Archive old refs folders (like monthly_summarize_archive.py does for dailies)
+# Usage: archive-refs [--dry-run]
+
+set -euo pipefail
+
+REFS_DIR="$HOME/.notes/journal/refs"
+ARCHIVE_DIR="$REFS_DIR/archive"
+DRY_RUN=false
+
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+
+# Get current month in YYYY-MM format
+CURRENT_MONTH=$(date +%Y-%m)
+
+# Find date-named directories (YYYY-MM-DD pattern) that are NOT current month
+for dir in "$REFS_DIR"/????-??-??; do
+    [[ ! -d "$dir" ]] && continue
+
+    dirname=$(basename "$dir")
+    # Extract year and month
+    year=${dirname:0:4}
+    month=${dirname:0:7}  # YYYY-MM
+
+    # Skip current month
+    [[ "$month" == "$CURRENT_MONTH" ]] && continue
+
+    # Skip empty directories
+    if [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
+        echo "Skipping empty: $dirname"
+        continue
+    fi
+
+    # Create archive path
+    archive_path="$ARCHIVE_DIR/$year/$month"
+
+    if $DRY_RUN; then
+        echo "[DRY-RUN] Would move: $dir -> $archive_path/$dirname"
+    else
+        mkdir -p "$archive_path"
+        mv "$dir" "$archive_path/"
+        echo "Archived: $dirname -> $archive_path/"
+    fi
+done
+
+echo "Done."

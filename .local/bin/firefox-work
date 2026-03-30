@@ -1,0 +1,7 @@
+#!/bin/bash
+# Open Firefox with work-related tabs
+# Customize URLs below for your workflow
+firefox \
+  "https://play.google.com/console" \
+  "https://appstoreconnect.apple.com" \
+  "https://github.com" &
