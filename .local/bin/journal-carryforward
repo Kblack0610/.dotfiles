@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # journal-carryforward: Extract incomplete tasks from yesterday and summarize with local LLM
+# Outputs separate ## Priority and ## Fun sections
 # Usage: journal-carryforward
 
 set -euo pipefail
@@ -15,21 +16,44 @@ YESTERDAY_FILE="$NOTES_DIR/$YESTERDAY.md"
 # Exit silently if no yesterday's note
 [[ ! -f "$YESTERDAY_FILE" ]] && exit 0
 
-# Extract incomplete tasks (- [ ] items, not - [x] or - [X])
-INCOMPLETE=$(grep -E '^\s*-\s*\[\s*\]' "$YESTERDAY_FILE" 2>/dev/null || true)
-[[ -z "$INCOMPLETE" ]] && exit 0
+# Extract a section's incomplete tasks
+extract_incomplete() {
+    local file="$1" section="$2"
+    sed -n "/^## ${section}$/,/^## /{/^## /d; p;}" "$file" \
+        | grep -E '^\s*-\s*\[\s*\]' 2>/dev/null || true
+}
+
+PRIORITY=$(extract_incomplete "$YESTERDAY_FILE" "Priority")
+FUN=$(extract_incomplete "$YESTERDAY_FILE" "Fun")
+
+# Migration: fall back to old "Carry Over" section
+if [[ -z "$PRIORITY" ]] && [[ -z "$FUN" ]]; then
+    PRIORITY=$(extract_incomplete "$YESTERDAY_FILE" "Carry Over")
+fi
+
+# Exit if nothing to carry
+[[ -z "$PRIORITY" ]] && [[ -z "$FUN" ]] && exit 0
 
 # Build LLM prompt
 PROMPT="Incomplete tasks from $YESTERDAY to carry forward to $TODAY.
-Prioritize, group related items, keep markdown checkbox format (- [ ]).
-Just output the task list, no explanations.
+Prioritize and group related items within each section. Keep markdown checkbox format (- [ ]).
+Preserve any HTML comments (<!-- since:... -->) at the end of each line exactly as they appear.
+Just output the task lists, no explanations.
 
-Tasks:
-$INCOMPLETE
+## Priority tasks:
+${PRIORITY:-None}
 
-Carried forward:"
+## Fun tasks:
+${FUN:-None}
 
-# Call OLLAMA
+Output format (include both headings even if a section is empty):
+## Priority
+<items>
+
+## Fun
+<items>"
+
+# Call Ollama
 RESPONSE=$(curl -s --max-time 30 "$OLLAMA_URL/api/generate" \
     -H "Content-Type: application/json" \
     -d "$(jq -n --arg m "$OLLAMA_MODEL" --arg p "$PROMPT" \
@@ -37,10 +61,13 @@ RESPONSE=$(curl -s --max-time 30 "$OLLAMA_URL/api/generate" \
 
 SUMMARY=$(echo "$RESPONSE" | jq -r '.response // empty' 2>/dev/null || true)
 
-# Fallback to raw tasks if LLM fails
-[[ -z "$SUMMARY" ]] && SUMMARY="$INCOMPLETE"
-
-cat << EOF
-## Carried Forward
-$SUMMARY
-EOF
+if [[ -n "$SUMMARY" ]]; then
+    echo "$SUMMARY"
+else
+    # Fallback: output raw items in two sections
+    echo "## Priority"
+    [[ -n "$PRIORITY" ]] && echo "$PRIORITY"
+    echo ""
+    echo "## Fun"
+    [[ -n "$FUN" ]] && echo "$FUN"
+fi
