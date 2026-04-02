@@ -14,9 +14,6 @@ Media/Pictures
 Media/Videos
 Media/Music
 
-.local/bin/*
-
-!.local/bin/claude-notify
 
 .config/jesseduffield/lazygit/state.yml
 
