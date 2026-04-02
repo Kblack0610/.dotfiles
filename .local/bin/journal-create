@@ -115,6 +115,17 @@ fi
         echo "$FUN_ITEMS"
     fi
     echo ""
+    echo "## Current Projects"
+    PROJECTS_DIR="$HOME/.notes/dev/projects"
+    if [[ -d "$PROJECTS_DIR" ]]; then
+        for entry in "$PROJECTS_DIR"/*/; do
+            [[ -d "$entry" ]] || continue
+            name=$(basename "$entry")
+            [[ "$name" == "archived" ]] && continue
+            echo "- [[dev/projects/${name}/summary.md|${name}]]"
+        done
+    fi
+    echo ""
 } > "$NOTE_FILE"
 
 # Report what was carried

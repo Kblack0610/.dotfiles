@@ -165,20 +165,6 @@ local function get_today_refs_dir()
   return vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d"))
 end
 
-local function get_most_recent_journal()
-  local daily_dir = vim.fn.expand("~/.notes/journal/daily/")
-  local today = os.date("%Y-%m-%d")
-  local files = vim.fn.glob(daily_dir .. "*.md", false, true)
-  table.sort(files)
-  -- Find most recent that isn't today
-  for i = #files, 1, -1 do
-    if not files[i]:find(today, 1, true) then
-      return files[i]
-    end
-  end
-  return nil
-end
-
 local function file_exists(path)
   local stat = vim.uv.fs_stat(path)
   return stat ~= nil
@@ -200,60 +186,10 @@ local function write_file(path, content)
   return true
 end
 
-local function extract_carryover(content)
-  if not content then return {} end
-  local lines = {}
-  local in_carryover = false
-  for line in content:gmatch("[^\n]*") do
-    if line:match("^## Carry Over") then
-      in_carryover = true
-    elseif in_carryover and line:match("^## ") then
-      break
-    elseif in_carryover and line ~= "" then
-      table.insert(lines, line)
-    end
-  end
-  return lines
-end
-
 local function create_daily_journal()
-  local today = os.date("%Y-%m-%d")
   local journal_path = get_today_journal()
-
-  -- Don't recreate if exists
   if file_exists(journal_path) then return end
-
-  -- Get carry over content from most recent previous note
-  local prev_journal = get_most_recent_journal()
-  local prev_content = prev_journal and read_file(prev_journal) or nil
-  local carryover = extract_carryover(prev_content)
-
-  -- Build clean template
-  local lines = {
-    "---",
-    "date: " .. today,
-    "tags: [daily]",
-    "---",
-    "",
-    "# " .. today,
-    "",
-    "## Focus",
-    "- [ ] ",
-    "",
-    "## Notes",
-    "",
-    "## Carry Over",
-  }
-
-  -- Add yesterday's carry over items
-  if #carryover > 0 then
-    for _, line in ipairs(carryover) do
-      table.insert(lines, line)
-    end
-  end
-  table.insert(lines, "")
-
-  write_file(journal_path, table.concat(lines, "\n"))
+  vim.fn.system("journal-create")
 end
 
 local function ensure_today_refs_dir()
