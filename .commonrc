@@ -192,7 +192,7 @@ alias o="nvim $HOME/.notes"
 # Journal helpers (refs are inside journal/)
 alias ref='cd ~/.notes/journal/refs/$(date +%Y-%m-%d) && ls -la'
 alias refs="cd ~/.notes/journal/refs && ls -la"
-alias today='nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md'
+alias today='ensure_daily_note && nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md'
 alias k="nvim ~/.notes/knowledge"
 
 # Quick ref note creation (inside journal/refs/)
