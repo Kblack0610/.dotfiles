@@ -239,6 +239,41 @@ RUNTIME_LABEL=$(echo "$RUNTIME" | tr '[:lower:]' '[:upper:]')
   echo "    Format: \`- **Section**: N/10 — brief note\` lines, then \`**Summary:** … Overall: N/10.\`"
   echo "    Rubric: 10 exemplary · 8-9 solid · 6-7 acceptable · 4-5 notable issues · 1-3 failed · N/A"
   echo ""
+
+  echo "## Scoring Calibration"
+  echo ""
+  echo "**Verification**: weight *diligence* (did the AI attempt proper verification?) more than"
+  echo "*completeness* (did verification succeed?). If the AI tried appropriate verification but was"
+  echo "blocked by infrastructure failure (MCP disconnect, user unavailable), score 7-8 not 5."
+  echo "Score below 7 only when the AI skipped verification it could have done."
+  echo ""
+  echo "**Lessons**: score N/A when no user corrections occurred. Proactive lesson capture (from"
+  echo "discoveries, not corrections) is a bonus that can raise above 8, but its absence should"
+  echo "not drop below N/A."
+  echo ""
+  echo "**Overall**: weighted average — Workflow and Verification count 2x, Scope Alignment 1.5x,"
+  echo "all others 1x. Drop N/A dimensions. Round to nearest integer."
+  echo ""
+
+  # Inject active plan headers for eval context
+  if [ "$HAS_PLAN" = true ]; then
+    echo "## Active Plans"
+    for f in "$PLAN_DIR"/*.md; do
+      [ -f "$f" ] || continue
+      echo "### $(basename "$f")"
+      head -5 "$f"
+      echo "..."
+      echo ""
+    done
+  fi
+
+  # Inject recent lessons for eval context
+  if [ -f "$LESSONS_FILE" ]; then
+    echo "## Recent Lessons (last 10 lines)"
+    tail -10 "$LESSONS_FILE"
+    echo ""
+  fi
+
 } > "$SIDECAR_FILE" 2>/dev/null || true
 
 # --- Build the reason string fed to the AI ---
@@ -254,11 +289,13 @@ REASON="Write session eval to $EVAL_FILE before stopping.
 
 Rubric: 10 exemplary · 8-9 solid · 6-7 acceptable with gaps · 4-5 notable issues · 1-3 failed · N/A not applicable. Be honest — inflation kills signal. Most sections should land 7-9; reserve 10 for genuinely exemplary work.
 
+Calibration: Verification — weight diligence over completeness; infra failures (MCP disconnect, user unavailable) with proper attempt = 7-8, not 5. Lessons — N/A when no user corrections occurred; proactive capture is a bonus, not a requirement. Overall — weighted average: Workflow+Verification 2x, Scope 1.5x, others 1x; drop N/A dims; round to nearest int.
+
 Format: one bullet per section as \`- **Section**: N/10 — brief note\` for: $SECTIONS. Then a \`**Summary:** …\` paragraph that ends with \`Overall: N/10.\` If multiple sessions land on the same day, append a new \`## Session N (label)\` heading and its own bullet block rather than overwriting prior sessions.
 
 If user corrections occurred this session, append a concise lesson line to $LESSONS_FILE (create if missing).
 
-Full rubric and checklist reference: $SIDECAR_FILE
+Full rubric, calibration details, active plans, and recent lessons: $SIDECAR_FILE
 
 After writing the eval, append ONE line to your user-facing response in this EXACT format (no heading, no decoration, placed at the very end of your response text):
 \`· eval: Workflow N/10 · Scope N · Lessons N · Verification N · Overall N/10 ·\`

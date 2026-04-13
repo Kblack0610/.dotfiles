@@ -90,6 +90,8 @@ install_common_links() {
 install_desktop_links() {
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.service" "$HOME/.config/systemd/user/git-sync-notes.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.timer" "$HOME/.config/systemd/user/git-sync-notes.timer"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.service" "$HOME/.config/systemd/user/journal-refs-archive.service"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.timer" "$HOME/.config/systemd/user/journal-refs-archive.timer"
 }
 
 configure_repo() {
@@ -116,6 +118,8 @@ setup_systemd() {
         systemctl --user daemon-reload
         systemctl --user enable git-sync-notes.timer >/dev/null 2>&1 || true
         systemctl --user start git-sync-notes.timer
+        systemctl --user enable journal-refs-archive.timer >/dev/null 2>&1 || true
+        systemctl --user start journal-refs-archive.timer
     fi
 }
 

@@ -1,4 +1,13 @@
-# Source the common settings file if it exists.
+# --- Shell config loading order ---
+# .zshrc (this file) loads, in order:
+#   1. .commonrc  — shared PATH helpers, env vars, aliases, functions
+#                   (also sourced by .bashrc — anything cross-shell goes here)
+#   2. .workrc    — optional work-specific overrides (not tracked)
+#   3. .bash_profile (line ~102) — secrets / API tokens
+#                   NOTE: sourced directly by .zshrc, NOT via .commonrc.
+#                   Interactive bash shells do NOT pick this up — only
+#                   zsh and login-bash see these env vars.
+# ---
 [ -f "$HOME/.commonrc" ] && source "$HOME/.commonrc"
 [ -f "$HOME/.workrc" ] && source "$HOME/.workrc"
 
@@ -98,7 +107,10 @@ add-zsh-hook precmd _tmux_rename_window
 # # Source VS Code shell integration.
 # [[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
 #
-# Source .bash_profile.
+# Source .bash_profile — holds API keys / secrets.
+# Lives at ~/.bash_profile (NOT symlinked into .dotfiles, so not in git).
+# Sourced here so zsh picks up env vars. Bash interactive shells get it via
+# their own login flow; bashrc does NOT source it.
 if [ -f "$HOME/.bash_profile" ]; then
     . "$HOME/.bash_profile"
 fi

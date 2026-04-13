@@ -40,6 +40,11 @@ stamp_items() {
             continue
         fi
 
+        # Drop empty task placeholders ("- [ ]" with no content)
+        if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*\[\ \][[:space:]]*$ ]]; then
+            continue
+        fi
+
         # Process unchecked task lines
         if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*\[ ]]; then
             if [[ "$line" =~ \<!--\ since:([0-9]{4}-[0-9]{2}-[0-9]{2})\ --\> ]]; then
@@ -69,25 +74,39 @@ PREV_FILE=$(ls -1 "$NOTES_DIR/"*.md 2>/dev/null | sort | grep -v "$TODAY" | tail
 
 PRIORITY_ITEMS=""
 FUN_ITEMS=""
+CARRYOVER_ITEMS=""
 
 if [[ -n "${PREV_FILE:-}" ]] && [[ -f "$PREV_FILE" ]]; then
     # Extract date from previous filename for day-tracking origin
     PREV_DATE=$(basename "$PREV_FILE" .md)
 
-    # Try new sections first, fall back to old "Carry Over"
     RAW_PRIORITY=$(extract_section "$PREV_FILE" "Priority")
     RAW_FUN=$(extract_section "$PREV_FILE" "Fun")
-
-    if [[ -z "$RAW_PRIORITY" ]] && [[ -z "$RAW_FUN" ]]; then
-        # Migration: old format had "## Carry Over" -- put everything into Priority
-        RAW_PRIORITY=$(extract_section "$PREV_FILE" "Carry Over")
-    fi
+    RAW_FOCUS=$(extract_section "$PREV_FILE" "Focus")
+    RAW_CARRYOVER=$(extract_section "$PREV_FILE" "Carry Over")
 
     if [[ -n "$RAW_PRIORITY" ]]; then
         PRIORITY_ITEMS=$(echo "$RAW_PRIORITY" | stamp_items "$PREV_DATE")
     fi
     if [[ -n "$RAW_FUN" ]]; then
         FUN_ITEMS=$(echo "$RAW_FUN" | stamp_items "$PREV_DATE")
+    fi
+
+    # Carry Over accumulates: unchecked items from previous Focus + previous Carry Over
+    # User triages these daily into Focus/Priority/discard
+    COMBINED_CARRYOVER=""
+    if [[ -n "$RAW_FOCUS" ]]; then
+        COMBINED_CARRYOVER="$RAW_FOCUS"
+    fi
+    if [[ -n "$RAW_CARRYOVER" ]]; then
+        if [[ -n "$COMBINED_CARRYOVER" ]]; then
+            COMBINED_CARRYOVER="$COMBINED_CARRYOVER"$'\n'"$RAW_CARRYOVER"
+        else
+            COMBINED_CARRYOVER="$RAW_CARRYOVER"
+        fi
+    fi
+    if [[ -n "$COMBINED_CARRYOVER" ]]; then
+        CARRYOVER_ITEMS=$(echo "$COMBINED_CARRYOVER" | stamp_items "$PREV_DATE")
     fi
 fi
 
@@ -126,8 +145,14 @@ fi
         echo "$FUN_ITEMS"
     fi
     echo ""
+    echo "## Carry Over"
+    if [[ -n "$CARRYOVER_ITEMS" ]]; then
+        echo "$CARRYOVER_ITEMS"
+    fi
+    echo ""
 } > "$NOTE_FILE"
 
 # Report what was carried
 [[ -n "$PRIORITY_ITEMS" ]] && echo "  -> Carried over priority items"
 [[ -n "$FUN_ITEMS" ]] && echo "  -> Carried over fun items"
+[[ -n "$CARRYOVER_ITEMS" ]] && echo "  -> Carried over focus/carryover items"
