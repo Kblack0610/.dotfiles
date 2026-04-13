@@ -21,6 +21,16 @@ This dotfiles repository is the source of truth for shared AI assistant rules an
 - Re-check existing plans in `~/.agent/plans/{project}/` before starting implementation.
 - Prefer elegant fixes over additive hacks, but do not over-engineer simple changes.
 - After a user correction, capture the lesson in `~/.agent/lessons/{project}.md`.
+- Before adding a new dependency, UI framework, or architectural pattern, grep the lessons file for that keyword. If a lesson prohibits it, stop and discuss with the user.
+
+### Session Preflight (before implementation)
+
+Before starting any implementation work, run these three cheap checks:
+1. `ls ~/.agent/plans/{project}/` — read any existing plan; state whether the current task aligns
+2. `tail -20 ~/.agent/lessons/{project}.md` — review recent lessons for relevant constraints
+3. `git log --oneline -5` + `gh pr list --state=all --limit=5` — check if the task is already done or in-flight
+
+Only escalate to Explore agents or multi-tool investigations after these checks are inconclusive.
 
 ## Verification
 
