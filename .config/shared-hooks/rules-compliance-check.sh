@@ -251,9 +251,17 @@ RUNTIME_LABEL=$(echo "$RUNTIME" | tr '[:lower:]' '[:upper:]')
   echo ""
 
   echo "## Eval Output"
-  echo "- [ ] Write eval to $EVAL_FILE"
-  echo "    Format: \`- **Section**: N/10 — brief note\` lines, then \`**Summary:** … Overall: N/10.\`"
-  echo "    Rubric: 10 exemplary · 8-9 solid · 6-7 acceptable · 4-5 notable issues · 1-3 failed · N/A"
+  echo ""
+  echo "**File (append to $EVAL_FILE):**"
+  echo "- Format: \`- **Section**: N/10 — brief note\` bullets for each section, then one \`**Summary:** … Overall: N/10.\` paragraph."
+  echo "- Same-day header: \`## Session N (label)\`."
+  echo "- Rubric: 10 exemplary · 8-9 solid · 6-7 acceptable · 4-5 notable issues · 1-3 failed · N/A."
+  echo ""
+  echo "**Response (user-facing chat):**"
+  echo "- Do NOT include the rubric bullets or the summary paragraph in your response — those go in the file only."
+  echo "- The ONLY eval content in your response is this one-line footer at the very end:"
+  echo "  \`· eval: Workflow N/10 · Scope N/10 · Lessons N/10 · Verification N/10 · Overall N/10 ·\`"
+  echo "- All scores are \`N/10\` or \`N/A\`. Never bare integers."
   echo ""
 
   echo "## Scoring Calibration"
@@ -298,29 +306,8 @@ RUNTIME_LABEL=$(echo "$RUNTIME" | tr '[:lower:]' '[:upper:]')
 
 } > "$SIDECAR_FILE" 2>/dev/null || true
 
-# --- Build the reason string fed to the AI ---
-SECTIONS="Workflow, Scope Alignment, Lessons, Verification"
-if [ "$HAS_CHANGES" = true ]; then
-  SECTIONS="$SECTIONS, Code Hygiene, Verification Honesty, Security Spot-Check"
-fi
-if [ "$HAS_INFRA_CHANGES" = true ]; then
-  SECTIONS="$SECTIONS, Infrastructure"
-fi
-
-CI_LINE=""
-if [ -n "$CI_STATUS_VAL" ]; then
-  CI_LINE="
-CI: $CI_STATUS_VAL${CI_NOTE_VAL:+ — $CI_NOTE_VAL}. Factor into Verification (FAIL caps at 5)."
-fi
-
-REASON="WRITE-TO-FILE (do NOT put any of this in your user-facing response):
-  → Append to $EVAL_FILE using the checklist at $SIDECAR_FILE — walk each item, findings drop the section score.
-  → Format: \`- **Section**: N/10 — note\` bullets for $SECTIONS, then one \`**Summary:** … Overall: N/10.\` paragraph. Same-day: header \`## Session N (label)\`.
-  → User corrections → append to $LESSONS_FILE.${CI_LINE}
-
-USER-FACING RESPONSE:
-  → Keep your response focused on the user's actual task. Do NOT include the rubric bullets or the summary paragraph in the response — those go in the file only.
-  → The ONLY eval content in the response is this one-line footer at the very end: \`· eval: Workflow N/10 · Scope N/10 · Lessons N/10 · Verification N/10 · Overall N/10 ·\` (all scores /10, or N/A)."
+# --- Build the reason string fed to the AI (pointer only; details in sidecar) ---
+REASON="Session eval — read $SIDECAR_FILE, write to $EVAL_FILE, end response with footer from sidecar. User corrections → $LESSONS_FILE."
 
 # --- Emit the JSON block on stdout, exit 0 ---
 # stdin on python3 is the reason; json.dumps handles all escaping.

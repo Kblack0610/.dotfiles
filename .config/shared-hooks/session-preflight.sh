@@ -1,13 +1,7 @@
 #!/bin/bash
 # Session preflight hook — injects plan/lesson/git context at session start.
-#
-# Dual-channel output:
-#   stdout: JSON with hookSpecificOutput.additionalContext → prepended to the
-#           AI's conversation context (AI sees plans/lessons/git on turn 1).
-#   stderr: same content for user visibility (collapsed behind "Ran N hooks").
-#
-# Always non-blocking. Satisfies the CLAUDE.md "Session Preflight" rule by
-# ensuring the AI has the preflight data without needing to run the checks.
+# Emits stdout JSON with hookSpecificOutput.additionalContext so the AI sees
+# plans/lessons/git on turn 1. Non-blocking, no stderr duplicate.
 
 set -euo pipefail
 
@@ -70,11 +64,7 @@ CONTEXT=$(
   echo "==="
 )
 
-# --- User channel: stderr, collapsed behind "Ran N hooks" ---
-echo "$CONTEXT" >&2
-
-# --- AI channel: stdout JSON with additionalContext ---
-# Cap at ~9500 chars to stay under the documented 10k limit with headroom.
+# --- stdout JSON with additionalContext (cap ~9500 chars, doc limit is 10k) ---
 python3 - "$CONTEXT" <<'PY'
 import json, sys
 ctx = sys.argv[1]
