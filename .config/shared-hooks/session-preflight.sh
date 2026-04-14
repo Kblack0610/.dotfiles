@@ -1,7 +1,13 @@
 #!/bin/bash
 # Session preflight hook — injects plan/lesson/git context at session start.
-# Output goes to stderr (collapsed by Claude Code behind "Ran N hooks").
-# Always approves (non-blocking).
+#
+# Dual-channel output:
+#   stdout: JSON with hookSpecificOutput.additionalContext → prepended to the
+#           AI's conversation context (AI sees plans/lessons/git on turn 1).
+#   stderr: same content for user visibility (collapsed behind "Ran N hooks").
+#
+# Always non-blocking. Satisfies the CLAUDE.md "Session Preflight" rule by
+# ensuring the AI has the preflight data without needing to run the checks.
 
 set -euo pipefail
 
@@ -23,38 +29,63 @@ PROJECT_NAME=$(basename "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 
-{
+# --- Build the preflight context block once, reuse for both channels ---
+CONTEXT=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
 
   # Plans
   if [ -d "$PLAN_DIR" ] && [ -n "$(ls -A "$PLAN_DIR" 2>/dev/null)" ]; then
     plan_count=$(ls -1 "$PLAN_DIR" 2>/dev/null | wc -l)
     echo "Plans: $plan_count file(s) in $PLAN_DIR"
-    ls -1 "$PLAN_DIR" 2>/dev/null | head -5
+    ls -1 "$PLAN_DIR" 2>/dev/null | head -5 | sed 's/^/  - /'
   else
-    echo "Plans: none"
+    echo "Plans: none in $PLAN_DIR"
   fi
 
-  # Lessons
+  # Lessons — tail last 20 lines per CLAUDE.md preflight rule
   if [ -f "$LESSONS_FILE" ]; then
     cnt=$(grep -cE '^(##|[0-9]+\.|-)' "$LESSONS_FILE" 2>/dev/null || echo 0)
-    echo "Lessons: $cnt entries in $LESSONS_FILE"
-    echo "--- last 3 ---"
-    tail -6 "$LESSONS_FILE"
+    echo "Lessons ($cnt entries) — last 20 lines of $LESSONS_FILE:"
+    tail -20 "$LESSONS_FILE" | sed 's/^/  /'
   else
-    echo "Lessons: none"
+    echo "Lessons: none ($LESSONS_FILE does not exist)"
   fi
 
   # Recent git history
   cd "$PROJECT_DIR" 2>/dev/null || true
   if git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "Recent commits:"
-    git log --oneline -3 2>/dev/null || true
+    echo "Recent commits (last 5):"
+    git log --oneline -5 2>/dev/null | sed 's/^/  /' || true
+
+    # Open/recent PRs if gh is available (5s timeout — don't hang a session on network)
+    if command -v gh >/dev/null 2>&1; then
+      PR_OUT=$(timeout 5 gh pr list --state=all --limit=5 2>/dev/null || true)
+      if [ -n "$PR_OUT" ]; then
+        echo "Recent PRs (last 5, any state):"
+        echo "$PR_OUT" | sed 's/^/  /'
+      fi
+    fi
   fi
 
   echo "==="
-} >&2
+)
 
-# Non-blocking: always approve
-echo '{"decision":"approve","reason":"preflight context injected"}'
+# --- User channel: stderr, collapsed behind "Ran N hooks" ---
+echo "$CONTEXT" >&2
+
+# --- AI channel: stdout JSON with additionalContext ---
+# Cap at ~9500 chars to stay under the documented 10k limit with headroom.
+python3 - "$CONTEXT" <<'PY'
+import json, sys
+ctx = sys.argv[1]
+if len(ctx) > 9500:
+    ctx = ctx[:9500] + "\n...[truncated to fit 10k additionalContext cap]"
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": ctx
+    }
+}))
+PY
+
 exit 0

@@ -11,10 +11,6 @@
           {
             "type": "command",
             "command": "bash ~/.claude/setup-personal-mcp.sh"
-          },
-          {
-            "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/session-preflight.sh"
           }
         ]
       }
@@ -25,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/rules-compliance-check.sh"
+            "command": "bash ~/.claude/hooks/pre-stop-checks.sh"
           }
         ]
       },
@@ -34,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/pre-stop-checks.sh"
+            "command": "bash ~/.dotfiles/.config/shared-hooks/rules-compliance-check.sh"
           }
         ]
       }

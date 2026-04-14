@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: "Review PR, fix issues, monitor CI, merge, and continue with next plan task"
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task, WebFetch, WebSearch, TodoWrite, mcp__github-gh__gh_pr_view, mcp__github-gh__gh_pr_checks, mcp__github-gh__gh_pr_merge, mcp__github-gh__gh_pr_diff, mcp__github-gh__gh_run_list, mcp__github-gh__gh_run_view]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task, WebFetch, WebSearch, TodoWrite]
 ---
 
 # PR Review, Fix, Monitor, Merge Flow

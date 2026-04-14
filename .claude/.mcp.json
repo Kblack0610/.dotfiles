@@ -41,14 +41,6 @@
         "RUST_LOG": "info"
       }
     },
-    "github-gh": {
-      "type": "stdio",
-      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp",
-      "args": [],
-      "env": {
-        "RUST_LOG": "info"
-      }
-    },
     "web-search": {
       "type": "stdio",
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp",

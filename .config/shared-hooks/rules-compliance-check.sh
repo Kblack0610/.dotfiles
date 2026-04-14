@@ -53,8 +53,17 @@ EVAL_FILE="$EVAL_DIR/${DATE_STAMP}.md"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook"
 SIDECAR_FILE="$CACHE_DIR/${PROJECT_NAME}-${DATE_STAMP}.md"
+CI_RESULT_FILE="$CACHE_DIR/ci-result-${PROJECT_NAME}-${DATE_STAMP}.txt"
 
 mkdir -p "$EVAL_DIR" "$CACHE_DIR" 2>/dev/null || true
+
+# --- Read CI result written by pre-stop-checks.sh (runs before us) ---
+CI_STATUS_VAL=""
+CI_NOTE_VAL=""
+if [ -f "$CI_RESULT_FILE" ]; then
+  CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  CI_NOTE_VAL=$(grep '^note=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+fi
 
 # --- Summary emitter (retry run + skip-if-fresh path) ---
 # All output goes to stderr. On exit 0 stderr is collapsed behind
@@ -176,6 +185,13 @@ RUNTIME_LABEL=$(echo "$RUNTIME" | tr '[:lower:]' '[:upper:]')
   echo "# Session Evaluation — $PROJECT_NAME ($RUNTIME_LABEL) — $DATE_STAMP"
   echo ""
 
+  if [ -n "$CI_STATUS_VAL" ]; then
+    echo "## CI Result (from pre-stop-checks.sh)"
+    echo "- **Status**: $CI_STATUS_VAL"
+    [ -n "$CI_NOTE_VAL" ] && echo "- **Note**: $CI_NOTE_VAL"
+    echo ""
+  fi
+
   if [ "$HAS_CHANGES" = true ]; then
     echo "## Changed files"
     git diff --stat HEAD 2>/dev/null || true
@@ -247,6 +263,12 @@ RUNTIME_LABEL=$(echo "$RUNTIME" | tr '[:lower:]' '[:upper:]')
   echo "blocked by infrastructure failure (MCP disconnect, user unavailable), score 7-8 not 5."
   echo "Score below 7 only when the AI skipped verification it could have done."
   echo ""
+  echo "**CI Result override**: if the CI Result section above shows \`Status: FAIL\`, cap Verification"
+  echo "at 5 — the code does not pass baseline gates (typecheck/lint/format or git workflow). Raise"
+  echo "to 6 only if the AI's response explicitly acknowledged the failing CI and explained next steps."
+  echo "If \`Status: PASS\`, this is a positive signal but not a free pass — diligence still matters."
+  echo "If \`Status: SKIPPED\` or absent, score on diligence alone (no CI signal available)."
+  echo ""
   echo "**Lessons**: score N/A when no user corrections occurred. Proactive lesson capture (from"
   echo "discoveries, not corrections) is a bonus that can raise above 8, but its absence should"
   echo "not drop below N/A."
@@ -285,21 +307,20 @@ if [ "$HAS_INFRA_CHANGES" = true ]; then
   SECTIONS="$SECTIONS, Infrastructure"
 fi
 
-REASON="Write session eval to $EVAL_FILE before stopping.
+CI_LINE=""
+if [ -n "$CI_STATUS_VAL" ]; then
+  CI_LINE="
+CI: $CI_STATUS_VAL${CI_NOTE_VAL:+ — $CI_NOTE_VAL}. Factor into Verification (FAIL caps at 5)."
+fi
 
-Rubric: 10 exemplary · 8-9 solid · 6-7 acceptable with gaps · 4-5 notable issues · 1-3 failed · N/A not applicable. Be honest — inflation kills signal. Most sections should land 7-9; reserve 10 for genuinely exemplary work.
+REASON="WRITE-TO-FILE (do NOT put any of this in your user-facing response):
+  → Append to $EVAL_FILE using the checklist at $SIDECAR_FILE — walk each item, findings drop the section score.
+  → Format: \`- **Section**: N/10 — note\` bullets for $SECTIONS, then one \`**Summary:** … Overall: N/10.\` paragraph. Same-day: header \`## Session N (label)\`.
+  → User corrections → append to $LESSONS_FILE.${CI_LINE}
 
-Calibration: Verification — weight diligence over completeness; infra failures (MCP disconnect, user unavailable) with proper attempt = 7-8, not 5. Lessons — N/A when no user corrections occurred; proactive capture is a bonus, not a requirement. Overall — weighted average: Workflow+Verification 2x, Scope 1.5x, others 1x; drop N/A dims; round to nearest int.
-
-Format: one bullet per section as \`- **Section**: N/10 — brief note\` for: $SECTIONS. Then a \`**Summary:** …\` paragraph that ends with \`Overall: N/10.\` If multiple sessions land on the same day, append a new \`## Session N (label)\` heading and its own bullet block rather than overwriting prior sessions.
-
-If user corrections occurred this session, append a concise lesson line to $LESSONS_FILE (create if missing).
-
-Full rubric, calibration details, active plans, and recent lessons: $SIDECAR_FILE
-
-After writing the eval, append ONE line to your user-facing response in this EXACT format (no heading, no decoration, placed at the very end of your response text):
-\`· eval: Workflow N/10 · Scope N · Lessons N · Verification N · Overall N/10 ·\`
-This gives the user an inline glance of the scores without needing to expand the stop-hook output."
+USER-FACING RESPONSE:
+  → Keep your response focused on the user's actual task. Do NOT include the rubric bullets or the summary paragraph in the response — those go in the file only.
+  → The ONLY eval content in the response is this one-line footer at the very end: \`· eval: Workflow N/10 · Scope N/10 · Lessons N/10 · Verification N/10 · Overall N/10 ·\` (all scores /10, or N/A)."
 
 # --- Emit the JSON block on stdout, exit 0 ---
 # stdin on python3 is the reason; json.dumps handles all escaping.
