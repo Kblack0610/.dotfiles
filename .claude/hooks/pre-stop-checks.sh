@@ -4,6 +4,15 @@
 
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Loop guard: Claude Code sets stop_hook_active=true on stdin after we block
+# once this turn. Blocking again traps the agent (esp. in plan mode where it
+# can't run pnpm format). Exit clean on the second call.
+PAYLOAD=$(cat 2>/dev/null || echo '{}')
+if command -v jq >/dev/null 2>&1 && [ "$(echo "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
+  echo "pre-stop-checks: loop guard — already blocked once this turn, exiting clean" >&2
+  exit 0
+fi
+
 FAILED=0
 
 # --- CI result file (read by rules-compliance-check.sh for eval scoring) ---

@@ -46,15 +46,6 @@
         "RUST_LOG": "info"
       }
     },
-    "github-gh": {
-      "description": "GitHub CLI-backed MCP server from local orchestrator",
-      "type": "stdio",
-      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp",
-      "args": [],
-      "env": {
-        "RUST_LOG": "info"
-      }
-    },
     "web-search": {
       "description": "Local web search MCP server",
       "type": "stdio",

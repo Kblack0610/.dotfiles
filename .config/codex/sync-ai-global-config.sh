@@ -53,14 +53,12 @@ cp -R "$RULESYNC_ROOT"/. "$stage_dir"/
 
 (
     cd "$stage_dir"
-    "$RULESYNC" generate --targets claudecode,codexcli,geminicli,opencode --features rules,mcp >/dev/null
+    "$RULESYNC" generate --targets codexcli,geminicli,opencode --features rules,mcp >/dev/null
 )
 
 for required_file in \
-    "$stage_dir/CLAUDE.md" \
     "$stage_dir/AGENTS.md" \
     "$stage_dir/GEMINI.md" \
-    "$stage_dir/.mcp.json" \
     "$stage_dir/.codex/config.toml" \
     "$stage_dir/.gemini/settings.json" \
     "$stage_dir/opencode.jsonc"; do
@@ -70,10 +68,10 @@ for required_file in \
     fi
 done
 
-mkdir -p "$CODEX_HOME" "$CLAUDE_HOME" "$GEMINI_HOME" "$OPENCODE_HOME"
+mkdir -p "$CODEX_HOME" "$GEMINI_HOME" "$OPENCODE_HOME"
 
-cp "$stage_dir/CLAUDE.md" "$CLAUDE_HOME/CLAUDE.md"
-cp "$stage_dir/.mcp.json" "$CLAUDE_HOME/.mcp.json"
+# Claude Code's CLAUDE.md and .mcp.json are stow-managed from ~/.dotfiles/.claude/
+# — do NOT write them here; it would clobber the stow symlinks.
 cp "$stage_dir/AGENTS.md" "$CODEX_HOME/AGENTS.md"
 cp "$stage_dir/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
 cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
@@ -198,8 +196,7 @@ opencode_current["mcp"] = current_mcp
 write_json(opencode_path, opencode_current)
 PY
 
-echo "Synced shared AI rules and MCP config"
-echo "  Claude: $CLAUDE_HOME/CLAUDE.md and $CLAUDE_HOME/.mcp.json"
+echo "Synced shared AI rules and MCP config (Claude owned by stow, not this script)"
 echo "  Codex:  $CODEX_HOME/AGENTS.md and $CODEX_HOME/config.toml"
 echo "  Gemini: $GEMINI_HOME/GEMINI.md and $GEMINI_HOME/settings.json"
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
