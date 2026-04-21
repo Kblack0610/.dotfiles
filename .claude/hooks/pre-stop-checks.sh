@@ -29,23 +29,12 @@ write_ci_result() {
 trap write_ci_result EXIT
 
 # --- Git workflow completeness checks ---
+# Workspace-state warnings (uncommitted/untracked) are deferred until *after* the
+# no-changes short-circuit below, so pure Q&A turns don't print noise.
 if git rev-parse --git-dir > /dev/null 2>&1; then
   BRANCH=$(git branch --show-current 2>/dev/null)
   MAIN_BRANCH="develop"
   git show-ref --verify --quiet refs/remotes/origin/develop || MAIN_BRANCH="main"
-
-  # Check for uncommitted changes (staged or unstaged)
-  # Only warn — dirty worktrees may be pre-existing from other agents/branches
-  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    echo "WARNING: Uncommitted changes in worktree (may be pre-existing)" >&2
-  fi
-
-  # Check for untracked files in tracked directories (new files not yet added)
-  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
-  if [ -n "$UNTRACKED" ]; then
-    echo "WARNING: Untracked files found (may need to be committed):" >&2
-    echo "$UNTRACKED" >&2
-  fi
 
   # Check for unpushed commits on non-main branches
   if [ -n "$BRANCH" ] && [ "$BRANCH" != "$MAIN_BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
@@ -92,6 +81,18 @@ if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null; t
 fi
 
 echo "=== Running CI checks before completing ===" >&2
+
+# Workspace-state warnings — only surface when we're actually about to run CI.
+if git rev-parse --git-dir > /dev/null 2>&1; then
+  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    echo "WARNING: Uncommitted changes in worktree (may be pre-existing)" >&2
+  fi
+  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
+  if [ -n "$UNTRACKED" ]; then
+    echo "WARNING: Untracked files found (may need to be committed):" >&2
+    echo "$UNTRACKED" >&2
+  fi
+fi
 
 # Detect project type and run appropriate checks
 if [ -f "package.json" ]; then

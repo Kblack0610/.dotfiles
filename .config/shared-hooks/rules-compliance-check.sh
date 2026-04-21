@@ -82,8 +82,10 @@ fi
 # --- Skip eval on pure Q&A (no code changes + no CI work) ---
 # Rationale: sessions with a clean worktree have nothing to score and don't
 # need the block/retry round trip. The user can still opt in by making edits.
+# CI_STATUS_VAL is "" if pre-stop-checks didn't write a result file, or
+# "SKIPPED" if it ran but bailed early on no-changes — both mean diagnostic-only.
 if [ "$HAS_CHANGES" = false ] && [ "$HAS_INFRA_CHANGES" = false ] \
-   && [ "$CI_STATUS_VAL" != "PASS" ] && [ "$CI_STATUS_VAL" != "FAIL" ]; then
+   && { [ -z "$CI_STATUS_VAL" ] || [ "$CI_STATUS_VAL" = "SKIPPED" ]; }; then
   exit 0
 fi
 

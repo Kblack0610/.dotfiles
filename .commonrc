@@ -193,7 +193,7 @@ alias o="nvim $HOME/.notes"
 alias ref='cd ~/.notes/journal/refs/$(date +%Y-%m-%d) && ls -la'
 alias refs="cd ~/.notes/journal/refs && ls -la"
 alias today='ensure_daily_note && nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md'
-alias k="nvim ~/.notes/knowledge"
+alias kw="nvim ~/.notes/knowledge"
 
 # Quick ref note creation (inside journal/refs/)
 refnote() {
@@ -220,34 +220,9 @@ alias gametodo="nvim $HOME/.config/life/todos/game_todo"
 alias dailylog="cp $HOME/.config/life/templates/daily_log_template $HOME/.config/life/todos/log_$(date +%F)"
 alias unitylaptop="env GDK_SCALE=2 ./Unity/Hub/Editor/2022.3.20f1/Editor/Unity -projectPath Games/DodginBalls/"
 
-# --- Kubernetes Aliases ---
-alias k="kubectl"
-alias kx="kubectx"
-alias kn="kubens"
-alias kgp="kubectl get pods"
-alias kgd="kubectl get deployments"
-alias kgs="kubectl get services"
-alias kga="kubectl get all"
-alias kaf="kubectl apply -f"
-alias kdf="kubectl delete -f"
-alias kdp="kubectl describe pod"
-alias kl="kubectl logs -f"
-alias kex="kubectl exec -it"
-
-# k9s cluster shortcuts
-alias k9="k9s"
-alias k9do="k9s --context do-nyc3-placemyparents-k8s-prod"
-alias k9home="k9s --context home-k3s"
-alias k9local="k9s --context k3d-local"
-
-# Cluster setup
-alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
-
-# Infrastructure dashboard
-# 'infra' command provided by ~/.local/bin/infra (symlink to home-config/infrastructure/infra/infra.sh)
-alias infra-dash="$HOME/.local/src/infra-dash/display.sh"
-alias infra-collect="$HOME/.local/src/infra-dash/collect.sh"
-alias infra-json="$HOME/.local/src/infra-dash/display.sh -j"
+# --- Modular RC files ---
+[ -f "$HOME/.k8s-rc" ] && source "$HOME/.k8s-rc"
+[ -f "$HOME/.ai-rc" ] && source "$HOME/.ai-rc"
 
 # Dotfiles setup (full installation)
 alias dotfiles-setup="$HOME/.local/src/installation_scripts/install.sh"
@@ -259,60 +234,3 @@ alias mic-stop="audio-stream --stop"
 alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
 
-alias cl="claude --dangerously-skip-permissions"
-alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
-alias cb="agent" # need to rename to agent
-
-# --- Tmux pane title wrappers for AI tools ---
-# Sets ✳ in pane title so tmux agent detection works (like Claude does natively)
-# Exports TMUX_PANE_KEY so agents with event APIs can write structured state files
-_tmux_agent_wrap() {
-    local name="$1"; shift
-    if [[ -n "$TMUX" ]]; then
-        printf '\033]2;✳ %s\033\\' "$name"
-        local sess win
-        sess=$(tmux display-message -p '#{session_name}')
-        win=$(tmux display-message -p '#{window_index}')
-        export TMUX_PANE_KEY="${sess}_${win}"
-    fi
-    command "$name" "$@"
-    if [[ -n "$TMUX" ]]; then
-        printf '\033]2;\033\\'
-        rm -f "/tmp/agent-events/${TMUX_PANE_KEY}.state.json" 2>/dev/null
-        unset TMUX_PANE_KEY
-    fi
-}
-codex()    { _tmux_agent_wrap codex "$@"; }
-gemini()   { _tmux_agent_wrap gemini "$@"; }
-opencode() { _tmux_agent_wrap opencode "$@"; }
-aider()    { _tmux_agent_wrap aider "$@"; }
-openclaw() {
-    local bin=""
-    if bin="$(type -P openclaw 2>/dev/null)"; then
-        [[ -n "$TMUX" ]] && printf '\033]2;✳ openclaw\033\\'
-        command "$bin" "$@"
-    elif bin="$(type -P bunx 2>/dev/null)"; then
-        [[ -n "$TMUX" ]] && printf '\033]2;✳ openclaw\033\\'
-        command "$bin" openclaw "$@"
-    else
-        echo "openclaw requires either the openclaw binary or bunx" >&2
-        return 127
-    fi
-    local status=$?
-    [[ -n "$TMUX" ]] && printf '\033]2;\033\\'
-    return "$status"
-}
-alias co="codex"
-alias claw-setup="$HOME/.dotfiles/.config/openclaw/setup-openclaw.sh"
-
-# --- Claude Code Profiles ---
-# Interactive profiles
-alias cmt="claude-profile manual-test"    # Browser testing (Playwright, Docker)
-alias cim="claude-profile implement"      # Coding (Serena, GitHub, Linear, Context7)
-alias cfl="claude-profile full"           # All MCP servers
-alias cmn="claude-profile minimal"        # Fast startup (filesystem + memory)
-
-# Headless profiles (for scripting / calling from within Claude)
-alias cmt-h="claude-profile manual-test --headless"
-alias cim-h="claude-profile implement --headless"
-alias cmn-h="claude-profile minimal --headless"
