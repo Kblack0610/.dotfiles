@@ -1,0 +1,45 @@
+# --- AI Tool Aliases & Wrappers ---
+# Sourced from .commonrc
+
+alias cl="claude --dangerously-skip-permissions"
+alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
+alias cb="agent" # need to rename to agent
+
+# --- Tmux pane title wrappers for AI tools ---
+# Sets ✳ in pane title so tmux agent detection works (like Claude does natively)
+# Exports TMUX_PANE_KEY so agents with event APIs can write structured state files
+_tmux_agent_wrap() {
+    local name="$1"; shift
+    if [[ -n "$TMUX" ]]; then
+        printf '\033]2;✳ %s\033\\' "$name"
+        local sess win
+        sess=$(tmux display-message -p '#{session_name}')
+        win=$(tmux display-message -p '#{window_index}')
+        export TMUX_PANE_KEY="${sess}_${win}"
+    fi
+    command "$name" "$@"
+    if [[ -n "$TMUX" ]]; then
+        printf '\033]2;\033\\'
+        rm -f "/tmp/agent-events/${TMUX_PANE_KEY}.state.json" 2>/dev/null
+        unset TMUX_PANE_KEY
+    fi
+}
+codex()    { _tmux_agent_wrap codex "$@"; }
+gemini()   { _tmux_agent_wrap gemini "$@"; }
+opencode() { _tmux_agent_wrap opencode "$@"; }
+aider()    { _tmux_agent_wrap aider "$@"; }
+
+alias co="codex"
+alias claw-setup="$HOME/.dotfiles/.config/openclaw/setup-openclaw.sh"
+
+# --- Claude Code Profiles ---
+# Interactive profiles
+alias cmt="claude-profile manual-test"    # Browser testing (Playwright, Docker)
+alias cim="claude-profile implement"      # Coding (Serena, GitHub, Linear, Context7)
+alias cfl="claude-profile full"           # All MCP servers
+alias cmn="claude-profile minimal"        # Fast startup (filesystem + memory)
+
+# Headless profiles (for scripting / calling from within Claude)
+alias cmt-h="claude-profile manual-test --headless"
+alias cim-h="claude-profile implement --headless"
+alias cmn-h="claude-profile minimal --headless"

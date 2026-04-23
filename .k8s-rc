@@ -1,0 +1,49 @@
+# --- Kubernetes Aliases ---
+# Sourced from .commonrc
+
+alias k="kubectl"
+alias kx="kubectx"
+alias kn="kubens"
+alias kgp="kubectl get pods"
+alias kgd="kubectl get deployments"
+alias kgs="kubectl get services"
+alias kga="kubectl get all"
+alias kaf="kubectl apply -f"
+alias kdf="kubectl delete -f"
+alias kdp="kubectl describe pod"
+alias kl="kubectl logs -f"
+alias kex="kubectl exec -it"
+
+# k9s cluster shortcuts
+alias k9="k9s"
+alias k9do="k9s --context do-nyc3-placemyparents-k8s-prod"
+alias k9home="k9s --context home-k3s"
+alias k9local="k9s --context k3d-local"
+
+# Cluster setup
+alias k8s-setup="$HOME/.local/bin/setup/k8s-clusters-setup.sh"
+
+# Infrastructure dashboard
+# 'infra' command provided by ~/.local/bin/infra (symlink to home-config/infrastructure/infra/infra.sh)
+alias infra-dash="$HOME/.local/src/infra-dash/display.sh"
+alias infra-collect="$HOME/.local/src/infra-dash/collect.sh"
+alias infra-json="$HOME/.local/src/infra-dash/display.sh -j"
+
+# --- K8s CLI Wrappers (home-k3s) ---
+# Thin wrappers that exec into pods on the home cluster.
+
+headscale() {
+    kubectl --context home-k3s exec -it -n headscale deploy/headscale -c headscale -- headscale "$@"
+}
+
+cscli() {
+    kubectl --context home-k3s exec -it -n crowdsec deploy/crowdsec-lapi -- cscli "$@"
+}
+
+openclaw() {
+    kubectl --context home-k3s exec -it -n openclaw deploy/openclaw -- openclaw "$@"
+}
+
+immich-psql() {
+    kubectl --context home-k3s exec -it -n immich deploy/immich-postgres -- psql -U immich -d immich
+}
