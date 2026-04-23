@@ -75,6 +75,7 @@ PREV_FILE=$(ls -1 "$NOTES_DIR/"*.md 2>/dev/null | sort | grep -v "$TODAY" | tail
 PRIORITY_ITEMS=""
 FUN_ITEMS=""
 CARRYOVER_ITEMS=""
+PROJECTS_ITEMS=""
 
 if [[ -n "${PREV_FILE:-}" ]] && [[ -f "$PREV_FILE" ]]; then
     # Extract date from previous filename for day-tracking origin
@@ -84,6 +85,8 @@ if [[ -n "${PREV_FILE:-}" ]] && [[ -f "$PREV_FILE" ]]; then
     RAW_FUN=$(extract_section "$PREV_FILE" "Fun")
     RAW_FOCUS=$(extract_section "$PREV_FILE" "Focus")
     RAW_CARRYOVER=$(extract_section "$PREV_FILE" "Carry Over")
+    # Carry Current Projects verbatim so user-curated version links survive
+    PROJECTS_ITEMS=$(extract_section "$PREV_FILE" "Current Projects")
 
     if [[ -n "$RAW_PRIORITY" ]]; then
         PRIORITY_ITEMS=$(echo "$RAW_PRIORITY" | stamp_items "$PREV_DATE")
@@ -120,14 +123,18 @@ fi
     echo "# $TODAY"
     echo ""
     echo "## Current Projects"
-    PROJECTS_DIR="$HOME/.notes/dev/projects"
-    if [[ -d "$PROJECTS_DIR" ]]; then
-        for entry in "$PROJECTS_DIR"/*/; do
-            [[ -d "$entry" ]] || continue
-            name=$(basename "$entry")
-            [[ "$name" == "archived" ]] && continue
-            echo "- [[dev/projects/${name}/summary.md|${name}]]"
-        done
+    if [[ -n "$PROJECTS_ITEMS" ]]; then
+        echo "$PROJECTS_ITEMS"
+    else
+        PROJECTS_DIR="$HOME/.notes/dev/projects"
+        if [[ -d "$PROJECTS_DIR" ]]; then
+            for entry in "$PROJECTS_DIR"/*/; do
+                [[ -d "$entry" ]] || continue
+                name=$(basename "$entry")
+                [[ "$name" == "archived" ]] && continue
+                echo "- [[dev/projects/${name}/summary.md|${name}]]"
+            done
+        fi
     fi
     echo ""
     echo "## Focus"

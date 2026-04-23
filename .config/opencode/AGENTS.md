@@ -38,6 +38,33 @@ Only escalate to Explore agents or multi-tool investigations after these checks 
 - Prefer repo-local infrastructure docs and manifests for project-specific operational truth, then verify against the live target context when access is available.
 - If a repo distinguishes between a navigation hub and domain docs, treat the domain docs as the source of truth for operational details.
 
+## Prefer skills over raw tooling and MCPs
+
+When a skill exists for an operational domain, use it instead of hand-rolling commands or reaching for the equivalent MCP. The skill encodes the current environments, conventions, and safety checks:
+
+- Notes / `~/.notes` journal → `notes-system` skill (do not hand-write entries into `~/.notes/journal/`)
+- Kubernetes (home-k3s, do-nyc3-placemyparents-k8s-prod, k3d-local) → `k8s-ops` skill
+- Cloudflare DNS / tunnels for kennethblack.me, blacknbrownstudios.com, binks.chat, kblack.dev → `cloudflare-ops` skill
+- Forgejo on home-k3s (git.kblab.me) → `forgejo-ops` skill
+- GitHub (PRs, issues, CI, releases) → `gh-workflows` skill (preferred over any GitHub MCP)
+
+If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here.
+
+## Agent Delegation
+
+Non-trivial implementation work flows through the G2I (Ghee-to-Implementation) agents:
+
+1. `kb-product-owner` — turns ambiguous asks into Product Briefs
+2. `kb-architect` — turns briefs into technical specs / conducts audits
+3. `kb-developer` — implements from specs with tests and docs
+4. `kb-qa` — verifies quality gates before merge
+
+For isolated Linear tickets, use `kb-linear-implementer` (fetch ticket → implement → PR, isolated context).
+
+Entry-point skills: `/kb:workflow` (full flow), `/kb:ticket` (Linear-driven), `/kb:implement` (feature → PR).
+
+For parallel code exploration or independent research queries, delegate to `Explore` agents.
+
 ## Project Mapping
 
 - `gheegle`, `ghee-sheets`, `ghee-*` -> `~/.agent/plans/gheegle/`
