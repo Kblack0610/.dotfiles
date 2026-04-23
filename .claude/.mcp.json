@@ -49,12 +49,6 @@
         "SEARXNG_URL": "http://localhost:8080",
         "RUST_LOG": "info"
       }
-    },
-    "adb": {
-      "type": "stdio",
-      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/adb-mcp",
-      "args": [],
-      "env": {}
     }
   }
 }
