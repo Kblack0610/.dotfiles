@@ -60,9 +60,9 @@ return {
       end
 
       -- Global signature help with rounded border
-      vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
-        border = "rounded",
-      })
+      vim.lsp.handlers["textDocument/signatureHelp"] = function(_, result, ctx, config)
+        return vim.lsp.handlers.signature_help(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
+      end
 
       -- Server-specific configs (mason-lspconfig auto-enables these)
       vim.lsp.config("ts_ls", {
@@ -116,8 +116,15 @@ return {
               debounce_text_changes = 150,
             },
             handlers = {
-              ["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, { border = "rounded" }),
-              ["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, { border = "rounded" }),
+              ["textDocument/hover"] = function(_, result, ctx, config)
+                if not (result and result.contents and result.contents.value ~= "") then
+                  return
+                end
+                return vim.lsp.handlers.hover(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
+              end,
+              ["textDocument/signatureHelp"] = function(_, result, ctx, config)
+                return vim.lsp.handlers.signature_help(_, result, ctx, vim.tbl_extend("force", config or {}, { border = "rounded" }))
+              end,
               ["textDocument/definition"] = require("omnisharp_extended").handler,
             },
             settings = {
