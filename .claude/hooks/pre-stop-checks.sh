@@ -5,8 +5,7 @@
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
 # Loop guard: Claude Code sets stop_hook_active=true on stdin after we block
-# once this turn. Blocking again traps the agent (esp. in plan mode where it
-# can't run pnpm format). Exit clean on the second call.
+# once this turn. Blocking again traps the agent. Exit clean on the second call.
 PAYLOAD=$(cat 2>/dev/null || echo '{}')
 if command -v jq >/dev/null 2>&1 && [ "$(echo "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
   echo "pre-stop-checks: loop guard — already blocked once this turn, exiting clean" >&2
@@ -29,18 +28,14 @@ write_ci_result() {
 trap write_ci_result EXIT
 
 # --- Git workflow completeness checks ---
-# Workspace-state warnings (uncommitted/untracked) are deferred until *after* the
-# no-changes short-circuit below, so pure Q&A turns don't print noise.
 if git rev-parse --git-dir > /dev/null 2>&1; then
   BRANCH=$(git branch --show-current 2>/dev/null)
   MAIN_BRANCH="develop"
   git show-ref --verify --quiet refs/remotes/origin/develop || MAIN_BRANCH="main"
 
-  # Check for unpushed commits on non-main branches
   if [ -n "$BRANCH" ] && [ "$BRANCH" != "$MAIN_BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
     UPSTREAM=$(git rev-parse --abbrev-ref "@{upstream}" 2>/dev/null)
     if [ -z "$UPSTREAM" ]; then
-      # Branch has no upstream - check if it has commits ahead of main
       AHEAD=$(git rev-list "$MAIN_BRANCH"..HEAD --count 2>/dev/null)
       if [ "$AHEAD" -gt 0 ] 2>/dev/null; then
         echo "FAILED: Branch '$BRANCH' has $AHEAD unpushed commit(s) with no remote tracking branch" >&2
@@ -54,7 +49,6 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
       fi
     fi
 
-    # Check for open unmerged PR on current branch
     if command -v gh &>/dev/null; then
       PR_STATE=$(gh pr view "$BRANCH" --json state --jq '.state' 2>/dev/null)
       if [ "$PR_STATE" = "OPEN" ]; then
@@ -65,10 +59,9 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
   fi
 fi
 
-# Skip CI checks if no uncommitted changes (nothing to lint/typecheck)
+# Skip CI if no uncommitted changes (nothing to lint/typecheck)
 if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
   if [ $FAILED -eq 1 ]; then
-    echo "" >&2
     echo "=== Workflow checks FAILED - Complete the PR/merge workflow before finishing ===" >&2
     CI_STATUS="FAIL"
     CI_NOTE="git workflow: unpushed commits or uncommitted state"
@@ -76,17 +69,14 @@ if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null; t
   fi
   CI_STATUS="SKIPPED"
   CI_NOTE="no local changes"
-  echo "No local changes - skipping CI checks" >&2
   exit 0
 fi
 
 echo "=== Running CI checks before completing ===" >&2
 
-# Workspace-state warnings — only surface when we're actually about to run CI.
+# We're here because there ARE changes — warn unconditionally.
 if git rev-parse --git-dir > /dev/null 2>&1; then
-  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    echo "WARNING: Uncommitted changes in worktree (may be pre-existing)" >&2
-  fi
+  echo "WARNING: Uncommitted changes in worktree (may be pre-existing)" >&2
   UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
   if [ -n "$UNTRACKED" ]; then
     echo "WARNING: Untracked files found (may need to be committed):" >&2
@@ -96,72 +86,52 @@ fi
 
 # Detect project type and run appropriate checks
 if [ -f "package.json" ]; then
-  # Node.js / TypeScript project
-  if [ -f "turbo.json" ] || grep -q '"turbo"' package.json 2>/dev/null; then
-    # For monorepos, scope to changed apps to avoid pre-existing issues in unrelated packages
+  PKG=$(cat package.json 2>/dev/null)
+  if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
     TURBO_FILTER=""
     if [ -d "apps" ] && git rev-parse --git-dir > /dev/null 2>&1; then
-      # Get the base branch (origin/dev or origin/main)
       BASE_BRANCH="origin/dev"
       git show-ref --verify --quiet refs/remotes/origin/dev || BASE_BRANCH="origin/main"
-      # Find changed apps
       CHANGED_APPS=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null | grep "^apps/" | cut -d'/' -f2 | sort -u)
       if [ -n "$CHANGED_APPS" ]; then
-        # Build filter for each changed app
         for app in $CHANGED_APPS; do
           TURBO_FILTER="$TURBO_FILTER --filter=./apps/$app..."
         done
         echo "Scoping checks to changed apps: $CHANGED_APPS" >&2
       fi
     fi
-    echo "Running turbo checks..." >&2
-    if [ -n "$TURBO_FILTER" ]; then
-      pnpm turbo run typecheck lint $TURBO_FILTER 2>&1 || FAILED=1
-      echo "Running format check..." >&2
-      pnpm format:check 2>&1 || FAILED=1
-    else
-      pnpm turbo run typecheck lint 2>&1 || FAILED=1
-      echo "Running format check..." >&2
-      pnpm format:check 2>&1 || FAILED=1
-    fi
+    pnpm turbo run typecheck lint $TURBO_FILTER 2>&1 || FAILED=1
+    pnpm format:check 2>&1 || FAILED=1
   else
-    [ -n "$(grep '"typecheck"' package.json 2>/dev/null)" ] && { echo "Running typecheck..." >&2; pnpm typecheck 2>&1 || FAILED=1; }
-    [ -n "$(grep '"lint"' package.json 2>/dev/null)" ] && { echo "Running lint..." >&2; pnpm lint 2>&1 || FAILED=1; }
+    echo "$PKG" | grep -q '"typecheck"' && { pnpm typecheck 2>&1 || FAILED=1; }
+    echo "$PKG" | grep -q '"lint"' && { pnpm lint 2>&1 || FAILED=1; }
   fi
-  # Knip is advisory - don't fail on warnings (pre-existing technical debt)
-  [ -n "$(grep '"knip"' package.json 2>/dev/null)" ] && { echo "Running knip (advisory)..." >&2; pnpm knip 2>&1 || echo "Knip found issues (advisory only)" >&2; }
+  # Knip is advisory — don't fail on warnings (pre-existing technical debt)
+  echo "$PKG" | grep -q '"knip"' && { pnpm knip 2>&1 || echo "Knip found issues (advisory only)" >&2; }
 
 elif [ -f "Cargo.toml" ]; then
-  # Rust project
-  echo "Running cargo check..." >&2
   cargo check 2>&1 || FAILED=1
-  echo "Running cargo clippy..." >&2
   cargo clippy 2>&1 || FAILED=1
 
 elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-  # Python project
-  command -v ruff &>/dev/null && { echo "Running ruff..." >&2; ruff check . 2>&1 || FAILED=1; }
-  command -v mypy &>/dev/null && { echo "Running mypy..." >&2; mypy . 2>&1 || FAILED=1; }
+  command -v ruff &>/dev/null && { ruff check . 2>&1 || FAILED=1; }
+  command -v mypy &>/dev/null && { mypy . 2>&1 || FAILED=1; }
 
 elif [ -f "go.mod" ]; then
-  # Go project
-  echo "Running go vet..." >&2
   go vet ./... 2>&1 || FAILED=1
-  command -v golangci-lint &>/dev/null && { echo "Running golangci-lint..." >&2; golangci-lint run 2>&1 || FAILED=1; }
+  command -v golangci-lint &>/dev/null && { golangci-lint run 2>&1 || FAILED=1; }
 
 else
   CI_STATUS="SKIPPED"
   CI_NOTE="no recognized project type (no package.json/Cargo.toml/pyproject.toml/go.mod)"
-  echo "No recognized project type - skipping CI checks" >&2
   exit 0
 fi
 
 if [ $FAILED -eq 1 ]; then
-  echo "" >&2
   echo "=== CI checks FAILED - Fix issues before completing ===" >&2
   CI_STATUS="FAIL"
   CI_NOTE="typecheck/lint/format failed (see stderr above)"
-  exit 2  # Block Claude from stopping
+  exit 2
 fi
 
 CI_STATUS="PASS"

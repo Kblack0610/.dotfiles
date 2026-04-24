@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/setup-personal-mcp.sh"
+            "command": "bash ~/.claude/setup-agent-env.sh"
           },
           {
             "type": "command",
