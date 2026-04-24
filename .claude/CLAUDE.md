@@ -108,4 +108,12 @@ For parallel code exploration or independent research queries, delegate to `Expl
 
 Preserve the modified files, verification results, key architectural decisions, task status, next step, active plan location when one exists, and recurring error patterns with their fixes.
 
+## Session Eval Format
+
+When the Stop hook blocks with "Session eval for {project}", append to the named eval file:
+- Header: `## Session N (label)` — same-day session counter; `label` is a short action summary.
+- One bullet per section listed in the hook's "Score sections" line, format: `- **Section**: N/10 — brief note`.
+- Close with: `**Summary:** … Overall: N/10.`
+- Capture any user corrections this turn in the named lessons file.
+
 
