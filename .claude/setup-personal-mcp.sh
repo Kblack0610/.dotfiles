@@ -4,15 +4,7 @@
 # Clean stale compliance guard files from previous sessions
 rm -f /tmp/claude-rules-guards/compliance-* 2>/dev/null
 
-MARKER_FILE="$HOME/.claude-mcp-configured"
 PLANS_MARKER="$HOME/.claude-plans-configured"
-
-# Setup MCP servers (existing installs)
-if [ ! -f "$MARKER_FILE" ]; then
-    # Add Linear MCP (user scope = applies to all projects on this device)
-    claude mcp add --scope user linear -- npx -y mcp-remote https://mcp.linear.app/mcp
-    touch "$MARKER_FILE"
-fi
 
 # Setup plans symlink (fallback for existing installations)
 if [ ! -f "$PLANS_MARKER" ]; then
