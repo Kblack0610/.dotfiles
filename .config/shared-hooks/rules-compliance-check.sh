@@ -36,9 +36,13 @@ mkdir -p "$(dirname "$EVAL_FILE")" 2>/dev/null || true
 # --- Read CI result written by pre-stop-checks.sh ---
 CI_STATUS_VAL=""
 CI_NOTE_VAL=""
+E2E_COVERAGE_VAL=""
+E2E_NOTE_VAL=""
 if [ -f "$CI_RESULT_FILE" ]; then
   CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
   CI_NOTE_VAL=$(grep '^note=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  E2E_COVERAGE_VAL=$(grep '^e2e_coverage=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  E2E_NOTE_VAL=$(grep '^e2e_note=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 fi
 
 # --- Compute git context ---
@@ -55,8 +59,12 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 # --- Skip eval on pure Q&A (no code changes, no meaningful CI run) ---
+# Exception: if the e2e gate has flagged a FAIL on this branch, fire the eval
+# even on a clean tree — otherwise a session that committed screen changes
+# without tests would slip past once the diff is "pushed away" from HEAD.
 if [ "$HAS_CHANGES" = false ] && [ "$HAS_INFRA_CHANGES" = false ] \
-   && { [ -z "$CI_STATUS_VAL" ] || [ "$CI_STATUS_VAL" = "SKIPPED" ]; }; then
+   && { [ -z "$CI_STATUS_VAL" ] || [ "$CI_STATUS_VAL" = "SKIPPED" ]; } \
+   && { [ -z "$E2E_COVERAGE_VAL" ] || [ "$E2E_COVERAGE_VAL" = "PASS" ]; }; then
   exit 0
 fi
 
@@ -65,6 +73,12 @@ REASON="Session eval for $PROJECT_NAME — append to $EVAL_FILE. User correction
 
 [ -n "$CI_STATUS_VAL" ] && REASON="$REASON
 CI: $CI_STATUS_VAL${CI_NOTE_VAL:+ ($CI_NOTE_VAL)}"
+
+if [ -n "$E2E_COVERAGE_VAL" ] && [ "$E2E_COVERAGE_VAL" != "PASS" ]; then
+  REASON="$REASON
+E2E gate: $E2E_COVERAGE_VAL${E2E_NOTE_VAL:+ — $E2E_NOTE_VAL}
+NOTE: e2e/manual verification gate not satisfied. Cap Verification ≤ 6/10 regardless of CI status. See ~/.claude/projects/-home-kblack0610-dev-bnb-platform/memory/feedback_e2e_and_manual_verification.md"
+fi
 
 if [ "$HAS_CHANGES" = true ]; then
   DIFF_STAT=$(git diff --stat HEAD 2>/dev/null | head -20 || true)

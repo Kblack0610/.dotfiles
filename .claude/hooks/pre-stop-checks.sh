@@ -20,12 +20,79 @@ _DATE=$(date +%Y-%m-%d)
 CI_RESULT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/ci-result-${_PROJ}-${_DATE}.txt"
 CI_STATUS="UNKNOWN"
 CI_NOTE=""
+E2E_COVERAGE="PASS"
+E2E_NOTE=""
 
 write_ci_result() {
   mkdir -p "$(dirname "$CI_RESULT_FILE")" 2>/dev/null || true
-  { echo "status=$CI_STATUS"; echo "note=$CI_NOTE"; echo "ts=$(date +%s)"; } > "$CI_RESULT_FILE" 2>/dev/null || true
+  {
+    echo "status=$CI_STATUS"
+    echo "note=$CI_NOTE"
+    echo "ts=$(date +%s)"
+    echo "e2e_coverage=$E2E_COVERAGE"
+    echo "e2e_note=$E2E_NOTE"
+  } > "$CI_RESULT_FILE" 2>/dev/null || true
 }
 trap write_ci_result EXIT
+
+# --- E2E + UI walkthrough verification gate (PlaceMyParents) ---
+# Codified rule:
+# ~/.claude/projects/-home-kblack0610-dev-bnb-platform/memory/feedback_e2e_and_manual_verification.md
+# Triggers only when the diff touches placemyparents user-facing screens.
+check_e2e_coverage() {
+  if ! git rev-parse --git-dir > /dev/null 2>&1; then return 0; fi
+
+  local cur_branch base_branch base_ref diff_files screens specs skips walkthroughs
+  cur_branch=$(git branch --show-current 2>/dev/null)
+  base_branch="develop"
+  git show-ref --verify --quiet refs/remotes/origin/develop || base_branch="main"
+  base_ref="origin/${base_branch}"
+  git show-ref --verify --quiet "refs/remotes/${base_ref}" || base_ref="${base_branch}"
+
+  # Compare against the merge-base so the gate sees committed work on the branch,
+  # not just uncommitted-vs-HEAD. Falls back gracefully if the merge-base lookup fails.
+  local mb
+  mb=$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")
+  diff_files=$(git diff --name-only "${mb}..HEAD" 2>/dev/null; git diff --name-only HEAD 2>/dev/null; git diff --cached --name-only 2>/dev/null)
+  diff_files=$(echo "$diff_files" | sort -u | grep -v '^$')
+
+  # Bail out cleanly if no diff at all (covered by other early-exits, but defensive).
+  [ -z "$diff_files" ] && return 0
+
+  screens=$(echo "$diff_files" | grep -E '^apps/placemyparents/(web/src/app/.*\.tsx$|mobile/src/(screens|components)/.*\.tsx$)' | grep -v '__tests__' || true)
+  [ -z "$screens" ] && return 0  # No screen changes → gate is N/A → PASS
+
+  specs=$(echo "$diff_files" | grep -E '^apps/placemyparents/(web/tests/e2e/.*\.spec\.ts$|mobile/maestro/.*\.ya?ml$)' || true)
+  walkthroughs=$(echo "$diff_files" | grep -E '^docs/runbooks/ui-walkthroughs/' || true)
+
+  # Skip markers inside the changed screens — defensive grep against the diff text itself
+  skips=0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if git diff "${mb}..HEAD" -- "$f" 2>/dev/null | grep -qE 'SKIP: e2e-not-applicable'; then
+      skips=$((skips + 1))
+    fi
+  done <<< "$screens"
+
+  local screen_count
+  screen_count=$(echo "$screens" | grep -cE '.+' || echo 0)
+
+  if [ -n "$specs" ] || [ -n "$walkthroughs" ]; then
+    E2E_COVERAGE="PASS"
+    E2E_NOTE="screens=$screen_count, specs=$(echo "$specs" | grep -cE '.+' || echo 0), walkthroughs=$(echo "$walkthroughs" | grep -cE '.+' || echo 0)"
+  elif [ "$skips" -eq "$screen_count" ] && [ "$screen_count" -gt 0 ]; then
+    E2E_COVERAGE="PASS"
+    E2E_NOTE="$screen_count screen change(s), all marked SKIP: e2e-not-applicable"
+  elif [ "$skips" -gt 0 ]; then
+    E2E_COVERAGE="WARN"
+    E2E_NOTE="$screen_count screen change(s), $skips with skip-marker, no e2e/walkthrough for the rest"
+  else
+    E2E_COVERAGE="FAIL"
+    E2E_NOTE="$screen_count screen change(s) without e2e spec, walkthrough evidence, or SKIP: e2e-not-applicable marker — see feedback_e2e_and_manual_verification.md"
+  fi
+}
+
+check_e2e_coverage 2>/dev/null || true
 
 # --- Git workflow completeness checks ---
 if git rev-parse --git-dir > /dev/null 2>&1; then
