@@ -81,6 +81,12 @@ REASON="$REASON
 
 Score sections: $SECTIONS"
 
+STOP_TS=$(date "+%Y-%m-%d %H:%M:%S %Z")
+REASON="$REASON
+
+End your response with this line verbatim (on its own line, after your summary):
+Stopped: $STOP_TS"
+
 # --- Emit blocking JSON ---
 jq -n --arg r "$REASON" '{decision:"block",reason:$r}'
 exit 0

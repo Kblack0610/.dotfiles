@@ -39,6 +39,27 @@ Project mapping:
 - Prefer skills for specialized workflows instead of embedding long reusable instructions in chat.
 - Delegate to the `binks-agent` skill when a task fits your local orchestration stack.
 
+## Memory layer
+
+Self-hosted mem0 at `https://mem0.kblab.me` (LAN-only) is the cross-project memory layer for user preferences and cross-project facts. Search it early in any session that touches user prefs ("remember", "prefers", "always", "what did I tell you about"); add to it when learning something new that should ride across projects/tools.
+
+REST endpoints (no auth currently — middleware restricts to RFC1918 + Tailscale):
+
+```bash
+# Search before answering — finds the user-pref or cross-project fact
+curl -fsS "https://mem0.kblab.me/memories?user_id=kblack0610&query=<question>"
+
+# Add a new memory
+curl -fsS -X POST https://mem0.kblab.me/memories -H 'Content-Type: application/json' -d '{
+  "messages": [{"role":"user","content":"<fact statement>"}],
+  "user_id": "kblack0610"
+}'
+```
+
+For the full operations table (project-scoped memories with `agent_id`, update, delete, etc.), see the upstream skill's API patterns at <https://github.com/mem0ai/mem0/tree/main/skills/mem0> or the Claude Code-specific scoped skill at `~/.claude/skills/mem0-ops/SKILL.md`.
+
+Don't write file-pointer "trigger" memories ("the X runbook lives at Y/<topic>.md") — mem0's LLM extractor filters them out as not-memory-shaped. Discovery of project runbooks goes via `ls docs/runbooks/` + `grep` in the consuming repo.
+
 ## MCP and local setup
 
 - Shared AI rules and MCP server definitions are managed from `.config/rulesync-global/`.

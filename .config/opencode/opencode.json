@@ -1,46 +1,10 @@
 {
   "provider": {
-    "mlx-code": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "MLX Code",
-      "options": {
-        "baseURL": "http://192.168.1.4:8080/v1"
-      },
-      "models": {
-        "mlx-community/Qwen3-Coder-Next-4bit": {
-          "name": "Qwen3 Coder Next 4bit"
-        }
-      }
-    },
-    "mlx-smart": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "MLX Smart",
-      "options": {
-        "baseURL": "http://192.168.1.4:8081/v1"
-      },
-      "models": {
-        "mlx-community/Qwen3-235B-A22B-4bit-DWQ": {
-          "name": "Qwen3 235B A22B 4bit DWQ"
-        }
-      }
-    },
-    "mlx-reasoning": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "MLX Reasoning",
-      "options": {
-        "baseURL": "http://192.168.1.4:8082/v1"
-      },
-      "models": {
-        "mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit": {
-          "name": "DeepSeek R1 Distill Qwen 32B MLX 4Bit"
-        }
-      }
-    },
     "litellm": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "LiteLLM",
       "options": {
-        "baseURL": "https://llm.home.kennethblack.me/v1",
+        "baseURL": "https://llm.kblab.me/v1",
         "apiKey": "{env:LITELLM_MASTER_KEY}"
       },
       "models": {
@@ -145,35 +109,6 @@
         "RUST_LOG": "info"
       }
     },
-    "github-gh": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/mcps/github-gh/target/release/github-gh-mcp"
-      ],
-      "enabled": true,
-      "environment": {
-        "RUST_LOG": "info"
-      }
-    },
-    "web-search": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp"
-      ],
-      "enabled": true,
-      "environment": {
-        "SEARXNG_URL": "http://localhost:8080",
-        "RUST_LOG": "info"
-      }
-    },
-    "adb": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/adb-mcp"
-      ],
-      "enabled": true,
-      "environment": {}
-    }
   },
   "permission": {
     "edit": "allow",
