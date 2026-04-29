@@ -8,19 +8,25 @@
         "apiKey": "{env:LITELLM_MASTER_KEY}"
       },
       "models": {
-        "code": {
+        "code (Qwen3-Coder-Next-4bit)": {
           "name": "code"
         },
-        "smart": {
+        "smart (GLM-5-4bit)": {
           "name": "smart"
         },
-        "reasoning": {
+        "fast (Qwen3-4B)": {
+          "name": "fast"
+        },
+        "reasoning (Qwen3.6-35B-A3B-4bit)": {
           "name": "reasoning"
+        },
+        "reasoning-ud (Qwen3.6-35B-A3B-UD-4bit)": {
+          "name": "reasoning-ud"
         }
       }
     }
   },
-  "model": "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+  "model": "litellm/code (Qwen3-Coder-Next-4bit)",
   "agent": {
     "plan": {
       "tools": {
@@ -108,7 +114,7 @@
       "environment": {
         "RUST_LOG": "info"
       }
-    },
+    }
   },
   "permission": {
     "edit": "allow",
