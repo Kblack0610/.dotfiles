@@ -11,7 +11,13 @@ export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 COLOR_RED='\033[1;31m'
 COLOR_YELLOW='\033[1;33m'
 COLOR_GREEN='\033[1;32m'
+COLOR_DIM='\033[2;37m'
+COLOR_BOLD_CYAN='\033[1;36m'
 COLOR_RESET='\033[0m'
+
+# Heavy horizontal bar — long enough that fzf's right edge clips it on any
+# realistic popup width, giving the visual effect of full-width separators.
+SEP='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
 
 # --- Claude session metadata helpers ---
 # Claude Code maintains ~/.claude/sessions/<pid>.json with the canonical
@@ -186,7 +192,7 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path pane_pid; do
                 sid="${meta%%:*}"
                 cwd="${meta#*:}"
                 jsonl=$(session_jsonl_path "$sid" "$cwd")
-                summary=$(last_event "$jsonl" | head -c 50)
+                summary=$(last_event "$jsonl" | head -c 100)
             fi
         else
             last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -290,20 +296,20 @@ for project in "${sorted_projects[@]}"; do
         statuses+="$(colorize_status "$status")"
     done <<< "$(echo -e "$agents")"
 
-    # Project header line (not selectable, just visual)
-    agent_list+="─── ${project} ${statuses} (${count}) ───\n"
+    # Project header line (not selectable, just visual): bold cyan name +
+    # status glyphs + count, then the long bar — fzf clips at viewport edge.
+    agent_list+="${COLOR_BOLD_CYAN}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
 
-    # Individual agents numbered sequentially
-    agent_num=1
+    # Individual agent rows: status, label, target, summary. Dropped the
+    # agent-N numbering (fzf shows position natively).
     while IFS='|' read -r status target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
         if [[ -n "$summary" ]]; then
-            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}  ${summary}\n"
+            agent_list+="  ${colored} ${agent_label} ${target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
         else
-            agent_list+="  ${colored} agent-${agent_num} ${agent_label}  ${target}\n"
+            agent_list+="  ${colored} ${agent_label} ${target}\n"
         fi
-        ((agent_num++))
     done <<< "$(echo -e "$agents")"
 done
 
@@ -318,7 +324,7 @@ fi
 # Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --prompt='Select agent > ' \
-    --header=$'Enter=jump | n=next needing attention | esc=exit\n\033[1;31m!\033[0m needs input | \033[1;33m~\033[0m working | \033[1;32m✓\033[0m idle' \
+    --header=$'Enter=jump  n=next-attention  esc=exit  ·  \033[1;31m!\033[0m input  \033[1;33m~\033[0m busy  \033[1;32m✓\033[0m idle' \
     --ansi \
     --no-sort \
     --bind "n:execute-silent($0 -n)+abort" \
@@ -326,13 +332,13 @@ selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
 
 [[ -z "$selected" ]] && exit 0
 
-# Skip if header line selected
-if [[ "$selected" == ───* ]]; then
+# Skip if header line selected (heavy bar prefix, with optional ANSI color)
+if [[ "$selected" == *━━* ]]; then
     exit 0
 fi
 
-# Extract session:window_idx (fourth field: status agent-N agent_label target)
-target=$(echo "$selected" | awk '{print $4}')
+# Extract session:window_idx (third field: status agent_label target)
+target=$(echo "$selected" | awk '{print $3}')
 
 # Jump to it
 if [ -n "$TMUX" ]; then
