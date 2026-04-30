@@ -3,6 +3,6 @@ Description=Apply day theme (jackie-brown)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/theme-auto
+ExecStart=%h/.local/bin/theme-switch jackie-brown
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1

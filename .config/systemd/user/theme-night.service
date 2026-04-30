@@ -3,6 +3,6 @@ Description=Apply night theme (tokyonight)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/theme-auto
+ExecStart=%h/.local/bin/theme-switch tokyonight
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1
