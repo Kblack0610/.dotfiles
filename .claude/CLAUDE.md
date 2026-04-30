@@ -20,6 +20,7 @@ Workflow Orchestration
     Ruthlessly iterate on these lessons until mistake rate drops
     Review lessons at session start for relevant project
     Before adopting a new dependency, UI framework, or architectural pattern, grep the lessons file for that keyword — if a lesson prohibits it, stop and discuss
+    Skill-candidate detection: when the same multi-step manual workflow recurs 3+ times (across sessions, or once within a session if it's clearly going to recur), propose drafting it as a skill at `~/.dotfiles/.claude/skills/{name}/SKILL.md`. Surface the candidate, confirm scope and naming with the user, then write the SKILL.md. Don't auto-create skill files. Idea adapted from rebelytics/one-skill-to-rule-them-all (CC BY 4.0).
 
 4. Verification Before Done
 
