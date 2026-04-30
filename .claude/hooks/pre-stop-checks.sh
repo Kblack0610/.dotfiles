@@ -49,7 +49,7 @@ run_post() {
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
     # Forward original stdin (the JSON payload) so post-checks can see stop_hook_active
-    bash "$s" <<<"$PAYLOAD"
+    bash "$s" < <(printf '%s' "$PAYLOAD")
     rc=$?
     [ "$rc" -gt "$worst" ] && worst=$rc
   done
@@ -62,7 +62,7 @@ run_pre() {
   [ -d "$dir" ] || return 0
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
-    bash "$s" <<<"$PAYLOAD" || {
+    bash "$s" < <(printf '%s' "$PAYLOAD") || {
       rc=$?
       echo "[pre-warn] $(basename "$s" .sh) exit=$rc" >&2
     }

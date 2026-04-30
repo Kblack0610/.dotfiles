@@ -49,6 +49,17 @@ Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinat
 Current post-checks:
 - `90-eval-gate.sh` — emits a 3–4 line JSON-block once per turn so the AI self-evaluates. Skips pure Q&A. Reads CI status from the file the content-check phase writes.
 
+## Manual compliance audit (not Stop-time)
+
+Separate from the automated Stop-time eval-gate, there's a manual rules-compliance LLM judge available on demand:
+
+| Surface | Invocation | Backing script |
+|---------|-----------|----------------|
+| Claude slash command | `/my:judge` | `~/.claude/hooks/llm-judge.sh` (+ `lib/`) |
+| Codex skill | `/llm-judge` | `~/.dotfiles/.config/codex/skills/llm-judge/judge.sh` |
+
+These read the project transcript and produce a deeper compliance audit than the Stop-hook eval-gate. They're **not** wired into Stop — invoke when you want them. Configuration lives at `~/.dotfiles/.config/llm-judge/`.
+
 ## SessionStart hooks (user-global)
 
 | File | Job |
