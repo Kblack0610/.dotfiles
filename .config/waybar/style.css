@@ -49,8 +49,8 @@ button:hover {
     color: #ef5734;
 }
 
-/* AI Agents Module - The star of the show */
-#custom-ai-agents {
+/* Claude Agents Module - The star of the show */
+#custom-claude-agents {
     padding: 2px 16px;
     margin: 4px 6px;
     border-radius: 8px;
@@ -60,26 +60,26 @@ button:hover {
 }
 
 /* Inactive state - subtle gray */
-#custom-ai-agents.inactive {
+#custom-claude-agents.inactive {
     background-color: rgba(102, 102, 102, 0.3);
     color: #666666;
 }
 
 /* Ready/Idle state - calm green */
-#custom-ai-agents.ready {
+#custom-claude-agents.ready {
     background-color: rgba(134, 168, 62, 0.2);
     color: #86a83e;
 }
 
 /* Working state - golden with border accent */
-#custom-ai-agents.working {
+#custom-claude-agents.working {
     background-color: rgba(255, 204, 47, 0.3);
     color: #ffcc2f;
     border-left: 3px solid #ffcc2f;
 }
 
 /* Urgent state - attention-grabbing red */
-#custom-ai-agents.urgent {
+#custom-claude-agents.urgent {
     background-color: rgba(239, 87, 52, 0.4);
     color: #ef5734;
     border-left: 3px solid #ef5734;

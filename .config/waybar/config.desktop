@@ -1,0 +1,24 @@
+// -*- mode: jsonc -*-
+// Workstation profile (no battery, no backlight, no PPD).
+// Module definitions are in config.base.
+{
+    "include": ["~/.config/waybar/config.base"],
+    "modules-left": [
+        "hyprland/workspaces",
+        "hyprland/mode",
+        "hyprland/scratchpad"
+    ],
+    "modules-right": [
+        "custom/ai-agents",
+        "idle_inhibitor",
+        "pulseaudio",
+        "custom/bluetooth",
+        "network",
+        "cpu",
+        "memory",
+        "temperature",
+        "clock#date",
+        "clock#time",
+        "tray"
+    ]
+}
