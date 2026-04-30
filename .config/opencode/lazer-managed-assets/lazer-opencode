@@ -1,0 +1,480 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OPENCODE_CONFIG_DIR="${HOME}/.config/opencode"
+OPENCODE_CONFIG_FILE="${OPENCODE_CONFIG_DIR}/opencode.json"
+OPENCODE_AGENTS_DIR="${OPENCODE_CONFIG_DIR}/agents"
+OPENCODE_EXPERT_AGENT_FILE="${OPENCODE_AGENTS_DIR}/opencode-expert.md"
+OPENCODE_UPDATER_AGENT_FILE="${OPENCODE_AGENTS_DIR}/lazer-updater.md"
+OPENCODE_COMMANDS_DIR="${OPENCODE_CONFIG_DIR}/commands"
+OPENCODE_UPDATE_COMMAND_FILE="${OPENCODE_COMMANDS_DIR}/lazer-update.md"
+OPENCODE_MANAGED_ASSETS_DIR="${OPENCODE_CONFIG_DIR}/lazer-managed-assets"
+OPENCODE_DATA_DIR="${HOME}/.local/share/opencode"
+OPENCODE_AUTH_FILE="${OPENCODE_DATA_DIR}/auth.json"
+CLI_INSTALL_DIR="${HOME}/.local/bin"
+CLI_INSTALL_FILE="${CLI_INSTALL_DIR}/lazer-opencode"
+DEFAULT_MODEL="lazer/gpt-5.4"
+PLAN_MODEL="lazer/gpt-5.4"
+BUILD_MODEL="lazer/gpt-5.3-codex"
+PREFERRED_VERIFICATION_MODEL="qwen-3-coder"
+REPO_SLUG="LazerTechnologies/lazer-opencode-installer"
+RETIRED_LAZER_MODEL_IDS_JSON='[
+  "deepinfra/MiniMaxAI/MiniMax-M2.5",
+  "deepinfra/Qwen/Qwen3-235B-A22B-Instruct-2507",
+  "deepinfra/Qwen/Qwen3-235B-A22B-Thinking-2507",
+  "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+  "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+  "deepinfra/deepseek-ai/DeepSeek-V3.2",
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-opus-4-6",
+  "anthropic/claude-haiku-4-5",
+  "deepinfra/moonshotai/Kimi-K2.5",
+  "deepinfra/openai/gpt-oss-120b",
+  "deepinfra/openai/gpt-oss-120b-Turbo",
+  "deepinfra/zai-org/GLM-5",
+  "deepinfra/zai-org/GLM-5.1",
+  "gemini/gemini-2.0-flash",
+  "gemini/gemini-2.5-flash",
+  "gemini/gemini-2.5-pro",
+  "gemini/gemini-3-flash-preview",
+  "gemini/gemini-3.1-pro-preview",
+  "openai/gpt-5.3-codex",
+  "openai/gpt-5.4",
+  "openai/gpt-5.4-mini",
+  "openai/gpt-5.4-nano",
+  "xai/grok-code-fast-1"
+]'
+
+LAZER_PROVIDER_JSON='{
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Lazer",
+  "options": {
+    "baseURL": "https://proxy.lazertechnologies.com/"
+  },
+  "models": {
+    "claude-opus-4.6": { "name": "Claude Opus 4.6", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 1000000, "output": 128000 }, "family": "claude-opus", "release_date": "2026-02-05", "cost": { "input": 5, "output": 25 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "max": { "reasoningEffort": "max" }, "medium": { "reasoningEffort": "medium" }, "minimal": { "reasoningEffort": "minimal" } } },
+    "claude-opus-4.7": { "name": "Claude Opus 4.7", "attachment": true, "reasoning": true, "temperature": false, "tool_call": true, "limit": { "context": 1000000, "output": 128000 }, "family": "claude-opus", "release_date": "2026-04-16", "cost": { "input": 5, "output": 25 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "max": { "reasoningEffort": "max" }, "medium": { "reasoningEffort": "medium" }, "xhigh": { "reasoningEffort": "xhigh" } } },
+    "claude-sonnet-4.6": { "name": "Claude Sonnet 4.6", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 1000000, "output": 64000 }, "family": "claude-sonnet", "release_date": "2026-02-17", "cost": { "input": 3, "output": 15 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "max": { "reasoningEffort": "max" }, "medium": { "reasoningEffort": "medium" }, "minimal": { "reasoningEffort": "minimal" } } },
+    "gemini-3-flash": { "name": "Gemini 3 Flash", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 1048576, "output": 65536 }, "family": "gemini-flash", "release_date": "2025-12-17", "cost": { "input": 0.5, "output": 3 }, "modalities": { "input": ["text", "image", "video", "audio", "pdf"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "off": { "reasoningEffort": "minimal" } } },
+    "gemini-3.1-pro": { "name": "Gemini 3.1 Pro", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 1048576, "output": 65536 }, "family": "gemini-pro", "release_date": "2026-02-19", "cost": { "input": 2, "output": 12 }, "modalities": { "input": ["text", "image", "video", "audio", "pdf"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "off": { "reasoningEffort": "none" } } },
+    "glm-4.6v": { "name": "GLM 4.6V", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 131072, "output": 32768 }, "family": "glm", "release_date": "2025-12-08", "cost": { "input": 0.3, "output": 0.9 }, "modalities": { "input": ["text", "image"], "output": ["text"] } },
+    "glm-5": { "name": "GLM 5", "attachment": false, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 202752, "output": 131072 }, "family": "glm", "release_date": "2026-02-11", "cost": { "input": 1, "output": 3.2 }, "modalities": { "input": ["text"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "glm-5.1": { "name": "GLM 5.1", "attachment": false, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 204800, "output": 131072 }, "family": "glm", "release_date": "2026-04-07", "cost": { "input": 1.4, "output": 4.4 }, "modalities": { "input": ["text"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "gpt-5.3-codex": { "name": "GPT 5.3 Codex", "attachment": true, "reasoning": true, "temperature": false, "tool_call": true, "limit": { "context": 400000, "output": 128000, "input": 272000 }, "family": "gpt-codex", "release_date": "2026-02-05", "cost": { "input": 1.75, "output": 14 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "minimal": { "reasoningEffort": "minimal" }, "none": { "reasoningEffort": "none" }, "xhigh": { "reasoningEffort": "xhigh" } } },
+    "gpt-5.4": { "name": "GPT 5.4", "attachment": true, "reasoning": true, "temperature": false, "tool_call": true, "limit": { "context": 1050000, "output": 128000, "input": 922000 }, "family": "gpt", "release_date": "2026-03-05", "cost": { "input": 2.5, "output": 15 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "minimal": { "reasoningEffort": "minimal" }, "none": { "reasoningEffort": "none" }, "xhigh": { "reasoningEffort": "xhigh" } } },
+    "gpt-5.4-mini": { "name": "GPT 5.4 Mini", "attachment": true, "reasoning": true, "temperature": false, "tool_call": true, "limit": { "context": 400000, "output": 128000, "input": 272000 }, "family": "gpt", "release_date": "2026-03-17", "cost": { "input": 0.75, "output": 4.5 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "minimal": { "reasoningEffort": "minimal" }, "none": { "reasoningEffort": "none" }, "xhigh": { "reasoningEffort": "xhigh" } } },
+    "gpt-oss-120b": { "name": "GPT OSS 120B", "attachment": false, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 131072, "output": 32768 }, "family": "gpt-oss", "release_date": "2025-06-01", "cost": { "input": 0.35, "output": 0.75 }, "modalities": { "input": ["text"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoning_effort": "high" }, "low": { "reasoning_effort": "low" }, "medium": { "reasoning_effort": "medium" } } },
+    "kimi-2.5": { "name": "Kimi 2.5", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 262144, "output": 65536 }, "family": "kimi", "release_date": "2026-01-27", "cost": { "input": 0.6, "output": 3 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "kimi-2.6": { "name": "Kimi 2.6", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 262144, "output": 262144 }, "family": "kimi", "release_date": "2026-04-21", "cost": { "input": 0.95, "output": 4 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "minimax-m2.5": { "name": "MiniMax M2.5", "attachment": false, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 196608, "output": 65536 }, "family": "minimax", "release_date": "2026-02-12", "cost": { "input": 0.3, "output": 1.2 }, "modalities": { "input": ["text"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "minimax-m2.7": { "name": "MiniMax M2.7", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 204800, "output": 131072 }, "family": "minimax", "release_date": "2026-03-18", "cost": { "input": 0.3, "output": 1.2 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } },
+    "qwen-3-coder": { "name": "Qwen 3 Coder", "attachment": false, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 262144, "output": 65536 }, "family": "qwen", "release_date": "2025-07-23", "cost": { "input": 0.22, "output": 1 }, "modalities": { "input": ["text"], "output": ["text"] } },
+    "qwen-3.6-plus": { "name": "Qwen 3.6 Plus", "attachment": true, "reasoning": true, "temperature": true, "tool_call": true, "limit": { "context": 1000000, "output": 65536 }, "family": "qwen", "release_date": "2026-04-02", "cost": { "input": 0.5, "output": 3 }, "modalities": { "input": ["text", "image"], "output": ["text"] }, "interleaved": { "field": "reasoning_content" }, "variants": { "high": { "reasoningEffort": "high" }, "low": { "reasoningEffort": "low" }, "medium": { "reasoningEffort": "medium" }, "none": { "reasoningEffort": "none" } } }
+  }
+}'
+
+usage() {
+  cat <<'EOF'
+Usage: lazer-opencode <command> [args]
+
+Commands:
+  models list                           Show configured Lazer models
+  models add <model-id> <name>          Add a model to the Lazer provider
+  models remove <model-id>              Remove a model from the Lazer provider
+  auth                                  Set or update your Lazer API key
+  update [--dry-run] [--auth] [--reset-defaults]
+                                        Update config and managed assets safely
+
+Examples:
+  lazer-opencode models list
+  lazer-opencode models add claude-sonnet-4.6 "claude-sonnet-4.6"
+  lazer-opencode models remove claude-sonnet-4.6
+  lazer-opencode auth
+  lazer-opencode update --dry-run
+EOF
+  exit 1
+}
+
+require_jq() {
+  if ! command -v jq &>/dev/null; then
+    echo "Error: jq is required but not installed."
+    echo "Install it with: brew install jq (macOS) or sudo apt-get install jq (Linux)"
+    exit 1
+  fi
+}
+
+resolve_cli_install_file() {
+  local cli_path=""
+
+  if cli_path="$(command -v lazer-opencode 2>/dev/null)"; then
+    printf '%s\n' "$cli_path"
+    return
+  fi
+
+  if [[ -x "${BASH_SOURCE[0]}" ]]; then
+    printf '%s\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    return
+  fi
+
+  printf '%s\n' "$CLI_INSTALL_FILE"
+}
+
+ensure_lazer_config() {
+  if [[ ! -f "$OPENCODE_CONFIG_FILE" ]]; then
+    echo "Error: OpenCode config not found at $OPENCODE_CONFIG_FILE"
+    echo "Run the Lazer installer first: bash install.sh"
+    exit 1
+  fi
+  if ! jq -e '.provider.lazer' "$OPENCODE_CONFIG_FILE" &>/dev/null; then
+    echo "Error: Lazer provider not configured in $OPENCODE_CONFIG_FILE"
+    echo "Run the Lazer installer first: bash install.sh"
+    exit 1
+  fi
+}
+
+read_secret() {
+  local secret=""
+  local char=""
+  while IFS= read -rsn1 char < /dev/tty; do
+    if [[ -z "$char" ]]; then
+      break
+    fi
+    if [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
+      if [[ -n "$secret" ]]; then
+        secret="${secret%?}"
+        printf '\b \b' >&2
+      fi
+    else
+      secret+="$char"
+      printf '*' >&2
+    fi
+  done
+  printf '\n' >&2
+  printf '%s' "$secret"
+}
+
+verify_model() {
+  local model_id="$1"
+  echo ""
+  echo "[..] Verifying — asking lazer/$model_id for a joke..."
+  echo ""
+  local joke
+  joke=$(opencode run -m "lazer/$model_id" "Tell me a short joke, one-liner only. No extra commentary." 2>/dev/null | grep -v -E "^(Performing|sqlite-migration|Database migration|$)") || true
+
+  if [[ -n "$joke" ]]; then
+    echo "  $joke"
+    echo ""
+    echo "It works!"
+  else
+    echo "  (Could not reach model — check your API key with 'lazer-opencode auth')"
+  fi
+}
+
+atomic_write() {
+  local target="$1"
+  local content="$2"
+  local tmp
+  tmp=$(mktemp)
+  printf '%s\n' "$content" > "$tmp"
+  mv "$tmp" "$target"
+}
+
+backup_file() {
+  local target="$1"
+  local dry_run="$2"
+
+  if [[ -f "$target" ]]; then
+    if [[ "$dry_run" == "true" ]]; then
+      echo "[dry-run] Would back up $target to ${target}.bak"
+    else
+      cp "$target" "${target}.bak"
+    fi
+  fi
+}
+
+fetch_asset_to_tmp() {
+  local repo_path="$1"
+  local tmp_path="$2"
+  local script_dir
+  local managed_asset_path="${OPENCODE_MANAGED_ASSETS_DIR}/${repo_path}"
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  if [[ -f "${script_dir}/${repo_path}" ]]; then
+    cp "${script_dir}/${repo_path}" "$tmp_path"
+    return
+  fi
+
+  if [[ -f "$managed_asset_path" ]]; then
+    cp "$managed_asset_path" "$tmp_path"
+    return
+  fi
+
+  if command -v gh &>/dev/null; then
+    gh api "repos/${REPO_SLUG}/contents/${repo_path}" --jq '.content' | base64 -d > "$tmp_path"
+    return
+  fi
+
+  echo "Error: Cannot fetch ${repo_path}."
+  echo "Install GitHub CLI (gh) or run update from a local checkout of this repo."
+  exit 1
+}
+
+apply_managed_asset() {
+  local repo_path="$1"
+  local target_path="$2"
+  local dry_run="$3"
+  local needs_sudo="$4"
+  local executable="${5:-false}"
+  local tmp
+  tmp=$(mktemp)
+  fetch_asset_to_tmp "$repo_path" "$tmp"
+
+  if [[ -f "$target_path" ]] && cmp -s "$tmp" "$target_path"; then
+    echo "[ok] ${target_path} already up to date"
+    rm -f "$tmp"
+    return
+  fi
+
+  if [[ "$dry_run" == "true" ]]; then
+    if [[ -f "$target_path" ]]; then
+      echo "[dry-run] Would update ${target_path} from ${repo_path}"
+    else
+      echo "[dry-run] Would install ${target_path} from ${repo_path}"
+    fi
+    rm -f "$tmp"
+    return
+  fi
+
+  backup_file "$target_path" "false"
+
+  if [[ "$needs_sudo" == "true" ]]; then
+    sudo cp "$tmp" "$target_path"
+    if [[ "$executable" == "true" ]]; then
+      sudo chmod 755 "$target_path"
+    else
+      sudo chmod 644 "$target_path"
+    fi
+  else
+    mkdir -p "$(dirname "$target_path")"
+    cp "$tmp" "$target_path"
+    if [[ "$executable" == "true" ]]; then
+      chmod 755 "$target_path"
+    else
+      chmod 644 "$target_path"
+    fi
+  fi
+
+  rm -f "$tmp"
+  echo "[ok] Updated ${target_path}"
+}
+
+models_list() {
+  ensure_lazer_config
+  echo "Lazer models:"
+  echo ""
+  if command -v column &>/dev/null; then
+    jq -r '.provider.lazer.models | to_entries[] | "  \(.key)\t\(.value.name)"' "$OPENCODE_CONFIG_FILE" | column -t -s $'\t'
+  else
+    jq -r '.provider.lazer.models | to_entries[] | "  \(.key)  \(.value.name)"' "$OPENCODE_CONFIG_FILE"
+  fi
+}
+
+models_add() {
+  local model_id="${1:-}"
+  local model_name="${2:-}"
+
+  if [[ -z "$model_id" || -z "$model_name" ]]; then
+    echo "Usage: lazer-opencode models add <model-id> <display-name>"
+    echo "Example: lazer-opencode models add claude-sonnet-4.6 \"claude-sonnet-4.6\""
+    exit 1
+  fi
+
+  ensure_lazer_config
+
+  local updated
+  updated=$(jq --arg id "$model_id" --arg name "$model_name" \
+    '.provider.lazer.models[$id] = {"name": $name}' "$OPENCODE_CONFIG_FILE")
+  atomic_write "$OPENCODE_CONFIG_FILE" "$updated"
+  echo "Added model: $model_id ($model_name)"
+
+  verify_model "$model_id"
+}
+
+models_remove() {
+  local model_id="${1:-}"
+
+  if [[ -z "$model_id" ]]; then
+    echo "Usage: lazer-opencode models remove <model-id>"
+    exit 1
+  fi
+
+  ensure_lazer_config
+
+  if ! jq -e --arg id "$model_id" '.provider.lazer.models[$id]' "$OPENCODE_CONFIG_FILE" &>/dev/null; then
+    echo "Error: Model '$model_id' not found in Lazer config."
+    echo "Run 'lazer-opencode models list' to see available models."
+    exit 1
+  fi
+
+  local updated
+  updated=$(jq --arg id "$model_id" 'del(.provider.lazer.models[$id])' "$OPENCODE_CONFIG_FILE")
+  atomic_write "$OPENCODE_CONFIG_FILE" "$updated"
+  echo "Removed model: $model_id"
+}
+
+auth_configure() {
+  echo "Enter your Lazer API key:"
+  printf "> "
+  local api_key
+  api_key=$(read_secret)
+
+  if [[ -z "$api_key" ]]; then
+    echo "Error: API key cannot be empty."
+    exit 1
+  fi
+
+  mkdir -p "$OPENCODE_DATA_DIR"
+
+  local updated
+  if [[ -f "$OPENCODE_AUTH_FILE" ]]; then
+    updated=$(jq --arg key "$api_key" '.lazer = {"type": "api", "key": $key}' "$OPENCODE_AUTH_FILE")
+  else
+    updated=$(jq -n --arg key "$api_key" '{"lazer": {"type": "api", "key": $key}}')
+  fi
+  atomic_write "$OPENCODE_AUTH_FILE" "$updated"
+  chmod 600 "$OPENCODE_AUTH_FILE"
+  echo "Lazer API key updated."
+
+  local test_model
+  test_model=$(jq -r --arg preferred "$PREFERRED_VERIFICATION_MODEL" '.provider.lazer.models | if has($preferred) then $preferred else (keys[0] // empty) end' "$OPENCODE_CONFIG_FILE" 2>/dev/null) || true
+  if [[ -n "$test_model" && "$test_model" != "null" ]]; then
+    verify_model "$test_model"
+  fi
+}
+
+update_config() {
+  local dry_run="$1"
+  local reset_defaults="$2"
+  ensure_lazer_config
+
+  local updated
+  updated=$(jq \
+    --argjson lazer "$LAZER_PROVIDER_JSON" \
+    --argjson retired_model_ids "$RETIRED_LAZER_MODEL_IDS_JSON" \
+    --arg default_model "$DEFAULT_MODEL" \
+    --arg plan_model "$PLAN_MODEL" \
+    --arg build_model "$BUILD_MODEL" \
+    --argjson reset_defaults "$reset_defaults" \
+    '.provider = (.provider // {})
+    | .provider.lazer = (.provider.lazer // {})
+    | .provider.lazer.npm = $lazer.npm
+    | .provider.lazer.name = $lazer.name
+    | .provider.lazer.options = $lazer.options
+    | .provider.lazer.models = (((.provider.lazer.models // {}) | delpaths($retired_model_ids | map([.]))) + ($lazer.models // {}))
+    | .agent = (.agent // {})
+    | .agent.plan = (.agent.plan // {})
+    | .agent.build = (.agent.build // {})
+    | if $reset_defaults then
+        .model = $default_model
+        | .agent.plan.model = $plan_model
+        | .agent.build.model = $build_model
+      else
+        if ((.model // "") == "") then .model = $default_model else . end
+        | if ((.agent.plan.model // "") == "") then .agent.plan.model = $plan_model else . end
+        | if ((.agent.build.model // "") == "") then .agent.build.model = $build_model else . end
+      end' "$OPENCODE_CONFIG_FILE")
+
+  local current_sorted
+  local updated_sorted
+  current_sorted=$(jq -S . "$OPENCODE_CONFIG_FILE")
+  updated_sorted=$(printf '%s\n' "$updated" | jq -S .)
+
+  if [[ "$current_sorted" == "$updated_sorted" ]]; then
+    echo "[ok] OpenCode config already up to date"
+    return
+  fi
+
+  if [[ "$dry_run" == "true" ]]; then
+    echo "[dry-run] OpenCode config would be updated: $OPENCODE_CONFIG_FILE"
+    return
+  fi
+
+  backup_file "$OPENCODE_CONFIG_FILE" "false"
+  atomic_write "$OPENCODE_CONFIG_FILE" "$updated"
+  echo "[ok] Updated $OPENCODE_CONFIG_FILE"
+}
+
+update_assets() {
+  local dry_run="$1"
+  local cli_install_file
+  cli_install_file="$(resolve_cli_install_file)"
+
+  apply_managed_asset "lazer-opencode" "$cli_install_file" "$dry_run" "false" "true"
+  apply_managed_asset "opencode-expert.md" "$OPENCODE_EXPERT_AGENT_FILE" "$dry_run" "false" "false"
+  apply_managed_asset "lazer-updater.md" "$OPENCODE_UPDATER_AGENT_FILE" "$dry_run" "false" "false"
+  apply_managed_asset "lazer-update.md" "$OPENCODE_UPDATE_COMMAND_FILE" "$dry_run" "false" "false"
+}
+
+update_run() {
+  local dry_run="false"
+  local update_auth="false"
+  local reset_defaults="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        dry_run="true"
+        ;;
+      --auth)
+        update_auth="true"
+        ;;
+      --reset-defaults)
+        reset_defaults="true"
+        ;;
+      *)
+        echo "Error: Unknown update option '$1'"
+        echo "Usage: lazer-opencode update [--dry-run] [--auth] [--reset-defaults]"
+        exit 1
+        ;;
+    esac
+    shift
+  done
+
+  update_config "$dry_run" "$reset_defaults"
+  update_assets "$dry_run"
+
+  if [[ "$update_auth" == "true" ]]; then
+    if [[ "$dry_run" == "true" ]]; then
+      echo "[dry-run] Would prompt to update Lazer API key"
+    else
+      auth_configure
+    fi
+  else
+    echo "[ok] Auth unchanged (use --auth to update API key)"
+  fi
+}
+
+# --- Command routing ---
+
+require_jq
+
+case "${1:-}" in
+  models)
+    case "${2:-}" in
+      list)   models_list ;;
+      add)    models_add "${3:-}" "${4:-}" ;;
+      remove) models_remove "${3:-}" ;;
+      *)      usage ;;
+    esac
+    ;;
+  auth)
+    auth_configure
+    ;;
+  update)
+    shift
+    update_run "$@"
+    ;;
+  *)
+    usage
+    ;;
+esac

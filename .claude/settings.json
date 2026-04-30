@@ -1,4 +1,13 @@
 {
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "effortLevel": "high",
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "clangd-lsp@claude-plugins-official": true
+  },
   "env": {
     "BASH_MAX_OUTPUT_LENGTH": "150000",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
@@ -6,11 +15,27 @@
     "DISABLE_ERROR_REPORTING": "1",
     "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"
   },
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/large-file-warning.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/block-pip.sh"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup",
@@ -26,28 +51,6 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/large-file-warning.sh",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-pip.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
@@ -57,22 +60,8 @@
             "command": "bash ~/.claude/hooks/pre-stop-checks.sh"
           }
         ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/rules-compliance-check.sh"
-          }
-        ]
       }
     ]
   },
-  "enabledPlugins": {
-    "rust-analyzer-lsp@claude-plugins-official": true,
-    "clangd-lsp@claude-plugins-official": true
-  },
-  "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true
 }

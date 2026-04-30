@@ -2,16 +2,32 @@
 
 ## Stop hooks (user-global, in ~/.claude/settings.json)
 
-| Order | File | Job | Blocks? |
-|-------|------|-----|---------|
-| 1 | `~/.claude/hooks/pre-stop-checks.sh` | Coordinator — fans out `stop-checks.d/*.sh` in parallel, aggregates verdict | Yes (exit 2) |
-| 2 | `~/.dotfiles/.config/shared-hooks/rules-compliance-check.sh` | Session eval checklist | Yes (JSON block) |
+One Stop entry, one entrypoint:
 
-Both read `stop_hook_active` from stdin JSON and exit clean on the second call to prevent loops.
+| File | Job |
+|------|-----|
+| `~/.claude/hooks/pre-stop-checks.sh` | Coordinator — runs `stop-pre.d/`, then parallel `stop-checks.d/`, then `stop-post.d/`. Single source of all Stop-time behavior. |
 
-### `stop-checks.d/` — per-check scripts
+The coordinator runs three phases:
 
-Each `*.sh` in `~/.dotfiles/.claude/hooks/stop-checks.d/` is one independent check. The coordinator fans them out in parallel and aggregates by exit code:
+```
+phase 1  stop-pre.d/   sequential, non-blocking, runs ALWAYS (incl. no-changes)
+phase 2  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2)
+phase 3  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2)
+```
+
+Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to all `*.d/` children via stdin so they can self-loop-guard.
+
+### `stop-pre.d/` — runs on every Stop, even no-changes
+
+Each `*.sh` runs sequentially before the no-changes early exit. Exit-code semantics: 0 = ok, anything else = warn (logged, never blocks). Use this phase for snapshots, telemetry, or anything that must fire on pure Q&A turns.
+
+Current pre-checks:
+- `10-entire-snapshot.sh` — runs `entire hooks claude-code stop` if `entire` is on PATH.
+
+### `stop-checks.d/` — content checks (parallel)
+
+Each `*.sh` is one independent check. The coordinator fans them out in parallel and aggregates by exit code:
 
 | Exit code | Meaning | Coordinator behavior |
 |-----------|---------|----------------------|
@@ -24,7 +40,14 @@ Project-type detection lives **inside each check** (e.g. `[ -f package.json ] ||
 
 Current checks: `10-git-workflow.sh` (unpushed commits, open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint).
 
-The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<proj>-<date>.txt`, which `rules-compliance-check.sh` reads for eval scoring — that contract is fixed.
+The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<proj>-<date>.txt`, which `stop-post.d/90-eval-gate.sh` reads.
+
+### `stop-post.d/` — runs after content checks (sequential, can block)
+
+Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check can block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message — same protocol as a top-level Stop hook.
+
+Current post-checks:
+- `90-eval-gate.sh` — emits a 3–4 line JSON-block once per turn so the AI self-evaluates. Skips pure Q&A. Reads CI status from the file the content-check phase writes.
 
 ## SessionStart hooks (user-global)
 

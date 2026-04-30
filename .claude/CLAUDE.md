@@ -138,8 +138,21 @@ Preserve the modified files, verification results, key architectural decisions, 
 
 ## Session Eval Format
 
-When the Stop hook blocks with "Session eval for {project}", append to the named eval file:
+The Stop hook (`stop-post.d/90-eval-gate.sh`) blocks once per turn with a terse JSON block:
+
+```
+eval=<path>[ ci=PASS|FAIL]
+lessons=<path>
+[sections=±X,±Y]
+Stopped: <ts>
+```
+
+Append a session entry to `<eval-path>`:
 - Header: `## Session N (label)` — same-day session counter; `label` is a short action summary.
-- One bullet per section listed in the hook's "Score sections" line, format: `- **Section**: N/10 — brief note`.
+- One bullet per section, format: `- **Section**: N/10 — brief note`.
 - Close with: `**Summary:** … Overall: N/10.`
-- Capture any user corrections this turn in the named lessons file.
+- Capture user corrections this turn in `<lessons-path>`.
+
+**Default sections** (when no `sections=` line is present): Workflow, Verification, Code Hygiene, Scope Alignment, Compact Handoff, Lessons. The `sections=±X,±Y` line, when present, applies deltas (`+Infrastructure` adds, `-Lessons` removes).
+
+**Stopped cookie**: copy the `Stopped: <ts>` line verbatim at the end of your summary — it proves you read the block. No "End your response with..." instruction is included in the block; this rule is the instruction.
