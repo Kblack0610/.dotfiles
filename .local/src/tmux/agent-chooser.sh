@@ -13,6 +13,85 @@ COLOR_YELLOW='\033[1;33m'
 COLOR_GREEN='\033[1;32m'
 COLOR_RESET='\033[0m'
 
+# --- Claude session metadata helpers ---
+# Claude Code maintains ~/.claude/sessions/<pid>.json with the canonical
+# pid -> sessionId + cwd + status mapping. Use it instead of /proc-poking
+# or mtime heuristics.
+
+# Resolve a tmux pane_pid (often a bash/zsh wrapper) to the Claude pid that
+# owns a ~/.claude/sessions/<pid>.json. Walks ancestry of every known claude
+# session pid and returns the one whose tree includes pane_pid.
+resolve_claude_pid() {
+    local pane_pid="$1"
+    [ -z "$pane_pid" ] && return 1
+    # Direct hit (pane is the Claude process itself)
+    [ -f "$HOME/.claude/sessions/${pane_pid}.json" ] && { echo "$pane_pid"; return 0; }
+    local sf cpid cur ppid
+    for sf in "$HOME/.claude/sessions/"*.json; do
+        [ -f "$sf" ] || continue
+        cpid=$(basename "$sf" .json)
+        [ -d "/proc/$cpid" ] || continue
+        cur="$cpid"
+        while [ -n "$cur" ] && [ "$cur" != "1" ] && [ "$cur" != "0" ]; do
+            ppid=$(awk '/^PPid:/{print $2; exit}' "/proc/$cur/status" 2>/dev/null)
+            [ -z "$ppid" ] && break
+            if [ "$ppid" = "$pane_pid" ]; then
+                echo "$cpid"
+                return 0
+            fi
+            cur="$ppid"
+        done
+    done
+    return 1
+}
+
+# Read pid -> "<sessionId>:<cwd>" or empty
+read_session_meta() {
+    local pid="$1"
+    local f="$HOME/.claude/sessions/${pid}.json"
+    [ -f "$f" ] || return 1
+    jq -r '"\(.sessionId):\(.cwd)"' "$f" 2>/dev/null
+}
+
+# Read pid -> Claude's own status: busy | idle | waiting | (empty)
+read_session_status() {
+    local pid="$1"
+    local f="$HOME/.claude/sessions/${pid}.json"
+    [ -f "$f" ] || return 1
+    jq -r '.status // empty' "$f" 2>/dev/null
+}
+
+# Compute JSONL path from sessionId + cwd. Claude encodes '/', '.', and '_'
+# all as '-' in the project dir name (verified across all live sessions).
+session_jsonl_path() {
+    local sid="$1" cwd="$2"
+    local enc="${cwd//\//-}"
+    enc="${enc//./-}"
+    enc="${enc//_/-}"
+    echo "$HOME/.claude/projects/$enc/$sid.jsonl"
+}
+
+# Pluck the most recent assistant/user event from a JSONL.
+# Returns "tool: <name>" / "say: <truncated>" / "user: input" / "(no events)".
+last_event() {
+    local file="$1"
+    [ -f "$file" ] || { echo "(no events)"; return; }
+    tac "$file" 2>/dev/null | jq -rR --slurp '
+        split("\n")
+        | map(fromjson? // empty)
+        | map(select(.type == "assistant" or .type == "user"))
+        | .[0]
+        | if . == null then "(no events)"
+          elif .type == "assistant" then
+            (.message.content[0]) as $c
+            | if $c.type == "tool_use" then "tool: \($c.name)"
+              elif $c.type == "text"   then "say: \(($c.text // "") | gsub("\\s+"; " ") | .[0:48])"
+              else                          "asst: \($c.type // "?")"
+              end
+          else "user: input"
+          end' 2>/dev/null || echo "?"
+}
+
 # Colorize a status character for display
 colorize_status() {
     case "$1" in
@@ -76,7 +155,7 @@ detect_agent_type() {
     return 1
 }
 
-while IFS=: read -r session window_idx _ pane_cmd pane_path; do
+while IFS=: read -r session window_idx _ pane_cmd pane_path pane_pid; do
     window_key="${session}:${window_idx}"
     [[ -n "${seen_windows[$window_key]}" ]] && continue
 
@@ -89,30 +168,44 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path; do
         # Get project from working directory
         project=$(get_project_from_path "$pane_path")
 
-        # Get status indicator
-        last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
-        last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
-        now=$(date +%s)
-        activity_diff=9999
-        [ -n "$last_activity" ] && activity_diff=$((now - last_activity))
-
-        # Determine status
-        if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?|Allow.*once|Allow.*always|Deny|Do you want to'; then
-            status="!"
-        elif [ $activity_diff -lt 3 ]; then
-            status="~"
-        elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left'; then
-            status="✓"
-        elif [ $activity_diff -gt 10 ]; then
-            status="✓"
-        else
-            status="~"
-        fi
-
-        # Read cached ollama summary (if daemon is running)
+        # Determine status + summary.
+        # Claude panes: read both from ~/.claude/sessions/<pid>.json (canonical).
+        # Other agents (aider, opencode): fall back to scrollback heuristic for status; empty summary.
+        status=""
         summary=""
-        summary_file="/tmp/agent-summaries/${session}_${window_idx}.summary"
-        [[ -f "$summary_file" ]] && summary=$(head -c 35 "$summary_file" 2>/dev/null)
+        if [[ "$agent_type" =~ ^claude ]]; then
+            claude_pid=$(resolve_claude_pid "$pane_pid")
+            case "$(read_session_status "$claude_pid")" in
+                waiting) status="!" ;;
+                busy)    status="~" ;;
+                idle)    status="✓" ;;
+                *)       status="✓" ;;
+            esac
+            meta=$(read_session_meta "$claude_pid")
+            if [ -n "$meta" ]; then
+                sid="${meta%%:*}"
+                cwd="${meta#*:}"
+                jsonl=$(session_jsonl_path "$sid" "$cwd")
+                summary=$(last_event "$jsonl" | head -c 50)
+            fi
+        else
+            last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
+            last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
+            now=$(date +%s)
+            activity_diff=9999
+            [ -n "$last_activity" ] && activity_diff=$((now - last_activity))
+            if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?|Allow.*once|Allow.*always|Deny|Do you want to'; then
+                status="!"
+            elif [ $activity_diff -lt 3 ]; then
+                status="~"
+            elif echo "$last_lines" | grep -qE '^> |^❯ |⏵⏵|bypass permissions|Context left'; then
+                status="✓"
+            elif [ $activity_diff -gt 10 ]; then
+                status="✓"
+            else
+                status="~"
+            fi
+        fi
 
         # Format agent type label
         agent_label=""
@@ -129,7 +222,7 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path; do
         project_agents[$project]+="${status}|${session}:${window_idx}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
     fi
-done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}" 2>/dev/null)
+done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}:#{pane_pid}" 2>/dev/null)
 
 # Check if any agents found
 if [ ${#project_agents[@]} -eq 0 ]; then
