@@ -41,6 +41,12 @@ ONLY_TOOLS=()
 WALLPAPER_DIR="$SCRIPT_DIR/wallpapers"
 ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar hyprland wallpaper)
 
+# Day/night auto-pick window (used by --auto)
+AUTO_DAY_THEME="jackie-brown"
+AUTO_NIGHT_THEME="tokyonight"
+AUTO_DAY_START=7    # inclusive — 07:00
+AUTO_NIGHT_START=19 # exclusive — 19:00
+
 # ─── Color output helpers ─────────────────────────────────────────────────────
 
 green()  { printf '\033[32m%s\033[0m' "$1"; }
@@ -74,6 +80,17 @@ show_current() {
         echo "Current theme: $(bold "$(cat "$STATE_FILE")")"
     else
         echo "No theme set yet (state file missing: $STATE_FILE)"
+    fi
+}
+
+# Pick day or night theme based on current hour (echoes the theme name).
+auto_pick() {
+    local hour
+    hour=$(date +%-H)
+    if (( hour >= AUTO_DAY_START && hour < AUTO_NIGHT_START )); then
+        echo "$AUTO_DAY_THEME"
+    else
+        echo "$AUTO_NIGHT_THEME"
     fi
 }
 
@@ -385,9 +402,12 @@ theme-switch — Unified theme switcher for dotfiles
 
 USAGE
   theme-switch <theme-name> [OPTIONS]
+  theme-switch --auto [OPTIONS]
   theme-switch --list | --current | --help
 
 OPTIONS
+  --auto            Pick day/night theme based on current hour
+                    (07:00–19:00 = day, else night — see AUTO_* constants)
   --dry-run         Show what would change without writing anything
   --only t1,t2      Only apply to listed tools (comma-separated)
   --list            List available themes
@@ -440,6 +460,7 @@ main() {
             --list)     list_themes; exit 0 ;;
             --current)  show_current; exit 0 ;;
             --help|-h)  usage; exit 0 ;;
+            --auto)     theme="$(auto_pick)"; shift ;;
             --dry-run)  DRY_RUN=true; shift ;;
             --only)
                 IFS=',' read -ra ONLY_TOOLS <<< "$2"
