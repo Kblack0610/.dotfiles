@@ -1,12 +1,11 @@
 // -*- mode: jsonc -*-
 // Laptop profile — adds battery, backlight, power-profiles-daemon.
-// Shared module definitions live in config.base.
 {
-    "include": ["~/.config/waybar/config.base"],
+    "include": [
+        "~/.config/waybar/config.base"
+    ],
     "modules-left": [
-        "hyprland/workspaces",
-        "hyprland/mode",
-        "hyprland/scratchpad"
+        "hyprland/workspaces"
     ],
     "modules-right": [
         "custom/ai-agents",
@@ -25,7 +24,6 @@
         "clock#time",
         "tray"
     ],
-
     "battery": {
         "states": {
             "warning": 30,
@@ -33,25 +31,41 @@
         },
         "format": "{capacity}% {icon}",
         "format-full": "{capacity}% {icon}",
-        "format-charging": "{capacity}% ",
-        "format-plugged": "{capacity}% ",
+        "format-charging": "{capacity}% ",
+        "format-plugged": "{capacity}% ",
         "format-alt": "{time} {icon}",
-        "format-icons": ["", "", "", "", ""]
+        "format-icons": [
+            "",
+            "",
+            "",
+            "",
+            ""
+        ]
     },
     "battery#bat2": {
         "bat": "BAT2"
     },
     "backlight": {
         "format": "{percent}% {icon}",
-        "format-icons": ["", "", "", "", "", "", "", "", ""]
+        "format-icons": [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+        ]
     },
     "power-profiles-daemon": {
         "tooltip": true,
         "format-icons": {
-            "default": "",
-            "performance": "",
-            "balanced": "",
-            "power-saver": ""
+            "default": "",
+            "performance": "",
+            "balanced": "",
+            "power-saver": ""
         }
     }
 }
