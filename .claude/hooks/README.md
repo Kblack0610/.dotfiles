@@ -22,9 +22,6 @@ Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_h
 
 Each `*.sh` runs sequentially before the no-changes early exit. Exit-code semantics: 0 = ok, anything else = warn (logged, never blocks). Use this phase for snapshots, telemetry, or anything that must fire on pure Q&A turns.
 
-Current pre-checks:
-- `10-entire-snapshot.sh` — runs `entire hooks claude-code stop` if `entire` is on PATH.
-
 ### `stop-checks.d/` — content checks (parallel)
 
 Each `*.sh` is one independent check. The coordinator fans them out in parallel and aggregates by exit code:
