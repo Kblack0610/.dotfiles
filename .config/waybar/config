@@ -2,7 +2,7 @@
 {
     // "layer": "top", // Waybar at top layer
     // "position": "bottom", // Waybar position (top|bottom|left|right)
-    "height": 50, // Waybar height (increased for better visibility)
+    "height": 30, // Waybar height (increased for better visibility)
     // "width": 1280, // Waybar width
     "spacing": 2, // Gaps between modules (4px)
     // Choose the order of the modules
@@ -36,19 +36,19 @@
         "all-outputs": false,
         "format": "{name}: {icon}",
         "format-icons": {
-            "1": " term",
-            "2": " web",
-            "3": " gfx",
-            "4": " gfx",
-            "5": " social",
-            "6": " agent",
-            "7": " agent",
-            "8": " misc",
-            "9": " misc",
+            "1": "term",
+            "2": "web",
+            "3": "gfx",
+            "4": "gfx",
+            "5": "social",
+            "6": "",
+            "7": "",
+            "8": "",
+            "9": "",
             "urgent": "",
             "focused": "",
             "default": "",
-            "active": "",
+            "active": ""
         }
     },
     "hyprland/window": {
@@ -108,14 +108,6 @@
             "deactivated": ""
         }
     },
-    "tray": {
-        // "icon-size": 21,
-        "spacing": 10,
-        // "icons": {
-        //   "blueman": "bluetooth",
-        //   "TelegramDesktop": "$HOME/.local/share/icons/hicolor/16x16/apps/telegram.png"
-        // }
-    },
     "clock#date": {
         "format": "{:%a %b %d}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
@@ -165,8 +157,6 @@
         "bat": "BAT2"
     },
     "power-profiles-daemon": {
-      "format": "{icon}",
-      "tooltip-format": "Power profile: {profile}\nDriver: {driver}",
       "tooltip": true,
       "format-icons": {
         "default": "",
