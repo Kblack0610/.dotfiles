@@ -91,7 +91,7 @@ last_event() {
           elif .type == "assistant" then
             (.message.content[0]) as $c
             | if $c.type == "tool_use" then "tool: \($c.name)"
-              elif $c.type == "text"   then "say: \(($c.text // "") | gsub("\\s+"; " ") | .[0:48])"
+              elif $c.type == "text"   then "say: \(($c.text // "") | gsub("\\s+"; " ") | .[0:300])"
               else                          "asst: \($c.type // "?")"
               end
           else "user: input"
@@ -192,7 +192,7 @@ while IFS=: read -r session window_idx _ pane_cmd pane_path pane_pid; do
                 sid="${meta%%:*}"
                 cwd="${meta#*:}"
                 jsonl=$(session_jsonl_path "$sid" "$cwd")
-                summary=$(last_event "$jsonl" | head -c 100)
+                summary=$(last_event "$jsonl")
             fi
         else
             last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -305,10 +305,14 @@ for project in "${sorted_projects[@]}"; do
     while IFS='|' read -r status target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
+        # Drop the [claude] label for the common case (density). Keep
+        # [aider] / [opencode] so the exception is visually flagged.
+        label_display=""
+        [[ "$agent_label" != "[claude]" ]] && label_display="${agent_label} "
         if [[ -n "$summary" ]]; then
-            agent_list+="  ${colored} ${agent_label} ${target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
+            agent_list+="  ${colored} ${label_display}${target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
         else
-            agent_list+="  ${colored} ${agent_label} ${target}\n"
+            agent_list+="  ${colored} ${label_display}${target}\n"
         fi
     done <<< "$(echo -e "$agents")"
 done
@@ -323,6 +327,7 @@ fi
 
 # Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
+    --wrap=word --wrap-sign='↳ ' \
     --prompt='Select agent > ' \
     --header=$'Enter=jump  n=next-attention  esc=exit  ·  \033[1;31m!\033[0m input  \033[1;33m~\033[0m busy  \033[1;32m✓\033[0m idle' \
     --ansi \
@@ -337,8 +342,11 @@ if [[ "$selected" == *━━* ]]; then
     exit 0
 fi
 
-# Extract session:window_idx (third field: status agent_label target)
-target=$(echo "$selected" | awk '{print $3}')
+# Extract session:window_idx by pattern, robust against row-format changes.
+# Targets always look like `<session-name>:<window-index>` (e.g. `_dotfiles:3`,
+# `platform-agent-2:1`). The conditional [claude] label means awk-by-position
+# is fragile.
+target=$(echo "$selected" | grep -oE '[A-Za-z0-9_-]+:[0-9]+' | head -1)
 
 # Jump to it
 if [ -n "$TMUX" ]; then
