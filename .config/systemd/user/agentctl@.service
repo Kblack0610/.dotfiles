@@ -1,0 +1,18 @@
+[Unit]
+Description=agentctl agent: %i
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/agentctl/agents/%i.conf
+Environment=AGENTCTL_NAME=%i
+Environment=AGENTCTL_INBOX=%h/.notes/inbox/%i
+Environment=AGENTCTL_STATE=%h/.local/state/agentctl
+ExecStartPre=/bin/mkdir -p %h/.local/state/agentctl %h/.notes/inbox/%i
+ExecStart=/bin/bash -c 'exec ${COMMAND}'
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:%h/.local/state/agentctl/%i.stdout.log
+StandardError=append:%h/.local/state/agentctl/%i.stderr.log
+
+[Install]
+WantedBy=default.target

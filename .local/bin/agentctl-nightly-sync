@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# agentctl-nightly-sync — distill recent .notes activity into mem0.
+#
+# Reads the last 3 days of ~/.notes/journal/daily and ~/.notes/inbox,
+# uses claude --print (with --allowedTools restricted to filesystem +
+# bash, NO Linear, NO memory MCPs) to extract durable user-level facts,
+# and posts them to the self-hosted mem0 instance at mem0.kblab.me.
+#
+# Replaces the legacy nightly-sync.service / /remember slash command flow
+# (which used the now-deprecated mcp__memory__* and mcp__linear__* MCPs).
+#
+# Harness note: this uses claude rather than opencode because opencode's
+# tool-calling is currently unreliable (premium models hit Anthropic credit
+# limits; local Qwen models don't invoke tools via `opencode run`). When
+# opencode is fixed, swap the invocation below — the prompt is harness-agnostic.
+
+set -euo pipefail
+
+LOG="$HOME/.local/log/nightly-sync.log"
+INBOX="${AGENTCTL_INBOX:-$HOME/.notes/inbox/nightly-sync}"
+mkdir -p "$(dirname "$LOG")" "$INBOX"
+
+TODAY=$(date +%Y-%m-%d)
+DAY1=$(date -d 'yesterday' +%Y-%m-%d)
+DAY2=$(date -d '2 days ago' +%Y-%m-%d)
+
+read -r -d '' PROMPT <<EOF || true
+Your job is to extract durable user-level facts from recent notes and write them to mem0.
+
+Step 1 — read the most recent 3 days of notes (skip any that don't exist):
+  ~/.notes/journal/daily/${TODAY}.md
+  ~/.notes/journal/daily/${DAY1}.md
+  ~/.notes/journal/daily/${DAY2}.md
+  ~/.notes/inbox/${TODAY}.md
+  ~/.notes/inbox/${DAY1}.md
+  ~/.notes/inbox/${DAY2}.md
+
+Step 2 — read existing mem0 entries to avoid duplicates:
+  curl -s 'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
+
+Step 3 — for each new fact you decide to capture, POST to mem0 via curl:
+  curl -s -X POST https://mem0.kblab.me/memories \\
+    -H 'Content-Type: application/json' \\
+    -d '{"messages":[{"role":"user","content":"<fact text>"}],"user_id":"kblack0610"}'
+
+Step 4 — append a one-line summary per write to ${INBOX}/activity.log:
+  [<ISO-timestamp>] wrote: <one-line description>
+
+If no new facts were found, append:
+  [<ISO-timestamp>] no new facts to capture (read N journal entries, M inbox entries)
+
+What counts as a durable user-level fact:
+  - preferences ("user prefers X over Y")
+  - decisions ("project A switched from X to Y")
+  - infrastructure changes (cluster topology, service moves, key paths)
+  - cross-project patterns (conventions adopted, tools standardized)
+  - identity/role facts about ongoing projects
+
+What does NOT count:
+  - todos, ephemera, single-conversation noise
+  - things specific to one PR or one ticket
+  - implementation details that belong in code/docs
+  - anything already in mem0
+
+Be selective. Quality over quantity. Aim for 0-5 mem0 writes per night.
+Better to skip a marginal fact than write noise.
+
+When done, report a summary to stdout: number of files read, number of mem0 entries written, brief description of each.
+EOF
+
+{
+    printf '\n=== %s ===\n' "$(date -Is)"
+    printf 'agent: nightly-sync (v2)  harness: claude --print\n'
+    printf 'inbox: %s\n' "$INBOX"
+    printf '\n'
+    printf '%s\n' "$PROMPT" | claude --print \
+        --allowedTools "Read,Write,Bash,Glob,Grep" \
+        2>&1
+    printf '\n=== exit: %d ===\n' "$?"
+} | tee -a "$LOG"
