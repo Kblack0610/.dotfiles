@@ -125,6 +125,73 @@ done
 `agentctl status <name>` and `agentctl logs <name>` show the tail of
 this file alongside captured stdout/stderr.
 
+## Picking a harness
+
+Each agent's `COMMAND` invokes a harness — the runtime that runs the LLM
+with tools. `agentctl` is harness-agnostic; pick per agent based on what
+tools/MCPs the agent needs.
+
+| Harness  | How to invoke                                       | Tools available on this machine                                                                                                | When to use                                                                                                              |
+| -------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| opencode | `opencode run -m '<model>' "<prompt>"`              | `serena` MCP (semantic code search), `filesystem` MCP, Bash, Read, Write — sessions in `~/.local/share/opencode/opencode.db`   | New agents that don't need Claude-specific slash commands. Lightweight, headless-friendly. Specify `-m` model explicitly. |
+| claude   | `echo "<prompt>" \| claude --print --allowedTools "..."` | All Claude Code MCPs + slash commands (`/dream`, `/remember`, etc.)                                                            | When the agent needs Claude-specific slash commands or MCPs that opencode doesn't have. Used by `nightly-sync` today.    |
+| openclaw | `openclaw exec ...` (kubectl exec into home-k3s pod) | Whatever's wired in the remote pod                                                                                             | Offload claude+tools to the home-k3s cluster (free up local box).                                                         |
+| binks    | `binks "<task>"`                                    | MCP tools configured in `binks-agent-orchestrator`                                                                             | Local Rust orchestrator. Use for tasks where binks's specific tool set fits.                                              |
+
+### Wiring patterns
+
+**File-reading + LLM + curl (typical mem0/journal agent):**
+
+```bash
+COMMAND="$HOME/.local/bin/my-agent-wrapper"
+```
+
+The wrapper builds a prompt, invokes a harness, tees output to the agent's
+inbox. See `~/.local/bin/agentctl-nightly-sync` for a worked example.
+
+**Single-prompt headless invocation:**
+
+```bash
+COMMAND='opencode run -m '\''litellm/reasoning (Qwen3.6-35B-A3B-4bit)'\'' "summarize today and write to ~/.notes/inbox/<agent>/today.md"'
+```
+
+**Heavy-tools claude invocation (when slash commands or stock tools are needed):**
+
+```bash
+COMMAND='echo "<prompt>" | claude --print --allowedTools "Bash,Read,Write,Glob,Grep,mcp__serena__*"'
+```
+
+**Never include `mcp__linear__*` or `mcp__memory__*`** in `--allowedTools` — those families are deprecated on this machine. Use mem0 (via curl) for cross-project memory and `gh` CLI (via the `gh-workflows` skill) for GitHub.
+
+### mem0 is the memory layer
+
+For any agent that needs to read or write durable user-level memory:
+
+```bash
+# Read existing memories
+curl -s 'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
+
+# Write a new memory
+curl -s -X POST https://mem0.kblab.me/memories \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"<fact>"}],"user_id":"kblack0610"}'
+```
+
+Auth is currently disabled (LAN/Tailscale only). See
+`~/.dotfiles/.claude/skills/mem0-ops/SKILL.md` for the full contract.
+
+### Harness gotcha — opencode tool-use (May 2026)
+
+opencode's `run` mode is currently unreliable for tool-using agents:
+premium claude models (`litellm/premium (claude-*)`) hit "Anthropic credit
+too low" errors via the LiteLLM gateway, and local Qwen models
+(`litellm/code`, `litellm/reasoning`) don't reliably invoke tools when
+called via `opencode run` (they respond to plain text but skip tool
+loops). For agents that need real tool use today, prefer `claude --print`
+until opencode is fixed. Plain text-in / text-out tasks (e.g., a
+distillation step where the wrapper handles file IO and curl in shell)
+work fine on opencode's local models.
+
 ## Custom restart policy
 
 The template unit uses `Restart=on-failure` by default. To override per

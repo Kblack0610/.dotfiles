@@ -1,17 +1,25 @@
 ---
 name: analysis
-description: Run comprehensive repo analysis (security, quality, dependencies) with auto-fixes and Linear tickets
-argument-hint: [--dry-run?] [--skip-pr?] [--skip-tickets?]
-allowed-tools: mcp__linear__*, mcp__github__*, Bash, Read, Grep, Glob, Write, Edit, Task
+description: Run comprehensive repo analysis (security, quality, dependencies) with auto-fixes; logs findings to notes inbox; optional GitHub issue creation
+argument-hint: [--dry-run?] [--skip-pr?] [--github-issues?]
+allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Task
 ---
 
 # Daily Repository Analysis
 
-Comprehensive analysis of the current repository covering security, code quality, and dependencies. Creates PRs for simple fixes and Linear tickets for complex issues.
+Comprehensive analysis of the current repository covering security, code
+quality, and dependencies. Creates auto-fix PRs for simple fixes; logs
+complex findings to `~/.notes/inbox/<date>-analysis.md`. Optionally
+creates GitHub issues with `--github-issues`.
+
+Sources: shell tooling + `gh` CLI (`gh-workflows` skill). Linear is no
+longer used; GitHub MCP is intentionally NOT used (project preference:
+`gh` CLI over MCP).
 
 ## Analysis Pipeline
 
-Execute the following analysis phases. For each phase, collect findings into a structured report.
+Execute the following analysis phases. For each phase, collect findings
+into a structured report.
 
 ### Phase 1: Project Detection
 
@@ -36,7 +44,6 @@ Store detected type for subsequent phases.
 #### 2.1 Secrets Scan
 Search for hardcoded secrets and credentials:
 ```bash
-# Common secret patterns (API keys, tokens, passwords)
 grep -rn --include="*.ts" --include="*.js" --include="*.py" --include="*.go" \
   -E "(api[_-]?key|apikey|secret|password|token|credential).*[=:].*['\"][a-zA-Z0-9]" . \
   | grep -v node_modules | grep -v ".git" | head -20
@@ -48,44 +55,27 @@ git ls-files | grep -E "\.env$|\.env\." | grep -v ".example"
 ```
 
 #### 2.2 Dependency Vulnerabilities
-Run security audit based on project type:
 
-**Node.js**:
-```bash
-npm audit --json 2>/dev/null || echo '{"vulnerabilities":{}}'
-```
-
-**Python**:
-```bash
-pip-audit --format=json 2>/dev/null || safety check --json 2>/dev/null || echo '[]'
-```
-
-**Rust**:
-```bash
-cargo audit --json 2>/dev/null || echo '{"vulnerabilities":[]}'
-```
-
-**Go**:
-```bash
-govulncheck -json ./... 2>/dev/null || echo '{}'
-```
+**Node.js**: `npm audit --json 2>/dev/null || echo '{"vulnerabilities":{}}'`
+**Python**: `pip-audit --format=json 2>/dev/null || safety check --json 2>/dev/null || echo '[]'`
+**Rust**: `cargo audit --json 2>/dev/null || echo '{"vulnerabilities":[]}'`
+**Go**: `govulncheck -json ./... 2>/dev/null || echo '{}'`
 
 #### 2.3 Security Findings Classification
-- **CRITICAL/HIGH**: Create Linear ticket immediately
-- **MEDIUM**: Include in report, consider ticket
-- **LOW**: Include in report only
+- **CRITICAL/HIGH**: log to `~/.notes/inbox/<date>-analysis.md` immediately; if `--github-issues`, also create a GitHub issue
+- **MEDIUM**: include in report + notes inbox
+- **LOW**: include in report only
 
 ---
 
 ### Phase 3: Quality Analysis (@quality-engineer mindset)
 
-**Focus**: Lint issues, type errors, code complexity, test coverage
+**Focus**: lint issues, type errors, code complexity, test coverage
 
 #### 3.1 Lint & Type Check
 
 **Node.js**:
 ```bash
-# Lint with auto-fix capability detection
 npx eslint . --format=json 2>/dev/null | head -1000
 npx tsc --noEmit 2>&1 | head -50
 ```
@@ -96,26 +86,19 @@ ruff check . --output-format=json 2>/dev/null | head -1000
 mypy . --output=json 2>/dev/null | head -500
 ```
 
-**Rust**:
-```bash
-cargo clippy --message-format=json 2>/dev/null | head -500
-```
-
-**Go**:
-```bash
-golangci-lint run --out-format=json 2>/dev/null | head -500
-```
+**Rust**: `cargo clippy --message-format=json 2>/dev/null | head -500`
+**Go**: `golangci-lint run --out-format=json 2>/dev/null | head -500`
 
 #### 3.2 Auto-Fixable Issues
+
 Identify issues that can be auto-fixed:
 - ESLint: `--fix` capable rules
-- Prettier: formatting issues
+- Prettier / `cargo fmt` / `gofmt`: formatting
 - Ruff: `--fix` capable rules
-- `cargo fmt`: formatting
 
 #### 3.3 Test Coverage (if available)
+
 ```bash
-# Check for coverage reports
 find . -name "coverage*.json" -o -name "lcov.info" -o -name "coverage.xml" 2>/dev/null | head -5
 ```
 
@@ -123,34 +106,19 @@ find . -name "coverage*.json" -o -name "lcov.info" -o -name "coverage.xml" 2>/de
 
 ### Phase 4: Dependency Analysis (@devops-architect mindset)
 
-**Focus**: Outdated packages, breaking changes, upgrade paths
+**Focus**: outdated packages, breaking changes, upgrade paths
 
 #### 4.1 Outdated Dependencies
 
-**Node.js**:
-```bash
-npm outdated --json 2>/dev/null || echo '{}'
-```
-
-**Python**:
-```bash
-pip list --outdated --format=json 2>/dev/null || echo '[]'
-```
-
-**Rust**:
-```bash
-cargo outdated --format=json 2>/dev/null || echo '{"dependencies":[]}'
-```
-
-**Go**:
-```bash
-go list -u -m -json all 2>/dev/null | head -100
-```
+**Node.js**: `npm outdated --json 2>/dev/null || echo '{}'`
+**Python**: `pip list --outdated --format=json 2>/dev/null || echo '[]'`
+**Rust**: `cargo outdated --format=json 2>/dev/null || echo '{"dependencies":[]}'`
+**Go**: `go list -u -m -json all 2>/dev/null | head -100`
 
 #### 4.2 Dependency Classification
-- **Patch updates**: Safe to auto-update (PR)
-- **Minor updates**: Usually safe, review changelog (PR with note)
-- **Major updates**: Breaking changes likely (Linear ticket)
+- **Patch updates**: safe to auto-update (PR)
+- **Minor updates**: usually safe, review changelog (PR with note)
+- **Major updates**: breaking changes likely (notes inbox writeup)
 
 ---
 
@@ -158,7 +126,7 @@ go list -u -m -json all 2>/dev/null | head -100
 
 Based on `$ARGUMENTS` flags, take action on findings:
 
-#### 5.1 Create Auto-Fix PR (unless --skip-pr)
+#### 5.1 Create Auto-Fix PR (unless --skip-pr or --dry-run)
 
 For simple, low-risk fixes:
 1. Create a new branch: `auto-analysis/{date}`
@@ -167,38 +135,80 @@ For simple, low-risk fixes:
    - `npx prettier --write .`
    - `ruff check . --fix`
    - `cargo fmt`
-3. Commit changes with conventional commit: `fix: auto-fix lint and formatting issues`
-4. Create PR using `mcp__github__create_pull_request`:
-   - title: "fix: auto-remediation from daily analysis"
-   - body: Include summary of fixes applied
-   - base: main/master branch
+3. Commit with conventional format: `fix: auto-fix lint and formatting issues`
+4. Create PR via `gh pr create`:
+   ```bash
+   gh pr create \
+     --title "fix: auto-remediation from daily analysis ($(date +%Y-%m-%d))" \
+     --body "$(cat <<'EOF'
+## Summary
+Automated fixes applied:
+- {list}
 
-#### 5.2 Create Linear Tickets (unless --skip-tickets)
+## Test Plan
+- CI must pass
+- Spot-check formatting changes
+EOF
+)" \
+     --base main
+   ```
 
-For complex issues requiring human review, use `mcp__linear__create_issue`:
+#### 5.2 Log Findings to Notes Inbox (always)
 
+For complex findings (HIGH/CRITICAL security, MEDIUM+ quality, MAJOR deps),
+append a structured markdown section to `~/.notes/inbox/<date>-analysis.md`:
+
+```bash
+INBOX_FILE="$HOME/.notes/inbox/$(date +%Y-%m-%d)-analysis.md"
+mkdir -p "$(dirname "$INBOX_FILE")"
+cat >> "$INBOX_FILE" <<EOF
+## $(date +%H:%M) — $REPO_NAME analysis findings
+
+### {category}: {brief description}
+
+**Location**: {file paths and line numbers}
+
+**Severity**: {CRITICAL|HIGH|MEDIUM|LOW}
+
+**Recommended Action**: {remediation steps}
+
+EOF
 ```
-title: "[Auto-Analysis] {category}: {brief description}"
-labels: ["auto-analysis", "{severity}", "{category}"]
-team: (from LINEAR_TEAM_ID or detect from project)
-description: |
-  ## Finding
-  {detailed description}
 
-  ## Location
-  {file paths and line numbers}
+This is the system of record. The notes inbox is auto-synced and durable.
 
-  ## Recommended Action
-  {remediation steps}
+#### 5.3 Optional: Create GitHub Issues (if --github-issues passed)
 
-  ## Severity
-  {CRITICAL|HIGH|MEDIUM|LOW}
+For each complex finding, when `--github-issues` is in `$ARGUMENTS`:
+
+```bash
+gh issue create \
+  --title "[Auto-Analysis] {category}: {brief description}" \
+  --label "auto-analysis,{severity},{category}" \
+  --body "$(cat <<EOF
+## Finding
+{detailed description}
+
+## Location
+{file paths and line numbers}
+
+## Recommended Action
+{remediation steps}
+
+## Severity
+{CRITICAL|HIGH|MEDIUM|LOW}
+
+_Generated by /daily:analysis on $(date +%Y-%m-%d)_
+EOF
+)"
 ```
+
+Off by default to avoid accidental issue spam.
 
 Categories:
-- `security` - Vulnerabilities, secrets, OWASP issues
-- `quality` - Complex lint issues, architectural concerns
-- `dependencies` - Major version updates, breaking changes
+- `security` — vulnerabilities, secrets, OWASP issues
+- `quality` — complex lint issues, architectural concerns
+- `dependencies` — major version updates, breaking changes
 
 ---
 
@@ -238,7 +248,8 @@ Output structured JSON summary (also save to `.claude/cache/analysis-{date}.json
   },
   "actions_taken": {
     "pr_created": null,
-    "tickets_created": [],
+    "github_issues_created": [],
+    "notes_inbox_path": "/path/to/<date>-analysis.md",
     "auto_fixes_applied": 0
   }
 }
@@ -261,7 +272,6 @@ Vulnerabilities: 2 (1 HIGH, 1 MEDIUM)
   • HIGH: lodash prototype pollution (CVE-2021-xxxx)
   • MEDIUM: minimist < 1.2.6
 Secrets Found: 0 ✓
-→ Created: LIN-456 (security vulnerabilities)
 
 ✅ QUALITY
 ───────────────────────────────────────────────────────
@@ -273,7 +283,7 @@ Auto-fixed: 12 issues
 📦 DEPENDENCIES
 ───────────────────────────────────────────────────────
 Outdated: 8 packages
-  • 2 major (breaking) → LIN-457
+  • 2 major (breaking)
   • 3 minor (safe)
   • 3 patch (auto-updated)
 → Created: PR #124 (patch updates)
@@ -281,7 +291,8 @@ Outdated: 8 packages
 📈 SUMMARY
 ───────────────────────────────────────────────────────
 PRs Created: 2 (#123, #124)
-Tickets Created: 2 (LIN-456, LIN-457)
+Findings logged to: ~/.notes/inbox/{date}-analysis.md
+GitHub Issues: 0 (pass --github-issues to create)
 Auto-fixes Applied: 12
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -291,15 +302,17 @@ Auto-fixes Applied: 12
 
 ## Arguments
 
-- `--dry-run`: Run analysis only, no PRs or tickets created
-- `--skip-pr`: Skip auto-fix PR creation
-- `--skip-tickets`: Skip Linear ticket creation
+- `--dry-run`: Run analysis only, no PRs / issues / notes writes
+- `--skip-pr`: Skip auto-fix PR creation (still logs to notes)
+- `--github-issues`: Also create a GitHub issue per complex finding (off by default)
 
 Parse from `$ARGUMENTS` if provided.
 
 ## Notes
 
-- Uses MCP servers for Linear/GitHub - no external API keys needed in command
-- Respects `.gitignore` and `node_modules` exclusions
+- Uses `gh` CLI (per `gh-workflows` skill) — no GitHub MCP tools
+- Auth from `gh auth login` state, not MCP server config
+- Findings ALWAYS go to `~/.notes/inbox/<date>-analysis.md` (system of record)
+- GitHub issues are opt-in via `--github-issues` to avoid issue spam
 - Caches results to `.claude/cache/` for aggregation
-- Can be run headless: `claude --dangerously-skip-permissions -p "/daily:analysis"`
+- Can run headless: `claude --dangerously-skip-permissions -p "/daily:analysis"`

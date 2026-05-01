@@ -1,41 +1,54 @@
 ---
 name: summary
-description: Generate a comprehensive daily activity summary (Linear tickets, GitHub PRs, commits)
+description: Generate a comprehensive daily activity summary (GitHub PRs, commits, notes activity)
 argument-hint: [date?]
-allowed-tools: mcp__linear__*, mcp__github__*, Bash, Read
+allowed-tools: Bash, Read, Glob
 ---
 
 # Daily Activity Summary
 
-Generate a comprehensive summary of today's work activity across all platforms.
+Generate a comprehensive summary of today's work activity. Sources are
+git + the `gh` CLI (`gh-workflows` skill) + the user's `.notes/` system.
+Linear is no longer used; GitHub MCP is intentionally NOT used (project
+preference: `gh` CLI over MCP).
 
 ## Data Sources
 
 Fetch data from all available sources in parallel:
 
-### 1. Linear Tasks
-Use `mcp__linear__list_issues` with:
-- `assignee`: "me"
-- `updatedAt`: "-P1D" (last 24 hours)
-- `limit`: 50
+### 1. GitHub Pull Requests
+```bash
+gh pr list --author=@me --state=all \
+  --search "updated:>=$(date +%Y-%m-%d)" \
+  --json number,title,state,url,headRefName,reviewDecision
+```
+Show: open PRs, merged today, review-requested.
 
-Group by state: In Progress, Completed, Backlog
+### 2. GitHub Commits
+```bash
+git log --since=today --author="$(git config user.name)" --all \
+  --pretty=format:'%h %s (%cr) [%cn]' --no-merges
+```
+Group by repo if multiple repos appear in the output.
 
-### 2. GitHub Pull Requests
-Use `mcp__github__search_pull_requests` with:
-- `query`: "author:@me"
-- `owner`: (detect from current repo or use default)
+### 3. PR Reviews
+```bash
+gh search prs --reviewed-by=@me --updated=">=$(date +%Y-%m-%d)"
+gh search prs --review-requested=@me --state=open
+```
 
-Show: Open PRs, Merged today, Review requested
-
-### 3. GitHub Commits
-Use `mcp__github__list_commits` for recent repos with:
-- `author`: (current GitHub user)
-- Today's commits across active repositories
-
-### 4. PR Reviews
-Use `mcp__github__search_pull_requests` with:
-- `query`: "reviewed-by:@me" or "review-requested:@me"
+### 4. Notes Activity
+Read the user's notes for today and yesterday to surface stated focus,
+priorities, decisions, and carry-over items:
+```bash
+TODAY_NOTE="$HOME/.notes/journal/daily/$(date +%Y-%m-%d).md"
+TODAY_INBOX="$HOME/.notes/inbox/$(date +%Y-%m-%d).md"
+[ -f "$TODAY_NOTE" ] && cat "$TODAY_NOTE"
+[ -f "$TODAY_INBOX" ] && cat "$TODAY_INBOX"
+```
+Extract section headers (Focus, Priority, Notes, Carry Over, Current Projects)
++ key bullets. This is the user's actual planning surface — better signal
+than scraping a tracker.
 
 ## Output Format
 
@@ -45,18 +58,6 @@ Present a clean, formatted summary:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 DAILY SUMMARY - {date}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎯 LINEAR TASKS
-───────────────────────────────────────────────────────
-In Progress:
-  • [TICKET-123] Task title (Project Name)
-  • [TICKET-456] Another task
-
-Completed Today:
-  • [TICKET-789] Finished task ✓
-
-Blocked/Waiting:
-  • [TICKET-101] Blocked task ⚠️
 
 💻 GITHUB ACTIVITY
 ───────────────────────────────────────────────────────
@@ -80,15 +81,25 @@ Pending Review Requests:
 Reviews Given:
   • #52 Approved PR (repo-name)
 
+📓 NOTES ACTIVITY
+───────────────────────────────────────────────────────
+Focus: API integration → DB migration
+Priorities:
+  • Ship HIPAA P1 PRs (#481-#483)
+  • Review forms refactor PR
+Decisions / carry-over:
+  • Karakeep replacing Stash on home-k3s
+  • Mobile billing flow blocked on Square SDK
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ## Execution Flow
 
-1. **Parallel Fetch**: Call Linear and GitHub MCP tools simultaneously
-2. **Aggregate**: Combine all results
-3. **Format**: Present in the structured format above
-4. **Highlight**: Call out any urgent items or blockers
+1. **Parallel Fetch**: run `gh`/`git` commands + read notes files in parallel
+2. **Aggregate**: combine all results
+3. **Format**: present in the structured format above
+4. **Highlight**: call out any urgent items or blockers
 
 ## Optional Arguments
 
@@ -113,12 +124,12 @@ Add to output format if analysis data exists:
 Security: {critical} critical, {high} high, {medium} medium
 Quality: {issues} issues ({auto_fixed} auto-fixed)
 Dependencies: {outdated} outdated ({major} major updates)
-Actions: {prs} PRs created, {tickets} Linear tickets
+Actions: {prs} PRs created, {issues} GitHub issues created
 ```
 
 ## Notes
 
-- Uses MCP servers directly - no external API keys needed for Linear/GitHub
-- Linear API key comes from Linear MCP server config
-- GitHub token comes from GitHub MCP server config
+- Uses `gh` CLI (per `gh-workflows` skill) + git + filesystem reads
+- `gh` auth comes from `gh auth login` state, not MCP server config
+- Notes activity reads `~/.notes/journal/daily/<date>.md` + `~/.notes/inbox/<date>.md`
 - Analysis data from `/daily:analysis` is automatically included if available

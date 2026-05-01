@@ -2,19 +2,33 @@
 name: slack
 description: Generate and optionally post a daily summary to Slack
 argument-hint: [channel?]
-allowed-tools: mcp__linear__*, mcp__github__*, Bash, Read
+allowed-tools: Bash, Read
 ---
 
 # Daily Slack Summary
 
 Generate a Slack-formatted daily summary and optionally post it via webhook.
+Sources are git + the `gh` CLI (`gh-workflows` skill) — Linear is no longer
+used; GitHub MCP is intentionally NOT used (project preference: `gh` CLI
+over MCP).
 
 ## Workflow
 
 1. **Fetch All Data** (parallel)
-   - Linear tasks: `mcp__linear__list_issues` with `assignee: "me"`, `updatedAt: "-P1D"`
-   - GitHub PRs: `mcp__github__search_pull_requests` with `query: "author:@me"`
-   - GitHub commits: Today's commit activity
+   - GitHub PRs:
+     ```bash
+     gh pr list --author=@me --state=all \
+       --search "updated:>=$(date -d yesterday +%Y-%m-%d)"
+     ```
+   - GitHub commits today:
+     ```bash
+     git log --since=today --author="$(git config user.name)" --all --oneline
+     ```
+   - Today's notes (optional):
+     ```bash
+     [ -f ~/.notes/journal/daily/$(date +%Y-%m-%d).md ] && \
+       cat ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+     ```
 
 2. **Format for Slack**
    - Use Slack mrkdwn formatting
@@ -41,14 +55,7 @@ Generate a Slack-formatted daily summary and optionally post it via webhook.
       "type": "section",
       "text": {
         "type": "mrkdwn",
-        "text": "*🎯 Linear Tasks*\n• `TICKET-123` Task in progress\n• `TICKET-456` Completed ✓"
-      }
-    },
-    {
-      "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": "*💻 GitHub*\n• PR #42 open - _Ready for review_\n• PR #40 merged ✓\n• 8 commits today"
+        "text": "*💻 GitHub*\n• PR #42 open — _Ready for review_\n• PR #40 merged ✓\n• 8 commits today across 2 repos"
       }
     },
     {
@@ -77,10 +84,6 @@ If blocks aren't needed, output simple mrkdwn:
 
 ```
 *📊 Daily Summary - {date}*
-
-*🎯 Linear*
-• `TICKET-123` In progress - Feature work
-• `TICKET-456` Completed ✓
 
 *💻 GitHub*
 • PR #42 ready for review

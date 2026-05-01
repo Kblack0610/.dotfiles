@@ -2,8 +2,8 @@
 # Copy this file to .github/workflows/daily-analysis.yml in any repo you want to analyze
 #
 # Requirements:
-# - SLACK_BOT_TOKEN secret (org-level recommended)
-# - LINEAR_API_KEY secret (org-level recommended)
+# - SLACK_BOT_TOKEN secret (org-level recommended, for /daily:slack notifications)
+# - GITHUB_TOKEN (provided automatically; used by `gh` CLI)
 # - Claude Code installed on runner (self-hosted) OR use claude-code-action
 #
 # To enable for a repo, also add the GitHub topic: auto-analysis
@@ -19,15 +19,15 @@ on:
         description: 'Trigger source (orchestrator/manual)'
         default: 'manual'
       dry_run:
-        description: 'Dry run - no PRs or tickets'
+        description: 'Dry run - no PRs / issues / notes writes'
         type: boolean
         default: false
       skip_pr:
         description: 'Skip auto-fix PR creation'
         type: boolean
         default: false
-      skip_tickets:
-        description: 'Skip Linear ticket creation'
+      github_issues:
+        description: 'Create a GitHub issue per complex finding (off by default)'
         type: boolean
         default: false
 
@@ -43,7 +43,7 @@ on:
 env:
   DRY_RUN: ${{ inputs.dry_run || github.event.client_payload.dry_run || 'false' }}
   SKIP_PR: ${{ inputs.skip_pr || github.event.client_payload.skip_pr || 'false' }}
-  SKIP_TICKETS: ${{ inputs.skip_tickets || github.event.client_payload.skip_tickets || 'false' }}
+  GITHUB_ISSUES: ${{ inputs.github_issues || github.event.client_payload.github_issues || 'false' }}
 
 jobs:
   analyze:
@@ -73,14 +73,13 @@ jobs:
         if: runner.name != 'GitHub Actions'  # Only on self-hosted
         id: analysis-self-hosted
         env:
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Build arguments based on inputs
           ARGS=""
           if [[ "$DRY_RUN" == "true" ]]; then ARGS="$ARGS --dry-run"; fi
           if [[ "$SKIP_PR" == "true" ]]; then ARGS="$ARGS --skip-pr"; fi
-          if [[ "$SKIP_TICKETS" == "true" ]]; then ARGS="$ARGS --skip-tickets"; fi
+          if [[ "$GITHUB_ISSUES" == "true" ]]; then ARGS="$ARGS --github-issues"; fi
 
           # Run Claude Code in headless mode
           claude --dangerously-skip-permissions \
@@ -107,8 +106,8 @@ jobs:
       #       Run /daily:analysis with these flags:
       #       - dry_run: ${{ env.DRY_RUN }}
       #       - skip_pr: ${{ env.SKIP_PR }}
-      #       - skip_tickets: ${{ env.SKIP_TICKETS }}
-      #     allowed_tools: "Bash,Read,Write,Edit,Grep,Glob,mcp__github__*,mcp__linear__*"
+      #       - github_issues: ${{ env.GITHUB_ISSUES }}
+      #     allowed_tools: "Bash,Read,Write,Edit,Grep,Glob"
       #     max_turns: 50
 
       - name: Upload Analysis Results

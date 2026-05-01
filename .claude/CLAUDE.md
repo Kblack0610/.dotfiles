@@ -124,7 +124,7 @@ Non-trivial implementation flows through the G2I (Ghee-to-Implementation) pipeli
 3. `kb-developer` — implements from specs with tests and docs
 4. `kb-qa` — verifies quality gates before merge
 
-For isolated Linear tickets: `kb-linear-implementer` (fetch → implement → PR, isolated context). Entry skills: `/kb:workflow` (full), `/kb:ticket` (Linear-driven), `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents.
+Entry skills: `/kb:workflow` (full G2I pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents.
 
 ## Project Mapping
 

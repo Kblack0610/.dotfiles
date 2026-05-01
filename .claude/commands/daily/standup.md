@@ -2,26 +2,65 @@
 name: standup
 description: Generate a concise standup update (yesterday, today, blockers)
 argument-hint: [format?]
-allowed-tools: mcp__linear__*, mcp__github__*, Bash
+allowed-tools: Bash
 ---
 
 # Daily Standup Generator
 
-Generate a concise standup update in the classic format.
+Generate a concise standup update in the classic format. Sources are git +
+the `gh` CLI (`gh-workflows` skill) — Linear is no longer used; GitHub MCP
+is intentionally NOT used (project preference: `gh` CLI over MCP).
 
 ## Workflow
 
 1. **Fetch Yesterday's Activity**
-   - Linear: `mcp__linear__list_issues` with `assignee: "me"`, `state: "completed"`, `updatedAt: "-P1D"`
-   - GitHub: `mcp__github__search_pull_requests` with `query: "author:@me merged:>=yesterday"`
+   - Commits across active repos:
+     ```bash
+     git log --since="yesterday 00:00" --until="today 00:00" \
+       --author="$(git config user.name)" --all --oneline
+     ```
+   - Merged PRs:
+     ```bash
+     gh pr list --author=@me --state=merged \
+       --search "merged:>=$(date -d yesterday +%Y-%m-%d)"
+     ```
+   - Reviews given yesterday:
+     ```bash
+     gh search prs --reviewed-by=@me \
+       --updated=">=$(date -d yesterday +%Y-%m-%d)"
+     ```
 
 2. **Fetch Today's Plan**
-   - Linear: `mcp__linear__list_issues` with `assignee: "me"`, `state: "started"` or `state: "todo"`
-   - GitHub: `mcp__github__list_pull_requests` with `state: "open"`
+   - Open PRs needing attention:
+     ```bash
+     gh pr list --author=@me --state=open
+     ```
+   - Current branch + uncommitted WIP:
+     ```bash
+     git status --short && git branch --show-current
+     ```
+   - Optionally: today's notes for stated focus
+     ```bash
+     [ -f ~/.notes/journal/daily/$(date +%Y-%m-%d).md ] && \
+       grep -A 5 -i '^## Focus\|^## Priority' ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+     ```
 
 3. **Identify Blockers**
-   - Linear issues with "blocked" label or in blocked state
-   - PRs waiting on review for >24 hours
+   - PRs waiting on review for >24h:
+     ```bash
+     gh pr list --author=@me --state=open \
+       --json url,title,createdAt,reviewDecision | \
+       jq '.[] | select(.reviewDecision == null and ((now - (.createdAt | fromdateiso8601)) > 86400))'
+     ```
+   - Draft PRs not touched in >3 days:
+     ```bash
+     gh pr list --author=@me --draft --json url,title,updatedAt | \
+       jq '.[] | select((now - (.updatedAt | fromdateiso8601)) > 259200)'
+     ```
+   - Optionally: blocker callouts in today's notes:
+     ```bash
+     grep -i blocked ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+     ```
 
 ## Output Format
 
@@ -29,18 +68,18 @@ Generate a concise standup update in the classic format.
 📍 STANDUP - {date}
 
 ✅ YESTERDAY
-• Completed [TICKET-123] Feature implementation
-• Merged PR #42 - Add user authentication
+• Merged PR #42 — Add user authentication (repo-name)
+• 7 commits in repo-a (auth/migrations + bug-fix-x)
 • Reviewed PR #55 for @teammate
 
 📋 TODAY
-• Working on [TICKET-456] API integration
-• PR #48 ready for review
-• Planning [TICKET-789] Database migration
+• PR #48 ready for review (repo-name)
+• On branch `feature/api-integration` (3 uncommitted files)
+• Today's focus: API integration → DB migration
 
 ⚠️ BLOCKERS
-• [TICKET-101] Waiting on design specs
-• PR #45 needs review from @specific-reviewer
+• PR #45 waiting on @specific-reviewer (>2 days)
+• Draft PR #30 stalled — needs spec sign-off
 ```
 
 ## Argument Options
