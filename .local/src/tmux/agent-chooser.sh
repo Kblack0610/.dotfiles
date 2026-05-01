@@ -15,9 +15,9 @@ COLOR_DIM='\033[2;37m'
 COLOR_BOLD_CYAN='\033[1;36m'
 COLOR_RESET='\033[0m'
 
-# Heavy horizontal bar — long enough that fzf's right edge clips it on any
-# realistic popup width, giving the visual effect of full-width separators.
-SEP='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+# Short heavy bar — fits on one line so fzf's --wrap doesn't break it.
+# Visual divider, not a viewport-spanning rule (which conflicted with --wrap).
+SEP='━━━━━━━━━━━━'
 
 # --- Claude session metadata helpers ---
 # Claude Code maintains ~/.claude/sessions/<pid>.json with the canonical
@@ -333,6 +333,8 @@ selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --ansi \
     --no-sort \
     --bind "n:execute-silent($0 -n)+abort" \
+    --bind 'up:up+transform:case {} in *━━*) echo up ;; esac' \
+    --bind 'down:down+transform:case {} in *━━*) echo down ;; esac' \
     $restore_pos)
 
 [[ -z "$selected" ]] && exit 0
