@@ -11,8 +11,11 @@ export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 COLOR_RED='\033[1;31m'
 COLOR_YELLOW='\033[1;33m'
 COLOR_GREEN='\033[1;32m'
-COLOR_DIM='\033[2;37m'
-COLOR_BOLD_CYAN='\033[1;36m'
+# Title is bold-only so it inherits the active terminal theme's foreground
+# (works in both jackie-brown and tokyonight without re-tweaking).
+COLOR_TITLE='\033[1m'
+# Count uses dim because it's secondary metadata, not content.
+COLOR_DIM='\033[2m'
 COLOR_RESET='\033[0m'
 
 # Short heavy bar — fits on one line so fzf's --wrap doesn't break it.
@@ -298,7 +301,7 @@ for project in "${sorted_projects[@]}"; do
 
     # Project header line (not selectable, just visual): bold cyan name +
     # status glyphs + count, then the long bar — fzf clips at viewport edge.
-    agent_list+="${COLOR_BOLD_CYAN}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
+    agent_list+="${COLOR_TITLE}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
 
     # Individual agent rows: status, label, target, summary. Dropped the
     # agent-N numbering (fzf shows position natively).
