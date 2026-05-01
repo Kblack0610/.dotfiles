@@ -22,21 +22,20 @@
       workspace: "~/.openclaw/workspace",
       userTimezone: "America/Los_Angeles",
       model: {
-        primary: "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+        primary: "litellm/code (Qwen3-Coder-Next-4bit)",
         fallbacks: [
-          "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
-          "mlx-reasoning/mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit",
+          "litellm/reasoning (Qwen3.6-35B-A3B-4bit)",
         ],
       },
       models: {
-        "mlx-code/mlx-community/Qwen3-Coder-Next-4bit": {
+        "litellm/code (Qwen3-Coder-Next-4bit)": {
           alias: "code",
         },
-        "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ": {
-          alias: "smart",
-        },
-        "mlx-reasoning/mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit": {
+        "litellm/reasoning (Qwen3.6-35B-A3B-4bit)": {
           alias: "reasoning",
+        },
+        "litellm/fast (Qwen3-4B)": {
+          alias: "fast",
         },
       },
       thinkingDefault: "low",
@@ -60,9 +59,9 @@
         workspace: "~/.openclaw/workspace-home-orchestrator",
         agentDir: "~/.openclaw/agents/home-orchestrator/agent",
         model: {
-          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          primary: "litellm/reasoning (Qwen3.6-35B-A3B-4bit)",
           fallbacks: [
-            "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+            "litellm/code (Qwen3-Coder-Next-4bit)",
           ],
         },
         subagents: {
@@ -94,7 +93,7 @@
         workspace: "~/.openclaw/workspace-ops-observer",
         agentDir: "~/.openclaw/agents/ops-observer/agent",
         model: {
-          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          primary: "litellm/reasoning (Qwen3.6-35B-A3B-4bit)",
         },
         tools: {
           deny: ["write", "edit", "apply_patch", "cron", "nodes"],
@@ -106,7 +105,7 @@
         workspace: "~/.openclaw/workspace-ops-escalate",
         agentDir: "~/.openclaw/agents/ops-escalate/agent",
         model: {
-          primary: "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+          primary: "litellm/reasoning (Qwen3.6-35B-A3B-4bit)",
         },
         tools: {
           deny: ["write", "edit", "apply_patch"],
@@ -121,9 +120,9 @@
         workspace: "~/.openclaw/workspace-pr-coordinator",
         agentDir: "~/.openclaw/agents/pr-coordinator/agent",
         model: {
-          primary: "mlx-code/mlx-community/Qwen3-Coder-Next-4bit",
+          primary: "litellm/code (Qwen3-Coder-Next-4bit)",
           fallbacks: [
-            "mlx-smart/mlx-community/Qwen3-235B-A22B-4bit-DWQ",
+            "litellm/reasoning (Qwen3.6-35B-A3B-4bit)",
           ],
         },
         subagents: {
@@ -152,51 +151,50 @@
   models: {
     mode: "merge",
     providers: {
-      "mlx-code": {
-        baseUrl: "http://192.168.1.4:8080/v1",
-        apiKey: "local",
+      // LiteLLM gateway (mac-studio mlx-server fronted via in-cluster
+      // litellm at apps/litellm/). Replaces the legacy direct-MLX
+      // layout that pointed at 192.168.1.4:8080/8081/8082 — those
+      // ports were retired when mlx-server unified to :8090 and
+      // litellm took over routing. Model IDs and provider name match
+      // the cluster pod's apps/openclaw/configmap.yaml so the local
+      // and pod setups stay in sync.
+      //
+      // For non-cluster local runs, point baseUrl at whatever litellm
+      // instance is reachable (e.g., http://localhost:4000/v1 if
+      // self-hosted, or the ingress URL if mTLS-tunneled). LITELLM_API_KEY
+      // env var is expected — use the local-only virtual key for
+      // restricted access, internal-tools for full access incl premium.
+      "litellm": {
+        baseUrl: "http://litellm.ai-gateway.svc.cluster.local:4000/v1",
+        apiKey: "${LITELLM_API_KEY}",
         api: "openai-completions",
         models: [
           {
-            id: "mlx-community/Qwen3-Coder-Next-4bit",
-            name: "Qwen3 Coder Next 4bit",
+            id: "code (Qwen3-Coder-Next-4bit)",
+            name: "code — Qwen3-Coder-Next 4bit",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 128000,
             maxTokens: 32768,
           },
-        ],
-      },
-      "mlx-smart": {
-        baseUrl: "http://192.168.1.4:8081/v1",
-        apiKey: "local",
-        api: "openai-completions",
-        models: [
           {
-            id: "mlx-community/Qwen3-235B-A22B-4bit-DWQ",
-            name: "Qwen3 235B A22B 4bit DWQ",
+            id: "reasoning (Qwen3.6-35B-A3B-4bit)",
+            name: "reasoning — Qwen3.6-35B-A3B 4bit (mlx-community)",
             reasoning: true,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 128000,
             maxTokens: 32768,
           },
-        ],
-      },
-      "mlx-reasoning": {
-        baseUrl: "http://192.168.1.4:8082/v1",
-        apiKey: "local",
-        api: "openai-completions",
-        models: [
           {
-            id: "mlx-community/DeepSeek-R1-Distill-Qwen-32B-MLX-4Bit",
-            name: "DeepSeek R1 Distill Qwen 32B MLX 4Bit",
-            reasoning: true,
+            id: "fast (Qwen3-4B)",
+            name: "fast — Qwen3 4B (latency-sensitive)",
+            reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 64000,
-            maxTokens: 16384,
+            contextWindow: 128000,
+            maxTokens: 32768,
           },
         ],
       },
