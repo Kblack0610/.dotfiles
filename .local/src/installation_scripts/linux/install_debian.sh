@@ -78,10 +78,12 @@ install_tools() {
         "jq"
         "tree"
         "htop"
-        "neofetch"
+        "fastfetch"
         "xsel"
+        "wl-clipboard"
         "zoxide"
         "glances"
+        "eza"
     )
     
     for tool in "${tools[@]}"; do
@@ -105,25 +107,24 @@ install_terminal() {
     done
 }
 
-# Override: Install GUI applications
+# Override: Install GUI applications (Hyprland / Wayland stack)
+# Note: hyprland/wofi/waybar require a recent Debian/Ubuntu (Debian 13+, Ubuntu 24.04+).
+# On older releases install_apt_package will warn and continue.
 install_gui() {
     log_section "Installing GUI applications"
-    
+
     local packages=(
-        "i3-wm"
-        "i3status"
-        "i3lock"
-        "rofi"
-        "dunst"
-        "picom"
-        "nitrogen"
+        "hyprland"
+        "hyprpaper"
+        "waybar"
+        "wofi"
         "firefox"
     )
-    
+
     for pkg in "${packages[@]}"; do
         install_apt_package "$pkg"
     done
-    
+
     # Install Flatpak apps
     if command -v flatpak &>/dev/null; then
         log_info "Installing Flatpak applications..."
@@ -440,6 +441,33 @@ EOF
     fi
 }
 
+# Setup keyd (key remapping daemon — F12 → Super layer)
+# Note: keyd is in Ubuntu 23.10+ universe; not packaged in Debian stable. If apt
+# can't find it, the user must install from source: https://github.com/rvaiya/keyd
+setup_keyd() {
+    log_section "Setting up keyd (key remapping)"
+
+    if ! install_apt_package "keyd"; then
+        log_warning "keyd not available via apt — install from source: https://github.com/rvaiya/keyd"
+        return 0
+    fi
+
+    local src="$HOME/.dotfiles/.config/keyd/default.conf"
+    local dst="/etc/keyd/default.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "keyd source config not found at $src — skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    log_info "Installed keyd config to $dst"
+
+    sudo systemctl enable --now keyd
+    sudo keyd reload &>/dev/null || true
+    log_info "keyd enabled and reloaded"
+}
+
 # Debian-specific: Install Flatpak
 install_flatpak() {
     log_section "Installing Flatpak"
@@ -480,6 +508,9 @@ install_all() {
     # Game streaming
     setup_sunshine
     install_moonlight
+
+    # Input remapping
+    setup_keyd
 
     # Desktop environment
     install_gui

@@ -56,6 +56,10 @@ detect_os() {
     elif [[ "$OSTYPE" == "linux-android"* ]] || [ -d /data/data/com.termux ]; then
         # Android/Termux
         os_type="android"
+    elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [ -n "$WINDIR" ]; then
+        # Native Windows (Git Bash / Cygwin / MSYS). WSL reports linux-gnu
+        # and is handled above as Debian/Arch — that's correct.
+        os_type="windows"
     else
         os_type="unknown"
     fi
@@ -125,6 +129,13 @@ main() {
             ;;
         android)
             source "$SCRIPT_DIR/android/install_android.sh"
+            ;;
+        windows)
+            echo -e "${YELLOW}Bash can't drive the Windows installer.${NC}"
+            echo -e "Open PowerShell and run:"
+            echo -e "${BLUE}  & \"$SCRIPT_DIR/windows/install_windows.ps1\"${NC}"
+            echo -e "Or use the bootstrap one-liner — see windows/README.md."
+            exit 0
             ;;
         *)
             echo -e "${RED}Unsupported system: $os_type${NC}"

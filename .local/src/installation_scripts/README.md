@@ -15,6 +15,11 @@ A modular, function-based installation system for setting up development environ
 ./android/install_android.sh
 ```
 
+```pwsh
+# Windows VDI / Win11 — run from PowerShell, see windows/README.md
+irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
+```
+
 ## Architecture
 
 ### Function-Based Override System
@@ -28,7 +33,8 @@ OS-specific scripts        # "Subclasses" that override specific methods
     ├── mac/install_mac.sh
     ├── linux/install_debian.sh
     ├── linux/install_arch.sh
-    └── android/install_android.sh
+    ├── android/install_android.sh
+    └── windows/install_windows.ps1   # PowerShell, not Bash — see windows/README.md
 ```
 
 ### Key Benefits
@@ -86,6 +92,13 @@ install_all()           # Calls all functions in order
 - Terminal-only environment
 - Limited package availability
 - Storage permission setup
+
+### Windows (Deloitte VDI / Win11)
+- WSL2 Debian is the primary dev environment — reuses `linux/install_debian.sh` unchanged
+- Windows side gets scoop, GlazeWM, Windows Terminal, PowerShell profile
+- Configs are *copied* (not symlinked) because Windows symlinks need Developer Mode or admin
+- Tuned for the Deloitte 8 GB VDI: `.wslconfig` caps WSL at 4 GB
+- See `windows/README.md` for the bootstrap one-liner and OneDrive fallback
 
 ## Benefits Over Switch Statements
 

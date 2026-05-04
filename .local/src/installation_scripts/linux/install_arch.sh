@@ -107,14 +107,13 @@ install_tools() {
         "jq"
         "tree"
         "htop"
-        "neofetch"
+        "fastfetch"
         "xsel"
         "wl-clipboard"
         "glances"
         "fd"
         "bat"
-        "exa"
-        "obsidian"
+        "eza"
         "dbeaver"
         "grimblast"
     )
@@ -142,23 +141,19 @@ install_terminal() {
     done
 }
 
-# Override: Install GUI applications
+# Override: Install GUI applications (Hyprland / Wayland stack)
 install_gui() {
     log_section "Installing GUI applications"
-    
+
     local packages=(
-        "i3-wm"
-        "i3status"
-        "i3lock"
-        "rofi"
-        "dunst"
-        "picom"
-        "nitrogen"
+        "hyprland"
         "hyprpaper"
+        "waybar"
+        "wofi"
         "firefox"
         "kitty"
     )
-    
+
     for pkg in "${packages[@]}"; do
         install_pacman_package "$pkg"
     done
@@ -467,6 +462,28 @@ install_moonlight() {
     fi
 }
 
+# Override: Setup keyd (key remapping daemon — F12 → Super layer)
+setup_keyd() {
+    log_section "Setting up keyd (key remapping)"
+
+    install_pacman_package "keyd"
+
+    local src="$HOME/.dotfiles/.config/keyd/default.conf"
+    local dst="/etc/keyd/default.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "keyd source config not found at $src — skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    log_info "Installed keyd config to $dst"
+
+    sudo systemctl enable --now keyd
+    sudo keyd reload &>/dev/null || true
+    log_info "keyd enabled and reloaded"
+}
+
 # Install Tailscale VPN
 install_tailscale() {
     log_section "Installing Tailscale VPN"
@@ -587,6 +604,9 @@ install_all() {
     # Game streaming
     setup_sunshine
     install_moonlight
+
+    # Input remapping
+    setup_keyd
 
     # Networking
     install_tailscale
