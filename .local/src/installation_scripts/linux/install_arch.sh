@@ -78,100 +78,38 @@ update_system() {
 # Override: Install basics
 install_basics() {
     log_section "Installing basic requirements"
-    
-    local packages=(
-        "vim"
-        "wget"
-        "curl"
-        "git"
-        "git-lfs"
-        "tmux"
-        "stow"
-        "base-devel"
-        "fuse2"
-        "openssh"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_pacman_package "$pkg"
-    done
+    install_package_list install_pacman_package arch \
+        $PACKAGES_BASIC $PACKAGES_BASIC_ARCH
 }
 
 # Override: Install development tools
 install_tools() {
     log_section "Installing development tools"
-    
-    local tools=(
-        "ripgrep"
-        "fzf"
-        "jq"
-        "tree"
-        "htop"
-        "fastfetch"
-        "xsel"
-        "wl-clipboard"
-        "glances"
-        "fd"
-        "bat"
-        "eza"
-        "dbeaver"
-        "grimblast"
-    )
-
-    for tool in "${tools[@]}"; do
-        install_pacman_package "$tool"
-    done
-
-    # Zoxide - smarter cd (Rust-based autojump replacement)
-    install_pacman_package "zoxide"
+    install_package_list install_pacman_package arch \
+        $PACKAGES_DEV $PACKAGES_DEV_ARCH
 }
 
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    
-    local packages=(
-        "zsh"
-        "cowsay"
-        "fortune-mod"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_pacman_package "$pkg"
-    done
+    install_package_list install_pacman_package arch \
+        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_ARCH
 }
 
 # Override: Install GUI applications (Hyprland / Wayland stack)
 install_gui() {
     log_section "Installing GUI applications"
-
-    local packages=(
-        "hyprland"
-        "hyprpaper"
-        "waybar"
-        "wofi"
-        "firefox"
-        "kitty"
-    )
-
-    for pkg in "${packages[@]}"; do
-        install_pacman_package "$pkg"
-    done
+    install_package_list install_pacman_package arch \
+        $PACKAGES_GUI $PACKAGES_GUI_ARCH
 }
 
 # Override: Install language runtimes
 install_runtime() {
     log_section "Installing language runtimes"
-    
-    # Node.js
-    install_pacman_package "nodejs"
-    install_pacman_package "npm"
-    
-    # Python
-    install_pacman_package "python"
-    install_pacman_package "python-pip"
-    
-    # Rust
+    install_package_list install_pacman_package arch \
+        $PACKAGES_RUNTIME $PACKAGES_RUNTIME_ARCH
+
+    # Rust handled out-of-band (rustup, not pacman)
     if ! command -v cargo &>/dev/null; then
         log_info "Installing Rust..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

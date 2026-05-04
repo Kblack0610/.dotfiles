@@ -30,12 +30,53 @@ log_section() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-# Load configuration
+# Load configuration. Resolves packages.conf relative to base_functions.sh's
+# own location, not the caller's $SCRIPT_DIR (which each OS installer overwrites
+# to point at its own subdirectory before calling load_config).
 load_config() {
-    local config_file="$SCRIPT_DIR/packages.conf"
+    local base_dir
+    base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local config_file="$base_dir/packages.conf"
     if [[ -f "$config_file" ]]; then
         source "$config_file"
+    else
+        log_error "packages.conf not found at $config_file"
+        return 1
     fi
+}
+
+# Resolve a logical package name to the OS-specific name.
+# Reads PACKAGE_NAME_<OS> associative array from packages.conf; falls back to
+# the input if no override exists.
+#   $1 = logical package name (e.g. "fd")
+#   $2 = os tag (arch|debian|mac|android|windows)
+_resolve_pkg_name() {
+    local logical="$1" os="$2"
+    local map_var="PACKAGE_NAME_${os^^}"
+    if declare -p "$map_var" &>/dev/null && [[ "$(declare -p "$map_var" 2>/dev/null)" == "declare -A"* ]]; then
+        local -n _map="$map_var"
+        if [[ ${_map[$logical]+x} ]]; then
+            echo "${_map[$logical]}"
+            return
+        fi
+    fi
+    echo "$logical"
+}
+
+# Iterate a logical package list and install each via the OS-specific helper,
+# applying naming overrides en route.
+#   $1     = installer fn name (install_pacman_package, install_apt_package, ...)
+#   $2     = os tag
+#   $3..$n = logical package names (typically passed unquoted as "$BASE $EXTRA")
+install_package_list() {
+    local installer_fn="$1" os="$2"
+    shift 2
+    local logical resolved
+    for logical in "$@"; do
+        resolved=$(_resolve_pkg_name "$logical" "$os")
+        [[ -z "$resolved" ]] && continue
+        "$installer_fn" "$resolved"
+    done
 }
 
 # Create directory structure
@@ -379,21 +420,21 @@ setup_ai_memory() {
     log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
 }
 
-# Install NPM packages
+# Install NPM packages — reads NPM_PACKAGES from packages.conf
 install_npm_packages() {
     if ! command -v npm &>/dev/null; then
         log_warning "npm not found, skipping npm packages"
         return 0
     fi
-    
+
     log_section "Installing NPM global packages"
-    
-    local packages=(
-        "opencode-ai"
-        "@google/gemini-cli"
-    )
-    
-    for package in "${packages[@]}"; do
+
+    if [[ -z "$NPM_PACKAGES" ]]; then
+        log_warning "NPM_PACKAGES not defined in packages.conf — skipping"
+        return 0
+    fi
+
+    for package in $NPM_PACKAGES; do
         log_info "Installing $package..."
         if npm install -g "$package" &>/dev/null; then
             log_info "✓ $package installed"
@@ -459,3 +500,4 @@ export -f install_nvim install_tmux install_kitty install_lazygit install_rust
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_ai_memory
 export -f install_all
+export -f _resolve_pkg_name install_package_list

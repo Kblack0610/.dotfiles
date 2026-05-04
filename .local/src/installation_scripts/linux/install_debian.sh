@@ -46,65 +46,22 @@ update_system() {
 # Override: Install basics
 install_basics() {
     log_section "Installing basic requirements"
-    
-    local packages=(
-        "vim"
-        "wget"
-        "curl"
-        "git"
-        "tmux"
-        "stow"
-        "build-essential"
-        "libfuse2"
-        "software-properties-common"
-        "apt-transport-https"
-        "ca-certificates"
-        "gnupg"
-        "lsb-release"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_apt_package "$pkg"
-    done
+    install_package_list install_apt_package debian \
+        $PACKAGES_BASIC $PACKAGES_BASIC_DEBIAN
 }
 
 # Override: Install development tools
 install_tools() {
     log_section "Installing development tools"
-    
-    local tools=(
-        "ripgrep"
-        "fzf"
-        "jq"
-        "tree"
-        "htop"
-        "fastfetch"
-        "xsel"
-        "wl-clipboard"
-        "zoxide"
-        "glances"
-        "eza"
-    )
-    
-    for tool in "${tools[@]}"; do
-        install_apt_package "$tool"
-    done
+    install_package_list install_apt_package debian \
+        $PACKAGES_DEV $PACKAGES_DEV_DEBIAN
 }
 
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    
-    local packages=(
-        "zsh"
-        "cowsay"
-        "fortune"
-        "feh"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_apt_package "$pkg"
-    done
+    install_package_list install_apt_package debian \
+        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_DEBIAN
 }
 
 # Override: Install GUI applications (Hyprland / Wayland stack)
@@ -112,44 +69,35 @@ install_terminal() {
 # On older releases install_apt_package will warn and continue.
 install_gui() {
     log_section "Installing GUI applications"
+    install_package_list install_apt_package debian \
+        $PACKAGES_GUI $PACKAGES_GUI_DEBIAN
 
-    local packages=(
-        "hyprland"
-        "hyprpaper"
-        "waybar"
-        "wofi"
-        "firefox"
-    )
-
-    for pkg in "${packages[@]}"; do
-        install_apt_package "$pkg"
-    done
-
-    # Install Flatpak apps
-    if command -v flatpak &>/dev/null; then
+    # Install Flatpak apps from FLATPAK_APPS in packages.conf
+    if command -v flatpak &>/dev/null && [[ -n "$FLATPAK_APPS" ]]; then
         log_info "Installing Flatpak applications..."
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-        flatpak install -y flathub one.ablaze.floorp &>/dev/null || true
+        for app in $FLATPAK_APPS; do
+            flatpak install -y flathub "$app" &>/dev/null || true
+        done
     fi
 }
 
 # Override: Install language runtimes
 install_runtime() {
     log_section "Installing language runtimes"
-    
-    # Node.js
+
+    # Node.js — NodeSource LTS (apt's nodejs is too stale)
     if ! command -v node &>/dev/null; then
-        log_info "Installing Node.js..."
+        log_info "Installing Node.js (NodeSource LTS)..."
         curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
         sudo apt install -y nodejs &>/dev/null
     fi
-    
-    # Python
-    install_apt_package "python3"
-    install_apt_package "python3-pip"
-    install_apt_package "python3-venv"
-    
-    # Rust
+
+    # Python + pipx via catalog
+    install_package_list install_apt_package debian \
+        $PACKAGES_RUNTIME $PACKAGES_RUNTIME_DEBIAN
+
+    # Rust handled out-of-band (rustup, not apt)
     if ! command -v cargo &>/dev/null; then
         log_info "Installing Rust..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

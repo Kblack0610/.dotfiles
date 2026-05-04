@@ -67,6 +67,21 @@ setup_git() {
     fi
 }
 
+# Helper: Install package with brew (idempotent)
+install_brew_package() {
+    local package="$1"
+    if brew list --formula 2>/dev/null | grep -q "^${package}$"; then
+        log_info "$package already installed"
+        return 0
+    fi
+    log_info "Installing $package..."
+    if brew install "$package" &>/dev/null; then
+        log_info "✓ $package installed"
+    else
+        log_warning "✗ Failed to install $package"
+    fi
+}
+
 # Install Homebrew if needed
 install_homebrew() {
     if ! command -v brew &>/dev/null; then
@@ -113,72 +128,35 @@ install_from_brewfile() {
 }
 
 # Override: Install basics
+# Brewfile is the primary path; if it's missing, fall back to PACKAGES_BASIC
+# from the catalog so we still get a usable CLI floor.
 install_basics() {
     log_section "Installing basic requirements"
-    
-    # Try Brewfile first
+
     if [[ -f "$BREWFILE_PATH" ]]; then
         install_from_brewfile
     else
-        # Fallback to manual installation
-        local packages=(
-            "coreutils"
-            "findutils"
-            "gnu-sed"
-            "wget"
-            "curl"
-            "git"
-            "stow"
-        )
-        
-        for pkg in "${packages[@]}"; do
-            if ! brew list --formula 2>/dev/null | grep -q "^${pkg}$"; then
-                log_info "Installing $pkg..."
-                brew install "$pkg" &>/dev/null
-            fi
-        done
+        log_warning "Brewfile not found — falling back to catalog PACKAGES_BASIC"
+        # Mac-specific augmentation: GNU coreutils for shell-script portability
+        install_package_list install_brew_package mac \
+            $PACKAGES_BASIC $PACKAGES_BASIC_MAC \
+            coreutils findutils gnu-sed
     fi
 }
 
-# Override: Install development tools
+# Override: Install development tools (catalog-driven; idempotent against Brewfile)
 install_tools() {
     log_section "Installing development tools"
-    
-    # Brewfile handles most tools, but we can add extras here
-    local tools=(
-        "ripgrep"
-        "fzf"
-        "gh"
-        "jq"
-        "tree"
-    )
-    
-    for tool in "${tools[@]}"; do
-        if ! brew list --formula 2>/dev/null | grep -q "^${tool}$"; then
-            log_info "Installing $tool..."
-            brew install "$tool" &>/dev/null
-        fi
-    done
+    install_package_list install_brew_package mac \
+        $PACKAGES_DEV $PACKAGES_DEV_MAC
 }
 
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    
-    local packages=(
-        "zsh"
-        "starship"
-        "zoxide"
-        "cowsay"
-        "fortune"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        if ! brew list --formula 2>/dev/null | grep -q "^${pkg}$"; then
-            log_info "Installing $pkg..."
-            brew install "$pkg" &>/dev/null
-        fi
-    done
+    install_package_list install_brew_package mac \
+        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_MAC \
+        starship zoxide
 }
 
 # Override: Install GUI applications

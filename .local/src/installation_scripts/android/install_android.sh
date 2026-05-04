@@ -46,59 +46,22 @@ update_system() {
 # Override: Install basics
 install_basics() {
     log_section "Installing basic requirements"
-    
-    local packages=(
-        "vim"
-        "wget"
-        "curl"
-        "git"
-        "tmux"
-        "stow"
-        "openssh"
-        "termux-api"
-        "termux-tools"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_pkg_package "$pkg"
-    done
+    install_package_list install_pkg_package android \
+        $PACKAGES_BASIC $PACKAGES_BASIC_ANDROID
 }
 
 # Override: Install development tools
 install_tools() {
     log_section "Installing development tools"
-    
-    local tools=(
-        "ripgrep"
-        "fzf"
-        "jq"
-        "tree"
-        "htop"
-        "neofetch"
-        "zoxide"
-        "fd"
-        "bat"
-        "exa"
-    )
-    
-    for tool in "${tools[@]}"; do
-        install_pkg_package "$tool"
-    done
+    install_package_list install_pkg_package android \
+        $PACKAGES_DEV $PACKAGES_DEV_ANDROID
 }
 
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    
-    local packages=(
-        "zsh"
-        "cowsay"
-        "fortune"
-    )
-    
-    for pkg in "${packages[@]}"; do
-        install_pkg_package "$pkg"
-    done
+    install_package_list install_pkg_package android \
+        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_ANDROID
 }
 
 # Override: Install GUI applications
@@ -110,15 +73,10 @@ install_gui() {
 # Override: Install language runtimes
 install_runtime() {
     log_section "Installing language runtimes"
-    
-    # Node.js
-    install_pkg_package "nodejs"
-    
-    # Python
-    install_pkg_package "python"
-    install_pkg_package "python-pip"
-    
-    # Rust
+    install_package_list install_pkg_package android \
+        $PACKAGES_RUNTIME $PACKAGES_RUNTIME_ANDROID
+
+    # Rust comes from Termux's pkg, not rustup (rustup-init binaries are limited on Android)
     if ! command -v cargo &>/dev/null; then
         log_info "Installing Rust..."
         pkg install rust -y &>/dev/null
