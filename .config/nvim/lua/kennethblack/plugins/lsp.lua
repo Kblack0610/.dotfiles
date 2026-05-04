@@ -106,6 +106,34 @@ return {
           vim.keymap.set({ "n", "v" }, "<leader>la", vim.lsp.buf.code_action, opts)
         end,
       })
+
+      -- :Lsp* commands. nvim-lspconfig 3.x bails on registering these because of an
+      -- upstream check (`exists(':lsp') == 2`) that mis-fires on nvim 0.12.
+      local cmd = vim.api.nvim_create_user_command
+      cmd("LspInfo", "checkhealth vim.lsp", { desc = "Show LSP status" })
+      cmd("LspLog", function()
+        vim.cmd("tabnew " .. vim.lsp.get_log_path())
+      end, { desc = "Open LSP log" })
+      cmd("LspRestart", function(info)
+        local names = #info.fargs > 0 and info.fargs or vim.tbl_map(function(c) return c.name end, vim.lsp.get_clients())
+        for _, name in ipairs(names) do
+          for _, c in ipairs(vim.lsp.get_clients({ name = name })) do
+            vim.lsp.stop_client(c.id, true)
+          end
+          vim.defer_fn(function() vim.lsp.enable(name) end, 200)
+        end
+      end, { nargs = "*", desc = "Restart LSP client(s)" })
+
+      vim.keymap.set("n", "<leader>li", function()
+        local clients = vim.lsp.get_clients({ bufnr = 0 })
+        if #clients == 0 then
+          vim.notify("LSP: no clients attached to buffer " .. vim.api.nvim_buf_get_name(0), vim.log.levels.WARN)
+          return
+        end
+        for _, c in ipairs(clients) do
+          vim.notify(("LSP: %s  root=%s  id=%d"):format(c.name, c.config.root_dir or "?", c.id), vim.log.levels.INFO)
+        end
+      end, { desc = "LSP: list attached clients" })
     end,
   },
 }
