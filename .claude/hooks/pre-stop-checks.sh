@@ -27,7 +27,8 @@ if command -v jq >/dev/null 2>&1 \
 fi
 
 # --- CI result file (consumed by stop-post.d/90-eval-gate.sh) ---
-PROJ=$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")
+. "$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
+PROJ=$(resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}")
 DATE=$(date +%Y-%m-%d)
 CI_RESULT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/ci-result-${PROJ}-${DATE}.txt"
 mkdir -p "$(dirname "$CI_RESULT_FILE")" 2>/dev/null || true

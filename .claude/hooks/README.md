@@ -41,10 +41,10 @@ The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_
 
 ### `stop-post.d/` — runs after content checks (sequential, can block)
 
-Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check can block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message — same protocol as a top-level Stop hook.
+Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check *could* block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message — same protocol as a top-level Stop hook. The current post-check chooses NOT to block.
 
 Current post-checks:
-- `90-eval-gate.sh` — emits a 3–4 line JSON-block once per turn so the AI self-evaluates. Skips pure Q&A. Reads CI status from the file the content-check phase writes.
+- `90-eval-gate.sh` — non-blocking. Skips pure Q&A. Reads CI status from the file the content-check phase writes, then spawns `llm-judge.sh --mode eval` detached (`setsid nohup ... & disown`) and exits 0. The async judge appends a `## Session N` entry to `~/.agent/evals/<proj>/<date>.md` ~10–30s later. Judge logs land at `${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/judge.log`. Distinct from the manual `/my:judge` audit-mode invocation below — same script, different mode flag.
 
 ## Manual compliance audit (not Stop-time)
 

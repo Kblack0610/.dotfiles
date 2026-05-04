@@ -77,6 +77,14 @@ Core Principles
 
 The SessionStart hook injects plans, last-20 lessons, recent commits, and open/recent PRs into the conversation as `additionalContext`. Use that — don't re-run those commands. Escalate to Explore agents only if the injected context is inconclusive.
 
+### Plan Lifecycle
+
+Plan-mode plans are written to `~/.claude/plans/{slug}.md`. After every Stop, `stop-post.d/85-sync-plans.sh` copies any plan touched in the last 24h into `~/.agent/plans/{project}/`. The next SessionStart preflight then lists those files. The loop:
+
+  plan-mode write → stop-hook copy → next session preflight injects
+
+When you act on an existing plan, **update the plan file** — mark items complete, append a "Results" section. The agent-plans copy is a cache; the source-of-truth file lives in `~/.claude/plans/`. Edit there. Stale subdirs in `~/.agent/plans/` get archived by `~/.dotfiles/.config/shared-hooks/archive-stale-plans.sh` (run manually).
+
 ## Operating Model
 
 - Keep reusable shared rules and MCP definitions in `~/.dotfiles/.config/rulesync-global/`.
@@ -128,9 +136,9 @@ Entry skills: `/kb:workflow` (full G2I pipeline) and `/kb:implement` (feature �
 
 ## Project Mapping
 
-- `dotfiles`, `waybar`, `zellij` → `~/.agent/plans/dotfiles/`
-- `binks-agent`, `orchestrator` → `~/.agent/plans/binks-agent/`
-- `bnb-platform`, `monorepo` → `~/.agent/plans/bnb-platform/`
+Canonical project names come from `~/.dotfiles/.config/shared-hooks/project-map.json`. The SessionStart and Stop hooks resolve `$CLAUDE_PROJECT_DIR` through that map; edit the JSON file to add or rename a mapping rather than renaming `~/.agent/plans/` dirs by hand.
+
+Resolution order: exact-path → basename-alias → basename (leading dot stripped). So `/home/kblack0610/.dotfiles` → `dotfiles`, not `.dotfiles`.
 
 ## Compact Handoff
 
