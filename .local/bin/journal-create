@@ -126,13 +126,12 @@ fi
     if [[ -n "$PROJECTS_ITEMS" ]]; then
         echo "$PROJECTS_ITEMS"
     else
-        PROJECTS_DIR="$HOME/.notes/dev/projects"
+        PROJECTS_DIR="$HOME/.lab/projects/current"
         if [[ -d "$PROJECTS_DIR" ]]; then
             for entry in "$PROJECTS_DIR"/*/; do
                 [[ -d "$entry" ]] || continue
                 name=$(basename "$entry")
-                [[ "$name" == "archived" ]] && continue
-                echo "- [[dev/projects/${name}/summary.md|${name}]]"
+                echo "- [${name}]($PROJECTS_DIR/${name}/summary.md)"
             done
         fi
     fi

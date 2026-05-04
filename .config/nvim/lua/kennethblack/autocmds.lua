@@ -222,7 +222,7 @@ function _G.open_today_refs_in_neotree()
 end
 
 local function get_projects_dir()
-  return vim.fn.expand("~/.notes/dev/projects")
+  return vim.fn.expand("~/.lab/projects/current")
 end
 
 local function get_projects_anchor()
