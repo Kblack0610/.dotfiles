@@ -7,8 +7,8 @@
       "timeout_seconds": 30
     },
     "litellm": {
-      "base_url": "https://llm.home.kennethblack.me/v1",
-      "model": "smart",
+      "base_url": "https://llm.kblab.me/v1",
+      "model": "fast (Qwen3-4B)",
       "timeout_seconds": 45,
       "api_key_env": "LITELLM_MASTER_KEY"
     }

@@ -12,6 +12,7 @@ brew "lazygit"
 brew "neovim"
 brew "ripgrep"
 brew "starship"
+brew "tree-sitter"  # required by nvim-treesitter (main branch) to compile parsers
 brew "stow"
 brew "tmux"
 brew "smug"  # tmux session manager (replaced tmuxinator)
