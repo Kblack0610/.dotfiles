@@ -1,0 +1,16 @@
+# WSL2 global config — copied to %USERPROFILE%\.wslconfig
+# Applies to all WSL2 distros. Restart with `wsl --shutdown` to take effect.
+#
+# Tuned for the Deloitte Azure VDI: 8GB RAM / 2 CPU.
+# Cap WSL at 4GB so Windows + RDP session keep ~4GB.
+
+[wsl2]
+memory=4GB
+swap=2GB
+processors=2
+localhostForwarding=true
+
+# Don't auto-mount removable drives (corporate VDI has none anyway, but keeps logs clean)
+[automount]
+enabled=true
+options="metadata,umask=22,fmask=11"

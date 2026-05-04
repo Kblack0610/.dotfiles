@@ -1,0 +1,170 @@
+# GlazeWM config — copied to %USERPROFILE%\.glzr\glazewm\config.yaml
+# i3/Hyprland-style keybinds. Animations disabled because the VDI renders
+# over Azure RDP and animations stutter.
+
+general:
+  startup_commands: []
+  shutdown_commands: []
+  config_reload_commands: ["shell-exec %userprofile%/.glzr/glazewm/scripts/reload-glazewm.cmd"]
+  focus_follows_cursor: false
+  toggle_workspace_on_refocus: true
+  cursor_jump:
+    enabled: true
+    trigger: "monitor_focus"
+
+gaps:
+  scale_with_dpi: true
+  inner_gap: "6px"
+  outer_gap:
+    top: "6px"
+    right: "6px"
+    bottom: "6px"
+    left: "6px"
+
+window_effects:
+  focused_window:
+    border:
+      enabled: true
+      color: "#8be9fd"
+  other_windows:
+    border:
+      enabled: true
+      color: "#44475a"
+
+window_behavior:
+  initial_state: "tiling"
+  state_defaults:
+    floating:
+      centered: true
+      shown_on_top: false
+    fullscreen:
+      maximized: true
+      shown_on_top: false
+
+workspaces:
+  - name: "1"
+    display_name: "1 · term"
+  - name: "2"
+    display_name: "2 · web"
+  - name: "3"
+    display_name: "3 · code"
+  - name: "4"
+    display_name: "4 · chat"
+  - name: "5"
+  - name: "6"
+  - name: "7"
+  - name: "8"
+  - name: "9"
+
+window_rules:
+  - commands: ["ignore"]
+    match:
+      - window_process: { equals: "Windows.App" }
+      - window_process: { equals: "msrdc" }
+      - window_process: { equals: "ApplicationFrameHost" }
+      - window_class: { regex: ".*Microsoft\\.AAD\\.BrokerPlugin.*" }
+
+binding_modes:
+  - name: "resize"
+    keybindings:
+      - commands: ["resize --width -2%"]
+        bindings: ["h", "left"]
+      - commands: ["resize --width +2%"]
+        bindings: ["l", "right"]
+      - commands: ["resize --height +2%"]
+        bindings: ["k", "up"]
+      - commands: ["resize --height -2%"]
+        bindings: ["j", "down"]
+      - commands: ["wm-disable-binding-mode --name resize"]
+        bindings: ["escape", "enter"]
+
+keybindings:
+  # Spawn terminal — Windows Terminal opening WSL Debian by default
+  - commands: ["shell-exec wt.exe"]
+    bindings: ["alt+enter"]
+
+  # Close focused
+  - commands: ["close"]
+    bindings: ["alt+shift+q"]
+
+  # Reload config
+  - commands: ["wm-reload-config"]
+    bindings: ["alt+shift+r"]
+
+  # Exit GlazeWM
+  - commands: ["wm-exit"]
+    bindings: ["alt+shift+e"]
+
+  # Toggle floating / tiling / fullscreen
+  - commands: ["toggle-floating --centered"]
+    bindings: ["alt+shift+space"]
+  - commands: ["toggle-tiling-direction"]
+    bindings: ["alt+v"]
+  - commands: ["toggle-fullscreen"]
+    bindings: ["alt+f"]
+
+  # Focus
+  - commands: ["focus --direction left"]
+    bindings: ["alt+h", "alt+left"]
+  - commands: ["focus --direction right"]
+    bindings: ["alt+l", "alt+right"]
+  - commands: ["focus --direction up"]
+    bindings: ["alt+k", "alt+up"]
+  - commands: ["focus --direction down"]
+    bindings: ["alt+j", "alt+down"]
+
+  # Move
+  - commands: ["move --direction left"]
+    bindings: ["alt+shift+h", "alt+shift+left"]
+  - commands: ["move --direction right"]
+    bindings: ["alt+shift+l", "alt+shift+right"]
+  - commands: ["move --direction up"]
+    bindings: ["alt+shift+k", "alt+shift+up"]
+  - commands: ["move --direction down"]
+    bindings: ["alt+shift+j", "alt+shift+down"]
+
+  # Resize mode
+  - commands: ["wm-enable-binding-mode --name resize"]
+    bindings: ["alt+r"]
+
+  # Workspaces
+  - commands: ["focus --workspace 1"]
+    bindings: ["alt+1"]
+  - commands: ["focus --workspace 2"]
+    bindings: ["alt+2"]
+  - commands: ["focus --workspace 3"]
+    bindings: ["alt+3"]
+  - commands: ["focus --workspace 4"]
+    bindings: ["alt+4"]
+  - commands: ["focus --workspace 5"]
+    bindings: ["alt+5"]
+  - commands: ["focus --workspace 6"]
+    bindings: ["alt+6"]
+  - commands: ["focus --workspace 7"]
+    bindings: ["alt+7"]
+  - commands: ["focus --workspace 8"]
+    bindings: ["alt+8"]
+  - commands: ["focus --workspace 9"]
+    bindings: ["alt+9"]
+  - commands: ["focus --recent-workspace"]
+    bindings: ["alt+tab"]
+
+  # Move window to workspace
+  - commands: ["move-to-workspace --workspace 1"]
+    bindings: ["alt+shift+1"]
+  - commands: ["move-to-workspace --workspace 2"]
+    bindings: ["alt+shift+2"]
+  - commands: ["move-to-workspace --workspace 3"]
+    bindings: ["alt+shift+3"]
+  - commands: ["move-to-workspace --workspace 4"]
+    bindings: ["alt+shift+4"]
+  - commands: ["move-to-workspace --workspace 5"]
+    bindings: ["alt+shift+5"]
+  - commands: ["move-to-workspace --workspace 6"]
+    bindings: ["alt+shift+6"]
+  - commands: ["move-to-workspace --workspace 7"]
+    bindings: ["alt+shift+7"]
+  - commands: ["move-to-workspace --workspace 8"]
+    bindings: ["alt+shift+8"]
+  - commands: ["move-to-workspace --workspace 9"]
+    bindings: ["alt+shift+9"]
