@@ -38,13 +38,13 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 function Install-Pkg {
     param([string]$Id)
     Write-Step "winget install $Id"
-    $listed = winget list --id $Id --exact 2>$null | Out-String
+    $listed = winget list --id $Id --exact --accept-source-agreements --source winget 2>$null | Out-String
     if ($listed -match [regex]::Escape($Id)) {
         Write-Skip 'already installed'
         return
     }
     try {
-        winget install --id $Id --exact --silent --accept-source-agreements --accept-package-agreements
+        winget install --id $Id --exact --silent --source winget --accept-source-agreements --accept-package-agreements
     } catch {
         Write-Warning "Failed to install $Id : $_"
     }
