@@ -124,6 +124,20 @@ wsl --list --verbose        # Debian, state Running, version 2
 
 GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config.
 
+## Optional: debloat
+
+`debloat.ps1` is an opt-in, HKCU-only noise reducer (widgets, Start recommendations,
+Spotlight ads, Quick Access frequent/recent, OneDrive ads in Explorer, RDP
+animations). It's intentionally minimal: no admin, no AppX removal, no service
+edits, no telemetry policies — nothing that fights the corporate image.
+
+```pwsh
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\debloat.ps1"
+```
+
+It restarts Explorer at the end to apply taskbar changes; pass `-NoRestartExplorer`
+to skip that. Some Spotlight surfaces only fully clear after sign-out.
+
 ## Caveats
 
 - **8 GB VDI RAM**: keep WSL's cap at 4 GB. Run Teams on your physical Mac (per Deloitte's VDI best-practices slide) — don't double up inside the VDI.
