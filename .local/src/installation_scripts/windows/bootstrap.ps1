@@ -1,51 +1,50 @@
-# bootstrap.ps1 — minimal entry point for the Deloitte Win11 VDI
+# bootstrap.ps1 — minimal entry point for the Deloitte Win11 VDI.
+# Uses winget (built into Win11) — no third-party bootstrapping, no TLS
+# fiddling, no proxy-blocked Cloudflare endpoints.
 #
-# One-liner invocation (when the VDI allows outbound HTTPS to GitHub):
+# One-liner invocation:
 #   irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
 #
-# OneDrive fallback:
-#   1. Drop this file in your OneDrive on the Mac.
-#   2. In the VDI, open PowerShell and run:
-#      pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
+# Day-1 (skip WSL while you wait for Anton):
+#   $env:DOTFILES_SKIP_WSL=1; irm <same url> | iex
+#
+# OneDrive fallback (when raw.githubusercontent.com is blocked):
+#   pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
 #
 # What this does:
-#   1. Installs scoop (user-mode package manager).
-#   2. scoop install git
-#   3. git clone the dotfiles to %USERPROFILE%\.dotfiles
-#   4. Hands off to install_windows.ps1 for the rest.
+#   1. Verifies winget is available (built into Win11 / "App Installer" on Win10).
+#   2. winget install Git.Git (skipped if git already on PATH).
+#   3. git clones the dotfiles to %USERPROFILE%\.dotfiles.
+#   4. Hands off to install_windows.ps1.
 #
 # Idempotent: re-running is safe.
 
 $ErrorActionPreference = 'Stop'
 
-# Force TLS 1.2+. Windows PowerShell 5.1 defaults to TLS 1.0/1.1, which
-# get.scoop.sh and many other modern services reject. -bor 3072 adds
-# TLS 1.2 (and 0x3000 covers TLS 1.3 on systems that support it).
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-
-$DotfilesUrl  = 'https://github.com/Kblack0610/.dotfiles.git'
-$DotfilesDir  = Join-Path $env:USERPROFILE '.dotfiles'
+$DotfilesUrl = 'https://github.com/Kblack0610/.dotfiles.git'
+$DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
-# 1. Install scoop if missing
-if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
-    Write-Step 'Installing scoop'
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-    Invoke-RestMethod -Uri 'https://get.scoop.sh' | Invoke-Expression
-} else {
-    Write-Step 'scoop already installed'
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw @'
+winget not found. On Windows 11 it is built-in. On Windows 10, install
+"App Installer" from the Microsoft Store, then re-run this command.
+'@
 }
 
-# 2. scoop install git
+# 1. git via winget
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Step 'Installing git via scoop'
-    scoop install git
+    Write-Step 'winget install Git.Git'
+    winget install --id Git.Git --exact --silent --accept-source-agreements --accept-package-agreements
+    # Refresh PATH so this session sees git without a restart
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path', 'User')
 } else {
     Write-Step 'git already installed'
 }
 
-# 3. Clone the dotfiles repo
+# 2. Clone the dotfiles repo
 if (-not (Test-Path $DotfilesDir)) {
     Write-Step "Cloning dotfiles to $DotfilesDir"
     git clone $DotfilesUrl $DotfilesDir
@@ -54,8 +53,7 @@ if (-not (Test-Path $DotfilesDir)) {
     git -C $DotfilesDir pull --ff-only
 }
 
-# 4. Hand off — pass -SkipWsl through if $env:DOTFILES_SKIP_WSL is set.
-# That env var is the only way to thread args through `irm | iex`.
+# 3. Hand off — pass -SkipWsl through if $env:DOTFILES_SKIP_WSL is set.
 $Installer = Join-Path $DotfilesDir '.local\src\installation_scripts\windows\install_windows.ps1'
 if (-not (Test-Path $Installer)) {
     throw "Installer not found at $Installer — bad clone?"

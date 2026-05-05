@@ -1,12 +1,10 @@
-# install_windows.ps1 — main Windows installer for the Deloitte Win11 VDI
-#
-# Reentrant. Each step is guarded so re-running this script is safe.
+# install_windows.ps1 — main Windows installer for the Deloitte Win11 VDI.
+# Uses winget exclusively. Each step is guarded so re-running is safe.
 #
 # Parameters:
 #   -SkipWsl   Skip WSL/Debian install + the Linux installer that runs inside.
-#              Use this on day 1 (before Anton enables WSL2) so you can still
-#              get scoop, Windows Terminal, GlazeWM, and the PowerShell profile.
-#              Re-run without -SkipWsl after WSL2 is enabled to finish the rest.
+#              Use on day 1 (before Anton enables WSL2) so you still get
+#              Windows-side tooling. Re-run later without -SkipWsl to finish.
 #
 # Layout assumed:
 #   $env:USERPROFILE\.dotfiles\
@@ -23,13 +21,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Force TLS 1.2+ (same reason as bootstrap.ps1 — Windows PowerShell 5.1
-# defaults reject some modern endpoints).
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-
 $DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
 $WinCfg      = Join-Path $DotfilesDir '.config\windows'
-$DotfilesUrl = 'https://github.com/Kblack0610/.dotfiles.git'
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Skip($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
@@ -38,66 +31,62 @@ if (-not (Test-Path $WinCfg)) {
     throw "Expected $WinCfg — run bootstrap.ps1 first or fix the clone."
 }
 
-# --- 1. scoop --------------------------------------------------------------
-Write-Step 'scoop'
-if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-    Invoke-RestMethod -Uri 'https://get.scoop.sh' | Invoke-Expression
-} else {
-    Write-Skip 'already installed'
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw 'winget not found. On Win11 it is built-in.'
 }
 
-# Add buckets we need (extras has GlazeWM, Windows Terminal)
-$buckets = @(scoop bucket list 6>&1 | Out-String)
-foreach ($b in @('extras', 'nerd-fonts')) {
-    if ($buckets -notmatch [regex]::Escape($b)) {
-        Write-Step "scoop bucket add $b"
-        scoop bucket add $b
-    } else {
-        Write-Skip "bucket $b already present"
-    }
-}
-
-# --- 2. scoop packages -----------------------------------------------------
-# Windows-side essentials. The ripgrep/fd/fzf/lazygit/neovim group keeps
-# native PowerShell sessions productive (especially in -SkipWsl mode while
-# you wait for WSL2 to be enabled), and is also useful afterward for the
-# occasional Windows-side script.
-$ScoopPkgs = @(
-    'git', 'starship', 'gsudo',
-    'glazewm', 'windows-terminal', 'JetBrainsMono-NF',
-    'ripgrep', 'fd', 'fzf', 'lazygit', 'neovim'
-)
-foreach ($pkg in $ScoopPkgs) {
-    Write-Step "scoop install $pkg"
-    $installed = scoop list $pkg 6>&1 | Select-String -Pattern "^$pkg\s" -Quiet
-    if ($installed) {
+function Install-Pkg {
+    param([string]$Id)
+    Write-Step "winget install $Id"
+    $listed = winget list --id $Id --exact 2>$null | Out-String
+    if ($listed -match [regex]::Escape($Id)) {
         Write-Skip 'already installed'
-    } else {
-        scoop install $pkg
+        return
+    }
+    try {
+        winget install --id $Id --exact --silent --accept-source-agreements --accept-package-agreements
+    } catch {
+        Write-Warning "Failed to install $Id : $_"
     }
 }
 
-# --- 3. WSL2 + Debian ------------------------------------------------------
+# --- 1. winget packages ----------------------------------------------------
+# Order: git first (already done by bootstrap, but cheap to verify), then
+# native dev tools, then the prompt/sudo helpers, then GUI bits.
+$Packages = @(
+    'Git.Git',
+    'Neovim.Neovim',
+    'BurntSushi.ripgrep.MSVC',
+    'sharkdp.fd',
+    'junegunn.fzf',
+    'JesseDuffield.lazygit',
+    'Starship.Starship',
+    'gerardog.gsudo',
+    'Microsoft.WindowsTerminal',
+    'glzr-io.glazewm',
+    'DEVCOM.JetBrainsMonoNerdFont'
+)
+foreach ($p in $Packages) { Install-Pkg $p }
+
+# Refresh PATH for this session so freshly-installed binaries are findable.
+$env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [System.Environment]::GetEnvironmentVariable('Path', 'User')
+
+# --- 2. WSL2 + Debian ------------------------------------------------------
 if ($SkipWsl) {
     Write-Step 'WSL2 Debian — skipped (-SkipWsl)'
 } else {
     Write-Step 'WSL2 Debian'
-
-    # Preflight — WSL must be platform-enabled. On the Deloitte VDI image this
-    # requires a ServiceNow ticket (Anton handles them). See windows/README.md.
     $wslStatus = & wsl.exe --status 2>&1
     if ($LASTEXITCODE -ne 0 -or $wslStatus -match 'is not installed') {
         throw @"
 WSL is not enabled on this VDI. Open a ServiceNow ticket (or message Anton)
-asking for 'WSL2 to be enabled on my Azure VDI'. After they confirm, re-run:
-  & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1"
+asking for 'WSL2 to be enabled on my Azure VDI'. After they confirm, re-run.
 
-If you'd like to set up the Windows-side tooling now and add WSL later, re-run with -SkipWsl:
+To set up the Windows-side tooling now and add WSL later:
   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -SkipWsl
 "@
     }
-
     $wslList = (& wsl.exe --list --quiet 2>$null) -join "`n"
     if ($wslList -notmatch 'Debian') {
         & wsl.exe --install -d Debian --no-launch
@@ -107,10 +96,7 @@ If you'd like to set up the Windows-side tooling now and add WSL later, re-run w
     }
 }
 
-# --- 4. Copy configs into their Windows-native locations -------------------
-# Symlinks would be nicer but require Developer Mode or admin on Windows.
-# Plain copies work everywhere and re-running this script keeps them fresh.
-
+# --- 3. Copy configs into their Windows-native locations -------------------
 function Copy-Config($src, $dst) {
     $dstDir = Split-Path -Parent $dst
     if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
@@ -126,18 +112,17 @@ Write-Step 'PowerShell profile'
 Copy-Config (Join-Path $WinCfg 'powershell\Microsoft.PowerShell_profile.ps1') $PROFILE
 
 Write-Step 'GlazeWM config'
-$glazeDir = Join-Path $env:USERPROFILE '.glzr\glazewm\config.yaml'
-Copy-Config (Join-Path $WinCfg 'glazewm\config.yaml') $glazeDir
+$glazePath = Join-Path $env:USERPROFILE '.glzr\glazewm\config.yaml'
+Copy-Config (Join-Path $WinCfg 'glazewm\config.yaml') $glazePath
 
 Write-Step '.wslconfig'
 Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.wslconfig')
 
-# --- 5. WSL Debian first-run + Linux installer -----------------------------
+# --- 4. WSL Debian first-run + Linux installer ----------------------------
 if ($SkipWsl) {
     Write-Step 'Linux installer inside WSL — skipped (-SkipWsl)'
 } else {
     Write-Step 'Bootstrapping WSL Debian'
-    # Detect whether Debian has a user yet by trying `whoami` as the default user.
     $debianUser = (& wsl.exe -d Debian -- whoami 2>$null).Trim()
     if (-not $debianUser -or $debianUser -eq 'root') {
         Write-Host @"
@@ -147,8 +132,6 @@ then exit the shell. This script will continue afterward.
         & wsl.exe -d Debian
     }
 
-    # Inside WSL: clone the dotfiles to ~/.dotfiles (separate from the Windows
-    # clone) and run the Linux installer + stow.
     $wslBootstrap = @'
 set -e
 DOTFILES="$HOME/.dotfiles"
@@ -177,12 +160,13 @@ Write-Host '================================================' -ForegroundColor G
 Write-Host ''
 Write-Host 'Next steps:' -ForegroundColor Yellow
 if ($SkipWsl) {
-    Write-Host '  1. Launch Windows Terminal (the default profile will fall back to PowerShell until WSL is enabled).'
-    Write-Host '  2. Start GlazeWM from the Start menu.'
-    Write-Host '  3. When Anton confirms WSL2 is enabled, re-run this script WITHOUT -SkipWsl to finish setup.'
+    Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
+    Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
+    Write-Host '  3. Launch Windows Terminal — pick "Git Bash" from the dropdown if your hands miss bash.'
+    Write-Host '  4. Start GlazeWM from the Start menu.'
+    Write-Host '  5. When Anton confirms WSL2 is enabled, re-run WITHOUT -SkipWsl to finish setup.'
 } else {
     Write-Host '  1. Run `wsl --shutdown` then start a new Debian shell so .wslconfig (4GB cap) takes effect.'
     Write-Host '  2. Launch Windows Terminal — Debian (WSL) is the default profile.'
-    Write-Host '  3. Start GlazeWM from the Start menu (or set it to autostart via Task Scheduler).'
-    Write-Host '  4. If outbound git is blocked in the VDI, see windows/README.md for the OneDrive fallback.'
+    Write-Host '  3. Start GlazeWM from the Start menu.'
 }
