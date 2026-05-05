@@ -1,0 +1,14 @@
+{
+  "paths": {
+    "/home/kblack0610/.dotfiles": "dotfiles",
+    "/home/kblack0610/dev/bnb/platform": "bnb-platform",
+    "/home/kblack0610/dev/binks-agent": "binks-agent"
+  },
+  "aliases": {
+    "waybar": "dotfiles",
+    "zellij": "dotfiles",
+    "monorepo": "bnb-platform",
+    "platform": "bnb-platform",
+    "orchestrator": "binks-agent"
+  }
+}
