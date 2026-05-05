@@ -1,8 +1,8 @@
 [Unit]
-Description=Apply night theme (tokyonight)
+Description=Apply night theme (ayaka)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/theme-switch tokyonight
+ExecStart=%h/.local/bin/theme-switch ayaka
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1

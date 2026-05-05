@@ -1,11 +1,11 @@
 ---
 name: workflow
-description: Run the full G2I workflow (brief -> spec -> code -> review)
+description: Run the full kb agent workflow (brief -> spec -> code -> review)
 argument-hint: [feature-description]
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task
 ---
 
-# G2I Development Workflow: $ARGUMENTS
+# Development Workflow: $ARGUMENTS
 
 Execute the full development lifecycle for: **$ARGUMENTS**
 

@@ -55,7 +55,7 @@ pnpm dev
 
 ## Project Configurations
 
-All G2I apps share the same State API pattern:
+All apps share the same State API pattern:
 
 ### Common State API Pattern
 - **Endpoint**: POST/GET/PATCH `/api/state`

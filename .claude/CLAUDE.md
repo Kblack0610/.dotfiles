@@ -125,14 +125,14 @@ If a skill doesn't yet exist for a domain you touch repeatedly, propose one rath
 
 ## Agent Delegation
 
-Non-trivial implementation flows through the G2I (Ghee-to-Implementation) pipeline:
+Non-trivial implementation flows through the `kb-*` agent pipeline:
 
 1. `kb-product-owner` — turns ambiguous asks into Product Briefs
 2. `kb-architect` — turns briefs into technical specs / conducts audits
 3. `kb-developer` — implements from specs with tests and docs
 4. `kb-qa` — verifies quality gates before merge
 
-Entry skills: `/kb:workflow` (full G2I pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents.
+Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents.
 
 ## Project Mapping
 
