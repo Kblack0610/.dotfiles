@@ -5,7 +5,7 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 ## What this gives you
 
 - **WSL2 Debian** — primary dev environment, runs the existing `linux/install_debian.sh` unchanged. Full parity with the Linux dotfiles: nvim, tmux, lazygit, ripgrep, fzf, zoxide, starship, zsh, etc.
-- **Windows-side native tools** via winget: git, neovim, ripgrep, fd, fzf, lazygit, starship. All on `$PATH` and usable directly in PowerShell.
+- **Windows-side native tools** via winget: git, neovim, ripgrep, fd, fzf, lazygit, starship, node (LTS), psmux (native tmux for Windows). All on `$PATH` and usable directly in PowerShell.
 - **Windows Terminal** with three profiles: Debian (WSL), PowerShell, Git Bash.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly).
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
@@ -73,7 +73,7 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
 1. Verifies `winget` is available (built into Win11).
 2. `winget install`s these IDs (each step is skipped if the package is already present):
    - `Git.Git`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`
-   - `Starship.Starship`
+   - `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`
    - `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`
    - `DEVCOM.JetBrainsMonoNerdFont`
 3. `wsl --install -d Debian --no-launch` (skipped with `-SkipWsl`).

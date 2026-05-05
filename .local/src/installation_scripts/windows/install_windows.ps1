@@ -64,6 +64,8 @@ $Packages = @(
     'junegunn.fzf',
     'JesseDuffield.lazygit',
     'Starship.Starship',
+    'OpenJS.NodeJS.LTS',
+    'marlocarlo.psmux',
     # gerardog.gsudo intentionally omitted: needs admin to install, which the
     # Deloitte Win11 VDI does not grant. Add back if you ever get admin.
     'Microsoft.WindowsTerminal',
