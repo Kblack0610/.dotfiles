@@ -51,5 +51,9 @@ user_pref("identity.fxaccounts.enabled", false);
 // Restore previous session (keeps tabs/tab groups across restarts)
 user_pref("browser.startup.page", 3);
 
+// === HOMEPAGE ===
+// Used for the Home button and new windows (not new tabs — that's mozilla.cfg)
+user_pref("browser.startup.homepage", "about:home");
+
 // === TAB GROUPS ===
 user_pref("browser.tabs.groups.enabled", true);
