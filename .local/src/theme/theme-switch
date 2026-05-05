@@ -43,7 +43,7 @@ ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar hyprland wallpape
 
 # Day/night auto-pick window (used by --auto)
 AUTO_DAY_THEME="jackie-brown"
-AUTO_NIGHT_THEME="tokyonight"
+AUTO_NIGHT_THEME="ayaka"
 AUTO_DAY_START=7    # inclusive — 07:00
 AUTO_NIGHT_START=19 # exclusive — 19:00
 
