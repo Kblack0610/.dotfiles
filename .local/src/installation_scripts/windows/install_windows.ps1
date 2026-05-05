@@ -23,6 +23,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Force TLS 1.2+ (same reason as bootstrap.ps1 — Windows PowerShell 5.1
+# defaults reject some modern endpoints).
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+
 $DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
 $WinCfg      = Join-Path $DotfilesDir '.config\windows'
 $DotfilesUrl = 'https://github.com/Kblack0610/.dotfiles.git'

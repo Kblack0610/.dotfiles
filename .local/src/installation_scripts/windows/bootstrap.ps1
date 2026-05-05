@@ -18,6 +18,11 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Force TLS 1.2+. Windows PowerShell 5.1 defaults to TLS 1.0/1.1, which
+# get.scoop.sh and many other modern services reject. -bor 3072 adds
+# TLS 1.2 (and 0x3000 covers TLS 1.3 on systems that support it).
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+
 $DotfilesUrl  = 'https://github.com/Kblack0610/.dotfiles.git'
 $DotfilesDir  = Join-Path $env:USERPROFILE '.dotfiles'
 
