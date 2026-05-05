@@ -49,10 +49,15 @@ if (-not (Test-Path $DotfilesDir)) {
     git -C $DotfilesDir pull --ff-only
 }
 
-# 4. Hand off
+# 4. Hand off — pass -SkipWsl through if $env:DOTFILES_SKIP_WSL is set.
+# That env var is the only way to thread args through `irm | iex`.
 $Installer = Join-Path $DotfilesDir '.local\src\installation_scripts\windows\install_windows.ps1'
 if (-not (Test-Path $Installer)) {
     throw "Installer not found at $Installer — bad clone?"
 }
 Write-Step "Running $Installer"
-& $Installer
+if ($env:DOTFILES_SKIP_WSL) {
+    & $Installer -SkipWsl
+} else {
+    & $Installer
+}

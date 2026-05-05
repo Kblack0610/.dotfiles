@@ -2,6 +2,12 @@
 #
 # Reentrant. Each step is guarded so re-running this script is safe.
 #
+# Parameters:
+#   -SkipWsl   Skip WSL/Debian install + the Linux installer that runs inside.
+#              Use this on day 1 (before Anton enables WSL2) so you can still
+#              get scoop, Windows Terminal, GlazeWM, and the PowerShell profile.
+#              Re-run without -SkipWsl after WSL2 is enabled to finish the rest.
+#
 # Layout assumed:
 #   $env:USERPROFILE\.dotfiles\
 #     .config\windows\terminal\settings.json
@@ -9,6 +15,11 @@
 #     .config\windows\glazewm\config.yaml
 #     .config\windows\wsl\.wslconfig
 #     .local\src\installation_scripts\linux\install_debian.sh
+
+[CmdletBinding()]
+param(
+    [switch]$SkipWsl
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -56,25 +67,32 @@ foreach ($pkg in $ScoopPkgs) {
 }
 
 # --- 3. WSL2 + Debian ------------------------------------------------------
-Write-Step 'WSL2 Debian'
+if ($SkipWsl) {
+    Write-Step 'WSL2 Debian — skipped (-SkipWsl)'
+} else {
+    Write-Step 'WSL2 Debian'
 
-# Preflight — WSL must be platform-enabled. On the Deloitte VDI image this
-# requires a ServiceNow ticket (Anton handles them). See windows/README.md.
-$wslStatus = & wsl.exe --status 2>&1
-if ($LASTEXITCODE -ne 0 -or $wslStatus -match 'is not installed') {
-    throw @"
+    # Preflight — WSL must be platform-enabled. On the Deloitte VDI image this
+    # requires a ServiceNow ticket (Anton handles them). See windows/README.md.
+    $wslStatus = & wsl.exe --status 2>&1
+    if ($LASTEXITCODE -ne 0 -or $wslStatus -match 'is not installed') {
+        throw @"
 WSL is not enabled on this VDI. Open a ServiceNow ticket (or message Anton)
 asking for 'WSL2 to be enabled on my Azure VDI'. After they confirm, re-run:
   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1"
-"@
-}
 
-$wslList = (& wsl.exe --list --quiet 2>$null) -join "`n"
-if ($wslList -notmatch 'Debian') {
-    & wsl.exe --install -d Debian --no-launch
-    Write-Host 'Debian installed. You will need to set a username/password the first time you launch it.' -ForegroundColor Yellow
-} else {
-    Write-Skip 'Debian already registered'
+If you'd like to set up the Windows-side tooling now and add WSL later, re-run with -SkipWsl:
+  & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -SkipWsl
+"@
+    }
+
+    $wslList = (& wsl.exe --list --quiet 2>$null) -join "`n"
+    if ($wslList -notmatch 'Debian') {
+        & wsl.exe --install -d Debian --no-launch
+        Write-Host 'Debian installed. You will need to set a username/password the first time you launch it.' -ForegroundColor Yellow
+    } else {
+        Write-Skip 'Debian already registered'
+    }
 }
 
 # --- 4. Copy configs into their Windows-native locations -------------------
@@ -103,20 +121,23 @@ Write-Step '.wslconfig'
 Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.wslconfig')
 
 # --- 5. WSL Debian first-run + Linux installer -----------------------------
-Write-Step 'Bootstrapping WSL Debian'
-# Detect whether Debian has a user yet by trying `whoami` as the default user.
-$debianUser = (& wsl.exe -d Debian -- whoami 2>$null).Trim()
-if (-not $debianUser -or $debianUser -eq 'root') {
-    Write-Host @"
+if ($SkipWsl) {
+    Write-Step 'Linux installer inside WSL — skipped (-SkipWsl)'
+} else {
+    Write-Step 'Bootstrapping WSL Debian'
+    # Detect whether Debian has a user yet by trying `whoami` as the default user.
+    $debianUser = (& wsl.exe -d Debian -- whoami 2>$null).Trim()
+    if (-not $debianUser -or $debianUser -eq 'root') {
+        Write-Host @"
 Debian needs a user account. Opening it now — set a username and password,
 then exit the shell. This script will continue afterward.
 "@ -ForegroundColor Yellow
-    & wsl.exe -d Debian
-}
+        & wsl.exe -d Debian
+    }
 
-# Inside WSL: clone the dotfiles to ~/.dotfiles (separate from the Windows
-# clone) and run the Linux installer + stow.
-$wslBootstrap = @'
+    # Inside WSL: clone the dotfiles to ~/.dotfiles (separate from the Windows
+    # clone) and run the Linux installer + stow.
+    $wslBootstrap = @'
 set -e
 DOTFILES="$HOME/.dotfiles"
 if [ ! -d "$DOTFILES" ]; then
@@ -129,16 +150,27 @@ fi
 bash "$DOTFILES/.local/src/installation_scripts/linux/install_debian.sh" || true
 cd "$DOTFILES" && stow --target="$HOME" --restow . 2>/dev/null || true
 '@
-& wsl.exe -d Debian -- bash -c $wslBootstrap
+    & wsl.exe -d Debian -- bash -c $wslBootstrap
+}
 
 # --- Done ------------------------------------------------------------------
 Write-Host ''
 Write-Host '================================================' -ForegroundColor Green
-Write-Host '  Windows VDI dotfiles setup complete.' -ForegroundColor Green
+if ($SkipWsl) {
+    Write-Host '  Windows-side setup complete (WSL skipped).' -ForegroundColor Green
+} else {
+    Write-Host '  Windows VDI dotfiles setup complete.' -ForegroundColor Green
+}
 Write-Host '================================================' -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next steps:' -ForegroundColor Yellow
-Write-Host '  1. Run `wsl --shutdown` then start a new Debian shell so .wslconfig (4GB cap) takes effect.'
-Write-Host '  2. Launch Windows Terminal — Debian (WSL) is the default profile.'
-Write-Host '  3. Start GlazeWM from the Start menu (or set it to autostart via Task Scheduler).'
-Write-Host '  4. If outbound git is blocked in the VDI, see windows/README.md for the OneDrive fallback.'
+if ($SkipWsl) {
+    Write-Host '  1. Launch Windows Terminal (the default profile will fall back to PowerShell until WSL is enabled).'
+    Write-Host '  2. Start GlazeWM from the Start menu.'
+    Write-Host '  3. When Anton confirms WSL2 is enabled, re-run this script WITHOUT -SkipWsl to finish setup.'
+} else {
+    Write-Host '  1. Run `wsl --shutdown` then start a new Debian shell so .wslconfig (4GB cap) takes effect.'
+    Write-Host '  2. Launch Windows Terminal — Debian (WSL) is the default profile.'
+    Write-Host '  3. Start GlazeWM from the Start menu (or set it to autostart via Task Scheduler).'
+    Write-Host '  4. If outbound git is blocked in the VDI, see windows/README.md for the OneDrive fallback.'
+}

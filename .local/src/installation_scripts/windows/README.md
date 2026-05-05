@@ -13,7 +13,7 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 
 ## Preflight: enable WSL2 on the VDI image
 
-WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. Microsoft's `wsl --install` command will fail without it. Before running the bootstrap:
+WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. Microsoft's `wsl --install` command will fail without it. Before running the WSL portion:
 
 1. Open a ServiceNow ticket (or message Anton, who handles these for the engineering teams) asking for **WSL2 to be enabled on your Azure VDI**.
 2. After they confirm, in PowerShell on the VDI run:
@@ -22,7 +22,7 @@ WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. Micros
    ```
    You should see something like *"Default Version: 2"* and the WSL kernel version. If you see *"WSL is not installed"* or a *0x80370102*-style error, it's not enabled yet — go back to step 1.
 
-Once `wsl --status` looks healthy, proceed.
+Once `wsl --status` looks healthy, proceed with the full install. **If you want to set up the Windows side first while you wait for Anton, see [Day-1 mode](#day-1-mode-skipwsl) below.**
 
 ## How to install
 
@@ -51,6 +51,23 @@ If even GitHub is blocked inside the VDI, drop the whole repo (zipped) into OneD
 ```pwsh
 & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1"
 ```
+
+### Day-1 mode (-SkipWsl)
+
+If Anton hasn't enabled WSL2 yet, you can still install the Windows side (scoop, Windows Terminal, GlazeWM, PowerShell profile) and add WSL later.
+
+```pwsh
+# One-liner — sets the env var that bootstrap.ps1 reads
+$env:DOTFILES_SKIP_WSL=1; irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
+```
+
+Or after the repo is already cloned:
+
+```pwsh
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -SkipWsl
+```
+
+When Anton confirms WSL2 is enabled, re-run **without** `-SkipWsl` (or without the env var) to finish the rest. The script is idempotent — it will skip the Windows-side bits it already did.
 
 ## What the installer does (in order)
 
