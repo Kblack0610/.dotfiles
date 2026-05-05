@@ -16,8 +16,12 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
 | `install.sh` | — | One-shot installer |
 
-The local startpage referenced by `mozilla.cfg` lives at
-`~/.local/share/firefox-newtab/index.html` (not in this repo — it's user content).
+The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
+Edit that one line to swap targets — local file (`file://...`),
+hosted Bonjourr (`https://online.bonjourr.fr/`), `about:home`, or a real site.
+
+If using a `file://` URL, the HTML lives at
+`~/.local/share/firefox-newtab/index.html` (not in this repo — user content).
 
 ## Install / re-install
 
