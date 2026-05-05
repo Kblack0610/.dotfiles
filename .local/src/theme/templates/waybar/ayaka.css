@@ -1,0 +1,216 @@
+/* Waybar Style Configuration - Ayaka Theme */
+
+* {
+    font-family: "JetBrainsMono Nerd Font", "Font Awesome 6 Free", monospace;
+    font-size: 15px;
+}
+
+window#waybar {
+    background-color: rgba(54, 40, 61, 0.9);
+    color: #cedaeb;
+    border-bottom: 2px solid rgba(139, 184, 233, 0.3);
+}
+
+window#waybar.hidden {
+    opacity: 0.2;
+}
+
+/* Default button styling */
+button {
+    box-shadow: inset 0 -3px transparent;
+    border: none;
+    border-radius: 0;
+}
+
+button:hover {
+    background: inherit;
+    box-shadow: inset 0 -3px #cedaeb;
+}
+
+/* Workspaces */
+#workspaces button {
+    padding: 2px 10px;
+    color: #cedaeb;
+    background-color: transparent;
+}
+
+#workspaces button:hover {
+    background: rgba(139, 184, 233, 0.2);
+}
+
+#workspaces button.active {
+    background-color: rgba(139, 184, 233, 0.3);
+    color: #8BB8E9;
+    box-shadow: inset 0 -3px #8BB8E9;
+}
+
+#workspaces button.urgent {
+    background-color: rgba(229, 157, 177, 0.3);
+    color: #E59DB1;
+}
+
+/* Claude Agents Module */
+#custom-claude-agents {
+    padding: 2px 16px;
+    margin: 4px 6px;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 16px;
+    transition: all 0.3s ease;
+}
+
+#custom-claude-agents.inactive {
+    background-color: rgba(144, 152, 164, 0.3);
+    color: #9098a4;
+}
+
+#custom-claude-agents.ready {
+    background-color: rgba(171, 140, 174, 0.2);
+    color: #AB8CAE;
+}
+
+#custom-claude-agents.working {
+    background-color: rgba(139, 184, 233, 0.3);
+    color: #8BB8E9;
+    border-left: 3px solid #8BB8E9;
+}
+
+#custom-claude-agents.urgent {
+    background-color: rgba(229, 157, 177, 0.4);
+    color: #E59DB1;
+    border-left: 3px solid #E59DB1;
+    font-weight: bold;
+}
+
+/* Common module styling for right-side modules */
+#clock,
+#battery,
+#cpu,
+#memory,
+#disk,
+#temperature,
+#backlight,
+#network,
+#pulseaudio,
+#custom-media,
+#tray,
+#mode,
+#idle_inhibitor,
+#scratchpad,
+#power-profiles-daemon,
+#custom-power,
+#custom-bluetooth,
+#mpd {
+    padding: 2px 12px;
+    margin: 5px 3px;
+    border-radius: 6px;
+    background-color: rgba(71, 51, 81, 0.4);
+    color: #cedaeb;
+}
+
+#clock {
+    background-color: rgba(139, 184, 233, 0.2);
+    color: #8BB8E9;
+}
+
+#battery {
+    background-color: rgba(171, 140, 174, 0.2);
+    color: #AB8CAE;
+}
+
+#battery.charging, #battery.plugged {
+    color: #AB8CAE;
+    background-color: rgba(171, 140, 174, 0.25);
+}
+
+#battery.critical:not(.charging) {
+    background-color: rgba(229, 157, 177, 0.4);
+    color: #E59DB1;
+    border-left: 3px solid #E59DB1;
+}
+
+#cpu {
+    background-color: rgba(158, 160, 211, 0.2);
+    color: #9EA0D3;
+}
+
+#memory {
+    background-color: rgba(139, 184, 233, 0.2);
+    color: #8BB8E9;
+}
+
+#temperature {
+    background-color: rgba(229, 157, 177, 0.2);
+    color: #E59DB1;
+}
+
+#temperature.critical {
+    background-color: rgba(229, 157, 177, 0.3);
+    color: #E59DB1;
+}
+
+#network {
+    background-color: rgba(225, 180, 206, 0.2);
+    color: #E1B4CE;
+}
+
+#network.disconnected {
+    background-color: rgba(229, 157, 177, 0.2);
+    color: #E59DB1;
+}
+
+#pulseaudio {
+    background-color: rgba(158, 160, 211, 0.2);
+    color: #9EA0D3;
+}
+
+#pulseaudio.muted {
+    background-color: rgba(144, 152, 164, 0.3);
+    color: #9098a4;
+}
+
+#custom-bluetooth {
+    background-color: rgba(225, 180, 206, 0.2);
+    color: #E1B4CE;
+}
+
+#custom-power {
+    background-color: rgba(229, 157, 177, 0.2);
+    color: #E59DB1;
+    margin-right: 4px;
+}
+
+#idle_inhibitor {
+    background-color: rgba(229, 157, 177, 0.2);
+    color: #E59DB1;
+}
+
+#idle_inhibitor.activated {
+    background-color: rgba(171, 140, 174, 0.2);
+    color: #AB8CAE;
+}
+
+#tray {
+    background-color: rgba(71, 51, 81, 0.3);
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: rgba(229, 157, 177, 0.2);
+}
+
+/* Tooltip styling */
+tooltip {
+    background-color: rgba(54, 40, 61, 0.95);
+    border: 1px solid rgba(139, 184, 233, 0.4);
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #cedaeb;
+    padding: 4px;
+}
