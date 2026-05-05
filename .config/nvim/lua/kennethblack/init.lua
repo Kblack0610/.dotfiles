@@ -26,3 +26,6 @@ require("lazy").setup("kennethblack.plugins", {
   },
 })
 
+-- colorscheme — kept on its own line; theme-switch sed-rewrites the quoted name
+vim.cmd.colorscheme "jackie-brown"
+
