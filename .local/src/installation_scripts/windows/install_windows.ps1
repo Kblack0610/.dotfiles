@@ -44,7 +44,10 @@ function Install-Pkg {
         return
     }
     try {
-        winget install --id $Id --exact --silent --source winget --accept-source-agreements --accept-package-agreements
+        winget install --id $Id --exact --silent --scope user --source winget --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "winget install $Id exited $LASTEXITCODE (often: package only ships machine-scope and this VDI lacks admin)"
+        }
     } catch {
         Write-Warning "Failed to install $Id : $_"
     }
@@ -52,7 +55,7 @@ function Install-Pkg {
 
 # --- 1. winget packages ----------------------------------------------------
 # Order: git first (already done by bootstrap, but cheap to verify), then
-# native dev tools, then the prompt/sudo helpers, then GUI bits.
+# native dev tools, then the prompt, then GUI bits.
 $Packages = @(
     'Git.Git',
     'Neovim.Neovim',
@@ -61,7 +64,8 @@ $Packages = @(
     'junegunn.fzf',
     'JesseDuffield.lazygit',
     'Starship.Starship',
-    'gerardog.gsudo',
+    # gerardog.gsudo intentionally omitted: needs admin to install, which the
+    # Deloitte Win11 VDI does not grant. Add back if you ever get admin.
     'Microsoft.WindowsTerminal',
     'glzr-io.glazewm',
     'DEVCOM.JetBrainsMonoNerdFont'
