@@ -1,4 +1,4 @@
-# PowerShell profile — copied to $PROFILE
+# PowerShell profile - copied to $PROFILE
 # ($env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1)
 #
 # Kept thin: real shell life happens inside WSL Debian. This profile just
@@ -13,8 +13,12 @@ if (Get-Command starship -ErrorAction SilentlyContinue) {
 if (Get-Module -ListAvailable -Name PSReadLine) {
     Import-Module PSReadLine
     Set-PSReadLineOption -EditMode Emacs
-    Set-PSReadLineOption -PredictionSource HistoryAndPlugin
-    Set-PSReadLineOption -PredictionViewStyle ListView
+    # PredictionSource/PredictionViewStyle need PSReadLine >= 2.2 (Windows
+    # PowerShell 5.1 ships 2.0; PowerShell 7 ships a current version).
+    if ((Get-Module PSReadLine).Version -ge [version]'2.2.0') {
+        Set-PSReadLineOption -PredictionSource HistoryAndPlugin
+        Set-PSReadLineOption -PredictionViewStyle ListView
+    }
     Set-PSReadLineOption -HistorySearchCursorMovesToEnd
     Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
     Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
@@ -38,7 +42,7 @@ function wsld {
     else { wsl.exe -d Debian -- @args }
 }
 
-# Open the dotfiles repo in nvim (inside WSL — that's where it lives)
+# Open the dotfiles repo in nvim (inside WSL - that's where it lives)
 function dot {
     wsl.exe -d Debian --cd "~/.dotfiles" -- nvim
 }
