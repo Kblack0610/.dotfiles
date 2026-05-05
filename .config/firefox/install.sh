@@ -86,7 +86,42 @@ install_policies() {
     echo "  - Installed policies.json to $dist_dir"
 }
 
+# Install autoconfig.js + mozilla.cfg into the Firefox install directory.
+# This sets the new tab URL natively so Simple Tab Groups doesn't race against
+# a WebExtension new-tab handler. Wiped on every Firefox upgrade -- a pacman
+# hook (installed below) restores it post-transaction.
+install_autoconfig() {
+    local firefox_dir=""
+    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox; do
+        if [[ -d "$candidate" ]]; then
+            firefox_dir="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$firefox_dir" ]]; then
+        echo "Warning: Could not find Firefox install directory for autoconfig"
+        return
+    fi
+
+    sudo install -m 0644 "$SCRIPT_DIR/mozilla.cfg" "$firefox_dir/mozilla.cfg"
+    echo "  - Installed mozilla.cfg to $firefox_dir"
+    sudo install -m 0644 "$SCRIPT_DIR/autoconfig.js" "$firefox_dir/defaults/pref/autoconfig.js"
+    echo "  - Installed autoconfig.js to $firefox_dir/defaults/pref"
+}
+
+# Install a pacman hook so Firefox upgrades on Arch/CachyOS don't wipe
+# mozilla.cfg + autoconfig.js. Skipped on non-pacman systems.
+install_pacman_hook() {
+    [[ ! -d /etc/pacman.d ]] && return
+    sudo install -d -m 0755 /etc/pacman.d/hooks
+    sudo install -m 0644 "$SCRIPT_DIR/firefox-autoconfig.hook" /etc/pacman.d/hooks/firefox-autoconfig.hook
+    echo "  - Installed pacman hook at /etc/pacman.d/hooks/firefox-autoconfig.hook"
+}
+
 install_policies
+install_autoconfig
+install_pacman_hook
 
 echo ""
 echo "Done! Restart browser(s) to apply changes."

@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = firefox
+
+[Action]
+Description = Restoring Firefox autoconfig (mozilla.cfg + autoconfig.js)...
+When = PostTransaction
+Exec = /bin/sh -c 'install -m 0644 /home/kblack0610/.dotfiles/.config/firefox/mozilla.cfg /usr/lib/firefox/mozilla.cfg && install -m 0644 /home/kblack0610/.dotfiles/.config/firefox/autoconfig.js /usr/lib/firefox/defaults/pref/autoconfig.js'
