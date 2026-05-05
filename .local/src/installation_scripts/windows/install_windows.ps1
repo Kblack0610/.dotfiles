@@ -55,7 +55,15 @@ foreach ($b in @('extras', 'nerd-fonts')) {
 }
 
 # --- 2. scoop packages -----------------------------------------------------
-$ScoopPkgs = @('git', 'starship', 'gsudo', 'glazewm', 'windows-terminal', 'JetBrainsMono-NF')
+# Windows-side essentials. The ripgrep/fd/fzf/lazygit/neovim group keeps
+# native PowerShell sessions productive (especially in -SkipWsl mode while
+# you wait for WSL2 to be enabled), and is also useful afterward for the
+# occasional Windows-side script.
+$ScoopPkgs = @(
+    'git', 'starship', 'gsudo',
+    'glazewm', 'windows-terminal', 'JetBrainsMono-NF',
+    'ripgrep', 'fd', 'fzf', 'lazygit', 'neovim'
+)
 foreach ($pkg in $ScoopPkgs) {
     Write-Step "scoop install $pkg"
     $installed = scoop list $pkg 6>&1 | Select-String -Pattern "^$pkg\s" -Quiet
