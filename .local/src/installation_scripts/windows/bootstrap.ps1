@@ -1,5 +1,5 @@
-# bootstrap.ps1 — minimal entry point for the Deloitte Win11 VDI.
-# Uses winget (built into Win11) — no third-party bootstrapping, no TLS
+# bootstrap.ps1 - minimal entry point for the Deloitte Win11 VDI.
+# Uses winget (built into Win11) - no third-party bootstrapping, no TLS
 # fiddling, no proxy-blocked Cloudflare endpoints.
 #
 # One-liner invocation:
@@ -49,14 +49,14 @@ if (-not (Test-Path $DotfilesDir)) {
     Write-Step "Cloning dotfiles to $DotfilesDir"
     git clone $DotfilesUrl $DotfilesDir
 } else {
-    Write-Step "Dotfiles already at $DotfilesDir — pulling latest"
+    Write-Step "Dotfiles already at $DotfilesDir - pulling latest"
     git -C $DotfilesDir pull --ff-only
 }
 
-# 3. Hand off — pass -SkipWsl through if $env:DOTFILES_SKIP_WSL is set.
+# 3. Hand off - pass -SkipWsl through if $env:DOTFILES_SKIP_WSL is set.
 $Installer = Join-Path $DotfilesDir '.local\src\installation_scripts\windows\install_windows.ps1'
 if (-not (Test-Path $Installer)) {
-    throw "Installer not found at $Installer — bad clone?"
+    throw "Installer not found at $Installer - bad clone?"
 }
 Write-Step "Running $Installer"
 if ($env:DOTFILES_SKIP_WSL) {

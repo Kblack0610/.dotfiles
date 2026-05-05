@@ -1,4 +1,4 @@
-# install_windows.ps1 — main Windows installer for the Deloitte Win11 VDI.
+# install_windows.ps1 - main Windows installer for the Deloitte Win11 VDI.
 # Uses winget exclusively. Each step is guarded so re-running is safe.
 #
 # Parameters:
@@ -28,7 +28,7 @@ function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Skip($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 
 if (-not (Test-Path $WinCfg)) {
-    throw "Expected $WinCfg — run bootstrap.ps1 first or fix the clone."
+    throw "Expected $WinCfg - run bootstrap.ps1 first or fix the clone."
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -74,7 +74,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';
 
 # --- 2. WSL2 + Debian ------------------------------------------------------
 if ($SkipWsl) {
-    Write-Step 'WSL2 Debian — skipped (-SkipWsl)'
+    Write-Step 'WSL2 Debian - skipped (-SkipWsl)'
 } else {
     Write-Step 'WSL2 Debian'
     $wslStatus = & wsl.exe --status 2>&1
@@ -120,13 +120,13 @@ Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.w
 
 # --- 4. WSL Debian first-run + Linux installer ----------------------------
 if ($SkipWsl) {
-    Write-Step 'Linux installer inside WSL — skipped (-SkipWsl)'
+    Write-Step 'Linux installer inside WSL - skipped (-SkipWsl)'
 } else {
     Write-Step 'Bootstrapping WSL Debian'
     $debianUser = (& wsl.exe -d Debian -- whoami 2>$null).Trim()
     if (-not $debianUser -or $debianUser -eq 'root') {
         Write-Host @"
-Debian needs a user account. Opening it now — set a username and password,
+Debian needs a user account. Opening it now - set a username and password,
 then exit the shell. This script will continue afterward.
 "@ -ForegroundColor Yellow
         & wsl.exe -d Debian
@@ -162,11 +162,11 @@ Write-Host 'Next steps:' -ForegroundColor Yellow
 if ($SkipWsl) {
     Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
     Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
-    Write-Host '  3. Launch Windows Terminal — pick "Git Bash" from the dropdown if your hands miss bash.'
+    Write-Host '  3. Launch Windows Terminal - pick "Git Bash" from the dropdown if your hands miss bash.'
     Write-Host '  4. Start GlazeWM from the Start menu.'
     Write-Host '  5. When Anton confirms WSL2 is enabled, re-run WITHOUT -SkipWsl to finish setup.'
 } else {
     Write-Host '  1. Run `wsl --shutdown` then start a new Debian shell so .wslconfig (4GB cap) takes effect.'
-    Write-Host '  2. Launch Windows Terminal — Debian (WSL) is the default profile.'
+    Write-Host '  2. Launch Windows Terminal - Debian (WSL) is the default profile.'
     Write-Host '  3. Start GlazeWM from the Start menu.'
 }
