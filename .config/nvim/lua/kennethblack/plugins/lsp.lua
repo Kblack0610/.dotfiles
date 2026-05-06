@@ -1,4 +1,8 @@
-local ensure_installed = {
+-- Native Windows nvim is for quick edits on the VDI; real dev happens in WSL.
+-- Skip Mason auto-install there to avoid blocking startup on slow corp networks.
+local is_windows_native = vim.fn.has("win32") == 1 and vim.fn.has("wsl") == 0
+
+local ensure_installed = is_windows_native and {} or {
   "lua_ls",
   "ts_ls",
   "jsonls",
@@ -8,7 +12,6 @@ local ensure_installed = {
   "sqlls",
   "yamlls",
   "pyright",
-  "emmet_language_server",
   "omnisharp",
 }
 
@@ -47,9 +50,6 @@ return {
         end,
       })
 
-      vim.lsp.config("emmet_language_server", {
-        filetypes = { "html", "css", "scss", "javascriptreact", "typescriptreact", "javascript" },
-      })
 
       vim.lsp.config("eslint", { settings = { format = false } })
       vim.lsp.config("biome", {})
