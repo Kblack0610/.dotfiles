@@ -2,9 +2,11 @@
 # Uses winget exclusively. Each step is guarded so re-running is safe.
 #
 # Parameters:
-#   -SkipWsl   Skip WSL/Debian install + the Linux installer that runs inside.
-#              Use on day 1 (before Anton enables WSL2) so you still get
-#              Windows-side tooling. Re-run later without -SkipWsl to finish.
+#   -SkipWsl     Skip WSL/Debian install + the Linux installer that runs inside.
+#                Use on day 1 (before Anton enables WSL2) so you still get
+#                Windows-side tooling. Re-run later without -SkipWsl to finish.
+#   -ConfigOnly  Skip winget package install + WSL entirely; only deploy configs.
+#                Fast re-sync path after editing dotfiles. Implies -SkipWsl.
 #
 # Layout assumed:
 #   $env:USERPROFILE\.dotfiles\
@@ -16,8 +18,11 @@
 
 [CmdletBinding()]
 param(
-    [switch]$SkipWsl
+    [switch]$SkipWsl,
+    [switch]$ConfigOnly
 )
+
+if ($ConfigOnly) { $SkipWsl = $true }
 
 $ErrorActionPreference = 'Stop'
 
@@ -76,11 +81,15 @@ $Packages = @(
     'glzr-io.glazewm',
     'DEVCOM.JetBrainsMonoNerdFont'
 )
-foreach ($p in $Packages) { Install-Pkg $p }
+if ($ConfigOnly) {
+    Write-Step 'winget packages - skipped (-ConfigOnly)'
+} else {
+    foreach ($p in $Packages) { Install-Pkg $p }
 
-# Refresh PATH for this session so freshly-installed binaries are findable.
-$env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-            [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    # Refresh PATH for this session so freshly-installed binaries are findable.
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path', 'User')
+}
 
 # --- 2. WSL2 + Debian ------------------------------------------------------
 if ($SkipWsl) {
@@ -193,7 +202,9 @@ cd "$DOTFILES" && stow --target="$HOME" --restow . 2>/dev/null || true
 # --- Done ------------------------------------------------------------------
 Write-Host ''
 Write-Host '================================================' -ForegroundColor Green
-if ($SkipWsl) {
+if ($ConfigOnly) {
+    Write-Host '  Configs re-synced (packages + WSL skipped).' -ForegroundColor Green
+} elseif ($SkipWsl) {
     Write-Host '  Windows-side setup complete (WSL skipped).' -ForegroundColor Green
 } else {
     Write-Host '  Windows VDI dotfiles setup complete.' -ForegroundColor Green
@@ -201,7 +212,10 @@ if ($SkipWsl) {
 Write-Host '================================================' -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next steps:' -ForegroundColor Yellow
-if ($SkipWsl) {
+if ($ConfigOnly) {
+    Write-Host '  Reload GlazeWM (Alt+Ctrl+R) so the new keybindings take effect.'
+    Write-Host '  Restart any open Windows Terminal / nvim if you changed their configs.'
+} elseif ($SkipWsl) {
     Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
     Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
     Write-Host '  3. Launch Windows Terminal - pick "Git Bash" from the dropdown if your hands miss bash.'

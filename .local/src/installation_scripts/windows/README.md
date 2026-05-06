@@ -153,10 +153,14 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 ## Re-syncing after dotfiles changes
 
 ```pwsh
-# PowerShell (on the VDI)
+# Fast path: pull repo, deploy configs only (skips winget + WSL).
 git -C "$env:USERPROFILE\.dotfiles" pull
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1"
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -ConfigOnly
 ```
+
+After it finishes, reload GlazeWM (`Alt+Ctrl+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
+
+Drop `-ConfigOnly` if you also want the installer to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$Packages` in `install_windows.ps1`.
 
 ```sh
 # Or just the Linux side, inside WSL
