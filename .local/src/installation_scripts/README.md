@@ -4,20 +4,33 @@ A modular, function-based installation system for setting up development environ
 
 ## Quick Start
 
-```bash
-# Automatic OS detection and installation
-./install.sh
+### One-liner remote bootstrap (no clone needed)
 
-# Or run OS-specific installers directly
-./mac/install_mac.sh
+Linux / macOS / WSL — installs git if missing, clones to `~/.dotfiles`, picks the right OS installer:
+
+```bash
+# Via gh (works through corporate proxies that block raw.githubusercontent.com)
+gh api repos/Kblack0610/.dotfiles/contents/.local/src/installation_scripts/bootstrap.sh \
+  --jq '.content' | base64 -d | bash
+
+# Via curl (simpler, no gh auth needed)
+curl -fsSL https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/bootstrap.sh | bash
+```
+
+Windows VDI / Win11 — run from PowerShell:
+
+```pwsh
+irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
+```
+
+### From a checked-out repo
+
+```bash
+./install.sh                        # Auto-detect OS
+./mac/install_mac.sh                # Or run OS-specific directly
 ./linux/install_debian.sh
 ./linux/install_arch.sh
 ./android/install_android.sh
-```
-
-```pwsh
-# Windows VDI / Win11 — run from PowerShell, see windows/README.md
-irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
 ```
 
 ## Architecture
