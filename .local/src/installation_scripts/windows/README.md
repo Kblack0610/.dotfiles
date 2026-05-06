@@ -46,10 +46,10 @@ Clipboard between your Mac and the VDI is **disabled** by Deloitte policy. OneDr
    pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
    ```
 
-If even GitHub is blocked inside the VDI, zip the whole repo into OneDrive, expand to `%USERPROFILE%\.dotfiles`, then run the installer directly:
+If even GitHub is blocked inside the VDI, zip the whole repo into OneDrive, expand to `%USERPROFILE%\.dotfiles`, then run the entry point directly:
 
 ```pwsh
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1"
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1"
 ```
 
 ### Day-1 mode (-SkipWsl)
@@ -63,31 +63,42 @@ $env:DOTFILES_SKIP_WSL=1; irm https://raw.githubusercontent.com/Kblack0610/.dotf
 Or after the repo is already cloned:
 
 ```pwsh
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -SkipWsl
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -SkipWsl
 ```
 
-When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`. The script is idempotent — it'll skip the Windows-side bits it already did.
+When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`. The chain is idempotent — it'll skip the Windows-side bits it already did.
 
-## What the installer does (in order)
+## How the bootstrap is structured
 
-1. Verifies `winget` is available (built into Win11).
-2. `winget install`s these IDs (each step is skipped if the package is already present):
-   - `Git.Git`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`
-   - `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`
-   - `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`
-   - `DEVCOM.JetBrainsMonoNerdFont`
-3. `wsl --install -d Debian --no-launch` (skipped with `-SkipWsl`).
-4. Copies configs to their Windows-native homes:
-   - `.config/windows/terminal/settings.json` → `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json`
-   - `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` → `$PROFILE`
-   - `.config/windows/glazewm/config.yaml` → `%USERPROFILE%\.glzr\glazewm\config.yaml`
-   - `.config/windows/wsl/.wslconfig` → `%USERPROFILE%\.wslconfig`
-   - `.config/nvim/` → `%LOCALAPPDATA%\nvim\`
-   - `.config/opencode/` → `%APPDATA%\opencode\` (excluding `node_modules/`)
-   - `.config/starship.toml` → `%USERPROFILE%\.config\starship.toml`
-   - `.config/jesseduffield/lazygit/config.yml` → `%APPDATA%\lazygit\config.yml`
-5. First-launches Debian so you can pick a username/password (skipped with `-SkipWsl`).
-6. Inside Debian: clones the dotfiles to `~/.dotfiles`, runs `linux/install_debian.sh`, `stow`s the Linux configs.
+`bootstrap.ps1` is just a thin orchestrator. The work lives in three idempotent modules, each runnable on its own:
+
+| Step | Script | What it does |
+|------|--------|--------------|
+| 1 | `sync_dotfiles.ps1` | `winget install Git.Git` if missing, then clone or `git pull --ff-only` the repo into `%USERPROFILE%\.dotfiles`. |
+| 2 | `install_packages.ps1` | `winget install` each ID below, then `wsl --install -d Debian --no-launch` (skipped with `-SkipWsl`). |
+| 3 | `apply_configs.ps1` | Copy configs into their Windows-native homes (see table below), then bootstrap WSL Debian (skipped with `-SkipWsl`). |
+
+`bootstrap.ps1 -ConfigOnly` runs steps 1 + 3 only — the fast path after editing dotfiles.
+
+### Packages (step 2)
+
+`Git.Git`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `DEVCOM.JetBrainsMonoNerdFont`.
+
+### Config copies (step 3)
+
+| Source in repo | Destination on Windows |
+|---|---|
+| `.config/windows/terminal/settings.json` | `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json` |
+| `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` | `$PROFILE` |
+| `.config/windows/glazewm/config.yaml` | `%USERPROFILE%\.glzr\glazewm\config.yaml` |
+| `.config/windows/zebar/settings.json` | `%USERPROFILE%\.glzr\zebar\settings.json` |
+| `.config/windows/wsl/.wslconfig` | `%USERPROFILE%\.wslconfig` |
+| `.config/nvim/` | `%LOCALAPPDATA%\nvim\` |
+| `.config/opencode/` | `%APPDATA%\opencode\` (excluding `node_modules/`) |
+| `.config/starship.toml` | `%USERPROFILE%\.config\starship.toml` |
+| `.config/jesseduffield/lazygit/config.yml` | `%APPDATA%\lazygit\config.yml` |
+
+GlazeWM auto-launches Zebar via its `startup_commands` (`shell-exec zebar startup`), so the bar appears on every monitor (`monitorSelection.type=all` in the upstream starter pack).
 
 ## Why copy configs instead of symlinking?
 
@@ -146,6 +157,7 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 
 - **8 GB VDI RAM**: keep WSL's cap at 4 GB. Run Teams on your physical Mac (per Deloitte's VDI best-practices slide) — don't double up inside the VDI.
 - **GlazeWM over RDP**: animations are off. If tiling still stutters, fall back to FancyZones (PowerToys).
+- **Zebar bar**: lives at the top of every monitor (`monitorSelection: all`) and renders the GlazeWM workspace list + clock + system stats. The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on.
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.
 - **Weekly reboots**: the VDI re-images on a schedule. WSL persists across reboots, but if your VDI is ever wiped, re-run the bootstrap one-liner.
 - **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Deloitte VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_windows.ps1`.
@@ -153,14 +165,15 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 ## Re-syncing after dotfiles changes
 
 ```pwsh
-# Fast path: pull repo, deploy configs only (skips winget + WSL).
-git -C "$env:USERPROFILE\.dotfiles" pull
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\install_windows.ps1" -ConfigOnly
+# Fast path: pull repo + deploy configs only (skips winget + WSL).
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -ConfigOnly
 ```
 
-After it finishes, reload GlazeWM (`Alt+Ctrl+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
+After it finishes, reload GlazeWM (`Alt+Shift+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
 
-Drop `-ConfigOnly` if you also want the installer to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$Packages` in `install_windows.ps1`.
+Drop `-ConfigOnly` if you also want to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$Packages` in `install_packages.ps1`.
+
+You can also call any single module directly when you only want one piece — e.g. `& sync_dotfiles.ps1` to just `git pull`.
 
 ```sh
 # Or just the Linux side, inside WSL

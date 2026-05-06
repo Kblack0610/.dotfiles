@@ -3,8 +3,12 @@
 # over Azure RDP and animations stutter.
 
 general:
-  startup_commands: []
-  shutdown_commands: []
+  # `zebar startup` reads %USERPROFILE%\.glzr\zebar\settings.json and spawns the
+  # configured widget on every monitor (monitorSelection.type=all in the starter
+  # pack). Without this the bar only appears on whichever monitor zebar.exe was
+  # launched on, which made it look isolated.
+  startup_commands: ["shell-exec zebar startup"]
+  shutdown_commands: ["shell-exec taskkill /IM zebar.exe /F"]
   config_reload_commands: ["shell-exec %userprofile%/.glzr/glazewm/scripts/reload-glazewm.cmd"]
   focus_follows_cursor: false
   toggle_workspace_on_refocus: true
