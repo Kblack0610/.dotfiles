@@ -83,21 +83,29 @@ keybindings:
   - commands: ["shell-exec wt.exe"]
     bindings: ["alt+enter"]
 
-  # Close focused
+  # Launchers
+  - commands: ["shell-exec explorer.exe"]
+    bindings: ["alt+e"]
+  - commands: ["shell-exec wt.exe nvim"]
+    bindings: ["alt+n"]
+  - commands: ["shell-exec wt.exe psmux"]
+    bindings: ["alt+t"]
+
+  # Close focused — alt+shift collides with the Windows IME hotkey, so use alt+ctrl
   - commands: ["close"]
-    bindings: ["alt+shift+q"]
+    bindings: ["alt+ctrl+q"]
 
   # Reload config
   - commands: ["wm-reload-config"]
-    bindings: ["alt+shift+r"]
+    bindings: ["alt+ctrl+r"]
 
   # Exit GlazeWM
   - commands: ["wm-exit"]
-    bindings: ["alt+shift+e"]
+    bindings: ["alt+ctrl+e"]
 
   # Toggle floating / tiling / fullscreen
   - commands: ["toggle-floating --centered"]
-    bindings: ["alt+shift+space"]
+    bindings: ["alt+ctrl+space"]
   - commands: ["toggle-tiling-direction"]
     bindings: ["alt+v"]
   - commands: ["toggle-fullscreen"]
@@ -115,13 +123,13 @@ keybindings:
 
   # Move
   - commands: ["move --direction left"]
-    bindings: ["alt+shift+h", "alt+shift+left"]
+    bindings: ["alt+ctrl+h", "alt+ctrl+left"]
   - commands: ["move --direction right"]
-    bindings: ["alt+shift+l", "alt+shift+right"]
+    bindings: ["alt+ctrl+l", "alt+ctrl+right"]
   - commands: ["move --direction up"]
-    bindings: ["alt+shift+k", "alt+shift+up"]
+    bindings: ["alt+ctrl+k", "alt+ctrl+up"]
   - commands: ["move --direction down"]
-    bindings: ["alt+shift+j", "alt+shift+down"]
+    bindings: ["alt+ctrl+j", "alt+ctrl+down"]
 
   # Resize mode
   - commands: ["wm-enable-binding-mode --name resize"]
@@ -151,20 +159,20 @@ keybindings:
 
   # Move window to workspace
   - commands: ["move --workspace 1"]
-    bindings: ["alt+shift+1"]
+    bindings: ["alt+ctrl+1"]
   - commands: ["move --workspace 2"]
-    bindings: ["alt+shift+2"]
+    bindings: ["alt+ctrl+2"]
   - commands: ["move --workspace 3"]
-    bindings: ["alt+shift+3"]
+    bindings: ["alt+ctrl+3"]
   - commands: ["move --workspace 4"]
-    bindings: ["alt+shift+4"]
+    bindings: ["alt+ctrl+4"]
   - commands: ["move --workspace 5"]
-    bindings: ["alt+shift+5"]
+    bindings: ["alt+ctrl+5"]
   - commands: ["move --workspace 6"]
-    bindings: ["alt+shift+6"]
+    bindings: ["alt+ctrl+6"]
   - commands: ["move --workspace 7"]
-    bindings: ["alt+shift+7"]
+    bindings: ["alt+ctrl+7"]
   - commands: ["move --workspace 8"]
-    bindings: ["alt+shift+8"]
+    bindings: ["alt+ctrl+8"]
   - commands: ["move --workspace 9"]
-    bindings: ["alt+shift+9"]
+    bindings: ["alt+ctrl+9"]
