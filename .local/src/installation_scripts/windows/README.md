@@ -82,7 +82,7 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
 
 ### Packages (step 2)
 
-`Git.Git`, `GitHub.cli`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`, `DEVCOM.JetBrainsMonoNerdFont`.
+`Git.Git`, `GitHub.cli`, `Docker.DockerCLI`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`, `DEVCOM.JetBrainsMonoNerdFont`.
 
 > PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails — `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
 

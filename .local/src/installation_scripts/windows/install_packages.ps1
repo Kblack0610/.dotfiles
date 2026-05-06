@@ -58,6 +58,10 @@ $Packages = @(
     'glzr-io.glazewm',
     'glzr-io.zebar',
     'GitHub.cli',
+    # Docker CLI only — Docker Desktop needs admin (omitted, like gsudo).
+    # Pair this with `docker.io` inside WSL Debian and point the CLI at
+    # the WSL socket via `docker context`.
+    'Docker.DockerCLI',
     # PostgreSQL ships full server + psql; the installer wants admin to register
     # the Windows service. On the VDI without admin, expect the service step to
     # fail - psql.exe still ends up on PATH for connecting to remote DBs, which
