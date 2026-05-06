@@ -416,6 +416,46 @@ setup_keyd() {
     log_info "keyd enabled and reloaded"
 }
 
+# Setup Docker — daemon-in-WSL replacement for Docker Desktop on locked-down
+# Windows VDIs. Runs anywhere; the WSL-specific bits no-op outside WSL.
+setup_docker() {
+    log_section "Setting up Docker"
+
+    if ! command -v dockerd &>/dev/null; then
+        log_warning "dockerd not found — install_tools should have installed docker.io. Skipping."
+        return 0
+    fi
+
+    if ! getent group docker >/dev/null; then
+        sudo groupadd docker
+    fi
+    if ! id -nG "$USER" | grep -qw docker; then
+        log_info "Adding $USER to docker group..."
+        sudo usermod -aG docker "$USER"
+    fi
+
+    # WSL: enable systemd so `systemctl enable --now docker` survives reboots.
+    if grep -qi 'microsoft\|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+        if [[ ! -f /etc/wsl.conf ]] || ! grep -q '^systemd=true' /etc/wsl.conf; then
+            log_info "Enabling systemd in /etc/wsl.conf (requires \`wsl --shutdown\` from Windows)"
+            sudo tee /etc/wsl.conf >/dev/null <<'EOF'
+[boot]
+systemd=true
+EOF
+            log_warning "From Windows PowerShell run: wsl --shutdown   (then reopen Debian)"
+        fi
+    fi
+
+    # Start the daemon now if we can. systemd-managed when present, service(8) otherwise.
+    if pidof systemd &>/dev/null; then
+        sudo systemctl enable --now docker || log_warning "systemctl enable docker failed"
+    else
+        sudo service docker start &>/dev/null || log_warning "service docker start failed (will work after \`wsl --shutdown\` once systemd is enabled)"
+    fi
+
+    log_info "Docker installed. Re-login (or \`newgrp docker\`) so group membership takes effect."
+}
+
 # Debian-specific: Install Flatpak
 install_flatpak() {
     log_section "Installing Flatpak"
@@ -452,6 +492,7 @@ install_all() {
     install_tmux
     install_lazygit
     install_kitty
+    setup_docker
 
     # Game streaming
     setup_sunshine

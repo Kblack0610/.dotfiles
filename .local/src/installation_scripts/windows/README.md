@@ -141,6 +141,26 @@ wsl --list --verbose        # Debian, state Running, version 2
 
 GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config.
 
+## Docker without Docker Desktop
+
+Docker Desktop needs admin and IT approval on the VDI — neither required here. The bootstrap installs `Docker.DockerCLI` on Windows and `docker.io` inside WSL Debian, with the daemon running in WSL. After a fresh install:
+
+```pwsh
+# 1. Reload WSL so the [boot] systemd=true that install_debian.sh wrote takes effect
+wsl --shutdown
+# 2. Start a Debian shell — systemd will be PID 1 and dockerd auto-starts
+wsl -d Debian
+```
+
+Inside Debian: `docker ps` should work. From PowerShell, point the Windows CLI at WSL's daemon:
+
+```pwsh
+docker context create wsl --docker host=npipe:////./pipe/docker_wsl
+docker context use wsl
+```
+
+Or skip the Windows CLI entirely and just run `wsl docker ps` / alias it.
+
 ## Optional: debloat
 
 `debloat.ps1` is an opt-in, HKCU-only noise reducer (widgets, Start recommendations,
