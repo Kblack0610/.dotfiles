@@ -84,14 +84,27 @@ install_common_links() {
     link_managed_file "$DOTFILES_ROOT/.local/src/git/notes-sync-bootstrap.sh" "$HOME/.local/src/git/notes-sync-bootstrap.sh"
     link_managed_file "$DOTFILES_ROOT/.local/src/git/NOTES_SYNC_SETUP.md" "$HOME/.local/src/git/NOTES_SYNC_SETUP.md"
     link_managed_file "$DOTFILES_ROOT/.local/bin/notes-sync" "$HOME/.local/bin/notes-sync"
+    link_managed_file "$DOTFILES_ROOT/.local/bin/notes-watch" "$HOME/.local/bin/notes-watch"
     copy_managed_file "$DOTFILES_ROOT/.config/notes-sync.env.example" "$HOME/.config/notes-sync.env.example"
+}
+
+is_macos() {
+    [[ "$OSTYPE" == "darwin"* ]]
 }
 
 install_desktop_links() {
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.service" "$HOME/.config/systemd/user/git-sync-notes.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/git-sync-notes.timer" "$HOME/.config/systemd/user/git-sync-notes.timer"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/notes-watch.service" "$HOME/.config/systemd/user/notes-watch.service"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/notes-mqtt.service" "$HOME/.config/systemd/user/notes-mqtt.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.service" "$HOME/.config/systemd/user/journal-refs-archive.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.timer" "$HOME/.config/systemd/user/journal-refs-archive.timer"
+}
+
+install_macos_links() {
+    copy_managed_file "$DOTFILES_ROOT/.config/launchd/com.kblack.git-sync-notes.plist" "$HOME/Library/LaunchAgents/com.kblack.git-sync-notes.plist"
+    copy_managed_file "$DOTFILES_ROOT/.config/launchd/com.kblack.notes-watch.plist"     "$HOME/Library/LaunchAgents/com.kblack.notes-watch.plist"
+    copy_managed_file "$DOTFILES_ROOT/.config/launchd/com.kblack.notes-mqtt.plist"      "$HOME/Library/LaunchAgents/com.kblack.notes-mqtt.plist"
 }
 
 configure_repo() {
@@ -120,6 +133,25 @@ setup_systemd() {
         systemctl --user start git-sync-notes.timer
         systemctl --user enable journal-refs-archive.timer >/dev/null 2>&1 || true
         systemctl --user start journal-refs-archive.timer
+        # notes-watch and notes-mqtt skip themselves via ConditionFileIsExecutable
+        # if their underlying tools (inotify-tools / mosquitto-clients) are not
+        # installed. Once the package installer runs, a `systemctl --user start`
+        # picks them up.
+        systemctl --user enable notes-watch.service >/dev/null 2>&1 || true
+        systemctl --user start notes-watch.service >/dev/null 2>&1 || true
+        systemctl --user enable notes-mqtt.service >/dev/null 2>&1 || true
+        systemctl --user start notes-mqtt.service >/dev/null 2>&1 || true
+    fi
+}
+
+setup_macos_launchd() {
+    if command -v launchctl >/dev/null 2>&1; then
+        for label in com.kblack.git-sync-notes com.kblack.notes-watch com.kblack.notes-mqtt; do
+            local plist="$HOME/Library/LaunchAgents/${label}.plist"
+            [[ -f "$plist" ]] || continue
+            launchctl unload "$plist" 2>/dev/null || true
+            launchctl load -w "$plist" 2>/dev/null || true
+        done
     fi
 }
 
@@ -198,6 +230,10 @@ if is_termux; then
     install_termux_packages
     configure_repo
     setup_termux_cron
+elif is_macos; then
+    install_macos_links
+    configure_repo
+    setup_macos_launchd
 else
     install_desktop_links
     configure_repo
@@ -207,7 +243,7 @@ fi
 cat <<EOF
 Notes bootstrap complete.
 
-Mode: $(if is_termux; then echo termux; else echo desktop; fi)
+Mode: $(if is_termux; then echo termux; elif is_macos; then echo macos; else echo desktop; fi)
 Notes dir: $NOTES_DIR
 Primary remote: ${PRIMARY_URL:-$(git -C "$NOTES_DIR" remote get-url origin 2>/dev/null || echo "unchanged")}
 Backup remote: ${BACKUP_URL:-$(git -C "$NOTES_DIR" remote get-url backup 2>/dev/null || echo "unchanged")}

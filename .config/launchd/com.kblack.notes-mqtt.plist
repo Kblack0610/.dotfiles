@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kblack.notes-mqtt</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>mosquitto_sub -h mosquitto.kblab.me -p 31883 -t notes/sync/needed -q 1 --keepalive 60 -v | while read -r _; do ~/.local/bin/notes-sync &gt;&gt;~/.local/state/notes-sync/mqtt.log 2&gt;&amp;1 || true; done</string>
+    </array>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/notes-mqtt.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/notes-mqtt.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,19 @@
+[Unit]
+Description=Watch ~/.notes for changes and trigger debounced sync
+After=default.target
+ConditionPathExists=%h/.notes
+# Skip silently if inotifywait isn't installed; the 5-minute fallback timer
+# (git-sync-notes.timer) keeps things flowing in the meantime.
+ConditionFileIsExecutable=/usr/bin/inotifywait
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/notes-watch
+EnvironmentFile=-%h/.config/notes-sync.env
+Restart=on-failure
+RestartSec=10s
+# Don't fight the user when they're editing; nice the sync.
+Nice=10
+
+[Install]
+WantedBy=default.target

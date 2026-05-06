@@ -9,6 +9,7 @@ LOCK_FILE="$STATE_DIR/lock"
 SSH_KEY="${NOTES_SYNC_SSH_KEY:-$HOME/.ssh/id_notes_sync}"
 PRIMARY_REMOTE="${NOTES_SYNC_PRIMARY_REMOTE:-origin}"
 BACKUP_REMOTE="${NOTES_SYNC_BACKUP_REMOTE:-backup}"
+MIRROR_REMOTE="${NOTES_SYNC_MIRROR_REMOTE:-}"
 HOST_TAG="${NOTES_SYNC_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 CONNECT_TIMEOUT="${NOTES_SYNC_CONNECT_TIMEOUT:-10}"
 
@@ -132,6 +133,18 @@ if [ "$backup_enabled" -eq 1 ]; then
     log "BACKUP: Updated $BACKUP_REMOTE/$BRANCH"
 else
     log "SKIP: Backup remote '$BACKUP_REMOTE' is not configured"
+fi
+
+if [ -n "$MIRROR_REMOTE" ]; then
+    if git_remote_exists "$MIRROR_REMOTE"; then
+        if git push "$MIRROR_REMOTE" "$BRANCH" 2>>"$LOG_FILE"; then
+            log "MIRROR: Updated $MIRROR_REMOTE/$BRANCH"
+        else
+            log "WARN: Mirror push to '$MIRROR_REMOTE' failed (non-fatal)"
+        fi
+    else
+        log "SKIP: Mirror remote '$MIRROR_REMOTE' is set but not configured"
+    fi
 fi
 
 log "COMPLETE: Notes sync finished"

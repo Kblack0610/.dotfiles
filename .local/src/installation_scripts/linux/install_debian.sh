@@ -469,6 +469,27 @@ install_flatpak() {
 }
 
 # Override main installation to include Flatpak
+# Wire ~/.notes git sync (Forgejo primary + MQTT/ntfy fan-out).
+# Idempotent; skips with a clear message if NOTES_PRIMARY_REMOTE_URL is unset.
+setup_notes_sync() {
+    log_section "Setting up notes sync"
+
+    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
+        log_warning "NOTES_PRIMARY_REMOTE_URL not set — skipping notes-bootstrap"
+        log_info "Run later with:  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git ~/.dotfiles/.local/bin/notes-bootstrap"
+        return 0
+    fi
+
+    local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
+    if [[ ! -x "$bootstrap" ]]; then
+        log_warning "notes-bootstrap not found at $bootstrap — skipping"
+        return 0
+    fi
+
+    "$bootstrap" --primary-url "$NOTES_PRIMARY_REMOTE_URL" \
+                 ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
+}
+
 install_all() {
     # Create structure
     create_directories
@@ -510,7 +531,10 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
-    
+
+    # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
+    setup_notes_sync
+
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
 }

@@ -1,11 +1,14 @@
 [Unit]
-Description=Run notes sync automatically
+Description=Run notes sync automatically (5-min fallback for the MQTT/ntfy webhook fan-out)
 
 [Timer]
 OnBootSec=2m
-OnUnitActiveSec=1h
-RandomizedDelaySec=5m
-AccuracySec=1m
+# 5-minute fallback. The Forgejo webhook -> notes-sync-bridge -> mosquitto/ntfy
+# path is the live trigger; this timer is just a safety net for cases where
+# the bridge / broker is down or the device just woke up.
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=15s
 Persistent=true
 Unit=git-sync-notes.service
 

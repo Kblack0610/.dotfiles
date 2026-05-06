@@ -96,6 +96,15 @@ Copy-Config (Join-Path $XConfig 'starship.toml') (Join-Path $env:USERPROFILE '.c
 Write-Step 'lazygit config'
 Copy-Config (Join-Path $XConfig 'jesseduffield\lazygit\config.yml') (Join-Path $env:APPDATA 'lazygit\config.yml')
 
+# --- Notes sync (Forgejo primary + MQTT/ntfy fan-out) ----------------------
+Write-Step 'notes sync (~/.notes)'
+$notesSetup = Join-Path $DotfilesDir '.local\src\installation_scripts\windows\setup_notes_sync.ps1'
+if (Test-Path $notesSetup) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $notesSetup
+} else {
+    Write-Skip "skip - $notesSetup not found"
+}
+
 # --- WSL Debian first-run + Linux installer --------------------------------
 if ($SkipWsl) {
     Write-Step 'Linux installer inside WSL - skipped (-SkipWsl)'

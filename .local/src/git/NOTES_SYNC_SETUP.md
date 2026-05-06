@@ -1,98 +1,181 @@
 # Notes Sync Bootstrap
 
-The repo now contains the reusable `~/.notes` sync tooling so a new device can be set up from the dotfiles checkout with one bootstrap command plus credentials.
+`~/.notes` is a git repo that stays in sync across every device — desktop
+Linux, macOS, Windows, Android (Termux + ntfy app) — within a few seconds
+typical, ≤5 min worst case.
 
-## Model
+## Architecture
 
-- `~/.notes` stays local on each device
-- `origin` points to the NAS Git repo
-- `backup` points to GitHub
-- `notes-sync` handles fetch, auto-commit, rebase, push, and backup push
+```
+   GitHub  (off-site backup, push only from master)
+                ▲
+                │
+   ┌────────────┴───────────────┐
+   │ cachyos-x8664-main         │   ◄── only device with `backup` remote
+   │ (MASTER)                   │
+   └──────────▲─────────────────┘
+              │
+   ┌──────────┴─────────────────────────────────────────┐
+   │ Forgejo @ git.kblab.me  (primary git, in-cluster)  │
+   │ post-receive webhook ──┐                           │
+   └────────────────────────┼───────────────────────────┘
+                            ▼
+              ┌──── notes-sync-bridge ────────────────┐
+              │  HMAC-verifies, fans out to:          │
+              │   • mosquitto: notes/sync/needed      │
+              │   • ntfy:     notes-sync              │
+              └────┬─────────────────────────┬────────┘
+                   │                         │
+        ┌──────────┴──┐                ┌─────┴─────┐
+        │ mosquitto   │                │   ntfy    │
+        └─────┬───────┘                └────┬──────┘
+              │                              │
+        Linux / macOS / Windows         Android (ntfy app)
+        notes-mqtt subscriber           phone push channel
+              │                              │
+              ▼                              ▼
+        notes-sync                      notes-sync (Termux)
+
+   Every device also runs a 5-min fallback timer for resilience.
+```
 
 ## Required inputs
 
-You still need to provision two things outside Git:
+You provision two things outside git:
 
-- an SSH key that can reach the NAS Git repo
-- the NAS remote URL, for example `ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git`
+- An identity that can push to Forgejo (HTTPS token in `~/.git-credentials` is fine)
+- The Forgejo URL: `https://git.kblab.me/kblack0610/.notes.git`
 
-GitHub backup can stay `git@github.com:Kblack0610/.notes.git`.
+The master device additionally has `backup` → `git@github.com:Kblack0610/.notes.git`. Other devices skip this.
 
-## Desktop bootstrap
-
-If `~/.notes` already exists and you only want the tooling installed:
+## Desktop bootstrap (Linux + macOS)
 
 ```bash
+NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git \
 ~/.dotfiles/.local/bin/notes-bootstrap
 ```
 
-If you want to clone or repoint the repo during bootstrap:
+`notes-bootstrap` auto-detects Linux vs macOS and does the right thing:
 
-```bash
-~/.dotfiles/.local/bin/notes-bootstrap \
-  --primary-url ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git \
-  --backup-url git@github.com:Kblack0610/.notes.git
+- **Linux** — installs the systemd user units (`git-sync-notes.timer` 5-min fallback, `notes-watch` for inotify push, `notes-mqtt` for the pull subscriber).
+- **macOS** — installs the launchd plists (`com.kblack.git-sync-notes`, `com.kblack.notes-watch` using `WatchPaths`, `com.kblack.notes-mqtt`) into `~/Library/LaunchAgents/`.
+
+Required system packages (`packages.conf` covers them on a fresh install):
+
+| Tool | Linux | macOS | Windows | Termux |
+|---|---|---|---|---|
+| git | yes | yes | yes | yes |
+| inotify-tools | yes | — (launchd `WatchPaths` is native) | — (FileSystemWatcher) | yes |
+| mosquitto-clients | yes | yes (`brew install mosquitto`) | `winget install Eclipse.Mosquitto` | yes |
+
+`notes-watch.service` and `notes-mqtt.service` skip themselves via `ConditionFileIsExecutable` until their underlying binaries are installed; the 5-min fallback timer keeps things flowing in the meantime.
+
+## Windows bootstrap
+
+The full chain is `sync_dotfiles.ps1 → install_packages.ps1 → apply_configs.ps1`. The notes setup runs as part of `apply_configs.ps1`, gated on `$env:NOTES_PRIMARY_REMOTE_URL`:
+
+```powershell
+$env:NOTES_PRIMARY_REMOTE_URL = 'https://git.kblab.me/kblack0610/.notes.git'
+~\.dotfiles\.local\src\installation_scripts\windows\setup_notes_sync.ps1
 ```
 
-What it does:
+Registers three Scheduled Tasks:
 
-- links managed scripts from `~/.dotfiles` into `~/.local` and `~/.config`
-- clones `~/.notes` if missing
-- or repoints remotes if `~/.notes` already exists
-- enables `git-sync-notes.timer` on desktop machines
+- `notes-sync-fallback` — every 5 minutes
+- `notes-watch` — at logon, restart on failure (FileSystemWatcher with 3s debounce)
+- `notes-mqtt` — at logon, restart on failure (`mosquitto_sub` subscriber)
 
-## Termux bootstrap
+Run a task manually: `Start-ScheduledTask -TaskName notes-sync-fallback`.
 
-After cloning the dotfiles repo in Termux:
+## Termux (Android) bootstrap
 
 ```bash
 ~/.dotfiles/.local/bin/notes-termux-bootstrap \
-  --primary-url ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git \
-  --backup-url git@github.com:Kblack0610/.notes.git
+  --primary-url https://git.kblab.me/kblack0610/.notes.git
 ```
 
-What it does:
+Plus install the official **ntfy Android app** and subscribe to:
 
-- installs `git`, `openssh`, `cronie`, `termux-services`, and `termux-tools`
-- links the managed notes scripts into the Termux home
-- clones or repoints `~/.notes`
-- installs an hourly `crond` entry for `notes-sync`
-- writes a `~/.termux/boot/notes-sync.sh` hook for unlock/boot sync
+```
+https://ntfy.kblab.me/notes-sync
+```
 
-## Credentials
+(Tailscale always-on lets the phone reach `ntfy.kblab.me` even on cellular.)
 
-Bootstrap does not create or distribute secrets.
+The ntfy notifications use the OS push channel — near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
 
-Before the first real sync on a new device, make sure one of these is true:
+## Webhook fan-out (cluster side)
 
-- `~/.ssh/id_notes_sync` is present and authorized on the NAS
-- or your normal SSH key already has access to the NAS repo
+If you ever need to redeploy the bridge or rotate the HMAC, the manifests live in `home-config/apps/`:
 
-The sync script automatically uses `~/.ssh/id_notes_sync` when it exists.
+- `notes-sync-bridge/` — Python webhook receiver, fans out to mosquitto + ntfy
+- `ntfy/` — phone push broker
+- `mosquitto/` — desktop pub/sub broker
+- `forgejo/configmap.yaml` — `[webhook] ALLOWED_HOST_LIST = private,external` permits the LAN bridge
+
+Rotate HMAC:
+
+```bash
+NEW=$(head -c 32 /dev/urandom | xxd -p -c 64)
+cd ~/dev/home/home-config
+sops apps/notes-sync-bridge/secret.yaml         # replace value with $NEW
+git add apps/notes-sync-bridge/secret.yaml && git commit -m 'chore: rotate notes-sync HMAC' && git push forgejo master
+# update Forgejo webhook to match
+TOKEN=$(kubectl --context home-k3s exec -n forgejo deploy/forgejo -- \
+    su-exec git forgejo admin user generate-access-token -u kblack0610 -t notes-rotate --raw --scopes "write:repository" | tail -1)
+curl -u "kblack0610:$TOKEN" -X PATCH \
+  -H 'Content-Type: application/json' \
+  -d "{\"config\":{\"secret\":\"$NEW\"}}" \
+  https://git.kblab.me/api/v1/repos/kblack0610/.notes/hooks/<id>
+```
 
 ## Runtime overrides
 
-An example runtime config lives at `~/.config/notes-sync.env.example`.
+Override at `~/.config/notes-sync.env`:
 
-If needed, create `~/.config/notes-sync.env` and override:
-
-- `NOTES_SYNC_SSH_KEY`
-- `NOTES_SYNC_PRIMARY_REMOTE`
-- `NOTES_SYNC_BACKUP_REMOTE`
-- `NOTES_SYNC_BRANCH`
+```text
+NOTES_SYNC_PRIMARY_REMOTE=origin
+NOTES_SYNC_BACKUP_REMOTE=backup           # only on the master device
+NOTES_SYNC_MIRROR_REMOTE=nas              # only during the NAS deprecation window
+NOTES_SYNC_BRANCH=master
+NOTES_MQTT_HOST=mosquitto.kblab.me
+NOTES_MQTT_PORT=31883
+NOTES_MQTT_TOPIC=notes/sync/needed
+```
 
 ## Validation
 
-After bootstrap:
+```bash
+# Remotes look right
+git -C ~/.notes remote -v
+
+# Master device:
+#   origin  https://git.kblab.me/kblack0610/.notes.git
+#   backup  git@github.com:Kblack0610/.notes.git
+#   nas     ssh://...nas.lan:2222/...    (only during deprecation window)
+#
+# Other devices:
+#   origin  https://git.kblab.me/kblack0610/.notes.git
+
+# Push side: edit a file, watch the sync log
+date >> ~/.notes/inbox/_test.md
+journalctl --user -u notes-watch -f         # Linux
+log stream --predicate 'subsystem == "com.kblack.notes-watch"'   # macOS
+Get-Content $env:LOCALAPPDATA\notes-sync\watch.log -Wait         # Windows
+
+# Pull side: push from another device, watch this device fire
+journalctl --user -u notes-mqtt -f          # Linux
+```
+
+## Migrating an existing device off the legacy NAS bare repo
 
 ```bash
-git -C ~/.notes remote -v
-notes-sync
+cd ~/.notes
+git remote rename origin nas                                       # legacy NAS becomes mirror
+git remote add origin https://git.kblab.me/kblack0610/.notes.git   # Forgejo is primary now
+git fetch origin
+git push -u origin master
+echo "NOTES_SYNC_MIRROR_REMOTE=nas" >> ~/.config/notes-sync.env    # keep mirror push for 2 weeks
 ```
 
-Expected remotes:
-
-```text
-origin  ssh://kblack0610@nas.lan:2222/mnt/nas/private/git/.notes.git
-backup  git@github.com:Kblack0610/.notes.git
-```
+After ~2 weeks of clean operation the `nas` remote can be dropped and the bare repo on `asus-laptop:/home/kblack0610/git/.notes.git` archived.

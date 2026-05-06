@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Debounced filesystem-watch trigger for ~/.notes -> notes-sync.
+# Linux + Termux. macOS uses launchd WatchPaths directly; Windows uses notes-watch.ps1.
+
+set -euo pipefail
+
+NOTES_DIR="${NOTES_DIR:-$HOME/.notes}"
+DEBOUNCE_SEC="${NOTES_WATCH_DEBOUNCE:-3}"
+SYNC_CMD="${NOTES_WATCH_SYNC_CMD:-$HOME/.local/bin/notes-sync}"
+STATE_DIR="${NOTES_WATCH_STATE_DIR:-$HOME/.local/state/notes-sync}"
+LOG_FILE="$STATE_DIR/watch.log"
+LAST_FILE="$STATE_DIR/watch-last-event"
+PENDING_FILE="$STATE_DIR/watch-pending"
+
+mkdir -p "$STATE_DIR"
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG_FILE"; }
+
+if [ ! -d "$NOTES_DIR" ]; then
+    log "ERROR: NOTES_DIR=$NOTES_DIR does not exist"
+    exit 1
+fi
+
+if ! command -v inotifywait >/dev/null 2>&1; then
+    log "ERROR: inotifywait not found — install inotify-tools (Arch: pacman -S inotify-tools, Debian: apt install inotify-tools, Termux: pkg install inotify-tools)"
+    exit 1
+fi
+
+if [ ! -x "$SYNC_CMD" ]; then
+    log "ERROR: SYNC_CMD=$SYNC_CMD is not executable"
+    exit 1
+fi
+
+# Background debounce loop:
+# Every 1s, if last-event timestamp is older than DEBOUNCE_SEC, run sync once.
+debounce_loop() {
+    while true; do
+        if [ -s "$LAST_FILE" ]; then
+            last=$(cat "$LAST_FILE" 2>/dev/null || echo 0)
+            now=$(date +%s)
+            if [ "$last" -gt 0 ] && [ $((now - last)) -ge "$DEBOUNCE_SEC" ]; then
+                : >"$LAST_FILE"
+                : >"$PENDING_FILE"
+                log "TRIGGER: $(date +%s) (debounced)"
+                if "$SYNC_CMD" >>"$LOG_FILE" 2>&1; then
+                    log "SYNC: ok"
+                else
+                    log "WARN: sync exited $?"
+                fi
+            fi
+        fi
+        sleep 1
+    done
+}
+
+debounce_loop &
+DEBOUNCE_PID=$!
+cleanup() { kill "$DEBOUNCE_PID" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+
+log "START: watching $NOTES_DIR (debounce=${DEBOUNCE_SEC}s)"
+
+# --exclude swallows: the .git dir, vim swap files, tmp files, backup files,
+# and vim's "atomic write" probe file `4913`.
+inotifywait -m -r -q \
+    -e close_write,moved_to,delete,create \
+    --exclude '(/\.git/|/\.git$|\.swp$|\.swo$|\.tmp$|~$|/4913$)' \
+    "$NOTES_DIR" 2>>"$LOG_FILE" \
+| while IFS= read -r _line; do
+    date +%s >"$LAST_FILE"
+done
