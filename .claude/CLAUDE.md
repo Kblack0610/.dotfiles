@@ -132,7 +132,7 @@ Non-trivial implementation flows through the `kb-*` agent pipeline:
 3. `kb-developer` — implements from specs with tests and docs
 4. `kb-qa` — verifies quality gates before merge
 
-Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents.
+Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents. For headless / CI runs (no human in the loop), invoke the `kb-coordinator` agent — it drives the same pipeline end-to-end and returns a structured JSON result.
 
 ## Project Mapping
 
