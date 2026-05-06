@@ -57,6 +57,12 @@ $Packages = @(
     'Microsoft.WindowsTerminal',
     'glzr-io.glazewm',
     'glzr-io.zebar',
+    'GitHub.cli',
+    # PostgreSQL ships full server + psql; the installer wants admin to register
+    # the Windows service. On the VDI without admin, expect the service step to
+    # fail - psql.exe still ends up on PATH for connecting to remote DBs, which
+    # is the usual VDI use case.
+    'PostgreSQL.PostgreSQL.17',
     'DEVCOM.JetBrainsMonoNerdFont'
 )
 foreach ($p in $Packages) { Install-Pkg $p }
