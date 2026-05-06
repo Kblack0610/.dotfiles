@@ -25,6 +25,15 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
     Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
 }
 
+# --- Git Bash userland on PATH ---------------------------------------------
+# Exposes base64, bash, awk, sed, tar, sha256sum, etc. from Git for Windows.
+# Appended (not prepended) so Windows tools win on collisions (find, sort).
+# Required for one-liners like `gh api … | base64 -d | bash`.
+$gitUsrBin = 'C:\Program Files\Git\usr\bin'
+if ((Test-Path $gitUsrBin) -and ($env:Path -notlike "*$gitUsrBin*")) {
+    $env:Path = "$env:Path;$gitUsrBin"
+}
+
 # --- aliases ----------------------------------------------------------------
 Set-Alias -Name g     -Value git -Option AllScope -ErrorAction SilentlyContinue
 Set-Alias -Name vim   -Value nvim -Option AllScope -ErrorAction SilentlyContinue
