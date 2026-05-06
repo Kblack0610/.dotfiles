@@ -23,12 +23,16 @@ $ErrorActionPreference = 'Stop'
 
 $DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
 $WinCfg      = Join-Path $DotfilesDir '.config\windows'
+$XConfig     = Join-Path $DotfilesDir '.config'
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Skip($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 
 if (-not (Test-Path $WinCfg)) {
     throw "Expected $WinCfg - run bootstrap.ps1 first or fix the clone."
+}
+if (-not (Test-Path $XConfig)) {
+    throw "Expected $XConfig - run bootstrap.ps1 first or fix the clone."
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -104,9 +108,28 @@ To set up the Windows-side tooling now and add WSL later:
 
 # --- 3. Copy configs into their Windows-native locations -------------------
 function Copy-Config($src, $dst) {
+    if (-not (Test-Path $src)) { Write-Skip "skip - $src not found"; return }
     $dstDir = Split-Path -Parent $dst
     if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
     Copy-Item -Path $src -Destination $dst -Force
+    Write-Skip "copied -> $dst"
+}
+
+function Copy-ConfigDir($src, $dst, [string[]]$Exclude = @()) {
+    if (-not (Test-Path $src)) { Write-Skip "skip - $src not found"; return }
+    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    $parent = Split-Path -Parent $dst
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if ($Exclude.Count -gt 0) {
+        $xdArgs = @()
+        foreach ($e in $Exclude) { $xdArgs += '/XD'; $xdArgs += $e }
+        $null = & robocopy $src $dst /E @xdArgs /NFL /NDL /NJH /NJS /NP
+        # robocopy: 0-7 are success-ish (0=no change, 1=copied, 3=copied+extra, etc.); >=8 is failure.
+        if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed (exit $LASTEXITCODE)" }
+        $global:LASTEXITCODE = 0
+    } else {
+        Copy-Item -Path $src -Destination $dst -Recurse -Force
+    }
     Write-Skip "copied -> $dst"
 }
 
@@ -123,6 +146,19 @@ Copy-Config (Join-Path $WinCfg 'glazewm\config.yaml') $glazePath
 
 Write-Step '.wslconfig'
 Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.wslconfig')
+
+# Cross-platform configs from .config/ (same source the Linux side stows).
+Write-Step 'Neovim config'
+Copy-ConfigDir (Join-Path $XConfig 'nvim') (Join-Path $env:LOCALAPPDATA 'nvim')
+
+Write-Step 'opencode config'
+Copy-ConfigDir (Join-Path $XConfig 'opencode') (Join-Path $env:APPDATA 'opencode') -Exclude 'node_modules'
+
+Write-Step 'starship.toml'
+Copy-Config (Join-Path $XConfig 'starship.toml') (Join-Path $env:USERPROFILE '.config\starship.toml')
+
+Write-Step 'lazygit config'
+Copy-Config (Join-Path $XConfig 'jesseduffield\lazygit\config.yml') (Join-Path $env:APPDATA 'lazygit\config.yml')
 
 # --- 4. WSL Debian first-run + Linux installer ----------------------------
 if ($SkipWsl) {

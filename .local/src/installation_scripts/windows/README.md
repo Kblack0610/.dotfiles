@@ -78,10 +78,14 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
    - `DEVCOM.JetBrainsMonoNerdFont`
 3. `wsl --install -d Debian --no-launch` (skipped with `-SkipWsl`).
 4. Copies configs to their Windows-native homes:
-   - `terminal/settings.json` → `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json`
-   - `powershell/Microsoft.PowerShell_profile.ps1` → `$PROFILE`
-   - `glazewm/config.yaml` → `%USERPROFILE%\.glzr\glazewm\config.yaml`
-   - `wsl/.wslconfig` → `%USERPROFILE%\.wslconfig`
+   - `.config/windows/terminal/settings.json` → `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json`
+   - `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` → `$PROFILE`
+   - `.config/windows/glazewm/config.yaml` → `%USERPROFILE%\.glzr\glazewm\config.yaml`
+   - `.config/windows/wsl/.wslconfig` → `%USERPROFILE%\.wslconfig`
+   - `.config/nvim/` → `%LOCALAPPDATA%\nvim\`
+   - `.config/opencode/` → `%APPDATA%\opencode\` (excluding `node_modules/`)
+   - `.config/starship.toml` → `%USERPROFILE%\.config\starship.toml`
+   - `.config/jesseduffield/lazygit/config.yml` → `%APPDATA%\lazygit\config.yml`
 5. First-launches Debian so you can pick a username/password (skipped with `-SkipWsl`).
 6. Inside Debian: clones the dotfiles to `~/.dotfiles`, runs `linux/install_debian.sh`, `stow`s the Linux configs.
 
