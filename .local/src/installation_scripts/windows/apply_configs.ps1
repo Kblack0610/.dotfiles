@@ -88,7 +88,9 @@ Write-Step 'Neovim config'
 Copy-ConfigDir (Join-Path $XConfig 'nvim') (Join-Path $env:LOCALAPPDATA 'nvim')
 
 Write-Step 'opencode config'
-Copy-ConfigDir (Join-Path $XConfig 'opencode') (Join-Path $env:APPDATA 'opencode') -Exclude 'node_modules'
+# OpenCode (sst/opencode) reads ~/.config/opencode on every platform — XDG-style,
+# not %APPDATA%. Same for auth.json under ~/.local/share/opencode.
+Copy-ConfigDir (Join-Path $XConfig 'opencode') (Join-Path $env:USERPROFILE '.config\opencode') -Exclude 'node_modules'
 
 Write-Step 'starship.toml'
 Copy-Config (Join-Path $XConfig 'starship.toml') (Join-Path $env:USERPROFILE '.config\starship.toml')
