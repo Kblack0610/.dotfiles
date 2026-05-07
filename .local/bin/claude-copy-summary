@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Copy the latest compact-summary block from a Claude Code session JSONL
+# to the Wayland clipboard.
+#
+# Usage: claude-copy-summary [--raw] [--print] [--list] [path]
+#   path defaults to $PWD; the script walks up parents looking for a
+#   matching ~/.claude/projects/<encoded>/ directory.
+
+set -euo pipefail
+
+raw=0
+printout=0
+list=0
+while [[ ${1:-} == --* ]]; do
+  case "$1" in
+    --raw)   raw=1 ;;
+    --print) printout=1 ;;
+    --list)  list=1 ;;
+    --help|-h)
+      sed -n '2,9p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "claude-copy-summary: unknown flag: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+target="${1:-$PWD}"
+projects="$HOME/.claude/projects"
+
+encode() { printf '%s' "$1" | sed 's:[/.]:-:g'; }
+
+resolve_proj() {
+  local d="$1"
+  while [[ -n "$d" && "$d" != "/" ]]; do
+    local p="$projects/$(encode "$d")"
+    if [[ -d "$p" ]] && compgen -G "$p/*.jsonl" >/dev/null; then
+      printf '%s\n' "$p"
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  ls -1dt "$projects"/*/ 2>/dev/null | head -1
+}
+
+notify() {
+  local msg="$1"
+  echo "$msg" >&2
+  [[ -n "${TMUX:-}" ]] && tmux display-message "$msg" >/dev/null 2>&1 || true
+}
+
+# Allow passing a JSONL file directly (skip project resolution).
+if [[ -f "$target" && "$target" == *.jsonl ]]; then
+  jsonl="$target"
+  proj="$(dirname "$jsonl")"
+else
+  proj="$(resolve_proj "$target")"
+  proj="${proj%/}"
+  if [[ -z "$proj" || ! -d "$proj" ]]; then
+    notify "claude-copy-summary: no project dir for $target"
+    exit 1
+  fi
+
+  if (( list )); then
+    for f in $(ls -1t "$proj"/*.jsonl 2>/dev/null); do
+      has=$(grep -c '"isCompactSummary":true' "$f" 2>/dev/null || true)
+      printf '%s\tsummaries=%s\t%s\n' \
+        "$(stat -c %y "$f" | cut -d. -f1)" \
+        "${has:-0}" \
+        "$(basename "$f")"
+    done
+    exit 0
+  fi
+
+  jsonl="$(ls -1t "$proj"/*.jsonl 2>/dev/null | head -1 || true)"
+  if [[ -z "$jsonl" ]]; then
+    notify "claude-copy-summary: no session jsonl in $proj"
+    exit 1
+  fi
+fi
+
+line="$(grep '"isCompactSummary":true' "$jsonl" | tail -1 || true)"
+if [[ -z "$line" ]]; then
+  notify "claude-copy-summary: no compact summary in $(basename "$jsonl") yet"
+  exit 1
+fi
+
+content="$(printf '%s\n' "$line" | jq -r '.message.content')"
+
+if (( ! raw )) && [[ "$content" == "This session is being continued"* ]]; then
+  content="$(printf '%s' "$content" | tail -n +4)"
+fi
+
+printf '%s' "$content" | wl-copy
+bytes=$(printf '%s' "$content" | wc -c)
+notify "claude-copy-summary: $bytes bytes from $(basename "$jsonl")"
+
+if (( printout )); then
+  printf '%s\n' "$content"
+fi
