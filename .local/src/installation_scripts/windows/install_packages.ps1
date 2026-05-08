@@ -59,7 +59,6 @@ function Install-Pkg {
 #
 # Order matters for both lists: deps before dependents, prompt after shells.
 $MinimalPackages = @(
-    'Git.Git',                        # clone/pull dotfiles from PowerShell
     'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
