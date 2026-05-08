@@ -75,10 +75,17 @@ $glazePath = Join-Path $env:USERPROFILE '.glzr\glazewm\config.yaml'
 Copy-Config (Join-Path $WinCfg 'glazewm\config.yaml') $glazePath
 
 Write-Step 'Zebar settings'
-# Zebar manages the starter widget pack itself under %USERPROFILE%\.glzr\zebar\starter\.
-# We only own settings.json so the with-glazewm widget runs at startup on every monitor.
+# settings.json points at our custom kblack-minimal pack (workspaces + open
+# windows + clock, top-of-screen, all monitors).
 $zebarPath = Join-Path $env:USERPROFILE '.glzr\zebar\settings.json'
 Copy-Config (Join-Path $WinCfg 'zebar\settings.json') $zebarPath
+
+Write-Step 'Zebar minimal pack'
+# Pack lives at ~/.glzr/zebar/<name>/ per Zebar's pack discovery (zpack.json
+# one level deep). Copying the whole dir mirrors how Zebar reads marketplace
+# packs from %AppData%\zebar\downloads\.
+$zebarPackPath = Join-Path $env:USERPROFILE '.glzr\zebar\kblack-minimal'
+Copy-ConfigDir (Join-Path $WinCfg 'zebar\kblack-minimal') $zebarPackPath
 
 Write-Step '.wslconfig'
 Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.wslconfig')

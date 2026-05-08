@@ -7,7 +7,8 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 - **WSL2 Debian** — primary dev environment, runs the existing `linux/install_debian.sh` unchanged. Full parity with the Linux dotfiles: nvim, tmux, lazygit, ripgrep, fzf, zoxide, starship, zsh, etc.
 - **Windows-side native tools** via winget: git, neovim, ripgrep, fd, fzf, lazygit, starship, node (LTS), psmux (native tmux for Windows). All on `$PATH` and usable directly in PowerShell.
 - **Windows Terminal** with three profiles: Debian (WSL), PowerShell, Git Bash.
-- **GlazeWM** — i3-style tiling, animations off (RDP-friendly).
+- **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
+- **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
 - **`.wslconfig`** — caps WSL at 4 GB RAM so the 8 GB VDI doesn't thrash.
 
@@ -82,7 +83,7 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
 
 ### Packages (step 2)
 
-`Git.Git`, `GitHub.cli`, `Docker.DockerCLI`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`, `DEVCOM.JetBrainsMonoNerdFont`.
+`Git.Git`, `GitHub.cli`, `Docker.DockerCLI`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`, `DEVCOM.JetBrainsMonoNerdFont`.
 
 > PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails — `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
 
@@ -94,13 +95,14 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
 | `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` | `$PROFILE` |
 | `.config/windows/glazewm/config.yaml` | `%USERPROFILE%\.glzr\glazewm\config.yaml` |
 | `.config/windows/zebar/settings.json` | `%USERPROFILE%\.glzr\zebar\settings.json` |
+| `.config/windows/zebar/kblack-minimal/` | `%USERPROFILE%\.glzr\zebar\kblack-minimal\` |
 | `.config/windows/wsl/.wslconfig` | `%USERPROFILE%\.wslconfig` |
 | `.config/nvim/` | `%LOCALAPPDATA%\nvim\` |
 | `.config/opencode/` | `%APPDATA%\opencode\` (excluding `node_modules/`) |
 | `.config/starship.toml` | `%USERPROFILE%\.config\starship.toml` |
 | `.config/jesseduffield/lazygit/config.yml` | `%APPDATA%\lazygit\config.yml` |
 
-GlazeWM auto-launches Zebar via its `startup_commands` (`shell-exec zebar startup`), so the bar appears on every monitor (`monitorSelection.type=all` in the upstream starter pack).
+GlazeWM auto-launches Zebar via its `startup_commands` (`shell-exec zebar startup`), so the bar appears on every monitor (`monitorSelection.type=all` in the `kblack-minimal` pack's `bar` widget).
 
 ## Why copy configs instead of symlinking?
 
@@ -139,7 +141,9 @@ readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
 wsl --list --verbose        # Debian, state Running, version 2
 ```
 
-GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config.
+GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config; `Alt+D` opens PowerToys Run (dmenu equivalent).
+
+Windows taskbar position is a Windows setting (*Settings → Personalization → Taskbar → Taskbar behaviors → Taskbar alignment*) — GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
 
 ## Docker without Docker Desktop
 
@@ -179,7 +183,7 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 
 - **8 GB VDI RAM**: keep WSL's cap at 4 GB. Run Teams on your physical Mac (per Deloitte's VDI best-practices slide) — don't double up inside the VDI.
 - **GlazeWM over RDP**: animations are off. If tiling still stutters, fall back to FancyZones (PowerToys).
-- **Zebar bar**: lives at the top of every monitor (`monitorSelection: all`) and renders the GlazeWM workspace list + clock + system stats. The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on.
+- **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock — no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` — the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.
 - **Weekly reboots**: the VDI re-images on a schedule. WSL persists across reboots, but if your VDI is ever wiped, re-run the bootstrap one-liner.
 - **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Deloitte VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_windows.ps1`.

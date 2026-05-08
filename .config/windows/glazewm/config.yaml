@@ -67,6 +67,24 @@ window_rules:
       - window_process: { equals: "msrdc" }
       - window_process: { equals: "ApplicationFrameHost" }
       - window_class: { regex: ".*Microsoft\\.AAD\\.BrokerPlugin.*" }
+      # PowerToys Run is a floating launcher popup, not a tileable window.
+      - window_process: { equals: "PowerToys" }
+      - window_class: { regex: "HwndWrapper.*PowerToys.*" }
+
+  # App routing — labels in `workspaces:` above are cosmetic, these rules
+  # are what actually pins each app to its home workspace.
+  - commands: ["move --workspace 1"]
+    match:
+      - window_process: { equals: "WindowsTerminal" }
+  - commands: ["move --workspace 2"]
+    match:
+      - window_process: { regex: "(msedge|chrome|brave|firefox)" }
+  - commands: ["move --workspace 3"]
+    match:
+      - window_process: { regex: "(Code|devenv|idea64|rider64)" }
+  - commands: ["move --workspace 4"]
+    match:
+      - window_process: { regex: "(ms-teams|Teams|slack|Discord)" }
 
 binding_modes:
   - name: "resize"

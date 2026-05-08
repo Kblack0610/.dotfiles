@@ -56,6 +56,7 @@ $EssentialPackages = @(
     'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
+    'Microsoft.PowerToys',            # PowerToys Run = dmenu equivalent (Alt+D)
     'DEVCOM.JetBrainsMonoNerdFont'    # font for WT/Zebar/Windows-side editors
 )
 

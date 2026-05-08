@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kblack-minimal</title>
+    <style>
+      :root {
+        --bg: rgba(40, 42, 54, 0.92);
+        --fg: #f8f8f2;
+        --muted: #6272a4;
+        --accent: #8be9fd;
+        --focused: #50fa7b;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", Consolas, monospace;
+        font-size: 13px;
+        color: var(--fg);
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+      }
+      .bar {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        height: 100%;
+        padding: 0 10px;
+        background: var(--bg);
+        gap: 12px;
+      }
+      .left, .center, .right { display: flex; align-items: center; gap: 8px; }
+      .center { justify-content: center; min-width: 0; }
+      .right { justify-content: flex-end; }
+      .ws {
+        appearance: none;
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .ws.displayed { color: var(--fg); border-color: var(--muted); }
+      .ws.focused { color: #282a36; background: var(--focused); border-color: var(--focused); }
+      .windows {
+        display: flex;
+        gap: 6px;
+        flex-wrap: nowrap;
+        overflow: hidden;
+        white-space: nowrap;
+        min-width: 0;
+        color: var(--accent);
+      }
+      .win {
+        max-width: 32ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .win.active { color: var(--fg); font-weight: 600; }
+      .win + .win::before { content: "·"; color: var(--muted); margin-right: 6px; }
+      .clock { color: var(--fg); font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <div class="left" id="workspaces"></div>
+      <div class="center windows" id="windows"></div>
+      <div class="right"><span class="clock" id="clock"></span></div>
+    </div>
+
+    <script type="module">
+      import * as zebar from "https://esm.sh/zebar@3.0";
+
+      const providers = zebar.createProviderGroup({
+        glazewm: { type: "glazewm" },
+        date: { type: "date", formatting: "HH:mm" },
+      });
+
+      const $workspaces = document.getElementById("workspaces");
+      const $windows = document.getElementById("windows");
+      const $clock = document.getElementById("clock");
+
+      function flattenWindows(container) {
+        if (!container || !Array.isArray(container.children)) return [];
+        const out = [];
+        for (const child of container.children) {
+          if (child.type === "window") out.push(child);
+          else out.push(...flattenWindows(child));
+        }
+        return out;
+      }
+
+      function render(output) {
+        const gw = output.glazewm;
+
+        $workspaces.replaceChildren();
+        if (gw && Array.isArray(gw.currentWorkspaces)) {
+          for (const ws of gw.currentWorkspaces) {
+            const btn = document.createElement("button");
+            btn.className = "ws"
+              + (ws.hasFocus ? " focused" : "")
+              + (ws.isDisplayed ? " displayed" : "");
+            btn.textContent = ws.displayName ?? ws.name;
+            btn.addEventListener("click", () => {
+              gw.runCommand(`focus --workspace ${ws.name}`);
+            });
+            $workspaces.appendChild(btn);
+          }
+        }
+
+        $windows.replaceChildren();
+        if (gw) {
+          const focusedWs = gw.focusedWorkspace
+            ?? gw.currentWorkspaces?.find((w) => w.hasFocus);
+          const wins = flattenWindows(focusedWs);
+          const focusedId = gw.focusedContainer?.id;
+          for (const w of wins) {
+            const span = document.createElement("span");
+            span.className = "win" + (w.id === focusedId ? " active" : "");
+            span.textContent = w.title || w.processName || "(untitled)";
+            $windows.appendChild(span);
+          }
+        }
+
+        $clock.textContent = output.date?.formatted ?? "";
+      }
+
+      providers.onOutput((map) => render(map));
+      render(providers.outputMap);
+    </script>
+  </body>
+</html>
