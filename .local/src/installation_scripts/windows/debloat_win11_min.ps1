@@ -19,7 +19,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$DebloatUrl = 'https://win11debloat.raphi.re/'
+$DebloatUrl = 'https://raw.githubusercontent.com/Raphire/Win11Debloat/master/Win11Debloat.ps1'
 
 $Args = @(
     '-Silent'
