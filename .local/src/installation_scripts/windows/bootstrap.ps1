@@ -13,6 +13,10 @@
 # Re-sync after editing dotfiles (skip winget + WSL, just pull and re-deploy configs):
 #   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -ConfigOnly
 #
+# Minimal Windows-side install (skip the cross-platform CLI tools that will
+# live inside WSL):
+#   irm <url> | iex; & ... -Essentials
+#
 # OneDrive fallback (when raw.githubusercontent.com is blocked):
 #   pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
 #
@@ -21,7 +25,8 @@
 [CmdletBinding()]
 param(
     [switch]$SkipWsl,
-    [switch]$ConfigOnly
+    [switch]$ConfigOnly,
+    [switch]$Essentials
 )
 
 if ($ConfigOnly) { $SkipWsl = $true }
@@ -57,7 +62,10 @@ if ($ConfigOnly) {
     Write-Step '[2/3] install_packages.ps1 - skipped (-ConfigOnly)'
 } else {
     Write-Step '[2/3] install_packages.ps1'
-    if ($SkipWsl) { & $InstallScript -SkipWsl } else { & $InstallScript }
+    $installArgs = @{}
+    if ($SkipWsl)     { $installArgs.SkipWsl     = $true }
+    if ($Essentials)  { $installArgs.Essentials  = $true }
+    & $InstallScript @installArgs
 }
 
 Write-Step '[3/3] apply_configs.ps1'
@@ -81,7 +89,12 @@ if ($ConfigOnly) {
     Write-Host '  Restart any open Windows Terminal / nvim if you changed their configs.'
 } elseif ($SkipWsl) {
     Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
-    Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
+    if ($Essentials) {
+        Write-Host '  2. -Essentials was set: only Git/WT/GlazeWM/Zebar/Nerd Font got installed.'
+        Write-Host '     CLI tools (nvim, rg, fzf, lazygit, gh, ...) live inside WSL.'
+    } else {
+        Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
+    }
     Write-Host '  3. Launch Windows Terminal - pick "Git Bash" from the dropdown if your hands miss bash.'
     Write-Host '  4. Start GlazeWM from the Start menu (it will auto-launch Zebar).'
     Write-Host '  5. When Anton confirms WSL2 is enabled, re-run WITHOUT -SkipWsl to finish setup.'

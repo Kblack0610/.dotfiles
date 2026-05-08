@@ -2,14 +2,19 @@
 # Module 2 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
 # Parameters:
-#   -SkipWsl   Skip WSL/Debian install. Use on day 1 (before WSL2 is enabled
-#              on the VDI) so you still get Windows-side tooling.
+#   -SkipWsl     Skip WSL/Debian install. Use on day 1 (before WSL2 is enabled
+#                on the VDI) so you still get Windows-side tooling.
+#   -Essentials  Install only the minimal Windows-side set: Git, Windows
+#                Terminal, GlazeWM, Zebar, JetBrainsMono Nerd Font. Use when
+#                most CLI tooling will live inside WSL and you don't want
+#                Windows-side duplicates of nvim, ripgrep, fzf, etc.
 #
 # Idempotent: each package install is guarded by a `winget list` check.
 
 [CmdletBinding()]
 param(
-    [switch]$SkipWsl
+    [switch]$SkipWsl,
+    [switch]$Essentials
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,10 +45,23 @@ function Install-Pkg {
 }
 
 # --- 1. winget packages ----------------------------------------------------
-# Order: git first (already done by sync_dotfiles, cheap to verify), then
-# native dev tools, then the prompt, then GUI bits.
-$Packages = @(
-    'Git.Git',
+# Two tiers:
+#   Essentials  — Windows-only tooling with no WSL counterpart. Always installed.
+#   Optional    — cross-platform CLI tools that also exist inside WSL. Skipped
+#                 when -Essentials is passed.
+#
+# Order matters for both lists: deps before dependents, prompt after shells.
+$EssentialPackages = @(
+    'Git.Git',                        # needed in PowerShell to clone/pull dotfiles
+    'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
+    'glzr-io.glazewm',                # Windows desktop WM
+    'glzr-io.zebar',                  # status bar paired with GlazeWM
+    'DEVCOM.JetBrainsMonoNerdFont'    # font for WT/Zebar/Windows-side editors
+)
+
+# gerardog.gsudo intentionally omitted from both tiers: needs admin to install,
+# which the Deloitte Win11 VDI does not grant. Add back if you ever get admin.
+$OptionalPackages = @(
     'Neovim.Neovim',
     'BurntSushi.ripgrep.MSVC',
     'sharkdp.fd',
@@ -51,12 +69,7 @@ $Packages = @(
     'JesseDuffield.lazygit',
     'Starship.Starship',
     'OpenJS.NodeJS.LTS',
-    'marlocarlo.psmux',
-    # gerardog.gsudo intentionally omitted: needs admin to install, which the
-    # Deloitte Win11 VDI does not grant. Add back if you ever get admin.
-    'Microsoft.WindowsTerminal',
-    'glzr-io.glazewm',
-    'glzr-io.zebar',
+    'marlocarlo.psmux',               # PowerShell-only multiplexer (no WSL equivalent)
     'GitHub.cli',
     # Docker CLI only — Docker Desktop needs admin (omitted, like gsudo).
     # Pair this with `docker.io` inside WSL Debian and point the CLI at
@@ -66,9 +79,15 @@ $Packages = @(
     # the Windows service. On the VDI without admin, expect the service step to
     # fail - psql.exe still ends up on PATH for connecting to remote DBs, which
     # is the usual VDI use case.
-    'PostgreSQL.PostgreSQL.17',
-    'DEVCOM.JetBrainsMonoNerdFont'
+    'PostgreSQL.PostgreSQL.17'
 )
+
+$Packages = if ($Essentials) {
+    Write-Step '-Essentials set: installing minimal Windows-side tier only'
+    $EssentialPackages
+} else {
+    $EssentialPackages + $OptionalPackages
+}
 foreach ($p in $Packages) { Install-Pkg $p }
 
 # Refresh PATH for this session so freshly-installed binaries are findable.
