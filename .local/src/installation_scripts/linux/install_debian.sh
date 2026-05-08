@@ -13,6 +13,14 @@ source "$BASE_DIR/base_functions.sh"
 # Load configuration
 load_config
 
+# WSL has its own minimal installer — refuse here so we don't try to install
+# Hyprland/Sunshine/keyd inside WSL.
+if is_wsl; then
+    log_error "WSL detected — run install_wsl.sh instead:"
+    log_error "  $SCRIPT_DIR/install_wsl.sh"
+    exit 1
+fi
+
 # Helper: Install package with apt
 install_apt_package() {
     local package="$1"
@@ -416,8 +424,6 @@ setup_keyd() {
     log_info "keyd enabled and reloaded"
 }
 
-# Setup Docker — daemon-in-WSL replacement for Docker Desktop on locked-down
-# Windows VDIs. Runs anywhere; the WSL-specific bits no-op outside WSL.
 setup_docker() {
     log_section "Setting up Docker"
 
@@ -434,24 +440,7 @@ setup_docker() {
         sudo usermod -aG docker "$USER"
     fi
 
-    # WSL: enable systemd so `systemctl enable --now docker` survives reboots.
-    if grep -qi 'microsoft\|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
-        if [[ ! -f /etc/wsl.conf ]] || ! grep -q '^systemd=true' /etc/wsl.conf; then
-            log_info "Enabling systemd in /etc/wsl.conf (requires \`wsl --shutdown\` from Windows)"
-            sudo tee /etc/wsl.conf >/dev/null <<'EOF'
-[boot]
-systemd=true
-EOF
-            log_warning "From Windows PowerShell run: wsl --shutdown   (then reopen Debian)"
-        fi
-    fi
-
-    # Start the daemon now if we can. systemd-managed when present, service(8) otherwise.
-    if pidof systemd &>/dev/null; then
-        sudo systemctl enable --now docker || log_warning "systemctl enable docker failed"
-    else
-        sudo service docker start &>/dev/null || log_warning "service docker start failed (will work after \`wsl --shutdown\` once systemd is enabled)"
-    fi
+    sudo systemctl enable --now docker || log_warning "systemctl enable docker failed"
 
     log_info "Docker installed. Re-login (or \`newgrp docker\`) so group membership takes effect."
 }
