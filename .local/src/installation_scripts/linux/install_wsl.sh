@@ -16,6 +16,18 @@ BASE_DIR="$(dirname "$SCRIPT_DIR")"
 source "$BASE_DIR/base_functions.sh"
 load_config
 
+# Minimal ArchWSL ships as root with no sudo. Make `sudo` a no-op when we're
+# already root; require it (and bail clearly) when we aren't.
+if [[ $EUID -eq 0 ]]; then
+    SUDO=""
+else
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_error "Not running as root and sudo isn't installed. Either run this as root or install sudo first."
+        exit 1
+    fi
+    SUDO="sudo"
+fi
+
 install_pacman_package() {
     local package="$1"
 
@@ -25,7 +37,7 @@ install_pacman_package() {
     fi
 
     log_info "Installing $package..."
-    if sudo pacman -S --noconfirm "$package" &>/dev/null; then
+    if $SUDO pacman -S --noconfirm "$package" &>/dev/null; then
         log_info "✓ $package installed"
     else
         log_warning "✗ Failed to install $package"
@@ -34,7 +46,7 @@ install_pacman_package() {
 
 update_system() {
     log_section "Updating system packages"
-    if ! sudo pacman -Syu --noconfirm; then
+    if ! $SUDO pacman -Syu --noconfirm; then
         log_error "pacman -Syu failed. Common WSL fixes:"
         log_error "  sudo pacman-key --init && sudo pacman-key --populate archlinux"
         log_error "  sudo rm -f /var/lib/pacman/db.lck   # if a previous run was killed"
@@ -83,7 +95,7 @@ setup_docker() {
 
     if [[ ! -f /etc/wsl.conf ]] || ! grep -q '^systemd=true' /etc/wsl.conf; then
         log_info "Enabling systemd in /etc/wsl.conf"
-        sudo tee /etc/wsl.conf >/dev/null <<'EOF'
+        $SUDO tee /etc/wsl.conf >/dev/null <<'EOF'
 [boot]
 systemd=true
 EOF
@@ -91,15 +103,15 @@ EOF
     fi
 
     if ! getent group docker >/dev/null; then
-        sudo groupadd docker
+        $SUDO groupadd docker
     fi
     if ! id -nG "$USER" | grep -qw docker; then
-        sudo usermod -aG docker "$USER"
+        $SUDO usermod -aG docker "$USER"
         log_info "Added $USER to docker group (re-login or \`newgrp docker\`)"
     fi
 
     if pidof systemd &>/dev/null; then
-        sudo systemctl enable --now docker || log_warning "systemctl enable docker failed"
+        $SUDO systemctl enable --now docker || log_warning "systemctl enable docker failed"
     else
         log_warning "systemd not active yet — Docker will start after \`wsl --shutdown\`"
     fi
@@ -120,9 +132,15 @@ setup_postgres() {
         log_info "PostgreSQL data dir already initialized"
     else
         log_info "Initializing PostgreSQL data dir at $data_dir"
-        sudo -iu postgres initdb --locale=C.UTF-8 --encoding=UTF8 -D "$data_dir" &>/dev/null \
-            && log_info "✓ initdb complete" \
-            || log_warning "initdb failed — run manually as the postgres user"
+        if [[ $EUID -eq 0 ]]; then
+            runuser -u postgres -- initdb --locale=C.UTF-8 --encoding=UTF8 -D "$data_dir" &>/dev/null \
+                && log_info "✓ initdb complete" \
+                || log_warning "initdb failed — run manually as the postgres user"
+        else
+            sudo -iu postgres initdb --locale=C.UTF-8 --encoding=UTF8 -D "$data_dir" &>/dev/null \
+                && log_info "✓ initdb complete" \
+                || log_warning "initdb failed — run manually as the postgres user"
+        fi
     fi
 
     log_info "Start with: sudo systemctl start postgresql"
