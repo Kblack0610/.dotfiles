@@ -34,7 +34,14 @@ install_pacman_package() {
 
 update_system() {
     log_section "Updating system packages"
-    sudo pacman -Syu --noconfirm &>/dev/null && log_info "System updated"
+    if ! sudo pacman -Syu --noconfirm; then
+        log_error "pacman -Syu failed. Common WSL fixes:"
+        log_error "  sudo pacman-key --init && sudo pacman-key --populate archlinux"
+        log_error "  sudo rm -f /var/lib/pacman/db.lck   # if a previous run was killed"
+        log_error "  sudo pacman -Sy archlinux-keyring   # if keyring is stale"
+        return 1
+    fi
+    log_info "System updated"
 }
 
 install_packages() {
