@@ -13,14 +13,6 @@ source "$BASE_DIR/base_functions.sh"
 # Load configuration
 load_config
 
-# WSL has its own minimal installer — refuse here so we don't try to install
-# Hyprland/Sunshine/keyd inside WSL.
-if is_wsl; then
-    log_error "WSL detected — run install_wsl.sh instead:"
-    log_error "  $SCRIPT_DIR/install_wsl.sh"
-    exit 1
-fi
-
 # Helper: Install package with apt
 install_apt_package() {
     local package="$1"

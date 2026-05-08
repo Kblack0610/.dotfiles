@@ -7,8 +7,6 @@
 # Intentionally minimal: CLI floor + dev tools (node/python/docker/postgres),
 # zsh/oh-my-zsh/starship, dotfiles via stow with a WSL-tailored ignore list.
 # No GUI/desktop/streaming/printing/keyd — those belong on the Windows host.
-# The regular install_arch.sh / install_debian.sh refuse to run under WSL and
-# point here.
 
 set -e
 
@@ -17,12 +15,6 @@ BASE_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$BASE_DIR/base_functions.sh"
 load_config
-
-# Refuse to run outside WSL — install_arch.sh is the right entry there.
-if ! is_wsl; then
-    log_error "Not running under WSL. Use install_arch.sh on bare-metal Arch."
-    exit 1
-fi
 
 install_pacman_package() {
     local package="$1"
@@ -179,21 +171,15 @@ EOF
 
     stow .
 
-    if ! is_work_profile; then
-        git config core.hooksPath .githooks
-        log_info "Git hooks configured"
-    fi
+    git config core.hooksPath .githooks
+    log_info "Git hooks configured"
 
     log_info "Dotfiles applied"
 }
 
-# Notes-sync — personal Forgejo + MQTT/ntfy fan-out. No-op in work mode or
-# when NOTES_PRIMARY_REMOTE_URL isn't set.
+# Notes-sync — personal Forgejo + MQTT/ntfy fan-out. No-op when
+# NOTES_PRIMARY_REMOTE_URL isn't set.
 setup_notes_sync() {
-    if is_work_profile; then
-        log_info "Work profile: skipping notes sync"
-        return 0
-    fi
     if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
         log_warning "NOTES_PRIMARY_REMOTE_URL not set — skipping notes-bootstrap"
         return 0
