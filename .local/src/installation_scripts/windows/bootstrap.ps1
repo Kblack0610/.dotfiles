@@ -1,38 +1,37 @@
-# bootstrap.ps1 - entry point for the Deloitte Win11 VDI.
+# bootstrap.ps1 - entry point for the Win11 VDI.
 # Composes three idempotent modules:
 #   1. sync_dotfiles.ps1   - winget Git.Git + clone/pull this repo to %USERPROFILE%\.dotfiles
-#   2. install_packages.ps1 - winget bulk install + WSL2 Debian provisioning
+#   2. install_packages.ps1 - winget bulk install + WSL2 Arch provisioning  (opt-in)
 #   3. apply_configs.ps1   - copy configs into their Windows-native locations
 #
-# One-liner invocation:
+# Default = configs only (steps 1 + 3). No winget package installs, no WSL
+# provisioning. Re-running just re-deploys the dotfiles.
+#
+# Examples:
+#   # Pull dotfiles + push configs (default)
 #   irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
 #
-# Day-1 (skip WSL while you wait for Anton):
-#   $env:DOTFILES_SKIP_WSL=1; irm <same url> | iex
+#   # Also install winget packages (WT, GlazeWM, Zebar, PowerToys, Nerd Font)
+#   # and provision WSL2 Arch
+#   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Install
 #
-# Re-sync after editing dotfiles (skip winget + WSL, just pull and re-deploy configs):
-#   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -ConfigOnly
+#   # Install packages but skip WSL provisioning (when WSL2 is not yet enabled)
+#   & ".\bootstrap.ps1" -Install -SkipWsl
 #
-# Default install is MINIMAL: Git, Windows Terminal, GlazeWM, Zebar, PowerToys,
-# Neovim, JetBrainsMono Nerd Font + WSL Debian (the rest of the dev toolchain
-# lives inside WSL). To also install Windows-side ripgrep/fd/fzf/lazygit/
-# starship/gh/node/etc., pass -Full:
-#   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Full
+#   # Install minimal tier + cross-platform CLI extras (rg, fd, fzf, lazygit, ...)
+#   & ".\bootstrap.ps1" -Install -Full
 #
-# OneDrive fallback (when raw.githubusercontent.com is blocked):
+#   # OneDrive fallback (when raw.githubusercontent.com is blocked):
 #   pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
 #
 # Each module is callable on its own if you only want one step.
 
 [CmdletBinding()]
 param(
+    [switch]$Install,
     [switch]$SkipWsl,
-    [switch]$ConfigOnly,
     [switch]$Full
 )
-
-if ($ConfigOnly) { $SkipWsl = $true }
-if ($env:DOTFILES_SKIP_WSL) { $SkipWsl = $true }
 
 $ErrorActionPreference = 'Stop'
 
@@ -60,24 +59,26 @@ $ApplyScript   = Join-Path $ScriptDir 'apply_configs.ps1'
 if (-not (Test-Path $InstallScript)) { throw "Missing $InstallScript - bad clone?" }
 if (-not (Test-Path $ApplyScript))   { throw "Missing $ApplyScript - bad clone?" }
 
-if ($ConfigOnly) {
-    Write-Step '[2/3] install_packages.ps1 - skipped (-ConfigOnly)'
-} else {
+if ($Install) {
     Write-Step '[2/3] install_packages.ps1'
     $installArgs = @{}
     if ($SkipWsl) { $installArgs.SkipWsl = $true }
     if ($Full)    { $installArgs.Full    = $true }
     & $InstallScript @installArgs
+} else {
+    Write-Step '[2/3] install_packages.ps1 - skipped (default; pass -Install to run)'
 }
 
 Write-Step '[3/3] apply_configs.ps1'
-if ($SkipWsl) { & $ApplyScript -SkipWsl } else { & $ApplyScript }
+# apply_configs only does its WSL bootstrap step when -Install is set;
+# otherwise it just deploys configs to their Windows locations.
+if ($Install -and -not $SkipWsl) { & $ApplyScript } else { & $ApplyScript -SkipWsl }
 
 # --- Done ------------------------------------------------------------------
 Write-Host ''
 Write-Host '================================================' -ForegroundColor Green
-if ($ConfigOnly) {
-    Write-Host '  Configs re-synced (packages + WSL skipped).' -ForegroundColor Green
+if (-not $Install) {
+    Write-Host '  Configs re-synced (no packages installed).' -ForegroundColor Green
 } elseif ($SkipWsl) {
     Write-Host '  Windows-side setup complete (WSL skipped).' -ForegroundColor Green
 } else {
@@ -86,23 +87,17 @@ if ($ConfigOnly) {
 Write-Host '================================================' -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next steps:' -ForegroundColor Yellow
-if ($ConfigOnly) {
-    Write-Host '  Reload GlazeWM (Alt+Shift+R) so the new keybindings take effect.'
+if (-not $Install) {
+    Write-Host '  Reload GlazeWM (Alt+Shift+R) so any new keybindings take effect.'
     Write-Host '  Restart any open Windows Terminal / nvim if you changed their configs.'
+    Write-Host '  Pass -Install on the next run to install winget packages + WSL Arch.'
 } elseif ($SkipWsl) {
     Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
-    if ($Full) {
-        Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
-    } else {
-        Write-Host '  2. Minimal tier installed: Git/WT/GlazeWM/Zebar/PowerToys/Neovim/Nerd Font.'
-        Write-Host '     CLI tools (rg, fzf, lazygit, gh, ...) will live inside WSL when it is enabled.'
-        Write-Host '     If you want them on the Windows side too, re-run with -Full.'
-    }
-    Write-Host '  3. Launch Windows Terminal - pick "Git Bash" from the dropdown if your hands miss bash.'
-    Write-Host '  4. Start GlazeWM from the Start menu (it will auto-launch Zebar).'
-    Write-Host '  5. When Anton confirms WSL2 is enabled, re-run WITHOUT -SkipWsl to finish setup.'
+    Write-Host '  2. Launch Windows Terminal.'
+    Write-Host '  3. Start GlazeWM from the Start menu (it will auto-launch Zebar).'
+    Write-Host '  4. When WSL2 is enabled, re-run with -Install (no -SkipWsl) to provision Arch.'
 } else {
-    Write-Host '  1. Run `wsl --shutdown` then start a new Debian shell so .wslconfig (4GB cap) takes effect.'
-    Write-Host '  2. Launch Windows Terminal - Debian (WSL) is the default profile.'
+    Write-Host '  1. Run `wsl --shutdown` then start a new Arch shell so .wslconfig (4GB cap) takes effect.'
+    Write-Host '  2. Launch Windows Terminal - Arch (WSL) is the default profile.'
     Write-Host '  3. Start GlazeWM from the Start menu (it will auto-launch Zebar).'
 }

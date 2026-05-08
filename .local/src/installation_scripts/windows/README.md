@@ -4,9 +4,13 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 
 ## What this gives you
 
-- **WSL2 Debian** — primary dev environment, runs the existing `linux/install_debian.sh` unchanged. Full parity with the Linux dotfiles: nvim, tmux, lazygit, ripgrep, fzf, zoxide, starship, zsh, etc.
-- **Windows-side native tools** via winget — by default only the minimum needed for the WM/launcher/editor loop: git, neovim, JetBrainsMono Nerd Font. Pass `-Full` to also install ripgrep, fd, fzf, lazygit, starship, node (LTS), psmux, gh, docker CLI, postgres client (cross-platform CLI tools that otherwise live inside WSL).
-- **Windows Terminal** with three profiles: Debian (WSL), PowerShell, Git Bash.
+The default invocation is **configs-only** — it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
+
+- **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
+- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
+- **WSL2 Arch** (`-Install`): primary dev environment, runs `linux/install_arch.sh` from inside the WSL distro. Full parity with the Linux dotfiles.
+- **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
+- **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
 - **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
@@ -14,7 +18,7 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 
 ## Preflight: enable WSL2 on the VDI image
 
-WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. `wsl --install` will fail without it. Before running the WSL portion:
+WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. `wsl --install` will fail without it. Before running with `-Install` (or with `-Install -SkipWsl` followed eventually by a non-`-SkipWsl` run):
 
 1. Open a ServiceNow ticket (or message Anton, who handles these for the engineering teams) asking for **WSL2 to be enabled on your Azure VDI**.
 2. After they confirm, in PowerShell on the VDI run:
@@ -23,7 +27,7 @@ WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. `wsl -
    ```
    You should see *"Default Version: 2"* and a kernel version. If you see *"WSL is not installed"* or `0x80370102`, it's not enabled yet — go back to step 1.
 
-If you don't want to wait, see [Day-1 mode](#day-1-mode-skipwsl) below — you can install everything except WSL right now and add it later.
+If you don't want to wait, see [Day-1 mode](#day-1-mode--skipwsl-with--install) below — you can install Windows-side packages right now and add WSL Arch later.
 
 ## How to install
 
@@ -32,10 +36,12 @@ If you don't want to wait, see [Day-1 mode](#day-1-mode-skipwsl) below — you c
 In a fresh PowerShell on the VDI:
 
 ```pwsh
+# Default: pull dotfiles + push configs (no winget, no WSL).
 irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
-```
 
-That uses winget to install git, clones the dotfiles, and runs `install_windows.ps1`.
+# After the repo is on disk, add packages + WSL Arch when you're ready:
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Install
+```
 
 ### Path B — OneDrive fallback
 
@@ -47,49 +53,37 @@ Clipboard between your Mac and the VDI is **disabled** by Deloitte policy. OneDr
    pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
    ```
 
-If even GitHub is blocked inside the VDI, zip the whole repo into OneDrive, expand to `%USERPROFILE%\.dotfiles`, then run the entry point directly:
+If even GitHub is blocked inside the VDI, zip the whole repo into OneDrive, expand to `%USERPROFILE%\.dotfiles`, then run the entry point directly.
+
+### Day-1 mode (-SkipWsl with -Install)
+
+If Anton hasn't enabled WSL2 yet but you still want the Windows-side packages installed:
 
 ```pwsh
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1"
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Install -SkipWsl
 ```
 
-### Day-1 mode (-SkipWsl)
-
-If Anton hasn't enabled WSL2 yet, install the Windows side now and add WSL later.
-
-```pwsh
-$env:DOTFILES_SKIP_WSL=1; irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
-```
-
-Or after the repo is already cloned:
-
-```pwsh
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -SkipWsl
-```
-
-When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`. The chain is idempotent — it'll skip the Windows-side bits it already did.
+When WSL2 is enabled, re-run with `-Install` (drop `-SkipWsl`) to provision Arch.
 
 ## How the bootstrap is structured
 
 `bootstrap.ps1` is just a thin orchestrator. The work lives in three idempotent modules, each runnable on its own:
 
-| Step | Script | What it does |
-|------|--------|--------------|
-| 1 | `sync_dotfiles.ps1` | `winget install Git.Git` if missing, then clone or `git pull --ff-only` the repo into `%USERPROFILE%\.dotfiles`. |
-| 2 | `install_packages.ps1` | `winget install` each ID below, then `wsl --install -d Debian --no-launch` (skipped with `-SkipWsl`). |
-| 3 | `apply_configs.ps1` | Copy configs into their Windows-native homes (see table below), then bootstrap WSL Debian (skipped with `-SkipWsl`). |
-
-`bootstrap.ps1 -ConfigOnly` runs steps 1 + 3 only — the fast path after editing dotfiles.
+| Step | Script | What it does | When it runs |
+|------|--------|--------------|--------------|
+| 1 | `sync_dotfiles.ps1` | `winget install Git.Git` if missing, then clone or `git pull --ff-only` the repo into `%USERPROFILE%\.dotfiles`. | always |
+| 2 | `install_packages.ps1` | `winget install` each ID below, then `wsl --install -d archlinux --no-launch` (skipped with `-SkipWsl`). | only with `-Install` |
+| 3 | `apply_configs.ps1` | Copy configs into their Windows-native homes (see table below), then bootstrap WSL Arch (only when `-Install` is set). | always; the WSL-bootstrap sub-step only runs with `-Install` |
 
 ### Packages (step 2)
 
-Two tiers — minimal is the default.
+Two tiers — minimal is the default when `-Install` is passed.
 
-**Minimal (always installed):** `Git.Git`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `Neovim.Neovim`, `DEVCOM.JetBrainsMonoNerdFont`.
+**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
 
-**Full (`-Full` only):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
+**Full (`-Install -Full`):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
 
-The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh, node, etc.) all live inside WSL Debian as part of the Linux-side install. There's no point pulling Windows-side duplicates onto a 8 GB VDI unless you want them callable directly from PowerShell.
+The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh, node, etc.) all live inside WSL Arch as part of the Linux-side install. There's no point pulling Windows-side duplicates onto a 8 GB VDI unless you want them callable directly from PowerShell.
 
 > PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails — `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
 
@@ -118,20 +112,26 @@ Windows symlinks need Developer Mode or admin. Corporate VDIs typically allow ne
 
 After the installer finishes, **close and reopen PowerShell** so the new `$PROFILE` and `$PATH` take effect.
 
-### Default (minimal) install
+### Default (configs only)
 
 ```pwsh
-git --version
-nvim --version              # bundled in the minimal tier
-Get-Command lg, wsld, dot   # functions from the profile (lg may noop until -Full adds lazygit)
+git --version                                                   # already on the VDI image
+Test-Path "$env:USERPROFILE\.glzr\glazewm\config.yaml"          # True
+Test-Path "$env:USERPROFILE\.glzr\zebar\kblack-minimal\zpack.json"  # True
 ```
 
-`rg`, `fd`, `fzf`, `lazygit`, `starship`, `gh`, `node` are intentionally NOT on Windows-side `$PATH` — they live inside WSL Debian. If you want them in PowerShell too, re-run with `-Full`.
+### After `-Install` (minimal packages)
 
-### After WSL provisioning (no `-SkipWsl`)
+```pwsh
+Get-Command wt, glazewm, zebar    # all resolve via winget installs
+```
+
+`rg`, `fd`, `fzf`, `lazygit`, `starship`, `gh`, `node` are intentionally NOT on Windows-side `$PATH` — they live inside WSL Arch. If you want them in PowerShell too, re-run with `-Install -Full`.
+
+### After WSL provisioning (`-Install`, no `-SkipWsl`)
 
 ```sh
-# Inside WSL Debian (after `wsl --shutdown` then re-launch)
+# Inside WSL Arch (after `wsl --shutdown` then re-launch)
 nvim --version
 free -h                     # should show ~4 GB total
 readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
@@ -139,10 +139,10 @@ readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
 
 ```pwsh
 # PowerShell on Windows
-wsl --list --verbose        # Debian, state Running, version 2
+wsl --list --verbose        # archlinux, state Running, version 2
 ```
 
-### After `-Full`
+### After `-Install -Full`
 
 The starship prompt should render automatically. All of `nvim`, `rg`, `fzf`, `lazygit`, `starship`, `gh`, `node` resolve directly in PowerShell.
 
@@ -152,16 +152,16 @@ Windows taskbar position is a Windows setting (*Settings → Personalization →
 
 ## Docker without Docker Desktop
 
-Docker Desktop needs admin and IT approval on the VDI — neither required here. The bootstrap installs `docker.io` inside WSL Debian (daemon + CLI) on every run; passing `-Full` additionally installs `Docker.DockerCLI` on Windows so `docker` works directly from PowerShell. Without `-Full`, just call into WSL (`wsl docker ps`). After a fresh install:
+Docker Desktop needs admin and IT approval on the VDI — neither required here. With `-Install`, the bootstrap installs `docker` (daemon + CLI) inside WSL Arch; with `-Install -Full` it additionally installs `Docker.DockerCLI` on Windows so `docker` works directly from PowerShell. Without `-Full`, just call into WSL (`wsl docker ps`). After a fresh install:
 
 ```pwsh
-# 1. Reload WSL so the [boot] systemd=true that install_debian.sh wrote takes effect
+# 1. Reload WSL so the [boot] systemd=true that install_arch.sh wrote takes effect
 wsl --shutdown
-# 2. Start a Debian shell — systemd will be PID 1 and dockerd auto-starts
-wsl -d Debian
+# 2. Start an Arch shell — systemd will be PID 1 and dockerd auto-starts
+wsl -d archlinux
 ```
 
-Inside Debian: `docker ps` should work. If you ran with `-Full`, point the Windows CLI at WSL's daemon:
+Inside Arch: `docker ps` should work. If you ran with `-Install -Full`, point the Windows CLI at WSL's daemon:
 
 ```pwsh
 docker context create wsl --docker host=npipe:////./pipe/docker_wsl
@@ -191,18 +191,18 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 - **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock — no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` — the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.
 - **Weekly reboots**: the VDI re-images on a schedule. WSL persists across reboots, but if your VDI is ever wiped, re-run the bootstrap one-liner.
-- **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Deloitte VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_windows.ps1`.
+- **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Deloitte VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_packages.ps1`.
 
 ## Re-syncing after dotfiles changes
 
 ```pwsh
-# Fast path: pull repo + deploy configs only (skips winget + WSL).
-& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -ConfigOnly
+# Default = pull repo + deploy configs (no winget, no WSL). Fast.
+& "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1"
 ```
 
 After it finishes, reload GlazeWM (`Alt+Shift+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
 
-Drop `-ConfigOnly` if you also want to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$Packages` in `install_packages.ps1`.
+Add `-Install` if you also want to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$MinimalPackages` / `$FullExtraPackages` in `install_packages.ps1`.
 
 You can also call any single module directly when you only want one piece — e.g. `& sync_dotfiles.ps1` to just `git pull`.
 

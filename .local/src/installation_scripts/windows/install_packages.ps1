@@ -1,12 +1,12 @@
-# install_packages.ps1 - winget package installs + WSL2 Debian provisioning.
+# install_packages.ps1 - winget package installs + WSL2 Arch provisioning.
 # Module 2 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
-# Default behavior: install only the minimal Windows-side set (Git, Windows
-# Terminal, GlazeWM, Zebar, PowerToys, Neovim, JetBrainsMono Nerd Font), then
-# provision WSL2 Debian where the rest of the dev toolchain lives.
+# Default behavior: install only the minimal Windows-side set (Windows
+# Terminal, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font), then
+# provision WSL2 Arch where the dev toolchain lives.
 #
 # Parameters:
-#   -SkipWsl  Skip WSL/Debian install. Use on day 1 (before WSL2 is enabled
+#   -SkipWsl  Skip WSL/Arch install. Use on day 1 (before WSL2 is enabled
 #             on the VDI) so you still get Windows-side tooling.
 #   -Full     Also install cross-platform CLI tools that exist inside WSL
 #             (ripgrep, fd, fzf, lazygit, starship, gh, node, psmux,
@@ -50,11 +50,9 @@ function Install-Pkg {
 
 # --- 1. winget packages ----------------------------------------------------
 # Two tiers:
-#   Minimal  — always installed. Windows-only tooling (WM/bar/launcher/font),
-#              plus Git for clone/pull and Neovim so $EDITOR works in
-#              PowerShell when you haven't dropped into WSL yet.
+#   Minimal  — Windows-only desktop tooling (WM, bar, launcher, font).
 #   Full     — opt-in via -Full. Cross-platform CLI tools that ALSO exist
-#              inside WSL Debian. Skip these unless you want PowerShell-side
+#              inside WSL Arch. Skip these unless you want PowerShell-side
 #              duplicates.
 #
 # Order matters for both lists: deps before dependents, prompt after shells.
@@ -63,7 +61,6 @@ $MinimalPackages = @(
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Microsoft.PowerToys',            # PowerToys Run = dmenu equivalent (Alt+D)
-    'Neovim.Neovim',                  # $EDITOR for quick PowerShell-side edits
     'DEVCOM.JetBrainsMonoNerdFont'    # font for WT/Zebar/Windows-side editors
 )
 
@@ -79,8 +76,8 @@ $FullExtraPackages = @(
     'marlocarlo.psmux',               # PowerShell-only multiplexer (no WSL equivalent)
     'GitHub.cli',
     # Docker CLI only — Docker Desktop needs admin (omitted, like gsudo).
-    # Pair this with `docker.io` inside WSL Debian and point the CLI at
-    # the WSL socket via `docker context`.
+    # Pair this with `docker` (community/extra) inside WSL Arch and point
+    # the CLI at the WSL socket via `docker context`.
     'Docker.DockerCLI',
     # PostgreSQL ships full server + psql; the installer wants admin to register
     # the Windows service. On the VDI without admin, expect the service step to
@@ -102,13 +99,13 @@ foreach ($p in $Packages) { Install-Pkg $p }
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path', 'User')
 
-# --- 2. WSL2 + Debian ------------------------------------------------------
+# --- 2. WSL2 + Arch --------------------------------------------------------
 if ($SkipWsl) {
-    Write-Step 'WSL2 Debian - skipped (-SkipWsl)'
+    Write-Step 'WSL2 Arch - skipped (-SkipWsl)'
     return
 }
 
-Write-Step 'WSL2 Debian'
+Write-Step 'WSL2 Arch'
 $wslStatus = & wsl.exe --status 2>&1
 if ($LASTEXITCODE -ne 0 -or $wslStatus -match 'is not installed') {
     throw @"
@@ -116,13 +113,13 @@ WSL is not enabled on this VDI. Open a ServiceNow ticket (or message Anton)
 asking for 'WSL2 to be enabled on my Azure VDI'. After they confirm, re-run.
 
 To set up the Windows-side tooling now and add WSL later:
-  & "`$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -SkipWsl
+  & "`$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Install -SkipWsl
 "@
 }
 $wslList = (& wsl.exe --list --quiet 2>$null) -join "`n"
-if ($wslList -notmatch 'Debian') {
-    & wsl.exe --install -d Debian --no-launch
-    Write-Host 'Debian installed. You will need to set a username/password the first time you launch it.' -ForegroundColor Yellow
+if ($wslList -notmatch '(?i)archlinux|^arch$') {
+    & wsl.exe --install -d archlinux --no-launch
+    Write-Host 'Arch installed. You will need to set a username/password the first time you launch it.' -ForegroundColor Yellow
 } else {
-    Write-Skip 'Debian already registered'
+    Write-Skip 'Arch already registered'
 }

@@ -2,7 +2,7 @@
 # Module 3 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
 # Parameters:
-#   -SkipWsl   Skip the WSL Debian first-run + Linux installer step.
+#   -SkipWsl   Skip the WSL Arch first-run + Linux installer step.
 #
 # Symlinks would need Developer Mode or admin (the VDI grants neither), so we copy.
 # Re-running re-copies, which is the supported way to push dotfiles edits to the VDI.
@@ -13,7 +13,7 @@
 #   .config\windows\glazewm\config.yaml
 #   .config\windows\zebar\settings.json
 #   .config\windows\wsl\.wslconfig
-#   .local\src\installation_scripts\linux\install_debian.sh
+#   .local\src\installation_scripts\linux\install_arch.sh
 
 [CmdletBinding()]
 param(
@@ -114,33 +114,33 @@ if (Test-Path $notesSetup) {
     Write-Skip "skip - $notesSetup not found"
 }
 
-# --- WSL Debian first-run + Linux installer --------------------------------
+# --- WSL Arch first-run + Linux installer ----------------------------------
 if ($SkipWsl) {
     Write-Step 'Linux installer inside WSL - skipped (-SkipWsl)'
     return
 }
 
-Write-Step 'Bootstrapping WSL Debian'
-$debianUser = (& wsl.exe -d Debian -- whoami 2>$null).Trim()
-if (-not $debianUser -or $debianUser -eq 'root') {
+Write-Step 'Bootstrapping WSL Arch'
+$archUser = (& wsl.exe -d archlinux -- whoami 2>$null).Trim()
+if (-not $archUser -or $archUser -eq 'root') {
     Write-Host @"
-Debian needs a user account. Opening it now - set a username and password,
-then exit the shell. This script will continue afterward.
+Arch needs a non-root user. Opening it now - run `useradd -m -G wheel <name>`
+and `passwd <name>`, set the default user with `/etc/wsl.conf`, then exit.
+This script will continue afterward.
 "@ -ForegroundColor Yellow
-    & wsl.exe -d Debian
+    & wsl.exe -d archlinux
 }
 
 $wslBootstrap = @'
 set -e
 DOTFILES="$HOME/.dotfiles"
 if [ ! -d "$DOTFILES" ]; then
-    sudo apt-get update
-    sudo apt-get install -y git stow
+    sudo pacman -Sy --noconfirm --needed git stow
     git clone https://github.com/Kblack0610/.dotfiles.git "$DOTFILES"
 else
     git -C "$DOTFILES" pull --ff-only || true
 fi
-bash "$DOTFILES/.local/src/installation_scripts/linux/install_debian.sh" || true
+bash "$DOTFILES/.local/src/installation_scripts/linux/install_arch.sh" || true
 cd "$DOTFILES" && stow --target="$HOME" --restow . 2>/dev/null || true
 '@
-& wsl.exe -d Debian -- bash -c $wslBootstrap
+& wsl.exe -d archlinux -- bash -c $wslBootstrap
