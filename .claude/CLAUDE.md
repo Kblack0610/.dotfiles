@@ -115,13 +115,27 @@ When writing memories, prefer mem0 (via the `mem0-ops` skill) for facts that sho
 
 Use a skill instead of hand-rolling commands or reaching for the equivalent MCP when one exists:
 
-- `notes-system` — `~/.notes` journal (do not hand-write entries into `~/.notes/journal/`)
+**Infra / ops**
 - `k8s-ops` — Kubernetes (home-k3s, do-nyc3-placemyparents-k8s-prod, k3d-local)
 - `cloudflare-ops` — DNS/tunnels for kennethblack.me, blacknbrownstudios.com, binks.chat, kblack.dev
 - `forgejo-ops` — git.kblab.me on home-k3s
 - `gh-workflows` — GitHub PRs, issues, CI, releases (preferred over any GitHub MCP)
+- `adb-ops` — Android debug bridge / emulator / APK install / logcat
 
-If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here.
+**Notes / memory**
+- `notes-system` — `~/.notes` journal (do not hand-write entries into `~/.notes/journal/`)
+- `mem0-ops` — cross-project, cross-tool long-term memory at `mem0.kblab.me`
+
+**Workstreams**
+- `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
+- `placemyparents-release` — production release runbook for placemyparents
+- `bnb-quality-gates` — what is/isn't enforced in the BNB platform monorepo
+
+**Authoring / config**
+- `one-pager` — Problem Brief / One-pager / Pitch in `~/.lab/briefs/`
+- `update-rules` — manage AI rules across rulesync overview / project CLAUDE.md / AGENTS.md / user-global, with sync (Claude / Codex / Gemini / OpenCode)
+
+If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here. The canonical skills index is `ls ~/.dotfiles/.claude/skills/`; keep this list in sync with that directory (the `update-rules` skill can do the diff for you).
 
 ## Agent Delegation
 

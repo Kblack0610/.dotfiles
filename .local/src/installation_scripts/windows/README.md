@@ -5,7 +5,7 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 ## What this gives you
 
 - **WSL2 Debian** — primary dev environment, runs the existing `linux/install_debian.sh` unchanged. Full parity with the Linux dotfiles: nvim, tmux, lazygit, ripgrep, fzf, zoxide, starship, zsh, etc.
-- **Windows-side native tools** via winget: git, neovim, ripgrep, fd, fzf, lazygit, starship, node (LTS), psmux (native tmux for Windows). All on `$PATH` and usable directly in PowerShell.
+- **Windows-side native tools** via winget — by default only the minimum needed for the WM/launcher/editor loop: git, neovim, JetBrainsMono Nerd Font. Pass `-Full` to also install ripgrep, fd, fzf, lazygit, starship, node (LTS), psmux, gh, docker CLI, postgres client (cross-platform CLI tools that otherwise live inside WSL).
 - **Windows Terminal** with three profiles: Debian (WSL), PowerShell, Git Bash.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
 - **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
@@ -83,7 +83,13 @@ When Anton confirms WSL2 is enabled, re-run **without** the env var / `-SkipWsl`
 
 ### Packages (step 2)
 
-`Git.Git`, `GitHub.cli`, `Docker.DockerCLI`, `Neovim.Neovim`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`, `DEVCOM.JetBrainsMonoNerdFont`.
+Two tiers — minimal is the default.
+
+**Minimal (always installed):** `Git.Git`, `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `Neovim.Neovim`, `DEVCOM.JetBrainsMonoNerdFont`.
+
+**Full (`-Full` only):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
+
+The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh, node, etc.) all live inside WSL Debian as part of the Linux-side install. There's no point pulling Windows-side duplicates onto a 8 GB VDI unless you want them callable directly from PowerShell.
 
 > PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails — `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
 
@@ -110,24 +116,19 @@ Windows symlinks need Developer Mode or admin. Corporate VDIs typically allow ne
 
 ## Verification
 
-### Day-1 (-SkipWsl)
-
 After the installer finishes, **close and reopen PowerShell** so the new `$PROFILE` and `$PATH` take effect.
 
+### Default (minimal) install
+
 ```pwsh
-# Should all succeed in PowerShell directly
-nvim --version
-rg --version
-fzf --version
-lazygit --version
-starship --version
 git --version
-Get-Command lg, wsld, dot   # functions from the profile
+nvim --version              # bundled in the minimal tier
+Get-Command lg, wsld, dot   # functions from the profile (lg may noop until -Full adds lazygit)
 ```
 
-The starship prompt should render automatically.
+`rg`, `fd`, `fzf`, `lazygit`, `starship`, `gh`, `node` are intentionally NOT on Windows-side `$PATH` — they live inside WSL Debian. If you want them in PowerShell too, re-run with `-Full`.
 
-### Full install
+### After WSL provisioning (no `-SkipWsl`)
 
 ```sh
 # Inside WSL Debian (after `wsl --shutdown` then re-launch)
@@ -141,13 +142,17 @@ readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
 wsl --list --verbose        # Debian, state Running, version 2
 ```
 
+### After `-Full`
+
+The starship prompt should render automatically. All of `nvim`, `rg`, `fzf`, `lazygit`, `starship`, `gh`, `node` resolve directly in PowerShell.
+
 GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config; `Alt+D` opens PowerToys Run (dmenu equivalent).
 
 Windows taskbar position is a Windows setting (*Settings → Personalization → Taskbar → Taskbar behaviors → Taskbar alignment*) — GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
 
 ## Docker without Docker Desktop
 
-Docker Desktop needs admin and IT approval on the VDI — neither required here. The bootstrap installs `Docker.DockerCLI` on Windows and `docker.io` inside WSL Debian, with the daemon running in WSL. After a fresh install:
+Docker Desktop needs admin and IT approval on the VDI — neither required here. The bootstrap installs `docker.io` inside WSL Debian (daemon + CLI) on every run; passing `-Full` additionally installs `Docker.DockerCLI` on Windows so `docker` works directly from PowerShell. Without `-Full`, just call into WSL (`wsl docker ps`). After a fresh install:
 
 ```pwsh
 # 1. Reload WSL so the [boot] systemd=true that install_debian.sh wrote takes effect
@@ -156,14 +161,14 @@ wsl --shutdown
 wsl -d Debian
 ```
 
-Inside Debian: `docker ps` should work. From PowerShell, point the Windows CLI at WSL's daemon:
+Inside Debian: `docker ps` should work. If you ran with `-Full`, point the Windows CLI at WSL's daemon:
 
 ```pwsh
 docker context create wsl --docker host=npipe:////./pipe/docker_wsl
 docker context use wsl
 ```
 
-Or skip the Windows CLI entirely and just run `wsl docker ps` / alias it.
+Otherwise just run `wsl docker ps` / alias it.
 
 ## Optional: debloat
 

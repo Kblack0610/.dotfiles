@@ -1,20 +1,24 @@
 # install_packages.ps1 - winget package installs + WSL2 Debian provisioning.
 # Module 2 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
+# Default behavior: install only the minimal Windows-side set (Git, Windows
+# Terminal, GlazeWM, Zebar, PowerToys, Neovim, JetBrainsMono Nerd Font), then
+# provision WSL2 Debian where the rest of the dev toolchain lives.
+#
 # Parameters:
-#   -SkipWsl     Skip WSL/Debian install. Use on day 1 (before WSL2 is enabled
-#                on the VDI) so you still get Windows-side tooling.
-#   -Essentials  Install only the minimal Windows-side set: Git, Windows
-#                Terminal, GlazeWM, Zebar, JetBrainsMono Nerd Font. Use when
-#                most CLI tooling will live inside WSL and you don't want
-#                Windows-side duplicates of nvim, ripgrep, fzf, etc.
+#   -SkipWsl  Skip WSL/Debian install. Use on day 1 (before WSL2 is enabled
+#             on the VDI) so you still get Windows-side tooling.
+#   -Full     Also install cross-platform CLI tools that exist inside WSL
+#             (ripgrep, fd, fzf, lazygit, starship, gh, node, psmux,
+#             docker CLI, postgres). Skip this unless you want those tools
+#             callable directly from PowerShell as well as inside WSL.
 #
 # Idempotent: each package install is guarded by a `winget list` check.
 
 [CmdletBinding()]
 param(
     [switch]$SkipWsl,
-    [switch]$Essentials
+    [switch]$Full
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,24 +50,27 @@ function Install-Pkg {
 
 # --- 1. winget packages ----------------------------------------------------
 # Two tiers:
-#   Essentials  — Windows-only tooling with no WSL counterpart. Always installed.
-#   Optional    — cross-platform CLI tools that also exist inside WSL. Skipped
-#                 when -Essentials is passed.
+#   Minimal  — always installed. Windows-only tooling (WM/bar/launcher/font),
+#              plus Git for clone/pull and Neovim so $EDITOR works in
+#              PowerShell when you haven't dropped into WSL yet.
+#   Full     — opt-in via -Full. Cross-platform CLI tools that ALSO exist
+#              inside WSL Debian. Skip these unless you want PowerShell-side
+#              duplicates.
 #
 # Order matters for both lists: deps before dependents, prompt after shells.
-$EssentialPackages = @(
-    'Git.Git',                        # needed in PowerShell to clone/pull dotfiles
+$MinimalPackages = @(
+    'Git.Git',                        # clone/pull dotfiles from PowerShell
     'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Microsoft.PowerToys',            # PowerToys Run = dmenu equivalent (Alt+D)
+    'Neovim.Neovim',                  # $EDITOR for quick PowerShell-side edits
     'DEVCOM.JetBrainsMonoNerdFont'    # font for WT/Zebar/Windows-side editors
 )
 
 # gerardog.gsudo intentionally omitted from both tiers: needs admin to install,
 # which the Deloitte Win11 VDI does not grant. Add back if you ever get admin.
-$OptionalPackages = @(
-    'Neovim.Neovim',
+$FullExtraPackages = @(
     'BurntSushi.ripgrep.MSVC',
     'sharkdp.fd',
     'junegunn.fzf',
@@ -83,11 +90,12 @@ $OptionalPackages = @(
     'PostgreSQL.PostgreSQL.17'
 )
 
-$Packages = if ($Essentials) {
-    Write-Step '-Essentials set: installing minimal Windows-side tier only'
-    $EssentialPackages
+$Packages = if ($Full) {
+    Write-Step '-Full set: installing minimal tier + cross-platform CLI tools'
+    $MinimalPackages + $FullExtraPackages
 } else {
-    $EssentialPackages + $OptionalPackages
+    Write-Step 'Minimal Windows-side tier (pass -Full for cross-platform CLI tools)'
+    $MinimalPackages
 }
 foreach ($p in $Packages) { Install-Pkg $p }
 

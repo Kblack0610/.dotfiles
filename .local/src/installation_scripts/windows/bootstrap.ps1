@@ -13,9 +13,11 @@
 # Re-sync after editing dotfiles (skip winget + WSL, just pull and re-deploy configs):
 #   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -ConfigOnly
 #
-# Minimal Windows-side install (skip the cross-platform CLI tools that will
-# live inside WSL):
-#   irm <url> | iex; & ... -Essentials
+# Default install is MINIMAL: Git, Windows Terminal, GlazeWM, Zebar, PowerToys,
+# Neovim, JetBrainsMono Nerd Font + WSL Debian (the rest of the dev toolchain
+# lives inside WSL). To also install Windows-side ripgrep/fd/fzf/lazygit/
+# starship/gh/node/etc., pass -Full:
+#   & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Full
 #
 # OneDrive fallback (when raw.githubusercontent.com is blocked):
 #   pwsh -ExecutionPolicy Bypass -File "$env:OneDrive\bootstrap.ps1"
@@ -26,7 +28,7 @@
 param(
     [switch]$SkipWsl,
     [switch]$ConfigOnly,
-    [switch]$Essentials
+    [switch]$Full
 )
 
 if ($ConfigOnly) { $SkipWsl = $true }
@@ -63,8 +65,8 @@ if ($ConfigOnly) {
 } else {
     Write-Step '[2/3] install_packages.ps1'
     $installArgs = @{}
-    if ($SkipWsl)     { $installArgs.SkipWsl     = $true }
-    if ($Essentials)  { $installArgs.Essentials  = $true }
+    if ($SkipWsl) { $installArgs.SkipWsl = $true }
+    if ($Full)    { $installArgs.Full    = $true }
     & $InstallScript @installArgs
 }
 
@@ -89,11 +91,12 @@ if ($ConfigOnly) {
     Write-Host '  Restart any open Windows Terminal / nvim if you changed their configs.'
 } elseif ($SkipWsl) {
     Write-Host '  1. CLOSE and REOPEN PowerShell so the new $PROFILE and PATH take effect.'
-    if ($Essentials) {
-        Write-Host '  2. -Essentials was set: only Git/WT/GlazeWM/Zebar/Nerd Font got installed.'
-        Write-Host '     CLI tools (nvim, rg, fzf, lazygit, gh, ...) live inside WSL.'
-    } else {
+    if ($Full) {
         Write-Host '  2. You should see the starship prompt; try `nvim`, `rg --version`, `lg`, `fzf --version`.'
+    } else {
+        Write-Host '  2. Minimal tier installed: Git/WT/GlazeWM/Zebar/PowerToys/Neovim/Nerd Font.'
+        Write-Host '     CLI tools (rg, fzf, lazygit, gh, ...) will live inside WSL when it is enabled.'
+        Write-Host '     If you want them on the Windows side too, re-run with -Full.'
     }
     Write-Host '  3. Launch Windows Terminal - pick "Git Bash" from the dropdown if your hands miss bash.'
     Write-Host '  4. Start GlazeWM from the Start menu (it will auto-launch Zebar).'
