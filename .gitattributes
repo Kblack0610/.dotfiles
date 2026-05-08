@@ -1,0 +1,9 @@
+# Force LF for shell scripts so Windows clones (Git for Windows defaults to
+# core.autocrlf=true) don't rewrite shebangs as `#!/usr/bin/env bash\r`.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.zsh   text eol=lf
+*.fish  text eol=lf
+
+# PowerShell scripts intentionally keep platform-native line endings.
+*.ps1   text
