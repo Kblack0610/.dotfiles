@@ -8,12 +8,13 @@
 #   - winget packages that have a WSL counterpart (Git, nvim, ripgrep, fd,
 #     fzf, lazygit, Starship, Node, gh, Docker CLI, Postgres 17)
 #   - Orphan config files for the binaries we just uninstalled
-#     (%LOCALAPPDATA%\nvim, ~\.config\starship.toml, %APPDATA%\lazygit)
+#     (%LOCALAPPDATA%\nvim, ~\.config\starship.toml, %APPDATA%\lazygit,
+#     ~\.config\opencode, ~\.local\share\opencode)
 #
 # Keeps (intentionally):
 #   - Active config copies: Windows Terminal settings, $PROFILE, GlazeWM,
-#     Zebar, .wslconfig, ~\.config\opencode (those binaries still run on
-#     Windows, and .wslconfig is *more* relevant under a WSL workflow).
+#     Zebar, .wslconfig (those binaries still run on Windows, and
+#     .wslconfig is *more* relevant under a WSL workflow).
 #   - Microsoft.WindowsTerminal, glzr-io.glazewm, glzr-io.zebar,
 #     DEVCOM.JetBrainsMonoNerdFont (Windows-only desktop tooling).
 #   - marlocarlo.psmux (PowerShell-only; no WSL equivalent).
@@ -155,13 +156,21 @@ if (-not $SkipPackages) {
 # --- 4. Orphan configs -----------------------------------------------------
 # Configs whose binaries were just uninstalled. Harmless to leave but cleaner
 # to remove. Active configs (Windows Terminal, $PROFILE, GlazeWM, Zebar,
-# .wslconfig, opencode) are intentionally NOT in this list.
+# .wslconfig) are intentionally NOT in this list.
+#
+# opencode is npm-installed (opencode-ai), not winget. The binary goes away
+# when Node is removed above; these two dirs are what's left behind.
+# ~\.local\share\opencode holds auth.json + conversation history — wiping it
+# logs you out of the Windows-side opencode and is intended here, since the
+# WSL install owns the auth state going forward.
 if (-not $SkipOrphanConfigs) {
     Write-Step 'Orphan config files'
     $OrphanPaths = @(
         (Join-Path $env:LOCALAPPDATA 'nvim'),
         (Join-Path $env:USERPROFILE '.config\starship.toml'),
-        (Join-Path $env:APPDATA 'lazygit\config.yml')
+        (Join-Path $env:APPDATA 'lazygit\config.yml'),
+        (Join-Path $env:USERPROFILE '.config\opencode'),
+        (Join-Path $env:USERPROFILE '.local\share\opencode')
     )
     foreach ($p in $OrphanPaths) {
         if (Test-Path $p) {
