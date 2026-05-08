@@ -30,6 +30,7 @@ irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/insta
 ./mac/install_mac.sh                # Or run OS-specific directly
 ./linux/install_debian.sh
 ./linux/install_arch.sh
+./linux/install_wsl.sh              # ArchWSL — minimal CLI/dev floor, no GUI
 ./android/install_android.sh
 ```
 
@@ -106,12 +107,57 @@ install_all()           # Calls all functions in order
 - Limited package availability
 - Storage permission setup
 
+### Linux on WSL (ArchWSL)
+- Dedicated installer: `linux/install_wsl.sh`. Does **not** reuse the Arch/Debian installers — the WSL path is intentionally narrower (no GUI, no Hyprland, no Sunshine, no keyd, no printing)
+- Always clone *inside* WSL into `~/.dotfiles` (native ext4). Cloning on the Windows side onto `/mnt/c/...` causes two well-known pain points:
+  - Git for Windows defaults to `core.autocrlf=true`, which rewrites every shell script to CRLF and produces `env: 'bash\r': No such file or directory`. The repo has a `.gitattributes` (`*.sh text eol=lf`) as defense, but it's still cleaner to clone in WSL
+  - 9P stat metadata isn't reliable, so every `git status` re-hashes the entire tree ("Refresh index: …%")
+- Runs as root with no `sudo` installed (typical for minimal ArchWSL). The script uses a `SUDO` shim that's empty when `EUID=0` and `sudo` otherwise
+- Docker requires systemd in WSL, which means a one-time `wsl --shutdown` from PowerShell after the script writes `/etc/wsl.conf`
+- See the **WSL installer walkthrough** section below for what each phase actually does
+
 ### Windows (Deloitte VDI / Win11)
-- WSL2 Debian is the primary dev environment — reuses `linux/install_debian.sh` unchanged
-- Windows side gets scoop, GlazeWM, Windows Terminal, PowerShell profile
+- The Windows side runs `windows/bootstrap.ps1` to get scoop, GlazeWM, Windows Terminal, PowerShell profile, etc.
 - Configs are *copied* (not symlinked) because Windows symlinks need Developer Mode or admin
 - Tuned for the Deloitte 8 GB VDI: `.wslconfig` caps WSL at 4 GB
+- The Linux dev environment lives inside WSL and is provisioned by `linux/install_wsl.sh` (see above)
 - See `windows/README.md` for the bootstrap one-liner and OneDrive fallback
+
+## WSL Installer Walkthrough (`linux/install_wsl.sh`)
+
+What `install_all` runs, in order, and why each step exists. Most steps come from `base_functions.sh`; the script overrides the ones that need WSL-specific behavior (called out below).
+
+| # | Phase | Source | What it does |
+|---|---|---|---|
+| 1 | `create_directories` | base | Makes `~/.local/bin`, `~/.config`, `~/dev`, `~/Downloads`, `~/Media/{Pictures,Videos,Music}`. Removes empty default XDG dirs (`~/Documents`, `~/Music`, etc.) so they don't clutter `ls`. |
+| 2 | `update_system` | **WSL override** | `pacman -Syu --noconfirm`. On failure, surfaces pacman's stderr and prints the three most common WSL fixes (keyring init, db.lck, archlinux-keyring). |
+| 3 | `install_packages` | **WSL override** | Loops over `PACKAGES_WSL` (in `packages.conf`) and pacman-installs each. Skips already-installed; warns on individual failures rather than aborting the whole run. |
+| 4 | `install_zsh` | **WSL override** | `chsh -s` to zsh if it isn't already the default. No-op if `$SHELL` already ends in `zsh`. |
+| 5 | `install_oh_my_zsh` | base | Curls the OMZ unattended installer; clones `zsh-autosuggestions` and `zsh-syntax-highlighting` into `$ZSH_CUSTOM/plugins/`. |
+| 6 | `install_starship` | base | Curls `starship.rs/install.sh` if `starship` isn't on PATH. |
+| 7 | `install_rust` | base | Curls `rustup-init` (`-y`) if `rustc` isn't on PATH. Sources `~/.cargo/env` after install. |
+| 8 | `setup_docker` | **WSL override** | Writes `/etc/wsl.conf` with `[boot] systemd=true`, creates the `docker` group, adds `$USER` to it. Enables the docker service if systemd is already running; otherwise warns that `wsl --shutdown` from PowerShell is required first. |
+| 9 | `setup_postgres` | **WSL override** | `initdb` into `/var/lib/postgres/data` (UTF-8, `C.UTF-8` locale) as the `postgres` user. Uses `runuser` when running as root, `sudo -iu` otherwise. Does **not** auto-start the service — left for the user. |
+| 10 | `setup_git` | base | `git config --global user.{name,email}`, generates `~/.ssh/id_ed25519` if missing. |
+| 11 | `install_npm_packages` | base | `npm install -g` each item in `NPM_PACKAGES` (currently `opencode-ai`, `@google/gemini-cli`). |
+| 12 | `apply_dotfiles` | **WSL override** | Backs up any non-symlink `~/.bashrc`/`~/.zshrc` to `*.preinstall.bak`, writes a WSL-tailored `.stow-local-ignore` (drops Hyprland/waybar/wofi/kitty/keyd/karabiner/aerospace/launchd/firefox/Code/cups/etc.), then `stow .` from `~/.dotfiles`. Sets `git config core.hooksPath .githooks`. |
+| 13 | `setup_ai_memory` | base | Creates `~/.agent/plans/` and symlinks `~/.claude/plans/` to it. Backs up an existing `~/.claude/plans` dir to `.bak` if it's not already a symlink. |
+| 14 | `setup_notes_sync` | **WSL override** | If `NOTES_PRIMARY_REMOTE_URL` is set in the environment, runs `~/.dotfiles/.local/bin/notes-bootstrap` with primary (and optional backup) URLs. No-op otherwise. |
+
+### Cross-cutting design choices
+
+- **`set -e` at the top**: any unhandled non-zero exit kills the script. Per-package failures inside `install_pacman_package` are handled with `if ... else` so they don't trip `set -e`; system-level failures (e.g. `pacman -Syu`) do trip it, but only after we've printed the error and remediation hints.
+- **`SUDO` shim**: `SUDO=""` when `EUID=0`, `SUDO="sudo"` otherwise. Bails early with a clear message if neither root nor sudo is available. Every functional elevation in this script goes through `$SUDO` so the same code path works on minimal ArchWSL (root, no sudo) and on a normal user account.
+- **`PACKAGES_WSL`**: single flat space-separated list in `packages.conf`. Intentionally minimal — base-devel, CLI tooling, node/python, docker/postgres, mosquitto/inotify-tools. No GUI or Hyprland. Edit there to add packages.
+- **WSL-specific stow ignore**: the override in `apply_dotfiles` is what keeps Hyprland/waybar/wofi/kitty/keyd/etc. from getting stowed into `~/.config/` on a machine that can't use them. If you add a new desktop-only config under `~/.dotfiles/.config/`, add it to this ignore list too.
+- **Idempotent**: every step checks for "already done" (package installed, symlink exists, group exists, user already in group, data dir already initialized) and short-circuits. Re-running the script is safe.
+
+### Post-install manual steps
+
+1. From PowerShell: `wsl --shutdown`, then reopen the distro. This applies `/etc/wsl.conf systemd=true` so Docker can start.
+2. After WSL restarts: `sudo systemctl start docker` and `sudo systemctl start postgresql` if you need them running.
+3. Restart the terminal (or `source ~/.zshrc`) to pick up the new shell config.
+4. Add your generated SSH key (`~/.ssh/id_ed25519.pub`) to GitHub/Forgejo.
 
 ## Benefits Over Switch Statements
 
