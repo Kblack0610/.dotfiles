@@ -6,13 +6,17 @@
 #   - Scheduled Tasks: notes-sync-fallback, notes-watch, notes-mqtt
 #   - %USERPROFILE%\.notes (git clone) - skipped if dirty/unpushed
 #   - winget packages that have a WSL counterpart (Git, nvim, ripgrep, fd,
-#     fzf, lazygit, Starship, Node, psmux, gh, Docker CLI, Postgres 17)
+#     fzf, lazygit, Starship, Node, gh, Docker CLI, Postgres 17)
+#   - Orphan config files for the binaries we just uninstalled
+#     (%LOCALAPPDATA%\nvim, ~\.config\starship.toml, %APPDATA%\lazygit)
 #
 # Keeps (intentionally):
-#   - The 9 config copies under %LOCALAPPDATA%, $PROFILE, ~\.glzr, ~\.config
-#     (Windows Terminal / PowerShell / GlazeWM / Zebar still run on Windows)
+#   - Active config copies: Windows Terminal settings, $PROFILE, GlazeWM,
+#     Zebar, .wslconfig, ~\.config\opencode (those binaries still run on
+#     Windows, and .wslconfig is *more* relevant under a WSL workflow).
 #   - Microsoft.WindowsTerminal, glzr-io.glazewm, glzr-io.zebar,
-#     DEVCOM.JetBrainsMonoNerdFont (Windows-only desktop tooling)
+#     DEVCOM.JetBrainsMonoNerdFont (Windows-only desktop tooling).
+#   - marlocarlo.psmux (PowerShell-only; no WSL equivalent).
 #
 # Default mode is dry-run: every destructive call prints "DRY-RUN: would ..."
 # and does nothing. Pass -Force to actually delete.
@@ -24,6 +28,7 @@
 #   -IncludeDirtyNotes    Allow .notes deletion even with uncommitted/unpushed
 #                         work. Has no effect without -Force.
 #   -SkipPackages         Skip the winget uninstall section.
+#   -SkipOrphanConfigs    Skip the orphan-config-file removal section.
 
 [CmdletBinding()]
 param(
@@ -31,7 +36,8 @@ param(
     [switch]$SkipScheduledTasks,
     [switch]$SkipNotes,
     [switch]$IncludeDirtyNotes,
-    [switch]$SkipPackages
+    [switch]$SkipPackages,
+    [switch]$SkipOrphanConfigs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,7 +129,6 @@ if (-not $SkipPackages) {
             'JesseDuffield.lazygit',
             'Starship.Starship',
             'OpenJS.NodeJS.LTS',
-            'marlocarlo.psmux',
             'GitHub.cli',
             'Docker.DockerCLI',
             'PostgreSQL.PostgreSQL.17'
@@ -145,6 +150,30 @@ if (-not $SkipPackages) {
     }
 } else {
     Write-Step 'winget packages - skipped (-SkipPackages)'
+}
+
+# --- 4. Orphan configs -----------------------------------------------------
+# Configs whose binaries were just uninstalled. Harmless to leave but cleaner
+# to remove. Active configs (Windows Terminal, $PROFILE, GlazeWM, Zebar,
+# .wslconfig, opencode) are intentionally NOT in this list.
+if (-not $SkipOrphanConfigs) {
+    Write-Step 'Orphan config files'
+    $OrphanPaths = @(
+        (Join-Path $env:LOCALAPPDATA 'nvim'),
+        (Join-Path $env:USERPROFILE '.config\starship.toml'),
+        (Join-Path $env:APPDATA 'lazygit\config.yml')
+    )
+    foreach ($p in $OrphanPaths) {
+        if (Test-Path $p) {
+            Invoke-Destructive "Remove $p" {
+                Remove-Item -Path $p -Recurse -Force
+            }
+        } else {
+            Write-Skip "skip - $p not present"
+        }
+    }
+} else {
+    Write-Step 'Orphan configs - skipped (-SkipOrphanConfigs)'
 }
 
 Write-Host ''
