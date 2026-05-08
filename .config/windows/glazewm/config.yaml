@@ -20,7 +20,9 @@ gaps:
   scale_with_dpi: true
   inner_gap: "6px"
   outer_gap:
-    top: "6px"
+    # Top gap reserves space for the Zebar bar (32px widget height + 6px
+    # breathing room). Without this, tiled windows render over the bar.
+    top: "38px"
     right: "6px"
     bottom: "6px"
     left: "6px"
