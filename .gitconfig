@@ -1,6 +1,12 @@
 [user]
 	name = Kenneth
 	email = kblack0610@gmail.com
+
+# Work identity for anything cloned under ~/dev/.
+# The included file is machine-local (not in dotfiles) — see .ssh/README.md.
+# Trailing slash matters: scopes to the directory tree.
+[includeIf "gitdir:~/dev/"]
+	path = ~/.gitconfig-work
 [credential]
 	helper = store
 [filter "lfs"]
@@ -16,3 +22,7 @@
 [credential "https://gist.github.com"]
 	helper = 
 	helper = !/usr/bin/gh auth git-credential
+[url "git@bitbucket-nova:"]
+	insteadOf = git@bitbucket.org:
+[url "ssh://git@bitbucket-nova/"]
+	insteadOf = ssh://git@bitbucket.org/

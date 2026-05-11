@@ -78,7 +78,7 @@ Media/Music
 .claude/stats-cache.json
 .claude/plans/
 .claude/plans.bak/
-.claude/downloads/
+.gitign.claude/downloads/
 
 # Codex - keep repo-managed definitions, ignore local runtime state
 .codex/*
@@ -117,6 +117,11 @@ Media/Music
 # Profile - machine-specific (each machine sets its own via profile-switch)
 .config/profile/current
 
+# SSH - never track machine-local overrides or private keys
+.ssh/config.local
+.ssh/id_*
+!.ssh/id_*.pub
+
 # Misc
 *.bak
 test_notifications.sh
@@ -125,3 +130,4 @@ test_notifications.sh
 
 # Agent runtime state (sync logs)
 .agent/.sync/sync.log
+.agent

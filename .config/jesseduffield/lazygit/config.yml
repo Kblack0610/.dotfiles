@@ -12,7 +12,7 @@ gui:
   nerdFontsVersion: "3"
   theme:
     activeBorderColor:
-      - "#ffcc2f"
+      - "#8BB8E9"
       - "bold"
     inactiveBorderColor:
       - "#ae8c20"
