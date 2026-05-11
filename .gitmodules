@@ -1,6 +1,6 @@
 [submodule ".local/src/android-suite"]
 	path = .local/src/android-suite
 	url = git@github.com:Kblack0610/android-suite.git
-[submodule "tools/claude-wrapper"]
-	path = tools/claude-wrapper
-	url = git@github.com:Kblack0610/claude-wrapper.git
+[submodule ".local/src/gungan"]
+	path = .local/src/gungan
+	url = git@github.com:Kblack0610/gungan-speak.git
