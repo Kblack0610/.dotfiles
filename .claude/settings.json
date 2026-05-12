@@ -26,7 +26,7 @@
   ],
   "permissions": {
     "allow": [
-      "Bash(*)",
+      "Bash",
       "Read(**)",
       "Edit(**)",
       "Write(**)",
@@ -34,9 +34,16 @@
       "WebSearch",
       "Agent",
       "Task",
-      "Skill(*)",
+      "Skill",
       "NotebookEdit",
-      "mcp__*"
+      "mcp__context7",
+      "mcp__playwright",
+      "mcp__serena",
+      "mcp__filesystem",
+      "mcp__web-search",
+      "mcp__claude_ai_Gmail",
+      "mcp__claude_ai_Google_Calendar",
+      "mcp__claude_ai_Google_Drive"
     ],
     "deny": [
       "Bash(sudo)",
@@ -49,7 +56,6 @@
       "Bash(rm -rf ~/*)",
       "Bash(rm -rf $HOME*)",
       "Bash(rm -rf --no-preserve-root*)",
-      "Bash(:(){ :|:& };:)",
       "Bash(dd if=*)",
       "Bash(dd of=/dev/*)",
       "Bash(mkfs*)",
