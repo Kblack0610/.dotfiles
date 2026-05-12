@@ -26,7 +26,7 @@ else
 
     prune_expr=()
     for p in "${PRUNE[@]}"; do prune_expr+=(-name "$p" -o); done
-    unset 'prune_expr[-1]'
+    unset "prune_expr[${#prune_expr[@]}-1]"
 
     selected=$(find "${roots[@]}" -maxdepth 4 \
         \( "${prune_expr[@]}" \) -prune -o \

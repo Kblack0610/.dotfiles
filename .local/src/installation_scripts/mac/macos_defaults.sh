@@ -80,6 +80,26 @@ defaults write com.apple.desktopservices DSDontWriteUSBStores -bool true
 defaults write com.apple.finder FXPreferredViewStyle -string "Nlsv"
 
 ###############################################################################
+# Menu Bar                                                                     #
+###############################################################################
+
+# Auto-hide menu bar always (not just in full screen)
+defaults write NSGlobalDomain _HIHideMenuBar -bool true
+
+echo "  - Menu bar set to always auto-hide"
+
+###############################################################################
+# App Shortcuts — disable Cmd+M (Minimize)                                    #
+###############################################################################
+
+# Map both spellings to an obscure combo so Cmd+M stops stealing focus.
+# AeroSpace uses Cmd+M; this prevents macOS from intercepting it.
+defaults write NSGlobalDomain NSUserKeyEquivalents -dict-add "Minimize"  "@~^\\U00a7"
+defaults write NSGlobalDomain NSUserKeyEquivalents -dict-add "Minimise"  "@~^\\U00a7"
+
+echo "  - Cmd+M (Minimize/Minimise) remapped to an unused combo"
+
+###############################################################################
 # Dock                                                                         #
 ###############################################################################
 
@@ -116,7 +136,8 @@ defaults write com.apple.screencapture disable-shadow -bool true
 
 # Set F7 as shortcut for "Copy picture of selected area to clipboard"
 # Symbolic hotkey 31 = screenshot area to clipboard, keycode 98 = F7, modifiers 0 = none
-defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 31 "<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>98</integer><integer>98</integer><integer>0</integer></array><key>type</key><string>standard</string></dict></dict>"
+# First param must be 65535 (no Unicode char) for function keys — not the keycode
+defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 31 "<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>65535</integer><integer>98</integer><integer>0</integer></array><key>type</key><string>standard</string></dict></dict>"
 
 echo "  - Screenshot area to clipboard set to F7"
 
@@ -210,10 +231,17 @@ defaults write com.apple.ActivityMonitor SortColumn -string "CPUUsage"
 defaults write com.apple.ActivityMonitor SortDirection -int 0
 
 ###############################################################################
-# Kill affected applications                                                   #
+# Activate changes                                                             #
 ###############################################################################
 
-echo "Restarting affected applications..."
+echo "Activating changes..."
+
+# Flush preferences cache — required for NSUserKeyEquivalents and symbolichotkeys
+# to take effect without a full logout/login
+killall cfprefsd &>/dev/null || true
+
+# Activate symbolic hotkeys (Spotlight disable, F7 screenshot) immediately
+/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null || true
 
 for app in "Dock" "Finder" "SystemUIServer"; do
     killall "${app}" &>/dev/null || true
