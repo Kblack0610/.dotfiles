@@ -61,7 +61,17 @@ $MinimalPackages = @(
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Microsoft.PowerToys',            # PowerToys Run = dmenu equivalent (Alt+D)
-    'DEVCOM.JetBrainsMonoNerdFont'    # font for WT/Zebar/Windows-side editors
+    'DEVCOM.JetBrainsMonoNerdFont',   # font for WT/Zebar/Windows-side editors
+    # --- Healix K9S/Freelens cheatsheet (Confluence 1689387031) ----------
+    # Auth + Kubernetes access must live on the Windows side because
+    # aws-azure-login needs a real browser for SAML+2FA (Puppeteer in WSL
+    # is brittle on the VDI). npm install of aws-azure-login itself is
+    # done by the user post-bootstrap.
+    'OpenJS.NodeJS.LTS',              # required by aws-azure-login (npm i -g)
+    'Amazon.AWSCLI',                  # `aws eks update-kubeconfig`, sts identity
+    'Kubernetes.kubectl',             # required by k9s and Freelens
+    'Derailed.k9s',                   # K9S terminal UI
+    'Freelensapp.Freelens'            # Freelens desktop UI (open-source Lens fork)
 )
 
 # gerardog.gsudo intentionally omitted from both tiers: needs admin to install,
@@ -72,7 +82,6 @@ $FullExtraPackages = @(
     'junegunn.fzf',
     'JesseDuffield.lazygit',
     'Starship.Starship',
-    'OpenJS.NodeJS.LTS',
     'marlocarlo.psmux',               # PowerShell-only multiplexer (no WSL equivalent)
     'GitHub.cli',
     # Docker CLI only — Docker Desktop needs admin (omitted, like gsudo).

@@ -55,10 +55,7 @@ workspaces:
   - name: "4"
     display_name: "4 · chat"
   - name: "5"
-  - name: "6"
-  - name: "7"
-  - name: "8"
-  - name: "9"
+    display_name: "5 · agent"
 
 window_rules:
   - commands: ["ignore"]
@@ -85,6 +82,12 @@ window_rules:
   - commands: ["move --workspace 4"]
     match:
       - window_process: { regex: "(ms-teams|Teams|slack|Discord)" }
+  # Playwright MCP / agent-driven Firefox surfaces through WSLg as msrdc.exe
+  # with "Nightly (<distro>)" in the title. Route to the agent workspace.
+  - commands: ["move --workspace 5"]
+    match:
+      - window_process: { equals: "msrdc.exe" }
+        window_title: { regex: ".*Nightly \\(archlinux\\).*" }
 
 binding_modes:
   - name: "resize"
