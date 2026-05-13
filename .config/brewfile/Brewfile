@@ -6,6 +6,7 @@ tap "lizardbyte/homebrew"
 
 # --- Core CLI Tools ---
 brew "asdf"
+brew "fzf"
 brew "zoxide"
 brew "git-lfs"
 brew "lazygit"
