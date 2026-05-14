@@ -6,7 +6,7 @@ WORKSPACES=(1 2 3 4 5 6 7 8 9)
 
 for sid in "${WORKSPACES[@]}"; do
   sketchybar --add item space.$sid left \
-             --subscribe space.$sid aerospace_workspace_change \
+             --subscribe space.$sid aerospace_workspace_change front_app_switched \
              --set space.$sid \
                    icon="$sid" \
                    icon.font="SF Pro:Bold:13.0" \
