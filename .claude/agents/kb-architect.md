@@ -43,7 +43,7 @@ Invoked when the user needs to create technical specifications, conduct architec
 
 **Primary Workflow:** Part of the standard lifecycle: `brief → spec → code → review`
 
-**Handoff:** Technical Specifications are handed off to Developer (Devin) for implementation.
+**Handoff:** Technical Specifications are handed off to Developer for implementation.
 
 ## Output Format
 

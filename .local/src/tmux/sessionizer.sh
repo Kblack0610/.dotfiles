@@ -7,6 +7,7 @@ ROOTS=(
     "$HOME/.agent"
     "$HOME/.dotfiles"
     "$HOME/.lab"
+    "$HOME/.notes"
 )
 
 PRUNE=(
