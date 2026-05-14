@@ -23,6 +23,13 @@ after-login-command = []
 # 'after-startup-command' is run after 'after-login-command'
 after-startup-command = []
 
+# Notify sketchybar on every workspace switch so workspace indicators update.
+# Format: argv passed to /bin/bash; $AEROSPACE_FOCUSED_WORKSPACE is injected by aerospace.
+# Initial render is handled by sketchybar's items/spaces.sh on startup.
+exec-on-workspace-change = ['/bin/bash', '-c',
+    'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE'
+]
+
 # Start AeroSpace at login
 start-at-login = true
 

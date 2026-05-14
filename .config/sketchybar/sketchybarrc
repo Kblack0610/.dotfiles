@@ -1,0 +1,56 @@
+#!/bin/bash
+# SketchyBar config — Waybar analog for macOS, wired to AeroSpace.
+# Entry point. Sources palette + icons, sets bar defaults, loads items.
+
+CONFIG_DIR="$HOME/.config/sketchybar"
+
+source "$CONFIG_DIR/colors.sh"
+source "$CONFIG_DIR/icons.sh"
+
+# Custom event triggered by aerospace.toml on workspace change.
+sketchybar --add event aerospace_workspace_change
+
+# Bar appearance
+sketchybar --bar height=32 \
+                 blur_radius=20 \
+                 position=top \
+                 sticky=on \
+                 padding_left=8 \
+                 padding_right=8 \
+                 color="$BAR_COLOR" \
+                 border_width=0 \
+                 border_color="$BAR_BORDER_COLOR" \
+                 shadow=off \
+                 corner_radius=0 \
+                 y_offset=0 \
+                 margin=0 \
+                 topmost=window
+
+# Defaults applied to every subsequent item
+sketchybar --default updates=when_shown \
+                    icon.font="SF Pro:Bold:14.0" \
+                    icon.color="$WHITE" \
+                    icon.padding_left=8 \
+                    icon.padding_right=4 \
+                    label.font="SF Pro:Semibold:13.0" \
+                    label.color="$WHITE" \
+                    label.padding_left=4 \
+                    label.padding_right=8 \
+                    background.corner_radius=6 \
+                    background.height=24 \
+                    background.padding_left=2 \
+                    background.padding_right=2 \
+                    background.color="$ITEM_BG_COLOR"
+
+# Items (order matters for left-to-right layout)
+source "$CONFIG_DIR/items/apple.sh"
+source "$CONFIG_DIR/items/spaces.sh"
+source "$CONFIG_DIR/items/front_app.sh"
+
+source "$CONFIG_DIR/items/clock.sh"
+source "$CONFIG_DIR/items/battery.sh"
+source "$CONFIG_DIR/items/volume.sh"
+source "$CONFIG_DIR/items/cpu.sh"
+
+# Force initial render of all items
+sketchybar --update
