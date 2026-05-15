@@ -23,6 +23,7 @@ brew "btop"
 brew "bun"
 brew "lazydocker"
 brew "zsh-autosuggestions"
+brew "poppler"  # pdftoppm/pdfinfo — lets agents render PDFs to images for Read
 
 # --- Kubernetes & Container Tools ---
 brew "kubectl"
