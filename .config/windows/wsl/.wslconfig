@@ -1,3 +1,27 @@
+# WSL2 global config. Applies after `wsl --shutdown` from a Windows shell.
+
+[wsl2]
+# Mirrored networking: WSL and Windows share one network namespace.
+# Effect: `localhost:<port>` works in both directions, no NAT, no firewall fuss.
+# Fixes: Windows-hosted Chrome with --remote-debugging-port=9222 becomes
+# reachable from WSL at http://localhost:9222 (needed for chrome-devtools-mcp
+# and Playwright CDP attach).
+networkingMode=mirrored
+
+# Route DNS queries from WSL through the Windows DNS stack instead of /etc/resolv.conf.
+# Helps on corporate networks where DNS goes over a VPN tunnel.
+dnsTunneling=true
+
+# Auto-detect the Windows system proxy (WinHTTP / IE settings) for WSL processes.
+# Useful on Deloitte VDI where outbound traffic may require the corporate proxy.
+autoProxy=true
+
+[experimental]
+# Reclaim cached/unused WSL memory back to Windows as processes free it.
+autoMemoryReclaim=gradual
+# Use a sparse VHD so the WSL disk image only consumes the space it actually uses.
+sparseVhd=true
+
 # Don't auto-mount removable drives (corporate VDI has none anyway, but keeps logs clean)
 #[automount]
 #enabled=true
