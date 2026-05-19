@@ -31,25 +31,22 @@ Here is a complete list of all available SuperClaude (`/sc`) commands.
 | `/sc:build` | Build, compile, and package projects with intelligent error handling and optimization |
 | `/sc:business-panel` | Multi-expert business analysis with adaptive interaction modes |
 | `/sc:cleanup` | Systematically clean up code, remove dead code, and optimize project structure |
-| `/sc:design` | Design system architecture, APIs, and component interfaces with comprehensive specifications |
 | `/sc:document` | Generate focused documentation for components, functions, APIs, and features |
 | `/sc:estimate` | Provide development estimates for tasks, features, or projects with intelligent analysis |
 | `/sc:explain` | Provide clear explanations of code, concepts, and system behavior with educational clarity |
 | `/sc:git` | Git operations with intelligent commit messages and workflow optimization |
 | `/sc:help` | List all available /sc commands and their functionality |
-| `/sc:implement` | Feature and code implementation with intelligent persona activation and MCP integration |
 | `/sc:improve` | Apply systematic improvements to code quality, performance, and maintainability |
 | `/sc:index` | Generate comprehensive project documentation and knowledge base with intelligent organization |
 | `/sc:load` | Session lifecycle management with Serena MCP integration for project context loading |
 | `/sc:reflect` | Task reflection and validation using Serena MCP analysis capabilities |
 | `/sc:save` | Session lifecycle management with Serena MCP integration for session context persistence |
 | `/sc:select-tool` | Intelligent MCP tool selection based on complexity scoring and operation analysis |
-| `/sc:spawn` | Meta-system task orchestration with intelligent breakdown and delegation |
 | `/sc:spec-panel` | Multi-expert specification review and improvement using renowned specification and software engineering experts |
-| `/sc:task` | Execute complex tasks with intelligent workflow management and delegation |
 | `/sc:test` | Execute tests with coverage analysis and automated quality reporting |
 | `/sc:troubleshoot` | Diagnose and resolve issues in code, builds, deployments, and system behavior |
-| `/sc:workflow` | Generate structured implementation workflows from PRDs and feature requirements |
+
+> **Removed:** `/sc:implement`, `/sc:workflow`, `/sc:design`, `/sc:task`, `/sc:spawn` — these duplicated `/kb:*` entries. Use `/kb:workflow` (full pipeline) or `/kb:implement` (feature → PR) instead. The `kb-*` agents are the canonical implementation flow; see `CLAUDE.md` Agent Delegation.
 
 ## SuperClaude Framework Flags
 
@@ -119,14 +116,14 @@ SuperClaude supports behavioral flags to enable specific execution modes and too
 # Deep analysis with Context7 enabled
 /sc:analyze --think-hard --context7 src/
 
-# UI development with Magic and validation
-/sc:implement --magic --validate "Add user dashboard"
-
-# Token-efficient task management
-/sc:task --token-efficient --delegate auto "Refactor authentication system"
-
 # Safe production deployment
 /sc:build --safe-mode --validate --focus security
+
+# Iterative quality improvement
+/sc:improve --loop --iterations 3 src/auth/
+
+# Multi-expert spec review
+/sc:spec-panel --think-hard docs/specs/feature.md
 ```
 
 ## Boundaries

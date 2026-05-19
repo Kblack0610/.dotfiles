@@ -275,7 +275,7 @@ command_system_integration:
 
   command_chaining:
     analyze_to_socratic: "/sc:analyze → /sc:socratic-clean-code for principle learning"
-    socratic_to_implement: "/sc:socratic-patterns → /sc:implement for pattern application"
+    socratic_to_implement: "/sc:socratic-patterns → /kb:implement for pattern application"
     socratic_to_document: "/sc:socratic discovery → /sc:document for principle documentation"
 
 orchestration_coordination:

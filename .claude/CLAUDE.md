@@ -142,11 +142,15 @@ If a skill doesn't yet exist for a domain you touch repeatedly, propose one rath
 Non-trivial implementation flows through the `kb-*` agent pipeline:
 
 1. `kb-product-owner` — turns ambiguous asks into Product Briefs
-2. `kb-architect` — turns briefs into technical specs / conducts audits
-3. `kb-developer` — implements from specs with tests and docs
-4. `kb-qa` — verifies quality gates before merge
+2. `kb-architect` — turns briefs into technical specs / conducts audits. Spec MUST open with a `## Goal` section (one-sentence outcome).
+3. *Plan-check (inline, not an agent)* — re-read brief and spec's `## Goal`; on gap, loop back to architect once before coding.
+4. `kb-developer` — implements from specs with tests and docs
+5. `kb-reviewer` — adversarial code review for bugs/security/correctness; severity-classified findings (BLOCK / FLAG / NIT). Any BLOCK loops back to developer.
+6. `kb-qa` — verifies quality gates before merge: goal achieved + lint/typecheck/tests/security/docs. Tests-green-but-goal-missed is a BLOCK.
 
 Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents. For headless / CI runs (no human in the loop), invoke the `kb-coordinator` agent — it drives the same pipeline end-to-end and returns a structured JSON result.
+
+**Canonical entry policy:** `/kb:*` is the canonical entry point for non-trivial implementation. The retained `/sc:*` commands are quick standalone utilities, not pipeline entries — do not use them as substitutes for `/kb:workflow` or `/kb:implement`.
 
 ## Project Mapping
 

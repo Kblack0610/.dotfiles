@@ -134,7 +134,7 @@ Total wall-clock: ~40-60 min for `all` (3 PR merges × ~10 min CI each + tag pus
 | Tag pattern | Workflow file | Deploys to | Mechanism |
 |---|---|---|---|
 | `placemyparents-v*.*.*` | `.github/workflows/deploy-production.yml` | DO K8s prod (`do-nyc3-placemyparents-k8s-prod`, NYC3) | Docker buildx → DO registry → sed `tag:` in `infra/flux/apps/prod/placemyparents/helmrelease-*.yaml` → auto-merge manifest PR to main → backfill to develop → Flux reconciles |
-| `placemyparents-mobile-v*.*.*` | `.github/workflows/mobile-local-release.yml` | TestFlight (tester track) + Play Store (internal/draft) | Self-hosted macOS runner: `expo prebuild` → iOS `xcodebuild archive` + `xcrun altool` (TestFlight); Android `./gradlew bundleRelease` + `r0adkll/upload-google-play@v1` |
+| `placemyparents-mobile-v*.*.*` | `.github/workflows/mobile-local-release.yml` | TestFlight (tester track) + Play Store (internal, `status: completed`, verified via Play Developer API) | Self-hosted macOS runner: `expo prebuild` → iOS `xcodebuild archive` + `xcrun altool` (TestFlight); Android `./gradlew bundleRelease` + `r0adkll/upload-google-play@v1` + `scripts/verify-play-release.mjs` |
 | `history-time-v*.*.*`, `dodginballs-v*.*.*`, `pick-a-number-v*.*.*`, `platform-v*.*.*` | Same `deploy-production.yml` | Respective K8s namespaces | Same Flux GitOps pattern |
 
 Slack notification: `#alerts-deployments` posts on success/failure/cancel.
@@ -160,6 +160,10 @@ curl -sI https://placemyparents.com | head -3
 curl -s https://api.placemyparents.com/api/v1/health | jq .
 
 # Mobile: check TestFlight + Play Store consoles for the new build (15-30 min ingest)
+# Android: do NOT trust `submit-android: success` — the run includes a `Verify Play release went live`
+# step that fails the workflow if the AAB ends up as a draft / orphan bundle. If you need to spot-check
+# manually:
+node scripts/verify-play-release.mjs com.kblack0610.placemyparents internal <versionCode>
 ```
 
 ## Recipes

@@ -25,6 +25,11 @@ user_pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
 user_pref("browser.urlbar.suggest.quicksuggest.nonsponsored", false);
 user_pref("browser.urlbar.suggest.trending", false);
 user_pref("browser.urlbar.suggest.recentsearches", false);
+// Quick Actions: typing "manage"/"log"/"pass" surfaces a chip that opens
+// about:logins on Enter — keystrokes leaking from other apps trigger it.
+user_pref("browser.urlbar.suggest.quickactions", false);
+user_pref("browser.urlbar.quickactions.enabled", false);
+user_pref("browser.urlbar.shortcuts.quickactions", false);
 
 // === NEW TAB BLOAT ===
 user_pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
@@ -40,6 +45,14 @@ user_pref("browser.newtabpage.activity-stream.section.highlights.includeVisited"
 // === PRIVACY ===
 user_pref("privacy.trackingprotection.enabled", true);
 user_pref("privacy.trackingprotection.socialtracking.enabled", true);
+
+// === PASSWORD MANAGER (disable about:logins entirely) ===
+// Stops "Manage Passwords" from ever opening — including stray
+// keystrokes after VDI sign-out that land in the URL bar.
+user_pref("signon.management.page.enabled", false);
+user_pref("signon.rememberSignons", false);
+user_pref("extensions.formautofill.addresses.enabled", false);
+user_pref("extensions.formautofill.creditCards.enabled", false);
 
 // === MISC ANNOYANCES ===
 user_pref("browser.shell.checkDefaultBrowser", false);
