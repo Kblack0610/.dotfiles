@@ -87,3 +87,11 @@ user_pref("browser.startup.homepage", "about:home");
 
 // === TAB GROUPS ===
 user_pref("browser.tabs.groups.enabled", true);
+
+// === VERTICAL TABS (native, Firefox 136+) ===
+// Moves tabs to a sidebar and natively hides the horizontal tab bar.
+user_pref("sidebar.revamp", true);
+user_pref("sidebar.verticalTabs", true);
+// "hide-sidebar" = sidebar slides off-screen until Ctrl+B or edge hover.
+// Alternatives: "always-show" (always visible), "expand-on-hover" (icons only, expand on hover).
+user_pref("sidebar.visibility", "hide-sidebar");
