@@ -2,50 +2,50 @@
 # i3/Hyprland-style keybinds. Animations disabled because the VDI renders
 # over Azure RDP and animations stutter.
 
-general:
+#general:
   # `zebar startup` reads %USERPROFILE%\.glzr\zebar\settings.json and spawns the
   # configured widget on every monitor (monitorSelection.type=all in the starter
   # pack). Without this the bar only appears on whichever monitor zebar.exe was
   # launched on, which made it look isolated.
-  startup_commands: ["shell-exec zebar startup"]
-  shutdown_commands: ["shell-exec taskkill /IM zebar.exe /F"]
-  config_reload_commands: ["shell-exec %userprofile%/.glzr/glazewm/scripts/reload-glazewm.cmd"]
-  focus_follows_cursor: false
-  toggle_workspace_on_refocus: true
-  cursor_jump:
-    enabled: true
-    trigger: "monitor_focus"
+  #startup_commands: ["shell-exec zebar startup"]
+  #shutdown_commands: ["shell-exec taskkill /IM zebar.exe /F"]
+#  config_reload_commands: ["shell-exec %userprofile%/.glzr/glazewm/scripts/reload-glazewm.cmd"]
+#  focus_follows_cursor: false
+#  toggle_workspace_on_refocus: true
+#  cursor_jump:
+#    enabled: true
+#    trigger: "monitor_focus"
 
-gaps:
-  scale_with_dpi: true
-  inner_gap: "6px"
-  outer_gap:
+#gaps:
+#  scale_with_dpi: true
+#  inner_gap: "6px"
+#  outer_gap:
     # Top gap reserves space for the Zebar bar (32px widget height + 6px
     # breathing room). Without this, tiled windows render over the bar.
-    top: "38px"
-    right: "6px"
-    bottom: "6px"
-    left: "6px"
+    #top: "38px"
+    #right: "6px"
+    #bottom: "6px"
+    #left: "6px"
 
-window_effects:
-  focused_window:
-    border:
-      enabled: true
-      color: "#8be9fd"
-  other_windows:
-    border:
-      enabled: true
-      color: "#44475a"
+#window_effects:
+#  focused_window:
+#    border:
+#      enabled: true
+#      color: "#8be9fd"
+#  other_windows:
+#    border:
+#      enabled: true
+#      color: "#44475a"
 
-window_behavior:
-  initial_state: "tiling"
-  state_defaults:
-    floating:
-      centered: true
-      shown_on_top: false
-    fullscreen:
-      maximized: true
-      shown_on_top: false
+#window_behavior:
+#  initial_state: "tiling"
+#  state_defaults:
+#    floating:
+#      centered: true
+#      shown_on_top: false
+#    fullscreen:
+#      maximized: true
+#      shown_on_top: false
 
 workspaces:
   - name: "1"
@@ -62,6 +62,10 @@ workspaces:
 window_rules:
   - commands: ["ignore"]
     match:
+      # Zebar's widget windows. Without this rule, GlazeWM tiles the bar as a
+      # regular managed window and it renders as a block in the middle of the
+      # screen instead of as a borderless top overlay.
+      #- window_process: { equals: "zebar" }
       - window_process: { equals: "Windows.App" }
       - window_process: { equals: "msrdc" }
       - window_process: { equals: "ApplicationFrameHost" }
@@ -117,6 +121,14 @@ keybindings:
     bindings: ["alt+n"]
   - commands: ["shell-exec wt.exe psmux"]
     bindings: ["alt+t"]
+
+  # Screenshot — region-select via built-in Snipping Tool, then bridge the
+  # image from Windows clipboard into the WSL (Arch) Wayland clipboard so
+  # TUI apps under WSLg (e.g. Claude Code) can paste it. WSLg shares text
+  # clipboard automatically but not image/png; snip-to-wsl.ps1 forces it.
+  # Requires `wl-clipboard` inside the Arch distro.
+  - commands: ["shell-exec powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File %userprofile%/.dotfiles/.config/windows/scripts/snip-to-wsl.ps1"]
+    bindings: ["alt+s"]
 
   # Close focused
   - commands: ["close"]
@@ -186,20 +198,20 @@ keybindings:
 
   # Move window to workspace
   - commands: ["move --workspace 1"]
-    bindings: ["alt+shift+1"]
+    bindings: ["ctrl+alt+1"]
   - commands: ["move --workspace 2"]
-    bindings: ["alt+shift+2"]
+    bindings: ["ctrl+alt+2"]
   - commands: ["move --workspace 3"]
-    bindings: ["alt+shift+3"]
+    bindings: ["ctrl+alt+3"]
   - commands: ["move --workspace 4"]
-    bindings: ["alt+shift+4"]
+    bindings: ["ctrl+alt+4"]
   - commands: ["move --workspace 5"]
-    bindings: ["alt+shift+5"]
+    bindings: ["ctrl+alt+5"]
   - commands: ["move --workspace 6"]
-    bindings: ["alt+shift+6"]
+    bindings: ["ctrl+alt+6"]
   - commands: ["move --workspace 7"]
-    bindings: ["alt+shift+7"]
+    bindings: ["ctrl+alt+7"]
   - commands: ["move --workspace 8"]
-    bindings: ["alt+shift+8"]
+    bindings: ["ctrl+alt+8"]
   - commands: ["move --workspace 9"]
-    bindings: ["alt+shift+9"]
+    bindings: ["ctrl+alt+9"]
