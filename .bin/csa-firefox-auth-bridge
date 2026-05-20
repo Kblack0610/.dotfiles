@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# csa-firefox-auth-bridge
+#
+# Bridge an authenticated session from Windows Firefox into the Playwright
+# Firefox profile used by @playwright/mcp, so the agent can drive the Healix
+# admin app (localhost:3000/admin) without re-logging-in.
+#
+# Why this exists:
+#   - Cognito-based OIDC auth keeps tokens in localStorage (origin storage),
+#     NOT in cookies. Re-using a Firefox profile across browsers only carries
+#     auth state if BOTH localStorage and cookies are migrated.
+#   - WSL Firefox can't reach Windows Hello, so passkeys must be done on the
+#     Windows-side Firefox; this script then carries the resulting session
+#     into the Linux/Playwright profile.
+#
+# Workflow:
+#   1. Log into http://localhost:3000/admin in your default Windows Firefox
+#      using your passkey (Windows Hello).
+#   2. Close BOTH Firefoxes (Windows Firefox + any Playwright-spawned one).
+#   3. Run this script.
+#   4. Start (or re-navigate) Playwright; the agent is now authenticated.
+#
+# Re-run when the session expires (Cognito refresh token validity).
+
+set -euo pipefail
+
+# --- config -----------------------------------------------------------------
+
+PW_PROFILE_DEFAULT="/root/.cache/playwright-mcp-firefox-profile"
+PW_PROFILE="${PW_PROFILE:-$PW_PROFILE_DEFAULT}"
+ORIGIN_HOST="${ORIGIN_HOST:-http+++localhost+3000}"
+COOKIE_HOST_LIKE_DEFAULT="%localhost%,%cognito%,%amazonaws.com%,%healix%,%deloitte%,%myhealix%"
+COOKIE_HOSTS="${COOKIE_HOSTS:-$COOKIE_HOST_LIKE_DEFAULT}"
+
+# --- helpers ----------------------------------------------------------------
+
+log() { printf '[bridge] %s\n' "$*" >&2; }
+die() { printf '[bridge] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# --- locate Windows Firefox default profile ---------------------------------
+
+# Detect the Windows username via interop. Falls back to env if interop is
+# unavailable (e.g. binfmt_misc not registered).
+detect_userprofile() {
+  if command -v cmd.exe >/dev/null 2>&1; then
+    ( cd /mnt/c && cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r' | head -n1 )
+  fi
+}
+
+WIN_USERPROFILE="${WIN_USERPROFILE:-$(detect_userprofile || true)}"
+[ -n "${WIN_USERPROFILE:-}" ] || die "couldn't detect %USERPROFILE% via cmd.exe; export WIN_USERPROFILE=C:\\Users\\<you>"
+
+# Translate Windows path C:\Users\<u> -> /mnt/c/Users/<u>
+WIN_USER_LINUX="/mnt/c/${WIN_USERPROFILE:3}"           # strip "C:\"
+WIN_USER_LINUX="${WIN_USER_LINUX//\\//}"               # backslashes -> forward
+FF_WIN_ROOT="$WIN_USER_LINUX/AppData/Roaming/Mozilla/Firefox/Profiles"
+
+[ -d "$FF_WIN_ROOT" ] || die "no Firefox profiles dir at $FF_WIN_ROOT"
+
+# Use the *.default-release profile (Firefox's stable profile, where the
+# default-installed Firefox parks its data).
+WIN_PROFILE="$(ls -1d "$FF_WIN_ROOT"/*.default-release 2>/dev/null | head -n1)"
+[ -n "$WIN_PROFILE" ] || die "no *.default-release profile under $FF_WIN_ROOT"
+
+log "source: $WIN_PROFILE"
+log "dest:   $PW_PROFILE"
+log "origin: $ORIGIN_HOST"
+
+[ -d "$PW_PROFILE" ] || die "Playwright profile $PW_PROFILE does not exist; run Playwright once first to create it"
+
+# --- preflight: nothing is holding either profile open ----------------------
+
+# Windows Firefox: stale WAL data is the risk; ask user to fully close it.
+if command -v powershell.exe >/dev/null 2>&1; then
+  if ( cd /mnt/c && powershell.exe -NoProfile -Command "if (Get-Process firefox -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }" 2>/dev/null ); then
+    :
+  else
+    die "Windows Firefox is still running. Close it fully (right-click tray icon → Quit) and re-run."
+  fi
+fi
+
+# Playwright Firefox: holds an exclusive lock on its profile.
+if pgrep -af "playwright.*firefox\|firefox.*playwright-mcp" >/dev/null 2>&1; then
+  die "Playwright Firefox appears to be running. Close it (browser_close in the MCP) and re-run."
+fi
+
+# --- copy localhost:3000 origin storage (localStorage + Cache API) ----------
+
+SRC_ORIGIN="$WIN_PROFILE/storage/default/$ORIGIN_HOST"
+DST_ORIGIN="$PW_PROFILE/storage/default/$ORIGIN_HOST"
+
+[ -d "$SRC_ORIGIN" ] || die "source origin storage missing: $SRC_ORIGIN — did you log in in Windows Firefox?"
+
+mkdir -p "$PW_PROFILE/storage/default"
+rm -rf "$DST_ORIGIN"
+cp -a "$SRC_ORIGIN" "$DST_ORIGIN"
+log "copied origin storage ($(du -sh "$DST_ORIGIN" 2>/dev/null | awk '{print $1}'))"
+
+# Sanity-check: localStorage has the OIDC tokens.
+LS_DB="$DST_ORIGIN/ls/data.sqlite"
+if [ -f "$LS_DB" ]; then
+  log "localStorage keys:"
+  sqlite3 "$LS_DB" "SELECT '  ' || key || ' (' || length(value) || 'B)' FROM data ORDER BY key;" >&2 || true
+else
+  log "WARN: $LS_DB not present — auth may not stick"
+fi
+
+# --- merge cookies for the relevant hosts -----------------------------------
+
+# Build a UNION of LIKE patterns for sqlite WHERE.
+IFS=',' read -r -a PATTERNS <<<"$COOKIE_HOSTS"
+WHERE=""
+for p in "${PATTERNS[@]}"; do
+  q="${p//\'/\'\'}"
+  WHERE+="${WHERE:+ OR }host LIKE '$q'"
+done
+
+COOKIES_MERGED="$(
+  sqlite3 "$PW_PROFILE/cookies.sqlite" <<SQL
+ATTACH 'file:$WIN_PROFILE/cookies.sqlite?mode=ro&immutable=1' AS src;
+INSERT OR REPLACE INTO moz_cookies SELECT * FROM src.moz_cookies WHERE $WHERE;
+SELECT changes();
+DETACH src;
+SQL
+)"
+log "merged $COOKIES_MERGED cookie rows (hosts: $COOKIE_HOSTS)"
+
+log "done. Re-run Playwright; navigate /admin; click 'Sign up or Sign in' once if the SPA hasn't picked up tokens yet."
