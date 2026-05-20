@@ -59,6 +59,53 @@ logic. Setting `AboutNewTab.newTabURL` from `mozilla.cfg` happens at the
 browser engine level before any extension hooks fire, so STG wins the race
 and assigns the new tab to the active group cleanly.
 
+## Hardware acceleration (VA-API)
+
+Four prefs in `user.js` enable GPU video decode + zero-copy compositing:
+
+| Pref | Effect |
+|---|---|
+| `media.ffmpeg.vaapi.enabled` | Route ffmpeg video decode through VA-API (the load-bearing one) |
+| `media.hardware-video-decoding.force-enabled` | Bypass Firefox's HW-decode blocklist/probe |
+| `gfx.webrender.all` | Force WebRender GPU compositor on all surfaces |
+| `widget.dmabuf.force-enabled` | Force DMA-BUF zero-copy buffer sharing (Wayland) |
+
+### Required system packages
+
+| Distro | VA-API driver | Verifier | Notes |
+|---|---|---|---|
+| Arch / CachyOS | bundled in `mesa` (provides `libva-mesa-driver`) | `libva-utils` | Both handled by `installation_scripts/packages.conf` |
+| Debian / Ubuntu | `mesa-va-drivers` (AMD/Intel) | `libva-utils` | Same — covered by packages.conf |
+| NVIDIA proprietary (any distro) | `libva-nvidia-driver` (AUR on Arch) | `libva-utils` | Install manually; not in packages.conf |
+
+### Verify
+
+```sh
+vainfo                        # should list VAProfile* decode entrypoints
+```
+
+Then in Firefox, open `about:support` → **Graphics** and confirm:
+
+- **Compositing**: `WebRender`
+- **HARDWARE_VIDEO_DECODING** decision log: shows `user force_enabled — Force enabled by pref` *in addition to* `default available`
+- **H264_HW_DECODE / HEVC_HW_DECODE / AV1_HW_DECODE / VP9_HW_DECODE**: `available`
+
+While playing video, `radeontop` (AMD) or `nvtop` (NVIDIA) should show the
+video-decode engine active and CPU usage on the Firefox content process low.
+
+### Multi-GPU
+
+If `vainfo` picks the wrong card (e.g. NVDEC when you want radeonsi), pin it
+by exporting `LIBVA_DRIVER_NAME` in Firefox's environment:
+
+```sh
+# ~/.config/environment.d/firefox.conf
+LIBVA_DRIVER_NAME=radeonsi   # or: nvidia, iHD, i965
+```
+
+Firefox itself picks the active GPU independently (see `about:support` → GPU
+#1 vs #2); `LIBVA_DRIVER_NAME` only controls which VA-API backend libva loads.
+
 ## Caveats
 
 - The pacman hook hardcodes `/home/kblack0610/.dotfiles/...`. Different

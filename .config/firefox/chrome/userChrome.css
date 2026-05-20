@@ -159,6 +159,18 @@
 /* List all tabs button (arrow at end of tab bar) */
 #alltabs-button { display: none !important; }
 
+/* === FULLSCREEN: HIDE ALL CHROME === */
+/* Covers F11 (browser fullscreen) and HTML5 video/element fullscreen. */
+:root[inFullscreen] #navigator-toolbox,
+:root[inDOMFullscreen] #navigator-toolbox,
+#main-window[inFullscreen] #navigator-toolbox {
+    visibility: collapse !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    overflow: hidden !important;
+}
+
 /* === FIX PERMISSION POPUPS FOR BOTTOM BAR === */
 
 /* Nuclear option: physically move ALL panels up by toolbar height + panel height */

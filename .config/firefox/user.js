@@ -8,6 +8,23 @@ user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
 // Smoother scrolling
 user_pref("general.smoothScroll", true);
 
+// === HARDWARE ACCELERATION ===
+// System packages required (handled by installation_scripts/packages.conf):
+//   - libva-utils         provides `vainfo`; verify with `vainfo` after install.
+//   - VA-API driver       Arch: bundled in `mesa` (provides libva-mesa-driver).
+//                         Debian/Ubuntu: `mesa-va-drivers` (AMD/Intel) or
+//                         `libva-nvidia-driver` (NVIDIA proprietary).
+// To force a specific GPU when multiple are present, export e.g.
+//   LIBVA_DRIVER_NAME=radeonsi   (or nvidia / iHD / i965)
+// VA-API video decode via ffmpeg (offloads H.264/HEVC/AV1/VP9 from CPU to GPU).
+user_pref("media.ffmpeg.vaapi.enabled", true);
+// Bypass Firefox's HW-decode probe/blocklist — vainfo confirmed decode works.
+user_pref("media.hardware-video-decoding.force-enabled", true);
+// Force WebRender (GPU compositor) on for all surfaces; prevents SW fallback under load.
+user_pref("gfx.webrender.all", true);
+// Force DMA-BUF buffer sharing (zero-copy decoder → compositor → display) on Wayland.
+user_pref("widget.dmabuf.force-enabled", true);
+
 // === TELEMETRY (disable all) ===
 user_pref("toolkit.telemetry.enabled", false);
 user_pref("toolkit.telemetry.unified", false);
