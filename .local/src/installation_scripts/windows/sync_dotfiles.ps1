@@ -33,7 +33,23 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 if (-not (Test-Path $DotfilesDir)) {
     Write-Step "Cloning dotfiles to $DotfilesDir"
     git clone $DotfilesUrl $DotfilesDir
+    if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit $LASTEXITCODE). Aborting before downstream modules run on a missing/partial clone." }
 } else {
     Write-Step "Dotfiles already at $DotfilesDir - pulling latest"
     git -C $DotfilesDir pull --ff-only
+    # PowerShell's $ErrorActionPreference = 'Stop' does NOT catch native-exe
+    # non-zero exits, so we check $LASTEXITCODE explicitly. Without this guard
+    # a broken ~/.gitconfig (the "fatal: unknown error occurred while reading
+    # the configuration files" path) silently leaves the clone at an old
+    # revision and the rest of the bootstrap runs against stale code.
+    if ($LASTEXITCODE -ne 0) {
+        throw @"
+git pull failed with exit code $LASTEXITCODE.
+Most common cause: a corrupted or unreadable ~\.gitconfig (look for
+'fatal: unknown error occurred while reading the configuration files'
+above the [1/3] banner). Fix:
+    Remove-Item `$env:USERPROFILE\.gitconfig -Force
+Then re-run this script.
+"@
+    }
 }

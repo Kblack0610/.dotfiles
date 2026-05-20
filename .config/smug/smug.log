@@ -1,0 +1,11 @@
+tmux has-session -t lab:
+exit status 1 can't find session: lab
+
+tmux new -Pd -s lab -n smug_def -c /home/kblack0610/.lab
+tmux setenv -t lab SMUG_SESSION lab
+tmux setenv -t lab SMUG_SESSION_CONFIG_PATH /home/kblack0610/.config/smug/lab.yml
+tmux neww -Pd -t lab: -c /home/kblack0610/.lab -F #{window_id} -n lab
+tmux send-keys -t @21 nvim ~/.lab Enter
+tmux select-layout -t @21 even-horizontal
+tmux kill-window -t lab:smug_def
+tmux move-window -r -s lab: -t lab:

@@ -54,6 +54,7 @@ Media/Music
 !.claude/agents/
 !.claude/commands/
 !.claude/hooks/
+!.claude/skills/
 !.claude/settings.json
 !.claude/.mcp.json
 !.claude/mcp.json

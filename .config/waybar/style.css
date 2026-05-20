@@ -214,12 +214,3 @@ tooltip label {
     color: #cedaeb;
     padding: 4px;
 }
-or: rgba(44, 28, 21, 0.95);
-    border: 1px solid rgba(174, 140, 32, 0.4);
-    border-radius: 8px;
-}
-
-tooltip label {
-    color: #bfbfbf;
-    padding: 4px;
-}

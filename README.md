@@ -34,9 +34,9 @@ Tracked in `.gitmodules`:
 | Submodule | Path | Description |
 |---|---|---|
 | [android-suite](https://github.com/Kblack0610/android-suite) | `.local/src/android-suite/` | Android device provisioning and debloating |
-| [claude-wrapper](https://github.com/Kblack0610/claude-wrapper) | `.local/src/claude-wrapper/` | Multi-account rotation wrapper for the Claude CLI |
+| [gungan-speak](https://github.com/Kblack0610/gungan-speak) | `.local/src/gungan/` | Gungan voice / TTS helpers |
 
-(`.claude/` and `.local/src/tmux/` are plain directories — not submodules.)
+(`.claude/`, `.local/src/tmux/`, and `.local/src/claude-wrapper/` are plain directories — not submodules. claude-wrapper was previously a submodule and was vendored in as plain files in commit `a23f91f`.)
 
 ## Installation
 

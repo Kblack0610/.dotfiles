@@ -1,9 +1,9 @@
 # Mac reqs
 - Preferences -> Apperance: Dark, Accent Color: Purple
 - System Settings -> Keyboard, Set Key Repeat to "Fast" and Delay until repeat to "Short" (haven't tried this yet)
-- System Settings -> Shortcuts, Add App Shortcuts "Minimize" and "Minimise" to random long key combos to overwrite cmd+m
-- System Settings -> Shortcuts, Uncheck Spotlight Shortcuts
-- System Settings -> Control Center, Set Automatically hide and show menu bar to "Always"
+- System Settings -> Shortcuts, Uncheck Spotlight Shortcuts (automated via macos_defaults.sh)
+- App Shortcuts Cmd+M override for Minimize/Minimise (automated via macos_defaults.sh)
+- Menu bar always auto-hide (automated via macos_defaults.sh)
 - System Settings -> Control Center -> Soundm Set to "Always show in menu bar"
 - [Raycast](https://www.raycast.com/)
     - Disabled Spotlight search in keyboard shortcuts

@@ -1,0 +1,8 @@
+session: lab
+root: ~/.lab
+
+windows:
+  - name: lab
+    root: ~/.lab
+    commands:
+      - nvim ~/.lab

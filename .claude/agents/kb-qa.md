@@ -35,12 +35,17 @@ Invoked when the user needs quality assurance review, PR verification, or releas
 
 ## Quality Gates Checklist
 
+- [ ] **Goal Achieved** - The spec's `## Goal` is true of the working tree (verify by reading the goal, then independently checking the implementation produces that outcome — not just that tasks were ticked off)
 - [ ] **Code Quality** - ESLint, TypeScript, formatting pass
 - [ ] **Test Coverage** - Adequate tests for new/changed code
 - [ ] **Performance** - No regressions, meets budgets
 - [ ] **Security** - No vulnerabilities, proper auth/validation
 - [ ] **UX Requirements** - Features work as specified
 - [ ] **Documentation** - README, JSDoc, comments updated
+
+**Goal-backward rule:** PASS requires both `Goal Achieved` AND all other gates
+green. Tests-green-but-goal-missed is a BLOCK, not a PASS — that's the failure
+mode this gate exists to catch.
 
 ## Workflow Context
 
@@ -55,7 +60,12 @@ Invoked when the user needs quality assurance review, PR verification, or releas
 
 ### Status: PASS / BLOCK
 
+### Goal
+<quoted from spec's ## Goal section>
+**Goal Achieved:** YES / NO (one-line evidence — what you ran, read, or saw)
+
 ### Checklist
+- [x] Goal achieved
 - [x] Code quality
 - [x] Test coverage
 - [ ] Performance (issue found)

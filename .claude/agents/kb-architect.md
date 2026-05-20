@@ -43,11 +43,26 @@ Invoked when the user needs to create technical specifications, conduct architec
 
 **Primary Workflow:** Part of the standard lifecycle: `brief → spec → code → review`
 
-**Handoff:** Technical Specifications are handed off to Developer (Devin) for implementation.
+**Handoff:** Technical Specifications are handed off to Developer for implementation.
 
 ## Output Format
 
-Technical specifications include:
+Every Technical Specification MUST open with a `## Goal` section before anything else:
+
+```markdown
+## Goal
+
+<One sentence, present-tense outcome that mirrors the brief's success criteria.
+Describe what is true for the user when this ships, not the tasks to get there.
+Example: "Users can reset their password from the login page and receive the
+reset email within 30 seconds.">
+```
+
+The goal is the verification anchor — kb-qa checks the goal, not just the task
+list. If you cannot state the goal in one sentence, the brief is too vague:
+hand back to kb-product-owner before continuing.
+
+After the goal, include:
 - Implementation approach
 - File changes required
 - Database schema changes

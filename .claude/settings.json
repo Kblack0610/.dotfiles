@@ -1,13 +1,4 @@
 {
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
-  "effortLevel": "high",
-  "enabledPlugins": {
-    "rust-analyzer-lsp@claude-plugins-official": true,
-    "clangd-lsp@claude-plugins-official": true
-  },
   "env": {
     "BASH_MAX_OUTPUT_LENGTH": "150000",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
@@ -101,6 +92,10 @@
       "Write(**/.env.*)"
     ]
   },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -145,5 +140,10 @@
       }
     ]
   },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "clangd-lsp@claude-plugins-official": true
+  },
+  "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true
 }

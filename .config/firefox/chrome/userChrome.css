@@ -1,5 +1,9 @@
-/* Firefox Bottom Tabs - userChrome.css
- * Move tab bar to bottom of window for ergonomic viewing
+/* Firefox userChrome.css — bottom URL bar + vertical tabs sidebar
+ * Layout: URL bar / nav-bar at the BOTTOM of the window (ergonomic).
+ *         Tabs in a vertical sidebar (native, configured in user.js).
+ * The flex+order rules below move the URL bar to the bottom; the search-
+ * suggestion flip and permission-popup margin-top hacks exist to keep
+ * popups pointing the right direction with the URL bar at the bottom.
  * Install: Copy chrome/ folder to ~/.mozilla/firefox/<profile>/chrome/
  */
 
@@ -71,52 +75,6 @@
     position: relative !important;
 }
 
-/* Tab bar styling - Catppuccin Mocha */
-#TabsToolbar {
-    background-color: #1e1e2e !important;
-    border-top: 1px solid #313244 !important;
-    border-bottom: none !important;
-}
-
-/* Individual tab styling */
-.tabbrowser-tab {
-    background-color: #1e1e2e !important;
-    border-radius: 6px 6px 0 0 !important;
-    margin-top: 4px !important;
-}
-
-.tabbrowser-tab[selected="true"] {
-    background-color: #313244 !important;
-}
-
-.tabbrowser-tab:hover:not([selected="true"]) {
-    background-color: #45475a !important;
-}
-
-/* Tab text */
-.tab-label {
-    color: #cdd6f4 !important;
-}
-
-.tabbrowser-tab[selected="true"] .tab-label {
-    color: #89b4fa !important;
-}
-
-/* Hide default tab line indicator */
-.tab-line {
-    display: none !important;
-}
-
-/* Cleaner new tab button */
-#tabs-newtab-button {
-    background-color: transparent !important;
-}
-
-#tabs-newtab-button:hover {
-    background-color: #45475a !important;
-    border-radius: 4px !important;
-}
-
 /* URL bar styling to match */
 #urlbar-background {
     background-color: #313244 !important;
@@ -158,6 +116,18 @@
 
 /* List all tabs button (arrow at end of tab bar) */
 #alltabs-button { display: none !important; }
+
+/* === FULLSCREEN: HIDE ALL CHROME === */
+/* Covers F11 (browser fullscreen) and HTML5 video/element fullscreen. */
+:root[inFullscreen] #navigator-toolbox,
+:root[inDOMFullscreen] #navigator-toolbox,
+#main-window[inFullscreen] #navigator-toolbox {
+    visibility: collapse !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    overflow: hidden !important;
+}
 
 /* === FIX PERMISSION POPUPS FOR BOTTOM BAR === */
 

@@ -40,7 +40,21 @@ function Copy-Config($src, $dst) {
     if (-not (Test-Path $src)) { Write-Skip "skip - $src not found"; return }
     $dstDir = Split-Path -Parent $dst
     if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
-    Copy-Item -Path $src -Destination $dst -Force
+    try {
+        Copy-Item -Path $src -Destination $dst -Force -ErrorAction Stop
+    } catch [System.IO.IOException] {
+        # File-in-use (e.g., starship.toml held open by the live PowerShell
+        # prompt) or a OneDrive cloud-only ghost. Try removing the destination
+        # first, then retry. If the file is still locked, warn and continue
+        # so one stuck config doesn't abort the whole apply step.
+        Remove-Item -Path $dst -Force -ErrorAction SilentlyContinue
+        try {
+            Copy-Item -Path $src -Destination $dst -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Could not write $dst (file in use or denied): $($_.Exception.Message)"
+            return
+        }
+    }
     Write-Skip "copied -> $dst"
 }
 

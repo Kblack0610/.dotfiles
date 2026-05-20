@@ -15,26 +15,26 @@ gui:
       - "#8BB8E9"
       - "bold"
     inactiveBorderColor:
-      - "#ae8c20"
+      - "#9098a4"
     searchingActiveBorderColor:
-      - "#00acee"
+      - "#E1B4CE"
       - "bold"
     optionsTextColor:
-      - "#00acee"
+      - "#E1B4CE"
     selectedLineBgColor:
-      - "#3d2a1f"
+      - "#473351"
     cherryPickedCommitFgColor:
-      - "#00acee"
+      - "#E1B4CE"
     cherryPickedCommitBgColor:
-      - "#cf5ec0"
+      - "#8BB8E9"
     markedBaseCommitFgColor:
-      - "#00acee"
+      - "#E1B4CE"
     markedBaseCommitBgColor:
-      - "#bdbe00"
+      - "#E59DB1"
     unstagedChangesColor:
-      - "#ef5734"
+      - "#71ADE9"
     defaultFgColor:
-      - "#ffcc2f"
+      - "#cedaeb"
 os:
   editCommand: 'nvim'
   openCommand: 'kitty nvim .'

@@ -3,9 +3,11 @@ tap "nikitabobko/tap"
 tap "jesseduffield/lazydocker"
 tap "jesseduffield/lazygit"
 tap "lizardbyte/homebrew"
+tap "felixkratz/formulae"
 
 # --- Core CLI Tools ---
 brew "asdf"
+brew "fzf"
 brew "zoxide"
 brew "git-lfs"
 brew "lazygit"
@@ -21,6 +23,7 @@ brew "btop"
 brew "bun"
 brew "lazydocker"
 brew "zsh-autosuggestions"
+brew "poppler"  # pdftoppm/pdfinfo — lets agents render PDFs to images for Read
 
 # --- Kubernetes & Container Tools ---
 brew "kubectl"
@@ -39,6 +42,13 @@ brew "nss"
 brew "postgresql@14", restart_service: :changed
 brew "protobuf"
 brew "yarn"
+
+# --- Status Bar (Waybar analog for macOS) ---
+brew "felixkratz/formulae/sketchybar"
+cask "font-sketchybar-app-font"
+# SF Symbols (browser app) requires sudo to install; the SF fonts ship with macOS already.
+# Uncomment + run interactively if you want the browser app:
+# cask "sf-symbols"
 
 # --- Casks (GUI Apps) ---
 cask "aerospace"
