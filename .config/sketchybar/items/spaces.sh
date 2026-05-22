@@ -8,6 +8,7 @@ for sid in "${WORKSPACES[@]}"; do
   sketchybar --add item space.$sid left \
              --subscribe space.$sid aerospace_workspace_change front_app_switched \
              --set space.$sid \
+                   updates=on \
                    icon="$sid" \
                    icon.font="SF Pro:Bold:13.0" \
                    icon.padding_left=10 \
