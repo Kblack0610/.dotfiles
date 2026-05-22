@@ -6,11 +6,12 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 
 The default invocation is **configs-only** — it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
 
-- **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
-- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
+- **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, WezTerm `wezterm.lua`, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
+- **Windows-side packages** (`-Install`): Windows Terminal, WezTerm, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font, Hack Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
 - **WSL2 Arch** (`-Install`): primary dev environment, runs `linux/install_arch.sh` from inside the WSL distro. Full parity with the Linux dotfiles.
 - **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
 - **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
+- **WezTerm** as a secondary terminal. Kitty has no Windows build; WezTerm is the closest spiritual match for the Linux/Mac `.config/kitty/` setup (Lua config, nerd-font fallback, GPU rendering). The `wezterm.lua` ports the Jackie Brown palette, tab keybindings (`ctrl+1..9`, `ctrl+shift+;/a/t`), font size hotkeys, and defaults into WSL Debian. Windows Terminal stays installed alongside it.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
 - **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
@@ -79,7 +80,7 @@ When WSL2 is enabled, re-run with `-Install` (drop `-SkipWsl`) to provision Arch
 
 Two tiers — minimal is the default when `-Install` is passed.
 
-**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
+**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `wez.wezterm`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.) Hack Nerd Font is also installed user-scope by downloading the upstream Nerd Fonts release directly — winget's nerd-font IDs have been flaky on the VDI, so the WezTerm font (`Hack Nerd Font`) does not go through winget.
 
 **Full (`-Install -Full`):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
 
@@ -92,6 +93,7 @@ The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh,
 | Source in repo | Destination on Windows |
 |---|---|
 | `.config/windows/terminal/settings.json` | `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json` |
+| `.config/windows/wezterm/wezterm.lua` | `%USERPROFILE%\.config\wezterm\wezterm.lua` |
 | `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` | `$PROFILE` |
 | `.config/windows/glazewm/config.yaml` | `%USERPROFILE%\.glzr\glazewm\config.yaml` |
 | `.config/windows/zebar/settings.json` | `%USERPROFILE%\.glzr\zebar\settings.json` |

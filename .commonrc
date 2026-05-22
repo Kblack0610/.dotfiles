@@ -238,3 +238,12 @@ alias mic-stop="audio-stream --stop"
 alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
 
+# --- WSL: screenshot clipboard bridge ---
+# Lets Windows screenshots (Win+Shift+S / our Ctrl+Alt+C hotkey) paste as a
+# file path in WSL terminals. `start --daemon` is idempotent.
+# Install: ~/.dotfiles/scripts/windows/install-wsl-screenshot-cli.sh
+if grep -qiE 'wsl|microsoft' /proc/version 2>/dev/null \
+    && command -v wsl-screenshot-cli >/dev/null 2>&1; then
+    wsl-screenshot-cli start --daemon >/dev/null 2>&1
+fi
+

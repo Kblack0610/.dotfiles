@@ -81,6 +81,12 @@ Write-Step 'Windows Terminal settings.json'
 $wtPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json'
 Copy-Config (Join-Path $WinCfg 'terminal\settings.json') $wtPath
 
+Write-Step 'WezTerm config'
+# WezTerm looks for ~/.wezterm.lua and ~/.config/wezterm/wezterm.lua;
+# we use the latter so it sits next to starship.toml under ~/.config.
+$wezPath = Join-Path $env:USERPROFILE '.config\wezterm\wezterm.lua'
+Copy-Config (Join-Path $WinCfg 'wezterm\wezterm.lua') $wezPath
+
 Write-Step 'PowerShell profile'
 Copy-Config (Join-Path $WinCfg 'powershell\Microsoft.PowerShell_profile.ps1') $PROFILE
 
