@@ -88,6 +88,14 @@ user_pref("browser.startup.homepage", "about:home");
 // === TAB GROUPS ===
 user_pref("browser.tabs.groups.enabled", true);
 
+// === VDI / KEYBOARD CAPTURE ===
+// 3 = PROMPT: ask the first time a site tries to override built-in
+// Firefox shortcuts. Lets the VDI page capture Ctrl+W / Ctrl+T / etc.
+// after a one-time accept, without globally allowing every site.
+// Values: 0=UNKNOWN (default), 1=ALLOW, 2=DENY/blocks VDI, 3=PROMPT.
+// Per-shortcut clearing also available at about:keyboard (Fx 147+).
+user_pref("permissions.default.shortcuts", 3);
+
 // === VERTICAL TABS (native, Firefox 136+) ===
 // Moves tabs to a sidebar and natively hides the horizontal tab bar.
 user_pref("sidebar.revamp", true);

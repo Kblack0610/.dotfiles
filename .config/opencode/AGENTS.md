@@ -31,6 +31,17 @@ Only escalate to Explore agents or multi-tool investigations after these checks 
 - Run the smallest credible validation that proves the change.
 - Report what was verified and what could not be verified.
 
+## Artifact Placement
+
+Where files land matters. Default to ephemeral; only commit when the artifact is clearly a tracked repo asset.
+
+- **Ephemeral / verification screenshots and dumps** (from `/verify`, `sc:manual-test`, Playwright debug runs, ad-hoc "show me what it looks like", logcat captures, scratch JSON) → `$TMPDIR` or `/tmp/claude-screenshots/`. Never the repo root, never staged, never committed.
+- **Intentional artifacts** → the repo's canonical location:
+  - Docs/README images → `docs/images/` (or whatever the repo already uses)
+  - E2E visual baselines → the test framework's snapshot dir (`e2e/__screenshots__/`, `tests/__snapshots__/`, Playwright `test-results/`)
+  - Design assets → `assets/` or `public/`
+- Only commit a screenshot or generated artifact if the user explicitly asks, or it clearly belongs to one of the tracked locations above. When in doubt, drop it in `/tmp/` and link to it.
+
 ## Infrastructure Questions
 
 - For infrastructure, cluster, deployment, ingress, or Kubernetes status questions, identify the target environment explicitly before answering.

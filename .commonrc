@@ -238,3 +238,8 @@ alias mic-stop="audio-stream --stop"
 alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
 
+# --- VDI Kiosk (Chromium with navigator.keyboard.lock support) ---
+# Usage: VDI_URL=https://your-vdi.example.com vdi
+# Isolated profile so it doesn't share cookies/extensions with main Chromium.
+alias vdi='chromium --user-data-dir="$HOME/.local/share/vdi-chromium-profile" --app="${VDI_URL:-about:blank}" --start-fullscreen'
+
