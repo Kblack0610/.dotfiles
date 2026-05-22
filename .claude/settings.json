@@ -34,7 +34,16 @@
       "mcp__web-search",
       "mcp__claude_ai_Gmail",
       "mcp__claude_ai_Google_Calendar",
-      "mcp__claude_ai_Google_Drive"
+      "mcp__claude_ai_Google_Drive",
+      "Bash(git fetch *)",
+      "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
+      "mcp__claude_ai_Atlassian__getJiraIssue",
+      "mcp__claude_ai_Atlassian__getConfluencePage",
+      "mcp__atlassian__searchJiraIssuesUsingJql",
+      "mcp__atlassian__getJiraIssue",
+      "mcp__figma__get_screenshot",
+      "mcp__figma__get_metadata",
+      "mcp__chrome-devtools__list_pages"
     ],
     "deny": [
       "Bash(sudo)",
