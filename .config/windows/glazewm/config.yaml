@@ -1,51 +1,15 @@
-# GlazeWM config — copied to %USERPROFILE%\.glzr\glazewm\config.yaml
+# GlazeWM config.
+#
+# IMPORTANT — manual copy required:
+#   This repo lives in WSL. GlazeWM runs on the Windows host and reads
+#   %USERPROFILE%\.glzr\glazewm\config.yaml. Stow can't bridge WSL → Windows,
+#   so after editing this file you must copy it across. From PowerShell:
+#     Copy-Item \\wsl$\<distro>\root\.dotfiles\.config\windows\glazewm\config.yaml `
+#               $env:USERPROFILE\.glzr\glazewm\config.yaml
+#   Then reload with alt+shift+r (wm-reload-config) inside GlazeWM.
+#
 # i3/Hyprland-style keybinds. Animations disabled because the VDI renders
 # over Azure RDP and animations stutter.
-
-#general:
-  # `zebar startup` reads %USERPROFILE%\.glzr\zebar\settings.json and spawns the
-  # configured widget on every monitor (monitorSelection.type=all in the starter
-  # pack). Without this the bar only appears on whichever monitor zebar.exe was
-  # launched on, which made it look isolated.
-  #startup_commands: ["shell-exec zebar startup"]
-  #shutdown_commands: ["shell-exec taskkill /IM zebar.exe /F"]
-#  config_reload_commands: ["shell-exec %userprofile%/.glzr/glazewm/scripts/reload-glazewm.cmd"]
-#  focus_follows_cursor: false
-#  toggle_workspace_on_refocus: true
-#  cursor_jump:
-#    enabled: true
-#    trigger: "monitor_focus"
-
-#gaps:
-#  scale_with_dpi: true
-#  inner_gap: "6px"
-#  outer_gap:
-    # Top gap reserves space for the Zebar bar (32px widget height + 6px
-    # breathing room). Without this, tiled windows render over the bar.
-    #top: "38px"
-    #right: "6px"
-    #bottom: "6px"
-    #left: "6px"
-
-#window_effects:
-#  focused_window:
-#    border:
-#      enabled: true
-#      color: "#8be9fd"
-#  other_windows:
-#    border:
-#      enabled: true
-#      color: "#44475a"
-
-#window_behavior:
-#  initial_state: "tiling"
-#  state_defaults:
-#    floating:
-#      centered: true
-#      shown_on_top: false
-#    fullscreen:
-#      maximized: true
-#      shown_on_top: false
 
 workspaces:
   - name: "1"
@@ -65,7 +29,7 @@ window_rules:
       # Zebar's widget windows. Without this rule, GlazeWM tiles the bar as a
       # regular managed window and it renders as a block in the middle of the
       # screen instead of as a borderless top overlay.
-      #- window_process: { equals: "zebar" }
+      - window_process: { equals: "zebar" }
       - window_process: { equals: "Windows.App" }
       - window_process: { equals: "msrdc" }
       - window_process: { equals: "ApplicationFrameHost" }
@@ -88,12 +52,6 @@ window_rules:
   - commands: ["move --workspace 4"]
     match:
       - window_process: { regex: "(ms-teams|Teams|slack|Discord)" }
-  # Playwright MCP / agent-driven Firefox surfaces through WSLg as msrdc.exe
-  # with "Nightly (<distro>)" in the title. Route to the agent workspace.
-  - commands: ["move --workspace 5"]
-    match:
-      - window_process: { equals: "msrdc.exe" }
-        window_title: { regex: ".*Nightly \\(archlinux\\).*" }
 
 binding_modes:
   - name: "resize"
@@ -160,15 +118,16 @@ keybindings:
   - commands: ["focus --direction down"]
     bindings: ["alt+j", "alt+down"]
 
-  # Move
+  # Move (ctrl+shift — alt+shift was eaten by Windows input-language toggle;
+  # try this before falling back to lwin+alt)
   - commands: ["move --direction left"]
-    bindings: ["alt+shift+h", "alt+shift+left"]
+    bindings: ["ctrl+shift+h", "ctrl+shift+left"]
   - commands: ["move --direction right"]
-    bindings: ["alt+shift+l", "alt+shift+right"]
+    bindings: ["ctrl+shift+l", "ctrl+shift+right"]
   - commands: ["move --direction up"]
-    bindings: ["alt+shift+k", "alt+shift+up"]
+    bindings: ["ctrl+shift+k", "ctrl+shift+up"]
   - commands: ["move --direction down"]
-    bindings: ["alt+shift+j", "alt+shift+down"]
+    bindings: ["ctrl+shift+j", "ctrl+shift+down"]
 
   # Resize mode
   - commands: ["wm-enable-binding-mode --name resize"]
