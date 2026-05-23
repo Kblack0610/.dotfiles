@@ -10,17 +10,18 @@
     "initialCols": 140,
     "initialRows": 40,
     "theme": "dark",
+    "disableAnimations": true,
 
     "profiles": {
         "defaults": {
             "font": {
                 "face": "JetBrainsMono Nerd Font",
-                "size": 11
+                "size": 20
             },
             "colorScheme": "Dracula",
             "useAcrylic": false,
             "padding": "8",
-            "antialiasingMode": "cleartype",
+            "antialiasingMode": "grayscale",
             "scrollbarState": "hidden",
             "cursorShape": "bar",
             "snapOnInput": true

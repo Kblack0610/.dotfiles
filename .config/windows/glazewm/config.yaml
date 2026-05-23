@@ -10,6 +10,16 @@
 #
 # i3/Hyprland-style keybinds. Animations disabled because the VDI renders
 # over Azure RDP and animations stutter.
+#
+# Mod key is `alt` (not `lwin`) on purpose: this dotfiles setup is used
+# from the Azure AVD *browser* web client, which deliberately does NOT
+# forward raw LWin/MetaLeft keystrokes to the remote session. Microsoft
+# uses Chromium's `navigator.keyboard.lock()` for some system keys but
+# omits Meta from the locked set; instead Alt+F3 sends a one-shot Win
+# tap. That single-tap cannot serve as a held mod, so `lwin+1` style
+# bindings can never fire from the web client. See
+# .agent/lessons/dotfiles.md ("GlazeWM under Azure AVD web client...")
+# for the workarounds if you ever want lwin back.
 
 workspaces:
   - name: "1"
@@ -118,8 +128,7 @@ keybindings:
   - commands: ["focus --direction down"]
     bindings: ["alt+j", "alt+down"]
 
-  # Move (ctrl+shift — alt+shift was eaten by Windows input-language toggle;
-  # try this before falling back to lwin+alt)
+  # Move (ctrl+shift — alt+shift was eaten by Windows input-language toggle)
   - commands: ["move --direction left"]
     bindings: ["ctrl+shift+h", "ctrl+shift+left"]
   - commands: ["move --direction right"]
