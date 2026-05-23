@@ -145,17 +145,25 @@ if (-not (Test-Path $ffSrc)) {
     $policySrc      = Join-Path $ffSrc 'policies.json'
     $vdiOverlaySrc  = Join-Path $ffSrc 'policies.vdi.json'
 
-    # VDI detection: Hyper-V / Hypervisor guest with no real GPU adapter visible.
-    # Real GPUs (NVIDIA / AMD / Intel / GPU-PV passthrough) report a vendor name in
-    # Win32_VideoController.Name. Hyper-V guests without passthrough only show
-    # 'Microsoft Hyper-V Video' and 'Microsoft Remote Display Adapter' (RDP IDD).
+    # VDI detection: Hyper-V guest with no real GPU adapter.
+    #
+    # We anchor on 'Microsoft Hyper-V Video' specifically because it is the
+    # VMBus synthetic device that ONLY appears inside Hyper-V guests -- never
+    # on a bare-metal Windows box (Hyper-V parent partition uses the real GPU
+    # driver), never on VMware/VirtualBox/Parallels (they use their own
+    # vendor display adapters). Then we require that no non-synthetic adapter
+    # be present, which rules out Hyper-V guests that DO have GPU-PV / DDA
+    # passthrough (those report the host's real GPU name alongside Hyper-V
+    # Video). Conservative on purpose: false negatives just mean the overlay
+    # isn't applied; false positives would slow down a real workstation.
     $isVdi = $false
     try {
-        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-        $isVm = $cs.HypervisorPresent -or ($cs.Model -eq 'Virtual Machine')
         $vcs = @(Get-CimInstance Win32_VideoController -ErrorAction Stop)
-        $hasRealGpu = @($vcs | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel\(R\)|GeForce|Quadro|Tesla|Arc' }).Count -gt 0
-        $isVdi = $isVm -and -not $hasRealGpu
+        $hasHyperVVideo = @($vcs | Where-Object { $_.Name -eq 'Microsoft Hyper-V Video' }).Count -gt 0
+        $nonSynthetic = @($vcs | Where-Object {
+            $_.Name -notmatch '^Microsoft (Hyper-V Video|Remote Display Adapter|Basic (Display|Render) (Adapter|Driver))$'
+        })
+        $isVdi = $hasHyperVVideo -and ($nonSynthetic.Count -eq 0)
     } catch {
         Write-Skip "VDI detection failed ($($_.Exception.Message)) - assuming non-VDI"
     }

@@ -222,14 +222,22 @@ Because GPU offload is impossible here, the achievable win is **cutting CPU work
 Detection logic in `apply_configs.ps1`:
 
 ```
-$isVm  = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent -or
-         (Get-CimInstance Win32_ComputerSystem).Model -eq 'Virtual Machine'
-$gpus  = Get-CimInstance Win32_VideoController
-$real  = $gpus | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel\(R\)|GeForce|Quadro|Tesla|Arc' }
-$isVdi = $isVm -and -not $real
+$vcs            = Get-CimInstance Win32_VideoController
+$hasHyperVVideo = ($vcs | Where-Object { $_.Name -eq 'Microsoft Hyper-V Video' }).Count -gt 0
+$nonSynthetic   = $vcs | Where-Object {
+    $_.Name -notmatch '^Microsoft (Hyper-V Video|Remote Display Adapter|Basic (Display|Render) (Adapter|Driver))$'
+}
+$isVdi          = $hasHyperVVideo -and ($nonSynthetic.Count -eq 0)
 ```
 
-On a Hyper-V VM with GPU-PV passthrough, the partitioned adapter shows up with the host's vendor name (e.g., "NVIDIA T4"), `$real` is non-empty, and the overlay is NOT applied — so this script correctly stays out of the way the day IT actually gives you a GPU.
+We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synthetic device that ONLY appears inside Hyper-V guests — never on bare-metal Windows (the Hyper-V parent partition uses the real GPU driver), never on VMware/VirtualBox/Parallels (they expose their own vendor adapters), never on Snapdragon/Apple-Silicon Windows. Then we require zero non-synthetic adapters, which keeps a Hyper-V guest WITH GPU-PV passthrough out of the VDI bucket (the partitioned adapter reports the host vendor name alongside Hyper-V Video). Conservative on purpose: false negatives just mean the overlay isn't applied; false positives would slow down a real workstation.
+
+### Which entry point writes what?
+
+`policies.json` deployment is **only** done by `apply_configs.ps1` (the elevated PowerShell entry point), because Program Files writes require admin. The WSL convenience wrapper `.local/bin/apply-windows-configs` skips `policies.json` entirely — it only mirrors the per-profile files (`user.js`, `containers.json`, `chrome/userChrome.css`) into `%APPDATA%\Mozilla\Firefox\Profiles\*.default-release\`. So:
+
+- **Running `apply-windows-configs` from WSL** (any machine): cannot pollute a non-VDI Firefox with VDI prefs, because it doesn't write `policies.json` at all and `user.js` carries no VDI-specific prefs.
+- **Running `apply_configs.ps1` elevated** (any machine): writes `policies.json`; the VDI overlay is merged in only when the detection above returns true.
 
 ## Caveats
 
