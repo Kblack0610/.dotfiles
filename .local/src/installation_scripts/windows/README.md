@@ -6,12 +6,11 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 
 The default invocation is **configs-only** — it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
 
-- **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, WezTerm `wezterm.lua`, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
-- **Windows-side packages** (`-Install`): Windows Terminal, WezTerm, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font, Hack Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
+- **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
+- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
 - **WSL2 Arch** (`-Install`): primary dev environment, runs `linux/install_arch.sh` from inside the WSL distro. Full parity with the Linux dotfiles.
 - **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
 - **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
-- **WezTerm** as a secondary terminal. Kitty has no Windows build; WezTerm is the closest spiritual match for the Linux/Mac `.config/kitty/` setup (Lua config, nerd-font fallback, GPU rendering). The `wezterm.lua` ports the Jackie Brown palette, tab keybindings (`ctrl+1..9`, `ctrl+shift+;/a/t`), font size hotkeys, and defaults into WSL Debian. Windows Terminal stays installed alongside it.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
 - **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
@@ -80,7 +79,7 @@ When WSL2 is enabled, re-run with `-Install` (drop `-SkipWsl`) to provision Arch
 
 Two tiers — minimal is the default when `-Install` is passed.
 
-**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `wez.wezterm`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.) Hack Nerd Font is also installed user-scope by downloading the upstream Nerd Fonts release directly — winget's nerd-font IDs have been flaky on the VDI, so the WezTerm font (`Hack Nerd Font`) does not go through winget.
+**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
 
 **Full (`-Install -Full`):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
 
@@ -93,7 +92,6 @@ The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh,
 | Source in repo | Destination on Windows |
 |---|---|
 | `.config/windows/terminal/settings.json` | `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json` |
-| `.config/windows/wezterm/wezterm.lua` | `%USERPROFILE%\.config\wezterm\wezterm.lua` |
 | `.config/windows/powershell/Microsoft.PowerShell_profile.ps1` | `$PROFILE` |
 | `.config/windows/glazewm/config.yaml` | `%USERPROFILE%\.glzr\glazewm\config.yaml` |
 | `.config/windows/zebar/settings.json` | `%USERPROFILE%\.glzr\zebar\settings.json` |
@@ -103,6 +101,8 @@ The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh,
 | `.config/opencode/` | `%APPDATA%\opencode\` (excluding `node_modules/`) |
 | `.config/starship.toml` | `%USERPROFILE%\.config\starship.toml` |
 | `.config/jesseduffield/lazygit/config.yml` | `%APPDATA%\lazygit\config.yml` |
+| `.config/firefox/policies.json` | `C:\Program Files\Mozilla Firefox\distribution\policies.json` (admin; on VDI deep-merged with `policies.vdi.json` first — see [Firefox on this VDI](#firefox-on-this-vdi) below) |
+| `.config/firefox/user.js`, `chrome/userChrome.css`, `containers.json` | `%APPDATA%\Mozilla\Firefox\Profiles\*.default-release\` (per profile, no admin) |
 
 GlazeWM auto-launches Zebar via its `startup_commands` (`shell-exec zebar startup`), so the bar appears on every monitor (`monitorSelection.type=all` in the `kblack-minimal` pack's `bar` widget).
 
@@ -185,6 +185,51 @@ edits, no telemetry policies — nothing that fights the corporate image.
 
 It restarts Explorer at the end to apply taskbar changes; pass `-NoRestartExplorer`
 to skip that. Some Spotlight surfaces only fully clear after sign-out.
+
+## Firefox on this VDI
+
+`apply_configs.ps1` deploys Firefox in two layers:
+
+1. **Enterprise policy** — `.config/firefox/policies.json` → `C:\Program Files\Mozilla Firefox\distribution\policies.json`. Locks the GPU offload prefs (`gfx.webrender.all`, `gfx.webrender.compositor`, `media.hardware-video-decoding.force-enabled`, `media.wmf.dxva.enabled`, `media.wmf.hevc.enabled`, plus Linux-only `media.ffmpeg.vaapi.enabled` and `widget.dmabuf.force-enabled` which Firefox simply ignores on Windows). Needs admin to write to Program Files — script warns and continues if not elevated; the per-profile layer below is the fallback.
+2. **Per-profile** — `user.js`, `chrome/userChrome.css`, `containers.json` into every `*.default-release` profile under `%APPDATA%\Mozilla\Firefox\Profiles\`. No admin needed. This is also the resilient layer if a corp-managed `policies.json` ever wins under Program Files.
+
+Verify after install: `about:support` → `Enterprise Policies: Active`, `Legacy User Stylesheets: Active true`, and `Important Locked Preferences` lists the seven GPU prefs.
+
+### GPU offload here is unrecoverable — don't re-debug it
+
+This VDI is a **Hyper-V Gen2 guest** (`Win32_ComputerSystem.Model = "Virtual Machine"`, BIOS = Hyper-V UEFI) with **no GPU-PV / DDA passthrough**. The only display adapters are `Microsoft Hyper-V Video` (synthetic, display-only, paired with `Basic Render Driver` = WARP for rendering) and `Microsoft Remote Display Adapter` (RDP Indirect Display Driver, active because we're connected over RDP). Firefox cannot offload anything to a GPU because there isn't one:
+
+- The locked GPU prefs above all apply, but `about:support` still reports `Compositing: WebRender (Software)` and `Hardware Decoding: Unsupported` for every codec.
+- Decision log shows `D3D11_COMPOSITING: env blocklisted FEATURE_FAILURE_EMPTY_DRIVER_VERSION`, `WEBRENDER_COMPOSITOR: runtime unavailable FEATURE_FAILURE_DCOMP_NOT_ANGLE`, `HARDWARE_VIDEO_DECODING: runtime unavailable FEATURE_FAILURE_BROKEN_TEXTURE_SHARING`.
+- Workarounds that **don't help**: `MOZ_GFX_SPOOF_*` env vars or `layers.acceleration.force-enabled` clear the blocklist text but reveal WARP underneath — "hardware" compositing in name only, often slower than the software path. `media.hardware-video-decoding.force-enabled` does not bypass `BROKEN_TEXTURE_SHARING` (it's a runtime probe, not a static blocklist).
+- Workarounds that **also don't help**: running Firefox under WSL2 via `/dev/dxg` routes to the same host WARP adapter — strictly worse than Windows-side because of WSLg's broken DRI3/dma-buf for video.
+- The only real fix is **infrastructure**: ask IT to enable GPU-Partitioning on this session host pool, or (if this is AVD) move to an NVads-A10 / NVv4 SKU.
+
+Keep `policies.json` deployed — those prefs are correct, no-op penalty here, real win on any non-VDI Windows box you sync this config to.
+
+### CPU-savings overlay (`policies.vdi.json`)
+
+Because GPU offload is impossible here, the achievable win is **cutting CPU work**. `.config/firefox/policies.vdi.json` carries a `Preferences` overlay that's deep-merged into the base `policies.json` **only when VDI is detected** (Hyper-V VM with no real GPU adapter visible). On a real-GPU machine these prefs are net losses (capped frame rate, software compositor preferred over real GPU, AV1 disabled), so the overlay is intentionally NOT applied unconditionally.
+
+| Pref | Value | What it buys (on VDI) |
+|---|---|---|
+| `layout.frame_rate` | `30` | Caps repaint at 30 fps — typically 30–40% CPU drop on busy pages |
+| `image.animation_mode` | `"once"` | Kills looping GIFs |
+| `media.av1.enabled` | `false` | Forces VP9/H.264 — much cheaper to software-decode on Zen 3 with no HW assist |
+| `dom.ipc.processCount` | `4` | Fewer content procs — better fit for a CPU-bound 8 GB VM |
+| `gfx.webrender.software.opengl` | `true` | Prefers the SIMD-optimized software compositor over WARP |
+
+Detection logic in `apply_configs.ps1`:
+
+```
+$isVm  = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent -or
+         (Get-CimInstance Win32_ComputerSystem).Model -eq 'Virtual Machine'
+$gpus  = Get-CimInstance Win32_VideoController
+$real  = $gpus | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel\(R\)|GeForce|Quadro|Tesla|Arc' }
+$isVdi = $isVm -and -not $real
+```
+
+On a Hyper-V VM with GPU-PV passthrough, the partitioned adapter shows up with the host's vendor name (e.g., "NVIDIA T4"), `$real` is non-empty, and the overlay is NOT applied — so this script correctly stays out of the way the day IT actually gives you a GPU.
 
 ## Caveats
 

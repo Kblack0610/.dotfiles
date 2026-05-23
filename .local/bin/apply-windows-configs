@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# apply-windows-configs - mirror of apply_configs.ps1 driven from WSL.
+#
+# Why: copying WSL -> /mnt/c via the WSL kernel is faster than robocopy through
+# \\wsl$, and lets us iterate on dotfiles without bouncing into Windows.
+# Mirrors the same source -> destination pairs as apply_configs.ps1 (Windows
+# Terminal, PowerShell profile, GlazeWM, Zebar, .wslconfig, nvim, opencode,
+# starship, lazygit, Firefox/Floorp per-profile prefs).
+#
+# Skipped vs. the PS script (intentional):
+#   - Firefox/Floorp policies.json under Program Files (needs admin; PS script
+#     handles that path when run elevated).
+#   - setup_notes_sync.ps1 invocation (Windows scheduled task setup).
+#   - WSL Arch first-run bootstrap (we are already inside WSL).
+#
+# Usage: apply-windows-configs [--win-user NAME] [--dry-run]
+
+set -euo pipefail
+
+DOTFILES="${DOTFILES:-$HOME/.dotfiles}"
+WIN_CFG="$DOTFILES/.config/windows"
+XCONFIG="$DOTFILES/.config"
+DRY=0
+WIN_USER=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --win-user) WIN_USER="$2"; shift 2 ;;
+        --dry-run)  DRY=1; shift ;;
+        -h|--help)
+            sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+[[ -d "$WIN_CFG" ]] || { echo "missing $WIN_CFG" >&2; exit 1; }
+[[ -d "$XCONFIG" ]] || { echo "missing $XCONFIG" >&2; exit 1; }
+
+# Resolve Windows user.
+if [[ -z "$WIN_USER" ]]; then
+    if command -v powershell.exe >/dev/null 2>&1; then
+        WIN_USER="$(powershell.exe -NoProfile -Command '[Console]::Out.Write($env:USERNAME)' 2>/dev/null | tr -d '\r\n')"
+    fi
+    if [[ -z "$WIN_USER" ]]; then
+        # Fallback: first /mnt/c/Users dir that isn't a system profile.
+        for d in /mnt/c/Users/*/; do
+            n="$(basename "$d")"
+            case "$n" in
+                Default|Default\ User|Public|All\ Users) continue ;;
+            esac
+            WIN_USER="$n"; break
+        done
+    fi
+fi
+[[ -n "$WIN_USER" ]] || { echo "could not determine Windows username; pass --win-user NAME" >&2; exit 1; }
+
+USERPROFILE="/mnt/c/Users/$WIN_USER"
+LOCALAPPDATA="$USERPROFILE/AppData/Local"
+APPDATA="$USERPROFILE/AppData/Roaming"
+
+[[ -d "$USERPROFILE" ]] || { echo "no such Windows profile: $USERPROFILE" >&2; exit 1; }
+
+cyan() { printf '\033[36m==> %s\033[0m\n' "$*"; }
+dim()  { printf '    \033[2m%s\033[0m\n' "$*"; }
+warn() { printf '\033[33m!! %s\033[0m\n' "$*" >&2; }
+
+copy_file() {
+    local src="$1" dst="$2"
+    if [[ ! -f "$src" ]]; then dim "skip - $src not found"; return 0; fi
+    if (( DRY )); then dim "would copy -> $dst"; return 0; fi
+    mkdir -p "$(dirname "$dst")"
+    if ! cp -f "$src" "$dst" 2>/dev/null; then
+        # File-in-use (e.g., starship.toml held by live prompt) - remove + retry.
+        rm -f "$dst" 2>/dev/null || true
+        if ! cp -f "$src" "$dst" 2>/dev/null; then
+            warn "could not write $dst (in use or denied)"; return 0
+        fi
+    fi
+    dim "copied -> $dst"
+}
+
+# Mirror a directory, optionally excluding paths. Removes dst first to keep
+# parity with Copy-ConfigDir in the PS script.
+copy_dir() {
+    local src="$1" dst="$2"; shift 2 || true
+    local excludes=("$@")
+    if [[ ! -d "$src" ]]; then dim "skip - $src not found"; return 0; fi
+    if (( DRY )); then dim "would mirror -> $dst${excludes:+ (exclude: ${excludes[*]})}"; return 0; fi
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    local tar_excludes=()
+    for e in "${excludes[@]:-}"; do
+        [[ -n "$e" ]] && tar_excludes+=("--exclude=$e")
+    done
+    # tar | tar honors excludes and is plenty fast on the /mnt/c hop.
+    (cd "$src" && tar -cf - "${tar_excludes[@]}" .) | (cd "$dst" && tar -xf -)
+    dim "copied -> $dst"
+}
+
+# --- Windows-only configs --------------------------------------------------
+cyan 'Windows Terminal settings.json'
+# Two package families coexist (Store stable + Preview/Canary). Hit both if
+# present so whichever is launched picks up the change.
+for pkg in Microsoft.WindowsTerminal_8wekyb3d8bbwe Microsoft.WindowsTerminal_8wekyb3d8bbce; do
+    wt_dst="$LOCALAPPDATA/Packages/$pkg/LocalState/settings.json"
+    if [[ -d "$LOCALAPPDATA/Packages/$pkg" ]]; then
+        copy_file "$WIN_CFG/terminal/settings.json" "$wt_dst"
+    fi
+done
+
+cyan 'PowerShell profile'
+# PS7 lives under Documents\PowerShell, PS5.1 under Documents\WindowsPowerShell.
+# Push to both so whichever shell the user launches picks it up.
+for psdir in PowerShell WindowsPowerShell; do
+    copy_file "$WIN_CFG/powershell/Microsoft.PowerShell_profile.ps1" \
+              "$USERPROFILE/Documents/$psdir/Microsoft.PowerShell_profile.ps1"
+done
+
+cyan 'GlazeWM config'
+copy_file "$WIN_CFG/glazewm/config.yaml" "$USERPROFILE/.glzr/glazewm/config.yaml"
+
+cyan 'Zebar settings'
+copy_file "$WIN_CFG/zebar/settings.json" "$USERPROFILE/.glzr/zebar/settings.json"
+
+cyan 'Zebar minimal pack'
+copy_dir  "$WIN_CFG/zebar/kblack-minimal" "$USERPROFILE/.glzr/zebar/kblack-minimal"
+
+cyan '.wslconfig'
+copy_file "$WIN_CFG/wsl/.wslconfig" "$USERPROFILE/.wslconfig"
+
+# --- Cross-platform configs ------------------------------------------------
+cyan 'Neovim config'
+copy_dir  "$XCONFIG/nvim" "$LOCALAPPDATA/nvim"
+
+cyan 'opencode config'
+copy_dir  "$XCONFIG/opencode" "$USERPROFILE/.config/opencode" node_modules
+
+cyan 'starship.toml'
+copy_file "$XCONFIG/starship.toml" "$USERPROFILE/.config/starship.toml"
+
+cyan 'lazygit config'
+copy_file "$XCONFIG/jesseduffield/lazygit/config.yml" "$APPDATA/lazygit/config.yml"
+
+# --- Firefox / Floorp (per-profile only; policies.json needs admin) --------
+cyan 'Firefox/Floorp configs'
+ff_src="$XCONFIG/firefox"
+if [[ ! -d "$ff_src" ]]; then
+    dim "skip - $ff_src not found"
+else
+    found_any=0
+    for root in "$APPDATA/Mozilla/Firefox/Profiles" "$APPDATA/Floorp/Profiles"; do
+        [[ -d "$root" ]] || continue
+        # Prefer .default-release; fall back to .default.
+        mapfile -t profs < <(find "$root" -maxdepth 1 -type d -name '*.default-release' 2>/dev/null)
+        if [[ ${#profs[@]} -eq 0 ]]; then
+            mapfile -t profs < <(find "$root" -maxdepth 1 -type d -name '*.default' 2>/dev/null)
+        fi
+        if [[ ${#profs[@]} -eq 0 ]]; then
+            dim "skip - no .default-release/.default profile in $root"
+            continue
+        fi
+        for p in "${profs[@]}"; do
+            found_any=1
+            copy_file "$ff_src/user.js"               "$p/user.js"
+            copy_file "$ff_src/containers.json"       "$p/containers.json"
+            copy_file "$ff_src/chrome/userChrome.css" "$p/chrome/userChrome.css"
+        done
+    done
+    if [[ "$ff_src/policies.json" && -f "$ff_src/policies.json" ]]; then
+        dim "note: policies.json under Program Files\\<browser>\\distribution\\ needs admin - run apply_configs.ps1 elevated to install it"
+    fi
+    (( found_any )) || dim "skip - no Firefox/Floorp profile dir under %APPDATA% (run the browser once first)"
+fi
+
+cyan 'done'
+echo "Windows user: $WIN_USER"

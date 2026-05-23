@@ -78,14 +78,8 @@ function Copy-ConfigDir($src, $dst, [string[]]$Exclude = @()) {
 
 # --- Windows-only configs --------------------------------------------------
 Write-Step 'Windows Terminal settings.json'
-$wtPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbce\LocalState\settings.json'
+$wtPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
 Copy-Config (Join-Path $WinCfg 'terminal\settings.json') $wtPath
-
-Write-Step 'WezTerm config'
-# WezTerm looks for ~/.wezterm.lua and ~/.config/wezterm/wezterm.lua;
-# we use the latter so it sits next to starship.toml under ~/.config.
-$wezPath = Join-Path $env:USERPROFILE '.config\wezterm\wezterm.lua'
-Copy-Config (Join-Path $WinCfg 'wezterm\wezterm.lua') $wezPath
 
 Write-Step 'PowerShell profile'
 Copy-Config (Join-Path $WinCfg 'powershell\Microsoft.PowerShell_profile.ps1') $PROFILE
@@ -124,6 +118,116 @@ Copy-Config (Join-Path $XConfig 'starship.toml') (Join-Path $env:USERPROFILE '.c
 
 Write-Step 'lazygit config'
 Copy-Config (Join-Path $XConfig 'jesseduffield\lazygit\config.yml') (Join-Path $env:APPDATA 'lazygit\config.yml')
+
+# --- Firefox / Floorp ------------------------------------------------------
+# Two layers:
+#   1. policies.json -> <install>\distribution\policies.json. Locks GPU prefs
+#      (gfx.webrender.*, media.hardware-video-decoding.force-enabled,
+#      media.wmf.dxva/hevc, etc.) as enforced defaults. Needs admin; warn and
+#      continue if not, because the per-profile copy in step 2 is the fallback.
+#   2. user.js + chrome\userChrome.css + containers.json per profile under
+#      %APPDATA%\Mozilla\Firefox\Profiles\*.default-release. No admin needed.
+#      This is also the resilient layer if a corp-managed policies.json wins.
+Write-Step 'Firefox/Floorp configs'
+$ffSrc = Join-Path $XConfig 'firefox'
+if (-not (Test-Path $ffSrc)) {
+    Write-Skip "skip - $ffSrc not found"
+} else {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    $ffInstalls = @(
+        (Join-Path $env:ProgramFiles 'Mozilla Firefox'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Mozilla Firefox'),
+        (Join-Path $env:ProgramFiles 'Ablaze Floorp'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Ablaze Floorp')
+    ) | Where-Object { Test-Path $_ }
+
+    $policySrc      = Join-Path $ffSrc 'policies.json'
+    $vdiOverlaySrc  = Join-Path $ffSrc 'policies.vdi.json'
+
+    # VDI detection: Hyper-V / Hypervisor guest with no real GPU adapter visible.
+    # Real GPUs (NVIDIA / AMD / Intel / GPU-PV passthrough) report a vendor name in
+    # Win32_VideoController.Name. Hyper-V guests without passthrough only show
+    # 'Microsoft Hyper-V Video' and 'Microsoft Remote Display Adapter' (RDP IDD).
+    $isVdi = $false
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $isVm = $cs.HypervisorPresent -or ($cs.Model -eq 'Virtual Machine')
+        $vcs = @(Get-CimInstance Win32_VideoController -ErrorAction Stop)
+        $hasRealGpu = @($vcs | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel\(R\)|GeForce|Quadro|Tesla|Arc' }).Count -gt 0
+        $isVdi = $isVm -and -not $hasRealGpu
+    } catch {
+        Write-Skip "VDI detection failed ($($_.Exception.Message)) - assuming non-VDI"
+    }
+
+    # Build the policies.json to deploy. On VDI, merge policies.vdi.json into the
+    # base policies.json's Preferences block. The overlay carries CPU-saving prefs
+    # (capped frame rate, AV1 off, fewer content processes) that are net losses
+    # on a real-GPU machine, so we intentionally keep them out of the base file.
+    $policyDeploySrc = $policySrc
+    if ($isVdi -and (Test-Path $vdiOverlaySrc)) {
+        Write-Skip 'VDI detected (no real GPU) - merging policies.vdi.json overlay'
+        try {
+            $base    = Get-Content -Raw $policySrc     | ConvertFrom-Json
+            $overlay = Get-Content -Raw $vdiOverlaySrc | ConvertFrom-Json
+            if (-not $base.policies.PSObject.Properties['Preferences']) {
+                $base.policies | Add-Member -NotePropertyName 'Preferences' -NotePropertyValue ([PSCustomObject]@{})
+            }
+            foreach ($p in $overlay.policies.Preferences.PSObject.Properties) {
+                $base.policies.Preferences | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+            }
+            $policyDeploySrc = Join-Path $env:TEMP 'policies.merged.json'
+            $base | ConvertTo-Json -Depth 10 | Set-Content -Path $policyDeploySrc -Encoding ASCII
+            Write-Skip "merged -> $policyDeploySrc"
+        } catch {
+            Write-Warning "policies.vdi.json merge failed ($($_.Exception.Message)) - falling back to base policies.json"
+            $policyDeploySrc = $policySrc
+        }
+    } elseif ($isVdi) {
+        Write-Skip 'VDI detected but no policies.vdi.json overlay present - using base policies.json'
+    }
+
+    if (-not $ffInstalls) {
+        Write-Skip 'skip - no Firefox/Floorp install found under Program Files'
+    }
+    foreach ($install in $ffInstalls) {
+        $distDir = Join-Path $install 'distribution'
+        $distDst = Join-Path $distDir 'policies.json'
+        if (-not $isAdmin) {
+            Write-Warning "policies.json: skipping $distDst - run apply_configs.ps1 from an elevated shell to install enforced GPU prefs"
+            continue
+        }
+        if (-not (Test-Path $distDir)) {
+            New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+        }
+        Copy-Item -Path $policyDeploySrc -Destination $distDst -Force
+        Write-Skip "copied -> $distDst"
+    }
+
+    $profileRoots = @(
+        (Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles'),
+        (Join-Path $env:APPDATA 'Floorp\Profiles')
+    ) | Where-Object { Test-Path $_ }
+
+    if (-not $profileRoots) {
+        Write-Skip 'skip - no Firefox/Floorp profile dir under %APPDATA% (run the browser once first)'
+    }
+    foreach ($root in $profileRoots) {
+        $profiles = @(Get-ChildItem -Path $root -Directory -Filter '*.default-release' -ErrorAction SilentlyContinue)
+        if (-not $profiles) {
+            $profiles = @(Get-ChildItem -Path $root -Directory -Filter '*.default' -ErrorAction SilentlyContinue)
+        }
+        if (-not $profiles) {
+            Write-Skip "skip - no .default-release/.default profile in $root"
+            continue
+        }
+        foreach ($p in $profiles) {
+            Copy-Config (Join-Path $ffSrc 'user.js')               (Join-Path $p.FullName 'user.js')
+            Copy-Config (Join-Path $ffSrc 'containers.json')       (Join-Path $p.FullName 'containers.json')
+            Copy-Config (Join-Path $ffSrc 'chrome\userChrome.css') (Join-Path $p.FullName 'chrome\userChrome.css')
+        }
+    }
+}
 
 # --- Notes sync (Forgejo primary + MQTT/ntfy fan-out) ----------------------
 Write-Step 'notes sync (~/.notes)'

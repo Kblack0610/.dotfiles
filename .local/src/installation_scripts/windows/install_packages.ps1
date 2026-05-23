@@ -48,53 +48,6 @@ function Install-Pkg {
     }
 }
 
-function Install-NerdFontHack {
-    # User-scope install of Hack Nerd Font straight from the upstream release.
-    # We don't go through winget for this — the Nerd Font winget IDs have been
-    # unreliable on the locked-down VDI (silent failures on JetBrainsMono).
-    # Installing under %LOCALAPPDATA%\Microsoft\Windows\Fonts + HKCU registry
-    # needs no admin.
-    $url      = 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Hack.zip'
-    $fontDir  = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
-    $regPath  = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
-    $marker   = Join-Path $fontDir 'HackNerdFont-Regular.ttf'
-
-    Write-Step 'Hack Nerd Font (user-scope, direct from Nerd Fonts release)'
-    if (Test-Path $marker) {
-        Write-Skip 'already installed'
-        return
-    }
-
-    if (-not (Test-Path $fontDir)) { New-Item -ItemType Directory -Path $fontDir -Force | Out-Null }
-    if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-
-    $tmpZip = Join-Path ([System.IO.Path]::GetTempPath()) 'Hack-NerdFont.zip'
-    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) 'Hack-NerdFont'
-
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $tmpZip -UseBasicParsing
-        if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
-        Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
-
-        # The release zip contains both .ttf and .otf; the windowed/mono variants
-        # are duplicates we don't need. Take the non-Windows-Compatible Regular/
-        # Bold/Italic/BoldItalic .ttf set — that's what WezTerm targets.
-        Get-ChildItem -Path $tmpDir -Filter 'HackNerdFont-*.ttf' -File | ForEach-Object {
-            $dst = Join-Path $fontDir $_.Name
-            Copy-Item -Path $_.FullName -Destination $dst -Force
-            # Registry name convention Windows uses: "<Face Name> (TrueType)"
-            $face = $_.BaseName -replace '-', ' '
-            New-ItemProperty -Path $regPath -Name "$face (TrueType)" -PropertyType String -Value $dst -Force | Out-Null
-        }
-        Write-Skip "installed -> $fontDir"
-    } catch {
-        Write-Warning "Hack Nerd Font install failed: $_ (carry on — WezTerm will fall back to whatever's already present)"
-    } finally {
-        Remove-Item $tmpZip -ErrorAction SilentlyContinue
-        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 # --- 1. winget packages ----------------------------------------------------
 # Two tiers:
 #   Minimal  — Windows-only desktop tooling (WM, bar, launcher, font).
@@ -105,7 +58,6 @@ function Install-NerdFontHack {
 # Order matters for both lists: deps before dependents, prompt after shells.
 $MinimalPackages = @(
     'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
-    'wez.wezterm',                    # secondary terminal: closer match to .config/kitty/* (Lua config)
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Microsoft.PowerToys',            # PowerToys Run = dmenu equivalent (Alt+D)
@@ -151,8 +103,6 @@ $Packages = if ($Full) {
     $MinimalPackages
 }
 foreach ($p in $Packages) { Install-Pkg $p }
-
-Install-NerdFontHack
 
 # Refresh PATH for this session so freshly-installed binaries are findable.
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
