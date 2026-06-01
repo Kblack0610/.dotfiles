@@ -124,5 +124,5 @@ test_notifications.sh
 
 .gemini/
 
-# Agent runtime state (sync logs)
-.agent/.sync/sync.log
+# Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
+.agent/
