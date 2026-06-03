@@ -891,6 +891,19 @@
       ],
       "enabled": true,
       "environment": {}
+    },
+    "vikunja": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@democratize-technology/vikunja-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
+        "VIKUNJA_API_TOKEN": "${VIKUNJA_MCP_TOKEN}"
+      }
     }
   }
 }
