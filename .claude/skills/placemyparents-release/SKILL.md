@@ -166,6 +166,24 @@ curl -s https://api.placemyparents.com/api/v1/health | jq .
 node scripts/verify-play-release.mjs com.kblack0610.placemyparents internal <versionCode>
 ```
 
+## Step 7 — Promote Android to the PUBLIC (production) track
+
+**The mobile tag only ships to the `internal` track. It does NOT update the public app.** Skipping this step is what left PlaceMyParents stuck on internal with nothing public since April — internal stays green while the public app silently falls behind. This step is the actual "Android shipped to users" gate.
+
+```bash
+# 1. Promote the just-released versionCode internal → production (no rebuild).
+#    rollout=1.0 = full; rollout=0.2 = staged 20%. version_code blank = latest on INTERNAL track
+#    (Play state is source of truth, NOT app.json — app.json drifts from the real built AAB).
+gh workflow run mobile-promote-android.yml -f app=placemyparents -f track=production -f rollout=1.0
+gh run watch "$(gh run list --workflow=mobile-promote-android.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+# 2. Confirm the PUBLIC track is live (source of truth — not the internal check above):
+node scripts/verify-play-release.mjs com.kblack0610.placemyparents production <versionCode>
+#    OK => versionCode N on track 'production' has status 'completed'
+```
+
+If Play **Managed publishing** is on, the promote stages the release and a human must click Publish in Play Console → Publishing overview. The weekly `mobile-release-drift.yml` cron is the backstop: it goes red (and opens an issue) whenever production is behind the latest built versionCode.
+
 ## Recipes
 
 ```bash

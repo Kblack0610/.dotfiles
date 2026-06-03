@@ -26,3 +26,5 @@
 	insteadOf = git@bitbucket.org:
 [url "ssh://git@bitbucket-nova/"]
 	insteadOf = ssh://git@bitbucket.org/
+[credential "https://git.kblab.me"]
+	helper = store

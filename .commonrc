@@ -247,3 +247,8 @@ if grep -qiE 'wsl|microsoft' /proc/version 2>/dev/null \
     wsl-screenshot-cli start --daemon >/dev/null 2>&1
 fi
 
+# --- VDI Kiosk (Chromium with navigator.keyboard.lock support) ---
+# Usage: VDI_URL=https://your-vdi.example.com vdi
+# Isolated profile so it doesn't share cookies/extensions with main Chromium.
+alias vdi='chromium --user-data-dir="$HOME/.local/share/vdi-chromium-profile" --app="${VDI_URL:-about:blank}" --start-fullscreen'
+

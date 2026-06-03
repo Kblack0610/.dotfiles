@@ -126,6 +126,10 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `notes-system` — `~/.notes` journal (do not hand-write entries into `~/.notes/journal/`)
 - `mem0-ops` — cross-project, cross-tool long-term memory at `mem0.kblab.me`
 
+**Research**
+- `deep-research` — multi-agent web research (broad/contested questions) with an adversarial verify pass
+- `deep-research-code` — multi-agent investigation of YOUR OWN systems (code + live infra/tools + web) with a live-verify pass; use for "what'll it take to get X to prod", "why does Y keep failing", "is Z actually fixed", pipeline audits
+
 **Workstreams**
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
 - `placemyparents-release` — production release runbook for placemyparents
