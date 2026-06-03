@@ -7,12 +7,12 @@ Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box
 The default invocation is **configs-only** — it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
 
 - **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
-- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
+- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, Flow Launcher, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
 - **WSL2 Arch** (`-Install`): primary dev environment, runs `linux/install_arch.sh` from inside the WSL distro. Full parity with the Linux dotfiles.
 - **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
 - **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
-- **PowerToys Run** — dmenu equivalent. `Alt+D` opens a fuzzy launcher; running an app that's already open focuses the existing window instead of launching a duplicate (covers the "two Teams instances" footgun).
+- **Flow Launcher** — dmenu equivalent. `Alt+D` opens a fuzzy launcher (hotkey pinned via `.config/windows/flow-launcher/Settings.json`). Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
 - **`.wslconfig`** — caps WSL at 4 GB RAM so the 8 GB VDI doesn't thrash.
 
@@ -73,13 +73,28 @@ When WSL2 is enabled, re-run with `-Install` (drop `-SkipWsl`) to provision Arch
 |------|--------|--------------|--------------|
 | 1 | `sync_dotfiles.ps1` | `winget install Git.Git` if missing, then clone or `git pull --ff-only` the repo into `%USERPROFILE%\.dotfiles`. | always |
 | 2 | `install_packages.ps1` | `winget install` each ID below, then `wsl --install -d archlinux --no-launch` (skipped with `-SkipWsl`). | only with `-Install` |
-| 3 | `apply_configs.ps1` | Copy configs into their Windows-native homes (see table below), then bootstrap WSL Arch (only when `-Install` is set). | always; the WSL-bootstrap sub-step only runs with `-Install` |
+| 3 | **WSL present**: `.local/bin/apply-windows-configs` (bash, via `wsl -- bash -lc ...`). **WSL absent**: `apply_configs.ps1` (PS1 fallback). Both deploy the same configs. | always |
+| 3b | `apply_configs.ps1 -WslBootstrapOnly` | Only when `-Install` AND WSL is present: clones the dotfiles inside Arch and runs `stow`. Skips the hard-blocked config-copy section. | only with `-Install` and WSL present |
+
+### Config-application policy (HARD-BLOCKED on WSL machines)
+
+`apply_configs.ps1`'s **config-copy** section refuses to run if any WSL distro is installed -- it `throw`s with a pointer to the bin script. No `-Force`, no escape hatch. Rationale: copying WSL -> `/mnt/c` via the WSL kernel is materially faster than robocopy through `\\wsl$`, and the bash script is the one we actually iterate on. The PS1 path exists only for day-1 / no-WSL machines.
+
+Canonical workflow once WSL is up:
+```bash
+# From inside WSL Arch
+apply-windows-configs              # auto-detects Windows username
+apply-windows-configs --dry-run    # preview without writing
+apply-windows-configs --win-user keblack  # explicit override
+```
+
+`bootstrap.ps1` does this routing for you: when it sees a WSL distro, step 3 dispatches to the bin script via `wsl -- bash -lc 'apply-windows-configs ...'`. The WSL-Arch first-run (clone + stow inside Arch, only on `-Install`) is *not* a config script and still runs from PS1 via `apply_configs.ps1 -WslBootstrapOnly`.
 
 ### Packages (step 2)
 
 Two tiers — minimal is the default when `-Install` is passed.
 
-**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
+**Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Flow-Launcher.Flow-Launcher`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
 
 **Full (`-Install -Full`):** the minimal set plus `GitHub.cli`, `Docker.DockerCLI`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `PostgreSQL.PostgreSQL.17`.
 
@@ -148,7 +163,7 @@ wsl --list --verbose        # archlinux, state Running, version 2
 
 The starship prompt should render automatically. All of `nvim`, `rg`, `fzf`, `lazygit`, `starship`, `gh`, `node` resolve directly in PowerShell.
 
-GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config; `Alt+D` opens PowerToys Run (dmenu equivalent).
+GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config; `Alt+D` opens Flow Launcher (dmenu equivalent).
 
 Windows taskbar position is a Windows setting (*Settings → Personalization → Taskbar → Taskbar behaviors → Taskbar alignment*) — GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
 

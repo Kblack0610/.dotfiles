@@ -11,6 +11,7 @@ Canonical Codex assets live under `.config/codex/`. Shared cross-agent Rulesync 
 - Do not mark work complete without verification that matches the change.
 - Prefer elegant fixes over additive hacks, but do not over-engineer simple changes.
 - After a user correction, capture the lesson in `~/.agent/lessons/{project}.md`.
+- **Windows config applier (HARD RULE):** when running inside WSL, always use `.local/bin/apply-windows-configs` to push dotfiles to Windows-side destinations. Do **not** invoke `.local/src/installation_scripts/windows/apply_configs.ps1` unless (a) WSL is genuinely unavailable, or (b) the change needs admin (Firefox `policies.json` under `Program Files\<browser>\distribution\`). Why: WSL -> `/mnt/c` is faster than the `\\wsl$` SMB bridge and keeps the user in the working shell. When adding a new source -> destination pair, mirror it in both scripts so they stay in lock-step.
 
 ## Plan workflow
 

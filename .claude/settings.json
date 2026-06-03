@@ -6,15 +6,10 @@
     "DISABLE_ERROR_REPORTING": "1",
     "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"
   },
-  "additionalDirectories": [
-    "/root/.agent",
-    "/root/.claude",
-    "/root/.notes",
-    "/root/.lab",
-    "/root/.config",
-    "/mnt/c/Users/keblack",
-    "/tmp"
-  ],
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {
     "allow": [
       "Bash",
@@ -101,10 +96,7 @@
       "Write(**/.env.*)"
     ]
   },
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
+  "model": "claude-opus-4-8",
   "hooks": {
     "PreToolUse": [
       {
@@ -154,5 +146,15 @@
     "clangd-lsp@claude-plugins-official": true
   },
   "effortLevel": "high",
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "additionalDirectories": [
+    "/root/.dotfiles",
+    "/root/.agent",
+    "/root/.claude",
+    "/root/.notes",
+    "/root/.lab",
+    "/root/.config",
+    "/mnt/c/Users/keblack",
+    "/tmp"
+  ]
 }

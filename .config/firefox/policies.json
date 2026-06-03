@@ -16,6 +16,15 @@
         "installation_mode": "normal_installed",
         "install_url": "https://addons.mozilla.org/firefox/downloads/latest/multi-account-containers/latest.xpi"
       }
+    },
+    "Preferences": {
+      "gfx.webrender.all":                          { "Value": true,  "Status": "locked" },
+      "gfx.webrender.compositor":                   { "Value": true,  "Status": "locked" },
+      "media.hardware-video-decoding.force-enabled":{ "Value": true,  "Status": "locked" },
+      "media.ffmpeg.vaapi.enabled":                 { "Value": true,  "Status": "locked" },
+      "widget.dmabuf.force-enabled":                { "Value": true,  "Status": "locked" },
+      "media.wmf.dxva.enabled":                     { "Value": true,  "Status": "locked" },
+      "media.wmf.hevc.enabled":                     { "Value": true,  "Status": "locked" }
     }
   }
 }

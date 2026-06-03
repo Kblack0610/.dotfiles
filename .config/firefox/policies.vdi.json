@@ -1,0 +1,12 @@
+{
+  "_comment": "VDI-only overlay. apply_configs.ps1 deep-merges this file's policies.Preferences into the base policies.json when it detects a Hyper-V VM with no real GPU (only Hyper-V Video / RDP Indirect Display / Basic Render Driver adapters). On a real-GPU machine these prefs are net losses (capped fps, software compositor preferred over real GPU, AV1 disabled), so this overlay is intentionally NOT applied unconditionally. See .local/src/installation_scripts/windows/README.md (Firefox section) for the GPU-offload investigation that motivated this split.",
+  "policies": {
+    "Preferences": {
+      "layout.frame_rate":             { "Value": 30,    "Status": "locked" },
+      "image.animation_mode":          { "Value": "once","Status": "locked" },
+      "media.av1.enabled":             { "Value": false, "Status": "locked" },
+      "dom.ipc.processCount":          { "Value": 4,     "Status": "locked" },
+      "gfx.webrender.software.opengl": { "Value": true,  "Status": "locked" }
+    }
+  }
+}

@@ -1,6 +1,20 @@
 # apply_configs.ps1 - copy dotfiles configs into their Windows-native locations.
 # Module 3 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
+# !!! DO NOT USE WHEN WSL IS INSTALLED !!!
+# This script is a LAST-RESORT fallback for day-1 / no-WSL machines.
+# The canonical config applier is the WSL bin script:
+#
+#     /root/.dotfiles/.local/bin/apply-windows-configs        # invoke from WSL
+#
+# Rationale: copying WSL -> /mnt/c via the WSL kernel is materially faster
+# than robocopy through \\wsl$, and the bash script is what we actually
+# iterate on. This PS1 will HARD ERROR if it detects any installed WSL
+# distro -- no -Force escape hatch. If you genuinely need to bypass (e.g.
+# WSL is uninstalled and you cannot reinstall it right now), use the bin
+# script from inside any Linux box that can mount the Windows profile, or
+# manually `Copy-Item` the file you care about.
+#
 # Parameters:
 #   -SkipWsl   Skip the WSL Arch first-run + Linux installer step.
 #
@@ -17,10 +31,55 @@
 
 [CmdletBinding()]
 param(
-    [switch]$SkipWsl
+    [switch]$SkipWsl,
+    # When set, skip the config-copy section entirely (it's been hard-blocked
+    # by the WSL-detection guard below). Only the WSL Arch first-run +
+    # dotfiles clone + stow step at the bottom runs. Used by bootstrap.ps1
+    # when WSL is detected, so the bin script handles config copies but we
+    # still do the Arch-side provisioning that has no bin-script equivalent.
+    [switch]$WslBootstrapOnly
 )
 
 $ErrorActionPreference = 'Stop'
+
+# --- HARD BLOCK: refuse to run if any WSL distro is installed -------------
+# Use the WSL bin script (.local/bin/apply-windows-configs) instead.
+function Test-WslInstalled {
+    # `wsl.exe` is shipped with Windows even without WSL enabled; presence
+    # alone doesn't mean a distro exists. Probe `wsl -l -q` and treat any
+    # non-empty distro list as "WSL is in use here".
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        # WSL emits UTF-16LE; redirect stderr to null since errors here are
+        # not actionable (we only care about the distro list itself).
+        $raw = & wsl.exe -l -q 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $distros = ($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+        return ($distros.Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+if ((Test-WslInstalled) -and -not $WslBootstrapOnly) {
+    throw @"
+apply_configs.ps1 config-copy is BLOCKED on this machine because WSL is installed.
+
+Use the canonical WSL bin script instead:
+
+    wsl -d <distro> -- ~/.dotfiles/.local/bin/apply-windows-configs
+
+Or from inside the WSL shell:
+
+    apply-windows-configs              # auto-detects Windows username
+    apply-windows-configs --dry-run    # preview
+
+The PS1 config-copy path is a last-resort fallback for no-WSL machines.
+(If you genuinely need only the WSL Arch first-run + stow step, pass
+-WslBootstrapOnly; bootstrap.ps1 already does this when -Install is run
+on a WSL machine.) See the file header for rationale.
+"@
+}
 
 $DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
 $WinCfg      = Join-Path $DotfilesDir '.config\windows'
@@ -76,6 +135,8 @@ function Copy-ConfigDir($src, $dst, [string[]]$Exclude = @()) {
     Write-Skip "copied -> $dst"
 }
 
+if (-not $WslBootstrapOnly) {
+
 # --- Windows-only configs --------------------------------------------------
 Write-Step 'Windows Terminal settings.json'
 $wtPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
@@ -100,6 +161,13 @@ Write-Step 'Zebar minimal pack'
 # packs from %AppData%\zebar\downloads\.
 $zebarPackPath = Join-Path $env:USERPROFILE '.glzr\zebar\kblack-minimal'
 Copy-ConfigDir (Join-Path $WinCfg 'zebar\kblack-minimal') $zebarPackPath
+
+Write-Step 'Flow Launcher settings (Hotkey: Alt+D)'
+# Flow rewrites this file with full defaults on first save, so shipping just
+# the Hotkey pin is enough -- Flow merges defaults around it. If Flow is
+# running, the file is locked; restart Flow afterward to pick up the change.
+$flowPath = Join-Path $env:APPDATA 'FlowLauncher\Settings\Settings.json'
+Copy-Config (Join-Path $WinCfg 'flow-launcher\Settings.json') $flowPath
 
 Write-Step '.wslconfig'
 Copy-Config (Join-Path $WinCfg 'wsl\.wslconfig') (Join-Path $env:USERPROFILE '.wslconfig')
@@ -246,7 +314,12 @@ if (Test-Path $notesSetup) {
     Write-Skip "skip - $notesSetup not found"
 }
 
+}  # end: if (-not $WslBootstrapOnly)
+
 # --- WSL Arch first-run + Linux installer ----------------------------------
+# Runs unconditionally (modulo -SkipWsl). This is a Windows-side action that
+# uses wsl.exe as a tool to clone the dotfiles repo into Arch and run stow.
+# Not a "config script" -- the hard-block above does NOT cover this section.
 if ($SkipWsl) {
     Write-Step 'Linux installer inside WSL - skipped (-SkipWsl)'
     return

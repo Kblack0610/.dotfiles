@@ -21,6 +21,20 @@ return {
       "theHamsta/nvim-dap-virtual-text", -- Inline variable text
       "nvim-neotest/nvim-nio", -- Dependency for dap-ui
     },
+    keys = {
+      { "<leader>da", desc = "Start/Continue Debugging" },
+      { "<leader>dO", desc = "Step Over" },
+      { "<leader>di", desc = "Step Into" },
+      { "<leader>do", desc = "Step Out" },
+      { "<leader>db", desc = "Toggle Breakpoint" },
+      { "<leader>dB", desc = "Set Breakpoint Condition" },
+      { "<leader>dt", desc = "Terminate" },
+      { "<leader>du", desc = "Toggle DAP UI" },
+    },
+    cmd = {
+      "DapContinue", "DapToggleBreakpoint", "DapStepOver", "DapStepInto",
+      "DapStepOut", "DapTerminate", "DapRestart",
+    },
     config = function()
       local dap = require "dap"
       local dapui = require "dapui"

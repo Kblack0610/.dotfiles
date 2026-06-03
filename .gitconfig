@@ -8,7 +8,7 @@
 [includeIf "gitdir:~/dev/"]
 	path = ~/.gitconfig-work
 [credential]
-	helper = osxkeychain
+	helper = store
 [filter "lfs"]
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f

@@ -44,7 +44,10 @@ window_rules:
       - window_process: { equals: "msrdc" }
       - window_process: { equals: "ApplicationFrameHost" }
       - window_class: { regex: ".*Microsoft\\.AAD\\.BrokerPlugin.*" }
-      # PowerToys Run is a floating launcher popup, not a tileable window.
+      # Flow Launcher (launcher popup bound to Alt+D, see flow-launcher
+      # Settings.json) and PowerToys (FancyZones, Keyboard Manager) are
+      # floating overlays, not tileable windows.
+      - window_process: { equals: "Flow.Launcher" }
       - window_process: { equals: "PowerToys" }
       - window_class: { regex: "HwndWrapper.*PowerToys.*" }
 
@@ -78,10 +81,6 @@ binding_modes:
         bindings: ["escape", "enter"]
 
 keybindings:
-  # Spawn terminal — Windows Terminal opening WSL Debian by default
-  - commands: ["shell-exec wt.exe"]
-    bindings: ["alt+enter"]
-
   # Launchers
   - commands: ["shell-exec explorer.exe"]
     bindings: ["alt+e"]
@@ -96,7 +95,7 @@ keybindings:
   # clipboard automatically but not image/png; snip-to-wsl.ps1 forces it.
   # Requires `wl-clipboard` inside the Arch distro.
   - commands: ["shell-exec powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File %userprofile%/.dotfiles/.config/windows/scripts/snip-to-wsl.ps1"]
-    bindings: ["alt+s"]
+    bindings: ["alt+g"]
 
   # Close focused
   - commands: ["close"]
