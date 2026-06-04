@@ -184,6 +184,40 @@ node scripts/verify-play-release.mjs com.kblack0610.placemyparents production <v
 
 If Play **Managed publishing** is on, the promote stages the release and a human must click Publish in Play Console → Publishing overview. The weekly `mobile-release-drift.yml` cron is the backstop: it goes red (and opens an issue) whenever production is behind the latest built versionCode.
 
+## Step 8 — Vikunja release coordination ticket
+
+The `platform / Release Management` epic (project id 29) holds one coordination ticket per release.
+This is descriptive (release-narrative artifact); it never gates the deploy.
+
+After the deploy workflow is green:
+
+```bash
+# Collect shipped PR numbers since last tag
+LAST_TAG=$(git -C ~/dev/bnb/platform tag --list 'placemyparents-v*' | sort -V | tail -2 | head -1)
+SHIPPED_PRS=$(git -C ~/dev/bnb/platform log "$LAST_TAG..origin/main" --merges --pretty=format:'%s' \
+  | grep -oE '#[0-9]+' | sort -u)
+```
+
+Create the coordination task via the `vikunja` MCP (`subcommand: "create"`, `projectId: 29`):
+
+- **title**: `placemyparents-v<NEW_VERSION>` (e.g. `placemyparents-v1.8.3`)
+- **description**: links to the deploy workflow run, the CHANGELOG diff anchor, and an enumerated
+  list of every shipped PR + its referenced Vikunja task id (parse the `Vikunja:` line from each
+  PR body via `gh pr view <num> --json body`).
+- Labels: `Done` (id 3), `compliance` (id 11) if HIPAA-relevant. Priority per release severity.
+- Apply `done = true` once the post-deploy verification (Step 6 + Step 7) confirms green.
+- Move to the Done bucket of the Release Management Kanban view (view id 116, done bucket id 87):
+  ```bash
+  curl -s -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"task_id": <NEW_TASK_ID>}' \
+    "https://vikunja.kblab.me/api/v1/projects/29/views/116/buckets/87/tasks"
+  ```
+
+Reasoning: the per-release coordination ticket is the queryable artifact you'd reach for in a
+quarterly review or HIPAA audit — what shipped, in which release, who fixed what. PRs scatter; the
+release ticket consolidates.
+
 ## Recipes
 
 ```bash
