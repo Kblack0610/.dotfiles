@@ -134,10 +134,13 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
 - `placemyparents-release` — production release runbook for placemyparents
 - `bnb-quality-gates` — what is/isn't enforced in the BNB platform monorepo
+- `vikunja-subtask-conform` — conform/restructure a Vikunja project's epic→story→subtask tree to the documented ticket template (BNB ticketing at vikunja.kblab.me, via the `vikunja` MCP)
+- `jira-subtask-conform` — same, for Jira epics via the Atlassian MCP (client projects)
 
 **Authoring / config**
 - `one-pager` — Problem Brief / One-pager / Pitch in `~/.lab/briefs/`
 - `update-rules` — manage AI rules across rulesync overview / project CLAUDE.md / AGENTS.md / user-global, with sync (Claude / Codex / Gemini / OpenCode)
+- `marp-slide` — Marp presentation decks with themes
 
 If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here. The canonical skills index is `ls ~/.dotfiles/.claude/skills/`; keep this list in sync with that directory (the `update-rules` skill can do the diff for you).
 
