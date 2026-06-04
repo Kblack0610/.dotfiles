@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""notes-to-vikunja — capture project tasks from today's daily note into Vikunja.
+
+Sync rules (one-directional, notes -> Vikunja):
+  - `- [ ] <project>: title`  or  `- [ ] title #<project>`  -> that Vikunja project
+  - `- [ ] title @vk`                                        -> the Inbox project
+  - everything else stays notes-only.
+
+<project> must match an existing (non-archived) Vikunja project title, or an
+alias from PROJECT_ALIASES. Unknown names are logged and skipped — projects are
+never auto-created.
+
+Dedup lives in ~/.local/state/notes-vikunja/synced.tsv, keyed on the same
+normalised task key the notes CLI uses (notes-cli/src/md.rs task_key), so the
+daily carry-forward re-stamping never creates duplicates. A previously synced
+task seen checked (- [x]) is marked done in Vikunja once. There is NO
+write-back into the note: stamp_line() rebuilds everything after the first
+`<!--` each day and would clobber any marker we left.
+
+Config (env, see ~/.config/notes-vikunja.env for the systemd timer):
+  VIKUNJA_URL             API base (default https://vikunja.kblab.me/api/v1)
+  VIKUNJA_API_TOKEN       tk_* token; falls back to VIKUNJA_MCP_TOKEN
+  PROJECT_ALIASES         e.g. pmp=placemyparents,bnb=platform
+  VIKUNJA_INBOX_PROJECT   project for @vk captures (default Inbox)
+  VIKUNJA_CAPTURE_LABEL   label applied to captures (default from-notes)
+  NOTES_DIR               default ~/.notes
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import date
+from pathlib import Path
+
+HOME = Path.home()
+NOTES_DIR = Path(os.environ.get("NOTES_DIR", HOME / ".notes"))
+STATE_DIR = Path(os.environ.get("NOTES_VIKUNJA_STATE_DIR", HOME / ".local/state/notes-vikunja"))
+STATE_FILE = STATE_DIR / "synced.tsv"
+LOG_FILE = STATE_DIR / "sync.log"
+API_URL = os.environ.get("VIKUNJA_URL", "https://vikunja.kblab.me/api/v1").rstrip("/")
+TOKEN = os.environ.get("VIKUNJA_API_TOKEN") or os.environ.get("VIKUNJA_MCP_TOKEN") or ""
+INBOX_TITLE = os.environ.get("VIKUNJA_INBOX_PROJECT", "Inbox")
+LABEL_TITLE = os.environ.get("VIKUNJA_CAPTURE_LABEL", "from-notes")
+WRITE_DELAY = 0.25  # stay far under Vikunja's 60 req/min
+
+
+def log(msg: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line)
+    # rotate at 1MB, keep the tail — same policy as git-sync-notes.sh
+    if LOG_FILE.exists() and LOG_FILE.stat().st_size > 1_048_576:
+        LOG_FILE.write_text("\n".join(LOG_FILE.read_text().splitlines()[-1000:]) + "\n")
+    with LOG_FILE.open("a") as f:
+        f.write(line + "\n")
+
+
+# --- task-line parsing (mirrors notes-cli/src/md.rs; keep in sync) -----------
+
+def is_task(line: str) -> bool:
+    return line.lstrip().startswith("- [")
+
+
+def is_checked(line: str) -> bool:
+    t = line.lstrip()
+    return t.startswith("- [x]") or t.startswith("- [X]")
+
+
+def strip_trailing_day(s: str) -> str:
+    return re.sub(r" \(\d+d\)$", "", s.rstrip())
+
+
+def find_since(line: str):
+    m = re.search(r"since:(\d{4}-\d{2}-\d{2})", line)
+    return m.group(1) if m else None
+
+
+def core_text(line: str) -> str:
+    """Task text minus checkbox, trailing comment and (Nd) day-count. Keeps case."""
+    t = line.strip()
+    i = t.find("<!--")
+    if i != -1:
+        t = t[:i].rstrip()
+    t = strip_trailing_day(t).strip()
+    for p in ("- [ ]", "- [x]", "- [X]"):
+        if t.startswith(p):
+            t = t[len(p):]
+            break
+    return t.strip()
+
+
+def task_key(line: str) -> str:
+    """Normalised dedup key — must match md.rs task_key()."""
+    return core_text(line).lower()
+
+
+# --- Vikunja API --------------------------------------------------------------
+
+def api(method: str, path: str, body=None):
+    req = urllib.request.Request(
+        f"{API_URL}{path}",
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+
+def paged(path: str):
+    out, page = [], 1
+    while True:
+        batch = api("GET", f"{path}?page={page}&per_page=50") or []
+        out.extend(batch)
+        if len(batch) < 50:
+            return out
+        page += 1
+
+
+def ensure_label() -> int:
+    for l in paged("/labels"):
+        if l["title"].strip().lower() == LABEL_TITLE.lower():
+            return l["id"]
+    created = api("PUT", "/labels", {"title": LABEL_TITLE, "hex_color": "0d9488"})
+    log(f"created label '{LABEL_TITLE}' (id {created['id']})")
+    return created["id"]
+
+
+def create_task(project_id: int, title: str, since, label_id: int) -> int:
+    body = {"title": title}
+    if since:
+        body["description"] = f"Captured from notes (since {since})."
+    t = api("PUT", f"/projects/{project_id}/tasks", body)
+    api("PUT", f"/tasks/{t['id']}/labels", {"label_id": label_id})
+    return t["id"]
+
+
+def mark_done(task_id: int) -> None:
+    # GET-modify-POST: Vikunja's update replaces fields, so send the full task.
+    t = api("GET", f"/tasks/{task_id}")
+    if not t.get("done"):
+        t["done"] = True
+        api("POST", f"/tasks/{task_id}", t)
+
+
+# --- routing ------------------------------------------------------------------
+
+def parse_aliases() -> dict:
+    out = {}
+    for pair in os.environ.get("PROJECT_ALIASES", "").split(","):
+        if "=" in pair:
+            a, t = pair.split("=", 1)
+            out[a.strip().lower()] = t.strip().lower()
+    return out
+
+
+def build_matchers(projects: list) -> dict:
+    m = {}
+    for p in projects:
+        if not p.get("is_archived"):
+            m[p["title"].strip().lower()] = p["id"]
+    for alias, title in parse_aliases().items():
+        if title in m:
+            m[alias] = m[title]
+    return m
+
+
+def route(line: str, matchers: dict, inbox_id):
+    """Return (project_id, clean_title, route_name) or (None, reason, None)."""
+    text = core_text(line)
+    if not text:
+        return None, None, None
+    # 1. leading `<project>:` prefix
+    m = re.match(r"^([^:#@]+?):\s+(.+)$", text)
+    if m:
+        name = m.group(1).strip().lower()
+        if name in matchers:
+            return matchers[name], m.group(2).strip(), name
+    # 2. `#<project>` hashtag
+    for tag in re.findall(r"#([\w-]+)", text):
+        if tag.lower() in matchers:
+            title = re.sub(rf"\s*#{re.escape(tag)}\b", "", text).strip()
+            return matchers[tag.lower()], title, tag.lower()
+    # 3. `@vk` opt-in capture -> Inbox
+    if re.search(r"@vk\b", text):
+        title = re.sub(r"\s*@vk\b", "", text).strip()
+        if inbox_id is None:
+            return None, f"@vk tagged but no '{INBOX_TITLE}' project exists", None
+        return inbox_id, title, INBOX_TITLE.lower()
+    return None, None, None
+
+
+# --- state --------------------------------------------------------------------
+
+def load_state() -> dict:
+    state = {}
+    if STATE_FILE.exists():
+        for raw in STATE_FILE.read_text().splitlines():
+            parts = raw.split("\t")
+            if len(parts) >= 4:
+                state[parts[0]] = {"id": int(parts[1]), "date": parts[2], "status": parts[3]}
+    return state
+
+
+def save_state(state: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lines = [f"{k}\t{v['id']}\t{v['date']}\t{v['status']}" for k, v in sorted(state.items())]
+    STATE_FILE.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+# --- main ---------------------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Capture project-tagged tasks from a daily note into Vikunja.")
+    ap.add_argument("--dry-run", action="store_true", help="show what would sync; no writes")
+    ap.add_argument("--date", default=date.today().isoformat(), help="note date YYYY-MM-DD (default today)")
+    args = ap.parse_args()
+
+    note = NOTES_DIR / "journal" / "daily" / f"{args.date}.md"
+    if not note.exists():
+        log(f"no daily note at {note}; nothing to do")
+        return 0
+    if not TOKEN:
+        log("VIKUNJA_API_TOKEN not set; skipping (populate ~/.config/notes-vikunja.env)")
+        return 0
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock = (STATE_DIR / "lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another run holds the lock; skipping")
+        return 0
+
+    try:
+        matchers = build_matchers(paged("/projects"))
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        log(f"vikunja unreachable ({e}); skipping")
+        return 0
+    inbox_id = matchers.get(INBOX_TITLE.lower())
+
+    state = load_state()
+    creates, dones = [], []
+    for line in note.read_text().splitlines():
+        if not is_task(line):
+            continue
+        key = task_key(line)
+        if not key:
+            continue
+        known = state.get(key)
+        if known:
+            if is_checked(line) and known["status"] != "done":
+                dones.append((key, known["id"]))
+            continue
+        if is_checked(line):
+            continue  # finished before it was ever synced — not worth creating
+        project_id, title, route_name = route(line, matchers, inbox_id)
+        if project_id is None:
+            if title:  # routing problem worth surfacing (e.g. @vk with no Inbox)
+                log(f"skip: {title}: {line.strip()}")
+            continue
+        creates.append((key, project_id, title, route_name, find_since(line)))
+
+    if args.dry_run:
+        for key, pid, title, route_name, since in creates:
+            print(f"DRY would create [{route_name} -> project {pid}]: {title}")
+        for key, tid in dones:
+            print(f"DRY would mark done: task {tid} ({key})")
+        print(f"DRY: {len(creates)} create(s), {len(dones)} done-update(s)")
+        return 0
+
+    if not creates and not dones:
+        log(f"{args.date}: nothing new")
+        return 0
+
+    try:
+        label_id = ensure_label() if creates else None
+        for key, pid, title, route_name, since in creates:
+            tid = create_task(pid, title, since, label_id)
+            state[key] = {"id": tid, "date": args.date, "status": "open"}
+            log(f"created task {tid} [{route_name}]: {title}")
+            time.sleep(WRITE_DELAY)
+        for key, tid in dones:
+            mark_done(tid)
+            state[key]["status"] = "done"
+            log(f"marked done: task {tid} ({key})")
+            time.sleep(WRITE_DELAY)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        log(f"sync aborted mid-run ({e}); state saved for completed items")
+    finally:
+        save_state(state)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

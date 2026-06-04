@@ -299,3 +299,23 @@ local function link_to_daily()
 end
 
 vim.keymap.set("n", "<leader>nl", link_to_daily, { desc = "Link to daily note" })
+
+-- ============================================
+-- Make `gf` follow vault-root-relative [[wikilinks]] under ~/.notes
+-- (e.g. [[journal/backlogs/fun]], [[journal/refs/DATE/name]],
+-- [[dev/projects/.../v1.8.0.md|alias]]). No wikilink plugin is used — vanilla
+-- gf does the work: add the notes root to 'path' and '.md' to 'suffixesadd'
+-- for markdown buffers inside ~/.notes.
+-- ============================================
+vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
+  group = vim.api.nvim_create_augroup("notes_gf_wikilinks", { clear = true }),
+  pattern = "*.md",
+  callback = function(args)
+    local notes_dir = vim.fn.expand("~/.notes")
+    local fname = vim.fn.fnamemodify(args.file, ":p")
+    if fname:sub(1, #notes_dir) == notes_dir then
+      vim.opt_local.suffixesadd:prepend(".md")
+      vim.opt_local.path:append(notes_dir)
+    end
+  end,
+})

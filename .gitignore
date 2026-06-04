@@ -6,6 +6,10 @@ src/
 
 !.local/src
 .local/src/pxe-server/images
+# Rust crate uses the conventional src/ dir, which the broad `src/` rule above
+# would otherwise exclude. Track its sources (build artifacts stay ignored via
+# .local/src/notes-cli/.gitignore).
+!.local/src/notes-cli/src/
 
 .local/share/applications/*.desktop
 

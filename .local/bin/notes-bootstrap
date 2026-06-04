@@ -86,6 +86,26 @@ install_common_links() {
     link_managed_file "$DOTFILES_ROOT/.local/bin/notes-sync" "$HOME/.local/bin/notes-sync"
     link_managed_file "$DOTFILES_ROOT/.local/bin/notes-watch" "$HOME/.local/bin/notes-watch"
     copy_managed_file "$DOTFILES_ROOT/.config/notes-sync.env.example" "$HOME/.config/notes-sync.env.example"
+    link_managed_file "$DOTFILES_ROOT/.config/notes" "$HOME/.config/notes"
+    build_notes_cli
+}
+
+# Build the profile-aware journal CLI (single static binary, identical on Mac/Linux)
+# and symlink it onto PATH. Failures are non-fatal so sync setup still proceeds.
+build_notes_cli() {
+    local src="$DOTFILES_ROOT/.local/src/notes-cli"
+    if command -v cargo >/dev/null 2>&1; then
+        echo "Building notes CLI (cargo build --release)..."
+        if ( cd "$src" && cargo build --release ); then
+            link_managed_file "$src/target/release/notes" "$HOME/.local/bin/notes"
+            echo "Installed notes -> $HOME/.local/bin/notes"
+        else
+            echo "WARN: notes CLI build failed; existing binary (if any) left in place." >&2
+        fi
+    else
+        echo "WARN: cargo not found — install rustup to build the notes CLI." >&2
+        echo "      Daily-note/summarize/archive tooling needs it; the shell fallback uses journal-create." >&2
+    fi
 }
 
 is_macos() {
@@ -99,6 +119,10 @@ install_desktop_links() {
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/notes-mqtt.service" "$HOME/.config/systemd/user/notes-mqtt.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.service" "$HOME/.config/systemd/user/journal-refs-archive.service"
     copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-refs-archive.timer" "$HOME/.config/systemd/user/journal-refs-archive.timer"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-daily-summarize.service" "$HOME/.config/systemd/user/journal-daily-summarize.service"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-daily-summarize.timer" "$HOME/.config/systemd/user/journal-daily-summarize.timer"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-monthly-archive.service" "$HOME/.config/systemd/user/journal-monthly-archive.service"
+    copy_managed_file "$DOTFILES_ROOT/.config/systemd/user/journal-monthly-archive.timer" "$HOME/.config/systemd/user/journal-monthly-archive.timer"
 }
 
 install_macos_links() {
@@ -133,6 +157,10 @@ setup_systemd() {
         systemctl --user start git-sync-notes.timer
         systemctl --user enable journal-refs-archive.timer >/dev/null 2>&1 || true
         systemctl --user start journal-refs-archive.timer
+        systemctl --user enable journal-daily-summarize.timer >/dev/null 2>&1 || true
+        systemctl --user start journal-daily-summarize.timer
+        systemctl --user enable journal-monthly-archive.timer >/dev/null 2>&1 || true
+        systemctl --user start journal-monthly-archive.timer
         # notes-watch and notes-mqtt skip themselves via ConditionFileIsExecutable
         # if their underlying tools (inotify-tools / mosquitto-clients) are not
         # installed. Once the package installer runs, a `systemctl --user start`

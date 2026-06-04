@@ -137,7 +137,6 @@ workspace = 10, name:getting-weird, monitor:DP-3
 # Window rules for automatic workspace assignment
 windowrule = workspace 2 silent, ^(Alacritty)$
 windowrule = workspace 3 silent, ^(firefox)$
-windowrule = workspace 6 silent, ^(obsidian)$
 windowrule = workspace 7 silent, ^(Spotify)$
 windowrule = workspace 7 silent, ^(discord)$
 windowrule = workspace 1 silent, ^(unityhub)$

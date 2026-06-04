@@ -1,0 +1,12 @@
+[Unit]
+Description=Capture project-tagged tasks from today's daily note into Vikunja
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/notes-vikunja.env
+ExecStart=%h/.local/src/notes-vikunja/notes-to-vikunja
+
+[Install]
+WantedBy=default.target

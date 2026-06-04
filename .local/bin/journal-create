@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# journal-create: Single source of truth for daily journal note creation.
+# journal-create: DEPRECATED — superseded by the `notes` CLI (`notes today`).
+#   Source: ~/.dotfiles/.local/src/notes-cli  (profile-aware, cross-platform Rust)
+# Kept only as a fallback for machines where the `notes` binary isn't built yet
+# (see ensure_daily_note() in .commonrc). It is NOT profile-aware and still emits
+# the old inline Fun/Carry Over sections. Prefer `notes today`.
+#
 # Creates today's note with Priority/Fun carry-forward and day tracking.
 # Usage: journal-create
 

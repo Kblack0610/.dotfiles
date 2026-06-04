@@ -66,16 +66,35 @@ Thin wrapper that `exec`s `~/.local/src/git/git-sync-notes.sh`. Pulls from origi
 
 Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override.
 
+### `notes-to-vikunja`
+
+Bridge that captures **project tasks** from today's daily note into Vikunja (`vikunja.kblab.me`). One-directional: notes are the capture surface, Vikunja stays the source of truth. Script: `~/.local/src/notes-vikunja/notes-to-vikunja` (Python stdlib); runs every 15 min via `notes-vikunja.timer`, or manually (`--dry-run`, `--date YYYY-MM-DD`).
+
+What syncs (everything else stays notes-only):
+
+| Line in daily note | Lands in |
+|---|---|
+| `- [ ] placemyparents: fix bug waves` | Vikunja project `placemyparents` (prefix must match an existing project title or a `PROJECT_ALIASES` alias) |
+| `- [ ] fix bug waves #dodginballs` | Vikunja project `dodginballs` |
+| `- [ ] renew passport @vk` | Vikunja `Inbox` project (opt-in capture for non-project tasks) |
+
+Mechanics:
+- Captured tasks get the `from-notes` label; `<!-- since: -->` dates land in the description.
+- Dedup state: `~/.local/state/notes-vikunja/synced.tsv`, keyed on the notes CLI's `task_key` normalisation — carry-forward `(Nd)` re-stamping never duplicates. **No write-back into the note** (stamp_line would clobber it).
+- Checking a previously synced task (`- [x]`) marks it done in Vikunja on the next run.
+- Unknown project names are skipped, never auto-created.
+- Config/token: `~/.config/notes-vikunja.env` (machine-local; `VIKUNJA_API_TOKEN`, falls back to `$VIKUNJA_MCP_TOKEN` for manual shell runs).
+
 ## Rules
 
-- **Never hand-author a daily note file.** Run `journal-create` instead — it handles carry-forward, day-tracking stamps, and project auto-linking that a manual write would silently break.
-- **Never edit the `<!-- since:YYYY-MM-DD -->` HTML comments** on carried items — `journal-create` uses them to recompute the `(Nd)` suffix each day.
+- **Never hand-author a daily note file.** Run `notes today` (Rust CLI, profile-aware) — it handles carry-forward, day-tracking stamps, refs linking, and backlog footers that a manual write would silently break. (`journal-create` is the deprecated bash fallback.)
+- **Never edit the `<!-- since:YYYY-MM-DD -->` HTML comments** on carried items — the tool uses them to recompute the `(Nd)` suffix each day.
 - For reading notes, it's fine to `cat` / grep / read files directly — they're plain markdown.
-- The user uses **shell + neovim** for notes editing, not Obsidian (there is a stale `.obsidian/` dir; ignore it).
-- When adding a new daily task mid-day, edit today's note directly; `journal-create` only runs once per day.
+- The user uses **shell + neovim** for notes editing, **never Obsidian**. All Obsidian traces were removed 2026-06-04; the old setup is archived at `~/.notes/_archive/obsidian/` (see its README). Do not reintroduce Obsidian config or plugins.
+- When adding a new daily task mid-day, edit today's note directly; `notes today` is idempotent (one note per day).
 
 ## Related
 
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist — the MEMORY.md index references it).
-- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-refs-archive.{service,timer}`.
+- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-refs-archive.{service,timer}`, `notes-vikunja.{service,timer}`.
 - Core sync logic: `~/.local/src/git/git-sync-notes.sh`.
