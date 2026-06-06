@@ -11,21 +11,39 @@ Execute the full development lifecycle for: **$ARGUMENTS**
 
 ## Phases
 
-### 0. Claim or create the Vikunja ticket (repos with the wired board)
+### 0. Claim or create the Vikunja ticket — FIRST ACTION, mechanical
 
-Before invoking `kb-product-owner`, if the repo has a Vikunja ticketing wiring (currently:
-`bnb/platform`), claim or create the ticket that this initiative will track. The platform
-CLAUDE.md `Ticketing (Vikunja)` block is the source of truth.
+Before invoking `kb-product-owner`, run the helper script and capture the id into
+`VIKUNJA_TASK_ID`. This id threads through the brief, spec, and PR as `Vikunja: $VIKUNJA_TASK_ID`.
+Skip cleanly only for repos without a Vikunja wiring, or when the user explicitly said "no ticket"
+(the PR body still has to say `Vikunja: none — <reason>`).
 
-- If the user supplied a task id: fetch via `vikunja_tasks` MCP `subcommand: "get"`, apply
-  `In Development` label (id 1), move to the epic's `Doing` bucket via the raw API
-  (`POST /api/v1/projects/<pid>/views/<vid>/buckets/<doing-bucket-id>/tasks` with
-  `{"task_id": <id>}`).
-- Otherwise: identify the right epic project (parents 3 and 9), create a task with state +
-  area + priority labels, move to `Doing`, echo the id.
+Repos with `scripts/vikunja-pr.sh` (currently: `bnb/platform`) — use the helper, not raw curl:
 
-Echo the task id so every downstream artifact (brief, spec, PR) can reference it. Skip for repos
-without a board, or when the user explicitly says "no ticket".
+```bash
+# User supplied a task id:
+VIKUNJA_TASK_ID=$(./scripts/vikunja-pr.sh claim 196)
+
+# Or create one (resolve-epic accepts: ci mobile-ci mobile backups compliance preview release):
+EPIC_PID=$(./scripts/vikunja-pr.sh resolve-epic ci)
+VIKUNJA_TASK_ID=$(./scripts/vikunja-pr.sh create "$EPIC_PID" "feat(api): X" --labels=ci,P2)
+
+echo "VIKUNJA_TASK_ID=$VIKUNJA_TASK_ID"
+```
+
+The helper applies `In Development`, removes `Todo` if present, and moves the card to the epic's
+`Doing` bucket. Labels accepted: `In Development`, `web`, `api`, `mobile`, `infra`, `ci`,
+`security`, `compliance`, `P0`–`P3` (optional `area:`/`priority:` prefixes are stripped).
+
+**Fallback when the helper isn't present** (other repos, fresh worktree): drive the `vikunja` MCP
+directly — `vikunja_projects subcommand:"get-tree"` (parent ids 3 and 9), `vikunja_tasks
+subcommand:"create"`, `vikunja_tasks subcommand:"apply-label"` (label ids: state In Development=1
+Todo=16 Done=3; area web=5 api=6 mobile=7 infra=8 ci=9 security=10 compliance=11; priority P0=12
+P1=13 P2=14 P3=15), and a raw curl bucket move
+(`POST /api/v1/projects/<pid>/views/<vid>/buckets/<doing-bucket-id>/tasks` with `{"task_id": <id>}`).
+
+**Self-check before continuing past Phase 0:** did I record a `VIKUNJA_TASK_ID`? If no, the PR
+body at Phase 4 MUST say `Vikunja: none` and state the reason in that same line.
 
 ### 1. Brief (Product Owner - Paige)
 Create a Product Brief defining:
@@ -94,8 +112,9 @@ Tests-green-but-goal-missed is a BLOCK, not a PASS.
 After completing all phases:
 1. Create PR with `gh pr create`
 2. Link to brief and spec in PR description
-3. Include `Vikunja: <task-id>` line in the PR body (the close-on-merge action reads this and
-   flips the ticket to Done; use `none` only for trivial PRs)
+3. Include `Vikunja: ${VIKUNJA_TASK_ID:-none}` line in the PR body (the close-on-merge action
+   reads this and flips the ticket to Done on merge; use `none — <reason>` only for trivial PRs).
+   The `vikunja-pr-gate.yml` workflow rejects bodies missing the line entirely.
 4. Report summary of changes and PR URL
 
 ## Agents
