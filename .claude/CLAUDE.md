@@ -132,6 +132,8 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 
 **Workstreams**
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
+- `ui-audit` — coverage-guaranteed UI/UX audit (inventory → matrix → wave walkthrough → findings → triage); artifacts at `~/.agent/evals/{project}/ui-audit-{date}/`; hands off to `bug-bash`
+- `prod-smoke-suite` — `db.sh prod smoke` suite-based regression smoke for placemyparents (10 suites, tRPC + REST); run after every release
 - `placemyparents-release` — production release runbook for placemyparents
 - `bnb-quality-gates` — what is/isn't enforced in the BNB platform monorepo
 - `vikunja-subtask-conform` — conform/restructure a Vikunja project's epic→story→subtask tree to the documented ticket template (BNB ticketing at vikunja.kblab.me, via the `vikunja` MCP)
