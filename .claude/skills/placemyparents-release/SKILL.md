@@ -5,7 +5,7 @@ description: PlaceMyParents production release runbook — when user says "relea
 
 # placemyparents-release
 
-End-to-end runbook for a PlaceMyParents production release. Bundles `scripts/deploy.sh`, the `develop → staging → main` PR chain, and the `placemyparents-v*` / `placemyparents-mobile-v*` tag conventions into one workflow.
+End-to-end runbook for a PlaceMyParents production release. Bundles `scripts/deploy.sh`, the `develop → main` PR chain, and the `placemyparents-v*` / `placemyparents-mobile-v*` tag conventions into one workflow. The `staging` branch was retired in PR #631; pre-prod verification happens on the home-k3s preview env (`placemyparents.blacknbrownstudios.com`), which auto-deploys on every merge to `main`.
 
 Repo: `/home/kblack0610/dev/bnb/platform`
 
@@ -122,12 +122,11 @@ The script will:
 1. Create branch `release/placemyparents-v{NEW_VERSION}` off develop
 2. Bump versions in 4 files: `api/package.json`, `web/package.json`, `mobile/package.json`, `mobile/app.json` (`expo.version`, `expo.ios.buildNumber`, `expo.android.versionCode`)
 3. Commit `chore(placemyparents): bump to v{NEW_VERSION}`, push, open PR → develop with auto-merge, **wait** (15-min timeout, 15-sec poll)
-4. After merge, open PR develop → staging with auto-merge, **wait**
-5. After merge, open PR staging → main with auto-merge, **wait**
-6. Tag from main: `placemyparents-v{NEW_VERSION}` and/or `placemyparents-mobile-v{NEW_VERSION}` (depending on `<component>`)
-7. `git push origin <tags>` — triggers the deploy workflows
+4. After merge, open PR develop → main with auto-merge, **wait**
+5. Tag from main: `placemyparents-v{NEW_VERSION}` and/or `placemyparents-mobile-v{NEW_VERSION}` (depending on `<component>`)
+6. `git push origin <tags>` — triggers the deploy workflows
 
-Total wall-clock: ~40-60 min for `all` (3 PR merges × ~10 min CI each + tag push).
+Total wall-clock: ~25-40 min for `all` (2 PR merges × ~10 min CI each + tag push).
 
 ## Tag → workflow map
 
@@ -243,19 +242,12 @@ release ticket consolidates.
 # 2. Skip scripts/deploy.sh; do the rest manually:
 
 cd ~/dev/bnb/platform
-git fetch origin develop staging main
+git fetch origin develop main
 
-# develop → staging
-gh pr create --base staging --head develop \
-  --title "staging: placemyparents v1.8.0" \
-  --body "Promote develop to staging for placemyparents v1.8.0 release."
-gh pr merge <staging-pr-num> --merge --auto
-# wait for merge
-
-# staging → main
-gh pr create --base main --head staging \
+# develop → main
+gh pr create --base main --head develop \
   --title "release: placemyparents v1.8.0" \
-  --body "Release placemyparents v1.8.0. Merging staging into main for deploy."
+  --body "Release placemyparents v1.8.0. Merging develop into main for deploy."
 gh pr merge <main-pr-num> --merge --auto
 # wait for merge
 
@@ -268,12 +260,12 @@ git push origin placemyparents-v1.8.0 placemyparents-mobile-v1.8.0
 
 ## Gotchas
 
-- **Staging gate** added 2026-03-25 (PR #301) — flow is `develop → staging → main`, NOT `develop → main`.
+- **Staging branch retired** in PR #631 — flow is `develop → main` directly. Pre-prod verification happens on the home-k3s preview env (`placemyparents.blacknbrownstudios.com`), which auto-deploys on every merge to `main`. The earlier PR #301 staging gate is gone.
 - **Mobile `buildNumber` and `versionCode`** are auto-incremented by `scripts/deploy.sh`. They live in `apps/placemyparents/mobile/app.json` (`expo.ios.buildNumber` is a string, `expo.android.versionCode` is an int).
 - **HIPAA toggle** `PHYSICIAN_REPORTS_ENABLED` requires DO BAA + private-bucket ACL spot-check before flipping in prod. Currently OFF in v1.8; flip is a v1.9 candidate.
 - **Pagination legacy keys** (`docs`, `totalDocs`, ...) cannot be removed until a forced-mobile-update gate ships in v1.9 — see `apps/placemyparents/api/src/utils/pagination.ts`.
 - **Wave-number labels** like `(v1.X-N)` in PR titles refer to a refactor wave's step number; they don't necessarily map to the release version. Verify against the actual tag, not the PR title prefix.
-- **Pre-flight CI** check is on `develop` HEAD, not on the bump PR. The bump PR runs CI again in the staging step.
+- **Pre-flight CI** check is on `develop` HEAD, not on the bump PR. The bump PR runs CI again in the `develop → main` PR step.
 - **deploy.sh hard-requires `develop`**, clean tree, up-to-date with origin. It will refuse otherwise.
 
 ## Related
