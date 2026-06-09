@@ -2,7 +2,14 @@
   "paths": {
     "/home/kblack0610/.dotfiles": "dotfiles",
     "/home/kblack0610/dev/bnb/platform": "bnb-platform",
-    "/home/kblack0610/dev/binks-agent": "binks-agent"
+    "/home/kblack0610/dev/binks-agent": "binks-agent",
+    "/home/kblack0610/dev/home/home-config": "home-config",
+    "/home/kblack0610/dev/bnb/games/dodginballs": "dodginballs",
+    "/home/kblack0610/dev/bnb/games/engine": "engine",
+    "/home/kblack0610/dev/openmptcsetup": "openmptcsetup",
+    "/home/kblack0610/src/zmk_config": "zmk_config",
+    "/home/kblack0610/dev/bnb/platform/apps/kenneth-black-portfolio": "kenneth-black-portfolio",
+    "/home/kblack0610/.notes": "notes"
   },
   "aliases": {
     "waybar": "dotfiles",
@@ -10,5 +17,45 @@
     "monorepo": "bnb-platform",
     "platform": "bnb-platform",
     "orchestrator": "binks-agent"
+  },
+  "trackers": {
+    "bnb-platform": {
+      "system": "vikunja",
+      "instance": "https://vikunja.kblab.me/api/v1",
+      "tokenEnv": "VIKUNJA_MCP_TOKEN",
+      "epicMap": {
+        "ci": 24,
+        "mobile-ci": 25,
+        "mobile": 22,
+        "backups": 26,
+        "compliance": 27,
+        "preview": 28,
+        "release": 29
+      },
+      "labelMap": {
+        "in-dev": 1,
+        "blocked": 2,
+        "done": 3,
+        "todo": 16,
+        "web": 5,
+        "api": 6,
+        "mobile": 7,
+        "infra": 8,
+        "ci": 9,
+        "security": 10,
+        "compliance": 11,
+        "P0": 12,
+        "P1": 13,
+        "P2": 14,
+        "P3": 15
+      }
+    },
+    "default": {
+      "system": "vikunja",
+      "instance": "https://vikunja.kblab.me/api/v1",
+      "tokenEnv": "VIKUNJA_MCP_TOKEN",
+      "epicMap": {},
+      "labelMap": {}
+    }
   }
 }
