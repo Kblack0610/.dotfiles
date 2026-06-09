@@ -186,36 +186,61 @@ If Play **Managed publishing** is on, the promote stages the release and a human
 ## Step 8 — Vikunja release coordination ticket
 
 The `platform / Release Management` epic (project id 29) holds one coordination ticket per release.
-This is descriptive (release-narrative artifact); it never gates the deploy.
+**This ticket is load-bearing**: `scripts/deploy.sh` refuses to cut a release unless an open
+ticket for the target version exists, has no `hold` label, and has every `- [ ]` verification
+checklist item ticked. The deploy gate runs as a pre-flight in step 5; if it refuses, the rest of
+the deploy never happens.
 
-After the deploy workflow is green:
+How the ticket gets there:
+
+- **Auto-created** on the first PR-merge to `develop` after the previous release tag, by
+  `.github/workflows/vikunja-close-on-merge.yml`. Title is `placemyparents-v<next-patch>`. Each
+  subsequent PR-merge to develop appends a `- PR #N — title` line under "## PRs in batch".
+- **preview-smoke green** is auto-ticked by `.github/workflows/preview-smoke.yml` after the
+  home-k3s preview env passes its health checks (post-merge to main).
+- **Mobile / migration** items are ticked by the deployer when applicable, or removed from the
+  checklist if not in scope for this batch.
+- **`hold` label** stops the cut. Apply it in Vikunja to pause; remove to proceed.
+- **`--no-ticket` escape hatch** on `scripts/deploy.sh` bypasses the gate with an auditable stderr
+  warning. Reserved for genuine emergencies when Vikunja is unavailable.
+
+After the deploy workflow is green (post-step 6), close the ticket:
 
 ```bash
-# Collect shipped PR numbers since last tag
-LAST_TAG=$(git -C ~/dev/bnb/platform tag --list 'placemyparents-v*' | sort -V | tail -2 | head -1)
-SHIPPED_PRS=$(git -C ~/dev/bnb/platform log "$LAST_TAG..origin/main" --merges --pretty=format:'%s' \
-  | grep -oE '#[0-9]+' | sort -u)
+# Flip done=true + swap In Development → Done + move to Done bucket
+# (view id 116, done bucket id 87)
+TICKET_ID=$(curl -fsSL -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/projects/29/tasks?filter=done=false&per_page=50" \
+  | jq -r --arg t "placemyparents-v<NEW_VERSION>" '.[] | select(.title==$t) | .id')
+
+# GET → modify → POST full task (partial POST resets fields per the gotcha).
+TASK=$(curl -fsSL -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID")
+UPDATED=$(printf '%s' "$TASK" | jq '
+  .done = true
+  | .done_at = (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
+')
+curl -fsSL -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" -d "$UPDATED" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID" >/dev/null
+
+# Swap labels: remove In Development (1), add Done (3).
+curl -fsSL -X DELETE -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID/labels/1" >/dev/null 2>&1 || true
+curl -fsSL -X PUT -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" -d '{"label_id":3}' \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID/labels" >/dev/null
+
+# Move to Done bucket
+curl -s -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"task_id\": $TICKET_ID}" \
+  "https://vikunja.kblab.me/api/v1/projects/29/views/116/buckets/87/tasks"
 ```
-
-Create the coordination task via the `vikunja` MCP (`subcommand: "create"`, `projectId: 29`):
-
-- **title**: `placemyparents-v<NEW_VERSION>` (e.g. `placemyparents-v1.8.3`)
-- **description**: links to the deploy workflow run, the CHANGELOG diff anchor, and an enumerated
-  list of every shipped PR + its referenced Vikunja task id (parse the `Vikunja:` line from each
-  PR body via `gh pr view <num> --json body`).
-- Labels: `Done` (id 3), `compliance` (id 11) if HIPAA-relevant. Priority per release severity.
-- Apply `done = true` once the post-deploy verification (Step 6 + Step 7) confirms green.
-- Move to the Done bucket of the Release Management Kanban view (view id 116, done bucket id 87):
-  ```bash
-  curl -s -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"task_id": <NEW_TASK_ID>}' \
-    "https://vikunja.kblab.me/api/v1/projects/29/views/116/buckets/87/tasks"
-  ```
 
 Reasoning: the per-release coordination ticket is the queryable artifact you'd reach for in a
 quarterly review or HIPAA audit — what shipped, in which release, who fixed what. PRs scatter; the
-release ticket consolidates.
+release ticket consolidates. It also now actively prevents accidental / unilateral releases.
 
 ## Recipes
 
