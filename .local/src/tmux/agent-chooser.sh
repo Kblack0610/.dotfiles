@@ -248,8 +248,20 @@ while IFS=$'\t' read -r session window_idx window_name pane_cmd pane_path pane_p
             *)              agent_label="[${agent_type}]" ;;
         esac
 
+        # Short target: strip the project name from the tmux session so rows
+        # under e.g. "platform" show "agent-2:1" instead of "platform-agent-2:1".
+        # The project header already names the project. The full target stays
+        # in field 1 of the row (hidden via fzf --with-nth) for tmux ops.
+        short_session="$session"
+        short_session="${short_session#_}"; short_session="${short_session#.}"
+        case "$short_session" in
+            "$project")     short_session="" ;;
+            "$project"-*)   short_session="${short_session#"$project"-}" ;;
+        esac
+        short_target="${short_session}:${window_idx}"
+
         # Add to project group and flat list
-        project_agents[$project]+="${status}|${session}:${window_idx}|${agent_label}|${summary}\n"
+        project_agents[$project]+="${status}|${session}:${window_idx}|${short_target}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
     fi
 done < <(tmux list-panes -a -F $'#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}' 2>/dev/null)
@@ -314,19 +326,20 @@ for project in "${sorted_projects[@]}"; do
     # Count agents and collect statuses
     count=0
     statuses=""
-    while IFS='|' read -r status target agent_label _summary; do
+    while IFS='|' read -r status target short_target agent_label _summary; do
         [ -z "$status" ] && continue
         ((count++))
         statuses+="$(colorize_status "$status")"
     done <<< "$(echo -e "$agents")"
 
-    # Project header line (not selectable, just visual): bold cyan name +
-    # status glyphs + count, then the long bar — fzf clips at viewport edge.
-    agent_list+="${COLOR_TITLE}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
+    # Row format: <full_target>\t<display>. fzf --with-nth=2.. hides field 1
+    # so the user sees only the display; on select we recover full target
+    # from field 1 to drive tmux switch-client.
+    # Project header has empty field 1 (not selectable; pattern-skipped below).
+    agent_list+="\t${COLOR_TITLE}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
 
-    # Individual agent rows: status, label, target, summary. Dropped the
-    # agent-N numbering (fzf shows position natively).
-    while IFS='|' read -r status target agent_label summary; do
+    # Individual agent rows: status, label, short_target, summary.
+    while IFS='|' read -r status target short_target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
         # Drop the [claude] label for the common case (density). Keep
@@ -334,9 +347,9 @@ for project in "${sorted_projects[@]}"; do
         label_display=""
         [[ "$agent_label" != "[claude]" ]] && label_display="${agent_label} "
         if [[ -n "$summary" ]]; then
-            agent_list+="  ${colored} ${label_display}${target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
+            agent_list+="${target}\t  ${colored} ${label_display}${short_target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
         else
-            agent_list+="  ${colored} ${label_display}${target}\n"
+            agent_list+="${target}\t  ${colored} ${label_display}${short_target}\n"
         fi
     done <<< "$(echo -e "$agents")"
 done
@@ -358,9 +371,11 @@ selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
     --header=$'Enter=jump  n=next-attention  C-/ toggle preview  C-d/C-u scroll  ·  \033[1;31m!\033[0m input  \033[1;33m~\033[0m busy  \033[1;32m✓\033[0m idle' \
     --ansi \
     --no-sort \
+    --delimiter=$'\t' \
+    --with-nth='2..' \
     --preview "$PREVIEW_SCRIPT '$JSONL_MAP_FILE' {}" \
-    --preview-window 'right:60%:wrap' \
-    --bind 'ctrl-/:change-preview-window(hidden|right:60%:wrap)' \
+    --preview-window 'right:75%:wrap' \
+    --bind 'ctrl-/:change-preview-window(hidden|right:75%:wrap)' \
     --bind 'ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up' \
     --bind "n:execute-silent($0 -n)+abort" \
     --bind 'up:up+transform:case {} in *━━*) echo up ;; esac' \
@@ -374,11 +389,9 @@ if [[ "$selected" == *━━* ]]; then
     exit 0
 fi
 
-# Extract session:window_idx by pattern, robust against row-format changes.
-# Targets always look like `<session-name>:<window-index>` (e.g. `_dotfiles:3`,
-# `platform-agent-2:1`). The conditional [claude] label means awk-by-position
-# is fragile.
-target=$(echo "$selected" | grep -oE '[A-Za-z0-9_-]+:[0-9]+' | head -1)
+# Field 1 of each row holds the full tmux target (hidden from display by
+# fzf --with-nth=2..). fzf returns the entire line on selection, tabs intact.
+target=$(printf '%s' "$selected" | cut -f1)
 
 # Jump to it
 if [ -n "$TMUX" ]; then

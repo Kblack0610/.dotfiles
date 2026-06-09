@@ -16,7 +16,16 @@ ROW="$2"
 # Header / divider rows aren't agents — fzf still asks for a preview though.
 [[ "$ROW" == *━━* ]] && exit 0
 
-target=$(printf '%s' "$ROW" | grep -oE '[A-Za-z0-9_-]+:[0-9]+' | head -1)
+# Field 1 of every agent row is the full tmux target (session:window). The
+# parent (agent-chooser.sh) prefixes each row with it; fzf --with-nth=2..
+# hides it from display but passes the whole line here.
+target=$(printf '%s' "$ROW" | cut -f1)
+[ -z "$target" ] && exit 0
+# Fallback for older invocations or unexpected row shape.
+case "$target" in
+    *:*) ;;
+    *) target=$(printf '%s' "$ROW" | grep -oE '[A-Za-z0-9_-]+:[0-9]+' | head -1) ;;
+esac
 [ -z "$target" ] && exit 0
 
 BOLD=$'\033[1m'
