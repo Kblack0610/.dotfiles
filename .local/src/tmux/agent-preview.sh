@@ -54,9 +54,10 @@ header_label="${repo_full:-${project:-$target}}"
 printf '%s\n' "${CYAN}${BOLD}── ${header_label} ──${RESET}"
 
 # --- tmux pane state ---
-# Last ~40 lines of the live pane. -J keeps wrapped lines joined where possible;
-# -S -60 gives a small lookback buffer; tail trims to a manageable preview height.
-tmux capture-pane -p -t "$target" -S -60 -J 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -40
+# -e preserves SGR colour/attribute escapes (bold, colours, dim) so the
+# preview renders the same way the live pane does — fzf --ansi handles them.
+# -J keeps wrapped lines joined where possible; -S -60 lookback buffer.
+tmux capture-pane -e -p -t "$target" -S -60 -J 2>/dev/null | tail -40
 printf '\n'
 
 if [ -n "$jsonl" ] && [ -f "$jsonl" ]; then
