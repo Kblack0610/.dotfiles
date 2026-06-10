@@ -38,8 +38,12 @@ struct Cli {
 enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today,
-    /// Print the path of today's daily note (for editor integration)
-    Path,
+    /// Print a resolved profile path for editor/shell integration.
+    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | index
+    Path {
+        #[arg(default_value = "daily")]
+        target: String,
+    },
     /// Link today's ref files into today's note's `## Refs` section
     LinkRefs,
     /// Summarize a day's note into the continuous monthly log (dedup-safe)
@@ -127,10 +131,18 @@ fn main() -> Result<()> {
             daily::run(&prof, &log)?;
             0
         }
-        Cmd::Path => {
-            println!("{}", daily::today_path(&prof).display());
-            0
-        }
+        Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
+            Some(path) => {
+                println!("{}", path.display());
+                0
+            }
+            None => {
+                eprintln!(
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, index)"
+                );
+                2
+            }
+        },
         Cmd::LinkRefs => {
             daily::link_refs(&prof, &log)?;
             0

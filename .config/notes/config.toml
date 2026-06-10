@@ -28,6 +28,7 @@ summaries = "journal/summaries"      # → continuous/ and monthly/ live under h
 archive   = "journal/daily_archive"
 zettel    = "journal/permanent"
 index     = "journal/index"
+projects  = "lab/projects/current"   # `notes today` auto-links these into ## Current Projects
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
 # On a machine set to this profile (via $NOTES_PROFILE or [hostname_map]), `notes

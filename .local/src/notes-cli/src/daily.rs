@@ -19,6 +19,31 @@ pub fn today_path(p: &Profile) -> PathBuf {
     p.daily.join(format!("{today}.md"))
 }
 
+/// Today's refs subdirectory for this profile (`<refs>/<YYYY-MM-DD>`).
+pub fn today_refs_dir(p: &Profile) -> PathBuf {
+    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    p.refs.join(today)
+}
+
+/// Resolve a named profile path for editor/shell integration (`notes path <target>`).
+/// This is the single source of truth that nvim, the `ref`/`refs` aliases, and the
+/// smug hub window all consume — so no consumer hardcodes a vault path. Returns
+/// `None` for an unknown target so the caller can report it.
+pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
+    Some(match target {
+        "daily" => today_path(p),
+        "daily-dir" => p.daily.clone(),
+        "refs" => p.refs.clone(),
+        "refs-today" => today_refs_dir(p),
+        "root" => p.root.clone(),
+        "fun" => p.fun.clone(),
+        "carryover" => p.carryover.clone(),
+        "zettel" => p.zettel.clone(),
+        "index" => p.index.clone(),
+        _ => return None,
+    })
+}
+
 pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     let today = Local::now().date_naive();
     fs::create_dir_all(&p.daily)
@@ -65,6 +90,13 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         }
     }
 
+    // No prior Current Projects to carry forward → auto-discover from the configured
+    // `projects` dir (e.g. lab/projects/current). Carry-forward wins so hand-curated
+    // wikilinks are preserved; discovery only seeds an otherwise-empty section.
+    if projects.trim().is_empty() {
+        projects = discover_projects(p);
+    }
+
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str(&format!("date: {today_s}\n"));
@@ -97,6 +129,40 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         }
     }
     Ok(())
+}
+
+/// Discover active projects from the configured `projects` dir (e.g. lab/projects/current):
+/// one wikilink per immediate subdir that contains a `summary.md`, sorted by name. Subdirs
+/// whose name starts with `_` (e.g. `_index`) are skipped. Returns "" when no `projects`
+/// dir is configured or it has no qualifying entries.
+fn discover_projects(p: &Profile) -> String {
+    let Some(dir) = p.projects.as_ref() else {
+        return String::new();
+    };
+    if !dir.is_dir() {
+        return String::new();
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return String::new();
+    };
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let summary = path.join("summary.md");
+        if !path.is_dir() || !summary.exists() {
+            continue;
+        }
+        match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) if !name.starts_with('_') => found.push((name.to_string(), summary)),
+            _ => {}
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+        .iter()
+        .map(|(name, summary)| format!("- [[{}|{}]]", config::wikilink(&p.root, summary), name))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Drop checked + empty items; day-stamp the rest. Non-task lines pass through.
@@ -275,4 +341,51 @@ fn ensure_backlog_file(path: &Path, title: &str, tag: &str, desc: &str, log: &Lo
     fs::write(path, body)?;
     log.info("backlog", &format!("created {}", path.display()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(root: &str) -> Profile {
+        let r = PathBuf::from(root);
+        Profile {
+            name: "test".into(),
+            source: "test".into(),
+            root: r.clone(),
+            daily: r.join("journal/daily"),
+            refs: r.join("journal/refs"),
+            refs_rel: "journal/refs".into(),
+            fun: r.join("journal/backlogs/fun.md"),
+            carryover: r.join("journal/backlogs/carryover.md"),
+            summaries: r.join("journal/summaries"),
+            continuous: r.join("journal/summaries/continuous"),
+            monthly: r.join("journal/summaries/monthly"),
+            archive: r.join("journal/daily_archive"),
+            zettel: r.join("journal/permanent"),
+            index: r.join("journal/index"),
+            projects: None,
+            state_dir: r.join(".state"),
+            log_file: r.join(".state/journal.log"),
+        }
+    }
+
+    #[test]
+    fn resolve_known_targets() {
+        let p = profile("/vault");
+        assert_eq!(resolve_path(&p, "daily-dir").unwrap(), PathBuf::from("/vault/journal/daily"));
+        assert_eq!(resolve_path(&p, "refs").unwrap(), PathBuf::from("/vault/journal/refs"));
+        assert_eq!(resolve_path(&p, "root").unwrap(), PathBuf::from("/vault"));
+        assert_eq!(resolve_path(&p, "fun").unwrap(), PathBuf::from("/vault/journal/backlogs/fun.md"));
+        // refs-today is under refs; daily note is under daily-dir
+        assert!(resolve_path(&p, "refs-today").unwrap().starts_with("/vault/journal/refs"));
+        assert!(resolve_path(&p, "daily").unwrap().starts_with("/vault/journal/daily"));
+        assert!(resolve_path(&p, "daily").unwrap().extension().is_some()); // .md file
+    }
+
+    #[test]
+    fn resolve_unknown_is_none() {
+        let p = profile("/vault");
+        assert!(resolve_path(&p, "bogus").is_none());
+    }
 }

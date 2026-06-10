@@ -5,4 +5,7 @@ windows:
   - name: notes
     root: ~/.notes
     commands:
-      - ensure_daily_note && nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+      # Profile-aware: ensure_daily_note runs `notes today`, and `notes path`
+      # resolves the right daily file for this machine's profile (personal vs
+      # giganticplayground). Falls back to the personal path if the binary is absent.
+      - ensure_daily_note && nvim "$(notes path 2>/dev/null || echo ~/.notes/journal/daily/$(date +%Y-%m-%d).md)"

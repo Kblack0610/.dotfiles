@@ -211,7 +211,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         archive: join(&rp.archive),
         zettel: join(&rp.zettel),
         index: join(&rp.index),
-        projects: rp.projects.as_ref().map(|s| expand(s)),
+        projects: rp.projects.as_ref().map(|s| join(s)),
         state_dir,
         log_file,
     })

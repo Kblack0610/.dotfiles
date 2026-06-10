@@ -109,16 +109,31 @@ local function is_in_notes_dir()
   return cwd:find(notes_dir, 1, true) == 1
 end
 
+-- Resolve a profile-aware notes path via the `notes` CLI, falling back to the
+-- personal-vault layout when the binary isn't on PATH. This keeps editor nav
+-- (daily note, refs) pointed at whichever profile this machine uses — e.g. on
+-- the gigantic-playground box it resolves into employment/jobs/gigantic_playground/.
+local function notes_path(target, fallback)
+  if vim.fn.executable("notes") == 1 then
+    local out = vim.fn.system({ "notes", "path", target })
+    if vim.v.shell_error == 0 then
+      out = vim.trim(out)
+      if out ~= "" then return out end
+    end
+  end
+  return fallback
+end
+
 local function get_journal_path(date_str)
   return vim.fn.expand("~/.notes/journal/daily/" .. date_str .. ".md")
 end
 
 local function get_today_journal()
-  return get_journal_path(os.date("%Y-%m-%d"))
+  return notes_path("daily", get_journal_path(os.date("%Y-%m-%d")))
 end
 
 local function get_today_refs_dir()
-  return vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d"))
+  return notes_path("refs-today", vim.fn.expand("~/.notes/journal/refs/" .. os.date("%Y-%m-%d")))
 end
 
 local function file_exists(path)
@@ -145,7 +160,14 @@ end
 local function create_daily_journal()
   local journal_path = get_today_journal()
   if file_exists(journal_path) then return end
-  vim.fn.system("journal-create")
+  -- `notes today` is profile-aware (creates the note in the active profile's
+  -- daily dir + links refs/backlogs). Fall back to the legacy script only if the
+  -- binary isn't built on this machine.
+  if vim.fn.executable("notes") == 1 then
+    vim.fn.system({ "notes", "today" })
+  else
+    vim.fn.system("journal-create")
+  end
 end
 
 local function ensure_today_refs_dir()
@@ -222,7 +244,7 @@ function _G.open_today_refs_in_neotree()
 end
 
 local function get_projects_dir()
-  return vim.fn.expand("~/.lab/projects/current")
+  return vim.fn.expand("~/.notes/lab/projects/current")
 end
 
 local function get_projects_anchor()

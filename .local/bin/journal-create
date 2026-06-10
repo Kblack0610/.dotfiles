@@ -131,7 +131,7 @@ fi
     if [[ -n "$PROJECTS_ITEMS" ]]; then
         echo "$PROJECTS_ITEMS"
     else
-        PROJECTS_DIR="$HOME/.lab/projects/current"
+        PROJECTS_DIR="$HOME/.notes/lab/projects/current"
         if [[ -d "$PROJECTS_DIR" ]]; then
             for entry in "$PROJECTS_DIR"/*/; do
                 [[ -d "$entry" ]] || continue

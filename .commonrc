@@ -187,9 +187,21 @@ alias sysz="$HOME/.bin/sysz"
 alias python="/usr/bin/python3"
 alias o="nvim $HOME/.notes"
 
-# Journal helpers (refs are inside journal/)
-alias ref='cd ~/.notes/journal/refs/$(date +%Y-%m-%d) && ls -la'
-alias refs="cd ~/.notes/journal/refs && ls -la"
+# Journal helpers — profile-aware: paths come from the `notes` CLI so on a
+# corporate machine (giganticplayground profile) these land in that job's dir.
+# Fall back to the personal vault if the binary isn't built on this machine.
+ref() {  # today's refs subdir
+    local d
+    d="$(notes path refs-today 2>/dev/null)"
+    [ -n "$d" ] || d="$HOME/.notes/journal/refs/$(date +%Y-%m-%d)"
+    mkdir -p "$d" && cd "$d" && ls -la
+}
+refs() {  # refs root
+    local d
+    d="$(notes path refs 2>/dev/null)"
+    [ -n "$d" ] || d="$HOME/.notes/journal/refs"
+    cd "$d" && ls -la
+}
 # `today` is now profile-aware: `notes today` creates/carries-forward, `notes path`
 # resolves the correct daily file for whichever profile this machine uses.
 alias today='ensure_daily_note && nvim "$(notes path)"'
@@ -200,13 +212,14 @@ alias co='nvim "$(notes backlog carryover)"'
 alias zk='notes zettel new'
 alias ndoctor='notes doctor'
 
-# Quick ref note creation (inside journal/refs/)
+# Quick ref note creation (inside the active profile's refs/<date>/ dir)
 refnote() {
-    local DATE=$(date +%Y-%m-%d)
     local NAME="${1:-note}"
-    local FILE="$HOME/.notes/journal/refs/$DATE/$NAME.md"
-    mkdir -p "$(dirname "$FILE")"
-    nvim "$FILE"
+    local DIR
+    DIR="$(notes path refs-today 2>/dev/null)"
+    [ -n "$DIR" ] || DIR="$HOME/.notes/journal/refs/$(date +%Y-%m-%d)"
+    mkdir -p "$DIR"
+    nvim "$DIR/$NAME.md"
 }
 
 # Aliases for specific tools and scripts
