@@ -264,11 +264,13 @@ while IFS=$'\t' read -r session window_idx window_name pane_cmd pane_path pane_p
         project_agents[$project]+="${status}|${session}:${window_idx}|${short_target}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
 
-        # Persist target -> (jsonl, project, summary) for the preview script.
-        # Written after the pane_title block above so $summary reflects the
-        # final label (the slug, not the long JSONL "say:" text).
-        printf '%s\t%s\t%s\t%s\n' \
-            "${session}:${window_idx}" "${jsonl:-}" "$project" "$summary" \
+        # Persist target -> (jsonl, project, summary, repo_full) for preview.
+        # repo_full keeps the agent suffix (e.g. "platform-agent-2") so the
+        # preview header shows the exact worktree the user is in; $project
+        # is the normalized name used to group rows in the sidebar.
+        repo_full=$(basename "$pane_path")
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "${session}:${window_idx}" "${jsonl:-}" "$project" "$summary" "$repo_full" \
             >>"$JSONL_MAP_FILE"
     fi
 done < <(tmux list-panes -a -F $'#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}' 2>/dev/null)

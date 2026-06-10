@@ -36,19 +36,20 @@ YELLOW=$'\033[33m'
 RESET=$'\033[0m'
 
 # --- look up extras from the map file ---
-# Each row is "<target>\t<jsonl>\t<project>\t<summary>".
-jsonl=""; project=""; summary=""
+# Each row is "<target>\t<jsonl>\t<project>\t<summary>\t<repo_full>".
+jsonl=""; project=""; summary=""; repo_full=""
 if [ -f "$MAP_FILE" ]; then
     line=$(awk -v t="$target" -F'\t' '$1 == t {print; exit}' "$MAP_FILE")
     if [ -n "$line" ]; then
         jsonl=$(printf '%s' "$line" | cut -f2)
         project=$(printf '%s' "$line" | cut -f3)
         summary=$(printf '%s' "$line" | cut -f4)
+        repo_full=$(printf '%s' "$line" | cut -f5)
     fi
 fi
 
-# --- header: "[repo] - [summary]" with target tucked at the end ---
-header_label="${project:-$target}"
+# --- header: "[full-repo-dir] - [summary]" so the worktree is visible ---
+header_label="${repo_full:-${project:-$target}}"
 [ -n "$summary" ] && header_label="${header_label} - ${summary}"
 printf '%s\n' "${CYAN}${BOLD}── ${header_label} ──${RESET}"
 
