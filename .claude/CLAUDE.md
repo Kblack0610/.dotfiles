@@ -133,6 +133,7 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `deep-research-code` — multi-agent investigation of YOUR OWN systems (code + live infra/tools + web) with a live-verify pass; use for "what'll it take to get X to prod", "why does Y keep failing", "is Z actually fixed", pipeline audits
 
 **Workstreams**
+- `release-captain` — release decisioning + monitoring front door (verbs: status/plan/ship/monitor/retro); risk-lanes batches, drafts go/no-go briefs, watches the bake window; NEVER satisfies human approval gates or pushes tags — `ship` delegates to `placemyparents-release`
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
 - `ui-audit` — coverage-guaranteed UI/UX audit (inventory → matrix → wave walkthrough → findings → triage); artifacts at `~/.agent/evals/{project}/ui-audit-{date}/`; hands off to `bug-bash`
 - `prod-smoke-suite` — `db.sh prod smoke` suite-based regression smoke for placemyparents (10 suites, tRPC + REST); run after every release

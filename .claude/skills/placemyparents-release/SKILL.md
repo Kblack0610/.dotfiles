@@ -167,7 +167,7 @@ kubectl --context do-nyc3-placemyparents-k8s-prod -n placemyparents \
 
 # Smoke prod
 curl -sI https://placemyparents.com | head -3
-curl -s https://api.placemyparents.com/api/v1/health | jq .
+curl -s https://api.placemyparents.com/health | jq .
 
 # Mobile: check TestFlight + Play Store consoles for the new build (15-30 min ingest)
 # Android: do NOT trust `submit-android: success` — the run includes a `Verify Play release went live`
