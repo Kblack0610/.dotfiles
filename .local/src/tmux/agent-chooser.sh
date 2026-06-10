@@ -200,10 +200,10 @@ while IFS=$'\t' read -r session window_idx window_name pane_cmd pane_path pane_p
                 busy)    status="~" ;;
                 *)       status="✓" ;;
             esac
+            jsonl=""
             if [ -n "$sid" ] && [ -n "$cwd" ]; then
                 jsonl=$(session_jsonl_path "$sid" "$cwd")
                 summary=$(last_event "$jsonl")
-                printf '%s\t%s\n' "${session}:${window_idx}" "$jsonl" >>"$JSONL_MAP_FILE"
             fi
         else
             last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
@@ -263,6 +263,13 @@ while IFS=$'\t' read -r session window_idx window_name pane_cmd pane_path pane_p
         # Add to project group and flat list
         project_agents[$project]+="${status}|${session}:${window_idx}|${short_target}|${agent_label}|${summary}\n"
         all_agents+=("${status}|${session}:${window_idx}")
+
+        # Persist target -> (jsonl, project, summary) for the preview script.
+        # Written after the pane_title block above so $summary reflects the
+        # final label (the slug, not the long JSONL "say:" text).
+        printf '%s\t%s\t%s\t%s\n' \
+            "${session}:${window_idx}" "${jsonl:-}" "$project" "$summary" \
+            >>"$JSONL_MAP_FILE"
     fi
 done < <(tmux list-panes -a -F $'#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}' 2>/dev/null)
 

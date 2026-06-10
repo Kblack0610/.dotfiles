@@ -35,19 +35,28 @@ GREEN=$'\033[32m'
 YELLOW=$'\033[33m'
 RESET=$'\033[0m'
 
+# --- look up extras from the map file ---
+# Each row is "<target>\t<jsonl>\t<project>\t<summary>".
+jsonl=""; project=""; summary=""
+if [ -f "$MAP_FILE" ]; then
+    line=$(awk -v t="$target" -F'\t' '$1 == t {print; exit}' "$MAP_FILE")
+    if [ -n "$line" ]; then
+        jsonl=$(printf '%s' "$line" | cut -f2)
+        project=$(printf '%s' "$line" | cut -f3)
+        summary=$(printf '%s' "$line" | cut -f4)
+    fi
+fi
+
+# --- header: "[repo] - [summary]" with target tucked at the end ---
+header_label="${project:-$target}"
+[ -n "$summary" ] && header_label="${header_label} - ${summary}"
+printf '%s\n' "${CYAN}${BOLD}── ${header_label} ──${RESET}"
+
 # --- tmux pane state ---
-printf '%s\n' "${CYAN}${BOLD}── tmux ${target} ──────────────────────────────${RESET}"
 # Last ~40 lines of the live pane. -J keeps wrapped lines joined where possible;
 # -S -60 gives a small lookback buffer; tail trims to a manageable preview height.
 tmux capture-pane -p -t "$target" -S -60 -J 2>/dev/null | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -40
 printf '\n'
-
-# --- claude jsonl: last events ---
-jsonl=""
-if [ -f "$MAP_FILE" ]; then
-    # Exact-target match: each row is "<target>\t<jsonl>".
-    jsonl=$(awk -v t="$target" -F'\t' '$1 == t {print $2; exit}' "$MAP_FILE")
-fi
 
 if [ -n "$jsonl" ] && [ -f "$jsonl" ]; then
     printf '%s\n' "${CYAN}${BOLD}── claude: recent events ──────────────────────${RESET}"
