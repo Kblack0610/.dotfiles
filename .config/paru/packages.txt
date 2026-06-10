@@ -22,6 +22,7 @@ zellij
 alacritty
 kitty
 chafa
+imagemagick
 
 # --- Editor ---
 neovim
