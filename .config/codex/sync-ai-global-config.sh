@@ -200,3 +200,7 @@ echo "Synced shared AI rules and MCP config (Claude owned by stow, not this scri
 echo "  Codex:  $CODEX_HOME/AGENTS.md and $CODEX_HOME/config.toml"
 echo "  Gemini: $GEMINI_HOME/GEMINI.md and $GEMINI_HOME/settings.json"
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
+
+# Mirror Claude agents + commands into OpenCode (skills/rules are read natively
+# by OpenCode from ~/.claude; agents/commands have no compat path).
+"$DOTFILES_ROOT/.config/codex/sync-opencode-claude-assets.sh"
