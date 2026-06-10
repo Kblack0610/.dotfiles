@@ -133,7 +133,7 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `deep-research-code` — multi-agent investigation of YOUR OWN systems (code + live infra/tools + web) with a live-verify pass; use for "what'll it take to get X to prod", "why does Y keep failing", "is Z actually fixed", pipeline audits
 
 **Workstreams**
-- `release-captain` — release decisioning + monitoring front door (verbs: status/plan/ship/monitor/retro); risk-lanes batches, drafts go/no-go briefs, watches the bake window; NEVER satisfies human approval gates or pushes tags — `ship` delegates to `placemyparents-release`
+- `release-captain` — release decisioning + monitoring front door (verbs: status/plan/preflight/monitor/retro); risk-lanes batches, drafts go/no-go briefs, watches the bake window; analysis-only — NEVER satisfies human approval gates or pushes tags; `preflight` checks readiness then hands off to user-invoked `placemyparents-release`
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
 - `ui-audit` — coverage-guaranteed UI/UX audit (inventory → matrix → wave walkthrough → findings → triage); artifacts at `~/.agent/evals/{project}/ui-audit-{date}/`; hands off to `bug-bash`
 - `prod-smoke-suite` — `db.sh prod smoke` suite-based regression smoke for placemyparents (10 suites, tRPC + REST); run after every release
@@ -161,6 +161,8 @@ Non-trivial implementation flows through the `kb-*` agent pipeline:
 6. `kb-qa` — verifies quality gates before merge: goal achieved + lint/typecheck/tests/security/docs. Tests-green-but-goal-missed is a BLOCK.
 
 Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents. For headless / CI runs (no human in the loop), invoke the `kb-coordinator` agent — it drives the same pipeline end-to-end and returns a structured JSON result.
+
+Adjacent to the pipeline: the `release-captain` agent (entry skill `/release-captain`) is the **analysis-only release persona** — delegate release-state dashboards, risk-lane batch classification, preflight readiness verdicts, and bake-window monitoring analysis to it. It consumes kb-qa-passed merged work and NEVER executes deploys, pushes tags, or satisfies the human approval gates; execution is always the user invoking `placemyparents-release`.
 
 The kb **Phase-0 ticket step is tracker-agnostic and MCP-first**: the active system (verbs `system|resolve-epic|claim|create|done|pr-line`) is chosen per-repo from `project-map.json` `trackers` (vikunja/jira/clickup/linear/notion/local) — vikunja=home/personal default, clickup="gigantic playground", jira=Deloitte. Two write modes: **drive the system's MCP** per `docs/adapters/<system>.md` when it's connected, else the `ticket` CLI (on PATH; token+curl) as the headless/CI fallback. Never hard-code a ticketing system. Vikunja emits the legacy `Vikunja: <id>` PR line (both modes) for CI compatibility; others emit `Ticket: <System> <id>`. Contract + adapters + how to add one: `~/.dotfiles/.local/src/ticket/docs/contract.md`.
 
