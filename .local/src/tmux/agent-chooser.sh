@@ -336,9 +336,12 @@ for project in "${sorted_projects[@]}"; do
     # so the user sees only the display; on select we recover full target
     # from field 1 to drive tmux switch-client.
     # Project header has empty field 1 (not selectable; pattern-skipped below).
-    agent_list+="\t${COLOR_TITLE}━━━ ${project}${COLOR_RESET}  ${statuses}  ${COLOR_DIM}(${count})${COLOR_RESET}  ${SEP}\n"
+    # No trailing separator bar — sidebar is narrow, every column counts.
+    agent_list+="\t${COLOR_TITLE}━━━ ${project}${COLOR_RESET} ${statuses} ${COLOR_DIM}(${count})${COLOR_RESET}\n"
 
     # Individual agent rows: status, label, short_target, summary.
+    # Single-space gaps, no leading indent — keeps rows on ONE LINE in narrow
+    # sidebars instead of wrapping. The preview pane shows the full content.
     while IFS='|' read -r status target short_target agent_label summary; do
         [ -z "$status" ] && continue
         colored=$(colorize_status "$status")
@@ -347,9 +350,9 @@ for project in "${sorted_projects[@]}"; do
         label_display=""
         [[ "$agent_label" != "[claude]" ]] && label_display="${agent_label} "
         if [[ -n "$summary" ]]; then
-            agent_list+="${target}\t  ${colored} ${label_display}${short_target}  ${COLOR_DIM}${summary}${COLOR_RESET}\n"
+            agent_list+="${target}\t ${colored} ${label_display}${short_target} ${COLOR_DIM}${summary}${COLOR_RESET}\n"
         else
-            agent_list+="${target}\t  ${colored} ${label_display}${short_target}\n"
+            agent_list+="${target}\t ${colored} ${label_display}${short_target}\n"
         fi
     done <<< "$(echo -e "$agents")"
 done
@@ -366,7 +369,6 @@ PREVIEW_SCRIPT="${0%/*}/agent-preview.sh"
 
 # Select with fzf
 selected=$(echo -e "$agent_list" | fzf --reverse --border --cycle \
-    --wrap=word --wrap-sign='↳ ' \
     --prompt='Select agent > ' \
     --header=$'Enter=jump  n=next-attention  C-/ toggle preview  C-d/C-u scroll  ·  \033[1;31m!\033[0m input  \033[1;33m~\033[0m busy  \033[1;32m✓\033[0m idle' \
     --ansi \
