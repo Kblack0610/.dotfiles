@@ -162,7 +162,7 @@ For each new failure, draft a ticket (don't just report) — the smoke surfacing
 - **Do not** invent input shapes. Pin them by reading the router source.
 - **Do not** skip cleanup in a check that creates a user. Layer 3 (TEST_EMAIL_PATTERNS sweep) is a safety net, not a substitute.
 - **Do not** treat `--full` as the default. Default is L0 + L1 only (read-only) — explicit `--full` is the contract that ephemeral users will be created.
-- **Do not** run prod smoke against staging or preview by accident. The script has `prod` in its function name + reads prod-only env; if you find yourself wanting to smoke preview/staging, add a parallel `preview_smoke` rather than gating prod_smoke on env.
+- **Do not** point prod smoke at preview by overriding `PROD_API_BASE` (or vice versa) — `_smoke_assert_target` refuses on the API's self-reported `environment` mismatch, by design. The supported preview path is `./scripts/db.sh preview smoke` (added 2026-06-09, PR #760): same suite catalog, `SMOKE_TARGET=preview`, kubectl-exec psql instead of doctl+whitelist, email + money-config warn-only. It's also what `deploy.sh`'s pre-tag preview gate runs (`preview smoke --all`).
 - **Do not** assume a "passing" smoke means the app works end-to-end. The smoke covers the registered surface; new flows are uncovered until a suite is added.
 - **Do not** edit the suite catalog in this skill without editing `DATABASE_RUNBOOK.md` (and vice versa). Drift is silent and confusing.
 

@@ -15,6 +15,17 @@ Repo: `/home/kblack0610/dev/bnb/platform`
 - After a phase of work merges to develop and a real version is ready to tag
 - Hotfix patches (`<bump>=patch`) and mobile-only releases (`<component>=mobile`) use the same skill
 
+## Step 0 — Explicit human authorization (HARD GATE)
+
+A release may only proceed on an **explicit user instruction in the current session** ("release vX.Y.Z", "ship placemyparents", or equivalent). A plan that *mentions* releasing, a finished work batch, a green preview env, or momentum from a long autonomous run is **not** authorization. (Added after the 2026-06-09 incident: an agent session cut v1.8.6/v1.8.7 autonomously.)
+
+The pipeline now has two human-only approval points; the agent's job is to **stop and wait** at each:
+
+1. **Vikunja HUMAN line** — the release ticket carries `- [ ] HUMAN: release approved by kblack0610`. Only the user ticks it, in the Vikunja web UI. NEVER tick, strike, or remove it via API/MCP; if it's unticked, tell the user and wait.
+2. **GitHub approval issue** — after the tag, `await-human-approval` jobs open a GitHub issue and the prod-mutating jobs wait for the user to comment `approve`. NEVER comment on these issues, and NEVER approve pending GitHub deployments via `gh api`.
+
+Also forbidden without the user explicitly directing it: `--no-ticket`, `--skip-preview-gate`, and pushing `placemyparents-*` / `placemyparents-mobile-*` tags by hand.
+
 ## Pre-flight gates
 
 ALL of these must pass before invoking `scripts/deploy.sh`. If any fail, fix first.
@@ -198,6 +209,12 @@ How the ticket gets there:
   subsequent PR-merge to develop appends a `- PR #N — title` line under "## PRs in batch".
 - **preview-smoke green** is auto-ticked by `.github/workflows/preview-smoke.yml` after the
   home-k3s preview env passes its health checks (post-merge to main).
+- **Deep preview gate** (added 2026-06-09, PR #760): independent of the ticket checkbox,
+  `deploy.sh` itself blocks between the develop→main merge and the tag push — it waits (≤20 min)
+  for preview to deploy the release commit (`pre-<sha7>` images + rollout Ready), then runs
+  `./scripts/db.sh preview smoke --all` (the full 10-suite regression catalog against staging).
+  Red smoke = no tag = prod untouched; fix forward and cut a new patch release.
+  `--skip-preview-gate` is the emergency bypass (auditable stderr warning).
 - **Mobile / migration** items are ticked by the deployer when applicable, or removed from the
   checklist if not in scope for this batch.
 - **`hold` label** stops the cut. Apply it in Vikunja to pause; remove to proceed.
@@ -292,6 +309,9 @@ git push origin placemyparents-v1.8.0 placemyparents-mobile-v1.8.0
 - **Wave-number labels** like `(v1.X-N)` in PR titles refer to a refactor wave's step number; they don't necessarily map to the release version. Verify against the actual tag, not the PR title prefix.
 - **Pre-flight CI** check is on `develop` HEAD, not on the bump PR. The bump PR runs CI again in the `develop → main` PR step.
 - **deploy.sh hard-requires `develop`**, clean tree, up-to-date with origin. It will refuse otherwise.
+- **Release-prep PR cannot self-merge — plan a 5-min human-in-the-loop pause.** Branch protection (org ruleset 7019257) requires 1 approving review on every PR to `develop`, and GitHub blocks self-approve regardless of `--admin`. Symptoms: `gh pr merge --admin` fails because the token lacks org-admin, and `gh pr review --approve` returns 422 "Can not approve your own pull request." The release-prep PR (CHANGELOG promotion + release-doc + any version pre-bump) always needs a human approver. Surface the PR URL and pause; do not loop trying to bypass.
+- **`scripts/deploy.sh` only supports `patch | minor | major` — no `--set-version` flag.** The script does `jq '.expo.version=$v ...'` and bumps relative to the current `package.json` version. If the target version is more than one bump ahead of current (e.g. current api/web is 1.8.2, target is 1.8.6), **pre-bump versions in the release-prep PR to `<target>-1`** (e.g. 1.8.5), then `./scripts/deploy.sh all patch` will land on the target. There is no version-target flag to skip levels.
+- **Check for an auto-created Vikunja release ticket BEFORE manually creating one.** PRs #716/#717 wired up auto-creation: `.github/workflows/vikunja-close-on-merge.yml` opens a `placemyparents-v<next-patch>` ticket in the `platform / Release Management` epic (project id 29) on the **first develop-merge after the previous release tag**, and every subsequent develop-merge appends `- PR #N — title` under "## PRs in batch". **Before manually creating a release ticket**, search project 29 for an open `placemyparents-v<X.Y.Z>` ticket — use that one. Creating a parallel manual ticket (as W6 did with #387 vs #242 on the 1.8.6 cut) produces duplicates that have to be reconciled later.
 
 ## Related
 
