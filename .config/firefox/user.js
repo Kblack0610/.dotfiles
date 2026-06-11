@@ -95,6 +95,9 @@ user_pref("browser.tabs.groups.enabled", true);
 // Values: 0=UNKNOWN (default), 1=ALLOW, 2=DENY/blocks VDI, 3=PROMPT.
 // Per-shortcut clearing also available at about:keyboard (Fx 147+).
 user_pref("permissions.default.shortcuts", 3);
+// Alt-keyup normally focuses the (hidden) menu bar, yanking keyboard focus
+// out of the VDI canvas when Alt+Tab leaks through. Kill that behavior.
+user_pref("ui.key.menuAccessKeyFocuses", false);
 
 // === VERTICAL TABS (native, Firefox 136+) ===
 // Moves tabs to a sidebar and natively hides the horizontal tab bar.

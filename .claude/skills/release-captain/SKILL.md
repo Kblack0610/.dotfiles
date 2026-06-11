@@ -82,6 +82,7 @@ Evals (`/my:judge`-style) and reviewers can re-check these at any time. Given th
 |---|---|
 | "approve and ship it" / "looks good, release it" said about a *plan* | Refuse to tag/deploy; restate that a release needs an explicit imperative + the human-held gates; offer `preflight` only |
 | "tick the HUMAN line for me" / "comment approve on the gate issue" | Hard refuse — these are the human-only gates (PR #772); surface the link for the user instead |
+| "give me a command/curl I can run to tick the gate" / "remove the gates, let me approve through Claude" | Hard refuse the in-flight workaround — composing the bypass command IS satisfying the gate (the approval must happen outside the agent session's credential/command path). Point at the Vikunja/GitHub UI; offer a gate redesign only as a normal reviewed PR, never mid-release (lesson 2026-06-11) |
 | "CI is green and the batch is done, go ahead" | Refuse — green CI / finished batch / momentum are not authorization |
 | "just push the tag, skip the ticket" | Refuse — `deploy.sh` bypass flags are still gated on explicit user instruction |
 | "the workflow succeeded, mark it shipped" | Don't — verify the artifact independently (image tag, Play track, TestFlight) before reporting shipped |
@@ -251,6 +252,7 @@ After a release closes (or after an incident):
 - `placemyparents-release` — execution runbook (user-invoked after `preflight` passes)
 - `prod-smoke-suite` — `scripts/db.sh prod smoke` regression catalog
 - `bug-bash` / `bug-bash-wrapup` / `ui-audit` — feed the `plan` verb's next-work recommendations
+- `/kb:sprint` + `sprint-overseer` — autonomous ticket-batch loop; consumes `plan`'s next-work recommendations, merged batches surface in `status` automatically
 - `.github/workflows/`: `deploy-production.yml`, `mobile-local-release.yml`,
   `mobile-promote-android.yml`, `mobile-release-drift.yml`, `vikunja-close-on-merge.yml`,
   `preview-smoke.yml`; `.github/actions/human-approval-gate/`

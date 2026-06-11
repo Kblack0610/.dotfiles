@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# agent-notify — channel-agnostic notification fan-out for agent workstreams.
+#
+#   agent-notify [-t title] [-p low|normal|high] <message...>
+#
+# Channels (all configured channels fire; unconfigured ones are skipped):
+#   ntfy     — if NTFY_URL is set (full topic URL, e.g. https://ntfy.kblab.me/agents)
+#   Slack    — if SLACK_WEBHOOK_URL is set (incoming-webhook URL)
+#   desktop  — if DISPLAY is set and notify-send exists
+#
+# A notification must never fail a caller: every channel error is swallowed
+# and the script always exits 0. With no channels configured it logs to
+# stderr and exits 0.
+
+set -u
+
+TITLE="agent"
+PRIO="normal"
+
+while getopts ":t:p:" opt; do
+  case "$opt" in
+    t) TITLE="$OPTARG" ;;
+    p) PRIO="$OPTARG" ;;
+    *) ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+MSG="${*:-}"
+if [ -z "$MSG" ]; then
+  echo "agent-notify: no message given" >&2
+  exit 0
+fi
+
+case "$PRIO" in low|normal|high) ;; *) PRIO="normal" ;; esac
+
+sent=0
+
+# ntfy
+if [ -n "${NTFY_URL:-}" ]; then
+  # ntfy priorities: min|low|default|high|max
+  ntfy_prio="default"
+  [ "$PRIO" = low ] && ntfy_prio="low"
+  [ "$PRIO" = high ] && ntfy_prio="high"
+  curl -fsS -m 10 \
+    -H "Title: $TITLE" \
+    -H "Priority: $ntfy_prio" \
+    ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+    -d "$MSG" \
+    "$NTFY_URL" >/dev/null 2>&1 && sent=1
+fi
+
+# Slack incoming webhook
+if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    payload=$(jq -nc --arg t "$TITLE" --arg m "$MSG" '{text: ("*\($t)* — \($m)")}')
+  else
+    # crude fallback: strip double quotes to keep the JSON valid
+    payload=$(printf '{"text":"*%s* — %s"}' "${TITLE//\"/}" "${MSG//\"/}")
+  fi
+  curl -fsS -m 10 -X POST -H 'Content-type: application/json' \
+    --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 && sent=1
+fi
+
+# Desktop
+if [ -n "${DISPLAY:-}" ] && command -v notify-send >/dev/null 2>&1; then
+  urgency="normal"
+  [ "$PRIO" = low ] && urgency="low"
+  [ "$PRIO" = high ] && urgency="critical"
+  notify-send -u "$urgency" "$TITLE" "$MSG" >/dev/null 2>&1 && sent=1
+fi
+
+if [ "$sent" -eq 0 ]; then
+  echo "agent-notify: no channel delivered (set NTFY_URL / SLACK_WEBHOOK_URL or run with DISPLAY): [$TITLE] $MSG" >&2
+fi
+
+exit 0

@@ -134,6 +134,8 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 
 **Workstreams**
 - `release-captain` — release decisioning + monitoring front door (verbs: status/plan/preflight/monitor/retro); risk-lanes batches, drafts go/no-go briefs, watches the bake window; analysis-only — NEVER satisfies human approval gates or pushes tags; `preflight` checks readiness then hands off to user-invoked `placemyparents-release`
+- `/kb:sprint` — autonomous ticket-batch loop: `kb-sprint-owner` builds the queue (one human approval gate) → `kb-coordinator` per ticket → CI monitor + merge → tracker Done; blackboard at `~/.agent/plans/{project}/sprint-{date}.md`
+- `sprint-overseer` — watchdog + single notification voice for sprint runs (verbs: watch/status/escalate/report); observe-only — verifies dispatcher claims against live `gh`/tracker state, notifies via `agent-notify` (ntfy/Slack/desktop), detects stalls; run as `/loop 10m /sprint-overseer watch` in a second session; hands finished batches to `release-captain`
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
 - `ui-audit` — coverage-guaranteed UI/UX audit (inventory → matrix → wave walkthrough → findings → triage); artifacts at `~/.agent/evals/{project}/ui-audit-{date}/`; hands off to `bug-bash`
 - `prod-smoke-suite` — `db.sh prod smoke` suite-based regression smoke for placemyparents (10 suites, tRPC + REST); run after every release
@@ -161,6 +163,8 @@ Non-trivial implementation flows through the `kb-*` agent pipeline:
 6. `kb-qa` — verifies quality gates before merge: goal achieved + lint/typecheck/tests/security/docs. Tests-green-but-goal-missed is a BLOCK.
 
 Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents. For headless / CI runs (no human in the loop), invoke the `kb-coordinator` agent — it drives the same pipeline end-to-end and returns a structured JSON result.
+
+Above the pipeline sits the sprint loop: the `kb-sprint-owner` agent (Sloane) builds a prioritized ticket queue, `/kb:sprint` dispatches `kb-coordinator` per ticket (sequential v1) through merged PR + ticket Done, and the `sprint-overseer` agent (Argus, entry skill `/sprint-overseer`) observes the run and is the single notification voice — it never executes. release-captain stays decoupled: its `plan` next-work output feeds the queue, and merged batches surface in its `status` automatically.
 
 Adjacent to the pipeline: the `release-captain` agent (entry skill `/release-captain`) is the **analysis-only release persona** — delegate release-state dashboards, risk-lane batch classification, preflight readiness verdicts, and bake-window monitoring analysis to it. It consumes kb-qa-passed merged work and NEVER executes deploys, pushes tags, or satisfies the human approval gates; execution is always the user invoking `placemyparents-release`.
 

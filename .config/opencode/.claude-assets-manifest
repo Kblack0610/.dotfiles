@@ -10,6 +10,7 @@ agents/kb-developer.md
 agents/kb-product-owner.md
 agents/kb-qa.md
 agents/kb-reviewer.md
+agents/kb-sprint-owner.md
 agents/learning-guide.md
 agents/monitor.md
 agents/performance-engineer.md
@@ -22,6 +23,7 @@ agents/requirements-analyst.md
 agents/root-cause-analyst.md
 agents/security-engineer.md
 agents/socratic-mentor.md
+agents/sprint-overseer.md
 agents/system-architect.md
 agents/technical-writer.md
 agents/zc-architect.md
@@ -34,6 +36,7 @@ commands/daily/summary.md
 commands/kb/ci-analyze.md
 commands/kb/ci.md
 commands/kb/implement.md
+commands/kb/sprint.md
 commands/kb/workflow.md
 commands/my/claude-edit.md
 commands/my/create.md
