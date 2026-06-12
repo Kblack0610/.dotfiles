@@ -2,8 +2,8 @@
 # Module 2 of 3 in the Win11 bootstrap chain (sync -> install_packages -> apply_configs).
 #
 # Default behavior: install only the minimal Windows-side set (Windows
-# Terminal, GlazeWM, Zebar, Flow Launcher, PowerToys, JetBrainsMono Nerd
-# Font), then provision WSL2 Arch where the dev toolchain lives.
+# Terminal, GlazeWM, Zebar, Flow Launcher, PowerToys), then provision WSL2
+# Arch where the dev toolchain lives.
 #
 # Parameters:
 #   -SkipWsl  Skip WSL/Arch install. Use on day 1 (before WSL2 is enabled
@@ -62,7 +62,6 @@ $MinimalPackages = @(
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Flow-Launcher.Flow-Launcher',    # dmenu-equivalent launcher (Alt+D, see flow-launcher/Settings.json)
     'Microsoft.PowerToys',            # FancyZones / Keyboard Manager / etc. (NOT used as launcher anymore)
-    'DEVCOM.JetBrainsMonoNerdFont',   # font for WT/Zebar/Windows-side editors
     # --- Healix K9S/Freelens cheatsheet (Confluence 1689387031) ----------
     # Auth + Kubernetes access must live on the Windows side because
     # aws-azure-login needs a real browser for SAML+2FA (Puppeteer in WSL

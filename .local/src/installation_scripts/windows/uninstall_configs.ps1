@@ -15,8 +15,8 @@
 #   - Active config copies: Windows Terminal settings, $PROFILE, GlazeWM,
 #     Zebar, .wslconfig (those binaries still run on Windows, and
 #     .wslconfig is *more* relevant under a WSL workflow).
-#   - Microsoft.WindowsTerminal, glzr-io.glazewm, glzr-io.zebar,
-#     DEVCOM.JetBrainsMonoNerdFont (Windows-only desktop tooling).
+#   - Microsoft.WindowsTerminal, glzr-io.glazewm, glzr-io.zebar
+#     (Windows-only desktop tooling).
 #   - marlocarlo.psmux (PowerShell-only; no WSL equivalent).
 #
 # Default mode is dry-run: every destructive call prints "DRY-RUN: would ..."
@@ -118,7 +118,7 @@ if (-not $SkipPackages) {
         Write-Warning 'winget not found - skipping package removal.'
     } else {
         # Curated removal list. Windows-only desktop tooling
-        # (Windows Terminal, GlazeWM, Zebar, JetBrainsMono Nerd Font) is
+        # (Windows Terminal, GlazeWM, Zebar) is
         # intentionally NOT in this list - those have no WSL equivalent
         # and remain in use after the migration.
         $RemovePkgs = @(
