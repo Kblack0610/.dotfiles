@@ -74,6 +74,8 @@ For isolated Linear tickets, use `kb-linear-implementer` (fetch ticket → imple
 
 Entry-point skills: `/kb:workflow` (full flow), `/kb:ticket` (Linear-driven), `/kb:implement` (feature → PR).
 
+The kb Phase-0 ticket step is **tracker-agnostic and MCP-first**: the active system (verbs `system|resolve-epic|claim|create|done|pr-line`) is selected per-repo from `project-map.json` `trackers` (vikunja/jira/clickup/linear/notion/local). Two write modes — drive the system's MCP per `docs/adapters/<system>.md` when connected, else the `ticket` CLI (on PATH; token+curl) as the headless/CI fallback. Never hard-code a ticketing system. Contract + adapters + templates: `~/.dotfiles/.local/src/ticket/docs/contract.md`.
+
 For parallel code exploration or independent research queries, delegate to `Explore` agents.
 
 ## Project Mapping

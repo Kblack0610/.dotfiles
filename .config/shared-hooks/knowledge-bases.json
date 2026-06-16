@@ -51,7 +51,7 @@
     {
       "name": "lab",
       "kind": "local-tree",
-      "root": "~/.lab",
+      "root": "~/.notes/lab",
       "describe": "Incubator for briefs, brainstorm, ideas; pre-canonical artifacts before they graduate to ~/dev/{project}/",
       "backed_by": "git: local repo",
       "subpaths": {

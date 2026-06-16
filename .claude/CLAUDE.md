@@ -97,6 +97,7 @@ When you act on an existing plan, **update the plan file** — mark items comple
 | User prefs (tooling choices, repo paths, workflow style) | self-hosted mem0 at `mem0.kblab.me` (`user_id=kblack0610`) | `mem0-ops` skill — curl `/search?query=...&user_id=kblack0610` early in any session that touches user prefs |
 | Cross-project facts ("project A uses X", client conventions) | self-hosted mem0 (`user_id=kblack0610`, optional `agent_id=<project>`) | Same — `mem0-ops` skill |
 | Project-specific corrections / lessons | `~/.agent/lessons/{project}.md` | SessionStart hook injects last-20 automatically; no tool call needed |
+| Project front door (decisions + why, key URLs, links to every layer) | `~/.agent/anchors/{project}.md` | SessionStart hook injects the whole anchor at turn 1, first; refresh the auto-block with the `project-index` skill |
 | Workflow rules (this file) | `~/.claude/CLAUDE.md`, `AGENTS.md` for non-Claude tools | Auto-loaded |
 | Project runbook docs (auth flow, deploy steps) | Project repo markdown, git-tracked | Read directly when working in that repo |
 | Plans + evals | `~/.agent/plans/{project}/`, `~/.agent/evals/{project}/` | SessionStart hook lists plans; eval format documented below |
@@ -125,19 +126,28 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 **Notes / memory**
 - `notes-system` — `~/.notes` journal (do not hand-write entries into `~/.notes/journal/`)
 - `mem0-ops` — cross-project, cross-tool long-term memory at `mem0.kblab.me`
+- `project-index` — refresh a project's anchor (`~/.agent/anchors/{project}.md`), the per-project memory/index.md front door the SessionStart hook injects at turn 1
 
 **Research**
 - `deep-research` — multi-agent web research (broad/contested questions) with an adversarial verify pass
 - `deep-research-code` — multi-agent investigation of YOUR OWN systems (code + live infra/tools + web) with a live-verify pass; use for "what'll it take to get X to prod", "why does Y keep failing", "is Z actually fixed", pipeline audits
 
 **Workstreams**
+- `release-captain` — release decisioning + monitoring front door (verbs: status/plan/preflight/monitor/retro); risk-lanes batches, drafts go/no-go briefs, watches the bake window; analysis-only — NEVER satisfies human approval gates or pushes tags; `preflight` checks readiness then hands off to user-invoked `placemyparents-release`
+- `/kb:sprint` — autonomous ticket-batch loop: `kb-sprint-owner` builds the queue (one human approval gate) → `kb-coordinator` per ticket → CI monitor + merge → tracker Done; blackboard at `~/.agent/plans/{project}/sprint-{date}.md`
+- `sprint-overseer` — watchdog + single notification voice for sprint runs (verbs: watch/status/escalate/report); observe-only — verifies dispatcher claims against live `gh`/tracker state, notifies via `agent-notify` (ntfy/Slack/desktop), detects stalls; run as `/loop 10m /sprint-overseer watch` in a second session; hands finished batches to `release-captain`
 - `bug-bash`, `bug-bash-wrapup` — per-feature bug hunt + e2e/changelog wrap-up
+- `ui-audit` — coverage-guaranteed UI/UX audit (inventory → matrix → wave walkthrough → findings → triage); artifacts at `~/.agent/evals/{project}/ui-audit-{date}/`; hands off to `bug-bash`
+- `prod-smoke-suite` — `db.sh prod smoke` suite-based regression smoke for placemyparents (10 suites, tRPC + REST); run after every release
 - `placemyparents-release` — production release runbook for placemyparents
 - `bnb-quality-gates` — what is/isn't enforced in the BNB platform monorepo
+- `vikunja-subtask-conform` — conform/restructure a Vikunja project's epic→story→subtask tree to the documented ticket template (BNB ticketing at vikunja.kblab.me, via the `vikunja` MCP)
+- `jira-subtask-conform` — same, for Jira epics via the Atlassian MCP (client projects)
 
 **Authoring / config**
-- `one-pager` — Problem Brief / One-pager / Pitch in `~/.lab/briefs/`
+- `one-pager` — Problem Brief / One-pager / Pitch in `~/.notes/lab/briefs/`
 - `update-rules` — manage AI rules across rulesync overview / project CLAUDE.md / AGENTS.md / user-global, with sync (Claude / Codex / Gemini / OpenCode)
+- `marp-slide` — Marp presentation decks with themes
 
 If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here. The canonical skills index is `ls ~/.dotfiles/.claude/skills/`; keep this list in sync with that directory (the `update-rules` skill can do the diff for you).
 
@@ -153,6 +163,12 @@ Non-trivial implementation flows through the `kb-*` agent pipeline:
 6. `kb-qa` — verifies quality gates before merge: goal achieved + lint/typecheck/tests/security/docs. Tests-green-but-goal-missed is a BLOCK.
 
 Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR). For parallel code exploration, delegate to `Explore` agents. For headless / CI runs (no human in the loop), invoke the `kb-coordinator` agent — it drives the same pipeline end-to-end and returns a structured JSON result.
+
+Above the pipeline sits the sprint loop: the `kb-sprint-owner` agent (Sloane) builds a prioritized ticket queue, `/kb:sprint` dispatches `kb-coordinator` per ticket (sequential v1) through merged PR + ticket Done, and the `sprint-overseer` agent (Argus, entry skill `/sprint-overseer`) observes the run and is the single notification voice — it never executes. release-captain stays decoupled: its `plan` next-work output feeds the queue, and merged batches surface in its `status` automatically.
+
+Adjacent to the pipeline: the `release-captain` agent (entry skill `/release-captain`) is the **analysis-only release persona** — delegate release-state dashboards, risk-lane batch classification, preflight readiness verdicts, and bake-window monitoring analysis to it. It consumes kb-qa-passed merged work and NEVER executes deploys, pushes tags, or satisfies the human approval gates; execution is always the user invoking `placemyparents-release`.
+
+The kb **Phase-0 ticket step is tracker-agnostic and MCP-first**: the active system (verbs `system|resolve-epic|claim|create|done|pr-line`) is chosen per-repo from `project-map.json` `trackers` (vikunja/jira/clickup/linear/notion/local) — vikunja=home/personal default, clickup="gigantic playground", jira=Deloitte. Two write modes: **drive the system's MCP** per `docs/adapters/<system>.md` when it's connected, else the `ticket` CLI (on PATH; token+curl) as the headless/CI fallback. Never hard-code a ticketing system. Vikunja emits the legacy `Vikunja: <id>` PR line (both modes) for CI compatibility; others emit `Ticket: <System> <id>`. Contract + adapters + how to add one: `~/.dotfiles/.local/src/ticket/docs/contract.md`.
 
 **Canonical entry policy:** `/kb:*` is the canonical entry point for non-trivial implementation. The retained `/sc:*` commands are quick standalone utilities, not pipeline entries — do not use them as substitutes for `/kb:workflow` or `/kb:implement`.
 

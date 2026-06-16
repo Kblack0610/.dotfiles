@@ -124,6 +124,11 @@ alias zephyr-env="source ~/zephyr-env/bin/activate"
 # Uses 5th frame for better exposure/brightness
 alias websnap='ffmpeg -f v4l2 -i /dev/video0 -vf "select=gte(n\,5)" -frames:v 1 -f image2pipe -c:v png - 2>/dev/null | wl-copy'
 
+# Terminal image viewers. `icat` = true Kitty graphics (best quality, needs allow-passthrough in tmux).
+# `img` = chafa fallback that works in any terminal/tmux without gibberish.
+alias icat='kitten icat --passthrough=tmux'
+alias img='chafa'
+
 export OLLAMA_HOST=192.168.1.4:11434
 
 # --- Bottom Prompt (Ergonomic) ---

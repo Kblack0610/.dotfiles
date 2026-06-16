@@ -1,0 +1,13 @@
+[Unit]
+Description=Run notes-to-vikunja capture every 15 minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=15min
+RandomizedDelaySec=30s
+AccuracySec=1m
+Persistent=true
+Unit=notes-vikunja.service
+
+[Install]
+WantedBy=timers.target

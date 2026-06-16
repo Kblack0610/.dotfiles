@@ -10,9 +10,18 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
+ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 
 CONTEXT=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
+
+  # Anchor = the project's front door (memory/index.md). Inject first, whole.
+  if [ -f "$ANCHOR_FILE" ]; then
+    echo "=== Anchor: $PROJECT_NAME (project index) ==="
+    cat "$ANCHOR_FILE"
+    echo "=== end anchor ==="
+    echo
+  fi
 
   if [ -d "$PLAN_DIR" ] && [ -n "$(ls -A "$PLAN_DIR" 2>/dev/null)" ]; then
     plan_count=$(ls -1 "$PLAN_DIR" 2>/dev/null | wc -l)

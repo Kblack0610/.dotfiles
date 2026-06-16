@@ -1,11 +1,11 @@
 ---
 name: one-pager
-description: Generate a concise 1-2 page problem doc in one of three formats — Problem Brief (framing only, ~½ page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to ~/.lab/briefs/.
+description: Generate a concise 1-2 page problem doc in one of three formats — Problem Brief (framing only, ~½ page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to ~/.notes/lab/briefs/.
 ---
 
 # one-pager
 
-Produce a short, focused problem doc and save it to `~/.lab/briefs/`. Three formats are supported; pick one before drafting.
+Produce a short, focused problem doc and save it to `~/.notes/lab/briefs/`. Three formats are supported; pick one before drafting.
 
 ## When to use this skill
 
@@ -63,12 +63,12 @@ Run the interview corresponding to the selected format. Reuse anything the user 
 Render the chosen template with the answers, then save to:
 
 ```
-~/.lab/briefs/YYYY-MM-DD-{slug}.md
+~/.notes/lab/briefs/YYYY-MM-DD-{slug}.md
 ```
 
 - `YYYY-MM-DD` = today's date (the `currentDate` value in your context).
 - `{slug}` = lowercase, hyphenated, derived from the title. Strip punctuation; keep ≤ 6 words. Example: title "Hyprland modular split" → slug `hyprland-modular-split`.
-- Create `~/.lab/briefs/` if it doesn't exist (`mkdir -p`).
+- Create `~/.notes/lab/briefs/` if it doesn't exist (`mkdir -p`).
 - If a file with the same name already exists, append `-2`, `-3`, etc. — never overwrite.
 
 After writing, print:
@@ -187,5 +187,5 @@ After writing, print:
 - `kb-product-owner` agent (Paige) — use for full Product Briefs with user stories + acceptance criteria.
 - `requirements-analyst` agent — use for comprehensive PRDs.
 - `kb-architect` agent — use for technical specs and ADRs.
-- `~/.lab/HANDBOOK.md` — incubator conventions.
-- `~/.lab/ideas/_IDEAS.md` — raw idea capture (free-form, predates this skill).
+- `~/.notes/lab/HANDBOOK.md` — incubator conventions.
+- `~/.notes/lab/ideas/_IDEAS.md` — raw idea capture (free-form, predates this skill).

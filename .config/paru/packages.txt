@@ -21,6 +21,8 @@ tmux
 zellij
 alacritty
 kitty
+chafa
+imagemagick
 
 # --- Editor ---
 neovim
@@ -82,7 +84,6 @@ pamixer
 
 # --- Apps ---
 firefox
-obsidian
 dbeaver
 spotify-launcher
 

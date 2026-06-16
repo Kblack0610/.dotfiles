@@ -1,5 +1,17 @@
 {
   "mcpServers": {
+    "vikunja": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@democratize-technology/vikunja-mcp"
+      ],
+      "env": {
+        "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
+        "VIKUNJA_API_TOKEN": "${VIKUNJA_MCP_TOKEN}"
+      }
+    },
     "context7": {
       "type": "stdio",
       "command": "npx",

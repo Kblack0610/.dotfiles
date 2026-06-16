@@ -34,9 +34,32 @@ git_remote_exists() {
 }
 
 setup_ssh() {
-    if [ -f "$SSH_KEY" ]; then
-        export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=$CONNECT_TIMEOUT -o StrictHostKeyChecking=accept-new"
-    fi
+    # Only force the dedicated key for SSH remotes; for HTTPS origins GIT_SSH_COMMAND
+    # is irrelevant and the BatchMode key would just be dead weight.
+    case "$(git remote get-url "$PRIMARY_REMOTE" 2>/dev/null)" in
+        ssh://*|*@*:*)
+            if [ -f "$SSH_KEY" ]; then
+                export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=$CONNECT_TIMEOUT -o StrictHostKeyChecking=accept-new"
+            fi
+            ;;
+    esac
+}
+
+ensure_https_credentials() {
+    # The shared ~/.gitconfig pins credential.helper=osxkeychain (for macOS). On hosts
+    # where that helper binary is absent (Linux), git can't authenticate HTTPS remotes
+    # non-interactively and sync silently fails. Fall back to the file-based 'store'
+    # helper there. Idempotent and repo-local, so it never touches the shared config.
+    case "$(git remote get-url "$PRIMARY_REMOTE" 2>/dev/null)" in
+        https://*)
+            if ! command -v git-credential-osxkeychain >/dev/null 2>&1 \
+               && ! git config --get-all credential.helper | grep -qx store; then
+                git config credential.helper ""        # reset inherited helpers for this repo
+                git config --add credential.helper store
+                log "AUTH: enabled file-based 'store' credential helper for HTTPS sync"
+            fi
+            ;;
+    esac
 }
 
 mkdir -p "$STATE_DIR"
@@ -60,6 +83,8 @@ if ! git_remote_exists "$PRIMARY_REMOTE"; then
     log "ERROR: Primary remote '$PRIMARY_REMOTE' is not configured"
     exit 1
 fi
+
+ensure_https_credentials
 
 BRANCH="${NOTES_SYNC_BRANCH:-$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD)}"
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
@@ -129,8 +154,12 @@ else
 fi
 
 if [ "$backup_enabled" -eq 1 ]; then
-    git push "$BACKUP_REMOTE" "$BRANCH"
-    log "BACKUP: Updated $BACKUP_REMOTE/$BRANCH"
+    # Backup is redundancy; a failure here must not undo a successful primary sync.
+    if git push "$BACKUP_REMOTE" "$BRANCH" 2>>"$LOG_FILE"; then
+        log "BACKUP: Updated $BACKUP_REMOTE/$BRANCH"
+    else
+        log "WARN: Backup push to '$BACKUP_REMOTE' failed (non-fatal)"
+    fi
 else
     log "SKIP: Backup remote '$BACKUP_REMOTE' is not configured"
 fi

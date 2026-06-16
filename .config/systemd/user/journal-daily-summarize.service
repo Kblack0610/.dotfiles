@@ -1,8 +1,9 @@
 [Unit]
-Description=Summarize yesterday's daily journal entry
+Description=Summarize yesterday's daily journal entry (notes CLI)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /home/kblack0610/.notes/journal/scripts/daily_summarize_cleanup.py
-StandardOutput=append:/home/kblack0610/.notes/journal/scripts/daily_summarize.log
-StandardError=append:/home/kblack0610/.notes/journal/scripts/daily_summarize.log
+# Dedup-safe summarize of yesterday into the continuous monthly log.
+# --verbose routes INFO/WARN to the systemd journal:
+#   journalctl --user -u journal-daily-summarize
+ExecStart=%h/.local/bin/notes --verbose summarize

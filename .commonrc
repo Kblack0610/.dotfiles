@@ -106,53 +106,47 @@ export PATH
 #     fortune | cut -c 1-200 | cowsay
 # fi
 
-# 1a. Helper: Link refs to daily note (wiki-style links)
+# 1a/1b. Daily-note helpers — now thin wrappers over the profile-aware `notes` CLI
+# (Rust binary at ~/.dotfiles/.local/src/notes-cli). The binary is the single
+# source of truth for paths/carry-forward; these stay for backward compatibility.
 function link_refs_to_daily() {
-    local DATE=$(date +%Y-%m-%d)
-    local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
-    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
+    command -v notes >/dev/null 2>&1 && notes link-refs
+}
 
-    # Skip if no refs folder or no note
-    [[ ! -d "$REFS_DIR" ]] && return
-    [[ ! -f "$NOTE_FILE" ]] && return
-
-    # Get list of ref files
-    local refs=($(find "$REFS_DIR" -type f -name "*.md" 2>/dev/null))
-    [[ ${#refs[@]} -eq 0 ]] && return
-
-    # Check if ## Refs section already exists
-    if grep -q "^## Refs$" "$NOTE_FILE"; then
-        # Section exists - check which refs are already linked
-        for ref in "${refs[@]}"; do
-            local name=$(basename "$ref" .md)
-            local link="[[journal/refs/$DATE/$name]]"
-            if ! grep -qF "$link" "$NOTE_FILE"; then
-                # Add new ref link under ## Refs section
-                sed -i "/^## Refs$/a - $link" "$NOTE_FILE"
-            fi
-        done
+function ensure_daily_note() {
+    if command -v notes >/dev/null 2>&1; then
+        notes today
     else
-        # Add ## Refs section at end of file
-        {
-            echo ""
-            echo "## Refs"
-            for ref in "${refs[@]}"; do
-                local name=$(basename "$ref" .md)
-                echo "- [[journal/refs/$DATE/$name]]"
-            done
-        } >> "$NOTE_FILE"
+        # Fallback to the legacy script if the binary isn't built on this machine
+        journal-create && legacy_link_refs_to_daily
     fi
 }
 
-# 1b. Helper: Ensure the daily note exists with task carryforward + refs folder
-function ensure_daily_note() {
-    journal-create
-    link_refs_to_daily
+# Legacy ref-linker kept as a fallback for machines without the notes binary built.
+function legacy_link_refs_to_daily() {
+    local DATE=$(date +%Y-%m-%d)
+    local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
+    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
+    [[ ! -d "$REFS_DIR" ]] && return
+    [[ ! -f "$NOTE_FILE" ]] && return
+    local refs=($(find "$REFS_DIR" -type f -name "*.md" 2>/dev/null))
+    [[ ${#refs[@]} -eq 0 ]] && return
+    if grep -q "^## Refs$" "$NOTE_FILE"; then
+        for ref in "${refs[@]}"; do
+            local name=$(basename "$ref" .md)
+            local link="[[journal/refs/$DATE/$name]]"
+            grep -qF "$link" "$NOTE_FILE" || sed -i "/^## Refs$/a - $link" "$NOTE_FILE"
+        done
+    else
+        { echo ""; echo "## Refs"; for ref in "${refs[@]}"; do echo "- [[journal/refs/$DATE/$(basename "$ref" .md)]]"; done; } >> "$NOTE_FILE"
+    fi
 }
 
 # 2. Main: The Dashboard
 function dashboard() {
     ensure_daily_note
+    local NOTE_FILE
+    NOTE_FILE="$(notes path 2>/dev/null || echo "$HOME/.notes/journal/daily/$(date +%Y-%m-%d).md")"
 
     # 2. Define the Columns (Process Substitution variables)
     # Col 1: Cowsay (Removed 'cut' so words aren't sliced. 'fortune -s' keeps it short)
@@ -193,19 +187,39 @@ alias sysz="$HOME/.bin/sysz"
 alias python="/usr/bin/python3"
 alias o="nvim $HOME/.notes"
 
-# Journal helpers (refs are inside journal/)
-alias ref='cd ~/.notes/journal/refs/$(date +%Y-%m-%d) && ls -la'
-alias refs="cd ~/.notes/journal/refs && ls -la"
-alias today='ensure_daily_note && nvim ~/.notes/journal/daily/$(date +%Y-%m-%d).md'
+# Journal helpers — profile-aware: paths come from the `notes` CLI so on a
+# corporate machine (giganticplayground profile) these land in that job's dir.
+# Fall back to the personal vault if the binary isn't built on this machine.
+ref() {  # today's refs subdir
+    local d
+    d="$(notes path refs-today 2>/dev/null)"
+    [ -n "$d" ] || d="$HOME/.notes/journal/refs/$(date +%Y-%m-%d)"
+    mkdir -p "$d" && cd "$d" && ls -la
+}
+refs() {  # refs root
+    local d
+    d="$(notes path refs 2>/dev/null)"
+    [ -n "$d" ] || d="$HOME/.notes/journal/refs"
+    cd "$d" && ls -la
+}
+# `today` is now profile-aware: `notes today` creates/carries-forward, `notes path`
+# resolves the correct daily file for whichever profile this machine uses.
+alias today='ensure_daily_note && nvim "$(notes path)"'
 alias kw="nvim ~/.notes/knowledge"
+# Standing backlogs (tidies done items into ## Done on open) + zettel quick-create
+alias fun='nvim "$(notes backlog fun)"'
+alias co='nvim "$(notes backlog carryover)"'
+alias zk='notes zettel new'
+alias ndoctor='notes doctor'
 
-# Quick ref note creation (inside journal/refs/)
+# Quick ref note creation (inside the active profile's refs/<date>/ dir)
 refnote() {
-    local DATE=$(date +%Y-%m-%d)
     local NAME="${1:-note}"
-    local FILE="$HOME/.notes/journal/refs/$DATE/$NAME.md"
-    mkdir -p "$(dirname "$FILE")"
-    nvim "$FILE"
+    local DIR
+    DIR="$(notes path refs-today 2>/dev/null)"
+    [ -n "$DIR" ] || DIR="$HOME/.notes/journal/refs/$(date +%Y-%m-%d)"
+    mkdir -p "$DIR"
+    nvim "$DIR/$NAME.md"
 }
 
 # Aliases for specific tools and scripts

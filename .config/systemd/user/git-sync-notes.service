@@ -1,5 +1,5 @@
 [Unit]
-Description=Sync ~/.notes through NAS Git primary and backup remote
+Description=Sync ~/.notes through Forgejo (HTTPS) primary and GitHub backup remote
 After=network-online.target
 Wants=network-online.target
 

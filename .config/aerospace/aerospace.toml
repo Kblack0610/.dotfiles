@@ -145,11 +145,6 @@ shift-cmd-9 = 'move-node-to-workspace 9'
     if.app-id = 'com.postmanlabs.mac' 
     run = 'move-node-to-workspace 5'
 
-#Notes
-[[on-window-detected]]
-    if.app-id = 'md.obsidian' 
-    run = 'move-node-to-workspace 6'
-
 #Communication
 [[on-window-detected]]
     if.app-id = 'com.microsoft.teams2'

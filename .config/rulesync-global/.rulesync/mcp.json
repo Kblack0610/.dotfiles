@@ -1,6 +1,19 @@
 {
   "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/mcp-schema.json",
   "mcpServers": {
+    "vikunja": {
+      "description": "Vikunja task management MCP server (self-hosted ticketing)",
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@democratize-technology/vikunja-mcp"
+      ],
+      "env": {
+        "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
+        "VIKUNJA_API_TOKEN": "${VIKUNJA_MCP_TOKEN}"
+      }
+    },
     "context7": {
       "description": "Library documentation search server",
       "type": "stdio",
@@ -47,16 +60,6 @@
       "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp",
       "args": [],
       "env": {
-        "RUST_LOG": "info"
-      }
-    },
-    "web-search": {
-      "description": "Local web search MCP server",
-      "type": "stdio",
-      "command": "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp",
-      "args": [],
-      "env": {
-        "SEARXNG_URL": "http://localhost:8080",
         "RUST_LOG": "info"
       }
     },

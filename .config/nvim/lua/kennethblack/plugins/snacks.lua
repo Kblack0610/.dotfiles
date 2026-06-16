@@ -51,8 +51,9 @@ return {
         enabled = false
       }
     },
-    -- image only works for .png without magick installed
-    image = { enabled = false},
+    -- Renders images inline via Kitty graphics protocol. Needs `imagemagick` for non-PNG formats
+    -- and `allow-passthrough on` in tmux (set in ~/.dotfiles/.tmux.conf).
+    image = { enabled = true },
     lazygit = {
       configure = true,
 

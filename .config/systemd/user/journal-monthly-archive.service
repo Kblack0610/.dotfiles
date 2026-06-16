@@ -1,8 +1,8 @@
 [Unit]
-Description=Archive daily journal entries monthly
+Description=Archive daily journal entries monthly (notes CLI)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /home/kblack0610/.notes/journal/scripts/monthly_summarize_archive.py
-StandardOutput=append:/home/kblack0610/.notes/journal/scripts/monthly_archive.log
-StandardError=append:/home/kblack0610/.notes/journal/scripts/monthly_archive.log
+# Roll the previous calendar month into the monthly summary + move dailies to archive.
+#   journalctl --user -u journal-monthly-archive
+ExecStart=%h/.local/bin/notes --verbose archive

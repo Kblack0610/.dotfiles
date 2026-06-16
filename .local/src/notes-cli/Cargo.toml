@@ -1,0 +1,24 @@
+[package]
+name = "notes"
+version = "0.1.0"
+edition = "2021"
+description = "Profile-aware journal + zettelkasten CLI for the ~/.notes vault"
+
+[[bin]]
+name = "notes"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

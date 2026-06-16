@@ -1,8 +1,8 @@
 session: lab
-root: ~/.lab
+root: ~/.notes/lab
 
 windows:
   - name: lab
-    root: ~/.lab
+    root: ~/.notes/lab
     commands:
-      - nvim ~/.lab
+      - nvim ~/.notes/lab

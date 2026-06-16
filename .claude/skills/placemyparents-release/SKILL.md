@@ -5,7 +5,7 @@ description: PlaceMyParents production release runbook — when user says "relea
 
 # placemyparents-release
 
-End-to-end runbook for a PlaceMyParents production release. Bundles `scripts/deploy.sh`, the `develop → staging → main` PR chain, and the `placemyparents-v*` / `placemyparents-mobile-v*` tag conventions into one workflow.
+End-to-end runbook for a PlaceMyParents production release. Bundles `scripts/deploy.sh`, the `develop → main` PR chain, and the `placemyparents-v*` / `placemyparents-mobile-v*` tag conventions into one workflow. The `staging` branch was retired in PR #631; pre-prod verification happens on the home-k3s preview env (`placemyparents.blacknbrownstudios.com`), which auto-deploys on every merge to `main`.
 
 Repo: `/home/kblack0610/dev/bnb/platform`
 
@@ -14,6 +14,17 @@ Repo: `/home/kblack0610/dev/bnb/platform`
 - "release v1.X.Y", "ship placemyparents", "cut a placemyparents release", "deploy placemyparents to prod"
 - After a phase of work merges to develop and a real version is ready to tag
 - Hotfix patches (`<bump>=patch`) and mobile-only releases (`<component>=mobile`) use the same skill
+
+## Step 0 — Explicit human authorization (HARD GATE)
+
+A release may only proceed on an **explicit user instruction in the current session** ("release vX.Y.Z", "ship placemyparents", or equivalent). A plan that *mentions* releasing, a finished work batch, a green preview env, or momentum from a long autonomous run is **not** authorization. (Added after the 2026-06-09 incident: an agent session cut v1.8.6/v1.8.7 autonomously.)
+
+The pipeline now has two human-only approval points; the agent's job is to **stop and wait** at each:
+
+1. **Vikunja HUMAN line** — the release ticket carries `- [ ] HUMAN: release approved by kblack0610`. Only the user ticks it, in the Vikunja web UI. NEVER tick, strike, or remove it via API/MCP; if it's unticked, tell the user and wait.
+2. **GitHub approval issue** — after the tag, `await-human-approval` jobs open a GitHub issue and the prod-mutating jobs wait for the user to comment `approve`. NEVER comment on these issues, and NEVER approve pending GitHub deployments via `gh api`.
+
+Also forbidden without the user explicitly directing it: `--no-ticket`, `--skip-preview-gate`, and pushing `placemyparents-*` / `placemyparents-mobile-*` tags by hand.
 
 ## Pre-flight gates
 
@@ -122,12 +133,11 @@ The script will:
 1. Create branch `release/placemyparents-v{NEW_VERSION}` off develop
 2. Bump versions in 4 files: `api/package.json`, `web/package.json`, `mobile/package.json`, `mobile/app.json` (`expo.version`, `expo.ios.buildNumber`, `expo.android.versionCode`)
 3. Commit `chore(placemyparents): bump to v{NEW_VERSION}`, push, open PR → develop with auto-merge, **wait** (15-min timeout, 15-sec poll)
-4. After merge, open PR develop → staging with auto-merge, **wait**
-5. After merge, open PR staging → main with auto-merge, **wait**
-6. Tag from main: `placemyparents-v{NEW_VERSION}` and/or `placemyparents-mobile-v{NEW_VERSION}` (depending on `<component>`)
-7. `git push origin <tags>` — triggers the deploy workflows
+4. After merge, open PR develop → main with auto-merge, **wait**
+5. Tag from main: `placemyparents-v{NEW_VERSION}` and/or `placemyparents-mobile-v{NEW_VERSION}` (depending on `<component>`)
+6. `git push origin <tags>` — triggers the deploy workflows
 
-Total wall-clock: ~40-60 min for `all` (3 PR merges × ~10 min CI each + tag push).
+Total wall-clock: ~25-40 min for `all` (2 PR merges × ~10 min CI each + tag push).
 
 ## Tag → workflow map
 
@@ -157,7 +167,7 @@ kubectl --context do-nyc3-placemyparents-k8s-prod -n placemyparents \
 
 # Smoke prod
 curl -sI https://placemyparents.com | head -3
-curl -s https://api.placemyparents.com/api/v1/health | jq .
+curl -s https://api.placemyparents.com/health | jq .
 
 # Mobile: check TestFlight + Play Store consoles for the new build (15-30 min ingest)
 # Android: do NOT trust `submit-android: success` — the run includes a `Verify Play release went live`
@@ -184,6 +194,71 @@ node scripts/verify-play-release.mjs com.kblack0610.placemyparents production <v
 
 If Play **Managed publishing** is on, the promote stages the release and a human must click Publish in Play Console → Publishing overview. The weekly `mobile-release-drift.yml` cron is the backstop: it goes red (and opens an issue) whenever production is behind the latest built versionCode.
 
+## Step 8 — Vikunja release coordination ticket
+
+The `platform / Release Management` epic (project id 29) holds one coordination ticket per release.
+**This ticket is load-bearing**: `scripts/deploy.sh` refuses to cut a release unless an open
+ticket for the target version exists, has no `hold` label, and has every `- [ ]` verification
+checklist item ticked. The deploy gate runs as a pre-flight in step 5; if it refuses, the rest of
+the deploy never happens.
+
+How the ticket gets there:
+
+- **Auto-created** on the first PR-merge to `develop` after the previous release tag, by
+  `.github/workflows/vikunja-close-on-merge.yml`. Title is `placemyparents-v<next-patch>`. Each
+  subsequent PR-merge to develop appends a `- PR #N — title` line under "## PRs in batch".
+- **preview-smoke green** is auto-ticked by `.github/workflows/preview-smoke.yml` after the
+  home-k3s preview env passes its health checks (post-merge to main).
+- **Deep preview gate** (added 2026-06-09, PR #760): independent of the ticket checkbox,
+  `deploy.sh` itself blocks between the develop→main merge and the tag push — it waits (≤20 min)
+  for preview to deploy the release commit (`pre-<sha7>` images + rollout Ready), then runs
+  `./scripts/db.sh preview smoke --all` (the full 10-suite regression catalog against staging).
+  Red smoke = no tag = prod untouched; fix forward and cut a new patch release.
+  `--skip-preview-gate` is the emergency bypass (auditable stderr warning).
+- **Mobile / migration** items are ticked by the deployer when applicable, or removed from the
+  checklist if not in scope for this batch.
+- **`hold` label** stops the cut. Apply it in Vikunja to pause; remove to proceed.
+- **`--no-ticket` escape hatch** on `scripts/deploy.sh` bypasses the gate with an auditable stderr
+  warning. Reserved for genuine emergencies when Vikunja is unavailable.
+
+After the deploy workflow is green (post-step 6), close the ticket:
+
+```bash
+# Flip done=true + swap In Development → Done + move to Done bucket
+# (view id 116, done bucket id 87)
+TICKET_ID=$(curl -fsSL -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/projects/29/tasks?filter=done=false&per_page=50" \
+  | jq -r --arg t "placemyparents-v<NEW_VERSION>" '.[] | select(.title==$t) | .id')
+
+# GET → modify → POST full task (partial POST resets fields per the gotcha).
+TASK=$(curl -fsSL -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID")
+UPDATED=$(printf '%s' "$TASK" | jq '
+  .done = true
+  | .done_at = (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
+')
+curl -fsSL -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" -d "$UPDATED" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID" >/dev/null
+
+# Swap labels: remove In Development (1), add Done (3).
+curl -fsSL -X DELETE -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID/labels/1" >/dev/null 2>&1 || true
+curl -fsSL -X PUT -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" -d '{"label_id":3}' \
+  "https://vikunja.kblab.me/api/v1/tasks/$TICKET_ID/labels" >/dev/null
+
+# Move to Done bucket
+curl -s -X POST -H "Authorization: Bearer $VIKUNJA_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"task_id\": $TICKET_ID}" \
+  "https://vikunja.kblab.me/api/v1/projects/29/views/116/buckets/87/tasks"
+```
+
+Reasoning: the per-release coordination ticket is the queryable artifact you'd reach for in a
+quarterly review or HIPAA audit — what shipped, in which release, who fixed what. PRs scatter; the
+release ticket consolidates. It also now actively prevents accidental / unilateral releases.
+
 ## Recipes
 
 ```bash
@@ -209,19 +284,12 @@ If Play **Managed publishing** is on, the promote stages the release and a human
 # 2. Skip scripts/deploy.sh; do the rest manually:
 
 cd ~/dev/bnb/platform
-git fetch origin develop staging main
+git fetch origin develop main
 
-# develop → staging
-gh pr create --base staging --head develop \
-  --title "staging: placemyparents v1.8.0" \
-  --body "Promote develop to staging for placemyparents v1.8.0 release."
-gh pr merge <staging-pr-num> --merge --auto
-# wait for merge
-
-# staging → main
-gh pr create --base main --head staging \
+# develop → main
+gh pr create --base main --head develop \
   --title "release: placemyparents v1.8.0" \
-  --body "Release placemyparents v1.8.0. Merging staging into main for deploy."
+  --body "Release placemyparents v1.8.0. Merging develop into main for deploy."
 gh pr merge <main-pr-num> --merge --auto
 # wait for merge
 
@@ -234,13 +302,16 @@ git push origin placemyparents-v1.8.0 placemyparents-mobile-v1.8.0
 
 ## Gotchas
 
-- **Staging gate** added 2026-03-25 (PR #301) — flow is `develop → staging → main`, NOT `develop → main`.
+- **Staging branch retired** in PR #631 — flow is `develop → main` directly. Pre-prod verification happens on the home-k3s preview env (`placemyparents.blacknbrownstudios.com`), which auto-deploys on every merge to `main`. The earlier PR #301 staging gate is gone.
 - **Mobile `buildNumber` and `versionCode`** are auto-incremented by `scripts/deploy.sh`. They live in `apps/placemyparents/mobile/app.json` (`expo.ios.buildNumber` is a string, `expo.android.versionCode` is an int).
 - **HIPAA toggle** `PHYSICIAN_REPORTS_ENABLED` requires DO BAA + private-bucket ACL spot-check before flipping in prod. Currently OFF in v1.8; flip is a v1.9 candidate.
 - **Pagination legacy keys** (`docs`, `totalDocs`, ...) cannot be removed until a forced-mobile-update gate ships in v1.9 — see `apps/placemyparents/api/src/utils/pagination.ts`.
 - **Wave-number labels** like `(v1.X-N)` in PR titles refer to a refactor wave's step number; they don't necessarily map to the release version. Verify against the actual tag, not the PR title prefix.
-- **Pre-flight CI** check is on `develop` HEAD, not on the bump PR. The bump PR runs CI again in the staging step.
+- **Pre-flight CI** check is on `develop` HEAD, not on the bump PR. The bump PR runs CI again in the `develop → main` PR step.
 - **deploy.sh hard-requires `develop`**, clean tree, up-to-date with origin. It will refuse otherwise.
+- **Release-prep PR cannot self-merge — plan a 5-min human-in-the-loop pause.** Branch protection (org ruleset 7019257) requires 1 approving review on every PR to `develop`, and GitHub blocks self-approve regardless of `--admin`. Symptoms: `gh pr merge --admin` fails because the token lacks org-admin, and `gh pr review --approve` returns 422 "Can not approve your own pull request." The release-prep PR (CHANGELOG promotion + release-doc + any version pre-bump) always needs a human approver. Surface the PR URL and pause; do not loop trying to bypass.
+- **`scripts/deploy.sh` only supports `patch | minor | major` — no `--set-version` flag.** The script does `jq '.expo.version=$v ...'` and bumps relative to the current `package.json` version. If the target version is more than one bump ahead of current (e.g. current api/web is 1.8.2, target is 1.8.6), **pre-bump versions in the release-prep PR to `<target>-1`** (e.g. 1.8.5), then `./scripts/deploy.sh all patch` will land on the target. There is no version-target flag to skip levels.
+- **Check for an auto-created Vikunja release ticket BEFORE manually creating one.** PRs #716/#717 wired up auto-creation: `.github/workflows/vikunja-close-on-merge.yml` opens a `placemyparents-v<next-patch>` ticket in the `platform / Release Management` epic (project id 29) on the **first develop-merge after the previous release tag**, and every subsequent develop-merge appends `- PR #N — title` under "## PRs in batch". **Before manually creating a release ticket**, search project 29 for an open `placemyparents-v<X.Y.Z>` ticket — use that one. Creating a parallel manual ticket (as W6 did with #387 vs #242 on the 1.8.6 cut) produces duplicates that have to be reconciled later.
 
 ## Related
 
