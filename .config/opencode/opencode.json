@@ -255,18 +255,8 @@
         "--browser",
         "firefox"
       ],
-      "enabled": true,
+      "enabled": false,
       "environment": {}
-    },
-    "filesystem": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp"
-      ],
-      "enabled": true,
-      "environment": {
-        "RUST_LOG": "info"
-      }
     },
     "context7": {
       "type": "local",
@@ -275,26 +265,7 @@
         "-y",
         "@upstash/context7-mcp"
       ],
-      "enabled": true,
-      "environment": {}
-    },
-    "web-search": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/web-search-mcp"
-      ],
-      "enabled": true,
-      "environment": {
-        "SEARXNG_URL": "http://localhost:8080",
-        "RUST_LOG": "info"
-      }
-    },
-    "adb": {
-      "type": "local",
-      "command": [
-        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/adb-mcp"
-      ],
-      "enabled": true,
+      "enabled": false,
       "environment": {}
     }
   }
