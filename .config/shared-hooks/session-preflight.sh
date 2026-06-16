@@ -23,6 +23,27 @@ CONTEXT=$(
     echo
   fi
 
+  # Stranded-sprint detection — surface an in-flight sprint at turn 1 so the user
+  # never has to remember to resume after a crash/outage/process-exit. A row is
+  # non-terminal if its Status is queued|in-progress|pr-open. Best-effort only.
+  if [ -d "$PLAN_DIR" ]; then
+    ACTIVE_SPRINT=""
+    while IFS= read -r sf; do
+      [ -n "$sf" ] || continue
+      if grep -Eq '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$sf" 2>/dev/null; then
+        ACTIVE_SPRINT="$sf"; break
+      fi
+    done < <(ls -1t "$PLAN_DIR"/sprint-*.md 2>/dev/null)
+    if [ -n "$ACTIVE_SPRINT" ]; then
+      n=$(grep -Ec '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$ACTIVE_SPRINT" 2>/dev/null || true)
+      mtime=$(stat -c %Y "$ACTIVE_SPRINT" 2>/dev/null || echo 0)
+      age=$(( ( $(date +%s) - mtime ) / 60 ))
+      echo "⚠ ACTIVE SPRINT: $(basename "$ACTIVE_SPRINT") — ${n:-1} in-flight row(s), last touched ${age}m ago."
+      echo "  Say \"resume\" (or run /captain) to reconcile against live gh/tracker/sentinel state and continue."
+      echo
+    fi
+  fi
+
   if [ -d "$PLAN_DIR" ] && [ -n "$(ls -A "$PLAN_DIR" 2>/dev/null)" ]; then
     plan_count=$(ls -1 "$PLAN_DIR" 2>/dev/null | wc -l)
     echo "Plans: $plan_count file(s) in $PLAN_DIR"

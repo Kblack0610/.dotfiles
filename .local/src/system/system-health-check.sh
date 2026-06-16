@@ -6,7 +6,10 @@ set -euo pipefail
 HOSTNAME=$(hostname)
 DATE=$(date '+%Y-%m-%d %H:%M')
 DATE_FILE=$(date '+%Y-%m-%d-%H%M')
-INBOX_DIR="$HOME/.notes/inbox"
+# Telemetry is runtime state, not durable human notes — keep it out of the
+# ~/.notes vault (it's per-device, ephemeral, and nothing reads the markdown
+# back). Lives under the XDG cache and is pruned to a rolling window.
+OUT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/system-health"
 
 # Collect diagnostics
 LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
@@ -62,9 +65,10 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     done
 fi
 
-# Save to inbox
-mkdir -p "$INBOX_DIR"
-echo "$REPORT" > "$INBOX_DIR/system-health-$DATE_FILE.md"
+# Save to cache (rolling window — prune to the most recent 60 snapshots)
+mkdir -p "$OUT_DIR"
+echo "$REPORT" > "$OUT_DIR/system-health-$DATE_FILE.md"
+ls -1t "$OUT_DIR"/system-health-*.md 2>/dev/null | tail -n +61 | xargs -r rm -f
 
 # Optional: Send to Slack if configured
 if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then

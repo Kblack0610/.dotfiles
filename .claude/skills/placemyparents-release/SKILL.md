@@ -21,8 +21,10 @@ A release may only proceed on an **explicit user instruction in the current sess
 
 The pipeline now has two human-only approval points; the agent's job is to **stop and wait** at each:
 
-1. **Vikunja HUMAN line** — the release ticket carries `- [ ] HUMAN: release approved by kblack0610`. Only the user ticks it, in the Vikunja web UI. NEVER tick, strike, or remove it via API/MCP; if it's unticked, tell the user and wait.
-2. **GitHub approval issue** — after the tag, `await-human-approval` jobs open a GitHub issue and the prod-mutating jobs wait for the user to comment `approve`. NEVER comment on these issues, and NEVER approve pending GitHub deployments via `gh api`.
+1. **Vikunja HUMAN line** — the release ticket carries `- [ ] HUMAN: release approved by kblack0610`. Only the user ticks it. NEVER tick, strike, or remove it via API/MCP; if it's unticked, tell the user and wait.
+2. **GitHub approval issue** — after the tag, `await-human-approval` jobs open a GitHub issue and the prod-mutating jobs wait for the user's approval. NEVER comment on these issues, and NEVER approve pending GitHub deployments via `gh api`.
+
+**The user's designed action is `scripts/release-approve.sh ship <version>`** — the one-command release: from their own terminal, one passphrase prompt ticks the Vikunja HUMAN line, runs `./scripts/deploy.sh` itself (all gates intact), and signs the GitHub gate issues as they open. When the user runs `ship`, the agent's role is release PREP only (CHANGELOG promotion, release doc, preflight) — do not also run deploy.sh. Approval-only mode (`release-approve.sh <version>`, no `ship`) covers the case where the user directs the agent to drive deploy.sh; `issue <N>` for Android promote gates; docs at `docs/deployment/RELEASE_APPROVAL.md`. When the gate action's `approval-key.pub` is committed, the GitHub gate only accepts Ed25519-signed approvals; before that it accepts a bare `approve` comment (legacy mode). Agents must NEVER run `release-approve.sh`, relay its passphrase prompt, or author/merge changes to `.github/actions/human-approval-gate/**` (incl. `approval-key.pub`) without the release owner's explicit instruction. When blocked on approval: tell the user to run the command, and wait.
 
 Also forbidden without the user explicitly directing it: `--no-ticket`, `--skip-preview-gate`, and pushing `placemyparents-*` / `placemyparents-mobile-*` tags by hand.
 

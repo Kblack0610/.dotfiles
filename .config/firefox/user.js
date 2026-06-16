@@ -98,6 +98,10 @@ user_pref("permissions.default.shortcuts", 3);
 // Alt-keyup normally focuses the (hidden) menu bar, yanking keyboard focus
 // out of the VDI canvas when Alt+Tab leaks through. Kill that behavior.
 user_pref("ui.key.menuAccessKeyFocuses", false);
+// Disable Alt+letter menu accelerators entirely (Alt+E=Edit, Alt+T=Tools,
+// Alt+W/R/Q...) so the left-hand Alt row is free for Simple Tab Groups
+// shortcuts. 0 = no menu access key (default 18 = Alt).
+user_pref("ui.key.menuAccessKey", 0);
 
 // === VERTICAL TABS (native, Firefox 136+) ===
 // Moves tabs to a sidebar and natively hides the horizontal tab bar.
