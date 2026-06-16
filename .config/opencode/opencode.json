@@ -199,7 +199,7 @@
     },
     "build": {
       "mode": "primary",
-      "model": "lazer/gpt-5.3-codex",
+      "model": "lazer/claude-sonnet-4.6",
       "reasoningEffort": "high",
       "tools": {
         "write": true,
