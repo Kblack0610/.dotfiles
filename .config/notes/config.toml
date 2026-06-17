@@ -28,6 +28,7 @@ summaries = "journal/summaries"      # → continuous/ and monthly/ live under h
 archive   = "journal/daily_archive"
 zettel    = "journal/permanent"
 index     = "journal/index"
+inbox     = "inbox"                   # dated captures (/remember, /daily:analysis, `notes inbox add`)
 projects  = "lab/projects/current"   # `notes today` auto-links these into ## Current Projects
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
@@ -44,3 +45,4 @@ summaries = "summaries"
 archive   = "log_archive"
 zettel    = "permanent"
 index     = "index"
+inbox     = "inbox"

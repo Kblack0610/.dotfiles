@@ -40,6 +40,8 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "carryover" => p.carryover.clone(),
         "zettel" => p.zettel.clone(),
         "index" => p.index.clone(),
+        "inbox" => p.inbox.clone(),
+        "inbox-today" => p.inbox.join(format!("{}.md", Local::now().date_naive().format("%Y-%m-%d"))),
         _ => return None,
     })
 }
@@ -365,6 +367,7 @@ mod tests {
             zettel: r.join("journal/permanent"),
             index: r.join("journal/index"),
             projects: None,
+            inbox: r.join("inbox"),
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
         }

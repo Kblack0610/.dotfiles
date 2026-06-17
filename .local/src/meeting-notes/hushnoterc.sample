@@ -1,0 +1,27 @@
+# Recommended HushNote config for this machine (CachyOS, RTX 4060 Ti 16GB, Ollama present).
+# HushNote reads `.hushnoterc` from its own repo dir: copy its `.hushnoterc.example`
+# to `.hushnoterc` and merge the lines below. `.hushnoterc` is a sourced shell file.
+
+# --- Audio (PipeWire) ---
+# Capture mic + system output. Pick your source with: pactl list sources short
+# AUDIO_BACKEND="pipewire"
+
+# --- Transcription (faster-whisper) ---
+# base = default/balanced. Bump to small/medium if accuracy matters; large-v3 for max.
+# (Later optimization per the plan: swap STT to your Parakeet-0.6b — not wired here yet.)
+WHISPER_MODEL="small"
+# WHISPER_LANGUAGE="en"   # uncomment to skip auto-detect if meetings start with silence
+
+# --- Summarization (Ollama) ---
+# 14B Q4 fits 16GB comfortably. IMPORTANT: HushNote/Ollama default num_ctx is small and
+# silently truncates long transcripts — prefer a model/Modelfile with a large context,
+# or keep meetings short. qwen2.5:14b is a good default if pulled (`ollama pull qwen2.5:14b`).
+OLLAMA_MODEL="qwen2.5:14b"
+
+# --- mem0 bridge (this repo) ---
+# Runs after every summary; pushes it to self-hosted mem0 for cross-session recall.
+POST_SUMMARY_HOOK="${HOME}/.local/bin/hushnote-mem0-hook"
+
+# mem0 endpoint (LAN/Tailscale only). Override if needed; MEM0_API_KEY only once auth flips on.
+# export MEM0_BASE_URL="https://mem0.kblab.me"
+# export MEM0_API_KEY="..."

@@ -38,10 +38,18 @@ struct RawProfile {
     index: String,
     #[serde(default)]
     projects: Option<String>,
+    /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
+    /// Defaults to `inbox` so configs predating this field keep working.
+    #[serde(default = "default_inbox")]
+    inbox: String,
 }
 
 fn default_profile_name() -> String {
     "personal".to_string()
+}
+
+fn default_inbox() -> String {
+    "inbox".to_string()
 }
 
 /// A fully-resolved profile with absolute paths.
@@ -62,6 +70,7 @@ pub struct Profile {
     pub zettel: PathBuf,
     pub index: PathBuf,
     pub projects: Option<PathBuf>,
+    pub inbox: PathBuf,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
 }
@@ -129,6 +138,7 @@ fn builtin_default() -> RawConfig {
             zettel: "journal/permanent".into(),
             index: "journal/index".into(),
             projects: None,
+            inbox: "inbox".into(),
         },
     );
     RawConfig {
@@ -212,6 +222,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         zettel: join(&rp.zettel),
         index: join(&rp.index),
         projects: rp.projects.as_ref().map(|s| join(s)),
+        inbox: join(&rp.inbox),
         state_dir,
         log_file,
     })
@@ -237,6 +248,7 @@ pub fn print(p: &Profile) {
     println!("archive     {}", p.archive.display());
     println!("zettel      {}", p.zettel.display());
     println!("index       {}", p.index.display());
+    println!("inbox       {}", p.inbox.display());
     println!("summaries   {}", p.summaries.display());
     if let Some(pr) = &p.projects {
         println!("projects    {}", pr.display());
