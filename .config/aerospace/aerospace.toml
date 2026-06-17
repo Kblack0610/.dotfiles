@@ -89,7 +89,12 @@ shift-cmd-l = 'focus-monitor next'
 ################################################################################
 # LAYOUTS
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
-cmd-g = 'layout tiles accordion' 
+cmd-g = 'layout tiles accordion'
+# Flip the focused container between side-by-side and top/bottom
+cmd-slash = 'layout horizontal vertical'
+# i3-style "split": stack the focused window with its neighbor vertically
+ctrl-cmd-j = 'join-with down'
+ctrl-cmd-k = 'join-with up'
 
 ################################################################################
 # WORKSPACES

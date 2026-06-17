@@ -13,6 +13,7 @@ local ensure_installed = is_windows_native and {} or {
   "yamlls",
   "pyright",
   "omnisharp",
+  "bright_script", -- BrightScript/BrighterScript LSP (Roku engine; works on BrightSign .brs too)
 }
 
 return {
@@ -26,7 +27,10 @@ return {
     opts = {
       ensure_installed = ensure_installed,
       automatic_enable = {
-        exclude = { "omnisharp" }, -- handled lazily on cs filetype
+        -- omnisharp: handled lazily on cs filetype.
+        -- bright_script: mason installs the `bsc` binary, but the brighterscript.nvim
+        -- plugin owns the running server (avoids a double-attach on .brs files).
+        exclude = { "omnisharp", "bright_script" },
       },
     },
   },
@@ -53,6 +57,11 @@ return {
 
       vim.lsp.config("eslint", { settings = { format = false } })
       vim.lsp.config("biome", {})
+
+      -- BrightScript: mason installs the `bsc` binary via `ensure_installed` above;
+      -- the brighterscript.nvim plugin (lua/kennethblack/plugins/brightscript.lua)
+      -- registers and enables the server. Excluded from automatic_enable so it only
+      -- attaches once.
 
       -- omnisharp for Unity/C# - install via setup-unity-omnisharp.sh
       vim.api.nvim_create_autocmd("FileType", {
