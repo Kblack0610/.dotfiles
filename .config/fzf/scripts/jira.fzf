@@ -1,0 +1,231 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# MIT License
+#
+# Copyright (c) 2026 Junegunn Choi
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+require 'optparse'
+require 'time'
+require 'json'
+require 'net/http'
+require 'shellwords'
+
+gems = %w[ansi256 base64]
+begin
+  gems.each { require it }
+rescue LoadError
+  require 'bundler/inline'
+  gemfile(true) do
+    source 'https://rubygems.org'
+    gems.each { gem it }
+  end
+end
+
+# Jira meets fzf
+class JiraFzf
+  COLUMNS = ENV.fetch('FZF_PREVIEW_COLUMNS', 80).to_i
+  SEPARATOR = "\n#{'━' * COLUMNS}\n\n".freeze
+  ZWSP = "\u200B"
+
+  def initialize
+    @options = { lines: 10, limit: 1000, query: '', color: true }
+    OptionParser.new do |opts|
+      opts.banner = "Usage: #{$PROGRAM_NAME} URL [JQL|PROJECT...]"
+      opts.on('-u', '--user={USER:PASSWORD,PAT}', 'User name and password (user:password) or PAT') do |v|
+        @options[:auth] = v
+      end
+      opts.on('-q', '--query=QUERY', 'Initial query') do |v|
+        @options[:query] = v
+      end
+      opts.on('--lines=NUM_LINES', 'Number of lines of description to show') do |v|
+        @options[:lines] = [0, v.to_i].max
+      end
+      opts.on('--limit=MAX_ITEMS', 'Maximum number of items to fetch') do |v|
+        @options[:limit] = [0, v.to_i].max
+      end
+      opts.on('--print=ISSUE', '(for preview) Print issue description and comments') do |v|
+        @options[:print] = v
+      end
+      opts.on('--no-color', 'Disable colored output') do
+        @options[:color] = false
+      end
+      opts.parse!
+      abort(opts.help) if ARGV.length < (@options[:print] ? 1 : 2)
+    end
+
+    @url, *args = ARGV
+    @url = @url.chomp('/')
+    @jql = if args.all? { it.match?(/\A[A-Z]+\z/) }
+             "project in (#{args.join(', ')}) order by updated desc"
+           else
+             args.join(' OR ')
+           end
+    @headers = {
+      'Content-Type' => 'application/json',
+      'Authorization' =>
+        case @options[:auth]
+        when nil then nil
+        when /:/ then "Basic #{Base64.encode64(@options[:auth])}"
+        else "Bearer #{@options[:auth]}"
+        end
+    }.compact
+  end
+
+  def run
+    Ansi256.enabled = @options[:color]
+    issue = @options[:print]
+    if issue
+      print_issue(issue)
+      puts SEPARATOR
+      print_comments(issue)
+    else
+      IO.popen(fzf, 'r+') do |io|
+        $stdout = io
+        search
+      end
+    end
+  end
+
+  private
+
+  def search
+    params = {
+      jql: @jql,
+      fields: %w[summary status creator assignee description created updated]
+    }
+    paged('/rest/api/2/search', params) do |result|
+      result[:issues].each do |issue|
+        print_issue_formatted(issue, listed: true, head: @options[:lines])
+        print "\x0"
+      end
+    end
+  end
+
+  def print_issue(id)
+    issue = get_path("/rest/api/2/issue/#{id}")
+    print_issue_formatted(issue, listed: false, fun: :itself)
+    puts
+  end
+
+  def print_comments(id)
+    idx = 0
+    paged("/rest/api/2/issue/#{id}/comment") do |result|
+      result => { comments:, total: }
+      comments.each do |comment|
+        idx += 1
+        comment => { author: { displayName: }, body:, created: }
+        puts("[#{idx}/#{total}] #{displayName.blue} #{format_time(created).magenta}")
+        puts(body.each_line.map(&:chomp))
+        puts SEPARATOR
+      end
+    end
+
+    puts 'No comments found' if idx.zero?
+  end
+
+  def fzf
+    auth = @options[:auth] ? " -u #{@options[:auth].shellescape}" : ''
+    <<~CMD
+      fzf --ansi --read0 --multi --info inline-right --reverse --scheme history \\
+          --delimiter "#{ZWSP}" --with-nth ..4 \\
+          --highlight-line --height 100% --wrap word \\
+          --gap --border --border-label " "#{@jql.shellescape}" " \\
+          --tiebreak begin \\
+          --header '╱ CTRL-Y: Copy to clipboard ╱ CTRL-V: View ╱ CTRL-O: Expand/collapse ╱ CTRL-/: Toggle preview ╱' \\
+          --header-border bottom \\
+          --query #{@options[:query].shellescape} \\
+          --preview-window hidden,wrap-word \\
+          --preview 'ruby #{__FILE__.shellescape} #{auth} #{@url} --print={1}' \\
+          --bind 'ctrl-o:change-with-nth:..5|..|..3|' \\
+          --bind ctrl-/:toggle-preview \\
+          --bind 'enter:execute-silent(for key in {+1}; do open #{@url}/browse/$key; done)+clear-selection' \\
+          --bind 'ctrl-y:execute-silent(echo -n {+1} | pbcopy)+clear-selection+bell' \\
+          --bind 'ctrl-v:execute:ruby #{__FILE__.shellescape} #{auth} #{@url} --print={1} --no-color | view - --not-a-term +"setf jira"' \\
+          --bind 'click-header:transform:
+            [[ $FZF_CLICK_HEADER_WORD =~ CTRL ]] && echo "trigger(${FZF_CLICK_HEADER_WORD%:})"
+          ' \\
+          --bind 'result:bg-transform-footer:[[ $FZF_MATCH_COUNT -gt 0 ]] && sort {*f2} | uniq -c | sort -nrk2' \\
+          --with-shell 'bash -c'
+    CMD
+  end
+
+  def print_issue_formatted(issue, head: nil, listed:, fun: :dim)
+    zwsp = listed ? ZWSP : ''
+    issue => {
+      key:,
+      fields: { summary:, status:, creator:, assignee:, description:, updated:, created: }
+    }
+    puts [key.red.bold, format_status(status[:name]), summary.bold].map { it + zwsp }.join('  ')
+    print [format_time(created).magenta,
+           format_time(updated).magenta,
+           creator&.fetch(:name)&.blue,
+           assignee&.fetch(:name)&.cyan].compact.join(' ╱ ')
+    puts zwsp
+    puts SEPARATOR unless listed
+    return unless description
+
+    lines = description.lines.map { _1.chomp.send(fun) }
+    if head
+      puts lines.take(head)
+      print zwsp
+      puts lines.drop(head)
+    else
+      puts lines
+    end
+  end
+
+  def format_time(time)
+    Time.parse(time).localtime.strftime('%Y-%m-%d %H:%M:%S')
+  end
+
+  def get_path(path, params = nil)
+    uri = URI(@url + path)
+    uri.query = URI.encode_www_form(params) if params
+    JSON.parse(Net::HTTP.get(uri, @headers), symbolize_names: true)
+  end
+
+  def paged(path, params = {})
+    params[:startAt] ||= 0
+    params[:maxResults] ||= [@options[:limit], 100].min
+
+    loop do
+      result = get_path(path, params).tap { yield(it) }
+      params[:startAt] += params[:maxResults]
+      break if params[:startAt] >= [result[:total], @options[:limit]].min
+    rescue Errno::EPIPE
+      break
+    end
+  end
+
+  def format_status(status)
+    status_colors = {
+      CLOSED: :green,
+      RESOLVED: :green,
+      IN_PROGRESS: :yellow
+    }
+    status = status.gsub(' ', '_').upcase.to_sym
+    "(#{status})".send(status_colors[status] || :white).bold
+  end
+end
+
+jira = JiraFzf.new
+jira.run
