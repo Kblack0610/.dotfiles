@@ -67,8 +67,14 @@ return {
       -- BrightScript/BrighterScript formatter (RokuCommunity bsfmt). It has no stdin
       -- mode, so format the tempfile in place with --write; honors a project bsfmt.json.
       -- Install: :MasonInstall brighterscript-formatter (or npm i -g).
+      -- Resolve Mason's bin directly so it works regardless of when Mason patches PATH;
+      -- otherwise an early format falls back to the LSP (which provides no formatting) and
+      -- errors with "no matching language servers".
       bsfmt = {
-        command = "bsfmt",
+        command = function()
+          local mason = vim.fn.stdpath("data") .. "/mason/bin/bsfmt"
+          return vim.fn.executable(mason) == 1 and mason or "bsfmt"
+        end,
         args = { "--write", "$FILENAME" },
         stdin = false,
       },
