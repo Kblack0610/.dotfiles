@@ -1,9 +1,10 @@
 -- BrightScript / BrighterScript: syntax highlighting + LSP (brighterscript `bsc`).
--- Local dir during development; switch to "kblack0610/brighterscript.nvim" after publish.
+-- Remote plugin. `dev = true` uses ~/dev/brighterscript.nvim when that checkout exists
+-- (live development); otherwise lazy clones the published repo (dev.fallback in init.lua).
 return {
   {
-    dir = vim.fn.expand("~/dev/brighterscript.nvim"),
-    name = "brighterscript.nvim",
+    "Kblack0610/brighterscript.nvim",
+    dev = true,
     ft = "brightscript",
     init = function()
       -- ensure .bs also resolves to the brightscript filetype before the ft-load fires
