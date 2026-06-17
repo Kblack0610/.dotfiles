@@ -39,6 +39,15 @@ return {
       mode = "",
       desc = "Format buffer",
     },
+    {
+      -- Same as <leader>lf: run conform (bsfmt etc.), falling back to LSP formatting only
+      -- when no conform formatter exists. Prevents the "no matching language servers"
+      -- error on filetypes the LSP can't format (e.g. brightscript -> bsfmt).
+      "<leader>f",
+      function() require("conform").format({ async = true, lsp_fallback = true }) end,
+      mode = "",
+      desc = "Format buffer",
+    },
   },
   ---@module "conform"
   ---@type conform.setupOpts
@@ -77,6 +86,12 @@ return {
         end,
         args = { "--write", "$FILENAME" },
         stdin = false,
+        -- bsfmt reads bsfmt.json from its CWD, not the file's dir. Run it from the
+        -- nearest dir holding a bsfmt.json/bsconfig.json/manifest so project style
+        -- (e.g. 2-space indent) is honored instead of bsfmt's 4-space default.
+        cwd = function(_, ctx)
+          return vim.fs.root(ctx.dirname, { "bsfmt.json", "bsconfig.json", "manifest" })
+        end,
       },
       oxfmt = {
         command = function(_, ctx)
