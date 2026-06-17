@@ -2,7 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "lazer/claude-opus-4.6",
   "small_model": "lazer/minimax-m2.7",
-  "enabled_providers": ["lazer", "litellm"],
+  "enabled_providers": [
+    "lazer",
+    "litellm"
+  ],
   "compaction": {
     "auto": true,
     "prune": false,
@@ -38,15 +41,30 @@
             "output": 25
           },
           "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
           },
           "variants": {
-            "high": { "reasoningEffort": "high" },
-            "low": { "reasoningEffort": "low" },
-            "max": { "reasoningEffort": "max" },
-            "medium": { "reasoningEffort": "medium" },
-            "minimal": { "reasoningEffort": "minimal" }
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            }
           }
         },
         "claude-sonnet-4.6": {
@@ -66,15 +84,30 @@
             "output": 15
           },
           "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
           },
           "variants": {
-            "high": { "reasoningEffort": "high" },
-            "low": { "reasoningEffort": "low" },
-            "max": { "reasoningEffort": "max" },
-            "medium": { "reasoningEffort": "medium" },
-            "minimal": { "reasoningEffort": "minimal" }
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            }
           }
         },
         "gpt-5.3-codex": {
@@ -95,16 +128,33 @@
             "output": 14
           },
           "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
           },
           "variants": {
-            "high": { "reasoningEffort": "high" },
-            "low": { "reasoningEffort": "low" },
-            "medium": { "reasoningEffort": "medium" },
-            "minimal": { "reasoningEffort": "minimal" },
-            "none": { "reasoningEffort": "none" },
-            "xhigh": { "reasoningEffort": "xhigh" }
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            }
           }
         },
         "gemini-3.1-pro": {
@@ -124,14 +174,30 @@
             "output": 12
           },
           "modalities": {
-            "input": ["text", "image", "video", "audio", "pdf"],
-            "output": ["text"]
+            "input": [
+              "text",
+              "image",
+              "video",
+              "audio",
+              "pdf"
+            ],
+            "output": [
+              "text"
+            ]
           },
           "variants": {
-            "high": { "reasoningEffort": "high" },
-            "low": { "reasoningEffort": "low" },
-            "medium": { "reasoningEffort": "medium" },
-            "off": { "reasoningEffort": "none" }
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "off": {
+              "reasoningEffort": "none"
+            }
           }
         },
         "minimax-m2.7": {
@@ -151,17 +217,30 @@
             "output": 1.2
           },
           "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
           },
           "interleaved": {
             "field": "reasoning_content"
           },
           "variants": {
-            "high": { "reasoningEffort": "high" },
-            "low": { "reasoningEffort": "low" },
-            "medium": { "reasoningEffort": "medium" },
-            "none": { "reasoningEffort": "none" }
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "none": {
+              "reasoningEffort": "none"
+            }
           }
         }
       }
@@ -296,6 +375,19 @@
       ],
       "enabled": true,
       "environment": {}
+    },
+    "vikunja": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@democratize-technology/vikunja-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
+        "VIKUNJA_API_TOKEN": "{env:VIKUNJA_MCP_TOKEN}"
+      }
     }
   }
 }

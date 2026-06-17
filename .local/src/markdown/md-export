@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# md-export — turn a markdown file into a polished, client-ready document.
+#
+# Wraps pandoc with a shared client-facing stylesheet (theme.css next to this
+# script). HTML output is fully self-contained (images/CSS embedded) so it is
+# safe to email; PDF is rendered with weasyprint using the *same* CSS, so the
+# two formats look identical and no LaTeX is required.
+#
+# Usage:
+#   md-export html  IN.md [OUT.html]   Self-contained HTML (default OUT: IN.html)
+#   md-export pdf   IN.md [OUT.pdf]    PDF via weasyprint        (default OUT: IN.pdf)
+#   md-export both  IN.md              Emit IN.html and IN.pdf
+#   md-export --css FILE <cmd> ...     Override the stylesheet for this run
+#   md-export --help                   Show this help
+#
+# Slides are a separate path: use the `marp` CLI or the `marp-slide` skill, e.g.
+#   marp -s -w deck.md      # live present (server + watch)
+#   marp deck.md -o deck.pdf|--pptx
+#
+# Requires: pandoc, weasyprint (brew install pandoc weasyprint).
+
+set -euo pipefail
+
+# Resolve this script's real directory, following symlinks (portable; macOS has
+# no GNU `readlink -f`). md-export is invoked via a symlink in ~/.local/bin.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+CSS="${SCRIPT_DIR}/theme.css"
+
+die() { printf 'md-export: %s\n' "$*" >&2; exit 1; }
+
+usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (brew install $1)"; }
+
+# --- parse global flags ------------------------------------------------------
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --css) CSS="${2:?--css needs a file}"; shift 2 ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+CMD="${1:-}"; [[ -n "$CMD" ]] || { usage; exit 1; }
+shift || true
+
+[[ -f "$CSS" ]] || die "stylesheet not found: $CSS"
+
+export_html() {
+  local in="$1" out="${2:-${1%.*}.html}"
+  need pandoc
+  pandoc "$in" -o "$out" --standalone --embed-resources --css "$CSS" \
+    --metadata title="$(basename "${in%.*}")"
+  printf 'wrote %s\n' "$out"
+}
+
+export_pdf() {
+  local in="$1" out="${2:-${1%.*}.pdf}"
+  need pandoc; need weasyprint
+  pandoc "$in" -o "$out" --pdf-engine=weasyprint --css "$CSS"
+  printf 'wrote %s\n' "$out"
+}
+
+case "$CMD" in
+  html) [[ -n "${1:-}" ]] || die "html: need IN.md"; [[ -f "$1" ]] || die "no such file: $1"; export_html "$@" ;;
+  pdf)  [[ -n "${1:-}" ]] || die "pdf: need IN.md";  [[ -f "$1" ]] || die "no such file: $1"; export_pdf  "$@" ;;
+  both) [[ -n "${1:-}" ]] || die "both: need IN.md"; [[ -f "$1" ]] || die "no such file: $1"
+        export_html "$1"; export_pdf "$1" ;;
+  *) die "unknown command: $CMD (try --help)" ;;
+esac
