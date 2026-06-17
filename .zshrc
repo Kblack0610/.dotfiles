@@ -164,3 +164,16 @@ export PATH="$HOME/.local/bin:$PATH"
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+
+# --- AWS dev access via Windows aws-azure-login (VDI+WSL bridge) ---
+# Run on Windows first:  aws-azure-login --profile dev --mode gui  (re-run ~every 12h)
+export AWS_SHARED_CREDENTIALS_FILE=/mnt/c/Users/keblack/.aws/credentials
+export AWS_CONFIG_FILE=/mnt/c/Users/keblack/.aws/config
+
+# --- Secret Service for bitbucket-cli / libsecret (WSL has no desktop session) ---
+# Starts gnome-keyring's secrets component on the session bus if not already up.
+# login.keyring has an empty password so it auto-unlocks (no prompt).
+if command -v gnome-keyring-daemon >/dev/null 2>&1 && \
+   ! busctl --user list 2>/dev/null | grep -q org.freedesktop.secrets; then
+  printf '\n' | gnome-keyring-daemon -d --unlock --components=secrets >/dev/null 2>&1
+fi

@@ -128,6 +128,10 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `mem0-ops` — cross-project, cross-tool long-term memory at `mem0.kblab.me`
 - `project-index` — refresh a project's anchor (`~/.agent/anchors/{project}.md`), the per-project memory/index.md front door the SessionStart hook injects at turn 1
 
+**Jira / tickets**
+- `jira-ticket-pipeline` — CREATE new tickets in the Feature → Story → Sub-task pipeline shape (Story + technical Sub-tasks under a Feature, with body templates + branch slugs); reads the project's `workflow.md` / `CLAUDE.local.md`
+- `jira-subtask-conform` — reshape EXISTING tickets to that shape; optionally label sub-tasks In Development vs Blocked
+
 **Research**
 - `deep-research` — multi-agent web research (broad/contested questions) with an adversarial verify pass
 - `deep-research-code` — multi-agent investigation of YOUR OWN systems (code + live infra/tools + web) with a live-verify pass; use for "what'll it take to get X to prod", "why does Y keep failing", "is Z actually fixed", pipeline audits

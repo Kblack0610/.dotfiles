@@ -118,14 +118,17 @@ keybindings:
     bindings: ["alt+f"]
 
   # Focus
+  # NOTE: alt+hjkl is intentionally NOT bound here — those keys pass through to
+  # the terminal so tmux can use M-hjkl for select-pane (.tmux.conf:26-29).
+  # GlazeWM window focus lives on ctrl+alt+hjkl (+ ctrl+alt+arrows) instead.
   - commands: ["focus --direction left"]
-    bindings: ["alt+h", "alt+left"]
+    bindings: ["ctrl+alt+h", "ctrl+alt+left"]
   - commands: ["focus --direction right"]
-    bindings: ["alt+l", "alt+right"]
+    bindings: ["ctrl+alt+l", "ctrl+alt+right"]
   - commands: ["focus --direction up"]
-    bindings: ["alt+k", "alt+up"]
+    bindings: ["ctrl+alt+k", "ctrl+alt+up"]
   - commands: ["focus --direction down"]
-    bindings: ["alt+j", "alt+down"]
+    bindings: ["ctrl+alt+j", "ctrl+alt+down"]
 
   # Move (ctrl+shift — alt+shift was eaten by Windows input-language toggle)
   - commands: ["move --direction left"]

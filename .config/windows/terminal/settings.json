@@ -15,8 +15,8 @@
     "profiles": {
         "defaults": {
             "font": {
-                "face": "JetBrainsMono Nerd Font",
-                "size": 20
+                "face": "Cascadia Mono",
+                "size": 18
             },
             "colorScheme": "Dracula",
             "useAcrylic": false,

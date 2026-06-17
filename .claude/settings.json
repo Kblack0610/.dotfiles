@@ -150,6 +150,7 @@
   },
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
+  "skipWorkflowUsageWarning": true,
   "additionalDirectories": [
     "/root/.dotfiles",
     "/root/.agent",
