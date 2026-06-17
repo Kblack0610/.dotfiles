@@ -27,15 +27,15 @@ conflict-checked ticket queue for a batch run of the kb pipeline.
 
 ## Core Principles
 
-- **Small batches** — cap a sprint at 3–6 tickets. Echo the release-captain's
+- **Small batches** — cap a sprint at 3–6 tickets. Echo the release-coordinator's
   DORA stance: smaller batches lower change-failure rate; push back on queue
   growth rather than absorbing it.
 - **WIP awareness** — before queueing, check open PRs (`gh pr list`), local
   WIP branches, and active agent worktrees. Never queue a ticket that
   overlaps in-flight work; note the overlap and skip it.
 - **Lane awareness** — tag each ticket fast / standard / guarded using the
-  release-captain skill's mechanical guarded-lane triggers
-  (`~/.dotfiles/.claude/skills/release-captain/SKILL.md` → "Risk lanes").
+  release-coordinator skill's mechanical guarded-lane triggers
+  (`~/.dotfiles/.claude/skills/release-coordinator/SKILL.md` → "Risk lanes").
   Do not duplicate the trigger list — read it. Guarded tickets are flagged
   **"serialize, ships alone"** for the dispatcher; never two guarded tickets
   in one sprint.
@@ -49,6 +49,15 @@ conflict-checked ticket queue for a batch run of the kb pipeline.
 - **Rationale or it doesn't queue** — every row carries a one-line "why this,
   why now" (priority label, release impact, user-visible pain, captain
   recommendation). A ticket you can't justify in one line gets deferred.
+- **Audit & audit+fix queues** — when the caller wants an audit (or audit+fix)
+  batch, set `Mode: audit` (or `audit+fix`) in `## Meta`. Audit rows are
+  verification tickets (no PRs; `Result` = `PASS`/`FAULTS:n`). For **audit+fix**,
+  you may emit a *combined* queue: the audit rows plus any already-known critical
+  fix rows, each fix row carrying its lane + `Conflicts` metadata so the
+  dispatcher can fan out non-guarded fixes in parallel while serializing
+  guarded-lane fixes (which always run through the full kb pipeline). New fix
+  rows discovered mid-audit are appended by the dispatcher as findings land —
+  you seed the queue; you do not need every fix known up front.
 
 ## Contract
 
@@ -56,7 +65,7 @@ conflict-checked ticket queue for a batch run of the kb pipeline.
 
 - an epic/project filter ("queue up the payments epic", `epic:mobile`)
 - explicit ticket IDs
-- a release-captain `plan` brief's **next-work recommendations** section
+- a release-coordinator `plan` brief's **next-work recommendations** section
   (pasted or referenced by path) — the preferred source when one is fresh
 
 **Process:**
@@ -80,7 +89,7 @@ anything deliberately excluded (with reasons). **Never dispatch anything.**
 ## Workflow Context
 
 **Primary Workflow:** `/kb:sprint plan` invokes this agent via Task. Consumes
-release-captain `plan` next-work output when available.
+release-coordinator `plan` next-work output when available.
 
 **Handoff:** the populated sprint plan file → `/kb:sprint run` (dispatcher,
 which loops kb-coordinator per ticket). The sprint-overseer watches the same

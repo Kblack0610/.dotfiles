@@ -40,7 +40,7 @@ Required fields: `NAME`, `KIND`, `COMMAND`.
 | `DESCRIPTION` | no       | empty                           | Human-readable description                              |
 | `SCHEDULE`    | oneshot  | empty                           | systemd `OnCalendar=` expression (e.g. `*-*-* 03:00:00`)|
 | `AUTOSTART`   | persist  | `no`                            | `yes` to enable on boot                                 |
-| `INBOX`       | no       | `$HOME/.notes/inbox/<name>`     | Directory for the agent's own activity log             |
+| `INBOX`       | no       | `$HOME/.local/state/agentctl/<name>` | Directory for the agent's own activity log (runtime state, NOT the `~/.notes` capture inbox) |
 
 ### Example: oneshot
 
@@ -51,7 +51,7 @@ KIND=oneshot
 DESCRIPTION='Distill eval corpus to lessons + mem0 entries'
 COMMAND='claude --print /dream'
 SCHEDULE='*-*-* 03:00:00'
-INBOX="$HOME/.notes/inbox/dream"
+INBOX="$HOME/.local/state/agentctl/dream"
 ```
 
 ### Example: persistent
@@ -63,7 +63,7 @@ KIND=persistent
 DESCRIPTION='Watch foo, alert on bar'
 COMMAND="$HOME/.local/bin/my-monitor-loop"
 AUTOSTART=yes
-INBOX="$HOME/.notes/inbox/monitor"
+INBOX="$HOME/.local/state/agentctl/monitor"
 ```
 
 ## Subcommands
@@ -104,12 +104,18 @@ reload.
 | Per-agent configs | `~/.config/agentctl/agents/*.conf` (stowed)                |
 | Generated timers | `~/.config/systemd/user/agentctl-<name>.timer` (machine-local) |
 | Captured stdout/stderr | `~/.local/state/agentctl/<name>.{stdout,stderr}.log`     |
-| Agent inboxes  | `~/.notes/inbox/<name>/activity.log` (agent-written)          |
+| Agent activity logs | `~/.local/state/agentctl/<name>/activity.log` (agent-written) |
 
-## Inbox convention
+## Activity-log convention
 
-The template unit sets `AGENTCTL_INBOX=$HOME/.notes/inbox/<name>`. Your
-agent script can write whatever it likes there. The recommended pattern
+> **Naming note:** the `INBOX`/`AGENTCTL_INBOX` field is the agent's own
+> *runtime activity log* directory — `~/.local/state/agentctl/<name>` (the
+> runtime axis). It is **not** the `~/.notes` capture inbox (that one holds
+> dated human/agent captures and is managed by `notes inbox`). Telemetry and
+> agent logs never go in the notes vault.
+
+The template unit sets `AGENTCTL_INBOX=$HOME/.local/state/agentctl/<name>`.
+Your agent script can write whatever it likes there. The recommended pattern
 is one append-only `activity.log`:
 
 ```sh
@@ -152,7 +158,7 @@ inbox. See `~/.local/bin/agentctl-nightly-sync` for a worked example.
 **Single-prompt headless invocation:**
 
 ```bash
-COMMAND='opencode run -m '\''litellm/reasoning (Qwen3.6-35B-A3B-4bit)'\'' "summarize today and write to ~/.notes/inbox/<agent>/today.md"'
+COMMAND='opencode run -m '\''litellm/reasoning (Qwen3.6-35B-A3B-4bit)'\'' "summarize today" | xargs -0 notes inbox add'
 ```
 
 **Heavy-tools claude invocation (when slash commands or stock tools are needed):**

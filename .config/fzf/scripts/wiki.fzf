@@ -1,0 +1,163 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# MIT License
+#
+# Copyright (c) 2026 Junegunn Choi
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+require 'optparse'
+require 'time'
+require 'json'
+require 'net/http'
+require 'base64'
+require 'shellwords'
+
+begin
+  require 'ansi256'
+rescue LoadError
+  require 'bundler/inline'
+  gemfile(true) do
+    source 'https://rubygems.org'
+    gem 'ansi256'
+  end
+end
+
+class WikiFzf
+  PAGE_SIZE = 20
+
+  def initialize
+    OptionParser.new do |opts|
+      opts.banner = "Usage: #{$PROGRAM_NAME} URL"
+      opts.on('-u', '--user={USER:PASSWORD,PAT}', 'User name and password (user:password) or PAT') do |v|
+        @auth = v
+      end
+      opts.parse!
+      abort(opts.help) if ARGV.length != 1
+      if @auth.nil?
+        warn 'Authentication is required'
+        abort(opts.help)
+      end
+    end
+
+    @headers = {
+      'Content-Type' => 'application/json',
+      'Authorization' =>
+        case @auth
+        when /:/ then "Basic #{Base64.encode64(@auth)}"
+        else "Bearer #{@auth}"
+        end
+    }.compact
+
+    @url = ARGV.first.chomp('/')
+  end
+
+  FZF = <<~CMD
+    fzf --delimiter "\t" --tabstop 3 --with-nth 2.. --ansi --nth 2.. \\
+        --layout reverse \\
+        --tiebreak index --multi \\
+        --bind 'enter:execute-silent(for url in {+1}; do open "$url"; done)+clear-selection' \\
+  CMD
+
+  def run
+    IO.popen(FZF, 'r+') do |io|
+      threads = [Thread.new { recently_viewed },
+                 Thread.new { recently_modified }]
+
+      Thread.new do
+        loop do
+          sleep 0.5
+          Process.getpgid(io.pid)
+        rescue StandardError
+          break
+        end
+        exit 1 if threads.any?(&:alive?)
+      end
+
+      list = threads.flat_map(&:value)
+      list = list.group_by { it[:url] }.transform_values do |items|
+        items.max_by { it[:time] }
+      end.values
+      list.sort_by { it[:time] }.reverse.each do |page|
+        page => { color:, url:, title:, time: }
+        io.puts [url, format_time(time).send(color), title].join("\t")
+      end
+    end
+  end
+
+  private
+
+  # Not used
+  def print_page(id)
+    result = get("/rest/api/content/#{id}", expand: 'body.export_view')
+    pp result
+  end
+
+  def recently_viewed
+    result = get('/rest/recentlyviewed/1.0/recent', includeTrashedContent: true)
+
+    # id, lastSeen, title, space, type, url
+    result.map do |page|
+      { color: :blue,
+        url: @url + page[:url],
+        title: page[:title],
+        time: Time.at(page[:lastSeen].to_f / 1000) }
+    end
+  end
+
+  def recently_modified
+    # NOTE: We could add body.export_view or body.styled_view to display the
+    # content as well but it slows down the process significantly
+    expand = 'metadata.currentuser.lastcontributed,metadata.currentuser.lastmodified'
+    Enumerator.new do |enum|
+      0.step(by: PAGE_SIZE) do |offset|
+        cql = 'type in (page,blogpost) and id in ' \
+          "recentlyModifiedPagesAndBlogPostsByUser(currentUser(), #{offset}, #{PAGE_SIZE})"
+        result = get('/rest/api/content/search', cql:, expand:, limit: PAGE_SIZE)
+        result => { size:, results: }
+
+        results.each do |page|
+          page => { title:, metadata: }
+          url = page.dig(:_links, :webui)
+          time = [
+            metadata.dig(:currentuser, :lastmodified, :version, :when),
+            metadata.dig(:currentuser, :lastcontributed, :when)
+          ].compact.map { Time.parse(it) }.max
+
+          enum.yield(color: :yellow, url: @url + url, title: title, time: time)
+        end
+
+        break if result[:size] < PAGE_SIZE
+      end
+    end.to_a
+  end
+
+  def get(path, params = {})
+    uri = URI(@url + path)
+    uri.query = URI.encode_www_form(params) if params.any?
+    JSON.parse(Net::HTTP.get(uri, @headers), symbolize_names: true)
+  end
+
+  def format_time(time)
+    time.localtime.strftime('%Y-%m-%d %H:%M:%S')
+  end
+end
+
+WikiFzf.new.run

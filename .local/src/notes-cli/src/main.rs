@@ -10,6 +10,7 @@ mod backlog;
 mod config;
 mod daily;
 mod doctor;
+mod inbox;
 mod index;
 mod logging;
 mod md;
@@ -39,7 +40,7 @@ enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today,
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | index
+    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -81,6 +82,11 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
+    Inbox {
+        #[command(subcommand)]
+        sub: Option<InboxCmd>,
+    },
     /// Zettelkasten operations
     Zettel {
         #[command(subcommand)]
@@ -96,6 +102,29 @@ enum Cmd {
     Doctor,
     /// Print the resolved profile + paths
     Config,
+}
+
+#[derive(Subcommand)]
+enum InboxCmd {
+    /// List pending captures, oldest-first (the triage view); this is the default
+    List,
+    /// Quick-capture: append a timestamped line to today's `inbox/<date>.md`
+    Add {
+        /// Capture text (free-form)
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Drain triaged captures into `inbox/_archive/` (pick one selector)
+    Archive {
+        /// A specific capture filename (or path) to archive
+        target: Option<String>,
+        /// Archive everything stale (age ≥ 14d)
+        #[arg(long)]
+        stale: bool,
+        /// Archive every dated capture before YYYY-MM-DD
+        #[arg(long)]
+        before: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -138,7 +167,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, index)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, index, inbox, inbox-today)"
                 );
                 2
             }
@@ -161,6 +190,16 @@ fn main() -> Result<()> {
         }
         Cmd::SeedBacklogs { from, force } => {
             backlog::seed(&prof, &log, from.as_deref(), force)?;
+            0
+        }
+        Cmd::Inbox { sub } => {
+            match sub {
+                None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
+                Some(InboxCmd::Add { text }) => inbox::add(&prof, &log, &text.join(" "))?,
+                Some(InboxCmd::Archive { target, stale, before }) => {
+                    inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?
+                }
+            }
             0
         }
         Cmd::Zettel { sub } => match sub {

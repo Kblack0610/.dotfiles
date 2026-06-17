@@ -61,8 +61,17 @@ return {
       python = { "isort", "black" },
       go = { "gofmt" },
       cs = { "csharpier" },
+      brightscript = { "bsfmt" },
     },
     formatters = {
+      -- BrightScript/BrighterScript formatter (RokuCommunity bsfmt). It has no stdin
+      -- mode, so format the tempfile in place with --write; honors a project bsfmt.json.
+      -- Install: :MasonInstall brighterscript-formatter (or npm i -g).
+      bsfmt = {
+        command = "bsfmt",
+        args = { "--write", "$FILENAME" },
+        stdin = false,
+      },
       oxfmt = {
         command = function(_, ctx)
           local local_bin = vim.fs.find("node_modules/.bin/oxfmt", {

@@ -14,7 +14,7 @@ do not reinvent their logic.
 
 ```
 ~/.notes/
-├── inbox/            # quick capture
+├── inbox/            # dated human/agent captures only (`notes inbox`); _archive/ holds drained items
 ├── journal/
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
 │   ├── backlogs/     # standing fun.md + carryover.md (linked from daily footer)
@@ -59,6 +59,9 @@ Sync is event-driven by a Forgejo push webhook → in-cluster `notes-sync-bridge
 | `notes link-refs` | Link `refs/<date>/*.md` into today's `## Refs` (idempotent). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into `summaries/monthly/` + move dailies to `daily_archive/`. Runs on the 2nd at 01:30 (`journal-monthly-archive.timer`). |
+| `notes inbox` | Triage view of the dated-capture inbox (`inbox/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (≥14d) flagged. No subcommand = `list`. |
+| `notes inbox add "<text>"` | Quick-capture from the terminal — append a timestamped bullet to today's `inbox/<date>.md` (creates it with a header if new). |
+| `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `inbox/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
 | `notes backlog <fun\|carryover>` | Tidy a backlog (sweep `- [x]` → `## Done`, restamp day counts), print its path. Aliases: `fun`, `co`. |
 | `notes seed-backlogs [--from N] [--force]` | One-time migration of inline `## Fun`/`## Carry Over` sections into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
@@ -128,6 +131,7 @@ not profile-aware; never prefer it when the binary exists.
 - The user uses **shell + neovim** for notes editing, **never Obsidian**. All Obsidian traces were removed 2026-06-04; the old setup is archived at `~/.notes/_archive/obsidian/` (see its README). Do not reintroduce Obsidian config or plugins.
 - When adding a new daily task mid-day, edit today's note directly; `notes today` is idempotent (one note per day).
 - Completed backlog items belong in that backlog's `## Done` section (`notes backlog` sweeps them) — don't delete them.
+- **The inbox is for dated human/agent captures only** (`inbox/<date>.md`, `<date>-analysis.md`). Telemetry, monitoring snapshots, and agent activity logs are runtime state → they belong under `~/.agent/` or `~/.local/state/` (the runtime axis), **never** the `~/.notes` vault. Triage with `notes inbox`; drain processed items with `notes inbox archive`.
 
 ## Related
 

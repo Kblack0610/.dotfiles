@@ -62,6 +62,18 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     file_check(&mut r, "fun backlog", &p.fun);
     file_check(&mut r, "carryover backlog", &p.carryover);
 
+    // Inbox backlog — pending captures awaiting triage; warn if any are stale
+    let (pending, stale) = crate::inbox::backlog_counts(p);
+    if stale > 0 {
+        r.add(
+            Status::Warn,
+            "inbox backlog",
+            &format!("{pending} pending, {stale} stale (≥14d) — `notes inbox`"),
+        );
+    } else {
+        r.add(Status::Pass, "inbox backlog", &format!("{pending} pending"));
+    }
+
     // 2. Summarize gaps — daily notes older than yesterday with no continuous entry
     check_gaps(&mut r, p);
 

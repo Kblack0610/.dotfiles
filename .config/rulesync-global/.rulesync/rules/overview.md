@@ -38,6 +38,16 @@ Only escalate to Explore agents or multi-tool investigations after these checks 
 - Run the smallest credible validation that proves the change.
 - Report what was verified and what could not be verified.
 
+## Writing Style (artifact prose)
+
+Applies to durable, outward-facing writing — READMEs, commit/PR messages, docs, code comments. Conversational response tone is governed separately (per-project feedback memory).
+
+- Write as a technical architect documenting work, not marketing it. State what a thing is and does; let the reader judge. No selling.
+- Cut intensifiers and filler that carry no information: "even", "entirely", "fully", "completely", "simply", "just", "seamless", "powerful", "robust", "blazing-fast". If deleting the word doesn't change the meaning, delete it.
+- Lead with the fact or the imperative — no throat-clearing ("It's worth noting that…", "Basically…").
+- Prefer concrete, verifiable claims over adjectives: "no Tree-sitter parser required" beats "incredibly lightweight". State caveats plainly instead of hiding them.
+- Match the surrounding document's voice and density.
+
 ## Artifact Placement
 
 Where files land matters. Default to ephemeral; only commit when the artifact is clearly a tracked repo asset.

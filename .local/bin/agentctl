@@ -43,7 +43,7 @@ load_agent() {
         : "${DESCRIPTION:=}"
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
-        : "${INBOX:=$HOME/.notes/inbox/$NAME}"
+        : "${INBOX:=$STATE_DIR/$NAME}"
         printf 'NAME=%s\n' "$NAME"
         printf 'KIND=%s\n' "$KIND"
         printf 'COMMAND=%s\n' "$COMMAND"

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 LOG="$HOME/.local/log/nightly-sync.log"
-INBOX="${AGENTCTL_INBOX:-$HOME/.notes/inbox/nightly-sync}"
+INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/nightly-sync}"
 mkdir -p "$(dirname "$LOG")" "$INBOX"
 
 TODAY=$(date +%Y-%m-%d)

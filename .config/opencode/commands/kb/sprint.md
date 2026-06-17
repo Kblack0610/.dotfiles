@@ -1,6 +1,7 @@
 ---
 description: Run a ticket batch through the kb pipeline — queue via kb-sprint-owner, dispatch kb-coordinator
-  per ticket, monitor CI, merge, flip tickets Done
+  per ticket, monitor CI, merge, flip tickets Done. Internal machinery — prefer /captain as the user entry
+  point
 ---
 
 # kb:sprint — $ARGUMENTS
@@ -30,19 +31,22 @@ line to copy into the second session.
 
 ## Meta
 - Repo: <abs path>
-- Mode: sequential            # v2: parallel:N
-- Source: <epic / ids / release-captain plan ref>
-- Overseer: /loop 10m /sprint-overseer watch
+- Mode: sequential            # also: parallel:N | audit | audit+fix
+- Source: <epic / ids / release-coordinator plan ref>
+- Watchdog: captain-watchdog arm   # autonomous; or /loop 10m /captain watch (optional second session)
 - Started: <ISO ts, blank until `run`>
 
 ## Queue
 | # | Ticket | Title | Pri | Lane | Conflicts | Rationale | Status | PR | Result |
 |---|--------|-------|-----|------|-----------|-----------|--------|----|--------|
 
-Status ∈ queued | in-progress | pr-open | merged | blocked | error | skipped
+Status ∈ queued | in-progress | pr-open | merged | blocked | error | skipped | done
 
 ## Run log
 (dispatcher appends timestamped lines; overseer appends `notified:` markers)
+
+## Findings
+(audit/audit+fix mode: per-ticket fault list streamed in as agents work — severity, env(s), evidence, proposed fix-ticket)
 
 ## Blocks
 (kb-coordinator BLOCK/ERROR JSON verbatim per ticket + a "Needs:" line)
@@ -51,12 +55,38 @@ Status ∈ queued | in-progress | pr-open | merged | blocked | error | skipped
 (written by sprint-overseer `report`)
 ```
 
+**Checkpoints (all modes).** Every dispatched agent owns
+`~/.agent/plans/{project}/checkpoints/{ticket}.md` (path derived from the Ticket
+column — no extra schema column). The agent appends a timestamped line per
+completed leg and ends with a terminal sentinel: `STATUS: DONE` |
+`STATUS: FAILED <reason>` | `STATUS: PARTIAL <what's left>`. The dispatcher/overseer
+trust the **sentinel**, never an Agent "completed" event — a "completed" with no
+`STATUS: DONE` is a false-completion (agent died mid-run); recover from the
+checkpoint's `what's left` and re-dispatch. This is what makes a model/process
+drop recoverable from disk instead of transcript forensics.
+
+## Modes
+
+- **sequential / parallel:N** — implementation: dispatch `kb-coordinator` per ticket,
+  CI-monitor, merge, flip Done (see `run`).
+- **audit** — dispatch verification agents (NOT kb-coordinator) per ticket across the
+  envs in scope (local / preview / prod-smoke). No PRs; `Result` column carries `PASS`
+  or `FAULTS:n`; faults stream into `## Findings`; criticals → P0/P1 fix tickets.
+- **audit+fix** — audit mode **plus** parallel fix dispatch as criticals land: a
+  confirmed, root-caused critical immediately gets a fix agent while remaining audits
+  continue. Conflict gating (reuse `kb-sprint-owner` lanes): **guarded-lane fixes**
+  (payments/payouts, auth/tokens, migrations, row-locking SQL, background workers, API
+  contracts) go through the **full kb pipeline (kb-developer → kb-reviewer → kb-qa),
+  serialized, worktree-isolated — never fast-pathed**; non-guarded fixes fan out
+  concurrently. This is the default for launch-blocking audits where waiting is the
+  expensive option; exploratory audits stay `audit` (outline-only).
+
 ## Verb: `plan [epic|ids|from-captain]`
 
 1. Resolve the repo (primary checkout or active worktree) and the canonical
    project name via project-map.
 2. Invoke the `kb-sprint-owner` agent via Task with the caller's input
-   (epic filter, explicit ticket IDs, and/or a fresh release-captain `plan`
+   (epic filter, explicit ticket IDs, and/or a fresh release-coordinator `plan`
    brief's next-work section). It reads the board + WIP state and writes the
    plan file with `## Queue` populated, all rows `queued`.
 3. Print the queue table and ask the user to approve it. **The queue approval
@@ -130,7 +160,7 @@ writes. (For the notifying dashboard, use `/sprint-overseer status`.)
 - Implementation PRs only. Never push release tags, never run `deploy.sh`,
   never touch the Vikunja `HUMAN:` line or GitHub approval issues — release
   execution stays with the user via `placemyparents-release`, release
-  analysis with `release-captain`.
+  analysis with `release-coordinator`.
 - Merging implementation PRs on required-green is in-scope (established
   doctrine: 60–90s polling, merge on required checks). A PR needing a human
   review approval that cannot be satisfied → mark `blocked`, surface the URL,
@@ -154,7 +184,7 @@ kb-sprint-owner) is unchanged.
 - `kb-sprint-owner` agent — queue builder (`plan` delegates to it)
 - `kb-coordinator` agent — per-ticket pipeline + JSON return contract
 - `sprint-overseer` skill — watchdog + single notification voice
-- `release-captain` skill — `plan` next-work output feeds the queue; merged
+- `release-coordinator` skill — `plan` next-work output feeds the queue; merged
   batches surface in its `status` automatically
 - `~/.dotfiles/.local/bin/agent-notify` — abort-only here; routine voice is
   the overseer's
