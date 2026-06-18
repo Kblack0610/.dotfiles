@@ -12,7 +12,7 @@ Create professional, visually appealing Marp presentation slides with 7 pre-desi
 Use this skill when the user:
 - Requests to create presentation slides or Marp documents
 - Asks to "make slides look good" or "improve slide design"
-- Provides vague instructions like "良い感じにして" (make it nice) or "かっこよく" (make it cool)
+- Provides vague instructions like "make it look good", "make it pop", or "make it cool"
 - Wants to create lecture or seminar materials
 - Needs bullet-point focused slides with occasional images
 
@@ -53,13 +53,17 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 4. Structure content following best practices:
    - Title slide with `<!-- _class: lead -->`
-   - Concise h2 titles (5-7 characters in Japanese)
+   - Concise h2 titles (short noun phrase, ~2–6 words)
    - 3-5 bullet points per slide
    - Adequate whitespace
+   - **Budget by section** — 3–7 content slides per section, one idea per slide. See the
+     Section-Budget Standard in `references/best-practices.md` (the canonical rule).
 
 5. Add images if needed using patterns from `references/image-patterns.md`
 
 6. Save to the current working directory (or a path the user specifies) with `.md` extension. Default filename: `presentation.md`.
+
+7. **Render & verify** (see the Render & verify step under "Creating Slides Process").
 
 ## Available Themes
 
@@ -111,43 +115,57 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 1. **Understand requirements**
    - Identify content: title, topics, key points
-   - Determine target audience
+   - Determine target audience and the deck's single purpose
    - Assess formality level
 
-2. **Select theme**
+2. **Outline by section**
+   - Group the content into sections; each section = one audience attention span
+   - Apply the **Section-Budget Standard** (`references/best-practices.md`): 3–7 content
+     slides per section, one idea per slide; past ~7, split the section or cut
+   - Purpose filter: drop anything that doesn't serve this audience's need
+
+3. **Select theme**
    - Use quick selection rules above
    - If uncertain, consult `references/theme-selection.md`
    - Default to default theme if still unsure
 
-3. **Apply template**
+4. **Apply template**
    - Load appropriate template from `assets/`
    - CSS is already embedded - no external files needed
    - Maintain template structure
 
-4. **Structure content**
+5. **Structure content**
    - Title slide: `<!-- _class: lead -->` + h1
    - Content slides: h2 title + bullet points
-   - Keep titles to 5-7 characters (Japanese)
+   - Keep titles to a short noun phrase (~2–6 words)
    - Use 3-5 bullet points per slide
 
-5. **Refine quality**
+6. **Refine quality**
    - Read `references/best-practices.md`
    - Ensure adequate whitespace
    - Maintain consistency
-   - Keep text concise (15-25 chars per line)
+   - Keep each bullet to one line (~6–12 words)
 
-6. **Add images**
+7. **Add images**
    - If needed, consult `references/image-patterns.md`
    - Common: `![bg right:40%](image.png)` for side images
    - Use proper Marp image syntax
 
-7. **Output file**
+8. **Output file**
    - Save to the current working directory (or path the user specifies)
    - Use descriptive filename like `presentation.md`
 
+9. **Render & verify** (built-in quality gate)
+   - If `marp` (marp-cli) is on PATH, render and check it renders clean:
+     `marp presentation.md -o presentation.pdf` (use `--html` for an HTML preview)
+   - Watch marp-cli output for overflow / content-bleed warnings, and confirm no slide
+     spills past its frame. If a slide overflows, split it — don't shrink the font.
+   - If marp-cli is **not** installed, print the install hint
+     (`brew install marp-cli`) and skip rendering — do not fail the task.
+
 ## Handling "Make It Look Good" Requests
 
-When users give vague instructions like "良い感じにして", "かっこよく", or "make it cool":
+When users give vague instructions like "make it look good", "make it pop", or "make it cool" (in any language):
 
 1. **Infer theme from content**:
    - Business content → business theme
@@ -156,7 +174,7 @@ When users give vague instructions like "良い感じにして", "かっこよ�
    - General → default theme
 
 2. **Apply best practices automatically**:
-   - Shorten titles to 5-7 characters
+   - Shorten titles to a short noun phrase (~2–6 words)
    - Limit bullet points to 3-5 items
    - Add adequate whitespace
    - Use consistent structure
@@ -207,11 +225,12 @@ Before delivering slides, verify:
 - [ ] Theme selected appropriately for content
 - [ ] CSS theme is embedded in the file
 - [ ] Title slide uses `<!-- _class: lead -->`
-- [ ] All h2 titles are concise (5-7 chars)
-- [ ] Bullet points are 3-5 items per slide
-- [ ] Images use proper Marp syntax
-- [ ] File saved to outputs directory
-- [ ] Content follows best practices
+- [ ] All h2 titles are concise (short noun phrase, ~2–6 words)
+- [ ] Bullet points are 3-5 items per slide, one line each
+- [ ] Every section stays within the 3–7-slide budget (one idea per slide)
+- [ ] Images / tables / diagrams use proper Marp syntax
+- [ ] File saved to the working directory (or user-specified path)
+- [ ] Rendered & verified — no slide overflow (or marp-cli absent and install hint shown)
 
 ## References
 

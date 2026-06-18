@@ -11,7 +11,7 @@ Repo: `~/dev/gigantic-playground/fleet/brightsign-fleet-platform`.
 ## Capture
 
 ```bash
-./scripts/webcam-check.sh <label>     # prints the saved image path
+./src/scripts/webcam-check.sh <label>     # prints the saved image path
 ```
 
 - Run with sandbox disabled (camera/TCC — see `webcam-ops` skill for the full
