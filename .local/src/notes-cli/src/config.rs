@@ -38,6 +38,10 @@ struct RawProfile {
     index: String,
     #[serde(default)]
     projects: Option<String>,
+    /// Meeting logs (`notes meeting new`). Optional so configs predating this
+    /// field keep working — resolve() falls back to `<root>/meetings`.
+    #[serde(default)]
+    meetings: Option<String>,
     /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
@@ -68,6 +72,7 @@ pub struct Profile {
     pub monthly: PathBuf,
     pub archive: PathBuf,
     pub zettel: PathBuf,
+    pub meetings: PathBuf,
     pub index: PathBuf,
     pub projects: Option<PathBuf>,
     pub inbox: PathBuf,
@@ -138,6 +143,7 @@ fn builtin_default() -> RawConfig {
             zettel: "journal/permanent".into(),
             index: "journal/index".into(),
             projects: None,
+            meetings: None,
             inbox: "inbox".into(),
         },
     );
@@ -220,6 +226,11 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         summaries,
         archive: join(&rp.archive),
         zettel: join(&rp.zettel),
+        meetings: rp
+            .meetings
+            .as_ref()
+            .map(|s| join(s))
+            .unwrap_or_else(|| root.join("meetings")),
         index: join(&rp.index),
         projects: rp.projects.as_ref().map(|s| join(s)),
         inbox: join(&rp.inbox),
@@ -247,6 +258,7 @@ pub fn print(p: &Profile) {
     println!("monthly     {}", p.monthly.display());
     println!("archive     {}", p.archive.display());
     println!("zettel      {}", p.zettel.display());
+    println!("meetings    {}", p.meetings.display());
     println!("index       {}", p.index.display());
     println!("inbox       {}", p.inbox.display());
     println!("summaries   {}", p.summaries.display());
