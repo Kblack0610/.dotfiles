@@ -8,7 +8,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 |--------|------------|-------------|
 | `launcher.sh` | `Prefix+l` | Master menu for all tmux operations |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
-| `agent-chooser.sh` | `Prefix+g` | View and select Claude agent windows |
+| `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
 | `spawn-project.sh` | `Prefix+p` | Create new tmux session with nvim |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
