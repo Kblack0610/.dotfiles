@@ -1,6 +1,9 @@
 # Dotfiles Installation Scripts
 
-A modular, function-based installation system for setting up development environments across different operating systems.
+A modular, function-based system for **provisioning** development environments across operating
+systems — i.e. taking a fresh machine to a known-good state (packages, dotfiles, services). The
+scripts here are the provisioning layer; "bootstrap" refers specifically to the no-clone one-liner
+entry points, and "install" to the per-OS setup runs.
 
 ## Quick Start
 
@@ -33,6 +36,38 @@ irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/insta
 ./linux/install_wsl.sh              # ArchWSL — minimal CLI/dev floor, no GUI
 ./android/install_android.sh
 ```
+
+## Keeping install files up to date
+
+These scripts are only as good as the package lists behind them. The golden rule:
+
+> **When you `brew install` (or `pacman -S`, `apt install`, …) something you want on _every_
+> machine, add it to the source of truth in the _same commit_.** The provisioning files must
+> describe reality, or a fresh machine silently comes up missing tools.
+
+Sources of truth:
+
+- **macOS:** `.config/brewfile/Brewfile` (consumed by `brew bundle` via `mac/install_mac.sh`).
+  Formulae use `brew "…"`, GUI apps use `cask "…"`.
+- **Linux/cross-OS catalog:** `packages.conf`.
+
+### Detect drift with `brew-audit` (macOS)
+
+Run `brew-audit` (on PATH; logic in `brew-audit.sh`) to compare what's *installed* against what's
+*tracked* in the Brewfile:
+
+```bash
+brew-audit
+```
+
+It reports formulae/casks you have installed but haven't tracked, and whether the Brewfile is fully
+installed. It's read-only and exits non-zero when drift is found (so it can gate a hook/CI later).
+Reconcile by adding the listed lines to the Brewfile — or, for machine-specific one-offs you do
+*not* want on every Mac, leave them in the commented "Untracked on this machine — decide" block at
+the bottom of the Brewfile so the audit stays quiet without claiming them as universal.
+
+> Separately, `brew bundle check` / `brew outdated` tell you what's *unupgraded* — that's a
+> maintenance concern (run `brew upgrade`), distinct from *drift* (untracked packages).
 
 ## Architecture
 

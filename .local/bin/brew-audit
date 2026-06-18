@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# brew-audit — PATH entrypoint; logic lives with the provisioning scripts.
+exec "${DOTFILES_ROOT:-$HOME/.dotfiles}/.local/src/installation_scripts/brew-audit.sh" "$@"
