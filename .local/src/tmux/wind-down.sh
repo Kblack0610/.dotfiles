@@ -62,10 +62,14 @@ cmd_arm() {
   fi
 
   local target session windows pane
-  target=$(tmux display-message -p '#{session_name}:#{window_index}' 2>/dev/null)
-  session=$(tmux display-message -p '#{session_name}' 2>/dev/null)
-  windows=$(tmux display-message -p '#{session_windows}' 2>/dev/null)
+  # Pin every lookup to THIS pane ($TMUX_PANE). `display-message` with no -t
+  # resolves against the attached client's *active* window — i.e. whatever the
+  # human happens to be looking at — which armed the wrong window when another
+  # window was focused. Resolving from the pane targets Claude's own window.
   pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
+  target=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
+  session=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)
+  windows=$(tmux display-message -p -t "$pane" '#{session_windows}' 2>/dev/null)
 
   if [ -z "$target" ] || [ -z "$session" ]; then
     echo "wind-down: could not resolve tmux target — aborting arm." >&2
@@ -100,10 +104,11 @@ cmd_fire() {
   [ -n "$sentinel" ] && [ -f "$sentinel" ] || { echo "wind-down fire: sentinel not found: $sentinel" >&2; return 1; }
 
   # shellcheck source=/dev/null
-  local scope target session
+  local scope target session pane
   scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
   target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
   session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
+  pane=$(grep '^pane=' "$sentinel" | head -1 | cut -d= -f2-)
   scope="${scope:-window}"
 
   [ -n "$target" ] || { echo "wind-down fire: no target in sentinel" >&2; return 1; }
@@ -114,21 +119,28 @@ cmd_fire() {
     return 0
   fi
 
+  # Prefer the pane id for the kill: pane ids (@N) are stable, while window
+  # indices drift under `renumber-windows on`. Fall back to the index.
+  local killtarget="${pane:-$target}"
+
   # Save scrollback first (best-effort).
   if [ -x "$HISTORY_CAPTURE" ]; then
-    "$HISTORY_CAPTURE" "$target" --quiet >/dev/null 2>&1 || true
+    "$HISTORY_CAPTURE" "$killtarget" --quiet >/dev/null 2>&1 || true
   fi
 
-  # Schedule the kill detached so THIS process (and the calling Stop hook) can
-  # exit cleanly before the window/session — and Claude with it — goes away.
+  # Schedule the kill on the tmux SERVER via `run-shell -b`, NOT as a child of
+  # this Stop hook. The hook's process tree is reaped when the turn ends; on
+  # macOS (no setsid) a nohup'd child got killed before its `sleep` elapsed, so
+  # the window stayed open. The tmux server is a persistent daemon, so a
+  # backgrounded run-shell job reliably outlives the hook and fires the kill —
+  # while the `sleep 1` still lets the Stop pipeline finish first.
   if [ "$scope" = "session" ]; then
-    setsid nohup bash -c "sleep 1; tmux kill-session -t '$session'" </dev/null >/dev/null 2>&1 &
+    tmux run-shell -b "sleep 1; tmux kill-session -t '$session'" 2>/dev/null
     echo "wind-down: scheduled kill-session '$session'"
   else
-    setsid nohup bash -c "sleep 1; tmux kill-window -t '$target'" </dev/null >/dev/null 2>&1 &
-    echo "wind-down: scheduled kill-window '$target'"
+    tmux run-shell -b "sleep 1; tmux kill-window -t '$killtarget'" 2>/dev/null
+    echo "wind-down: scheduled kill-window '$killtarget' (window '$target')"
   fi
-  disown 2>/dev/null || true
 }
 
 cmd_note_path() {
