@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# watch-companion-loop — Sentinel: an always-on, observe-only monitoring companion.
+#
+# A single pass (`run`) iterates the watch registry (~/.agent/watches/*.yaml),
+# runs each due watch's probe, and notifies via agent-notify ONLY on a state
+# change. `daemon` loops `run` on a tick (driven by the agentctl persistent
+# service). Sentinel never mutates anything — it observes, judges, and pings.
+#
+# Cost model (the load-bearing design choice):
+#   - Deterministic probes (http/metric/kubectl/command) run in plain bash:
+#     ZERO tokens, every pass.
+#   - The model (claude -p) is invoked ONLY for (1) a TRIP on an
+#     `agent_evaluate: true` watch (diagnosis), or (2) a `probe: agent` watch
+#     on its (deliberately slow) interval. A per-hour SENTINEL_AGENT_BUDGET
+#     hard-stops any storm.
+#
+# Subcommands:
+#   run      one pass over the registry (used by the timer/agentctl service)
+#   daemon   loop `run` every SENTINEL_TICK seconds (persistent agentctl COMMAND)
+#
+# Manifest schema (flat YAML, parsed in pure bash — no yq dependency):
+#   name, description, probe, target, interval, expiry, severity,
+#   agent_evaluate, created, source
+#   probe-specific:  expect_status / expect_body_contains   (http)
+#                    expect_metric / expect_op / expect_threshold  (metric)
+#                    expect_rollout / expect_restarts_max    (kubectl)
+#                    expect_cmd / expect_exit                (command)
+#                    agent_question / agent_max_turns / signal (repeatable)  (agent)
+#
+# No `-e`: a monitor must survive an individual probe failing. Errors are
+# handled explicitly and logged; the daemon keeps running.
+set -uo pipefail
+
+WATCHES="${SENTINEL_WATCHES:-$HOME/.agent/watches}"
+STATE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}"
+INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/sentinel}"
+LOG="$INBOX/activity.log"
+MODEL="${SENTINEL_MODEL:-claude-sonnet-4-6}"
+AGENT_BUDGET="${SENTINEL_AGENT_BUDGET:-20}"   # max agent passes per clock-hour
+NTFY_URL="${NTFY_URL:-https://ntfy.kblab.me/agents}"
+export NTFY_URL
+
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
+log()    { printf '[%s] %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || true; }
+notify() { local pri="$1" ttl="$2"; shift 2; agent-notify -p "$pri" -t "$ttl" "$*" >/dev/null 2>&1 || true; }
+
+# mget FILE KEY → first value, trimmed, surrounding quotes stripped
+mget() {
+  local v
+  v="$(grep -m1 -E "^[[:space:]]*$2:[[:space:]]*" "$1" 2>/dev/null \
+       | sed -E "s/^[[:space:]]*$2:[[:space:]]*//")" || true
+  v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+  v="${v%"${v##*[![:space:]]}"}"   # rstrip
+  printf '%s' "$v"
+}
+
+# mget_all FILE KEY → every value for a repeated key, one per line
+mget_all() {
+  grep -E "^[[:space:]]*$2:[[:space:]]*" "$1" 2>/dev/null \
+    | sed -E "s/^[[:space:]]*$2:[[:space:]]*//" \
+    | while IFS= read -r l; do l="${l%\"}"; l="${l#\"}"; printf '%s\n' "$l"; done
+}
+
+# to_secs DURATION (e.g. 30s 5m 1h 2d; bare number = seconds) → seconds
+to_secs() {
+  local d="${1:-}" n u
+  [[ "$d" =~ ^([0-9]+)([smhd]?)$ ]] || { printf '0'; return; }
+  n="${BASH_REMATCH[1]}"; u="${BASH_REMATCH[2]:-s}"
+  case "$u" in s) printf '%s' "$n";; m) printf '%s' $((n*60));; \
+               h) printf '%s' $((n*3600));; d) printf '%s' $((n*86400));; esac
+}
+
+# ---------------------------------------------------------------------------
+# agent-tier budget (the only token-spending path)
+# ---------------------------------------------------------------------------
+agent_budget_file() { printf '%s/agent-budget.%s' "$STATE" "$(date +%Y%m%d%H)"; }
+agent_budget_ok()   { local n; n="$(cat "$(agent_budget_file)" 2>/dev/null || echo 0)"; [ "$n" -lt "$AGENT_BUDGET" ]; }
+agent_budget_inc()  {
+  local f n; f="$(agent_budget_file)"; n="$(cat "$f" 2>/dev/null || echo 0)"
+  printf '%s' $((n+1)) > "$f"
+  find "$STATE" -name 'agent-budget.*' -mmin +180 -delete 2>/dev/null || true
+}
+
+# run_agent_pass FILE NAME TRIGGER → one-line verdict (HEALTHY/SUSPECT/BROKEN …)
+# THE single model boundary. Observe-only prompt, bounded by --max-turns.
+run_agent_pass() {
+  local f="$1" name="$2" trigger="$3"
+  if ! agent_budget_ok; then
+    log "$name agent-pass SKIPPED (hourly budget $AGENT_BUDGET exhausted)"
+    printf 'SUSPECT (agent budget exhausted — not evaluated; trigger: %s)' "$trigger"
+    return
+  fi
+  local question maxturns sigblock="" s prompt
+  question="$(mget "$f" agent_question)"
+  [ -n "$question" ] || question="Assess whether '$name' is healthy."
+  maxturns="$(mget "$f" agent_max_turns)"; [ -n "$maxturns" ] || maxturns=12
+  while IFS= read -r s; do [ -n "$s" ] && sigblock+="- $s"$'\n'; done < <(mget_all "$f" signal)
+
+  prompt="$(cat <<EOF
+You are Sentinel, an OBSERVE-ONLY monitoring companion. Do NOT change anything:
+no edits, no kubectl mutations, no fixes, no remediation. Gather the read-only
+signals below, reason about them, and reply in ONE line that STARTS with exactly
+one of: HEALTHY / SUSPECT / BROKEN.
+
+Watch: $name
+Question: $question
+Trigger: $trigger
+$( [ -n "$sigblock" ] && printf 'Signals to gather first (run these, read-only):\n%s' "$sigblock" )
+If not HEALTHY, end the line with a recommended human action. Be terse.
+EOF
+)"
+  agent_budget_inc
+  claude -p "$prompt" \
+    --model "$MODEL" \
+    --dangerously-skip-permissions \
+    --max-turns "$maxturns" \
+    2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //' | head -c 400
+}
+
+# ---------------------------------------------------------------------------
+# deterministic probes — each echoes "OK|TRIP|ERROR <detail>"
+# ---------------------------------------------------------------------------
+probe_http() {
+  local f="$1" target="$2" want bc code body tmp
+  want="$(mget "$f" expect_status)"; [ -n "$want" ] || want=200
+  bc="$(mget "$f" expect_body_contains)"
+  tmp="$(mktemp)"
+  # NOTE: no -f, so an HTTP error status is still captured (not collapsed to 000).
+  code="$(curl -sS -m 15 -o "$tmp" -w '%{http_code}' "$target" 2>/dev/null)" || code="000"
+  body="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp"
+  if [ "$code" = "000" ]; then echo "ERROR no response from $target"; return; fi
+  if [ "$code" != "$want" ]; then echo "TRIP HTTP $code (want $want)"; return; fi
+  if [ -n "$bc" ] && ! printf '%s' "$body" | grep -qF -- "$bc"; then
+    echo "TRIP HTTP $code but body missing '$bc'"; return
+  fi
+  echo "OK HTTP $code"
+}
+
+probe_metric() {
+  local f="$1" target="$2" metric op threshold text val rc
+  metric="$(mget "$f" expect_metric)"; op="$(mget "$f" expect_op)"; threshold="$(mget "$f" expect_threshold)"
+  text="$(curl -sS -m 15 "$target" 2>/dev/null)" || { echo "ERROR metrics fetch failed"; return; }
+  val="$(printf '%s\n' "$text" | grep -vE '^#' | grep -E "^${metric}([{ ])" | head -1 | awk '{print $NF}')"
+  [ -n "$val" ] || { echo "ERROR metric '$metric' not present"; return; }
+  awk -v a="$val" -v b="$threshold" -v op="$op" 'BEGIN{
+    a+=0; b+=0;
+    if(op=="<")r=(a<b); else if(op=="<=")r=(a<=b); else if(op==">")r=(a>b);
+    else if(op==">=")r=(a>=b); else if(op=="==")r=(a==b); else if(op=="!=")r=(a!=b);
+    else r=-1; exit (r==1?0:(r==-1?2:1)) }'
+  rc=$?
+  case "$rc" in
+    0) echo "OK $metric=$val ($op $threshold)";;
+    1) echo "TRIP $metric=$val violates ($op $threshold)";;
+    *) echo "ERROR bad op '$op'";;
+  esac
+}
+
+probe_kubectl() {
+  # target: "context/namespace/selector"  (selector = deployment name or label)
+  local f="$1" target="$2" ctx rest ns sel rollout maxr restarts
+  command -v kubectl >/dev/null 2>&1 || { echo "ERROR kubectl not found"; return; }
+  ctx="${target%%/*}"; rest="${target#*/}"; ns="${rest%%/*}"; sel="${rest#*/}"
+  rollout="$(mget "$f" expect_rollout)"
+  maxr="$(mget "$f" expect_restarts_max)"
+  if [ -n "$rollout" ]; then
+    if kubectl --context "$ctx" -n "$ns" rollout status "deployment/$sel" --timeout=8s >/dev/null 2>&1; then
+      echo "OK rollout $sel ready"
+    else
+      echo "TRIP rollout $sel not ready"
+    fi
+    return
+  fi
+  if [ -n "$maxr" ]; then
+    restarts="$(kubectl --context "$ctx" -n "$ns" get pods ${sel:+-l "$sel"} \
+      -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.restartCount}{"\n"}{end}{end}' 2>/dev/null \
+      | awk '{s+=$1} END{print s+0}')" || { echo "ERROR kubectl get pods failed"; return; }
+    if [ "$restarts" -gt "$maxr" ]; then echo "TRIP restarts=$restarts (max $maxr)"; else echo "OK restarts=$restarts"; fi
+    return
+  fi
+  echo "ERROR kubectl watch needs expect_rollout or expect_restarts_max"
+}
+
+probe_command() {
+  local f="$1" cmd want rc
+  cmd="$(mget "$f" expect_cmd)"; want="$(mget "$f" expect_exit)"; [ -n "$want" ] || want=0
+  [ -n "$cmd" ] || { echo "ERROR command watch missing expect_cmd"; return; }
+  bash -c "$cmd" >/dev/null 2>&1; rc=$?
+  if [ "$rc" = "$want" ]; then echo "OK exit $rc"; else echo "TRIP exit $rc (want $want)"; fi
+}
+
+run_probe() {  # FILE → "OK|TRIP|ERROR <detail>"
+  local f="$1" probe target
+  probe="$(mget "$f" probe)"; target="$(mget "$f" target)"
+  case "$probe" in
+    http)    probe_http "$f" "$target" ;;
+    metric)  probe_metric "$f" "$target" ;;
+    kubectl) probe_kubectl "$f" "$target" ;;
+    command) probe_command "$f" ;;
+    *)       echo "ERROR unknown probe '$probe'" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# state transition + notification (notify ONLY on change)
+# ---------------------------------------------------------------------------
+emit_transition() {  # FILE NAME STATUS DETAIL VERDICT?
+  local f="$1" name="$2" status="$3" detail="$4" verdict="${5:-}"
+  local prev sev pri ttl
+  prev="$(cat "$STATE/$name.state" 2>/dev/null || echo unknown)"
+  sev="$(mget "$f" severity)"; [ -n "$sev" ] || sev=normal
+  case "$sev" in low|normal|high) ;; *) sev=normal ;; esac
+  pri="$(mget "$f" notify_priority)"; [ -n "$pri" ] || pri="$sev"
+  ttl="$(mget "$f" notify_title)"; [ -n "$ttl" ] || ttl="Sentinel: $name"
+
+  log "$name $prev -> $status — ${verdict:-$detail}"
+  [ "$status" = "$prev" ] && return            # no change → silent (dedupe)
+  printf '%s' "$status" > "$STATE/$name.state"
+
+  case "$status" in
+    OK)
+      [ "$prev" = TRIP ] || [ "$prev" = ERROR ] && \
+        notify "$pri" "$ttl" "[$name] RECOVERED — ${verdict:-$detail}" ;;
+    TRIP)   notify "$pri" "$ttl" "[$name] ${verdict:-TRIPPED — $detail}" ;;
+    ERROR)  notify low   "$ttl" "[$name] probe error — $detail" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# per-watch processing
+# ---------------------------------------------------------------------------
+expired_and_removed() {  # FILE NAME NOW → 0 if expired+cleaned, 1 otherwise
+  local f="$1" name="$2" now="$3" exp created cep eep
+  exp="$(mget "$f" expiry)"
+  if [ -z "$exp" ] || [ "$exp" = null ] || [ "$exp" = "~" ]; then return 1; fi
+  created="$(mget "$f" created)"
+  if [ -n "$created" ]; then cep="$(date -d "$created" +%s 2>/dev/null || stat -c %Y "$f")"
+  else cep="$(stat -c %Y "$f")"; fi
+  if [[ "$exp" =~ ^[0-9]+[smhd]$ ]]; then eep=$(( cep + $(to_secs "$exp") ))
+  else eep="$(date -d "$exp" +%s 2>/dev/null || echo 0)"; fi
+  if [ "$eep" -gt 0 ] && [ "$now" -ge "$eep" ]; then
+    rm -f "$f" "$STATE/$name.state" "$STATE/$name.lastrun"
+    notify low "Sentinel: $name" "[$name] watch expired and was removed"
+    log "EXPIRE $name"
+    return 0
+  fi
+  return 1
+}
+
+process_watch() {
+  local f="$1" name now interval_s last probe out status detail verdict
+  name="$(mget "$f" name)"; [ -n "$name" ] || name="$(basename "${f%.yaml}")"
+  now="$(date +%s)"
+
+  expired_and_removed "$f" "$name" "$now" && return
+
+  interval_s="$(to_secs "$(mget "$f" interval)")"; [ "$interval_s" -gt 0 ] || interval_s=300
+  last="$(cat "$STATE/$name.lastrun" 2>/dev/null || echo 0)"
+  [ $((now - last)) -lt "$interval_s" ] && return    # not due yet
+  printf '%s' "$now" > "$STATE/$name.lastrun"
+
+  probe="$(mget "$f" probe)"
+  if [ "$probe" = agent ]; then
+    # the agent pass IS the probe (slow-cadence fuzzy watch)
+    verdict="$(run_agent_pass "$f" "$name" "scheduled")"
+    case "$verdict" in
+      HEALTHY*) status=OK ;;
+      *)        status=TRIP ;;     # SUSPECT/BROKEN/ROLLBACK/budget-skip
+    esac
+    emit_transition "$f" "$name" "$status" "agent" "$verdict"
+    return
+  fi
+
+  out="$(run_probe "$f")"
+  status="${out%% *}"; detail="${out#* }"
+  if [ "$status" = TRIP ] && [ "$(mget "$f" agent_evaluate)" = true ]; then
+    # deterministic trip → escalate to a bounded diagnosis pass
+    verdict="$(run_agent_pass "$f" "$name" "probe tripped: $detail")"
+    emit_transition "$f" "$name" TRIP "$detail" "$verdict"
+  else
+    emit_transition "$f" "$name" "$status" "$detail"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# entrypoints
+# ---------------------------------------------------------------------------
+cmd_run() {
+  mkdir -p "$STATE" "$INBOX"
+  command -v agent-notify >/dev/null 2>&1 || { echo "watch-companion-loop: agent-notify not on PATH" >&2; }
+  local f had=0
+  shopt -s nullglob
+  for f in "$WATCHES"/*.yaml; do        # *.yaml.paused is excluded by the glob
+    had=1
+    process_watch "$f" || log "ERROR while processing $f"
+  done
+  shopt -u nullglob
+  [ "$had" = 0 ] && log "pass: no active watches in $WATCHES"
+  return 0
+}
+
+cmd_daemon() {
+  local tick="${SENTINEL_TICK:-60}"
+  mkdir -p "$STATE" "$INBOX"
+  log "sentinel daemon start (tick ${tick}s, registry $WATCHES, budget ${AGENT_BUDGET}/h)"
+  while :; do
+    cmd_run || true
+    sleep "$tick"
+  done
+}
+
+case "${1:-run}" in
+  run)    cmd_run ;;
+  daemon) cmd_daemon ;;
+  *) echo "usage: watch-companion-loop {run|daemon}" >&2; exit 2 ;;
+esac

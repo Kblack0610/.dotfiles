@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# dotfiles-autopull — keep ~/.dotfiles current across machines.
+#
+# Cross-platform (invoked from ~/.zshrc, which runs on both Linux and macOS),
+# throttled, fast-forward-only, and silent unless it actually advances the branch.
+# Designed to be non-invasive: it never merges, rebases, or clobbers local work —
+# `git merge --ff-only` aborts rather than overwrite tracked changes, and we only
+# attempt it when HEAD is strictly behind upstream. A persistently-dirty submodule
+# (e.g. .local/src/android-suite) does NOT block a superproject fast-forward, so we
+# deliberately do not gate on a dirty working tree.
+#
+# fail-soft throughout: any error exits 0 so a broken network or odd repo state can
+# never disrupt shell startup.
+
+set -uo pipefail
+
+REPO="${DOTFILES_DIR:-$HOME/.dotfiles}"
+THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
+STAMP="$CACHE_DIR/last-pull"
+LOG="$CACHE_DIR/autopull.log"
+
+command -v git >/dev/null 2>&1 || exit 0
+[ -d "$REPO/.git" ] || exit 0
+
+now=$(date +%s)
+
+# Throttle: at most once per THROTTLE_SECS. Stamp BEFORE the network call so an
+# offline/hung fetch does not retry on every single shell.
+if [ -f "$STAMP" ]; then
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  [ "$((now - last))" -lt "$THROTTLE_SECS" ] && exit 0
+fi
+mkdir -p "$CACHE_DIR"
+echo "$now" >"$STAMP"
+
+# Never touch a repo mid-merge or mid-rebase.
+git -C "$REPO" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && exit 0
+if [ -d "$REPO/.git/rebase-merge" ] || [ -d "$REPO/.git/rebase-apply" ]; then exit 0; fi
+
+# Need a branch with an upstream.
+branch=$(git -C "$REPO" symbolic-ref --quiet --short HEAD 2>/dev/null) || exit 0
+git -C "$REPO" rev-parse --quiet --verify "@{u}" >/dev/null 2>&1 || exit 0
+
+git -C "$REPO" fetch --quiet 2>/dev/null || exit 0
+
+local_head=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) || exit 0
+remote_head=$(git -C "$REPO" rev-parse "@{u}" 2>/dev/null) || exit 0
+[ "$local_head" = "$remote_head" ] && exit 0 # already current
+
+# Only fast-forward when strictly behind (HEAD is an ancestor of upstream); this
+# skips the diverged case, which ff-only would refuse anyway.
+git -C "$REPO" merge-base --is-ancestor HEAD "@{u}" 2>/dev/null || exit 0
+
+if git -C "$REPO" merge --ff-only "@{u}" >/dev/null 2>&1; then
+  short_from=$(git -C "$REPO" rev-parse --short "$local_head" 2>/dev/null)
+  short_to=$(git -C "$REPO" rev-parse --short "$remote_head" 2>/dev/null)
+  msg="dotfiles: fast-forwarded $branch ${short_from}..${short_to}"
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >>"$LOG" 2>/dev/null
+  # Only speak when attached to a terminal in the foreground; stays silent when
+  # backgrounded from .zshrc.
+  [ -t 1 ] && echo "$msg"
+fi
+exit 0

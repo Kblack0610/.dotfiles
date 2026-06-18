@@ -164,3 +164,9 @@ export PATH="$HOME/.local/bin:$PATH"
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+
+# Keep ~/.dotfiles current across machines: throttled (6h), ff-only, silent.
+# Fully detached subshell so it never blocks startup or prints job-control noise.
+if [[ -o interactive ]] && command -v dotfiles-autopull >/dev/null 2>&1; then
+  (dotfiles-autopull &) >/dev/null 2>&1
+fi

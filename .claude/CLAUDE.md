@@ -127,6 +127,7 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `notes-system` — `~/.notes` journal (do not hand-write entries into `~/.notes/journal/`)
 - `mem0-ops` — cross-project, cross-tool long-term memory at `mem0.kblab.me`
 - `project-index` — refresh a project's anchor (`~/.agent/anchors/{project}.md`), the per-project memory/index.md front door the SessionStart hook injects at turn 1
+- `wind-down` — end-of-session self-teardown: write a wrap-up note to `~/.agent/sessions/{project}/<date>-wind-down.md` (runtime axis, not the vault), then arm a deferred `tmux kill-window` (or `--session`) that fires from `stop-post.d/95-wind-down.sh` after the Stop pipeline + eval run; gated on Stop checks (defers the kill if they fail). Trigger: "wind down" / "spin yourself down" / `/wind-down`
 
 **Research**
 - `deep-research` — multi-agent web research (broad/contested questions) with an adversarial verify pass
