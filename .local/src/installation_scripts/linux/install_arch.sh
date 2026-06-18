@@ -507,21 +507,25 @@ setup_profile() {
     fi
 }
 
-# Wire ~/.notes git sync (Forgejo primary + MQTT/ntfy fan-out).
-# Idempotent; skips with a clear message if NOTES_PRIMARY_REMOTE_URL is unset
+# Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
+# MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
+# so it runs on every machine; only the sync wiring is gated on the URL
 # (the only piece a fresh device can't infer).
 setup_notes_sync() {
-    log_section "Setting up notes sync"
-
-    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
-        log_warning "NOTES_PRIMARY_REMOTE_URL not set — skipping notes-bootstrap"
-        log_info "Run later with:  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git ~/.dotfiles/.local/bin/notes-bootstrap"
-        return 0
-    fi
+    log_section "Setting up notes CLI + sync"
 
     local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
     if [[ ! -x "$bootstrap" ]]; then
         log_warning "notes-bootstrap not found at $bootstrap — skipping"
+        return 0
+    fi
+
+    # The notes CLI build needs no sync URL — always build it so daily-note
+    # tooling and profile resolution work even on machines without notes sync.
+    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
+        log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
+        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git $bootstrap"
+        "$bootstrap" --build-only
         return 0
     fi
 

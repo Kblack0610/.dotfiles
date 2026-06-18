@@ -350,6 +350,35 @@ install_rust() {
     fi
 }
 
+# Build local Rust tools that live in the dotfiles and symlink them onto PATH.
+# Single static binaries, identical on macOS and Linux. Failures are non-fatal so
+# the rest of the install proceeds. Mirrors notes-bootstrap's build_notes_cli.
+build_local_rust_tools() {
+    log_section "Building local Rust tools"
+
+    if ! command -v cargo &>/dev/null; then
+        log_warning "cargo not found — skipping local Rust tools (install rustup first)"
+        return 0
+    fi
+
+    mkdir -p "$HOME/.local/bin"
+
+    # name:relative-source-dir pairs
+    local tools=("agent-panel:.local/src/agent-panel")
+    local entry name src
+    for entry in "${tools[@]}"; do
+        name="${entry%%:*}"
+        src="$HOME/.dotfiles/${entry#*:}"
+        log_info "Building $name (cargo build --release)..."
+        if ( cd "$src" && cargo build --release ); then
+            ln -sf "$src/target/release/$name" "$HOME/.local/bin/$name"
+            log_info "✓ Installed $name -> ~/.local/bin/$name"
+        else
+            log_warning "$name build failed; existing binary (if any) left in place."
+        fi
+    done
+}
+
 # Setup Git configuration
 setup_git() {
     log_section "Configuring Git"
@@ -469,6 +498,7 @@ install_all() {
     install_lazygit
     install_kitty
     install_rust
+    build_local_rust_tools
 
     # Kubernetes & Containers
     install_kubernetes
@@ -496,7 +526,7 @@ export -f log_info log_error log_warning log_section
 export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
-export -f install_nvim install_tmux install_kitty install_lazygit install_rust
+export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_ai_memory
 export -f install_all
