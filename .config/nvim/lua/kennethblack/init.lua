@@ -19,6 +19,13 @@ require "kennethblack.autocmds"
 
 -- Load plugins, lazy will do this automagically if string is in lua/{your dir here}. I use 'plugins'
 require("lazy").setup("kennethblack.plugins", {
+  -- Local checkouts of my own plugins (dev = true on a spec) are used when present
+  -- under ~/dev; on any machine that lacks the checkout, lazy clones the remote instead.
+  dev = {
+    path = "~/dev",
+    patterns = { "Kblack0610" },  -- only my repos opt into the local-dir override
+    fallback = true,              -- missing local dir -> clone from the remote
+  },
   ui = {
     size = { width = 0.9, height = 0.9 },  -- larger window for errors
     wrap = true,  -- wrap long lines so nothing is cut off
