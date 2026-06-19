@@ -121,6 +121,7 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `cloudflare-ops` — DNS/tunnels for kennethblack.me, blacknbrownstudios.com, binks.chat, kblack.dev
 - `forgejo-ops` — git.kblab.me on home-k3s
 - `gh-workflows` — GitHub PRs, issues, CI, releases (preferred over any GitHub MCP)
+- `bitbucket-ops` — Bitbucket Cloud PRs, pipelines, issues, code search (enterprise-safe; preferred over raw API calls)
 - `adb-ops` — Android debug bridge / emulator / APK install / logcat
 
 **Notes / memory**

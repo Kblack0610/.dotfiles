@@ -68,6 +68,7 @@ When a skill exists for an operational domain, use it instead of hand-rolling co
 - Cloudflare DNS / tunnels for kennethblack.me, blacknbrownstudios.com, binks.chat, kblack.dev → `cloudflare-ops` skill
 - Forgejo on home-k3s (git.kblab.me) → `forgejo-ops` skill
 - GitHub (PRs, issues, CI, releases) → `gh-workflows` skill (preferred over any GitHub MCP)
+- Bitbucket Cloud (PRs, pipelines, issues, code search) → `bitbucket-ops` skill (enterprise-safe)
 
 If a skill doesn't yet exist for a domain you touch repeatedly, propose one rather than inlining the procedure here.
 

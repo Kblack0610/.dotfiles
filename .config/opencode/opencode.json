@@ -286,19 +286,6 @@
         "bash": true
       }
     },
-    "autoaccept": {
-      "mode": "primary",
-      "tools": {
-        "write": true,
-        "edit": true,
-        "bash": true
-      },
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "webfetch": "allow"
-      }
-    },
     "code-reviewer": {
       "mode": "subagent",
       "model": "lazer/claude-sonnet-4.6",
