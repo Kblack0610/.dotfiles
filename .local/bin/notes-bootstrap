@@ -8,11 +8,17 @@ PRIMARY_URL="${NOTES_PRIMARY_REMOTE_URL:-}"
 BACKUP_URL="${NOTES_BACKUP_REMOTE_URL:-${NOTES_BACKUP_URL:-}}"
 MODE="${NOTES_BOOTSTRAP_MODE:-auto}"
 FORCE=0
+BUILD_ONLY=0
 
 usage() {
     cat <<'EOF'
 Usage:
-  notes-bootstrap [--force] [--primary-url URL] [--backup-url URL]
+  notes-bootstrap [--force] [--build-only] [--primary-url URL] [--backup-url URL]
+
+  --build-only   Build + link the notes CLI and ~/.config/notes only.
+                 Skips git-remote wiring and services. Needs no URL — safe
+                 on any machine, used by the installer when no sync remote
+                 is configured.
 
 Environment:
   NOTES_PRIMARY_REMOTE_URL   NAS remote URL for ~/.notes
@@ -231,6 +237,9 @@ while [[ $# -gt 0 ]]; do
         --force)
             FORCE=1
             ;;
+        --build-only|--no-sync)
+            BUILD_ONLY=1
+            ;;
         --primary-url)
             PRIMARY_URL="${2:-}"
             shift
@@ -253,6 +262,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 install_common_links
+
+if [[ "$BUILD_ONLY" -eq 1 ]]; then
+    cat <<EOF
+Notes CLI build complete (--build-only).
+
+Notes dir: $NOTES_DIR
+Binary:    $(command -v notes 2>/dev/null || echo "$HOME/.local/bin/notes")
+
+Sync/services were skipped. Wire them later with:
+  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git $0
+EOF
+    exit 0
+fi
 
 if is_termux; then
     install_termux_packages

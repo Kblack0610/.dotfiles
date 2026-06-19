@@ -22,6 +22,9 @@ return {
         },
       },
     },
+    -- Renders vim.ui.input (title prompts) as a snacks float; used by the
+    -- notes quick-create menu (<leader>nn).
+    input = { enabled = true },
     notifier = {
       enabled = true,
       width = { min = 40, max = 0.7 },  -- wider notifications (70% screen max)

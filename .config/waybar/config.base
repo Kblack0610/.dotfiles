@@ -95,7 +95,7 @@
         "return-type": "json",
         "interval": 3,
         "exec": "/home/kblack0610/.config/waybar/ai_agents.sh",
-        "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/agent-chooser.sh",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
         "tooltip": true
     }
 }

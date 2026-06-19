@@ -323,6 +323,74 @@ end
 vim.keymap.set("n", "<leader>nl", link_to_daily, { desc = "Link to daily note" })
 
 -- ============================================
+-- Quick-create note menu (<leader>nn)
+-- Floating picker over the profile-aware `notes` CLI — meetings, zettels,
+-- daily, inbox captures, backlogs. The CLI owns every template (source of
+-- truth); this is just a front door that opens whatever it creates.
+-- ============================================
+
+-- Run a `notes` subcommand that prints the created/target file path on stdout
+-- (logs go to stderr) and open that file. Notifies on failure.
+local function notes_run_open(args)
+  local cmd = { "notes" }
+  vim.list_extend(cmd, args)
+  local out = vim.trim(vim.fn.system(cmd))
+  if vim.v.shell_error ~= 0 or out == "" then
+    vim.notify("notes " .. table.concat(args, " ") .. " failed:\n" .. out, vim.log.levels.ERROR)
+    return
+  end
+  vim.cmd("edit " .. vim.fn.fnameescape(out))
+end
+
+-- Prompt for free text, then run `notes <args...> <text>` and open the result.
+local function notes_create_titled(prompt, args)
+  vim.ui.input({ prompt = prompt }, function(input)
+    if not input or vim.trim(input) == "" then return end
+    local full = vim.deepcopy(args)
+    table.insert(full, input)
+    notes_run_open(full)
+  end)
+end
+
+local function new_note_menu()
+  if vim.fn.executable("notes") ~= 1 then
+    vim.notify("`notes` CLI not found on PATH (build ~/.dotfiles/.local/src/notes-cli)", vim.log.levels.ERROR)
+    return
+  end
+
+  local items = {
+    { label = "🤝 Meeting log", action = function() notes_create_titled("Meeting title: ", { "meeting", "new" }) end },
+    { label = "🗓️  Daily note", action = function()
+      create_daily_journal()
+      vim.cmd("edit " .. vim.fn.fnameescape(get_today_journal()))
+    end },
+    { label = "🧠 Zettel / permanent", action = function() notes_create_titled("Zettel title: ", { "zettel", "new" }) end },
+    { label = "📥 Inbox capture", action = function()
+      vim.ui.input({ prompt = "Capture: " }, function(input)
+        if not input or vim.trim(input) == "" then return end
+        local out = vim.trim(vim.fn.system({ "notes", "inbox", "add", input }))
+        if vim.v.shell_error ~= 0 then
+          vim.notify("notes inbox add failed:\n" .. out, vim.log.levels.ERROR)
+        else
+          vim.notify("Captured to inbox", vim.log.levels.INFO)
+        end
+      end)
+    end },
+    { label = "🎯 Fun backlog", action = function() notes_run_open({ "backlog", "fun" }) end },
+    { label = "↪️  Carryover backlog", action = function() notes_run_open({ "backlog", "carryover" }) end },
+  }
+
+  vim.ui.select(items, {
+    prompt = "New note",
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if choice then choice.action() end
+  end)
+end
+
+vim.keymap.set("n", "<leader>nn", new_note_menu, { desc = "New note (notes menu)" })
+
+-- ============================================
 -- Make `gf` follow vault-root-relative [[wikilinks]] under ~/.notes
 -- (e.g. [[journal/backlogs/fun]], [[journal/refs/DATE/name]],
 -- [[dev/projects/.../v1.8.0.md|alias]]). No wikilink plugin is used — vanilla

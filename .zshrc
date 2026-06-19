@@ -171,9 +171,25 @@ export AWS_SHARED_CREDENTIALS_FILE=/mnt/c/Users/keblack/.aws/credentials
 export AWS_CONFIG_FILE=/mnt/c/Users/keblack/.aws/config
 
 # --- Secret Service for bitbucket-cli / libsecret (WSL has no desktop session) ---
-# Starts gnome-keyring's secrets component on the session bus if not already up.
-# login.keyring has an empty password so it auto-unlocks (no prompt).
-if command -v gnome-keyring-daemon >/dev/null 2>&1 && \
-   ! busctl --user list 2>/dev/null | grep -q org.freedesktop.secrets; then
-  printf '\n' | gnome-keyring-daemon -d --unlock --components=secrets >/dev/null 2>&1
+# bitbucket-cli stores creds ONLY in the Secret Service keyring. login.keyring has
+# an EMPTY password, but gnome-keyring still starts it LOCKED and needs one unlock
+# per daemon lifetime. So: if the login collection is locked, replace the daemon
+# with one unlocked via empty password (stdin '\n'). No GUI prompt, ever.
+if command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}"
+  if [ "$(busctl --user get-property org.freedesktop.secrets \
+            /org/freedesktop/secrets/collection/login \
+            org.freedesktop.Secret.Collection Locked 2>/dev/null)" != "b false" ]; then
+    printf '\n' | gnome-keyring-daemon --replace --daemonize \
+      --components=secrets,pkcs11,ssh --unlock >/dev/null 2>&1
+  fi
 fi
+
+# Keep ~/.dotfiles current across machines: throttled (6h), ff-only, silent.
+# Fully detached subshell so it never blocks startup or prints job-control noise.
+if [[ -o interactive ]] && command -v dotfiles-autopull >/dev/null 2>&1; then
+  (dotfiles-autopull &) >/dev/null 2>&1
+fi
+
+# Bitbucket Cloud headless auth (API token; app passwords deprecated)
+[ -f "$HOME/.config/bitbucket/secrets.env" ] && source "$HOME/.config/bitbucket/secrets.env"

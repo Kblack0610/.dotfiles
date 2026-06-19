@@ -14,6 +14,7 @@ mod inbox;
 mod index;
 mod logging;
 mod md;
+mod meeting;
 mod summarize;
 mod zettel;
 
@@ -40,7 +41,7 @@ enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today,
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -92,6 +93,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: ZettelCmd,
     },
+    /// Meeting log operations
+    Meeting {
+        #[command(subcommand)]
+        sub: MeetingCmd,
+    },
     /// Scan `[[wikilinks]]`; report or rebuild the backlink + MOC index
     Index {
         /// Write the index/ MOC + backlink files (otherwise just report)
@@ -137,6 +143,16 @@ enum ZettelCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum MeetingCmd {
+    /// Create a new meeting log with a timestamp id + agenda scaffolding
+    New {
+        /// Meeting title (free text)
+        #[arg(required = true, num_args = 1..)]
+        title: Vec<String>,
+    },
+}
+
 /// Restore default SIGPIPE handling so piping into `head`/`less` exits quietly
 /// (like `cat`) instead of panicking with "Broken pipe". Rust ignores SIGPIPE
 /// by default, which turns a closed pipe into a panic.
@@ -167,7 +183,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, index, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, meetings, index, inbox, inbox-today)"
                 );
                 2
             }
@@ -205,6 +221,12 @@ fn main() -> Result<()> {
         Cmd::Zettel { sub } => match sub {
             ZettelCmd::New { title } => {
                 zettel::new_note(&prof, &log, &title.join(" "))?;
+                0
+            }
+        },
+        Cmd::Meeting { sub } => match sub {
+            MeetingCmd::New { title } => {
+                meeting::new_note(&prof, &log, &title.join(" "))?;
                 0
             }
         },

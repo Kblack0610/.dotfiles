@@ -24,6 +24,10 @@ brew "bun"
 brew "lazydocker"
 brew "zsh-autosuggestions"
 brew "poppler"  # pdftoppm/pdfinfo — lets agents render PDFs to images for Read
+brew "gcalcli"  # Google Calendar from the CLI (agenda, reminders) — cross-platform meeting notifs
+brew "gh"       # GitHub CLI (PRs, issues, CI) — preferred over any GitHub MCP
+brew "pandoc"   # universal document converter
+brew "d2"       # declarative diagram language
 
 # --- Kubernetes & Container Tools ---
 brew "kubectl"
@@ -33,6 +37,8 @@ brew "k3d"               # k3s in Docker for local dev
 brew "helm"              # Kubernetes package manager
 brew "stern"             # Multi-pod log tailing
 brew "docker"
+brew "colima"            # Container runtime (Docker/k8s) on macOS without Docker Desktop
+brew "docker-compose"    # Compose plugin for colima/docker
 
 # --- Development ---
 brew "cocoapods"
@@ -42,6 +48,13 @@ brew "nss"
 brew "postgresql@14", restart_service: :changed
 brew "protobuf"
 brew "yarn"
+brew "rustup"            # Rust toolchain installer (notes-cli, ticket CLI, etc.)
+brew "awscli"           # AWS CLI
+brew "cloudflared"      # Cloudflare tunnel daemon / DNS-over-HTTPS client
+brew "marp-cli"         # Marp slide deck renderer (marp-slide skill)
+
+# --- Skills support ---
+brew "imagesnap"        # webcam capture CLI — webcam-ops / brightsign-visual-check skills
 
 # --- Status Bar (Waybar analog for macOS) ---
 brew "felixkratz/formulae/sketchybar"
@@ -62,11 +75,24 @@ cask "karabiner-elements"
 cask "raycast"
 cask "windsurf"
 cask "zulu@17"
-cask "tailscale"
+cask "tailscale-app"  # GUI menu-bar app (Tailscale split the old `tailscale` cask; formula = CLI-only)
 cask "discord"
 cask "spotify"
+cask "meetingbar"     # menu-bar next-meeting + native notifications (Google Calendar via Internet Accounts)
 
 # --- Game Streaming ---
 # Note: Sunshine on macOS is experimental (no gamepad support, needs BlackHole for audio)
 brew "lizardbyte/homebrew/sunshine"
 cask "moonlight"
+
+# --- Untracked on this machine — decide whether these belong on every Mac ---
+# Found by `brew-audit` but not yet adopted: may be machine-specific one-offs. Uncomment to track.
+# brew "mosquitto"      # MQTT broker/client (homelab)
+# brew "node_exporter"  # Prometheus host metrics exporter (homelab)
+# brew "sshpass"        # non-interactive ssh password auth
+# brew "arp-scan"       # local network scanner
+# brew "picocom"        # serial console
+# brew "weasyprint"     # HTML/CSS → PDF renderer
+# brew "zsh"            # newer zsh than macOS system zsh
+# cask "codex"          # OpenAI Codex desktop
+# cask "devin-desktop"  # Devin desktop
