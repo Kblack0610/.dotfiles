@@ -70,22 +70,37 @@ cmd_arm() {
   target=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
   session=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)
   windows=$(tmux display-message -p -t "$pane" '#{session_windows}' 2>/dev/null)
+  # Pin the server socket: on macOS tmux finds its server via $TMPDIR, which the
+  # Stop hook's (sanitized) env may not share. Capturing the absolute socket path
+  # now lets `fire` reach the right server with `tmux -S <socket>` regardless.
+  socket=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null)
 
   if [ -z "$target" ] || [ -z "$session" ]; then
     echo "wind-down: could not resolve tmux target — aborting arm." >&2
     return 1
   fi
 
-  local proj sentinel
+  local proj sentinel sid
   proj=$(resolve_project)
+  sid="${CLAUDE_CODE_SESSION_ID:-}"
   mkdir -p "$SPIN_DIR"
-  sentinel="$SPIN_DIR/${proj}.request"
+  # Key the sentinel by Claude session id. Multiple Claude windows can run in the
+  # SAME project's tmux session at once; a single shared "<proj>.request" let one
+  # session's Stop hook consume another's sentinel and kill the wrong window. The
+  # session id (== the Stop hook's stdin .session_id) isolates them. Fall back to
+  # the project-only name for non-Claude callers.
+  if [ -n "$sid" ]; then
+    sentinel="$SPIN_DIR/${proj}__${sid}.request"
+  else
+    sentinel="$SPIN_DIR/${proj}.request"
+  fi
 
   {
     echo "scope=$scope"
     echo "target=$target"
     echo "pane=$pane"
     echo "session=$session"
+    echo "socket=$socket"
     echo "windows=$windows"
     echo "ts=$(date +%s)"
   } > "$sentinel"
@@ -104,22 +119,34 @@ cmd_fire() {
   [ -n "$sentinel" ] && [ -f "$sentinel" ] || { echo "wind-down fire: sentinel not found: $sentinel" >&2; return 1; }
 
   # shellcheck source=/dev/null
-  local scope target session pane
+  local scope target session pane socket
   scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
   target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
   session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
   pane=$(grep '^pane=' "$sentinel" | head -1 | cut -d= -f2-)
+  socket=$(grep '^socket=' "$sentinel" | head -1 | cut -d= -f2-)
   scope="${scope:-window}"
 
   [ -n "$target" ] || { echo "wind-down fire: no target in sentinel" >&2; return 1; }
 
+  # Reach the SAME tmux server the window lives on. Pinning the socket (-S) makes
+  # this work regardless of $TMPDIR/$TMUX in the Stop hook's environment, which is
+  # how tmux otherwise locates its server (and a mismatch = silent no-op on macOS).
+  local TM="tmux"
+  [ -n "$socket" ] && [ -S "$socket" ] && TM="tmux -S $socket"
+
+  local logf="$SPIN_DIR/fire.log"
+  printf '[%s] fire: scope=%s target=%s pane=%s socket=%s TM="%s"\n' \
+    "$(date '+%F %T' 2>/dev/null)" "$scope" "$target" "$pane" "$socket" "$TM" >> "$logf" 2>/dev/null || true
+
   # Validate the target still exists before doing anything.
-  if ! tmux has-session -t "$session" 2>/dev/null; then
+  if ! $TM has-session -t "$session" 2>/dev/null; then
     echo "wind-down fire: session '$session' gone — nothing to do." >&2
+    printf '[%s] fire: session %s NOT found on %s — abort\n' "$(date '+%F %T' 2>/dev/null)" "$session" "$TM" >> "$logf" 2>/dev/null || true
     return 0
   fi
 
-  # Prefer the pane id for the kill: pane ids (@N) are stable, while window
+  # Prefer the pane id for the kill: pane ids (%N) are stable, while window
   # indices drift under `renumber-windows on`. Fall back to the index.
   local killtarget="${pane:-$target}"
 
@@ -133,14 +160,18 @@ cmd_fire() {
   # macOS (no setsid) a nohup'd child got killed before its `sleep` elapsed, so
   # the window stayed open. The tmux server is a persistent daemon, so a
   # backgrounded run-shell job reliably outlives the hook and fires the kill —
-  # while the `sleep 1` still lets the Stop pipeline finish first.
+  # while the `sleep 1` still lets the Stop pipeline finish first. The job logs
+  # itself at kill time so a survived window leaves a clear post-mortem.
+  local kill_cmd
   if [ "$scope" = "session" ]; then
-    tmux run-shell -b "sleep 1; tmux kill-session -t '$session'" 2>/dev/null
-    echo "wind-down: scheduled kill-session '$session'"
+    kill_cmd="$TM kill-session -t '$session'"
   else
-    tmux run-shell -b "sleep 1; tmux kill-window -t '$killtarget'" 2>/dev/null
-    echo "wind-down: scheduled kill-window '$killtarget' (window '$target')"
+    kill_cmd="$TM kill-window -t '$killtarget'"
   fi
+  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'" 2>/dev/null
+  local sched_rc=$?
+  printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
+  echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
 }
 
 cmd_note_path() {

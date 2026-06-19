@@ -10,7 +10,7 @@
 # and a leading `~` are also honored). This file is the SINGLE source of truth for
 # "where notes live" — journal-create/aliases/services all read it via the binary.
 
-default_profile = "personal"
+default_profile = "giganticplayground"
 
 [hostname_map]
 # Map a machine's short hostname to a profile so corporate boxes auto-root into

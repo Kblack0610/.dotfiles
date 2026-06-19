@@ -24,7 +24,19 @@ fi
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
 . "$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
-SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}.request"
+
+# Prefer THIS session's sentinel (keyed by the Stop payload's session_id) so
+# concurrent Claude windows in the same project never fire each other's teardown.
+# Only fall back to the legacy shared name when there is no session id at all.
+SID=""
+if [ -n "$STDIN_JSON" ] && command -v jq >/dev/null 2>&1; then
+  SID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null)
+fi
+if [ -n "$SID" ]; then
+  SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}__${SID}.request"
+else
+  SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}.request"
+fi
 
 [ -f "$SENTINEL" ] || exit 0
 
