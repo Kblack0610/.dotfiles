@@ -17,8 +17,13 @@ dnsTunneling=true
 autoProxy=true
 
 [experimental]
-# Reclaim cached/unused WSL memory back to Windows as processes free it.
-autoMemoryReclaim=gradual
+# Reclaim only page cache when WSL is idle — never balloon-squeeze live anon
+# pages out to the VHD swap. `gradual` did the latter, which (with the default
+# swappiness) pushed idle long-lived sessions to swap; on VDI return they
+# faulted back in and stalled IO until a tmux reattach. On this 32GB host there
+# is no memory pressure to justify aggressive reclaim. Pairs with
+# vm.swappiness=10 (etc/sysctl.d/99-wsl-memory.conf). See lessons: WSL swap thrash.
+autoMemoryReclaim=dropcache
 # Use a sparse VHD so the WSL disk image only consumes the space it actually uses.
 sparseVhd=true
 

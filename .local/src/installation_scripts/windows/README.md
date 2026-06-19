@@ -14,7 +14,7 @@ The default invocation is **configs-only** — it pulls the dotfiles repo and co
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
 - **Flow Launcher** — dmenu equivalent. `Alt+D` opens a fuzzy launcher (hotkey pinned via `.config/windows/flow-launcher/Settings.json`). Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
-- **`.wslconfig`** — caps WSL at 4 GB RAM so the 8 GB VDI doesn't thrash.
+- **`.wslconfig`** — WSL2 tuning: mirrored networking, DNS tunneling, `autoMemoryReclaim=dropcache`. No RAM cap (host is 32 GB; WSL's default ~50% is fine). Swap thrash is handled by `vm.swappiness=10` (see `etc/sysctl.d/99-wsl-memory.conf`) + `dropcache`, not a memory cap.
 
 ## Preflight: enable WSL2 on the VDI image
 
@@ -150,7 +150,8 @@ Get-Command wt, glazewm, zebar    # all resolve via winget installs
 ```sh
 # Inside WSL Arch (after `wsl --shutdown` then re-launch)
 nvim --version
-free -h                     # should show ~4 GB total
+free -h                     # ~50% of host RAM (no cap); swappiness should be 10
+cat /proc/sys/vm/swappiness # → 10 (from etc/sysctl.d/99-wsl-memory.conf)
 readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
 ```
 
@@ -256,7 +257,7 @@ We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synt
 
 ## Caveats
 
-- **8 GB VDI RAM**: keep WSL's cap at 4 GB. Run Teams on your physical Mac (per Deloitte's VDI best-practices slide) — don't double up inside the VDI.
+- **VDI RAM**: this host was upgraded to 32 GB, so WSL runs uncapped (~50% default) with `vm.swappiness=10` + `autoMemoryReclaim=dropcache` to avoid swap thrash. On a smaller (e.g. 8 GB) VDI, add a `memory=` cap to `.wslconfig` and run Teams on your physical Mac (per Deloitte's VDI best-practices slide) rather than doubling up inside the VDI.
 - **GlazeWM over RDP**: animations are off. If tiling still stutters, fall back to FancyZones (PowerToys).
 - **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock — no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` — the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.

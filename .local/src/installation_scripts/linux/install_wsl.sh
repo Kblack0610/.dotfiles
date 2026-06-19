@@ -117,6 +117,33 @@ EOF
     fi
 }
 
+# Kernel VM tuning for WSL: keep the working set in RAM so idle sessions don't
+# get swapped to the slow VHD and stall on fault-back after a VDI return.
+# systemd-sysctl.service re-applies /etc/sysctl.d on every boot.
+setup_sysctl() {
+    log_section "Applying WSL sysctl tuning"
+
+    local src="$HOME/.dotfiles/etc/sysctl.d/99-wsl-memory.conf"
+    local dst="/etc/sysctl.d/99-wsl-memory.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "sysctl source $src not found — skipping"
+        return 0
+    fi
+
+    if $SUDO install -Dm644 "$src" "$dst"; then
+        log_info "Installed $dst"
+    else
+        log_warning "Failed to install $dst — skipping apply"
+        return 0
+    fi
+
+    # Apply now without waiting for a reboot. --system reads all of /etc/sysctl.d.
+    $SUDO sysctl --system >/dev/null 2>&1 \
+        && log_info "✓ sysctl applied (vm.swappiness=$(cat /proc/sys/vm/swappiness))" \
+        || log_warning "sysctl --system failed — values apply on next \`wsl --shutdown\`"
+}
+
 # initdb the cluster but don't auto-start the service. The user runs postgres
 # on demand via `sudo systemctl start postgresql` once systemd is active.
 setup_postgres() {
@@ -172,6 +199,7 @@ apply_dotfiles() {
 ^/AGENTS\.md$
 ^/README\.md$
 ^/\.local/src/installation_scripts$
+^/etc$
 ^/\.fonts$
 ^/\.config/hypr$
 ^/\.config/waybar$
@@ -238,6 +266,7 @@ install_all() {
     install_rust
 
     setup_docker
+    setup_sysctl
     setup_postgres
 
     setup_git

@@ -5,6 +5,7 @@
 ^/AGENTS\.md$
 ^/README\.md$
 ^/\.local/src/installation_scripts$
+^/etc$
 ^/\.fonts$
 ^/\.config/hypr$
 ^/\.config/waybar$

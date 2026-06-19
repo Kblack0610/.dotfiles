@@ -3,7 +3,9 @@
 
 set -euo pipefail
 
-HOSTNAME=$(hostname)
+# `hostname` isn't installed on minimal Arch-WSL; fall back to uname/env so the
+# rest of the check (incl. swap-thrash detection) still runs under `set -e`.
+HOSTNAME=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo "${HOST:-unknown}")
 DATE=$(date '+%Y-%m-%d %H:%M')
 DATE_FILE=$(date '+%Y-%m-%d-%H%M')
 # Telemetry is runtime state, not durable human notes — keep it out of the
@@ -25,6 +27,13 @@ FAILING_SYSTEM=$(systemctl --failed --no-legend 2>/dev/null | wc -l || echo "0")
 ZOMBIE_COUNT=$(ps aux 2>/dev/null | awk '$8 ~ /Z/ {count++} END {print count+0}')
 TOP_CPU=$(ps aux --sort=-%cpu 2>/dev/null | head -6 | tail -5 | awk '{printf "- %s (%.1f%%)\n", $11, $3}')
 
+# Swap-thrash signals (the WSL/VDI "unusable after returning" fingerprint):
+# idle pages forced onto the slow VHD swap then faulted back in. We watch swap
+# fill %, IO pressure-stall, and live swap-in rate. See lessons: WSL swap thrash.
+SWAP_PCT=$(free | awk '/Swap:/{ if ($2>0) printf "%.0f", $3/$2*100; else printf "0" }')
+PSI_IO_60=$(awk '/^some/{ for(i=1;i<=NF;i++) if($i ~ /^avg60=/){ sub("avg60=","",$i); print $i } }' /proc/pressure/io 2>/dev/null || echo "0")
+SWAP_IN=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $7+0}')  # si: KB/s swapped in
+
 # Determine overall status
 STATUS="OK"
 ISSUES=()
@@ -33,6 +42,9 @@ ISSUES=()
 [[ $FAILING_SYSTEM -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("$FAILING_SYSTEM system service(s) failed"); }
 [[ $ZOMBIE_COUNT -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("$ZOMBIE_COUNT zombie process(es)"); }
 [[ ${MEM_PCT} -gt 90 ]] && { STATUS="WARNING"; ISSUES+=("Memory usage high: ${MEM_PCT}%"); }
+[[ ${SWAP_PCT} -gt 25 ]] && { STATUS="WARNING"; ISSUES+=("Swap thrash risk: ${SWAP_PCT}% swap used (idle pages on VHD)"); }
+awk "BEGIN{exit !(${PSI_IO_60:-0} > 5)}" && { STATUS="WARNING"; ISSUES+=("IO pressure-stall high: io.some avg60=${PSI_IO_60} (swap fault-back?)"); }
+[[ ${SWAP_IN} -gt 1000 ]] && { STATUS="WARNING"; ISSUES+=("Sustained swap-in: ${SWAP_IN} KB/s (fault-back stall)"); }
 
 # Build markdown report
 REPORT="# System Health: $HOSTNAME
@@ -44,6 +56,9 @@ REPORT="# System Health: $HOSTNAME
 |--------|-------|
 | Load | $LOAD |
 | Memory | $MEM_USED / $MEM_TOTAL ($MEM_PCT%) |
+| Swap used | ${SWAP_PCT}% |
+| IO stall (io.some avg60) | ${PSI_IO_60} |
+| Swap-in rate | ${SWAP_IN} KB/s |
 | Disk (/) | $DISK_ROOT |
 | Disk (/home) | $DISK_HOME |
 | Network Loss | ${PING_LOSS}% |
