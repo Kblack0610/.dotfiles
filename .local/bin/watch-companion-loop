@@ -220,11 +220,13 @@ emit_transition() {  # FILE NAME STATUS DETAIL VERDICT?
 
   case "$status" in
     OK)
-      [ "$prev" = TRIP ] || [ "$prev" = ERROR ] && \
-        notify "$pri" "$ttl" "[$name] RECOVERED — ${verdict:-$detail}" ;;
+      if [ "$prev" = TRIP ] || [ "$prev" = ERROR ]; then
+        notify "$pri" "$ttl" "[$name] RECOVERED — ${verdict:-$detail}"
+      fi ;;
     TRIP)   notify "$pri" "$ttl" "[$name] ${verdict:-TRIPPED — $detail}" ;;
     ERROR)  notify low   "$ttl" "[$name] probe error — $detail" ;;
   esac
+  return 0   # benign transitions must not bubble a non-zero exit to cmd_run's error guard
 }
 
 # ---------------------------------------------------------------------------
@@ -289,15 +291,13 @@ process_watch() {
 cmd_run() {
   mkdir -p "$STATE" "$INBOX"
   command -v agent-notify >/dev/null 2>&1 || { echo "watch-companion-loop: agent-notify not on PATH" >&2; }
-  local f had=0
+  local f
   shopt -s nullglob
   for f in "$WATCHES"/*.yaml; do        # *.yaml.paused is excluded by the glob
-    had=1
     process_watch "$f" || log "ERROR while processing $f"
   done
   shopt -u nullglob
-  [ "$had" = 0 ] && log "pass: no active watches in $WATCHES"
-  return 0
+  return 0    # quiet on empty/clean passes — only real events are logged
 }
 
 cmd_daemon() {

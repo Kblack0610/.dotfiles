@@ -1,0 +1,13 @@
+# EXAMPLE — metric probe: scrape a Prometheus-text endpoint and threshold one series.
+# Healthy while the value satisfies (op threshold); TRIP otherwise.
+name: pmp-fanout-backlog
+description: Notification fan-out backlog must stay low
+probe: metric
+target: https://api.placemyparents.com/metrics
+expect_metric: placemyparents_notification_fanout_backlog
+expect_op: "<"
+expect_threshold: 100
+interval: 5m
+expiry: null
+severity: high
+source: user

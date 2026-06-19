@@ -245,7 +245,34 @@ node scripts/verify-play-release.mjs com.kblack0610.placemyparents production <v
 # crash-free gate before widening rollout: ≥99.5% crash-free sessions over 24-48h (Sentry/Play vitals)
 ```
 
-For recurring checks during the window, pair with the loop skill: `/loop 15m release-coordinator monitor`.
+For the recurring legwork during the window, **register a Sentinel bake-watch** instead of making
+the user hold a `/loop` session open. Drop a self-removing manifest into `~/.agent/watches/` and the
+always-on Sentinel service watches the bake for you, pinging only on a SUSPECT/ROLLBACK signal and
+auto-removing itself when the window closes:
+
+```yaml
+# ~/.agent/watches/pmp-bake-<version>.yaml
+name: pmp-bake-<version>
+description: Post-deploy bake watch for placemyparents <version>
+probe: agent
+target: placemyparents
+interval: 10m
+expiry: 60m            # the v1.8.7 deadlock hit ~25 min in; 60 min active window
+severity: high
+agent_evaluate: true
+agent_question: "Post-deploy bake for <version>. Check pod restarts, api error/deadlock/timeout logs, notification_fanout_backlog, payment_confirmed rate, /health. Conclude HEALTHY / SUSPECT (name the signal) / ROLLBACK-CANDIDATE (with rationale). Recommend only — never execute."
+agent_max_turns: 15
+signal: kubectl --context do-nyc3-placemyparents-k8s-prod -n placemyparents get pods
+signal: kubectl --context do-nyc3-placemyparents-k8s-prod -n placemyparents logs deployment/placemyparents-api --since=10m | grep -iE 'error|fatal|deadlock|timeout' | tail -20
+signal: curl -s https://api.placemyparents.com/metrics | grep -E 'notification_fanout_backlog|pool|payment_confirmed_total'
+source: release-coordinator
+```
+
+Template: `~/.dotfiles/.config/agentctl/sentinel-watches.examples/pmp-bake.yaml`. Confirm to the
+user: "Sentinel is watching the bake for 60 min; it'll ping on any SUSPECT/ROLLBACK signal and
+auto-remove itself." This respects the constraints verbatim — Sentinel recommends, never executes —
+so the rollback decision stays with the human. (A user-run `/loop 15m release-coordinator monitor`
+remains an optional live-tail equivalent.)
 
 Decision framing on regression: classify **roll back** (re-point image / halt rollout — safe to
 recommend immediately) vs **roll forward** (anything involving migrated data — DB migrations roll

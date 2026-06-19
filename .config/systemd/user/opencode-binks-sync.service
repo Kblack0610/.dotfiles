@@ -1,0 +1,14 @@
+[Unit]
+Description=Rebase the opencode-binks patch series onto the latest upstream tag and rebuild
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/src/opencode-binks
+# fork-sync exits 2 on a rebase conflict (patches need manual/LLM resolution) and
+# 4 on a build failure; surface those as a failed unit rather than silent success.
+ExecStart=%h/.local/bin/fork-sync %h/.local/src/opencode-binks
+
+[Install]
+WantedBy=default.target
