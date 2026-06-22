@@ -32,4 +32,15 @@ notifications are easy to miss, so these are the post-install steps that make al
 - First run does a one-time Google OAuth handshake: `gcalcli agenda` (or `gcalcli init`). Auth state
   is per-machine and not committed.
 
+**SketchyBar next-meeting item** (`items/calendar.sh` + `plugins/calendar.sh`, via `brew "ical-buddy"`):
+- With AeroSpace's rice the native menu bar auto-hides (`_HIHideMenuBar = 1`), so MeetingBar's icon
+  is hidden behind SketchyBar. This item shows the next meeting directly on the bar instead. It reads
+  the **same system Calendar** MeetingBar uses (via icalBuddy — no separate OAuth).
+- One-time grant: **System Settings → Privacy & Security → Calendars → enable SketchyBar**. Until
+  granted, the item shows `no cal access`. (icalBuddy prints "No calendars." with no permission.)
+- Shows the earliest meeting that hasn't ended yet, styled by state: **live now** → red +
+  highlighted bg + `● now  Title`; **starting soon** (≤5 min) → gold + `in Nm  Title`; **upcoming**
+  → cyan `HH:MM  Title`; falls back to an all-day event (`Title`), else `Free`. Re-reads every 60s.
+  Click opens Calendar.app.
+
 Plan to load up macOS config similar to linux setup

@@ -25,6 +25,7 @@ brew "lazydocker"
 brew "zsh-autosuggestions"
 brew "poppler"  # pdftoppm/pdfinfo — lets agents render PDFs to images for Read
 brew "gcalcli"  # Google Calendar from the CLI (agenda, reminders) — cross-platform meeting notifs
+brew "ical-buddy"  # reads system Calendar (EventKit) — feeds SketchyBar next-meeting item
 brew "gh"       # GitHub CLI (PRs, issues, CI) — preferred over any GitHub MCP
 brew "pandoc"   # universal document converter
 brew "d2"       # declarative diagram language

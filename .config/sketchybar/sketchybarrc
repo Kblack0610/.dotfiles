@@ -51,6 +51,10 @@ source "$CONFIG_DIR/items/clock.sh"
 source "$CONFIG_DIR/items/battery.sh"
 source "$CONFIG_DIR/items/volume.sh"
 source "$CONFIG_DIR/items/cpu.sh"
+source "$CONFIG_DIR/items/calendar.sh"
+
+# Invisible driver: colors the whole bar by meeting state (pulse red / tint green).
+source "$CONFIG_DIR/items/meeting_watch.sh"
 
 # Force initial render of all items
 sketchybar --update

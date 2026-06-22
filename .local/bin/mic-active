@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""mic-active — print 1 if the default audio input is in use, else 0.
+
+Reads CoreAudio's kAudioDevicePropertyDeviceIsRunningSomewhere on the system
+default input device — the same signal macOS's orange mic dot uses. Reading it
+is unprivileged (no Microphone TCC grant needed; only the *capturing* app needs
+one). It flips to 1 whenever any app holds the mic: Zoom, Google Meet in a
+browser, Slack huddle, Teams, FaceTime, Dictation, Voice Memos, etc.
+
+Used by SketchyBar's meeting_watch plugin to tint the bar green while in a call.
+On ANY error it prints 0 and exits 0 — fail-safe: never falsely claim in-call.
+"""
+import ctypes
+import ctypes.util
+import struct
+import sys
+
+
+def main() -> int:
+    try:
+        ca = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+
+        def fourcc(s: str) -> int:
+            return struct.unpack(">I", s.encode())[0]
+
+        kSystemObject = 1
+        kDefaultInput = fourcc("dIn ")          # kAudioHardwarePropertyDefaultInputDevice
+        kRunningSomewhere = fourcc("gone")      # kAudioDevicePropertyDeviceIsRunningSomewhere
+        kGlobal = fourcc("glob")                # kAudioObjectPropertyScopeGlobal
+        kMain = 0                               # kAudioObjectPropertyElementMain
+
+        class Addr(ctypes.Structure):
+            _fields_ = [
+                ("mSelector", ctypes.c_uint32),
+                ("mScope", ctypes.c_uint32),
+                ("mElement", ctypes.c_uint32),
+            ]
+
+        def get_u32(obj: int, selector: int):
+            addr = Addr(selector, kGlobal, kMain)
+            val = ctypes.c_uint32(0)
+            size = ctypes.c_uint32(4)
+            err = ca.AudioObjectGetPropertyData(
+                ctypes.c_uint32(obj), ctypes.byref(addr),
+                0, None, ctypes.byref(size), ctypes.byref(val),
+            )
+            return err, val.value
+
+        err, dev = get_u32(kSystemObject, kDefaultInput)
+        if err != 0 or dev == 0:
+            print(0)
+            return 0
+        err, running = get_u32(dev, kRunningSomewhere)
+        if err != 0:
+            print(0)
+            return 0
+        print(1 if running else 0)
+        return 0
+    except Exception:
+        print(0)
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
