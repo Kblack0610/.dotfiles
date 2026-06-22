@@ -11,6 +11,11 @@ src/
 # .local/src/notes-cli/.gitignore).
 !.local/src/notes-cli/src/
 
+# notes: the active profile selection is machine-local — each box copies
+# config.toml.example → config.toml and sets its own profile. Only the
+# template is tracked, so no machine's choice can ever reroute another's.
+.config/notes/config.toml
+
 .local/share/applications/*.desktop
 
 .fonts/.uuid
