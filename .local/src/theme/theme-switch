@@ -320,6 +320,12 @@ apply_sketchybar() {
 # Bar background
 export BAR_COLOR=$(sb_color "$THEME_BG" e6)
 export BAR_BORDER_COLOR=$(sb_color "$THEME_FG_DIM" 4d)
+# Meeting-state signals: fixed red/green/yellow, theme-INDEPENDENT on purpose. These are
+# semantic alerts (unjoined / in-call / attended-then-left), not decoration — a pastel
+# theme must not turn the "join now" pulse blue. meeting_watch.sh drives the whole bar.
+export BAR_ALERT_COLOR=0xe6ef5734
+export BAR_INCALL_COLOR=0xe686a83e
+export BAR_LEFT_COLOR=0xe6ffcc2f
 
 # Item backgrounds
 export ITEM_BG_COLOR=$(sb_color "$THEME_BG_LIGHT" 66)
@@ -343,6 +349,7 @@ export BATTERY_COLOR=\$GREEN
 export BATTERY_LOW_COLOR=\$RED
 export VOLUME_COLOR=\$MAGENTA
 export CPU_COLOR=\$BLUE
+export CALENDAR_COLOR=\$CYAN
 EOF
     info "sketchybar: regenerated colors.sh from palette"
 

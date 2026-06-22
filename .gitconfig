@@ -27,4 +27,11 @@
 [url "ssh://git@bitbucket-nova/"]
 	insteadOf = ssh://git@bitbucket.org/
 [credential "https://git.kblab.me"]
-	helper = store
+	helper = osxkeychain
+[credential "https://git.kennethblack.me"]
+	helper = osxkeychain
+# Machine-local overrides (untracked). Holds the Cloudflare Access service-token
+# headers for git.kennethblack.me so secrets never land in this tracked file.
+# See ~/.gitconfig.local (create per-machine; not stowed).
+[include]
+	path = ~/.gitconfig.local

@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily local opencode-binks sync (safety net; the Forgejo Action is the primary auto-sync)
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=24h
+RandomizedDelaySec=10m
+AccuracySec=5m
+Persistent=true
+Unit=opencode-binks-sync.service
+
+[Install]
+WantedBy=timers.target

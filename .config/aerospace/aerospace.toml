@@ -96,6 +96,10 @@ cmd-slash = 'layout horizontal vertical'
 ctrl-cmd-j = 'join-with down'
 ctrl-cmd-k = 'join-with up'
 
+# Join the current/next meeting's video-call link (Meet/Zoom/Teams) — same target the
+# SketchyBar calendar item opens on click. See ~/.local/bin/meeting-join.
+ctrl-cmd-m = 'exec-and-forget $HOME/.local/bin/meeting-join'
+
 ################################################################################
 # WORKSPACES
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace

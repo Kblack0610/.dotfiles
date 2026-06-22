@@ -4,6 +4,7 @@
 
 export ICON_APPLE=""
 export ICON_CLOCK=""
+export ICON_CALENDAR=""
 
 # Battery
 export ICON_BATTERY_100=""

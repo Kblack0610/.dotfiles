@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# fork-sync — keep a customization fork cleanly current with a fast-moving upstream.
+#
+# Model: a fork is modelled as a thin PATCH SERIES (a handful of focused commits)
+# replayed on top of an upstream RELEASE TAG. Each sync fast-forwards a pristine
+# `vendor` branch to the newest stable upstream tag, then `git rebase --onto`s the
+# patch series from the old tag onto the new one. Conflicts then arrive small and
+# per-patch instead of accumulating in a long-lived merge branch — the true delta
+# stays readable and patches can be reordered/dropped as upstream absorbs features.
+#
+# This is deliberately generic: it works on ANY fork, configured per-repo via a
+# `.fork-sync.conf` file in the repo root (shell-sourced). The opencode-binks fork
+# is just its first consumer.
+#
+# Usage:
+#   fork-sync [REPO_DIR]            # sync the repo (defaults to $PWD)
+#   fork-sync --check [REPO_DIR]    # report drift only; never mutate branches
+#
+# Config (.fork-sync.conf in repo root; every key has a sensible default):
+#   UPSTREAM_REMOTE=upstream          # remote tracking the canonical upstream
+#   UPSTREAM_URL=https://...          # if set, the remote is auto-added when missing
+#   VENDOR_BRANCH=vendor              # pristine pointer to the current upstream tag
+#   PATCH_BRANCH=binks                # our patch series
+#   TAG_GLOB='v[0-9]*'                # git tag -l pattern for candidate release tags
+#   TAG_EXCLUDE='-(rc|beta|alpha|pre)' # ERE; tags matching are skipped (pre-releases)
+#   BUILD_CMD=''                      # optional; run after a clean rebase (cwd=repo)
+#   PUSH_REMOTE=''                    # optional; if set, push vendor+patch after success
+#
+# Exit codes: 0 success/up-to-date · 2 conflict (patches need manual/LLM rebase)
+#   · 3 misconfiguration · 4 build failed. Conflict (2) is the seam where an LLM
+#   resolver or a PR-opening CI step bolts on — see .forgejo/workflows/sync.yaml.
+
+set -uo pipefail
+
+# ---- args -------------------------------------------------------------------
+CHECK_ONLY=0
+REPO=""
+for a in "$@"; do
+  case "$a" in
+    --check) CHECK_ONLY=1 ;;
+    -*) echo "fork-sync: unknown flag: $a" >&2; exit 3 ;;
+    *)  REPO="$a" ;;
+  esac
+done
+REPO="${REPO:-$PWD}"
+
+die()  { echo "fork-sync: $*" >&2; exit 3; }
+info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
+
+command -v git >/dev/null 2>&1 || die "git not found"
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git repo"
+REPO="$(git -C "$REPO" rev-parse --show-toplevel)"
+git() { command git -C "$REPO" "$@"; }
+
+# ---- config -----------------------------------------------------------------
+UPSTREAM_REMOTE=upstream
+UPSTREAM_URL=""
+VENDOR_BRANCH=vendor
+PATCH_BRANCH=binks
+TAG_GLOB='v[0-9]*'
+TAG_EXCLUDE='-(rc|beta|alpha|pre)'
+BUILD_CMD=""
+PUSH_REMOTE=""
+# shellcheck disable=SC1091
+[ -f "$REPO/.fork-sync.conf" ] && . "$REPO/.fork-sync.conf"
+
+# Refuse to clobber in-progress work.
+git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && die "repo is mid-merge; resolve first"
+{ [ -d "$REPO/.git/rebase-merge" ] || [ -d "$REPO/.git/rebase-apply" ]; } && die "repo is mid-rebase; resolve first"
+# Gate on tracked changes only: a rebase/checkout won't disturb untracked files
+# (and .fork-sync.conf itself is often untracked), so they must not block a sync.
+{ git diff --quiet && git diff --cached --quiet; } || die "uncommitted tracked changes; commit or stash first"
+
+# ---- upstream remote --------------------------------------------------------
+if ! git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
+  [ -n "$UPSTREAM_URL" ] || die "remote '$UPSTREAM_REMOTE' missing and UPSTREAM_URL unset"
+  info "adding remote $UPSTREAM_REMOTE -> $UPSTREAM_URL"
+  [ "$CHECK_ONLY" -eq 1 ] || git remote add "$UPSTREAM_REMOTE" "$UPSTREAM_URL"
+fi
+
+info "fetching $UPSTREAM_REMOTE tags"
+git fetch --quiet --tags --prune "$UPSTREAM_REMOTE" || die "fetch failed"
+
+# ---- resolve newest stable tag ---------------------------------------------
+# Version-sort the matching tags, drop pre-releases, take the highest.
+latest_tag="$(
+  git tag -l "$TAG_GLOB" --sort=-v:refname \
+    | { [ -n "$TAG_EXCLUDE" ] && grep -Ev -e "$TAG_EXCLUDE" || cat; } \
+    | head -1
+)"
+[ -n "$latest_tag" ] || die "no tags matched TAG_GLOB='$TAG_GLOB' (after TAG_EXCLUDE)"
+latest_sha="$(git rev-parse "refs/tags/$latest_tag^{commit}")"
+
+# Current vendor pointer (the tag the patch series currently sits on).
+if git rev-parse -q --verify "refs/heads/$VENDOR_BRANCH" >/dev/null 2>&1; then
+  old_vendor="$(git rev-parse "$VENDOR_BRANCH")"
+else
+  old_vendor=""
+fi
+
+# ---- report -----------------------------------------------------------------
+old_desc="$( [ -n "$old_vendor" ] && git describe --tags --always "$old_vendor" 2>/dev/null || echo '(none)')"
+info "upstream latest stable: $latest_tag    vendor at: $old_desc"
+
+if [ "$old_vendor" = "$latest_sha" ]; then
+  info "already current — nothing to do"
+  exit 0
+fi
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  warn "drift: vendor=$old_desc  ->  upstream=$latest_tag (run 'fork-sync' to sync)"
+  exit 0
+fi
+
+# ---- ensure patch branch exists --------------------------------------------
+if ! git rev-parse -q --verify "refs/heads/$PATCH_BRANCH" >/dev/null 2>&1; then
+  [ -n "$old_vendor" ] || old_vendor="$latest_sha"
+  info "creating patch branch '$PATCH_BRANCH' at $old_desc (empty series)"
+  git branch "$PATCH_BRANCH" "$old_vendor"
+fi
+# First-ever vendor: anchor it where the patch series currently sits so the
+# rebase range (old_vendor..PATCH_BRANCH) captures exactly our commits.
+if [ -z "$old_vendor" ]; then
+  old_vendor="$(git merge-base "$PATCH_BRANCH" "$latest_sha" 2>/dev/null || git rev-parse "$PATCH_BRANCH")"
+fi
+
+n_patches="$(git rev-list --count "$old_vendor..$PATCH_BRANCH" 2>/dev/null || echo '?')"
+info "replaying $n_patches patch(es) from $(git describe --tags --always "$old_vendor" 2>/dev/null) onto $latest_tag"
+
+# ---- rebase patch series onto the new tag (on a temp branch) ---------------
+rebase_branch="fork-sync/rebase-$latest_tag"
+git branch -f "$rebase_branch" "$PATCH_BRANCH"
+prev_head="$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)"
+
+cleanup_to_prev() { git checkout -q "$prev_head" 2>/dev/null || true; }
+
+git checkout -q "$rebase_branch" || die "could not checkout $rebase_branch"
+
+if ! git rebase --onto "$latest_sha" "$old_vendor" "$rebase_branch" >/tmp/fork-sync-rebase.log 2>&1; then
+  warn "rebase hit conflicts replaying patches onto $latest_tag:"
+  sed 's/^/    /' /tmp/fork-sync-rebase.log >&2 || true
+  git rebase --abort 2>/dev/null || true
+  cleanup_to_prev   # leave the conflicted branch before deleting it
+  git branch -D "$rebase_branch" 2>/dev/null || true
+  warn "vendor/$VENDOR_BRANCH and $PATCH_BRANCH left UNCHANGED (atomic). Resolve by:"
+  warn "    git checkout -B $rebase_branch $PATCH_BRANCH && git rebase --onto $latest_tag $old_vendor"
+  exit 2
+fi
+info "rebase clean"
+
+# ---- optional build before we publish --------------------------------------
+if [ -n "$BUILD_CMD" ]; then
+  info "building: $BUILD_CMD"
+  if ! ( cd "$REPO" && eval "$BUILD_CMD" ); then
+    warn "build failed on rebased series; leaving branches UNCHANGED"
+    git branch -D "$rebase_branch" 2>/dev/null || true
+    cleanup_to_prev
+    exit 4
+  fi
+  info "build ok"
+fi
+
+# ---- commit: advance vendor + fast-forward patch branch --------------------
+git branch -f "$VENDOR_BRANCH" "$latest_sha"
+git branch -f "$PATCH_BRANCH" "$rebase_branch"
+cleanup_to_prev
+git branch -D "$rebase_branch" 2>/dev/null || true
+info "advanced $VENDOR_BRANCH -> $latest_tag and rebased $PATCH_BRANCH onto it"
+
+# ---- optional push ----------------------------------------------------------
+if [ -n "$PUSH_REMOTE" ]; then
+  info "pushing $VENDOR_BRANCH + $PATCH_BRANCH to $PUSH_REMOTE (force-with-lease on patch)"
+  git push "$PUSH_REMOTE" "$VENDOR_BRANCH" || warn "push $VENDOR_BRANCH failed"
+  git push --force-with-lease "$PUSH_REMOTE" "$PATCH_BRANCH" || warn "push $PATCH_BRANCH failed"
+fi
+
+info "done: now at $latest_tag + $n_patches patch(es)"
+exit 0

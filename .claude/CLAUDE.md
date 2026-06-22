@@ -101,9 +101,11 @@ When you act on an existing plan, **update the plan file** — mark items comple
 | Workflow rules (this file) | `~/.claude/CLAUDE.md`, `AGENTS.md` for non-Claude tools | Auto-loaded |
 | Project runbook docs (auth flow, deploy steps) | Project repo markdown, git-tracked | Read directly when working in that repo |
 | Plans + evals | `~/.agent/plans/{project}/`, `~/.agent/evals/{project}/` | SessionStart hook lists plans; eval format documented below |
+| Session wrap-ups (narrative "what happened") | `~/.agent/sessions/{project}/<date>-wind-down.md` | Written by the `wind-down` skill; runtime axis, git-tracked. Read directly |
+| Consolidated memory (nightly distillation) | `~/.agent/dreams/{project}/` (`DREAMS.md` diary, `mem0-queue.md`) | Written by **Dreaming** (`/dream` + `agentctl@dream` at 03:00); SessionStart injects the latest Deep-sleep digest. Runbook: `.config/agentctl/DREAMING.md` |
 | Skill knowledge | `~/.claude/skills/` | Auto-loaded when skill is invoked |
 
-When writing memories, prefer mem0 (via the `mem0-ops` skill) for facts that should ride across projects/tools and lessons for project-specific corrections. Don't write project runbooks to memory — those belong in the project repo.
+When writing memories, prefer mem0 (via the `mem0-ops` skill) for facts that should ride across projects/tools and lessons for project-specific corrections. Don't write project runbooks to memory — those belong in the project repo. **Dreaming** is the consolidation layer over the rest: nightly it scores the eval/lesson/session corpus and promotes durable signal into lessons + `memory/` (local, auto) and a human-gated `mem0-queue.md` (cross-project) — it never auto-posts to mem0. `nightly-sync` (23:00) ingests notes→mem0; `dream` (03:00) reflects on the agent's own work. See `.config/agentctl/DREAMING.md`.
 
 ## Infrastructure Questions
 
@@ -149,6 +151,9 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `vikunja-subtask-conform` — conform/restructure a Vikunja project's epic→story→subtask tree to the documented ticket template (BNB ticketing at vikunja.kblab.me, via the `vikunja` MCP)
 - `jira-subtask-conform` — same, for Jira epics via the Atlassian MCP (client projects)
 
+**Monitoring**
+- `sentinel` — Sentinel 🛰️, the always-on, observe-only monitoring companion. "Keep an eye on X / alert me if X" → a declarative watch at `~/.agent/watches/*.yaml`, polled by a persistent agentctl service (`agentctl@sentinel`, survives logout) that notifies via `agent-notify` ONLY on a state change. Verbs: `watch | list | status | stop | pause | resume`. Deterministic probes (http/metric/kubectl/command) cost zero tokens; the model fires only to diagnose a trip or for a fuzzy `probe: agent` watch (per-hour budget-capped). Observe-only — never executes/mutates/touches release gates. Other agents register watches by dropping a manifest. Runbook: `~/.dotfiles/.config/agentctl/SENTINEL.md`
+
 **Authoring / config**
 - `one-pager` — Problem Brief / One-pager / Pitch in `~/.notes/lab/briefs/`
 - `update-rules` — manage AI rules across rulesync overview / project CLAUDE.md / AGENTS.md / user-global, with sync (Claude / Codex / Gemini / OpenCode)
@@ -172,6 +177,8 @@ Entry skills: `/kb:workflow` (full pipeline) and `/kb:implement` (feature → PR
 Above the pipeline sits the sprint loop, entered via **`/captain` — the single conversational front door for all delivery workstreams**: the `kb-sprint-owner` agent (Sloane) builds a prioritized ticket queue, the `/kb:sprint` procedures dispatch `kb-coordinator` per ticket (sequential v1) through merged PR + ticket Done, and the `sprint-overseer` agent (Argus) observes the run as the single notification voice — it never executes. New workstreams plug into the captain's routing table rather than adding user-facing front doors. release-coordinator stays decoupled: it supplies release-impact input to the queue, and merged batches surface in its `status` automatically.
 
 Adjacent to the pipeline: the `release-coordinator` agent (routed via `/captain`; direct `/release-coordinator` also fine) is the **analysis-only release persona** — delegate release-state dashboards, risk-lane batch classification, preflight readiness verdicts, and bake-window monitoring analysis to it. It consumes kb-qa-passed merged work and NEVER executes deploys, pushes tags, or satisfies the human approval gates; execution is always the user invoking `placemyparents-release`.
+
+Standing beside the pipeline is the **`sentinel` skill (Sentinel 🛰️)** — the third observe-only persona after Argus (sprint-overseer) and Mercer (release-coordinator). It is an always-on `agentctl` service that watches a registry of declarative manifests (`~/.agent/watches/*.yaml`) and is the single notification voice for anything it watches — pinging via `agent-notify` only on a state change, and recommending (never executing) on a trip. Delegate "keep an eye on X / alert me if X" asks to it. Other agents register watches by dropping a manifest with an `expiry`; release-coordinator's `monitor` verb drops a 60-min bake-window watch so deploys are watched without the user holding a `/loop`. Deterministic-first by design: probes are free; the model fires only to diagnose a trip or judge a fuzzy `probe: agent` watch, budget-capped per hour.
 
 The kb **Phase-0 ticket step is tracker-agnostic and MCP-first**: the active system (verbs `system|resolve-epic|claim|create|done|pr-line`) is chosen per-repo from `project-map.json` `trackers` (vikunja/jira/clickup/linear/notion/local) — vikunja=home/personal default, clickup="gigantic playground", jira=Deloitte. Two write modes: **drive the system's MCP** per `docs/adapters/<system>.md` when it's connected, else the `ticket` CLI (on PATH; token+curl) as the headless/CI fallback. Never hard-code a ticketing system. Vikunja emits the legacy `Vikunja: <id>` PR line (both modes) for CI compatibility; others emit `Ticket: <System> <id>`. Contract + adapters + how to add one: `~/.dotfiles/.local/src/ticket/docs/contract.md`.
 

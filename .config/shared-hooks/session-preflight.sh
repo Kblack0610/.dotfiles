@@ -59,6 +59,22 @@ CONTEXT=$(
     echo "Lessons: none ($LESSONS_FILE does not exist)"
   fi
 
+  # Dream digest — if Dreaming consolidated recently (DREAMS.md touched in the last
+  # ~18h), surface the newest entry's Deep-sleep summary + any pending mem0 proposals.
+  DREAMS_FILE="$HOME/.agent/dreams/${PROJECT_NAME}/DREAMS.md"
+  MEM0_QUEUE="$HOME/.agent/dreams/${PROJECT_NAME}/mem0-queue.md"
+  if [ -f "$DREAMS_FILE" ] && find "$DREAMS_FILE" -mmin -1080 2>/dev/null | grep -q .; then
+    echo "💤 Last night's dream ($DREAMS_FILE):"
+    # Latest dated entry's Deep Sleep section (from the last '# <date>' heading onward).
+    awk '/^# [0-9]{4}-[0-9]{2}-[0-9]{2}/{buf=""} {buf=buf $0 "\n"} END{printf "%s",buf}' "$DREAMS_FILE" \
+      | awk '/^## Deep Sleep/{f=1; next} f&&/^## /{exit} f' \
+      | head -12 | sed 's/^/  /'
+    if [ -f "$MEM0_QUEUE" ]; then
+      pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null || echo 0)
+      [ "${pending:-0}" -gt 0 ] && echo "  → $pending mem0 proposal(s) awaiting review in $MEM0_QUEUE (run their curls to approve)."
+    fi
+  fi
+
   cd "$PROJECT_DIR" 2>/dev/null || true
   if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "Recent commits (last 5):"

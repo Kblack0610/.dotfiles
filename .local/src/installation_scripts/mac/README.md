@@ -32,4 +32,35 @@ notifications are easy to miss, so these are the post-install steps that make al
 - First run does a one-time Google OAuth handshake: `gcalcli agenda` (or `gcalcli init`). Auth state
   is per-machine and not committed.
 
+**SketchyBar next-meeting item** (`items/calendar.sh` + `plugins/calendar.sh`, via `brew "ical-buddy"`):
+- With AeroSpace's rice the native menu bar auto-hides (`_HIHideMenuBar = 1`), so MeetingBar's icon
+  is hidden behind SketchyBar. This item shows the next meeting directly on the bar instead. It reads
+  the **same system Calendar** MeetingBar uses (via icalBuddy — no separate OAuth).
+- One-time grant: **System Settings → Privacy & Security → Calendars → enable SketchyBar**. Until
+  granted, the item shows `no cal access`. (icalBuddy prints "No calendars." with no permission.)
+- Shows the earliest meeting that hasn't ended yet, styled by state: **live now** → red +
+  highlighted bg + `● now  Title`; **starting soon** (≤5 min) → gold + `in Nm  Title`; **upcoming**
+  → cyan `HH:MM  Title`; falls back to an all-day event (`Title`), else `Free`. Re-reads every 60s.
+
+**Whole-bar meeting state** (`items/meeting_watch.sh` + `plugins/meeting_watch.sh`, `.local/bin/mic-active`):
+- An invisible 2s driver colors the entire bar by meeting state (visual only — no sound, no
+  notifications; those were removed for simplicity and can be re-added as separate modules):
+  - **ALERT** — meeting live or ≤5 min away, mic off, *not yet joined* → bar **pulses red**.
+  - **IN-CALL** — mic active → bar **solid green**.
+  - **LEFT** — you joined this meeting and left while it's still on → bar **solid yellow** (no nag).
+  - **NORMAL** — theme color.
+- **Joined latch**: the first time your mic is active inside a meeting's window, that meeting is
+  latched joined (`~/.local/cache/sketchybar/joined.<start-epoch>`); leaving then shows yellow, not
+  red. Epochs are pinned to `:00` (BSD `date` would otherwise fill seconds from the clock and the
+  latch would drift). Mic detection (`mic-active`) scans **all** input devices, so a Krisp/virtual
+  mic captured by a browser still counts as in-call. Signal colors are fixed red/green/yellow
+  (theme-independent — see `theme-switch`); the one tunable is `SOON_SECS` in `meeting_watch.sh`.
+
+**Join the meeting** (`.local/bin/meeting-join`):
+- Opens the current/next meeting's video-call link (Meet/Zoom/Teams, extracted from the event notes;
+  falls back to Calendar.app if none). Bound to: **left-click the calendar item**, and the **⌃⌘M**
+  hotkey (AeroSpace `ctrl-cmd-m`). **Right-click** the calendar item opens **Calendar.app**
+  (`plugins/calendar_click.sh` dispatches on `$BUTTON`). Test without launching a tab:
+  `MEETING_JOIN_DRYRUN=1 meeting-join`.
+
 Plan to load up macOS config similar to linux setup
