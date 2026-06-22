@@ -170,6 +170,18 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 export AWS_SHARED_CREDENTIALS_FILE=/mnt/c/Users/keblack/.aws/credentials
 export AWS_CONFIG_FILE=/mnt/c/Users/keblack/.aws/config
 
+# --- kubectl.exe bridge: private dev EKS is unroutable from WSL, so mint the EKS
+#     token here (WSL has dev creds) and run kubectl.exe on Windows (on the VPN).
+#     Needs fresh dev creds (aws-azure-login on Windows) + VPN connected.
+#     Usage: k get pods -n edudev   |   k auth can-i create pods/exec -n edudev
+export EP=https://827F9F0DF14FFA6A59E5FBB67A971B6E.sk1.ca-central-1.eks.amazonaws.com
+unalias k 2>/dev/null  # oh-my-zsh kubectl plugin sets `alias k=kubectl`, which blocks the function def below
+k() {
+  local TOK
+  TOK=$(aws eks get-token --cluster-name cms-oc-nova-healix-dev --profile dev --region ca-central-1 --query 'status.token' --output text) || return 1
+  powershell.exe -NoProfile -Command "kubectl.exe --server='$EP' --token='$TOK' --insecure-skip-tls-verify=true --request-timeout=20s $*"
+}
+
 # --- Secret Service for bitbucket-cli / libsecret (WSL has no desktop session) ---
 # bitbucket-cli stores creds ONLY in the Secret Service keyring. login.keyring has
 # an EMPTY password, but gnome-keyring still starts it LOCKED and needs one unlock
