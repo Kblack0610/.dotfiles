@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""mic-active — print 1 if the default audio input is in use, else 0.
+"""mic-active — print 1 if ANY audio input device is actively capturing, else 0.
 
-Reads CoreAudio's kAudioDevicePropertyDeviceIsRunningSomewhere on the system
-default input device — the same signal macOS's orange mic dot uses. Reading it
-is unprivileged (no Microphone TCC grant needed; only the *capturing* app needs
-one). It flips to 1 whenever any app holds the mic: Zoom, Google Meet in a
-browser, Slack huddle, Teams, FaceTime, Dictation, Voice Memos, etc.
+Scans every input-capable CoreAudio device and reports 1 if any has
+kAudioDevicePropertyDeviceIsRunningSomewhere set. Checking ALL input devices (not just
+the system default) is deliberate: noise-cancellation apps like Krisp insert a *virtual*
+microphone, and a meeting app (Zoom/Meet-in-browser/Slack/Teams) often captures from that
+virtual device rather than the hardware default — so a default-only check misses the call.
 
-Used by SketchyBar's meeting_watch plugin to tint the bar green while in a call.
+Reading these flags is unprivileged (no Microphone TCC grant needed; only the capturing
+app needs one). Used by SketchyBar's meeting_watch plugin to tint the bar green in a call.
 On ANY error it prints 0 and exits 0 — fail-safe: never falsely claim in-call.
 """
 import ctypes
@@ -24,37 +25,56 @@ def main() -> int:
             return struct.unpack(">I", s.encode())[0]
 
         kSystemObject = 1
-        kDefaultInput = fourcc("dIn ")          # kAudioHardwarePropertyDefaultInputDevice
-        kRunningSomewhere = fourcc("gone")      # kAudioDevicePropertyDeviceIsRunningSomewhere
-        kGlobal = fourcc("glob")                # kAudioObjectPropertyScopeGlobal
-        kMain = 0                               # kAudioObjectPropertyElementMain
+        kDevices = fourcc("dev#")        # kAudioHardwarePropertyDevices
+        kStreams = fourcc("stm#")        # kAudioDevicePropertyStreams
+        kRunning = fourcc("gone")        # kAudioDevicePropertyDeviceIsRunningSomewhere
+        kGlobal = fourcc("glob")         # kAudioObjectPropertyScopeGlobal
+        kInput = fourcc("inpt")          # kAudioObjectPropertyScopeInput
+        kMain = 0
 
         class Addr(ctypes.Structure):
-            _fields_ = [
-                ("mSelector", ctypes.c_uint32),
-                ("mScope", ctypes.c_uint32),
-                ("mElement", ctypes.c_uint32),
-            ]
+            _fields_ = [("mSelector", ctypes.c_uint32),
+                        ("mScope", ctypes.c_uint32),
+                        ("mElement", ctypes.c_uint32)]
 
-        def get_u32(obj: int, selector: int):
-            addr = Addr(selector, kGlobal, kMain)
+        def data_size(obj, selector, scope=kGlobal):
+            addr = Addr(selector, scope, kMain)
+            size = ctypes.c_uint32(0)
+            ca.AudioObjectGetPropertyDataSize(
+                ctypes.c_uint32(obj), ctypes.byref(addr), 0, None, ctypes.byref(size))
+            return size.value
+
+        def get_u32(obj, selector, scope=kGlobal):
+            addr = Addr(selector, scope, kMain)
             val = ctypes.c_uint32(0)
             size = ctypes.c_uint32(4)
             err = ca.AudioObjectGetPropertyData(
-                ctypes.c_uint32(obj), ctypes.byref(addr),
-                0, None, ctypes.byref(size), ctypes.byref(val),
-            )
+                ctypes.c_uint32(obj), ctypes.byref(addr), 0, None,
+                ctypes.byref(size), ctypes.byref(val))
             return err, val.value
 
-        err, dev = get_u32(kSystemObject, kDefaultInput)
-        if err != 0 or dev == 0:
+        # Enumerate all devices.
+        sz = data_size(kSystemObject, kDevices)
+        count = sz // 4
+        if count == 0:
             print(0)
             return 0
-        err, running = get_u32(dev, kRunningSomewhere)
-        if err != 0:
-            print(0)
-            return 0
-        print(1 if running else 0)
+        devs = (ctypes.c_uint32 * count)()
+        addr = Addr(kDevices, kGlobal, kMain)
+        szc = ctypes.c_uint32(sz)
+        ca.AudioObjectGetPropertyData(
+            ctypes.c_uint32(kSystemObject), ctypes.byref(addr), 0, None,
+            ctypes.byref(szc), devs)
+
+        for dev in devs:
+            # Input-capable? (has at least one input stream)
+            if data_size(dev, kStreams, kInput) == 0:
+                continue
+            err, running = get_u32(dev, kRunning)
+            if err == 0 and running:
+                print(1)
+                return 0
+        print(0)
         return 0
     except Exception:
         print(0)

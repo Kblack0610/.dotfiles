@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""meeting-join — open the video-call link of the meeting the bar is pointing at.
+
+Picks the earliest timed event that hasn't ended yet (same rule as the SketchyBar
+calendar item / lib/calendar.sh) and opens its Google Meet / Zoom / Teams link, which
+icalBuddy exposes in the event notes. If that meeting has no link, falls back to opening
+Calendar.app so you can act. Bound to a click on the calendar item and to a hotkey.
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+DRYRUN = os.environ.get("MEETING_JOIN_DRYRUN") == "1"  # print target instead of opening
+
+
+def _open(*args):
+    if DRYRUN:
+        print(" ".join(args))
+    else:
+        subprocess.run(["open", *args])
+
+BUDDY = shutil.which("icalBuddy") or "/opt/homebrew/bin/icalBuddy"
+URL_RE = re.compile(
+    r"https://(?:meet\.google\.com|[a-z0-9.]*zoom\.us|teams\.microsoft\.com|teams\.live\.com)/[^\s>]+"
+)
+
+
+def epoch(date_str, time_str):
+    return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").timestamp()
+
+
+def main():
+    try:
+        raw = subprocess.run(
+            [BUDDY, "-npn", "-nc", "-nrd", "-b", "@EVT@", "-ps", "|@P@|",
+             "-iep", "datetime,title,notes", "-po", "datetime,title,notes",
+             "-df", "%Y-%m-%d", "-tf", "%H:%M", "eventsToday+1"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:
+        raw = ""
+
+    now = time.time()
+    # Records are delimited by the literal "@EVT@" bullet; notes may span newlines, so we
+    # split on the bullet (NOT on newlines) to keep each event whole.
+    for rec in (r for r in raw.split("@EVT@") if r.strip()):
+        dt = rec.split("@P@", 1)[0].strip().replace(" at ", " ")
+        if ":" not in dt:                       # all-day event → no join time, skip
+            continue
+        try:
+            start_part, end_part = dt.split(" - ", 1)
+            sdate, stime = start_part.split()[:2]
+            etoks = end_part.split()
+            if len(etoks) >= 2:                 # end carries its own date (cross-midnight)
+                edate, etime = etoks[0], etoks[1]
+            else:
+                edate, etime = sdate, etoks[0]
+            ee = epoch(edate, etime)
+        except Exception:
+            continue
+        if ee <= now:                           # already ended → not the meeting to join
+            continue
+        # This is the chosen meeting (earliest not-yet-ended). Open its link or fall back.
+        m = URL_RE.search(rec)
+        if m:
+            _open(m.group(0))
+            return 0
+        break                                   # chosen meeting has no link → fall back
+
+    _open("-a", "Calendar")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

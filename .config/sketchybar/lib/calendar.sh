@@ -18,7 +18,10 @@
 #   - timed events render datetime as "<date> at <start> - <end>"; the " at " is normalized.
 #   - the multi-day query (eventsToday+1) includes the date so parsing is uniform.
 
-_cal_to_epoch() { date -j -f "%Y-%m-%d %H:%M" "$1 $2" +%s 2>/dev/null; }
+# Pin seconds to :00 explicitly. Without %S, BSD `date -j` fills missing seconds from the
+# CURRENT clock, so the same meeting yields a different epoch every run — which would make
+# downstream "is this the same meeting?" checks (the joined latch) drift and never stick.
+_cal_to_epoch() { date -j -f "%Y-%m-%d %H:%M:%S" "$1 $2:00" +%s 2>/dev/null; }
 
 calendar_scan() {
   local buddy raw now line dt title start end sdate stime edate etime s e first_allday

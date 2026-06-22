@@ -1,77 +1,92 @@
 #!/bin/bash
-# Drives the WHOLE bar's background color to signal meeting state. Run every 2s by the
-# invisible meeting_watch item. Modes (precedence top-down):
-#   IN-CALL  mic active                     → solid green tint, steady (you're in a call)
-#   ALERT    meeting live or ≤5m away,       → pulse red (animate toggle each tick)
-#            mic inactive                       (a meeting you haven't joined)
-#   NORMAL   neither                         → theme $BAR_COLOR
-# Mic precedence is deliberate: being in a call (even ad-hoc) wins over the calendar nudge.
+# meeting_watch — color the WHOLE bar by meeting state. Visual only (no sound, no
+# notifications — those are deliberately out for modularity; re-add as separate concerns).
+# Run every 2s by the invisible meeting_watch item.
 #
-# Reads the timed-event epochs cached by plugins/calendar.sh — never runs icalBuddy here.
-# Known limitation: the mic probe can't tell a meeting from Dictation / Voice Memos / Photo
-# Booth, so those also show green. Acceptable for v1.
+# States (highest precedence first):
+#   INCALL  green   — your mic is active (you're in a call)
+#   ALERT   red⇡    — meeting live or ≤5m away, mic off, and you haven't joined yet (pulses)
+#   LEFT    yellow  — you joined this meeting and left while it's still on (no longer nagging)
+#   NORMAL  base    — nothing relevant
+#
+# "Joined" is latched the first time your mic is active during a meeting's window, so leaving
+# early turns the bar yellow (not back to red). Everything is data-driven off two inputs:
+# the cached meeting (written by plugins/calendar.sh) and mic-active. Colors come from
+# colors.sh; the only tunable here is SOON_SECS.
+#
+# Modules this composes (each does one job):
+#   mic-active            → is any input device capturing? (handles Krisp virtual mic)
+#   lib/calendar.sh       → parses the calendar (via plugins/calendar.sh → cache)
+#   meeting-join          → the click/hotkey join action (separate; not used here)
+
+# ── config ──────────────────────────────────────────────────────────────────────────
 source "$HOME/.config/sketchybar/colors.sh"
-[ -n "$BAR_COLOR" ] || exit 0   # colors.sh is mid-regen (theme-switch truncate); skip this tick
+[ -n "$BAR_COLOR" ] || exit 0   # colors.sh mid-regen (theme-switch truncate) — skip this tick
 
 STATE_DIR="$HOME/.local/cache/sketchybar"
-CAL_FILE="$STATE_DIR/calendar.state"
-MODE_FILE="$STATE_DIR/meeting_mode"
-PHASE_FILE="$STATE_DIR/pulse_phase"
-SOON_SECS=300                   # how early before a meeting the red nudge starts
+CAL_FILE="$STATE_DIR/calendar.state"     # "START_EPOCH END_EPOCH TITLE" (or empty)
+MODE_FILE="$STATE_DIR/meeting_mode"       # last applied mode (change detection)
+PHASE_FILE="$STATE_DIR/pulse_phase"       # 0/1 pulse toggle for ALERT
+CUR_FILE="$STATE_DIR/cur_meeting"         # start-epoch of the meeting we're tracking
+SOON_SECS=300                             # alert/pulse window: starts 5 min before
+MICBIN="$(command -v mic-active || echo "$HOME/.local/bin/mic-active")"
 mkdir -p "$STATE_DIR" 2>/dev/null
 
-MICBIN="$(command -v mic-active || echo "$HOME/.local/bin/mic-active")"
+# ── inputs ──────────────────────────────────────────────────────────────────────────
 NOW="$(date +%s)"
 
-# --- mic state (fail-safe: any non-"1" → not in call) ---
-MIC="$("$MICBIN" 2>/dev/null)"; [ "$MIC" = "1" ] || MIC=0
+read_meeting() {                          # → sets S, E, TITLE (S/E empty if none)
+  S=""; E=""; TITLE=""
+  [ -r "$CAL_FILE" ] && read -r S E TITLE < "$CAL_FILE" 2>/dev/null
+  case "$S" in ''|*[!0-9]*) S=""; E="" ;; esac
+}
 
-# --- live/soon from cached epochs (cheap, no icalBuddy) ---
-live=0
-if [ -r "$CAL_FILE" ]; then
-  read -r S E _ < "$CAL_FILE" 2>/dev/null
-  if [ -n "$S" ] && [ -n "$E" ]; then
-    if [ "$S" -le "$NOW" ] && [ "$NOW" -lt "$E" ]; then
-      live=1                                            # in progress
-    elif [ $((S - NOW)) -gt 0 ] && [ $((S - NOW)) -le "$SOON_SECS" ]; then
-      live=1                                            # starts within SOON_SECS
-    fi
+mic_active() { [ "$("$MICBIN" 2>/dev/null)" = "1" ]; }
+
+# ── state ───────────────────────────────────────────────────────────────────────────
+read_meeting
+
+# New target meeting → drop the previous meeting's "joined" latch.
+CUR="$(cat "$CUR_FILE" 2>/dev/null)"
+if [ "$S" != "$CUR" ]; then
+  rm -f "$STATE_DIR"/joined.* 2>/dev/null
+  echo "$S" > "$CUR_FILE"
+fi
+
+# Is a meeting in its alert window (live now, or starting within SOON_SECS)?
+alert_window=0
+if [ -n "$S" ] && [ -n "$E" ]; then
+  if { [ "$S" -le "$NOW" ] && [ "$NOW" -lt "$E" ]; } \
+     || { [ $((S - NOW)) -gt 0 ] && [ $((S - NOW)) -le "$SOON_SECS" ]; }; then
+    alert_window=1
   fi
 fi
 
-# --- decide mode ---
-if [ "$MIC" = "1" ]; then MODE="INCALL"
-elif [ "$live" = "1" ]; then MODE="ALERT"
-else MODE="NORMAL"; fi
+# Latch "joined" the first time the mic is active inside the window.
+JOINED_FILE="$STATE_DIR/joined.$S"
+if mic_active && [ "$alert_window" = 1 ]; then : > "$JOINED_FILE"; fi
+joined=0; [ -n "$S" ] && [ -f "$JOINED_FILE" ] && joined=1
 
+# ── decide mode ─────────────────────────────────────────────────────────────────────
+if mic_active; then                       MODE="INCALL"
+elif [ "$alert_window" = 1 ] && [ "$joined" = 0 ]; then MODE="ALERT"
+elif [ "$alert_window" = 1 ] && [ "$joined" = 1 ]; then MODE="LEFT"
+else                                      MODE="NORMAL"
+fi
+
+# ── apply to the bar ────────────────────────────────────────────────────────────────
+# Steady colors (INCALL/LEFT) re-assert every tick so a sketchybar --reload can't strip
+# them; NORMAL only resets on change (avoids idle churn); ALERT toggles to pulse.
 LAST="$(cat "$MODE_FILE" 2>/dev/null)"
-
 case "$MODE" in
-  INCALL)
-    # Re-assert green every tick, not just on entry: a `sketchybar --reload` (e.g. from
-    # theme-switch) resets the bar to BAR_COLOR while we're still INCALL, and we must
-    # restore the tint. Animating green→green is a visual no-op, so this is safe each tick.
-    sketchybar --animate sin 30 --bar color="$BAR_INCALL_COLOR"
-    ;;
+  INCALL) sketchybar --animate sin 30 --bar color="$BAR_INCALL_COLOR" ;;
+  LEFT)   sketchybar --animate sin 30 --bar color="$BAR_LEFT_COLOR" ;;
   ALERT)
-    # Continuous throb: each 2s tick animates to the opposite color over ~2s (sin 120 ≈ 2s
-    # at 60fps), so the fade is edge-to-edge with no flat dwell. ~4s red→base→red cycle.
-    phase="$(cat "$PHASE_FILE" 2>/dev/null)"
-    if [ "$phase" = "1" ]; then nphase=0; else nphase=1; fi
+    phase="$(cat "$PHASE_FILE" 2>/dev/null)"; [ "$phase" = 1 ] && nphase=0 || nphase=1
     echo "$nphase" > "$PHASE_FILE"
-    if [ "$nphase" = "1" ]; then
-      sketchybar --animate sin 120 --bar color="$BAR_ALERT_COLOR"
-    else
-      sketchybar --animate sin 120 --bar color="$BAR_COLOR"
-    fi
+    [ "$nphase" = 1 ] && target="$BAR_ALERT_COLOR" || target="$BAR_COLOR"
+    sketchybar --animate sin 120 --bar color="$target"
     ;;
-  NORMAL)
-    # Reset to theme color when leaving another mode, or when last mode is unknown/missing
-    # (crash-recovery — never leave the bar stuck on alert red).
-    if [ "$LAST" != "NORMAL" ]; then
-      sketchybar --animate sin 30 --bar color="$BAR_COLOR"
-    fi
-    ;;
+  NORMAL) [ "$LAST" != "NORMAL" ] && sketchybar --animate sin 30 --bar color="$BAR_COLOR" ;;
 esac
-
 echo "$MODE" > "$MODE_FILE"
