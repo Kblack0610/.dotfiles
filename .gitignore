@@ -6,10 +6,11 @@ src/
 
 !.local/src
 .local/src/pxe-server/images
-# Rust crate uses the conventional src/ dir, which the broad `src/` rule above
-# would otherwise exclude. Track its sources (build artifacts stay ignored via
-# .local/src/notes-cli/.gitignore).
-!.local/src/notes-cli/src/
+# Local Rust crates (notes-cli, agent-panel, …) keep their sources in the
+# conventional src/ dir, which the broad `src/` rule above would otherwise
+# swallow. Re-include every .local/src/<crate>/src tree; per-crate .gitignores
+# still keep build artifacts (target/) out.
+!.local/src/*/src/
 
 # notes: the active profile selection is machine-local — each box copies
 # config.toml.example → config.toml and sets its own profile. Only the
