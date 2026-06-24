@@ -50,3 +50,19 @@ zettel    = "permanent"
 meetings  = "meetings"
 index     = "index"
 inbox     = "inbox"
+
+# --- Lazer (edubot) — Deloitte engagement -------------------------------------
+# Same pattern as giganticplayground: a corporate job profile that roots daily
+# notes inside the Deloitte engagement dir under jobs/lazer/.
+[profile.lazer]
+root      = "~/.notes/employment/jobs/lazer/deloitte"
+daily     = "log"
+refs      = "refs"
+fun       = "backlogs/fun.md"
+carryover = "backlogs/carryover.md"
+summaries = "summaries"
+archive   = "log_archive"
+zettel    = "permanent"
+meetings  = "meetings"
+index     = "index"
+inbox     = "inbox"
