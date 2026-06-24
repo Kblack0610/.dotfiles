@@ -11,7 +11,7 @@
     "commit": "",
     "pr": ""
   },
-  "model": "opus[1m]",
+  "model": "claude-opus-4-8[1m]",
   "fallbackModel": [
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001"

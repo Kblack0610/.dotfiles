@@ -150,6 +150,7 @@ Use a skill instead of hand-rolling commands or reaching for the equivalent MCP 
 - `sentinel` — Sentinel 🛰️, the always-on, observe-only monitoring companion. "Keep an eye on X / alert me if X" → a declarative watch at `~/.agent/watches/*.yaml`, polled by a persistent agentctl service (`agentctl@sentinel`, survives logout) that notifies via `agent-notify` ONLY on a state change. Verbs: `watch | list | status | stop | pause | resume`. Deterministic probes (http/metric/kubectl/command) cost zero tokens; the model fires only to diagnose a trip or for a fuzzy `probe: agent` watch (per-hour budget-capped). Observe-only — never executes/mutates/touches release gates. Other agents register watches by dropping a manifest. Runbook: `~/.dotfiles/.config/agentctl/SENTINEL.md`
 
 **Authoring / config**
+- `provision-capture` — fold a hand-wired feature (peripheral/service/package/PAM edit) into the dotfiles provisioning system: an idempotent `setup_<feature>()` in the OS installer (`installation_scripts/linux/install_arch.sh`) + a `.config/<feature>/README.md` runbook, following the `setup_printing`/`cups` convention. Use after setting something up manually so a fresh-machine install reproduces it
 - `one-pager` — Problem Brief / One-pager / Pitch in `~/.notes/lab/briefs/`
 - `update-rules` — manage AI rules across rulesync overview / project CLAUDE.md / AGENTS.md / user-global, with sync (Claude / Codex / Gemini / OpenCode)
 - `marp-slide` — Marp presentation decks with themes

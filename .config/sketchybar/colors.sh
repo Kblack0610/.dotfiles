@@ -6,9 +6,9 @@
 # Bar background
 export BAR_COLOR=0xe636283d
 export BAR_BORDER_COLOR=0x4d9098a4
-# Meeting-state signals: fixed red/green, theme-INDEPENDENT on purpose. These are
-# semantic alerts (live-but-unjoined / in-call), not decoration — a pastel theme must
-# not turn the "join now" pulse blue. meeting_watch.sh drives the whole bar to these.
+# Meeting-state signals: fixed red/green/yellow, theme-INDEPENDENT on purpose. These are
+# semantic alerts (unjoined / in-call / attended-then-left), not decoration — a pastel
+# theme must not turn the "join now" pulse blue. meeting_watch.sh drives the whole bar.
 export BAR_ALERT_COLOR=0xe6ef5734
 export BAR_INCALL_COLOR=0xe686a83e
 export BAR_LEFT_COLOR=0xe6ffcc2f

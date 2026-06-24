@@ -25,22 +25,48 @@ Backed by `apps/mem0/` (mem0-api-server) + `apps/postgres/` (pgvector) on the ho
 
 ## Endpoint and auth
 
+mem0 runs app-layer auth (`AUTH_DISABLED=false`): **every** request needs
+`Authorization: Bearer <token>`. There are two hosts for the same store:
+
+| Host | Reach | Gating |
+|---|---|---|
+| `mem0.kblab.me` | LAN + Tailscale only | Traefik RFC1918 allowlist **+** bearer token |
+| `mem0.kennethblack.me` | public internet (corp devices, headless agents) | Cloudflare Access (edge) **+** bearer token |
+
 ```bash
+# Token = mem0 ADMIN_API_KEY (SOPS-encrypted in the repo; workstation has the age key).
+export MEM0_API_KEY="$(sops -d ~/dev/home/home-config/apps/mem0/secret.yaml \
+  | awk '/ADMIN_API_KEY:/ {print $2}')"
+
+# Default to the LAN host when on the home network / tailnet:
 export MEM0_BASE_URL=https://mem0.kblab.me
-# Currently AUTH_DISABLED=true on the server (LAN-only ingress middleware
-# does the access control). When auth flips on, add:
-#   export MEM0_API_KEY="<bearer>"
-#   curl -H "Authorization: Bearer $MEM0_API_KEY" ...
+
+# Every call carries the bearer header (define a helper so examples stay short):
+mem0() { curl -fsS -H "Authorization: Bearer $MEM0_API_KEY" "$@"; }
 ```
 
-The host is reachable over the LAN and via Tailscale. From outside both networks, the Traefik `monitoring-local-network-only` middleware returns 403 — this is intentional.
+**Off-LAN (corp laptop, phone on cellular, headless agent):** use the public host
+and add the Cloudflare Access **service-token** headers on top of the bearer token:
+
+```bash
+export MEM0_BASE_URL=https://mem0.kennethblack.me
+mem0() { curl -fsS \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $MEM0_API_KEY" "$@"; }
+```
+
+A browser hitting `https://mem0.kennethblack.me` gets the Cloudflare Access SSO
+login instead of needing the service token. The `monitoring-local-network-only`
+middleware on the LAN host still 403s off-network requests — that's intentional;
+off-network access goes through the public host.
 
 ## Common operations (curl)
 
 ### Add a user-level fact
 
 ```bash
-curl -fsS -X POST "$MEM0_BASE_URL/memories" \
+mem0 -X POST "$MEM0_BASE_URL/memories" \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
@@ -55,7 +81,7 @@ curl -fsS -X POST "$MEM0_BASE_URL/memories" \
 When the user asks a question that could depend on stored context, search FIRST, then answer with the retrieved facts woven in:
 
 ```bash
-curl -fsS "$MEM0_BASE_URL/memories?user_id=kblack0610&query=notes+editor+preference"
+mem0 "$MEM0_BASE_URL/memories?user_id=kblack0610&query=notes+editor+preference"
 ```
 
 Response shape:
@@ -71,7 +97,7 @@ Response shape:
 ### Add a project-scoped memory
 
 ```bash
-curl -fsS -X POST "$MEM0_BASE_URL/memories" \
+mem0 -X POST "$MEM0_BASE_URL/memories" \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
@@ -85,8 +111,8 @@ curl -fsS -X POST "$MEM0_BASE_URL/memories" \
 ### List + delete
 
 ```bash
-curl -fsS "$MEM0_BASE_URL/memories?user_id=kblack0610" | jq '.results[] | {id, memory}'
-curl -fsS -X DELETE "$MEM0_BASE_URL/memories/<memory-id>"
+mem0 "$MEM0_BASE_URL/memories?user_id=kblack0610" | jq '.results[] | {id, memory}'
+mem0 -X DELETE "$MEM0_BASE_URL/memories/<memory-id>"
 ```
 
 ## When to write a memory
@@ -126,8 +152,10 @@ The search is a single `curl` — run it, scan the top 3 results, ignore the res
 For more complex flows — batch retrieval-augmented generation, async memory updates from background jobs — use the Python SDK pointed at the self-hosted endpoint:
 
 ```python
+import os
 from mem0 import MemoryClient
-client = MemoryClient(api_key="not-needed", host="https://mem0.kblab.me")
+# api_key is sent as the Authorization: Bearer token (mem0 ADMIN_API_KEY).
+client = MemoryClient(api_key=os.environ["MEM0_API_KEY"], host="https://mem0.kblab.me")
 
 client.add(
     messages=[{"role": "user", "content": "..."}],
@@ -153,10 +181,13 @@ This skill is Claude-Code-native. For OpenCode + Codex CLI to use mem0, place an
 ```markdown
 # Memory layer
 
-Self-hosted mem0 at https://mem0.kblab.me (LAN-only). For user-level prefs
-and cross-project facts, search before answering and add when learning
-something new. See ~/.claude/skills/mem0-ops/SKILL.md for the full operations
-table — same REST API works from any tool.
+Self-hosted mem0 at https://mem0.kblab.me (LAN/tailnet) or
+https://mem0.kennethblack.me (public, off-LAN). Auth is required: send
+`Authorization: Bearer $MEM0_API_KEY` (the mem0 ADMIN_API_KEY); on the public
+host also send the Cloudflare Access `CF-Access-Client-Id`/`-Secret` service-token
+headers. For user-level prefs and cross-project facts, search before answering and
+add when learning something new. See ~/.claude/skills/mem0-ops/SKILL.md for the
+full operations table — same REST API works from any tool.
 ```
 
 The skill content above is the contract; the AGENTS.md cross-reference makes it discoverable to non-Claude tools.

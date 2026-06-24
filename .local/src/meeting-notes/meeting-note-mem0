@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""meeting-note-mem0 — push one meeting note to self-hosted mem0 (LAN/Tailscale only).
+
+Universal local ingester for any source whose notes you can land as text on this
+machine (Krisp via a relay, an exported transcript, a polled Notion/Sheet row, etc.).
+The Krisp webhook receiver and any cron poller funnel through here.
+
+Examples:
+  meeting-note-mem0 --title "Sprint sync" --date 2026-06-18 --source krisp --file note.md
+  pbpaste | meeting-note-mem0 --title "Standup" --source krisp           # note on stdin
+  meeting-note-mem0 --title "1:1" --source krisp <<<"Discussed roadmap. Action: ship X."
+
+Exit 0 on a 2xx from mem0; non-zero otherwise (so a cron wrapper can retry).
+Env: MEM0_BASE_URL (default https://mem0.kblab.me), MEM0_API_KEY (optional),
+     MEM0_USER_ID (default kblack0610), MEM0_AGENT_ID (default meetings).
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from meeting_mem0 import push_memory  # noqa: E402
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Push a meeting note to mem0.")
+    p.add_argument("--title", default="", help="meeting title")
+    p.add_argument("--date", dest="timestamp", default="", help="ISO date/timestamp")
+    p.add_argument("--run-id", default="", help="override run_id (default <source>-<date>-<slug>)")
+    p.add_argument("--source", default="krisp", help="origin tag (default: krisp)")
+    p.add_argument("--file", help="read summary from this file (default: stdin)")
+    args = p.parse_args()
+
+    summary = Path(args.file).read_text() if args.file else sys.stdin.read()
+    ok, code, body = push_memory(
+        summary,
+        title=args.title,
+        timestamp=args.timestamp,
+        run_id=args.run_id,
+        source=args.source,
+    )
+    if ok:
+        print(f"pushed to mem0 (HTTP {code})")
+        return 0
+    print(f"mem0 push failed (HTTP {code}): {body[:300]}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

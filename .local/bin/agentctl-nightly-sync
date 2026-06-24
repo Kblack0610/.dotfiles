@@ -20,6 +20,17 @@ LOG="$HOME/.local/log/nightly-sync.log"
 INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/nightly-sync}"
 mkdir -p "$(dirname "$LOG")" "$INBOX"
 
+# mem0 requires app-layer auth (AUTH_DISABLED=false). Decrypt the bearer token
+# (ADMIN_API_KEY) from the SOPS-encrypted secret at runtime — the workstation
+# holds the age key. Exported so the claude sub-agent's curl calls inherit it.
+# (assignment masks command-substitution failure under set -e, so check explicitly)
+MEM0_SECRET="$HOME/dev/home/home-config/apps/mem0/secret.yaml"
+export MEM0_API_KEY="$(sops -d "$MEM0_SECRET" 2>/dev/null | awk '/ADMIN_API_KEY:/ {print $2}')"
+if [ -z "${MEM0_API_KEY:-}" ]; then
+    echo "ERROR: could not decrypt MEM0_API_KEY from $MEM0_SECRET (sops + age key required)" >&2
+    exit 1
+fi
+
 TODAY=$(date +%Y-%m-%d)
 DAY1=$(date -d 'yesterday' +%Y-%m-%d)
 DAY2=$(date -d '2 days ago' +%Y-%m-%d)
@@ -35,11 +46,15 @@ Step 1 — read the most recent 3 days of notes (skip any that don't exist):
   ~/.notes/inbox/${DAY1}.md
   ~/.notes/inbox/${DAY2}.md
 
+mem0 requires an auth header on every call: -H "Authorization: Bearer \$MEM0_API_KEY"
+(the MEM0_API_KEY env var is already set in your environment — do not echo or print it).
+
 Step 2 — read existing mem0 entries to avoid duplicates:
-  curl -s 'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
+  curl -s -H "Authorization: Bearer \$MEM0_API_KEY" 'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
 
 Step 3 — for each new fact you decide to capture, POST to mem0 via curl:
   curl -s -X POST https://mem0.kblab.me/memories \\
+    -H "Authorization: Bearer \$MEM0_API_KEY" \\
     -H 'Content-Type: application/json' \\
     -d '{"messages":[{"role":"user","content":"<fact text>"}],"user_id":"kblack0610"}'
 

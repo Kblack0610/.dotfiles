@@ -174,16 +174,24 @@ COMMAND='echo "<prompt>" | claude --print --allowedTools "Bash,Read,Write,Glob,G
 For any agent that needs to read or write durable user-level memory:
 
 ```bash
+# Bearer token (mem0 ADMIN_API_KEY) — decrypt from the SOPS secret at runtime:
+export MEM0_API_KEY="$(sops -d ~/dev/home/home-config/apps/mem0/secret.yaml \
+  | awk '/ADMIN_API_KEY:/ {print $2}')"
+
 # Read existing memories
-curl -s 'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
+curl -s -H "Authorization: Bearer $MEM0_API_KEY" \
+  'https://mem0.kblab.me/memories?user_id=kblack0610' | jq -r '.[].memory'
 
 # Write a new memory
 curl -s -X POST https://mem0.kblab.me/memories \
+  -H "Authorization: Bearer $MEM0_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"<fact>"}],"user_id":"kblack0610"}'
 ```
 
-Auth is currently disabled (LAN/Tailscale only). See
+Auth is ON (`AUTH_DISABLED=false`): every call needs the bearer token, on both the
+LAN host (`mem0.kblab.me`) and the public host (`mem0.kennethblack.me`, which also
+needs Cloudflare Access service-token headers). See
 `~/.dotfiles/.claude/skills/mem0-ops/SKILL.md` for the full contract.
 
 ### Harness gotcha — opencode tool-use (May 2026)
