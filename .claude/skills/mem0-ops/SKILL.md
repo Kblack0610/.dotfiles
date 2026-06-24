@@ -25,35 +25,37 @@ Backed by `apps/mem0/` (mem0-api-server) + `apps/postgres/` (pgvector) on the ho
 
 ## Endpoint and auth
 
-mem0 runs app-layer auth (`AUTH_DISABLED=false`): **every** request needs
-`Authorization: Bearer <token>`. There are two hosts for the same store:
+mem0 runs app-layer auth (`AUTH_DISABLED=false`): **every** request needs the API
+key in the **`X-API-Key`** header (NOT `Authorization: Bearer`, and NOT the
+ADMIN_API_KEY — that's server bootstrap material). The request credential is a
+minted key `m0sk_…`. There are two hosts for the same store:
 
 | Host | Reach | Gating |
 |---|---|---|
-| `mem0.kblab.me` | LAN + Tailscale only | Traefik RFC1918 allowlist **+** bearer token |
-| `mem0.kennethblack.me` | public internet (corp devices, headless agents) | Cloudflare Access (edge) **+** bearer token |
+| `mem0.kblab.me` | LAN + Tailscale only | Traefik RFC1918 allowlist **+** `X-API-Key` |
+| `mem0.kennethblack.me` | public internet (corp devices, headless agents) | Cloudflare Access (edge) **+** `X-API-Key` |
 
 ```bash
-# Token = mem0 ADMIN_API_KEY (SOPS-encrypted in the repo; workstation has the age key).
-export MEM0_API_KEY="$(sops -d ~/dev/home/home-config/apps/mem0/secret.yaml \
-  | awk '/ADMIN_API_KEY:/ {print $2}')"
+# API key (m0sk_…) from the SOPS client-creds file (workstation has the age key).
+export MEM0_API_KEY="$(sops -d ~/dev/home/home-config/apps/mem0/client-credentials.secret.yaml \
+  | awk '/MEM0_API_KEY:/ {print $2}' | tr -d '"')"
 
 # Default to the LAN host when on the home network / tailnet:
 export MEM0_BASE_URL=https://mem0.kblab.me
 
-# Every call carries the bearer header (define a helper so examples stay short):
-mem0() { curl -fsS -H "Authorization: Bearer $MEM0_API_KEY" "$@"; }
+# Every call carries the X-API-Key header (define a helper so examples stay short):
+mem0() { curl -fsS -H "X-API-Key: $MEM0_API_KEY" "$@"; }
 ```
 
 **Off-LAN (corp laptop, phone on cellular, headless agent):** use the public host
-and add the Cloudflare Access **service-token** headers on top of the bearer token:
+and add the Cloudflare Access **service-token** headers on top of the X-API-Key:
 
 ```bash
 export MEM0_BASE_URL=https://mem0.kennethblack.me
 mem0() { curl -fsS \
   -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
   -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-  -H "Authorization: Bearer $MEM0_API_KEY" "$@"; }
+  -H "X-API-Key: $MEM0_API_KEY" "$@"; }
 ```
 
 A browser hitting `https://mem0.kennethblack.me` gets the Cloudflare Access SSO
@@ -149,22 +151,22 @@ The search is a single `curl` — run it, scan the top 3 results, ignore the res
 
 ## Programmatic SDK (when curl isn't enough)
 
-For more complex flows — batch retrieval-augmented generation, async memory updates from background jobs — use the Python SDK pointed at the self-hosted endpoint:
+For more complex flows — batch retrieval-augmented generation, async memory updates from background jobs — drive the REST API with `requests`, sending the `X-API-Key` header (the self-hosted server authenticates on `X-API-Key`, not the `Authorization: Token` scheme that `mem0.MemoryClient` defaults to — so the SDK client does not work against this server without overriding its session headers; plain `requests` is the reliable path):
 
 ```python
-import os
-from mem0 import MemoryClient
-# api_key is sent as the Authorization: Bearer token (mem0 ADMIN_API_KEY).
-client = MemoryClient(api_key=os.environ["MEM0_API_KEY"], host="https://mem0.kblab.me")
+import os, requests
+S = requests.Session()
+S.headers["X-API-Key"] = os.environ["MEM0_API_KEY"]   # m0sk_… from client-credentials.secret.yaml
+BASE = "https://mem0.kblab.me"
 
-client.add(
-    messages=[{"role": "user", "content": "..."}],
-    user_id="kblack0610",
-)
-results = client.search("query", user_id="kblack0610")
+S.post(f"{BASE}/memories", json={
+    "messages": [{"role": "user", "content": "..."}],
+    "user_id": "kblack0610",
+}).raise_for_status()
+results = S.get(f"{BASE}/memories", params={"user_id": "kblack0610", "query": "..."}).json()
 ```
 
-The upstream skill (Apache-2.0) at <https://github.com/mem0ai/mem0/tree/main/skills/mem0> has the full operations table for SDK usage. This skill scopes the operations to the self-hosted server and the user's actual `user_id`.
+The upstream skill (Apache-2.0) at <https://github.com/mem0ai/mem0/tree/main/skills/mem0> has the full operations table. This skill scopes the operations to the self-hosted server and the user's actual `user_id`.
 
 ## Failure modes worth knowing
 
@@ -182,10 +184,11 @@ This skill is Claude-Code-native. For OpenCode + Codex CLI to use mem0, place an
 # Memory layer
 
 Self-hosted mem0 at https://mem0.kblab.me (LAN/tailnet) or
-https://mem0.kennethblack.me (public, off-LAN). Auth is required: send
-`Authorization: Bearer $MEM0_API_KEY` (the mem0 ADMIN_API_KEY); on the public
-host also send the Cloudflare Access `CF-Access-Client-Id`/`-Secret` service-token
-headers. For user-level prefs and cross-project facts, search before answering and
+https://mem0.kennethblack.me (public, off-LAN). Auth is required: send the API key
+in `X-API-Key: $MEM0_API_KEY` (the m0sk_ key from client-credentials.secret.yaml —
+NOT Authorization: Bearer, NOT ADMIN_API_KEY); on the public host also send the
+Cloudflare Access `CF-Access-Client-Id`/`-Secret` service-token headers. For
+user-level prefs and cross-project facts, search before answering and
 add when learning something new. See ~/.claude/skills/mem0-ops/SKILL.md for the
 full operations table — same REST API works from any tool.
 ```
