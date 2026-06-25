@@ -178,6 +178,18 @@ curl -s https://api.placemyparents.com/health | jq .
 node scripts/verify-play-release.mjs com.kblack0610.placemyparents internal <versionCode>
 ```
 
+Once the release is tagged and verified, refresh the **lab project bus** so the human-facing
+release/status feed reflects the new version (deterministic, non-destructive — never touches the
+human `## → For the agents` section):
+
+```bash
+~/.local/bin/agentctl-lab-sync placemyparents
+```
+
+This mirrors the new tag + state into `~/.notes/lab/projects/current/placemyparents/summary.md`.
+Release **prose** belongs in the in-repo CHANGELOG / release doc (Steps 1, 4); the lab feed only
+mirrors mechanical state. See the `lab-sync` skill.
+
 ## Step 7 — Promote Android to the PUBLIC (production) track
 
 **The mobile tag only ships to the `internal` track. It does NOT update the public app.** Skipping this step is what left PlaceMyParents stuck on internal with nothing public since April — internal stays green while the public app silently falls behind. This step is the actual "Android shipped to users" gate.

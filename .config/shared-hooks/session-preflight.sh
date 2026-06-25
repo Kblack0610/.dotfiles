@@ -75,6 +75,36 @@ CONTEXT=$(
     fi
   fi
 
+  # Lab readback — the human↔agent project BUS. Surface the human's "→ For the agents"
+  # section from the project's lab file (~/.notes/lab/projects/current/{name}/summary.md)
+  # so open comments/suggestions/tasks reach the agent at turn 1. Keyed on canonical name;
+  # resolves the lab dir via an authoritative `<!-- canonical: NAME -->` marker, else fuzzy.
+  # Fully best-effort — every step guarded so it can never break the hook.
+  LAB_CURRENT="$HOME/.notes/lab/projects/current"
+  LAB_SUMMARY=""
+  if [ -d "$LAB_CURRENT" ]; then
+    LAB_SUMMARY=$(grep -rlsF "canonical: $PROJECT_NAME " "$LAB_CURRENT"/*/summary.md 2>/dev/null | head -1 || true)
+    if [ -z "$LAB_SUMMARY" ]; then
+      for cand in "$PROJECT_NAME" "${PROJECT_NAME%-agent}" "${PROJECT_NAME%-platform}"; do
+        if [ -f "$LAB_CURRENT/$cand/summary.md" ]; then
+          LAB_SUMMARY="$LAB_CURRENT/$cand/summary.md"; break
+        fi
+      done
+    fi
+  fi
+  if [ -n "$LAB_SUMMARY" ] && [ -f "$LAB_SUMMARY" ]; then
+    # extract the "## → For the agents" section (up to the next "## " heading), drop the
+    # italic descriptor line, and only inject if it holds real content (not the placeholder).
+    LAB_MSGS=$(awk '/^## .*For the agents/{f=1;next} f&&/AUTO:START/{exit} f&&/^## /{exit} f' "$LAB_SUMMARY" 2>/dev/null \
+      | grep -vE '^_|^[[:space:]]*<!--|^[[:space:]]*$' | grep -vF '_(nothing yet)_' | head -15 || true)
+    if [ -n "$LAB_MSGS" ]; then
+      echo "📥 From you, via lab (${LAB_SUMMARY/#$HOME/\~}) — open comments/tasks for this project:"
+      printf '%s\n' "$LAB_MSGS" | sed 's/^/  /'
+      echo "  (edit that file's \"## → For the agents\" section to talk back; lab-sync never overwrites it.)"
+      echo
+    fi
+  fi
+
   cd "$PROJECT_DIR" 2>/dev/null || true
   if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "Recent commits (last 5):"

@@ -124,6 +124,20 @@ At the end of the `[Unreleased]` block, add a one-liner:
 
 This makes the bash discoverable at release time.
 
+### Step 5.5 — Refresh the lab feed
+
+After the CHANGELOG lands, mirror the new status into the **lab project bus** so the
+human-facing release/status feed reflects the bash. Deterministic, non-destructive:
+
+```bash
+~/.local/bin/agentctl-lab-sync <lab-project>   # e.g. placemyparents; no-op if none exists
+```
+
+This refreshes the `## ← Release & status feed` AUTO block in
+`~/.notes/lab/projects/current/{name}/summary.md` (latest tag, plans, evals) and never touches
+the human `## → For the agents` section. CHANGELOG **prose** stays in the repo (above); the lab
+feed just mirrors mechanical state. See the `lab-sync` skill.
+
 ## Phase 6 — Lessons
 
 For every finding in Batches A/B:

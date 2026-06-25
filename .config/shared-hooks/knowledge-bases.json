@@ -52,16 +52,23 @@
       "name": "lab",
       "kind": "local-tree",
       "root": "~/.notes/lab",
-      "describe": "Incubator for briefs, brainstorm, ideas; pre-canonical artifacts before they graduate to ~/dev/{project}/",
-      "backed_by": "git: local repo",
+      "describe": "Incubator for briefs/brainstorm/ideas AND the human<->agent project BUS: projects/current/{name}/summary.md carries a hand-curated '## -> For the agents' comms section + an agent-maintained '## <- Release & status feed' AUTO block (slow, durable layer between ~/.agent runtime and in-repo CHANGELOG)",
+      "backed_by": "git: rides ~/.notes sync (forgejo primary + github backup); multi-device",
       "subpaths": {
-        "briefs":   "briefs/",
-        "ideas":    "ideas/",
-        "projects": "projects/",
-        "docs":     "docs/"
+        "briefs":      "briefs/",
+        "ideas":       "ideas/",
+        "projects":    "projects/",
+        "bus-summary": "projects/current/{name}/summary.md",
+        "changelog":   "projects/current/{name}/changelog.md",
+        "docs":        "docs/"
       },
-      "consumed_by": ["one-pager skill"],
-      "write_via": "one-pager skill"
+      "consumed_by": [
+        "one-pager skill",
+        "lab-sync skill",
+        ".config/shared-hooks/session-preflight.sh (injects '-> For the agents' at turn 1)",
+        ".local/bin/agentctl-lab-sync (weekly feed refresh)"
+      ],
+      "write_via": "one-pager skill (briefs/ideas); lab-sync skill (the AUTO feed block); human edits the '-> For the agents' + Status sections directly"
     },
     {
       "name": "claude-config",

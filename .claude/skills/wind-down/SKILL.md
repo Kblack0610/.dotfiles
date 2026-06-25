@@ -62,6 +62,19 @@ Keep it concise and factual — it's a memory aid, not a changelog. If the file 
 today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked,
 so the note becomes durable, recallable knowledge.
 
+### 1b. Refresh the lab feed (if the project has a lab bus)
+
+A session just ended — a natural point to mirror the latest status into the **lab project bus**
+(`~/.notes/lab/projects/current/{name}/summary.md`), the human-facing release/status layer. If a
+lab project exists for this repo, refresh its deterministic `## ← Release & status feed` AUTO block:
+
+```bash
+~/.local/bin/agentctl-lab-sync <lab-project>   # e.g. placemyparents; no-op if none exists
+```
+
+This never touches the human `## → For the agents` section. Skip if the repo has no lab project.
+See the `lab-sync` skill.
+
 ### 2. Arm the teardown
 
 ```bash
