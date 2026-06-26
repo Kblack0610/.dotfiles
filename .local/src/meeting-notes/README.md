@@ -107,6 +107,41 @@ same way as HushNote ones via the `mem0-ops` skill, alongside your Linux/in-pers
 > ⚠️ Confirm it's acceptable to relay one company's Krisp seat through your homelab before wiring a
 > work account. And there's no live 2xx test yet — mem0 is down until home-config PR #26 merges.
 
+## Reading the "Teams" calendar (Microsoft 365)
+
+The Teams calendar is **not a Teams thing** — it's the Outlook/Exchange (M365) calendar surfaced
+inside Teams. So you read it through **Microsoft Graph**, same as any other M365 calendar. Teams
+*meetings* appear as ordinary calendar events with an `onlineMeeting` block (join URL), so you get
+them for free. There is **no supported way** to scrape the Teams desktop app's local state — always
+go through Graph / Exchange behind it.
+
+### Decision tree — which path applies (check in order)
+
+1. **What account is it?** Look at the Teams login email.
+   - `@outlook.com / @hotmail.com / @live.com` → **personal account**, Graph is wide open. Easiest.
+   - company/org domain → **work/school account**, continue below.
+2. **ICS feed (easiest win, try first).** Outlook web → Settings → Calendar → Shared calendars →
+   *Publish a calendar* → "Can view all details" → gives a read-only **ICS URL** you can poll. No
+   API app needed. If greyed out, the tenant admin disabled publishing → use Graph.
+3. **Can you register an app?** Open https://entra.microsoft.com (or portal.azure.com → App
+   registrations) → *New registration*. If it works → delegated Graph auth is yours to build. If
+   "contact your administrator" → locked-down tenant, needs admin consent (the permission wall).
+4. **Decisive smoke test (no app setup):** https://developer.microsoft.com/graph/graph-explorer →
+   sign in with the Teams account → run `GET https://graph.microsoft.com/v1.0/me/events`.
+   - Returns events → Graph works for this account; just replicate the auth in code.
+   - "consent required" and can't grant → tenant locked down → fall back to ICS (step 2) or
+     `evolution-ews` local Exchange sync on Linux.
+
+### Graph endpoints (once auth works)
+
+- `GET /me/calendarView?startDateTime=…&endDateTime=…` — events in a window (preferred for polling).
+- `GET /me/events` / `GET /me/calendar/events` — list events.
+- Scope: `Calendars.Read` (delegated = your calendar; application = org-wide, needs admin consent).
+
+> Not wired into the pipeline yet. Natural use: poll `calendarView` for upcoming meetings to
+> pre-create note stubs / attach recordings. Build path depends entirely on step 4's outcome —
+> personal/own-tenant = ~30-min job; locked client tenant = admin-permission fight, prefer ICS.
+
 ## Fellow.ai (alternative to Krisp, if MCP→Claude + auto-tickets matter)
 
 1. **Confirm corporate IT/legal allow a third-party meeting bot first.**

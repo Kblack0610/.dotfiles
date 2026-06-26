@@ -344,7 +344,7 @@
       "enabled": true,
       "environment": {
         "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
-        "VIKUNJA_API_TOKEN": "{env:VIKUNJA_MCP_TOKEN}"
+        "VIKUNJA_API_TOKEN": "${VIKUNJA_MCP_TOKEN}"
       }
     }
   }

@@ -28,13 +28,13 @@ gui:
     cherryPickedCommitBgColor:
       - "#cf5ec0"
     markedBaseCommitFgColor:
-      - "#E1B4CE"
+      - "#00acee"
     markedBaseCommitBgColor:
       - "#bdbe00"
     unstagedChangesColor:
       - "#ef5734"
     defaultFgColor:
-      - "#cedaeb"
+      - "#ffcc2f"
 os:
   editCommand: 'nvim'
   openCommand: 'kitty nvim .'

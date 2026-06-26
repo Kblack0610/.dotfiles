@@ -19,6 +19,31 @@ theme-switch --help              # full help
 
 State lives at `~/.config/theme/current` (single-line file).
 
+## One-off: recolor a single terminal (`--here`)
+
+A normal `theme-switch <name>` is **global** — it rewrites shared config files,
+saves state, and reloads every kitty window. To give just **one** terminal a
+different theme for a one-off (without touching the global theme or any other
+window), use `--here`:
+
+```bash
+theme-switch tokyonight --here   # recolor ONLY the window you run this in
+theme-switch --here --reset      # restore that window to its configured colors
+theme-switch tokyonight --here --dry-run   # preview the colors it would send
+```
+
+`--here` is kitty-only and writes **nothing** — no config files, no
+`~/.config/theme/current`. It recolors the live window by emitting standard
+terminal color OSC sequences (background → OSC 11, foreground → OSC 10,
+cursor → OSC 12, selection → OSC 17/19, palette → OSC 4) read from
+`templates/kitty/<name>.conf`. kitty colors are per-OS-window, so only the
+window you're in changes; opening a new window shows the global theme again.
+
+Inside tmux the sequences are wrapped in the tmux passthrough envelope, so this
+relies on `set -g allow-passthrough on` in `.tmux.conf` (already enabled). It
+also works outside tmux (sequences are emitted raw). Note `--here` only changes
+terminal colors — nvim/starship/etc. are per-process and unaffected.
+
 ## Automatic day/night switching (systemd timers)
 
 Two user-level systemd timers flip the theme on schedule. Each timer

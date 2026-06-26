@@ -1,6 +1,7 @@
 agents/backend-architect.md
 agents/benchmarker.md
 agents/business-panel-experts.md
+agents/compliance-counsel.md
 agents/deep-research-agent.md
 agents/devops-architect.md
 agents/frontend-architect.md
@@ -33,15 +34,18 @@ commands/daily/help.md
 commands/daily/slack.md
 commands/daily/standup.md
 commands/daily/summary.md
+commands/dream.md
 commands/kb/ci-analyze.md
 commands/kb/ci.md
 commands/kb/implement.md
 commands/kb/sprint.md
 commands/kb/workflow.md
+commands/my/autopilot.md
 commands/my/claude-edit.md
 commands/my/create.md
 commands/my/fix-ci.md
 commands/my/fresh.md
+commands/my/go.md
 commands/my/judge.md
 commands/my/kill-all.md
 commands/my/merge-dev-ci.md

@@ -96,6 +96,8 @@ The kb Phase-0 ticket step is **tracker-agnostic and MCP-first**: the active sys
 
 For parallel code exploration or independent research queries, delegate to `Explore` agents.
 
+For regulated/sensitive-data questions (PHI/HIPAA, PII, GDPR, FTC/state health-privacy, SOC2, vendor BAAs/DPAs, covered-product coverage, "are we compliant?"), use the `compliance` skill (dated reference: regulatory-scope decision tree + covered-product matrix + verify method) and/or the `compliance-counsel` agent (Vera ⚖️). **Verify coverage against the vendor's live docs / the primary regulation — never from memory** (cite + date the source); separate technical fact from a lawyer's ruling; determine regulatory scope first; name the human-counsel / BAA gate. Advisory only — never satisfy a legal/approval gate or pose as the lawyer.
+
 ## Project Mapping
 
 - `gheegle`, `ghee-sheets`, `ghee-*` -> `~/.agent/plans/gheegle/`

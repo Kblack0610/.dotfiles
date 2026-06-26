@@ -7,6 +7,8 @@
 #
 # Usage:
 #   theme-switch <theme-name>                  Apply theme to all tools
+#   theme-switch <theme-name> --here           One-off: recolor ONLY this terminal window
+#   theme-switch --here --reset                Restore this window to its configured colors
 #   theme-switch <theme-name> --dry-run        Show what would change, don't write
 #   theme-switch <theme-name> --only t1,t2     Apply to specific tools only
 #   theme-switch --list                        List available themes
@@ -462,6 +464,108 @@ apply_wallpaper() {
     echo "$pick" > "${STATE_FILE}.wallpaper"
 }
 
+# ─── One-off: recolor only the current terminal window ───────────────────────
+#
+# Unlike the global apply_* functions, --here touches NO shared config file and
+# saves NO state — it recolors only the kitty window the command is run in, live,
+# via standard terminal color OSC escape sequences. kitty colors are per-OS-window,
+# so this gives a single terminal a different theme for one-offs without affecting
+# any other window or the global theme.
+#
+# Inside tmux the sequence is wrapped in the tmux passthrough envelope (DCS tmux;…ST,
+# with the inner ESC bytes doubled) so it reaches the underlying kitty window. This
+# relies on `set -g allow-passthrough on` in tmux.conf (already enabled).
+
+# Output target for OSC sequences — set by apply_here() to the controlling tty
+# when it can actually be opened, else stdout (which, for an interactively-run
+# one-off, is the terminal anyway).
+OSC_OUT=/dev/stdout
+
+# Emit one escape sequence to OSC_OUT, wrapping for tmux passthrough if needed.
+# Arg: the sequence body INCLUDING its leading ESC and trailing terminator.
+emit_seq() {
+    local seq="$1"
+    if [[ -n "${TMUX:-}" ]]; then
+        # tmux passthrough: ESC P tmux ; <seq with ESC doubled> ESC \
+        local inner="${seq//$'\e'/$'\e\e'}"
+        printf '\eptmux;%s\e\\' "$inner" > "$OSC_OUT"
+    else
+        printf '%s' "$seq" > "$OSC_OUT"
+    fi
+}
+
+apply_here() {
+    # Pick the OSC output target: the controlling tty if it can actually be
+    # opened for writing (real open test — permission bits alone aren't enough,
+    # e.g. under setsid), otherwise stdout.
+    if ! $DRY_RUN && (printf '' >/dev/tty) 2>/dev/null; then
+        OSC_OUT=/dev/tty
+    fi
+
+    # Reset path — restore the window to its configured colors, no theme needed.
+    if $RESET; then
+        if $DRY_RUN; then
+            dry "here: would reset palette + fg/bg/cursor/selection to configured colors"
+            return
+        fi
+        emit_seq $'\e]104\e\\'   # reset all 256 palette colors
+        emit_seq $'\e]110\e\\'   # reset foreground
+        emit_seq $'\e]111\e\\'   # reset background
+        emit_seq $'\e]112\e\\'   # reset cursor
+        emit_seq $'\e]117\e\\'   # reset selection background
+        emit_seq $'\e]119\e\\'   # reset selection foreground
+        info "here: reset current window to configured colors"
+        return
+    fi
+
+    local src="$SCRIPT_DIR/templates/kitty/${THEME_NAME}.conf"
+    if [[ ! -f "$src" ]]; then
+        err "here: kitty template not found: $src"
+        exit 1
+    fi
+
+    if [[ -z "${KITTY_WINDOW_ID:-}" && -z "${TMUX:-}" ]]; then
+        warn "here: not running inside kitty (KITTY_WINDOW_ID unset) — sending OSC anyway"
+    fi
+
+    local key val n count=0
+    # Parse the kitty template; emit an OSC color sequence per recognized key.
+    while read -r key val _; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        val="${val%%[[:space:]]*}"
+        [[ "$val" == \#* ]] || continue   # only act on lines with a #hex value
+        case "$key" in
+            background)           n=11 ;;
+            foreground)           n=10 ;;
+            cursor)               n=12 ;;
+            selection_background) n=17 ;;
+            selection_foreground) n=19 ;;
+            color[0-9]|color[0-9][0-9]|color[0-9][0-9][0-9])
+                local idx="${key#color}"
+                if $DRY_RUN; then
+                    dry "here: color$idx → $val"
+                else
+                    emit_seq $'\e]4;'"${idx};${val}"$'\e\\'
+                fi
+                count=$((count + 1))
+                continue ;;
+            *) continue ;;
+        esac
+        if $DRY_RUN; then
+            dry "here: $key (OSC $n) → $val"
+        else
+            emit_seq $'\e]'"${n};${val}"$'\e\\'
+        fi
+        count=$((count + 1))
+    done < "$src"
+
+    if $DRY_RUN; then
+        dry "here: would send $count color sequence(s) to the current window"
+    else
+        info "here: recolored current window → $THEME_NAME ($count colors, one-off, no files touched)"
+    fi
+}
+
 # ─── State tracking ──────────────────────────────────────────────────────────
 
 save_state() {
@@ -477,10 +581,19 @@ theme-switch — Unified theme switcher for dotfiles
 
 USAGE
   theme-switch <theme-name> [OPTIONS]
+  theme-switch <theme-name> --here          # one-off: this terminal window only
+  theme-switch --here --reset               # restore this window's colors
   theme-switch --auto [OPTIONS]
   theme-switch --list | --current | --help
 
 OPTIONS
+  --here, --this    One-off: recolor ONLY the terminal window you run this in,
+                    live, via OSC color sequences. Touches no config file, saves
+                    no global state, leaves every other window unchanged. kitty
+                    colors are per-window, so this is how you give one terminal a
+                    different theme. Works inside tmux (uses passthrough).
+  --reset           With --here: restore the current window to its configured
+                    colors (no theme name needed).
   --auto            Pick day/night theme based on current hour
                     (07:00–19:00 = day, else night — see AUTO_* constants)
   --dry-run         Show what would change without writing anything
@@ -537,6 +650,8 @@ main() {
             --current)  show_current; exit 0 ;;
             --help|-h)  usage; exit 0 ;;
             --auto)     theme="$(auto_pick)"; shift ;;
+            --here|--this) HERE=true; shift ;;
+            --reset)    RESET=true; shift ;;
             --dry-run)  DRY_RUN=true; shift ;;
             --only)
                 IFS=',' read -ra ONLY_TOOLS <<< "$2"
@@ -553,6 +668,12 @@ main() {
                 ;;
         esac
     done
+
+    # One-off reset needs no theme: recolor-reset the current window and exit.
+    if $HERE && $RESET; then
+        apply_here
+        exit 0
+    fi
 
     if [[ -z "$theme" ]]; then
         err "No theme specified. Use --list to see available themes."
@@ -571,6 +692,20 @@ main() {
 
     # shellcheck source=/dev/null
     source "$palette"
+
+    # One-off: recolor only the current terminal window — no shared files, no
+    # state, no other windows. Skip the global apply loop entirely.
+    if $HERE; then
+        echo ""
+        if $DRY_RUN; then
+            echo "$(bold "DRY RUN") — one-off (current window only): $(bold "$THEME_NAME")"
+        else
+            echo "Recoloring current window (one-off): $(bold "$THEME_NAME")"
+        fi
+        echo ""
+        apply_here
+        exit 0
+    fi
 
     echo ""
     if $DRY_RUN; then

@@ -39,6 +39,7 @@ Project mapping:
 - Use repo-managed Codex skills synced from `.config/codex/skills/`.
 - Prefer skills for specialized workflows instead of embedding long reusable instructions in chat.
 - Delegate to the `binks-agent` skill when a task fits your local orchestration stack.
+- For regulated/sensitive-data questions (PHI/HIPAA, PII, GDPR, FTC/state health-privacy, SOC2, vendor BAAs/DPAs, covered-product coverage, "are we compliant?"), use the `compliance` skill (dated reference: scope decision tree + covered-product matrix) and/or the `compliance-counsel` agent. **Verify coverage against the vendor's live docs / the primary regulation — never from memory** (cite + date the source); separate technical fact from a lawyer's ruling; name the human-counsel / BAA gate. Advisory only — never satisfy a legal/approval gate.
 
 ## Memory layer
 
