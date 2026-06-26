@@ -83,7 +83,7 @@ Media/Music
 .claude/stats-cache.json
 .claude/plans/
 .claude/plans.bak/
-.gitign.claude/downloads/
+.claude/downloads/
 
 # Codex - keep repo-managed definitions, ignore local runtime state
 .codex/*

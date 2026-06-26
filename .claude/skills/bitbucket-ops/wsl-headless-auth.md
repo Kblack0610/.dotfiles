@@ -123,6 +123,7 @@ bitbucket auth status
 | `Failed to store credential in keyring` | Secret Service unreachable (no D-Bus) | Don't unset `DBUS_SESSION_BUS_ADDRESS`; ensure daemon running |
 | `Error: Failed to read username` | piping to the interactive login | Use a real TTY / pseudo-tty; login can't read username from a pipe |
 | HTTP 401/410 on previously-working auth | app password hit a brownout / removal | Migrate to an API token (the whole point of this doc) |
+| `auth status` ✓ but real calls say **"Authentication failed"** / raw API returns **401** even after the keyring is unlocked | **API token expired or revoked** — the keyring still holds the stale token. NOT a keyring/doc bug. | Confirm with `curl -s -o /dev/null -w '%{http_code}' -u "$BITBUCKET_USERNAME:$BITBUCKET_API_KEY" https://api.bitbucket.org/2.0/user` (401 = dead). Regenerate the API token, update `secrets.env`, re-login. A **403** instead means the token is valid but lacks access to that workspace (wrong account/scopes). |
 | `Refusing to write through symlink` editing `.zshrc` | `~/.zshrc` is a stow symlink | Edit `~/.dotfiles/.zshrc` |
 | Shell dies when killing the daemon | `pkill -f gnome-keyring-daemon` matched the shell's own cmdline | Kill by explicit PID via `/proc/*/cmdline` scan instead |
 
