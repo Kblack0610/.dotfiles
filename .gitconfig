@@ -28,6 +28,7 @@
 	insteadOf = ssh://git@bitbucket.org/
 [credential "https://git.kblab.me"]
 	helper = osxkeychain
+	helper = store
 [credential "https://git.kennethblack.me"]
 	helper = osxkeychain
 # Machine-local overrides (untracked). Holds the Cloudflare Access service-token

@@ -14,8 +14,10 @@ default_profile = "personal"
 
 [hostname_map]
 # Map a machine's short hostname to a profile so corporate boxes auto-root into
-# the right directory. Find the name with `hostname -s`, then uncomment + set:
-# corp-laptop = "giganticplayground"
+# the right directory. Find the name with `hostname -s`, then uncomment + set.
+# The GLOBAL default stays "personal" (journal); only corporate boxes opt in here
+# so a stray default never reroutes the personal master into the corp dir.
+# <corp-machine-hostname> = "giganticplayground"
 
 # --- Personal vault (default) -------------------------------------------------
 [profile.personal]
@@ -27,7 +29,10 @@ carryover = "journal/backlogs/carryover.md"
 summaries = "journal/summaries"      # → continuous/ and monthly/ live under here
 archive   = "journal/daily_archive"
 zettel    = "journal/permanent"
+meetings  = "journal/meetings"        # `notes meeting new` → structured meeting logs
 index     = "journal/index"
+inbox     = "inbox"                   # dated captures (/remember, /daily:analysis, `notes inbox add`)
+projects  = "lab/projects/current"   # `notes today` auto-links these into ## Current Projects
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
 # On a machine set to this profile (via $NOTES_PROFILE or [hostname_map]), `notes
@@ -42,4 +47,22 @@ carryover = "backlogs/carryover.md"
 summaries = "summaries"
 archive   = "log_archive"
 zettel    = "permanent"
+meetings  = "meetings"
 index     = "index"
+inbox     = "inbox"
+
+# --- Lazer (edubot) — Deloitte engagement -------------------------------------
+# Same pattern as giganticplayground: a corporate job profile that roots daily
+# notes inside the Deloitte engagement dir under jobs/lazer/.
+[profile.lazer]
+root      = "~/.notes/employment/jobs/lazer/deloitte"
+daily     = "log"
+refs      = "refs"
+fun       = "backlogs/fun.md"
+carryover = "backlogs/carryover.md"
+summaries = "summaries"
+archive   = "log_archive"
+zettel    = "permanent"
+meetings  = "meetings"
+index     = "index"
+inbox     = "inbox"

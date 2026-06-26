@@ -422,6 +422,48 @@ setup_keyd() {
     log_info "keyd enabled and reloaded"
 }
 
+# Setup fingerprint auth (fprintd + libfprint + PAM)
+setup_fingerprint() {
+    log_section "Setting up fingerprint auth (fprintd + PAM)"
+
+    # Install the fingerprint service and driver library. libfprint carries the
+    # uru4000 driver that backs the DigitalPersona U.are.U reader (05ba:000a).
+    install_pacman_package "fprintd"
+    install_pacman_package "libfprint"
+
+    # Wire pam_fprintd.so as the FIRST auth line of each target stack, using
+    # `sufficient` (not `required`) so a fingerprint succeeds on its own but the
+    # password still works as a fallback. Guarded by grep so re-runs never
+    # duplicate the line. polkit-1 is only wired if its PAM file exists.
+    local pam_targets=("sudo" "sddm" "polkit-1")
+    for name in "${pam_targets[@]}"; do
+        local file="/etc/pam.d/$name"
+        if [[ ! -f "$file" ]]; then
+            log_info "PAM stack $name not present — skipping"
+            continue
+        fi
+        if grep -q "pam_fprintd.so" "$file"; then
+            log_info "fingerprint already configured in $name"
+            continue
+        fi
+        log_info "Enabling fingerprint auth for $name..."
+        # Insert before the first `auth` line in the file.
+        sudo sed -i '0,/^auth/s//auth      sufficient  pam_fprintd.so\n&/' "$file"
+        log_info "✓ $name wired for fingerprint"
+    done
+
+    # Enrollment requires a physical finger, so it can't be automated. Surface
+    # the exact command instead of silently skipping it.
+    if fprintd-list "$USER" 2>/dev/null | grep -q "Fingerprints for user"; then
+        log_info "Fingerprint(s) already enrolled for $USER"
+    else
+        log_warning "No fingerprint enrolled. Run: fprintd-enroll"
+        log_warning "(press and lift your finger repeatedly until enroll-completed)"
+    fi
+
+    log_info "Fingerprint setup complete — see .config/fprintd/README.md"
+}
+
 # Install Tailscale VPN
 install_tailscale() {
     log_section "Installing Tailscale VPN"
@@ -571,6 +613,9 @@ install_all() {
 
     # Input remapping
     setup_keyd
+
+    # Biometric auth (fingerprint)
+    setup_fingerprint
 
     # Networking
     install_tailscale
