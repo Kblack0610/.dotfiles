@@ -16,6 +16,24 @@ return {
           width = "block",
         },
       }
+
+      -- Toggle markdown task checkboxes: `- [ ]` <-> `- [x]`.
+      -- Operates on the current line (normal) or every line in the visual
+      -- selection (visual). Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
+      local function toggle_checkbox(line1, line2)
+        for lnum = line1, line2 do
+          local line = vim.fn.getline(lnum)
+          local toggled
+          if line:match "%[ %]" then
+            toggled = line:gsub("%[ %]", "[x]", 1)
+          elseif line:match "%[[xX]%]" then
+            toggled = line:gsub("%[[xX]%]", "[ ]", 1)
+          end
+          if toggled then
+            vim.fn.setline(lnum, toggled)
+          end
+        end
+      end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
         pattern = "markdown",
@@ -42,6 +60,16 @@ return {
             "<CMD>RenderMarkdown disable<CR>",
             { desc = "Markdown disable", silent = true }
           )
+          -- Task checkbox toggle: current line (normal) / selection (visual).
+          vim.keymap.set("n", "<leader>t", function()
+            local lnum = vim.api.nvim_win_get_cursor(0)[1]
+            toggle_checkbox(lnum, lnum)
+          end, { buffer = buf, desc = "Toggle task checkbox", silent = true })
+          vim.keymap.set("x", "<leader>t", function()
+            -- Leave visual mode so '< and '> marks are set, then toggle the range.
+            vim.cmd "normal! \27"
+            toggle_checkbox(vim.fn.line "'<", vim.fn.line "'>")
+          end, { buffer = buf, desc = "Toggle task checkbox(es)", silent = true })
         end,
       })
     end,

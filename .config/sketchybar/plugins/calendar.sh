@@ -21,7 +21,7 @@ CACHE_FILE="$CACHE_DIR/calendar.state"
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
 NOW="$(date +%s)"
-IFS=$'\t' read -r KIND F1 F2 F3 <<<"$(calendar_scan)"
+IFS=$'\t' read -r KIND F1 F2 F3 F4 <<<"$(calendar_scan)"
 
 case "$KIND" in
   ERR)
@@ -30,8 +30,10 @@ case "$KIND" in
                              label.color="$DIM" background.drawing=off
     ;;
   TIMED)
-    S="$F1"; E="$F2"; TITLE="$F3"
-    printf '%s %s %s\n' "$S" "$E" "$TITLE" > "$CACHE_FILE"
+    S="$F1"; E="$F2"; RSVP="$F3"; TITLE="$F4"
+    # Cache: "START END RSVP TITLE" — meeting_watch.sh reads RSVP to pick the amber
+    # (tentative) bar state. RSVP is a single token, so it parses cleanly before TITLE.
+    printf '%s %s %s %s\n' "$S" "$E" "$RSVP" "$TITLE" > "$CACHE_FILE"
     if [ "$S" -le "$NOW" ]; then
       sketchybar --set "$NAME" icon="$ICON_CALENDAR" icon.color="$RED" \
                                label="● now  $TITLE" label.color="$RED" \

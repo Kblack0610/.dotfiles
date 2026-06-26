@@ -11,6 +11,7 @@ export BAR_BORDER_COLOR=0x4d9098a4
 # theme must not turn the "join now" pulse blue. meeting_watch.sh drives the whole bar.
 export BAR_ALERT_COLOR=0xe6ef5734
 export BAR_INCALL_COLOR=0xe686a83e
+export BAR_MAYBE_COLOR=0xe6ff9f1c
 export BAR_LEFT_COLOR=0xe6ffcc2f
 
 # Item backgrounds

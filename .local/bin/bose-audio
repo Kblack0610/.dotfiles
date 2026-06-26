@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# bose-audio — keep macOS from auto-grabbing the Bose QC35 II, with manual override.
+#
+# Why this exists: macOS auto-routes system output to a Bluetooth headset on connect and
+# holds the A2DP link "Active" as long as the headset is the *selected output device* — which
+# starves a second multipoint device (e.g. a phone) of the headphones until you toggle
+# Bluetooth off on the Mac. There is no native macOS setting to disable this (verified).
+#
+# Model: a `guard` daemon (launchd) bounces output OFF the Bose whenever it isn't explicitly
+# "claimed", so the phone keeps the headphones by default. A hotkey (`toggle`) claims the Bose
+# for the Mac when you want it for a meeting/Slack call, and releases it after.
+#
+#   grab     claim the Bose for the Mac: route output + mic to it (connecting it if needed)
+#   release  un-claim: route output back to built-in speakers (mic left as-is)
+#   toggle   grab if released, release if grabbed  (bind this to a hotkey)
+#   guard    daemon loop: while unclaimed, keep output off the Bose  (run by launchd)
+#   status   print "claimed" or "guarding"  (for sketchybar / debugging)
+set -euo pipefail
+
+# --- config ---------------------------------------------------------------
+MAC="4c:87:5d:09:57:89"                 # Bose QC35 II
+SPEAKERS_UID="BuiltInSpeakerDevice"      # built-in speakers (UID substring-matched)
+FLAG="${XDG_STATE_HOME:-$HOME/.local/state}/bose-audio/claimed"
+
+# launchd has a minimal PATH, so resolve the Homebrew binaries explicitly.
+_find() { command -v "$1" 2>/dev/null || { for p in /opt/homebrew/bin /usr/local/bin; do [ -x "$p/$1" ] && { echo "$p/$1"; return; }; done; }; }
+SAS="$(_find SwitchAudioSource)"
+BU="$(_find blueutil)"
+
+# --- helpers --------------------------------------------------------------
+notify() {  # best-effort desktop notification; never fail the command
+  local msg="$1"
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    terminal-notifier -title "Bose audio" -message "$msg" >/dev/null 2>&1 || true
+  else
+    osascript -e "display notification \"$msg\" with title \"Bose audio\"" >/dev/null 2>&1 || true
+  fi
+}
+
+refresh_bar() { command -v sketchybar >/dev/null 2>&1 && sketchybar --trigger bose_audio >/dev/null 2>&1 || true; }
+
+bose_device() { "$SAS" -a -t "$1" 2>/dev/null | grep -i bose | head -1; }   # $1 = output|input
+current_output() { "$SAS" -c -t output 2>/dev/null || true; }
+is_connected() { [ "$("$BU" --is-connected "$MAC" 2>/dev/null)" = "1" ]; }
+claimed() { [ -f "$FLAG" ]; }
+
+# --- verbs ----------------------------------------------------------------
+grab() {
+  mkdir -p "$(dirname "$FLAG")"; : > "$FLAG"          # claim first, so guard stands down
+  is_connected || { "$BU" --connect "$MAC" >/dev/null 2>&1 || true; "$BU" --wait-connect "$MAC" 8 >/dev/null 2>&1 || true; }
+  local out in; out="$(bose_device output)"; in="$(bose_device input)"
+  [ -n "$out" ] && "$SAS" -s "$out" -t output >/dev/null 2>&1 || true
+  [ -n "$in"  ] && "$SAS" -s "$in"  -t input  >/dev/null 2>&1 || true
+  notify "Bose → Mac (output + mic). Press the key again to release."
+  refresh_bar
+}
+
+release() {
+  rm -f "$FLAG"                                        # un-claim → guard re-arms
+  "$SAS" -u "$SPEAKERS_UID" -t output >/dev/null 2>&1 || true
+  notify "Bose released → speakers. Phone can take the headphones."
+  refresh_bar
+}
+
+toggle() { if claimed; then release; else grab; fi; }
+
+status() { if claimed; then echo claimed; else echo guarding; fi; }
+
+guard() {
+  while true; do
+    # Block (no busy-wait) until the Bose connects; returns immediately if already connected.
+    "$BU" --wait-connect "$MAC" >/dev/null 2>&1 || { sleep 5; continue; }
+    while is_connected; do
+      if ! claimed; then
+        case "$(current_output)" in
+          *[Bb]ose*)
+            "$SAS" -u "$SPEAKERS_UID" -t output >/dev/null 2>&1 || true
+            notify "macOS grabbed the Bose — bounced output back to speakers."
+            sleep 1 ;;                                 # debounce macOS's re-grab burst
+        esac
+      fi
+      sleep 2
+    done
+    rm -f "$FLAG"                                       # reset claim on disconnect
+  done
+}
+
+case "${1:-}" in
+  grab) grab ;;
+  release) release ;;
+  toggle) toggle ;;
+  guard) guard ;;
+  status) status ;;
+  *) echo "usage: bose-audio {grab|release|toggle|guard|status}" >&2; exit 2 ;;
+esac

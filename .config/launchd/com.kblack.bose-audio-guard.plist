@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kblack.bose-audio-guard</string>
+
+    <!-- Keeps system audio output off the Bose QC35 II while it isn't explicitly
+         "claimed" (see ~/.local/bin/bose-audio), so a second multipoint device keeps
+         the headphones. Long-lived loop; relaunch if it ever exits.
+         Runs as a USER agent on purpose: blueutil refuses to run as root. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>~/.local/bin/bose-audio guard</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't thrash if it crash-loops. -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/bose-audio-guard.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/bose-audio-guard.err.log</string>
+</dict>
+</plist>

@@ -81,6 +81,10 @@ cask "discord"
 cask "spotify"
 cask "meetingbar"     # menu-bar next-meeting + native notifications (Google Calendar via Internet Accounts)
 
+# --- Bluetooth audio control (bose-audio guard: stop macOS auto-grabbing the QC35 II) ---
+brew "blueutil"        # CLI Bluetooth connect/disconnect/state — drives the bose-audio guard
+brew "switchaudio-osx" # SwitchAudioSource: set default audio in/out devices from the CLI
+
 # --- Game Streaming ---
 # Note: Sunshine on macOS is experimental (no gamepad support, needs BlackHole for audio)
 brew "lizardbyte/homebrew/sunshine"

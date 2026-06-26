@@ -166,6 +166,11 @@ If a skill doesn't yet exist for a domain you touch repeatedly, propose one rath
 
 ## Agent Delegation
 
+The system's **named identities** (Cap, Sloane, Argus, Mercer, Sentinel, Vera, Mnemosyne, Scribe,
+Chronos, and the context-selves) are indexed in `~/.dotfiles/.claude/PERSONAS.md` — the persona
+registry (schema, autonomy ladder, naming theme, roster → source files). Add/rename/retire a
+persona there; keep each persona's inline `## Persona` block as the per-agent detail.
+
 Non-trivial implementation flows through the `kb-*` agent pipeline:
 
 1. `kb-product-owner` — turns ambiguous asks into Product Briefs

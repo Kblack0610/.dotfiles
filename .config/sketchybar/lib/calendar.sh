@@ -1,13 +1,23 @@
 #!/bin/bash
 # Shared system-Calendar parser for SketchyBar. Sourced by plugins/calendar.sh
-# (the meeting_watch plugin reads the cached epochs instead, never re-running icalBuddy).
+# (the meeting_watch plugin reads the cached epochs instead, never re-running the scan).
 #
-# calendar_scan: runs icalBuddy ONCE and prints one tab-separated line describing the
-# most relevant event. Fields by kind:
-#   ERR<TAB><message>                                    icalBuddy missing or no Calendar access
-#   TIMED<TAB><start_epoch><TAB><end_epoch><TAB><title>  earliest not-yet-ended timed event
-#   ALLDAY<TAB><title>                                   no timed event, but an all-day one exists
-#   NONE                                                 nothing on the calendar
+# calendar_scan: prints ONE tab-separated line describing the most relevant event. Two
+# backends, preferred-first:
+#   1. meeting-status (Swift/EventKit, ~/.local/bin) — the real source of truth. Knows your
+#      RSVP status and whether an event has a video link, and emits drift-free epochs. Only
+#      events that are *actual video meetings* (link present, not cancelled, not declined)
+#      come back as TIMED.
+#   2. icalBuddy fallback — used only when the helper binary isn't built yet (fresh machine
+#      pre-build). Degraded: no RSVP (always NONE) and no link filter, so it behaves like the
+#      old bar. Build the helper: ~/.dotfiles/.local/src/meeting-status/build.sh
+#
+# Fields by kind:
+#   ERR<TAB><message>                                              no Calendar access / no backend
+#   TIMED<TAB><start_epoch><TAB><end_epoch><TAB><rsvp><TAB><title> earliest relevant timed meeting
+#   ALLDAY<TAB><title>                                             no timed meeting, an all-day event exists
+#   NONE                                                           nothing relevant
+# <rsvp> is ACCEPTED | TENTATIVE | PENDING | NONE (icalBuddy path always emits NONE).
 #
 # Epochs (not a live/soon label) are emitted because that classification is time-relative
 # and must be recomputed against NOW by each caller every tick.
@@ -23,7 +33,26 @@
 # downstream "is this the same meeting?" checks (the joined latch) drift and never stick.
 _cal_to_epoch() { date -j -f "%Y-%m-%d %H:%M:%S" "$1 $2:00" +%s 2>/dev/null; }
 
+# Preferred backend: the EventKit helper. Its stdout already IS the contract, so we just
+# pass it through. If the binary is missing we fall back to the icalBuddy scanner below.
 calendar_scan() {
+  local helper out
+  helper="$(command -v meeting-status || echo "$HOME/.local/bin/meeting-status")"
+  if [ -x "$helper" ]; then
+    out="$("$helper" 2>/dev/null)"
+    # Trust the helper unless it couldn't reach Calendar at all — then degrade to icalBuddy.
+    case "$out" in
+      "ERR"*|"") _calendar_scan_icalbuddy ;;
+      *)         printf '%s\n' "$out" ;;
+    esac
+    return 0
+  fi
+  _calendar_scan_icalbuddy
+}
+
+# Fallback only. Emits a NONE rsvp field for TIMED so the cache format stays uniform; has no
+# link filter, so it shows any timed event (the pre-EventKit behavior).
+_calendar_scan_icalbuddy() {
   local buddy raw now line dt title start end sdate stime edate etime s e first_allday
   buddy="$(command -v icalBuddy || echo /opt/homebrew/bin/icalBuddy)"
   if [ ! -x "$buddy" ]; then
@@ -70,7 +99,7 @@ calendar_scan() {
     [ -z "$s" ] || [ -z "$e" ] && continue
     [ "$e" -le "$now" ] && continue        # already ended → skip
 
-    printf 'TIMED\t%s\t%s\t%s\n' "$s" "$e" "$title"
+    printf 'TIMED\t%s\t%s\t%s\t%s\n' "$s" "$e" "NONE" "$title"
     return 0
   done <<EOF
 $(printf '%s' "$raw" | sed 's/@EVT@/\

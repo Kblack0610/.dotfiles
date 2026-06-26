@@ -100,6 +100,10 @@ ctrl-cmd-k = 'join-with up'
 # SketchyBar calendar item opens on click. See ~/.local/bin/meeting-join.
 ctrl-cmd-m = 'exec-and-forget $HOME/.local/bin/meeting-join'
 
+# Claim/release the Bose QC35 II for the Mac (output + mic) for a meeting/Slack call.
+# Otherwise the bose-audio guard keeps output off the Bose so a phone keeps the headphones.
+ctrl-cmd-b = 'exec-and-forget $HOME/.local/bin/bose-audio toggle'
+
 ################################################################################
 # WORKSPACES
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
