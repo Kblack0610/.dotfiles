@@ -165,38 +165,6 @@ export PATH="$HOME/.local/bin:$PATH"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
-# --- AWS dev access via Windows aws-azure-login (VDI+WSL bridge) ---
-# Run on Windows first:  aws-azure-login --profile dev --mode gui  (re-run ~every 12h)
-export AWS_SHARED_CREDENTIALS_FILE=/mnt/c/Users/keblack/.aws/credentials
-export AWS_CONFIG_FILE=/mnt/c/Users/keblack/.aws/config
-
-# --- kubectl.exe bridge: private dev EKS is unroutable from WSL, so mint the EKS
-#     token here (WSL has dev creds) and run kubectl.exe on Windows (on the VPN).
-#     Needs fresh dev creds (aws-azure-login on Windows) + VPN connected.
-#     Usage: k get pods -n edudev   |   k auth can-i create pods/exec -n edudev
-export EP=https://827F9F0DF14FFA6A59E5FBB67A971B6E.sk1.ca-central-1.eks.amazonaws.com
-unalias k 2>/dev/null  # oh-my-zsh kubectl plugin sets `alias k=kubectl`, which blocks the function def below
-k() {
-  local TOK
-  TOK=$(aws eks get-token --cluster-name cms-oc-nova-healix-dev --profile dev --region ca-central-1 --query 'status.token' --output text) || return 1
-  powershell.exe -NoProfile -Command "kubectl.exe --server='$EP' --token='$TOK' --insecure-skip-tls-verify=true --request-timeout=20s $*"
-}
-
-# --- Secret Service for bitbucket-cli / libsecret (WSL has no desktop session) ---
-# bitbucket-cli stores creds ONLY in the Secret Service keyring. login.keyring has
-# an EMPTY password, but gnome-keyring still starts it LOCKED and needs one unlock
-# per daemon lifetime. So: if the login collection is locked, replace the daemon
-# with one unlocked via empty password (stdin '\n'). No GUI prompt, ever.
-if command -v gnome-keyring-daemon >/dev/null 2>&1; then
-  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}"
-  if [ "$(busctl --user get-property org.freedesktop.secrets \
-            /org/freedesktop/secrets/collection/login \
-            org.freedesktop.Secret.Collection Locked 2>/dev/null)" != "b false" ]; then
-    printf '\n' | gnome-keyring-daemon --replace --daemonize \
-      --components=secrets,pkcs11,ssh --unlock >/dev/null 2>&1
-  fi
-fi
-
 # Keep ~/.dotfiles current across machines: throttled (6h), ff-only, silent.
 # Fully detached subshell so it never blocks startup or prints job-control noise.
 if [[ -o interactive ]] && command -v dotfiles-autopull >/dev/null 2>&1; then
