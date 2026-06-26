@@ -321,8 +321,12 @@
         "--browser",
         "firefox"
       ],
-      "enabled": false,
-      "environment": {}
+      "enabled": true,
+      "environment": {
+        "DISPLAY": ":0",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "XDG_RUNTIME_DIR": "/run/user/0/"
+      }
     },
     "context7": {
       "type": "local",
@@ -331,7 +335,7 @@
         "-y",
         "@upstash/context7-mcp"
       ],
-      "enabled": false,
+      "enabled": true,
       "environment": {}
     },
     "vikunja": {
@@ -346,6 +350,24 @@
         "VIKUNJA_URL": "https://vikunja.kblab.me/api/v1",
         "VIKUNJA_API_TOKEN": "${VIKUNJA_MCP_TOKEN}"
       }
+    },
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "RUST_LOG": "info"
+      }
+    },
+    "adb": {
+      "type": "local",
+      "command": [
+        "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/adb-mcp"
+      ],
+      "enabled": true,
+      "environment": {}
     }
   }
 }

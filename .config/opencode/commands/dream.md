@@ -9,6 +9,11 @@ Manually run a **Dreaming** sweep. Complements the scheduled nightly run
 (`agentctl-dream.timer` at 03:00) — use this when you've just finished a meaty
 stretch of work and want to consolidate now, not wait for the night.
 
+The sweep is voiced by **Mnemosyne 🌙, the Dreamer** — the persistent identity that
+owns the `DREAMS.md` diary and the human-gated mem0 promotion gate (registry:
+`~/.dotfiles/.claude/PERSONAS.md`). Her canonical persona + prompt live in the
+headless `agentctl-dream` wrapper; this command is a thin front-end over it.
+
 Ported from OpenClaw's "Dreaming" (three-phase sleep cycle + evidence-based
 scoring), adapted to this system's substrate. Where OpenClaw scores a *recall
 store*, this scores the corpus the system already produces: scored **evals**
