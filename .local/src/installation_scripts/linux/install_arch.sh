@@ -575,6 +575,44 @@ setup_notes_sync() {
                  ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
 }
 
+# Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden at
+# vault.kblab.me. The `rbw` package itself is installed via PACKAGES_DEV_ARCH;
+# this just points it at the right server + account so secrets (e.g. Cloudflare
+# API tokens) can be sourced with `rbw get` instead of stale literals in
+# ~/.bash_profile. Idempotent: `rbw config set` is safe to re-run.
+#
+# Login is NOT automated — `rbw login` needs the Vaultwarden master password
+# interactively, and the resulting session/device state is exactly the kind of
+# ephemeral auth-state we never script. We surface the command instead.
+setup_rbw() {
+    log_section "Setting up rbw (Bitwarden CLI → vault.kblab.me)"
+
+    if ! command -v rbw &>/dev/null; then
+        log_warning "rbw not installed — skipping (expected in PACKAGES_DEV_ARCH)"
+        return 0
+    fi
+
+    local vault_url="https://vault.kblab.me"
+    local vault_email="${RBW_EMAIL:-hughlio912@gmail.com}"
+
+    rbw config set base_url "$vault_url"
+    rbw config set email "$vault_email"
+    # 1h unlock; matches the lock_timeout we want for a workstation.
+    rbw config set lock_timeout 3600
+
+    log_info "✓ rbw configured for $vault_email @ $vault_url"
+
+    if rbw unlocked &>/dev/null; then
+        log_info "rbw already logged in + unlocked"
+    else
+        log_warning "rbw not logged in. Run:  rbw login   (Vaultwarden master password)"
+        log_warning "Then source secrets in shells, e.g.:"
+        log_warning "  export CLOUDFLARE_API_TOKEN=\$(rbw get 'Cloudflare API Token')"
+    fi
+
+    log_info "rbw setup complete — see .config/rbw/README.md"
+}
+
 # Override main installation to include AUR
 install_all() {
     # Create structure
@@ -637,6 +675,9 @@ install_all() {
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
     setup_notes_sync
+
+    # Secrets CLI (rbw → self-hosted Vaultwarden)
+    setup_rbw
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
