@@ -1,4 +1,32 @@
 # Mac reqs
+
+## Install without a root password (`--no-sudo`)
+
+The only steps in the macOS install that need a root password are the
+headless/server-mode tweaks in `macos_defaults.sh`: disabling sleep (`pmset`),
+disabling FileVault (`fdesetup`), and enabling auto-login. Pass `--no-sudo`
+(alias `--no-root`) to skip exactly those — everything else (Homebrew packages,
+dotfiles, and all the non-privileged Dock/Finder/keyboard/trackpad defaults)
+still applies:
+
+```sh
+# Local clone
+.local/src/installation_scripts/install.sh --no-sudo
+
+# Bootstrap one-liner — either form works
+curl -fsSL https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/bootstrap.sh | bash -s -- --no-sudo
+curl -fsSL https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/bootstrap.sh | NO_SUDO=1 bash
+```
+
+It's implemented as `export NO_SUDO=1` → a `priv()` wrapper in
+`macos_defaults.sh` that skips the privileged command (with a log line) instead
+of calling `sudo`. Caveat: a *first-ever* Homebrew install still prompts for a
+password once (Homebrew itself needs it to create `/opt/homebrew`); that's
+outside these scripts. If brew is already present, `--no-sudo` is fully
+password-free. Re-run later without the flag (or run those `sudo` commands by
+hand) if you do want the headless tweaks.
+
+## Manual GUI steps
 - Preferences -> Apperance: Dark, Accent Color: Purple
 - System Settings -> Keyboard, Set Key Repeat to "Fast" and Delay until repeat to "Short" (haven't tried this yet)
 - System Settings -> Shortcuts, Uncheck Spotlight Shortcuts (automated via macos_defaults.sh)

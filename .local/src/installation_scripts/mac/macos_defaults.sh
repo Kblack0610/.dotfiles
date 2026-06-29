@@ -5,7 +5,25 @@
 
 set -e
 
+# --- Privilege gate -----------------------------------------------------------
+# Every step in this script that needs a root password goes through priv().
+# When NO_SUDO=1 (set by `install.sh --no-sudo`, or exported directly), those
+# steps are skipped instead of prompting for a password — so the whole install
+# runs unattended on a stock laptop. The skipped steps are headless/server-mode
+# tweaks (disable sleep, disable FileVault, enable auto-login); everything that
+# does NOT need root (Dock/Finder/keyboard/trackpad defaults) still applies.
+NO_SUDO="${NO_SUDO:-0}"
+
+priv() {
+    if [[ "$NO_SUDO" == "1" ]]; then
+        echo "  - [no-sudo] skipping privileged step: $*"
+        return 0
+    fi
+    sudo "$@"
+}
+
 echo "Configuring macOS defaults..."
+[[ "$NO_SUDO" == "1" ]] && echo "  - NO_SUDO=1: privileged steps (sleep/FileVault/auto-login) will be skipped"
 
 # Close System Preferences to prevent conflicts
 osascript -e 'tell application "System Preferences" to quit' 2>/dev/null || true
@@ -162,21 +180,25 @@ defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2.5
 ###############################################################################
 
 # Prevent system sleep entirely (all power sources)
-sudo pmset -a sleep 0 2>/dev/null || true
+priv pmset -a sleep 0 2>/dev/null || true
 
 # Prevent display sleep (all power sources)
-sudo pmset -a displaysleep 0 2>/dev/null || true
+priv pmset -a displaysleep 0 2>/dev/null || true
 
 # Disable idle sleep (prevents sleep even with no user activity)
-sudo pmset -a disablesleep 1 2>/dev/null || true
+priv pmset -a disablesleep 1 2>/dev/null || true
 
 # Disable hibernation (speeds up wake if sleep somehow triggers)
-sudo pmset -a hibernatemode 0 2>/dev/null || true
+priv pmset -a hibernatemode 0 2>/dev/null || true
 
 # Prevent hard drive sleep
-sudo pmset -a disksleep 0 2>/dev/null || true
+priv pmset -a disksleep 0 2>/dev/null || true
 
-echo "  - Sleep fully disabled (all power sources)"
+if [[ "$NO_SUDO" == "1" ]]; then
+    echo "  - Sleep settings skipped (no-sudo)"
+else
+    echo "  - Sleep fully disabled (all power sources)"
+fi
 
 ###############################################################################
 # Auto-Login                                                                   #
@@ -185,18 +207,24 @@ echo "  - Sleep fully disabled (all power sources)"
 # Disable FileVault (full-disk encryption) if enabled
 # FileVault blocks auto-login and unattended restarts, making it incompatible
 # with headless/server use. Safe to disable for home LAN machines.
-if fdesetup status 2>/dev/null | grep -q "On"; then
+if [[ "$NO_SUDO" == "1" ]]; then
+    echo "  - [no-sudo] skipping FileVault disable (run manually if needed: sudo fdesetup disable)"
+elif fdesetup status 2>/dev/null | grep -q "On"; then
     echo "  - FileVault is enabled, disabling..."
-    sudo fdesetup disable 2>/dev/null || echo "  - WARNING: Failed to disable FileVault (may need manual intervention)"
+    priv fdesetup disable 2>/dev/null || echo "  - WARNING: Failed to disable FileVault (may need manual intervention)"
 else
     echo "  - FileVault already disabled"
 fi
 
 # Enable automatic login for the current user
 CURRENT_USER=$(whoami)
-sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "$CURRENT_USER" 2>/dev/null || true
+priv defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "$CURRENT_USER" 2>/dev/null || true
 
-echo "  - Auto-login configured for $CURRENT_USER (takes effect after restart)"
+if [[ "$NO_SUDO" == "1" ]]; then
+    echo "  - Auto-login skipped (no-sudo)"
+else
+    echo "  - Auto-login configured for $CURRENT_USER (takes effect after restart)"
+fi
 
 ###############################################################################
 # Security                                                                     #

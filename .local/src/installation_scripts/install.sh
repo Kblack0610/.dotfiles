@@ -90,6 +90,29 @@ show_menu() {
 
 # Main execution
 main() {
+    # Parse flags. --no-sudo / --no-root makes the install run without a root
+    # password by exporting NO_SUDO=1, which the OS-specific installers honor
+    # (on macOS, macos_defaults.sh skips its privileged steps). Exported so it
+    # reaches child scripts like macos_defaults.sh.
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-sudo|--no-root)
+                export NO_SUDO=1
+                echo -e "${YELLOW}--no-sudo: privileged steps will be skipped (no root password needed)${NC}"
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: install.sh [--no-sudo|--no-root]"
+                echo "  --no-sudo, --no-root   Skip every step that needs a root password"
+                exit 0
+                ;;
+            *)
+                echo -e "${YELLOW}Ignoring unknown argument: $1${NC}"
+                shift
+                ;;
+        esac
+    done
+
     print_header
 
     # Detect OS

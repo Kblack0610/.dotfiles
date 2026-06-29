@@ -51,12 +51,15 @@ fi
 INSTALLER="$DOTFILES_DIR/.local/src/installation_scripts/install.sh"
 [[ -f "$INSTALLER" ]] || die "Installer not found at $INSTALLER — bad clone?"
 
-step "Running $INSTALLER"
+# Args passed to bootstrap.sh (e.g. --no-sudo) are forwarded to install.sh.
+# NO_SUDO is also honored via the environment, so the curl one-liner works as:
+#   curl -fsSL .../bootstrap.sh | NO_SUDO=1 bash
+step "Running $INSTALLER $*"
 if [[ -e /dev/tty ]]; then
-    exec bash "$INSTALLER" </dev/tty
+    exec bash "$INSTALLER" "$@" </dev/tty
 else
     # No tty (CI, container without -t). install.sh's interactive prompts will
     # fall through; assume non-interactive and pass DOTFILES_YES=1 if the
     # caller wants to skip confirmation.
-    exec bash "$INSTALLER"
+    exec bash "$INSTALLER" "$@"
 fi
