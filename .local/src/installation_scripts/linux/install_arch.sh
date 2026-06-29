@@ -593,7 +593,7 @@ setup_rbw() {
     fi
 
     local vault_url="https://vault.kblab.me"
-    local vault_email="${RBW_EMAIL:-hughlio912@gmail.com}"
+    local vault_email="${RBW_EMAIL:-kblack0610@gmail.com}"
 
     rbw config set base_url "$vault_url"
     rbw config set email "$vault_email"

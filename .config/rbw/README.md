@@ -26,7 +26,7 @@ instead of living as stale literals in `~/.bash_profile`.
 ```bash
 # 1. installed + configured by the installer; or by hand:
 rbw config set base_url https://vault.kblab.me
-rbw config set email    hughlio912@gmail.com
+rbw config set email    kblack0610@gmail.com
 
 # 2. log in (prompts for the Vaultwarden master password)
 rbw login
