@@ -7,6 +7,14 @@ description: Cloudflare DNS, tunnel, and zone operations via the REST API v4. Us
 
 Manage Cloudflare resources via `curl` against the [REST API v4](https://developers.cloudflare.com/api/) with `jq` for parsing. No CLI tools to install.
 
+> **To put a homelab site on the public internet, do NOT use this skill.** That is a
+> pure-GitOps flow now: add a Traefik Ingress under `apps/<x>/` in `home-config` and push —
+> external-dns makes the DNS and the tunnel's single wildcard catch-all routes it. The
+> canonical reference is `home-config/docs/public-sites.md`. The tunnel-edit capability has
+> been **removed** from the cluster token on purpose, and `cfd_tunnel`/`dns_records` edits are
+> **not** how sites go live. Use this skill for *diagnosis* (tunnel health, inspecting records,
+> cache, zone settings) — not for the add-a-site path.
+
 ## Prerequisites
 
 | Env var | Required | Purpose |
@@ -31,8 +39,8 @@ curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 
 ### Infrastructure context
 
-- **Tunnel:** `public-sites-homelab` — runs as `cloudflared-public-sites` deployment in `apps` namespace on home-k3s
-- **Terraform source of truth:** `~/dev/bnb/platform/infra/public-sites-tunnel/main.tf`
+- **Tunnel:** `public-sites-homelab` — `cloudflared-public-sites` deployment in `apps` on home-k3s. Holds **one** ingress rule: a wildcard catch-all → `https://traefik…:443`. Per-host tunnel routes no longer exist. Tunnel *shape* (the wildcard) is Terraform-managed in `~/dev/bnb/platform/infra/public-sites-tunnel/main.tf`.
+- **DNS source of truth:** `external-dns` in-cluster (`home-config/apps/external-dns/`), derived from Ingresses across kennethblack.me / blacknbrownstudios.com / binks.chat / kblack.dev. **Terraform manages no DNS.** Hand-editing records via this skill fights external-dns — diagnose, don't mutate.
 - **Cert-manager:** `letsencrypt-dns` ClusterIssuer with Cloudflare DNS01 solver — depends on `_acme-challenge` TXT records
 - **Private services:** `*.kblab.me` resolved via local AdGuard DNS — NOT Cloudflare-managed
 
@@ -258,9 +266,9 @@ curl -s -X PATCH \
 
 ### Terraform-managed resources
 
-- Root and www DNS records for all four zones are **managed by Terraform** in `~/dev/bnb/platform/infra/public-sites-tunnel/main.tf`. Modifying these via API causes state drift — prefer `terraform apply`.
-- Tunnel configuration is also Terraform-managed — **do not modify tunnel config via the API**.
-- For **new subdomains** not in Terraform, the API is fine — note it in the comment for future import traceability.
+- **DNS is owned by `external-dns`, not Terraform.** All records (apex/www/subdomains, all four zones) are derived from Kubernetes Ingresses. Creating/editing them via this API fights external-dns and will be reverted or duplicated — change the **Ingress** instead. Use the API only to *inspect*.
+- **Tunnel config is a single wildcard, Terraform-managed.** Don't add per-host routes — they're obsolete. The cluster token no longer has `Cloudflare-Tunnel:Edit`, so a `cfd_tunnel/configurations` PUT returns `Authentication error` by design.
+- **New public site:** do NOT touch DNS or the tunnel here — add a Traefik Ingress in `home-config` (`docs/public-sites.md`).
 
 ### General
 
@@ -279,9 +287,11 @@ curl -s -X PATCH \
   ```
 - Paginate large record sets with `?page=2&per_page=100`. Check total: `jq '.result_info | {page, total_pages}'`
 - **522 debugging flow:** check tunnel status via API → check `cloudflared-public-sites` pod logs → verify upstream service (`traefik.kube-system.svc.cluster.local:80`) reachable from within the cluster
-- **New tunnel-routed subdomain checklist:**
-  1. Add ingress rule in Terraform (`main.tf`)
-  2. `terraform apply`
-  3. Create CNAME DNS record (proxied, ttl auto) pointing to `<tunnel-id>.cfargotunnel.com`
-  4. Create or update Kubernetes Ingress for Traefik to route the Host header
-  5. Optionally add cert-manager TLS annotation (`cert-manager.io/cluster-issuer: letsencrypt-dns`)
+- **New public subdomain — the ONLY checklist (no Cloudflare ops at all):**
+  1. Add a Traefik Ingress under `home-config/apps/<x>/` (`ingressClassName: traefik`,
+     `cert-manager.io/cluster-issuer: letsencrypt-dns`, host `<name>.<zone>`).
+  2. `git push`.
+
+  external-dns creates the proxied CNAME; the tunnel's wildcard catch-all routes it to Traefik.
+  Steps "add a tunnel ingress rule", "terraform apply", and "create a CNAME by hand" are the
+  **retired legacy method** — do not do them. Canonical: `home-config/docs/public-sites.md`.
