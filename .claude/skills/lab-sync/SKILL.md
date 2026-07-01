@@ -29,10 +29,25 @@ two-region file where agents own a fenced AUTO block and you own everything abov
 ## → For the agents    ← hand-curated: YOUR open comments / suggestions / tasks (`- [ ]`)
 
 <!-- AUTO:START — maintained by /lab-sync; edits below are overwritten -->
-## ← Release & status feed   ← agent-posted: latest tag, active plans, latest eval,
-                               last wind-down, recent commits, links to ~/.agent
+## ← Release & status feed   ← agent-posted, human-first dashboard: version line
+                               (git tag + lab checklist), In flight (open GitHub
+                               PRs), Recent (commits), links to ~/.agent
 <!-- AUTO:END -->
 ```
+
+The feed is a **compact human view**, not a data dump: what version we're on, what's in
+flight, the last couple of commits. Agent-runtime detail (plan counts, eval scores,
+wind-downs) deliberately stays in the **anchor** — don't reintroduce it here.
+
+**Best-effort live rows.** The version line and Recent come from `git` (deterministic);
+**In flight** comes from `gh pr list` (open, non-draft PRs). Every live row is guarded —
+if `gh`/`git` is missing, unauthenticated, or offline, that row is simply omitted and the
+block still regenerates identically. So the writer stays safe in the headless weekly cron.
+
+> **Phase 2 (not yet wired):** syncing Vikunja tasks + version into the feed, and pushing
+> your `## → For the agents` tasks *into* Vikunja. Deferred because the live board isn't
+> currently tracking WIP in a queryable bucket (the `Doing` buckets are empty), and the
+> git-version ↔ Vikunja-version mapping needs a decision. Revisit with the user.
 
 - **`<!-- canonical: NAME -->`** resolves the naming impedance: lab projects are named for
   the product (`placemyparents`, `binks`) while `~/.agent`/anchors use the canonical repo
@@ -44,7 +59,8 @@ two-region file where agents own a fenced AUTO block and you own everything abov
 ## How the loop closes (bidirectional)
 
 - **Agent → you:** `lab-sync` regenerates the `## ← Release & status feed` AUTO block from
-  git + `~/.agent` (deterministic — see `regen-lab-feed.sh`). You read it on any device.
+  git + GitHub + `~/.agent` (deterministic core + best-effort live PR rows — see
+  `regen-lab-feed.sh`). You read it on any device.
 - **You → agent:** you write under `## → For the agents`. The **SessionStart preflight**
   resolves the lab file by canonical name and injects that section at turn 1 of every
   session for that project — so your comments/tasks reach the agent automatically. No extra

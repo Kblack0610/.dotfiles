@@ -19,7 +19,8 @@ set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
 MAP_FILE="$HOOKS_DIR/project-map.json"
-LAB_CURRENT="$HOME/.notes/lab/projects/current"
+# Overridable for testing against a scratch copy; defaults to the real lab dir.
+LAB_CURRENT="${LAB_CURRENT:-$HOME/.notes/lab/projects/current}"
 
 START='<!-- AUTO:START — maintained by /lab-sync (regen-lab-feed.sh); edits below are overwritten -->'
 END='<!-- AUTO:END -->'
@@ -54,28 +55,37 @@ resolve_repo() {
   printf '%s' "$repo"
 }
 
+# --- resolve open PRs for a repo (best-effort; empty on any failure) --------
+# Prints up to 4 open, non-draft PRs as "#NUM title" lines. Silent + empty when
+# gh is missing, unauthenticated, offline, or the repo has no GitHub remote — so
+# the feed stays deterministic offline and headless.
+open_prs() {
+  local repo="$1"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  # gh infers owner/repo from the cwd's git remote (its `-R` flag wants owner/repo,
+  # not a filesystem path), so run from inside the repo.
+  ( cd "$repo" && gh pr list --state open --limit 4 \
+      --json number,title,isDraft \
+      --jq '.[] | select(.isDraft | not) | "#\(.number) \(.title)"' 2>/dev/null ) || true
+}
+
 # --- build the AUTO feed block for one project -----------------------------
+# A compact, human-first dashboard: what version we're on, what's in flight
+# (open PRs), and the last few commits. Agent-runtime detail (plan counts, evals,
+# wind-downs) lives in the anchor — the lab feed is the human view. Every live
+# row is guarded so the block regenerates identically offline.
 auto_block() {
   local lab="$1" canon="$2" repo="$3"
-  local plan_dir="$HOME/.agent/plans/$canon"
-  local eval_dir="$HOME/.agent/evals/$canon"
-  local sess_dir="$HOME/.agent/sessions/$canon"
   local anchor="$HOME/.agent/anchors/$canon.md"
   local proj_dir="$LAB_CURRENT/$lab"
 
   echo "$START"
   echo "## ← Release & status feed"
-  echo "_Maintained by lab-sync — mechanical mirror of git + ~/.agent. Do not hand-edit; add notes above._"
+  echo "_Mirror of git + GitHub + ~/.agent · maintained by lab-sync · do not hand-edit; add notes above._"
   echo
 
-  # canonical + repo
-  if [ -n "$repo" ]; then
-    echo "- **Repo:** \`$repo\` · canonical \`$canon\`"
-  else
-    echo "- **Canonical project:** \`$canon\` _(no local repo resolved; set \`<!-- canonical: NAME -->\` in this file to map it)_"
-  fi
-
-  # latest release/tag — prefer git, fall back to the lab's own v*.md files
+  # --- version line: git tag + lab checklist, aligned ---
   local tag="" tagdate=""
   if [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1; then
     tag=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)
@@ -84,52 +94,39 @@ auto_block() {
   local labver
   labver=$(ls -1 "$proj_dir"/v*.md 2>/dev/null | sed 's#.*/##; s/\.md$//' | sort -V | tail -1 || true)
   if [ -n "$tag" ]; then
-    echo "- **Latest tag:** \`$tag\`${tagdate:+ ($tagdate)}${labver:+ · lab checklist: \`$labver\`}"
+    echo "**\`$canon\`${labver:+ · $labver}** — tag \`$tag\`${tagdate:+ ($tagdate)}"
   elif [ -n "$labver" ]; then
-    echo "- **Active version (lab):** \`$labver\` _(no git tag resolved)_"
+    echo "**\`$canon\` · $labver** — _(no git tag resolved)_"
+  else
+    echo "**\`$canon\`** — _(no version resolved; set \`<!-- canonical: NAME -->\` to map a repo)_"
+  fi
+  echo
+
+  # --- in flight: open PRs (Vikunja task/version sync → phase 2) ---
+  local prs
+  prs=$(open_prs "$repo")
+  if [ -n "$prs" ]; then
+    echo "**In flight**"
+    printf '%s\n' "$prs" | sed 's/^/- /'
+    echo
   fi
 
-  # active plans
-  if [ -d "$plan_dir" ]; then
-    local n newest
-    n=$(ls -1 "$plan_dir" 2>/dev/null | grep -vxE 'active|archive|_archive|tasks|backlog|planning|checkpoints' | grep -c '.' || true)
-    newest=$(ls -t "$plan_dir"/*.md 2>/dev/null | head -1 | sed 's#.*/##' || true)
-    echo "- **Active plans:** ${n:-0} in \`~/.agent/plans/$canon/\`${newest:+ · newest \`$newest\`}"
-  fi
-
-  # latest eval (+ overall score if parseable)
-  if [ -d "$eval_dir" ]; then
-    local latest_eval score
-    latest_eval=$(ls -t "$eval_dir"/*.md 2>/dev/null | head -1 || true)
-    if [ -n "$latest_eval" ]; then
-      score=$(grep -oiE 'Overall:[[:space:]]*[0-9]+(\.[0-9]+)?/10' "$latest_eval" 2>/dev/null | tail -1 || true)
-      echo "- **Latest eval:** \`$(basename "$latest_eval")\`${score:+ — ${score}}"
-    fi
-  fi
-
-  # last session wind-down
-  if [ -d "$sess_dir" ]; then
-    local lastsess
-    lastsess=$(ls -t "$sess_dir"/*.md 2>/dev/null | head -1 | sed 's#.*/##' || true)
-    [ -n "$lastsess" ] && echo "- **Last wind-down:** \`$lastsess\`"
-  fi
-
-  # recent commits (best-effort)
+  # --- recent: last 2 commits ---
   if [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1; then
     local commits
-    commits=$(git -C "$repo" log --oneline -3 2>/dev/null || true)
+    commits=$(git -C "$repo" log --oneline -2 2>/dev/null || true)
     if [ -n "$commits" ]; then
-      echo "- **Recent commits:**"
-      printf '%s\n' "$commits" | sed 's/^/    - `/; s/$/`/'
+      echo "**Recent**"
+      printf '%s\n' "$commits" | sed 's/^/- `/; s/$/`/'
+      echo
     fi
   fi
 
-  # links row
+  # --- links row ---
   local links="Links:"
   [ -f "$anchor" ] && links="$links anchor \`~/.agent/anchors/$canon.md\` ·"
   links="$links plans \`~/.agent/plans/$canon/\` · evals \`~/.agent/evals/$canon/\`"
   [ -f "$proj_dir/changelog.md" ] && links="$links · changelog \`changelog.md\`"
-  echo
   echo "$links"
   echo "$END"
 }
