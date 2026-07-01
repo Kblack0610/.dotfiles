@@ -115,8 +115,11 @@ auto_block() {
   [ -n "$tag" ] && tagdate=$(git -C "$repo" log -1 --format=%cs "$tag" 2>/dev/null || true)
   local labver
   labver=$(ls -1 "$proj_dir"/v*.md 2>/dev/null | sed 's#.*/##; s/\.md$//' | sort -V | tail -1 || true)
+  # The git tag is the authoritative "what version we're at" — show it alone. Only fall
+  # back to the lab vX.Y.Z.md checklist when there's no tag (e.g. a repo-less project),
+  # so a stale checklist number never sits next to the real shipped tag.
   if [ -n "$tag" ]; then
-    echo "**\`$canon\`${labver:+ · $labver}** — tag \`$tag\`${tagdate:+ ($tagdate)}"
+    echo "**\`$canon\`** — tag \`$tag\`${tagdate:+ ($tagdate)}"
   elif [ -n "$labver" ]; then
     echo "**\`$canon\` · $labver** — _(no git tag resolved)_"
   else
