@@ -70,6 +70,30 @@ open_prs() {
       --jq '.[] | select(.isDraft | not) | "#\(.number) \(.title)"' 2>/dev/null ) || true
 }
 
+# --- resolve the current release tag (highest semver, not describe-from-HEAD) ---
+# `git describe --abbrev=0` walks HEAD's ancestry, so it misses a newer tag cut on a
+# commit HEAD can't reach (e.g. placemyparents-v1.8.15). Pick the highest version tag
+# instead, robust across monorepo (product-prefixed) and single-repo layouts:
+#   1. `<!-- tagglob: PATTERN -->` in summary.md (override), else
+#   2. highest `<lab>-v*` tag (monorepo product prefix), else
+#   3. highest `v*` tag (single-product repo), else
+#   4. `git describe --tags --abbrev=0` (last resort).
+latest_tag() {
+  local repo="$1" lab="$2" summary="$3" glob="" t=""
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
+  if [ -f "$summary" ]; then
+    glob=$(grep -oE '<!--[[:space:]]*tagglob:[[:space:]]*[^ ]+[[:space:]]*-->' "$summary" 2>/dev/null \
+      | head -1 | sed -E 's/.*tagglob:[[:space:]]*([^ ]+)[[:space:]]*-->/\1/' || true)
+  fi
+  if [ -n "$glob" ]; then
+    t=$(git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null | head -1)
+  fi
+  [ -z "$t" ] && t=$(git -C "$repo" tag --list "${lab}-v*" --sort=-v:refname 2>/dev/null | head -1)
+  [ -z "$t" ] && t=$(git -C "$repo" tag --list "v*" --sort=-v:refname 2>/dev/null | head -1)
+  [ -z "$t" ] && t=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)
+  printf '%s' "$t"
+}
+
 # --- build the AUTO feed block for one project -----------------------------
 # A compact, human-first dashboard: what version we're on, what's in flight
 # (open PRs), and the last few commits. Agent-runtime detail (plan counts, evals,
@@ -87,10 +111,8 @@ auto_block() {
 
   # --- version line: git tag + lab checklist, aligned ---
   local tag="" tagdate=""
-  if [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1; then
-    tag=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)
-    [ -n "$tag" ] && tagdate=$(git -C "$repo" log -1 --format=%cs "$tag" 2>/dev/null || true)
-  fi
+  tag=$(latest_tag "$repo" "$lab" "$proj_dir/summary.md")
+  [ -n "$tag" ] && tagdate=$(git -C "$repo" log -1 --format=%cs "$tag" 2>/dev/null || true)
   local labver
   labver=$(ls -1 "$proj_dir"/v*.md 2>/dev/null | sed 's#.*/##; s/\.md$//' | sort -V | tail -1 || true)
   if [ -n "$tag" ]; then
