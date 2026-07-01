@@ -1,10 +1,14 @@
 //! `notes today` — idempotent daily-note creation with carry-forward.
 //!
-//! New model: only fresh **Focus** + **Priority** live inline.
-//!   - Priority items carry forward, day-stamped.
-//!   - Yesterday's unfinished **Focus** items roll into the `carryover` backlog
-//!     (not into today's note), so today's Focus starts clean.
-//!   - **Fun** + **Carry Over** are standing backlog files, linked at the bottom.
+//! Model: a *backlog → on-deck → in-progress* pipeline with time-relative wording.
+//!   - **Focus** = "now / in progress": unfinished items carry forward, day-stamped.
+//!   - **Due** = "on deck / coming up" (formerly Priority): dated tasks surface here
+//!     within `LEAD_DAYS` of their date and carry forward until done or pushed later.
+//!   - A single inline `[YYYY-MM-DD]` tag is the only verb — it both defers a task
+//!     (a far-future date pushes it out to the `scheduled` backlog) and, once the
+//!     date nears, resurfaces it in Due. Tagging a surfaced task again pushes it back.
+//!   - **scheduled** (formerly carryover) is the holding pen for future-dated tasks;
+//!     **Fun** is a standing backlog. Both are linked at the bottom of the note.
 
 use crate::config::{self, Profile};
 use crate::logging::Logger;
@@ -37,7 +41,8 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "refs-today" => today_refs_dir(p),
         "root" => p.root.clone(),
         "fun" => p.fun.clone(),
-        "carryover" => p.carryover.clone(),
+        // `carryover` kept as a back-compat alias — the file moved to scheduled.md.
+        "scheduled" | "carryover" | "carry" => p.scheduled.clone(),
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
@@ -69,27 +74,39 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
 fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Result<()> {
     let today_s = today.format("%Y-%m-%d").to_string();
 
-    let mut priority = String::new();
     let mut projects = String::new();
-    let mut focus_carry: Vec<String> = Vec::new();
+    let mut focus_keep: Vec<String> = Vec::new();
+    let mut focus_defer: Vec<String> = Vec::new();
+    let mut due_keep: Vec<String> = Vec::new();
+    let mut due_defer: Vec<String> = Vec::new();
 
     if let Some(prev) = latest_prev(&p.daily, &today_s)? {
         let prev_date = file_date(&prev).unwrap_or(today);
         let content = fs::read_to_string(&prev)
             .with_context(|| format!("reading previous note {}", prev.display()))?;
 
-        if let Some(lines) = md::section_lines(&content, "Priority") {
-            priority = carry(&lines, today, prev_date);
-        }
         if let Some(lines) = md::section_lines(&content, "Current Projects") {
             projects = lines.join("\n");
         }
+
+        // Focus = "now": carry unfinished items forward; a task dated beyond the lead
+        // window is pushed out to the scheduled backlog instead of cluttering today.
         if let Some(lines) = md::section_lines(&content, "Focus") {
-            focus_carry = lines
+            let carried: Vec<String> = lines
                 .iter()
                 .filter(|l| md::is_task(l) && !md::is_checked(l) && !md::is_empty_unchecked(l))
                 .map(|l| md::stamp_line(l, today, prev_date))
                 .collect();
+            (focus_keep, focus_defer) = route_by_due(&carried, today);
+        }
+
+        // Due = "on deck" (formerly Priority): carry forward, pushing far-future items
+        // out to scheduled. Fall back to a legacy `## Priority` section for migration.
+        let due_src = md::section_lines(&content, "Due")
+            .or_else(|| md::section_lines(&content, "Priority"));
+        if let Some(lines) = due_src {
+            let carried = carry(&lines, today, prev_date);
+            (due_keep, due_defer) = route_by_due(&carried, today);
         }
     }
 
@@ -98,6 +115,21 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // wikilinks are preserved; discovery only seeds an otherwise-empty section.
     if projects.trim().is_empty() {
         projects = discover_projects(p);
+    }
+
+    // Scheduled backlog: surface any task now within the lead window into today's Due,
+    // then push the newly-deferred Focus/Due items back into the pen.
+    let sched_before = fs::read_to_string(&p.scheduled).unwrap_or_default();
+    let (promoted, sched_pruned) = promote_scheduled(&sched_before, today);
+    let n_promoted = promoted.len();
+
+    let mut due_lines = due_keep;
+    let mut due_keys: std::collections::HashSet<String> =
+        due_lines.iter().map(|l| md::task_key(l)).collect();
+    for pr in promoted {
+        if due_keys.insert(md::task_key(&pr)) {
+            due_lines.push(pr);
+        }
     }
 
     let mut s = String::new();
@@ -111,24 +143,47 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         s.push_str(&projects);
         s.push('\n');
     }
-    s.push_str("\n## Focus\n- [ ] \n\n");
+    s.push_str("\n## Focus\n");
+    for l in &focus_keep {
+        s.push_str(l);
+        s.push('\n');
+    }
+    s.push_str("- [ ] \n\n");
     s.push_str("## Notes\n\n");
-    s.push_str("## Priority\n");
-    if !priority.is_empty() {
-        s.push_str(&priority);
+    s.push_str("## Due\n");
+    for l in &due_lines {
+        s.push_str(l);
         s.push('\n');
     }
     s.push('\n');
 
     fs::write(note, s).with_context(|| format!("writing {}", note.display()))?;
+    if n_promoted > 0 {
+        log.info("today", &format!("surfaced {n_promoted} scheduled item(s) into Due"));
+    }
 
-    if !focus_carry.is_empty() {
-        let n = append_to_carryover(p, &focus_carry)?;
-        if n > 0 {
-            log.info(
-                "today",
-                &format!("rolled {n} unfinished Focus item(s) into carryover backlog"),
-            );
+    // Persist the scheduled backlog: pruned (promoted removed) + newly deferred items.
+    let defers: Vec<String> = focus_defer.into_iter().chain(due_defer).collect();
+    let mut seen: std::collections::HashSet<String> = sched_pruned
+        .lines()
+        .filter(|l| md::is_task(l))
+        .map(md::task_key)
+        .collect();
+    let fresh: Vec<String> = defers
+        .into_iter()
+        .filter(|l| seen.insert(md::task_key(l)))
+        .collect();
+    let n_deferred = fresh.len();
+    let sched_after = if fresh.is_empty() {
+        sched_pruned
+    } else {
+        md::insert_under_heading(&sched_pruned, "Active", &fresh)
+    };
+    if sched_after != sched_before {
+        fs::write(&p.scheduled, &sched_after)
+            .with_context(|| format!("writing {}", p.scheduled.display()))?;
+        if n_deferred > 0 {
+            log.info("today", &format!("deferred {n_deferred} item(s) to scheduled backlog"));
         }
     }
     Ok(())
@@ -168,8 +223,12 @@ fn discover_projects(p: &Profile) -> String {
         .join("\n")
 }
 
+/// How many days ahead of its `[date]` a task surfaces in Due ("a couple days
+/// before"). While `due > today + LEAD_DAYS` the task waits in the scheduled backlog.
+const LEAD_DAYS: i64 = 2;
+
 /// Drop checked + empty items; day-stamp the rest. Non-task lines pass through.
-fn carry(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> String {
+fn carry(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
     lines
         .iter()
         .filter_map(|l| {
@@ -181,8 +240,53 @@ fn carry(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> String {
                 Some(l.clone())
             }
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
+}
+
+/// Partition carried lines into `(keep, defer)`: a task dated more than `LEAD_DAYS`
+/// ahead is deferred to the scheduled backlog; undated, due-soon, and overdue stay.
+fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>) {
+    let horizon = today + chrono::Duration::days(LEAD_DAYS);
+    let mut keep = Vec::new();
+    let mut defer = Vec::new();
+    for l in lines {
+        match md::find_due(l) {
+            Some(due) if due > horizon => defer.push(l.clone()),
+            _ => keep.push(l.clone()),
+        }
+    }
+    (keep, defer)
+}
+
+/// Pull tasks whose due-date is within the lead window (or overdue) out of the
+/// scheduled backlog's `## Active`. Surfaced lines have their `[date]` token stripped
+/// and a fresh day-count stamped. Returns `(surfaced, remaining_scheduled_content)`.
+fn promote_scheduled(content: &str, today: NaiveDate) -> (Vec<String>, String) {
+    let horizon = today + chrono::Duration::days(LEAD_DAYS);
+    let mut promoted = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut in_active = false;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            in_active = rest.trim().eq_ignore_ascii_case("Active");
+            out.push(line.to_string());
+            continue;
+        }
+        if in_active && md::is_task(line) && !md::is_checked(line) {
+            if let Some(due) = md::find_due(line) {
+                if due <= horizon {
+                    promoted.push(md::stamp_line(&md::strip_due(line), today, today));
+                    continue; // drop from the scheduled backlog
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+    let mut new_content = out.join("\n");
+    if content.ends_with('\n') && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    (promoted, new_content)
 }
 
 fn latest_prev(dir: &Path, today_s: &str) -> Result<Option<PathBuf>> {
@@ -212,28 +316,6 @@ fn is_date(s: &str) -> bool {
 fn file_date(path: &Path) -> Option<NaiveDate> {
     let stem = path.file_stem()?.to_str()?;
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
-}
-
-/// Append unfinished Focus items to the carryover backlog's `## Active`, deduped.
-fn append_to_carryover(p: &Profile, items: &[String]) -> Result<usize> {
-    let content = fs::read_to_string(&p.carryover).unwrap_or_default();
-    let mut existing: std::collections::HashSet<String> = content
-        .lines()
-        .filter(|l| md::is_task(l))
-        .map(md::task_key)
-        .collect();
-
-    let fresh: Vec<String> = items
-        .iter()
-        .filter(|l| existing.insert(md::task_key(l)))
-        .cloned()
-        .collect();
-    if fresh.is_empty() {
-        return Ok(0);
-    }
-    let updated = md::insert_under_heading(&content, "Active", &fresh);
-    fs::write(&p.carryover, updated)?;
-    Ok(fresh.len())
 }
 
 /// Link today's ref files into the note's `## Refs` section (idempotent).
@@ -294,11 +376,11 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         return Ok(());
     }
     let fun = config::wikilink(&p.root, &p.fun);
-    let carry = config::wikilink(&p.root, &p.carryover);
+    let sched = config::wikilink(&p.root, &p.scheduled);
     if !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(&format!("\n---\nBacklogs: [[{fun}]] · [[{carry}]]\n"));
+    content.push_str(&format!("\n---\nBacklogs: [[{fun}]] · [[{sched}]]\n"));
     fs::write(note, content)?;
     Ok(())
 }
@@ -321,11 +403,38 @@ fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
         "Standing backlog of fun / personal / creative tasks.",
         log,
     )?;
+    // One-time migration: the carryover backlog became the scheduled holding pen.
+    // Rename it in place so existing items are preserved (only when scheduled is absent).
+    if !p.scheduled.exists() && p.carryover.exists() {
+        if let Some(parent) = p.scheduled.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&p.carryover, &p.scheduled)
+            .with_context(|| format!("migrating {} → {}", p.carryover.display(), p.scheduled.display()))?;
+        // Relabel the default header/tag/description so the migrated file reads as
+        // Scheduled. Exact-match replacements — a no-op if the user customized them.
+        if let Ok(c) = fs::read_to_string(&p.scheduled) {
+            let relabeled = c
+                .replace("tags: [backlog, carryover]", "tags: [backlog, scheduled]")
+                .replace("# Carry Over\n", "# Scheduled\n")
+                .replace(
+                    "Triage queue: unfinished items roll here from daily Focus.",
+                    "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.",
+                );
+            if relabeled != c {
+                fs::write(&p.scheduled, relabeled)?;
+            }
+        }
+        log.info(
+            "backlog",
+            &format!("migrated carryover → {}", p.scheduled.display()),
+        );
+    }
     ensure_backlog_file(
-        &p.carryover,
-        "Carry Over",
-        "carryover",
-        "Triage queue: unfinished items roll here from daily Focus.",
+        &p.scheduled,
+        "Scheduled",
+        "scheduled",
+        "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.",
         log,
     )?;
     Ok(())
@@ -361,6 +470,7 @@ mod tests {
             refs_rel: "journal/refs".into(),
             fun: r.join("journal/backlogs/fun.md"),
             carryover: r.join("journal/backlogs/carryover.md"),
+            scheduled: r.join("journal/backlogs/scheduled.md"),
             summaries: r.join("journal/summaries"),
             continuous: r.join("journal/summaries/continuous"),
             monthly: r.join("journal/summaries/monthly"),
@@ -392,5 +502,76 @@ mod tests {
     fn resolve_unknown_is_none() {
         let p = profile("/vault");
         assert!(resolve_path(&p, "bogus").is_none());
+    }
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn v(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn route_by_due_defers_far_future_only() {
+        // today 2026-06-30, LEAD_DAYS=2 → horizon 2026-07-02
+        let lines = v(&[
+            "- [ ] far [2026-07-15]",
+            "- [ ] soon [2026-07-01]",
+            "- [ ] overdue [2026-06-01]",
+            "- [ ] undated",
+        ]);
+        let (keep, defer) = route_by_due(&lines, d("2026-06-30"));
+        assert_eq!(defer, v(&["- [ ] far [2026-07-15]"]));
+        assert_eq!(
+            keep,
+            v(&["- [ ] soon [2026-07-01]", "- [ ] overdue [2026-06-01]", "- [ ] undated"])
+        );
+    }
+
+    #[test]
+    fn route_by_due_horizon_is_inclusive() {
+        // a task due exactly on the horizon stays (surfaces), not deferred
+        let (keep, defer) = route_by_due(&v(&["- [ ] edge [2026-07-02]"]), d("2026-06-30"));
+        assert!(defer.is_empty());
+        assert_eq!(keep, v(&["- [ ] edge [2026-07-02]"]));
+    }
+
+    #[test]
+    fn promote_scheduled_surfaces_due_and_overdue() {
+        let content = "\
+# Scheduled
+
+## Active
+- [ ] far [2026-07-15]
+- [ ] soon [2026-07-01]
+- [ ] overdue [2026-06-20]
+- [ ] undated task
+
+## Done
+- [x] finished [2026-01-01]
+";
+        let (promoted, remaining) = promote_scheduled(content, d("2026-06-30"));
+        // soon + overdue surface; far + undated stay; Done is never touched
+        assert_eq!(promoted.len(), 2);
+        // surfaced lines have the [date] token stripped and a since: stamp added
+        assert!(promoted.iter().any(|l| l.contains("soon") && !l.contains("2026-07-01") && l.contains("since:2026-06-30")));
+        assert!(promoted.iter().any(|l| l.contains("overdue") && !l.contains("2026-06-20") && l.contains("since:2026-06-30")));
+        // the pen keeps the far-future + undated items and the whole Done section
+        assert!(remaining.contains("- [ ] far [2026-07-15]"));
+        assert!(remaining.contains("- [ ] undated task"));
+        assert!(remaining.contains("- [x] finished [2026-01-01]"));
+        // and no longer lists the surfaced ones in Active
+        let active = &remaining[..remaining.find("## Done").unwrap()];
+        assert!(!active.contains("soon"));
+        assert!(!active.contains("overdue"));
+    }
+
+    #[test]
+    fn promote_scheduled_noop_when_all_far() {
+        let content = "## Active\n- [ ] later [2027-01-01]\n\n## Done\n";
+        let (promoted, remaining) = promote_scheduled(content, d("2026-06-30"));
+        assert!(promoted.is_empty());
+        assert_eq!(remaining, content);
     }
 }

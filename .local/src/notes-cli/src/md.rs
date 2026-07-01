@@ -89,6 +89,56 @@ pub fn find_since(line: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(&tail, "%Y-%m-%d").ok()
 }
 
+/// Locate the first inline `[YYYY-MM-DD]` due-date token: returns `(open, close, date)`
+/// as byte indices of the `[` and `]`. Skips the `- [ ]`/`- [x]` checkbox (its inner
+/// span is 1 char, never 10) and `[[wikilinks]]` (a `[` adjacent to another `[`).
+/// Strict canonical zero-padded form only — `[2026-6-3]` and `[2026-13-40]` are rejected.
+fn find_due_span(line: &str) -> Option<(usize, usize, NaiveDate)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = line[i..].find('[') {
+        let open = i + rel;
+        let prev_is_bracket = open > 0 && bytes[open - 1] == b'[';
+        let next_is_bracket = bytes.get(open + 1) == Some(&b'[');
+        if !prev_is_bracket && !next_is_bracket {
+            if let Some(crel) = line[open + 1..].find(']') {
+                let close = open + 1 + crel;
+                let after_is_bracket = bytes.get(close + 1) == Some(&b']');
+                let inner = &line[open + 1..close];
+                if inner.len() == 10 && !after_is_bracket {
+                    if let Ok(d) = NaiveDate::parse_from_str(inner, "%Y-%m-%d") {
+                        return Some((open, close, d));
+                    }
+                }
+            }
+        }
+        i = open + 1;
+    }
+    None
+}
+
+/// Parse the first inline `[YYYY-MM-DD]` due-date token on a line, if present.
+pub fn find_due(line: &str) -> Option<NaiveDate> {
+    find_due_span(line).map(|(_, _, d)| d)
+}
+
+/// Remove the first inline `[YYYY-MM-DD]` due token, collapsing the surrounding
+/// whitespace so no double space is left behind. No-op when the line has no token.
+pub fn strip_due(line: &str) -> String {
+    match find_due_span(line) {
+        Some((open, close, _)) => {
+            let head = line[..open].trim_end();
+            let tail = line[close + 1..].trim_start();
+            if tail.is_empty() {
+                head.to_string()
+            } else {
+                format!("{head} {tail}")
+            }
+        }
+        None => line.to_string(),
+    }
+}
+
 /// Strip a trailing ` (Nd)` day-count suffix, if any.
 fn strip_trailing_day(s: &str) -> String {
     let t = s.trim_end();
@@ -253,5 +303,52 @@ nothing here
         let c = "# t\n";
         let out = insert_under_heading(c, "Active", &["- [ ] two".to_string()]);
         assert!(out.contains("## Active\n- [ ] two"));
+    }
+
+    #[test]
+    fn find_due_parses_inline() {
+        assert_eq!(find_due("- [ ] pay rent [2026-07-15]"), Some(d("2026-07-15")));
+        assert_eq!(find_due("- [ ] renew [2026-08-01] (2d)"), Some(d("2026-08-01")));
+    }
+
+    #[test]
+    fn find_due_ignores_checkbox() {
+        assert_eq!(find_due("- [ ] todo"), None);
+        assert_eq!(find_due("- [x] done"), None);
+        assert_eq!(find_due("  - [ ] indented"), None);
+    }
+
+    #[test]
+    fn find_due_ignores_wikilink() {
+        assert_eq!(find_due("see [[2026-06-30]] note"), None);
+        assert_eq!(find_due("- [ ] x [[journal/2026-06-30]]"), None);
+    }
+
+    #[test]
+    fn find_due_checkbox_and_date_coexist() {
+        assert_eq!(find_due("- [x] done early [2026-01-02]"), Some(d("2026-01-02")));
+    }
+
+    #[test]
+    fn find_due_rejects_invalid_or_nonpadded() {
+        assert_eq!(find_due("- [ ] x [2026-13-40]"), None);
+        assert_eq!(find_due("- [ ] x [2026-6-3]"), None);
+        assert_eq!(find_due("- [ ] x [not-a-date!]"), None);
+    }
+
+    #[test]
+    fn find_due_picks_date_past_wikilink() {
+        assert_eq!(find_due("[[note]] thing [2026-07-15]"), Some(d("2026-07-15")));
+    }
+
+    #[test]
+    fn strip_due_removes_token_and_collapses_space() {
+        assert_eq!(strip_due("- [ ] pay rent [2026-07-15]"), "- [ ] pay rent");
+        assert_eq!(strip_due("- [ ] x [2026-07-15] more"), "- [ ] x more");
+    }
+
+    #[test]
+    fn strip_due_noop_when_absent() {
+        assert_eq!(strip_due("- [ ] plain task"), "- [ ] plain task");
     }
 }

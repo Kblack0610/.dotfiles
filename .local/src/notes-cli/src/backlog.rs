@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 pub fn run(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     let file = match name {
         "fun" => &p.fun,
-        "carryover" | "carry" => &p.carryover,
-        other => bail!("unknown backlog '{other}' (want: fun | carryover)"),
+        // `carryover`/`carry` kept as back-compat aliases — the file moved to scheduled.md.
+        "scheduled" | "carryover" | "carry" => &p.scheduled,
+        other => bail!("unknown backlog '{other}' (want: fun | scheduled)"),
     };
 
     if !file.exists() {
@@ -24,9 +25,9 @@ pub fn run(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         let (title, desc) = if name == "fun" {
             ("Fun", "Standing backlog of fun / personal / creative tasks.")
         } else {
-            ("Carry Over", "Triage queue: unfinished items roll here from daily Focus.")
+            ("Scheduled", "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.")
         };
-        let tag = if name == "fun" { "fun" } else { "carryover" };
+        let tag = if name == "fun" { "fun" } else { "scheduled" };
         fs::write(
             file,
             format!("---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"),

@@ -16,6 +16,7 @@ use std::path::Path;
 pub const SECTIONS: &[(&str, &str)] = &[
     ("Focus", "Focus"),
     ("Notes", "Notes"),
+    ("Due", "Due"),
     ("Priority", "Priority"),
     ("Fun", "Fun"),
     ("Carry Over", "Carry Over"),

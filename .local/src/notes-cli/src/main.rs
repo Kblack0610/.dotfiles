@@ -41,7 +41,7 @@ enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today,
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | carryover | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | scheduled | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -69,9 +69,9 @@ enum Cmd {
         #[arg(long)]
         backfill: bool,
     },
-    /// Open + tidy a standing backlog file (`fun` or `carryover`); prints its path
+    /// Open + tidy a standing backlog file (`fun` or `scheduled`); prints its path
     Backlog {
-        /// Backlog name: fun | carryover
+        /// Backlog name: fun | scheduled
         name: String,
     },
     /// One-time migration: lift Fun + Carry Over out of a daily note into backlogs
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, carryover, zettel, meetings, index, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, scheduled, zettel, meetings, index, inbox, inbox-today)"
                 );
                 2
             }

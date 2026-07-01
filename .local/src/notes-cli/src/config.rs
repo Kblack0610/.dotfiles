@@ -32,6 +32,11 @@ struct RawProfile {
     refs: String,
     fun: String,
     carryover: String,
+    /// Scheduled/deferred-task backlog (the holding pen for future-dated tasks).
+    /// Optional so configs predating this field keep working — resolve() falls back
+    /// to a `scheduled.md` sibling of `carryover`.
+    #[serde(default)]
+    scheduled: Option<String>,
     summaries: String,
     archive: String,
     zettel: String,
@@ -67,6 +72,7 @@ pub struct Profile {
     pub refs_rel: String,
     pub fun: PathBuf,
     pub carryover: PathBuf,
+    pub scheduled: PathBuf,
     pub summaries: PathBuf,
     pub continuous: PathBuf,
     pub monthly: PathBuf,
@@ -138,6 +144,7 @@ fn builtin_default() -> RawConfig {
             refs: "journal/refs".into(),
             fun: "journal/backlogs/fun.md".into(),
             carryover: "journal/backlogs/carryover.md".into(),
+            scheduled: None,
             summaries: "journal/summaries".into(),
             archive: "journal/daily_archive".into(),
             zettel: "journal/permanent".into(),
@@ -221,6 +228,11 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         refs_rel: rp.refs.trim_end_matches('/').to_string(),
         fun: join(&rp.fun),
         carryover: join(&rp.carryover),
+        scheduled: rp
+            .scheduled
+            .as_ref()
+            .map(|s| join(s))
+            .unwrap_or_else(|| join(&rp.carryover).with_file_name("scheduled.md")),
         continuous: summaries.join("continuous"),
         monthly: summaries.join("monthly"),
         summaries,
@@ -254,6 +266,7 @@ pub fn print(p: &Profile) {
     println!("refs        {}", p.refs.display());
     println!("fun         {}", p.fun.display());
     println!("carryover   {}", p.carryover.display());
+    println!("scheduled   {}", p.scheduled.display());
     println!("continuous  {}", p.continuous.display());
     println!("monthly     {}", p.monthly.display());
     println!("archive     {}", p.archive.display());

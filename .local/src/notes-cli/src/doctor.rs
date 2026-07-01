@@ -60,7 +60,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     dir_check(&mut r, "refs", &p.refs, true);
     dir_check(&mut r, "continuous", &p.continuous, true);
     file_check(&mut r, "fun backlog", &p.fun);
-    file_check(&mut r, "carryover backlog", &p.carryover);
+    file_check(&mut r, "scheduled backlog", &p.scheduled);
 
     // Inbox backlog — pending captures awaiting triage; warn if any are stale
     let (pending, stale) = crate::inbox::backlog_counts(p);
@@ -211,19 +211,21 @@ fn check_headings(r: &mut Report, p: &Profile) {
                 continue;
             }
             let content = fs::read_to_string(&path).unwrap_or_default();
-            if !content.contains("## Focus") || !content.contains("## Priority") {
+            // `## Due` is the current section; `## Priority` satisfies legacy notes.
+            let has_ondeck = content.contains("## Due") || content.contains("## Priority");
+            if !content.contains("## Focus") || !has_ondeck {
                 bad.push(stem);
             }
         }
     }
     if bad.is_empty() {
-        r.add(Status::Pass, "daily headings", "all notes have Focus + Priority");
+        r.add(Status::Pass, "daily headings", "all notes have Focus + Due");
     } else {
         bad.sort();
         r.add(
             Status::Warn,
             "daily headings",
-            &format!("{} note(s) missing Focus/Priority: {}", bad.len(), bad.join(", ")),
+            &format!("{} note(s) missing Focus/Due: {}", bad.len(), bad.join(", ")),
         );
     }
 }
