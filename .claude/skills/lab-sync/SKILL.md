@@ -99,6 +99,25 @@ preserved, exactly like `/project-index` does for anchors.
 lab-sync does **not** write to mem0; cross-project facts still flow through the `dream`
 `mem0-queue.md` human gate. The lab is a *project* surface, not a memory store.
 
+## The cross-project index (`lab/projects/index.md`)
+
+A companion to the per-project feeds: one hand-curated index that is the **source of truth
+for project status**. You edit its lanes — `## Current`, `## Next version`, `## Backlog`,
+`## Prod`, `## Archived` — to move a project around. The `## Current` lane **drives the daily
+note's Current Projects** (the notes-cli re-derives that section from it each `notes today`,
+so an edit shows up the next day). The file is linked from every daily note's footer.
+
+- **`regen-project-index.sh`** fills only the `AUTO:START…AUTO:END` block — a deterministic
+  mirror of the project folders under `{current,prod,archived}/` with each one's live version
+  (highest git tag → lab `v*.md` fallback) and status. Hand lanes above the marker are
+  preserved byte-for-byte; it only writes when the block actually changed.
+- **Refresh triggers:** a daily `agentctl@project-index` timer (04:30, backstop) + a
+  `regen-project-index.path` systemd unit that watches the stage dirs and regenerates the
+  instant a project folder moves. It watches the *stage dirs*, not `index.md`, so the regen's
+  own write never self-triggers. A manual `/lab-sync` also refreshes it.
+- **Sentinel is not the updater** — it's observe-only (notifies, never writes); the timer +
+  path unit do the regeneration.
+
 ## Wiring a new project into the bus
 
 1. Ensure `~/.notes/lab/projects/current/{name}/summary.md` exists (or let the writer scaffold it).

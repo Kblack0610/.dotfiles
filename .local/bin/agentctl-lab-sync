@@ -56,8 +56,13 @@ ONE="${1:-}"
     fi
   fi
 
+  # also refresh the cross-project index AUTO block (lab folders + git → index.md);
+  # the hand-curated lanes that drive the daily note are never touched.
+  IDX="$HOME/.dotfiles/.claude/skills/lab-sync/regen-project-index.sh"
+  [ -x "$IDX" ] && "$IDX" >/dev/null || true
+
   printf '[%s] lab-sync: refreshed feed for %s project(s)%s\n' \
     "$(date -Is)" "$count" "${ONE:+ ($ONE)}" >> "$INBOX/activity.log"
-  printf '\nlab-sync: refreshed %s project(s).\n' "$count"
+  printf '\nlab-sync: refreshed %s project(s) + project index.\n' "$count"
   printf '=== exit: 0 ===\n'
 } | tee -a "$LOG"

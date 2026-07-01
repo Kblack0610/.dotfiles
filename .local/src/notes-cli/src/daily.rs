@@ -110,9 +110,14 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         }
     }
 
-    // No prior Current Projects to carry forward → auto-discover from the configured
-    // `projects` dir (e.g. lab/projects/current). Carry-forward wins so hand-curated
-    // wikilinks are preserved; discovery only seeds an otherwise-empty section.
+    // Current Projects precedence:
+    //   1. the hand-curated `## Current` lane of the project index (source of truth —
+    //      re-derived each day so editing the index changes tomorrow's note), else
+    //   2. carry-forward from the previous note (above), else
+    //   3. auto-discovery from the `projects` dir.
+    if let Some(lane) = current_lane_from_index(p) {
+        projects = lane;
+    }
     if projects.trim().is_empty() {
         projects = discover_projects(p);
     }
@@ -187,6 +192,29 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         }
     }
     Ok(())
+}
+
+/// Read the `## Current` lane of the hand-curated project index (`lab/projects/index.md`),
+/// which is the source of truth for what's active. Returns the lane's lines verbatim
+/// (blank + placeholder `-`/`_…_` lines dropped) so the user's wikilinks flow straight
+/// into the daily note. `None` when the index is unset, absent, or has no `## Current`
+/// entries — callers then fall back to carry-forward / discovery.
+fn current_lane_from_index(p: &Profile) -> Option<String> {
+    let idx = p.project_index.as_ref()?;
+    let content = fs::read_to_string(idx).ok()?;
+    let lines = md::section_lines(&content, "Current")?;
+    let kept: Vec<String> = lines
+        .into_iter()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && t != "-" && !(t.starts_with('_') && t.ends_with('_'))
+        })
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join("\n"))
+    }
 }
 
 /// Discover active projects from the configured `projects` dir (e.g. lab/projects/current):
@@ -380,7 +408,12 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(&format!("\n---\nBacklogs: [[{fun}]] · [[{sched}]]\n"));
+    let projects_link = p
+        .project_index
+        .as_ref()
+        .map(|pi| format!(" · Projects: [[{}]]", config::wikilink(&p.root, pi)))
+        .unwrap_or_default();
+    content.push_str(&format!("\n---\nBacklogs: [[{fun}]] · [[{sched}]]{projects_link}\n"));
     fs::write(note, content)?;
     Ok(())
 }
@@ -479,6 +512,7 @@ mod tests {
             meetings: r.join("journal/meetings"),
             index: r.join("journal/index"),
             projects: None,
+            project_index: None,
             inbox: r.join("inbox"),
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
@@ -565,6 +599,36 @@ mod tests {
         let active = &remaining[..remaining.find("## Done").unwrap()];
         assert!(!active.contains("soon"));
         assert!(!active.contains("overdue"));
+    }
+
+    #[test]
+    fn current_lane_reads_index_and_falls_back() {
+        let dir = std::env::temp_dir().join(format!("notes-idx-{}", std::process::id()));
+        let projects = dir.join("lab/projects/current");
+        std::fs::create_dir_all(&projects).unwrap();
+        let mut p = profile(dir.to_str().unwrap());
+        p.projects = Some(projects.clone());
+        p.project_index = Some(projects.parent().unwrap().join("index.md"));
+
+        // no index file yet → None
+        assert!(current_lane_from_index(&p).is_none());
+
+        // index with a Current lane (plus a placeholder to ignore) → verbatim lines
+        std::fs::write(
+            p.project_index.as_ref().unwrap(),
+            "# Projects\n\n## Current\n- [[current/placemyparents/summary|placemyparents]]\n- [[current/time-tangle/summary|time-tangle]]\n\n## Backlog\n- _(nothing)_\n",
+        )
+        .unwrap();
+        let lane = current_lane_from_index(&p).unwrap();
+        assert!(lane.contains("placemyparents"));
+        assert!(lane.contains("time-tangle"));
+        assert!(!lane.contains("nothing"));
+
+        // an empty Current lane → None (so caller falls back)
+        std::fs::write(p.project_index.as_ref().unwrap(), "## Current\n- \n\n## Backlog\n- x\n").unwrap();
+        assert!(current_lane_from_index(&p).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# agentctl-project-index — refresh the cross-project index AUTO block.
+#
+# Deterministic mirror of the lab project folders + git into the AUTO block of
+# ~/.notes/lab/projects/index.md. The hand-curated lanes above AUTO:START (the human
+# source of truth for project status, which drives the daily note's Current Projects)
+# are never touched. Zero token cost — pure bash + git, like lab-sync.
+#
+# Scheduled twin of a manual `regen-project-index.sh` run. Two triggers point here:
+#   - agentctl@project-index.timer  — daily 04:30 backstop (catches version bumps)
+#   - regen-project-index.path      — instant, on a project folder moving stage
+set -euo pipefail
+
+REGEN="$HOME/.dotfiles/.claude/skills/lab-sync/regen-project-index.sh"
+LOG="$HOME/.local/log/project-index.log"
+INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/project-index}"
+mkdir -p "$(dirname "$LOG")" "$INBOX"
+
+{
+  printf '\n=== %s ===\n' "$(date -Is)"
+  printf 'agent: project-index  mode: deterministic (regen-project-index)\n\n'
+  "$REGEN" || true
+  printf '[%s] project-index: refreshed index AUTO block\n' "$(date -Is)" >> "$INBOX/activity.log"
+} | tee -a "$LOG"

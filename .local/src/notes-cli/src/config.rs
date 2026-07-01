@@ -81,6 +81,10 @@ pub struct Profile {
     pub meetings: PathBuf,
     pub index: PathBuf,
     pub projects: Option<PathBuf>,
+    /// Hand-curated cross-project index (`lab/projects/index.md`) whose `## Current`
+    /// lane drives the daily note's Current Projects. Derived as the `index.md`
+    /// sibling of the `projects` dir's parent; None when `projects` is unset.
+    pub project_index: Option<PathBuf>,
     pub inbox: PathBuf,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
@@ -245,6 +249,12 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
             .unwrap_or_else(|| root.join("meetings")),
         index: join(&rp.index),
         projects: rp.projects.as_ref().map(|s| join(s)),
+        // `<projects-dir>/../index.md` — e.g. lab/projects/current → lab/projects/index.md
+        project_index: rp
+            .projects
+            .as_ref()
+            .map(|s| join(s))
+            .and_then(|d| d.parent().map(|p| p.join("index.md"))),
         inbox: join(&rp.inbox),
         state_dir,
         log_file,
@@ -277,6 +287,9 @@ pub fn print(p: &Profile) {
     println!("summaries   {}", p.summaries.display());
     if let Some(pr) = &p.projects {
         println!("projects    {}", pr.display());
+    }
+    if let Some(pi) = &p.project_index {
+        println!("proj-index  {}", pi.display());
     }
     println!("state       {}", p.state_dir.display());
     println!("log         {}", p.log_file.display());
