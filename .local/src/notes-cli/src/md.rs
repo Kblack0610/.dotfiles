@@ -89,10 +89,38 @@ pub fn find_since(line: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(&tail, "%Y-%m-%d").ok()
 }
 
-/// Locate the first inline `[YYYY-MM-DD]` due-date token: returns `(open, close, date)`
-/// as byte indices of the `[` and `]`. Skips the `- [ ]`/`- [x]` checkbox (its inner
-/// span is 1 char, never 10) and `[[wikilinks]]` (a `[` adjacent to another `[`).
-/// Strict canonical zero-padded form only — `[2026-6-3]` and `[2026-13-40]` are rejected.
+/// Parse a bracket's inner text as a due date. Accepts a few human-friendly forms
+/// (separator `-` or `/`), all requiring an explicit year so bare `[3-4]` prose
+/// never false-matches:
+///   - ISO   `YYYY-MM-DD`      (e.g. `2026-07-02`)
+///   - US     `M-D-YY`         (e.g. `7-02-26` → 2026-07-02)
+///   - US     `M-D-YYYY`       (e.g. `7/2/2026`)
+/// Two-part first group of length 4 ⇒ ISO (year-first); otherwise month-first with
+/// the year last (US ordering — the author's convention). Returns None on anything
+/// that isn't three all-numeric groups with a 2- or 4-digit year.
+fn parse_due_token(inner: &str) -> Option<NaiveDate> {
+    let sep = if inner.contains('/') { '/' } else { '-' };
+    let parts: Vec<&str> = inner.split(sep).collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let (ys, ms, ds) = if parts[0].len() == 4 {
+        (parts[0], parts[1], parts[2]) // ISO YYYY-MM-DD
+    } else if parts[2].len() == 2 || parts[2].len() == 4 {
+        (parts[2], parts[0], parts[1]) // US M-D-Y → (year, month, day)
+    } else {
+        return None;
+    };
+    let mut year: i32 = ys.parse().ok()?;
+    if ys.len() == 2 {
+        year += 2000;
+    }
+    NaiveDate::from_ymd_opt(year, ms.parse().ok()?, ds.parse().ok()?)
+}
+
+/// Locate the first inline due-date token: returns `(open, close, date)` as byte
+/// indices of the `[` and `]`. Skips the `- [ ]`/`- [x]` checkbox and `[[wikilinks]]`
+/// (a `[` adjacent to another `[`). Accepts the formats `parse_due_token` handles.
 fn find_due_span(line: &str) -> Option<(usize, usize, NaiveDate)> {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -105,8 +133,8 @@ fn find_due_span(line: &str) -> Option<(usize, usize, NaiveDate)> {
                 let close = open + 1 + crel;
                 let after_is_bracket = bytes.get(close + 1) == Some(&b']');
                 let inner = &line[open + 1..close];
-                if inner.len() == 10 && !after_is_bracket {
-                    if let Ok(d) = NaiveDate::parse_from_str(inner, "%Y-%m-%d") {
+                if !after_is_bracket {
+                    if let Some(d) = parse_due_token(inner) {
                         return Some((open, close, d));
                     }
                 }
@@ -330,10 +358,22 @@ nothing here
     }
 
     #[test]
-    fn find_due_rejects_invalid_or_nonpadded() {
+    fn find_due_accepts_us_and_nonpadded_forms() {
+        // US M-D-YY (the author's natural form), M-D-YYYY, slash separator
+        assert_eq!(find_due("- [ ] take exam [7-02-26]"), Some(d("2026-07-02")));
+        assert_eq!(find_due("- [ ] x [7/2/2026]"), Some(d("2026-07-02")));
+        // non-padded ISO is unambiguous → accepted
+        assert_eq!(find_due("- [ ] x [2026-6-3]"), Some(d("2026-06-03")));
+    }
+
+    #[test]
+    fn find_due_rejects_invalid() {
         assert_eq!(find_due("- [ ] x [2026-13-40]"), None);
-        assert_eq!(find_due("- [ ] x [2026-6-3]"), None);
         assert_eq!(find_due("- [ ] x [not-a-date!]"), None);
+        // two-part prose like a section ref must NOT match (year required)
+        assert_eq!(find_due("- [ ] see section [3-4]"), None);
+        // single-digit year rejected (avoids [1-1-1]-style false matches)
+        assert_eq!(find_due("- [ ] x [1-1-1]"), None);
     }
 
     #[test]
