@@ -514,6 +514,7 @@ mod tests {
             projects: None,
             project_index: None,
             inbox: r.join("inbox"),
+            tag_scan: Vec::new(),
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
         }

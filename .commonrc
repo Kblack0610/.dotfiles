@@ -211,6 +211,8 @@ alias fun='nvim "$(notes backlog fun)"'
 alias co='nvim "$(notes backlog carryover)"'
 alias zk='notes zettel new'
 alias ndoctor='notes doctor'
+# Tag finder: fzf window over vault tags (#hashtag + frontmatter) → open in nvim
+alias nt="$HOME/.local/src/fzf/notes-tags.sh"
 
 # Quick ref note creation (inside the active profile's refs/<date>/ dir)
 refnote() {

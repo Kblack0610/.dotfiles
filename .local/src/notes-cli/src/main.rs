@@ -16,6 +16,7 @@ mod logging;
 mod md;
 mod meeting;
 mod summarize;
+mod tags;
 mod zettel;
 
 use anyhow::Result;
@@ -103,6 +104,12 @@ enum Cmd {
         /// Write the index/ MOC + backlink files (otherwise just report)
         #[arg(long)]
         rebuild: bool,
+    },
+    /// Scan the vault for tags (inline `#hashtag` + frontmatter `tags:`). No arg lists
+    /// every tag with a count; `<name>` prints each matching line as `path<TAB>line<TAB>text`.
+    Tags {
+        /// Tag to show hits for (leading `#` optional). Omit to list all tags.
+        name: Option<String>,
     },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor,
@@ -232,6 +239,13 @@ fn main() -> Result<()> {
         },
         Cmd::Index { rebuild } => {
             index::run(&prof, &log, rebuild)?;
+            0
+        }
+        Cmd::Tags { name } => {
+            match name {
+                Some(n) => tags::show(&prof, &n)?,
+                None => tags::list(&prof)?,
+            }
             0
         }
         Cmd::Doctor => doctor::run(&prof, &log)?,

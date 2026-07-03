@@ -51,6 +51,10 @@ struct RawProfile {
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
     inbox: String,
+    /// Dirs `notes tags` scans for `#hashtag`/frontmatter tags. Optional — when empty,
+    /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
+    #[serde(default)]
+    tag_dirs: Vec<String>,
 }
 
 fn default_profile_name() -> String {
@@ -86,6 +90,8 @@ pub struct Profile {
     /// sibling of the `projects` dir's parent; None when `projects` is unset.
     pub project_index: Option<PathBuf>,
     pub inbox: PathBuf,
+    /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
+    pub tag_scan: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
 }
@@ -156,6 +162,7 @@ fn builtin_default() -> RawConfig {
             projects: None,
             meetings: None,
             inbox: "inbox".into(),
+            tag_dirs: Vec::new(),
         },
     );
     RawConfig {
@@ -223,6 +230,22 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     let state_dir = home().join(".local/state/notes");
     let log_file = state_dir.join("journal.log");
 
+    // Dirs scanned by `notes tags`. Explicit `tag_dirs` wins; otherwise derive a
+    // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
+    let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
+        let mut v = vec![join(&rp.daily), join(&rp.inbox), join(&rp.zettel)];
+        if let Some(parent) = join(&rp.fun).parent() {
+            v.push(parent.to_path_buf()); // backlogs dir (parent of fun.md)
+        }
+        v.push(root.join("knowledge"));
+        v
+    } else {
+        rp.tag_dirs.iter().map(|s| join(s)).collect()
+    };
+    tag_scan.sort();
+    tag_scan.dedup();
+    tag_scan.retain(|d| d.exists());
+
     Ok(Profile {
         name,
         source: format!("{how} (config: {config_src})"),
@@ -256,6 +279,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
             .map(|s| join(s))
             .and_then(|d| d.parent().map(|p| p.join("index.md"))),
         inbox: join(&rp.inbox),
+        tag_scan,
         state_dir,
         log_file,
     })
@@ -285,6 +309,14 @@ pub fn print(p: &Profile) {
     println!("index       {}", p.index.display());
     println!("inbox       {}", p.inbox.display());
     println!("summaries   {}", p.summaries.display());
+    println!(
+        "tag-scan    {}",
+        p.tag_scan
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     if let Some(pr) = &p.projects {
         println!("projects    {}", pr.display());
     }

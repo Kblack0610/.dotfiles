@@ -150,6 +150,71 @@ pub fn find_due(line: &str) -> Option<NaiveDate> {
     find_due_span(line).map(|(_, _, d)| d)
 }
 
+/// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
+/// then `[A-Za-z0-9_/-]*`, so `#wedding` and nested `#wedding/venue` both parse.
+/// Deliberately skips (mirroring the care `find_due_span` takes with brackets):
+///   - the leading `##`-style markdown **heading marker** (its text is still scanned);
+///   - a `#` glued to the end of a word/number, `_`, `/`, `.`, `[`, or another `#`
+///     — covers `foo#bar`, URL fragments `site.com/#top`, and the `[[note#anchor]]`
+///     wikilink form;
+///   - anything inside a `` `backtick` `` inline-code span.
+/// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
+pub fn find_hashtags(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+
+    // Skip a leading heading marker: optional indent, a run of '#', then a space.
+    let indent_end = line.len() - line.trim_start().len();
+    let mut j = indent_end;
+    while j < bytes.len() && bytes[j] == b'#' {
+        j += 1;
+    }
+    let start = if j > indent_end && bytes.get(j) == Some(&b' ') {
+        j + 1
+    } else {
+        0
+    };
+
+    let mut out = Vec::new();
+    let mut in_code = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'`' {
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if b == b'#' && !in_code {
+            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+            let glued = matches!(prev, Some(p)
+                if p.is_ascii_alphanumeric() || matches!(p, b'_' | b'/' | b'.' | b'[' | b'#'));
+            let tag_start = i + 1;
+            if !glued
+                && bytes
+                    .get(tag_start)
+                    .is_some_and(|c| c.is_ascii_alphabetic())
+            {
+                let mut k = tag_start;
+                while k < bytes.len()
+                    && (bytes[k].is_ascii_alphanumeric() || matches!(bytes[k], b'_' | b'-' | b'/'))
+                {
+                    k += 1;
+                }
+                // Trim a trailing separator so `#wedding/` / `#wedding-` → the bare stem.
+                let mut end = k;
+                while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
+                    end -= 1;
+                }
+                out.push(line[tag_start..end].to_lowercase());
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Remove the first inline `[YYYY-MM-DD]` due token, collapsing the surrounding
 /// whitespace so no double space is left behind. No-op when the line has no token.
 pub fn strip_due(line: &str) -> String {
@@ -390,5 +455,45 @@ nothing here
     #[test]
     fn strip_due_noop_when_absent() {
         assert_eq!(strip_due("- [ ] plain task"), "- [ ] plain task");
+    }
+
+    #[test]
+    fn hashtags_basic_and_multiple() {
+        assert_eq!(find_hashtags("book #wedding venue"), vec!["wedding"]);
+        assert_eq!(
+            find_hashtags("- [ ] #wedding cake and #house paint"),
+            vec!["wedding", "house"]
+        );
+        assert!(find_hashtags("no tags here").is_empty());
+    }
+
+    #[test]
+    fn hashtags_case_insensitive_and_nested() {
+        assert_eq!(find_hashtags("#Wedding"), vec!["wedding"]);
+        assert_eq!(find_hashtags("plan #wedding/venue now"), vec!["wedding/venue"]);
+    }
+
+    #[test]
+    fn hashtags_skip_heading_marker_but_scan_text() {
+        assert!(find_hashtags("## Focus").is_empty());
+        assert!(find_hashtags("# Title").is_empty());
+        assert_eq!(find_hashtags("## Focus #wedding"), vec!["wedding"]);
+        // a bare `#wedding` with no space after the '#' run is a tag, not a heading
+        assert_eq!(find_hashtags("#wedding"), vec!["wedding"]);
+    }
+
+    #[test]
+    fn hashtags_skip_glued_and_wikilink_and_url() {
+        assert!(find_hashtags("see [[note#anchor]] here").is_empty());
+        assert!(find_hashtags("id foo#bar baz").is_empty());
+        assert!(find_hashtags("visit https://site.com/#top now").is_empty());
+        assert!(find_hashtags("value is 3#4").is_empty());
+    }
+
+    #[test]
+    fn hashtags_skip_code_span_and_trim_punctuation() {
+        assert!(find_hashtags("run `git commit #123` now").is_empty());
+        assert_eq!(find_hashtags("done #wedding."), vec!["wedding"]);
+        assert_eq!(find_hashtags("(#wedding, #house)"), vec!["wedding", "house"]);
     }
 }

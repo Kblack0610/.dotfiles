@@ -77,7 +77,7 @@ pub fn extract_links(content: &str) -> Vec<String> {
     out
 }
 
-fn extract_tags(content: &str) -> Vec<String> {
+pub(crate) fn extract_tags(content: &str) -> Vec<String> {
     // crude frontmatter `tags: [a, b]` reader
     for line in content.lines().take(15) {
         let t = line.trim();

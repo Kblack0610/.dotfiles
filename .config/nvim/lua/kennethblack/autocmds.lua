@@ -390,6 +390,12 @@ end
 
 vim.keymap.set("n", "<leader>nn", new_note_menu, { desc = "New note (notes menu)" })
 
+-- Tag finder: pick a #tag (or frontmatter tag) → a matching note line → open it.
+-- Backed by `notes tags`; see lua/kennethblack/notes_tags.lua.
+vim.keymap.set("n", "<leader>nt", function()
+  require("kennethblack.notes_tags").pick()
+end, { desc = "Find notes by tag" })
+
 -- ============================================
 -- Make `gf` follow vault-root-relative [[wikilinks]] under ~/.notes
 -- (e.g. [[journal/backlogs/fun]], [[journal/refs/DATE/name]],
