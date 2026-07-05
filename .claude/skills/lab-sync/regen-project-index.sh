@@ -58,7 +58,11 @@ project_line() {
   [ -f "$summary" ] || return 0
   canon=$(resolve_canonical "$summary" "$name")
   repo=$(resolve_repo "$canon")
-  status=$(awk '/^## Status/{getline; while($0 ~ /^[[:space:]]*$/) getline; print; exit}' "$summary" 2>/dev/null | sed 's/^[-*[:space:]]*//' | head -c 40)
+  # first line of ## Status, first sentence, word-boundary-truncated to ~48 chars
+  status=$(awk '/^## Status/{getline; while($0 ~ /^[[:space:]]*$/) getline; print; exit}' "$summary" 2>/dev/null | sed 's/^[-*[:space:]]*//; s/\. .*//')
+  if [ "${#status}" -gt 48 ]; then
+    status="$(printf '%s' "$status" | cut -c1-48 | sed 's/ [^ ]*$//')…"
+  fi
   labver=$(ls -1 "$dir"/v*.md 2>/dev/null | sed 's#.*/v##; s/\.md$//' | sort -V | tail -1 || true)
   tag=$(latest_tag "$repo" "$name")
   # prefer the shipped git tag; fall back to the lab version checklist
