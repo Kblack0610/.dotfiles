@@ -177,7 +177,13 @@ process_project() {
       echo "<!-- canonical: $canon -->"
       echo
       echo "## Status"
-      echo "- _(what / why / status / active version)_"
+      echo "_(one line: where the app is at — live? pre-launch? what shipped)_"
+      echo
+      echo "## This release — target vX.Y.Z"
+      echo "- [ ] _(what you want shipped in the current release)_"
+      echo
+      echo "## Next release — target (tbd)"
+      echo "- [ ] _(nothing yet)_"
       echo
       echo "## → For the agents"
       echo "_Open comments / suggestions / tasks for the agents — read at session start (preflight injects it). \`- [ ]\` = task. lab-sync never edits this section._"

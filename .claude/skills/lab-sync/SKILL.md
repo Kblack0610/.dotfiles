@@ -99,13 +99,32 @@ preserved, exactly like `/project-index` does for anchors.
 lab-sync does **not** write to mem0; cross-project facts still flow through the `dream`
 `mem0-queue.md` human gate. The lab is a *project* surface, not a memory store.
 
+## The 3-level drill-down (hub → situation → detail)
+
+The lab is a three-level drill-down, each a click deeper:
+
+1. **`lab/projects/index.md`** — the **hub**: every project by lane, with its version +
+   status. "Whole portfolio at a glance."
+2. **`{project}/summary.md`** — that app's **situation page**: a one-line `## Status`,
+   `## This release — target vX.Y.Z` + `## Next release` (the **intent/wishlist scope you
+   type**), and the AUTO feed (shipped tag, In flight PRs, Recent commits). Order:
+   Status → This release → Next release → `## → For the agents` → AUTO block. This is the
+   answer to "where do I write what we want shipped, and where's the app at."
+3. **`{project}/vX.Y.Z.md`** — optional **deep detail** for a single release (waves,
+   sub-tasks) when the summary list isn't enough. Linked from This release; the scaffold
+   doesn't create these — add one only when a release needs the depth.
+
+Split from the in-repo `CHANGELOG.md`: the lab holds **intent** (what we *want*, wishlist) +
+situation; the CHANGELOG holds the **record** (built-but-unshipped `[Unreleased]`, and
+shipped history). Don't duplicate CHANGELOG entries into the summary.
+
 ## The cross-project index (`lab/projects/index.md`)
 
-A companion to the per-project feeds: one hand-curated index that is the **source of truth
-for project status**. You edit its lanes — `## Current`, `## Next version`, `## Backlog`,
-`## Prod`, `## Archived` — to move a project around. The `## Current` lane **drives the daily
-note's Current Projects** (the notes-cli re-derives that section from it each `notes today`,
-so an edit shows up the next day). The file is linked from every daily note's footer.
+The hub (level 1). One hand-curated index that is the **source of truth for project status**.
+You edit its lanes — `## Current`, `## Next version`, `## Backlog`, `## Prod`, `## Archived`
+— to move a project around. The `## Current` lane **drives the daily note's Current Projects**
+(the notes-cli re-derives that section from it each `notes today`, so an edit shows up the
+next day). The file is linked from every daily note's footer.
 
 - **`regen-project-index.sh`** fills only the `AUTO:START…AUTO:END` block — a deterministic
   mirror of the project folders under `{current,prod,archived}/` with each one's live version
