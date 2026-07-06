@@ -213,6 +213,8 @@ alias zk='notes zettel new'
 alias ndoctor='notes doctor'
 # Tag finder: fzf window over vault tags (#hashtag + frontmatter) → open in nvim
 alias nt="$HOME/.local/src/fzf/notes-tags.sh"
+# Project finder: fzf window over indexed projects (lab/projects/current) → open in nvim
+alias np="$HOME/.local/src/fzf/notes-projects.sh"
 
 # Quick ref note creation (inside the active profile's refs/<date>/ dir)
 refnote() {

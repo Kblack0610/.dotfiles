@@ -217,19 +217,20 @@ fn current_lane_from_index(p: &Profile) -> Option<String> {
     }
 }
 
-/// Discover active projects from the configured `projects` dir (e.g. lab/projects/current):
-/// one wikilink per immediate subdir that contains a `summary.md`, sorted by name. Subdirs
-/// whose name starts with `_` (e.g. `_index`) are skipped. Returns "" when no `projects`
-/// dir is configured or it has no qualifying entries.
-fn discover_projects(p: &Profile) -> String {
+/// Active-project `(name, summary_path)` pairs from the configured `projects` dir
+/// (e.g. lab/projects/current): each immediate subdir that contains a `summary.md`,
+/// sorted by name, `_`-prefixed dirs (e.g. `_index`) skipped. Empty when no `projects`
+/// dir is configured or it has no qualifying entries. Shared source of truth between
+/// the daily note's discovery fallback and the `notes projects` picker.
+pub(crate) fn discover_project_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
     let Some(dir) = p.projects.as_ref() else {
-        return String::new();
+        return Vec::new();
     };
     if !dir.is_dir() {
-        return String::new();
+        return Vec::new();
     }
     let Ok(entries) = fs::read_dir(dir) else {
-        return String::new();
+        return Vec::new();
     };
     let mut found: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
@@ -245,6 +246,12 @@ fn discover_projects(p: &Profile) -> String {
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+/// Discover active projects from the configured `projects` dir as daily-note wikilinks:
+/// one `- [[…|name]]` per `discover_project_dirs` entry. Returns "" when there are none.
+fn discover_projects(p: &Profile) -> String {
+    discover_project_dirs(p)
         .iter()
         .map(|(name, summary)| format!("- [[{}|{}]]", config::wikilink(&p.root, summary), name))
         .collect::<Vec<_>>()

@@ -313,6 +313,9 @@ function M.setup()
   vim.keymap.set("n", "<leader>nt", function()
     require("notes.tags").pick()
   end, { desc = "Find notes by tag" })
+  vim.keymap.set("n", "<leader>np", function()
+    require("notes.projects").pick()
+  end, { desc = "Find notes by project" })
 
   -- Make `gf` follow vault-root-relative [[wikilinks]] under ~/.notes (e.g.
   -- [[journal/backlogs/fun]], [[dev/projects/.../v1.8.0.md|alias]]). No wikilink

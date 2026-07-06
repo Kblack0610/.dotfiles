@@ -15,6 +15,7 @@ mod index;
 mod logging;
 mod md;
 mod meeting;
+mod projects;
 mod summarize;
 mod tags;
 mod zettel;
@@ -109,6 +110,13 @@ enum Cmd {
     /// every tag with a count; `<name>` prints each matching line as `path<TAB>line<TAB>text`.
     Tags {
         /// Tag to show hits for (leading `#` optional). Omit to list all tags.
+        name: Option<String>,
+    },
+    /// List the indexed projects behind the daily note's `## Current Projects` block.
+    /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
+    /// project's note files as `path<TAB>label` (summary first).
+    Projects {
+        /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
     },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
@@ -245,6 +253,13 @@ fn main() -> Result<()> {
             match name {
                 Some(n) => tags::show(&prof, &n)?,
                 None => tags::list(&prof)?,
+            }
+            0
+        }
+        Cmd::Projects { name } => {
+            match name {
+                Some(n) => projects::show(&prof, &n)?,
+                None => projects::list(&prof)?,
             }
             0
         }
