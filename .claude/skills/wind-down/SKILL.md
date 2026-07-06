@@ -75,6 +75,10 @@ lab project exists for this repo, refresh its deterministic `## ← Release & st
 This never touches the human `## → For the agents` section. Skip if the repo has no lab project.
 See the `lab-sync` skill.
 
+Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
+"where we are" line from this session's work into the cockpit's `STATUS` block — the narrative
+`lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
+
 ### 2. Arm the teardown
 
 ```bash
