@@ -45,6 +45,14 @@ ONLY_TOOLS=()
 WALLPAPER_DIR="$SCRIPT_DIR/wallpapers"
 ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar sketchybar hyprland wallpaper)
 
+# OS-gated tools — only applied on their native platform. Anything NOT listed
+# here is cross-platform (terminal / editor / prompt configs). This is why a
+# Linux box never regenerates the macOS menu bar, and a Mac never rewrites the
+# Wayland bar / compositor — so neither machine's `git status` fills with the
+# other OS's noise, and no one edits a bar they can't even see.
+MACOS_ONLY_TOOLS=(sketchybar)
+LINUX_ONLY_TOOLS=(waybar hyprland wallpaper)
+
 # Day/night auto-pick window (used by --auto)
 AUTO_DAY_THEME="jackie-brown"
 AUTO_NIGHT_THEME="ayaka"
@@ -107,6 +115,20 @@ should_apply() {
         [[ "$t" == "$tool" ]] && return 0
     done
     return 1
+}
+
+# True if $tool should be applied on the current OS. macOS-only and Linux-only
+# tools are skipped on the other platform; everything else is cross-platform.
+os_supports() {
+    local tool="$1" os t
+    os="$(uname)"
+    for t in "${MACOS_ONLY_TOOLS[@]}"; do
+        [[ "$t" == "$tool" ]] && { [[ "$os" == "Darwin" ]] && return 0 || return 1; }
+    done
+    for t in "${LINUX_ONLY_TOOLS[@]}"; do
+        [[ "$t" == "$tool" ]] && { [[ "$os" == "Linux" ]] && return 0 || return 1; }
+    done
+    return 0
 }
 
 # Portable sed -i (macOS vs Linux)
@@ -609,11 +631,15 @@ TOOLS MANAGED
   neo-tree   NeoTreeModified highlight color in neo-tree.lua
   starship   7 color values across prompt sections
   lazygit    11 theme color values in config.yml
-  waybar     Full CSS replacement + SIGUSR2 reload
-  sketchybar macOS menu bar — colors.sh generated from palette + --reload
-  hyprland   Border + shadow rgba colors + hyprctl reload
+  waybar     Full CSS replacement + SIGUSR2 reload          (Linux only)
+  sketchybar macOS menu bar — colors.sh generated from palette (macOS only)
+  hyprland   Border + shadow rgba colors + hyprctl reload    (Linux only)
   wallpaper  Random wallpaper from wallpapers/<theme>-*.{jpg,png,webp}
-             Backends: hyprpaper (preferred) > swww > swaybg
+             Backends: hyprpaper (preferred) > swww > swaybg (Linux only)
+
+  OS-gated tools are skipped silently on the other platform, so a full run
+  never touches a bar/compositor this machine doesn't have. Naming one in
+  --only on the wrong OS prints a skip notice instead.
 
 ADDING A NEW THEME
   1. Create palettes/<name>.sh   (copy existing, change values)
@@ -718,21 +744,27 @@ main() {
     # Apply each tool
     local applied=0
     for tool in "${ALL_TOOLS[@]}"; do
-        if should_apply "$tool"; then
-            case "$tool" in
-                kitty)     apply_kitty ;;
-                nvim)      apply_nvim ;;
-                lualine)   apply_lualine ;;
-                neo-tree)  apply_neo_tree ;;
-                starship)  apply_starship ;;
-                lazygit)   apply_lazygit ;;
-                waybar)    apply_waybar ;;
-                sketchybar) apply_sketchybar ;;
-                hyprland)  apply_hyprland ;;
-                wallpaper) apply_wallpaper ;;
-            esac
-            applied=$((applied + 1))
+        should_apply "$tool" || continue
+        if ! os_supports "$tool"; then
+            # Not this machine's OS (e.g. sketchybar on Linux, waybar on macOS).
+            # Stay silent on a full run so the other platform's tools never show
+            # up; only speak up when the tool was explicitly named via --only.
+            [[ ${#ONLY_TOOLS[@]} -gt 0 ]] && warn "$tool: skipped — $(uname) is not its platform"
+            continue
         fi
+        case "$tool" in
+            kitty)     apply_kitty ;;
+            nvim)      apply_nvim ;;
+            lualine)   apply_lualine ;;
+            neo-tree)  apply_neo_tree ;;
+            starship)  apply_starship ;;
+            lazygit)   apply_lazygit ;;
+            waybar)    apply_waybar ;;
+            sketchybar) apply_sketchybar ;;
+            hyprland)  apply_hyprland ;;
+            wallpaper) apply_wallpaper ;;
+        esac
+        applied=$((applied + 1))
     done
 
     if [[ $applied -eq 0 ]]; then
