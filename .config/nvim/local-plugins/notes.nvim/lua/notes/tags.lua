@@ -1,17 +1,20 @@
--- notes_tags.lua — a tag finder for the `~/.notes` vault, wired to the `notes`
+-- notes.tags — a tag finder for the `~/.notes` vault, wired to the `notes`
 -- Rust CLI's `notes tags` subcommand.
 --
---   :lua require("kennethblack.notes_tags").pick()   (bound to <leader>nt)
+--   :lua require("notes.tags").pick()   (bound to <leader>nt by notes.setup())
 --
 -- Two stages (mirrors the `notes-tags` fzf window):
 --   1. pick a #tag from `notes tags`        ("<tag>\t<count>")
 --   2. pick a matching note line from        ("<path>\t<line>\t<text>")
 --      `notes tags <tag>`, previewed in-editor, then opened at that line.
 --
+-- Stage 2 remaps <Esc> (and <C-o>) to step BACK to the tag list instead of
+-- quitting — so the drill-down is reversible. (<Esc> on the tag list still
+-- closes, i.e. Esc → tags → Esc → quit.)
+--
 -- Built on Snacks.picker (the only picker installed) with a vim.ui.select
--- fallback, and following the notes conventions in autocmds.lua: guard on
--- `executable("notes")`, shell out with vim.fn.system*, check v:shell_error,
--- notify on failure.
+-- fallback, following the notes conventions: guard on `executable("notes")`,
+-- shell out with vim.fn.system*, check v:shell_error, notify on failure.
 
 local M = {}
 
@@ -85,6 +88,29 @@ function M.pick_hits(tag)
           { item.text, "Normal" },
         }
       end,
+      -- <Esc>/<C-o> step back to the tag list instead of closing the finder.
+      actions = {
+        notes_tags_back = function(picker)
+          picker:close()
+          vim.schedule(function()
+            M.pick()
+          end)
+        end,
+      },
+      win = {
+        input = {
+          keys = {
+            ["<Esc>"] = { "notes_tags_back", mode = { "n", "i" } },
+            ["<C-o>"] = { "notes_tags_back", mode = { "n", "i" } },
+          },
+        },
+        list = {
+          keys = {
+            ["<Esc>"] = "notes_tags_back",
+            ["<C-o>"] = "notes_tags_back",
+          },
+        },
+      },
       confirm = function(picker, item)
         picker:close()
         if item then
