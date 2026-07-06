@@ -99,24 +99,46 @@ preserved, exactly like `/project-index` does for anchors.
 lab-sync does **not** write to mem0; cross-project facts still flow through the `dream`
 `mem0-queue.md` human gate. The lab is a *project* surface, not a memory store.
 
-## The 3-level drill-down (hub → situation → detail)
+## The project cockpit (`{project}/summary.md`)
 
-The lab is a three-level drill-down, each a click deeper:
+Nothing factual is hand-typed — it rots. The summary is a **source-of-truth cockpit** with
+three regions, each with exactly one owner:
 
-1. **`lab/projects/index.md`** — the **hub**: every project by lane, with its version +
-   status. "Whole portfolio at a glance."
-2. **`{project}/summary.md`** — that app's **situation page**: a one-line `## Status`,
-   `## This release — target vX.Y.Z` + `## Next release` (the **intent/wishlist scope you
-   type**), and the AUTO feed (shipped tag, In flight PRs, Recent commits). Order:
-   Status → This release → Next release → `## → For the agents` → AUTO block. This is the
-   answer to "where do I write what we want shipped, and where's the app at."
-3. **`{project}/vX.Y.Z.md`** — optional **deep detail** for a single release (waves,
-   sub-tasks) when the summary list isn't enough. Linked from This release; the scaffold
-   doesn't create these — add one only when a release needs the depth.
+1. **`## → For the agents`** (HUMAN, the only hand-edited region) — you type *wants / tasks /
+   direction*. Injected at session start by `session-preflight.sh`; agents read it and
+   **scope each want into a Vikunja ticket**, which then surfaces automatically in the
+   cockpit's "In progress" / "Shipping next". An optional `## Reference` section holds static
+   background (services, architecture) that doesn't rot.
+2. **`<!-- STATUS:START/END -->`** (AGENT, LLM) — a dated 1–3 line "where we are" narrative,
+   written by `/lab-status` (Phase 2). It sits above `AUTO:START`, so lab-sync never touches
+   it and the preflight readback filters it out.
+3. **`<!-- AUTO:START/END -->`** (AGENT, deterministic — `regen-lab-feed.sh`) — the factual
+   mirror: **shipped** version (git tag), **Shipping next** (`git log` since the tag,
+   path-filtered), a **TRACKER** sub-block (next-release ticket + verification/approval +
+   in-progress Vikunja tickets), **In flight** PRs, **Recent** commits, and **Drill down**
+   links (release ticket · board · anchor · plans). All rows are best-effort and guarded.
 
-Split from the in-repo `CHANGELOG.md`: the lab holds **intent** (what we *want*, wishlist) +
-situation; the CHANGELOG holds the **record** (built-but-unshipped `[Unreleased]`, and
-shipped history). Don't duplicate CHANGELOG entries into the summary.
+**Per-project config** via a `<!-- cockpit: k=v … -->` marker (keys, all optional):
+`vikunja=<project-id>` (in-progress tickets) · `release-epic=<id>` (next-release ticket) ·
+`pathfilter=<paths>` (scope "Shipping next" in a monorepo) · `branch=<name>` (integration
+branch; default the repo's HEAD) · `prfilter=<title-regex>` (scope "In flight" to one app) ·
+`repo=<canonical>` (override the git repo, e.g. a lab project whose code lives in a shared
+monorepo). A separate `<!-- tagglob: PATTERN -->` scopes the version tag.
+
+**Sources of truth** (what feeds each row): shipped=git tags · shipping-next=`git log
+<tag>..<branch>` · next-release+checklist=the Vikunja release ticket · in-progress=Vikunja
+"In Development" label · in-flight=open PRs · recent=git log. The **CHANGELOG** is the
+built/shipped *record*; the lab is *intent + live situation* — don't duplicate CHANGELOG prose.
+
+**Headless safety:** the Vikunja TRACKER sub-block needs a token. When absent (e.g. the weekly
+cron), regen **preserves** the existing TRACKER block instead of stripping it; git/gh rows
+always regenerate. So an interactive `/lab-sync` writes the rich tracker view and the weekly
+run keeps it.
+
+### Drill-down levels
+1. **`lab/projects/index.md`** — the hub: every project by lane + version + status.
+2. **`{project}/summary.md`** — this cockpit (above).
+3. **`{project}/vX.Y.Z.md`** — optional deep per-release detail; create only when needed.
 
 ## The cross-project index (`lab/projects/index.md`)
 

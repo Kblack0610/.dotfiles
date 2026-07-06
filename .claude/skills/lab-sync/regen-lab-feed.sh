@@ -60,14 +60,16 @@ resolve_repo() {
 # gh is missing, unauthenticated, offline, or the repo has no GitHub remote — so
 # the feed stays deterministic offline and headless.
 open_prs() {
-  local repo="$1"
+  local repo="$1" filt="$2"
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
   command -v gh >/dev/null 2>&1 || return 0
   # gh infers owner/repo from the cwd's git remote (its `-R` flag wants owner/repo,
-  # not a filesystem path), so run from inside the repo.
-  ( cd "$repo" && gh pr list --state open --limit 4 \
-      --json number,title,isDraft \
-      --jq '.[] | select(.isDraft | not) | "#\(.number) \(.title)"' 2>/dev/null ) || true
+  # not a filesystem path), so run from inside the repo. In a monorepo, an optional
+  # title filter keeps one app's cockpit from listing another app's PRs.
+  # gh's own --jq can't take `--arg`, so pipe the JSON to standalone jq for the filter.
+  command -v jq >/dev/null 2>&1 || return 0
+  ( cd "$repo" && gh pr list --state open --limit 20 --json number,title,isDraft 2>/dev/null ) \
+    | jq -r --arg f "${filt:-}" '.[] | select(.isDraft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"' 2>/dev/null | head -4 || true
 }
 
 # --- resolve the current release tag (highest semver, not describe-from-HEAD) ---
@@ -85,8 +87,11 @@ latest_tag() {
     glob=$(grep -oE '<!--[[:space:]]*tagglob:[[:space:]]*[^ ]+[[:space:]]*-->' "$summary" 2>/dev/null \
       | head -1 | sed -E 's/.*tagglob:[[:space:]]*([^ ]+)[[:space:]]*-->/\1/' || true)
   fi
+  # An explicit tagglob is authoritative — resolve strictly, never fall through to
+  # `describe` (which would return an unrelated product's tag in a monorepo).
   if [ -n "$glob" ]; then
-    t=$(git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null | head -1)
+    git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null | head -1
+    return 0
   fi
   [ -z "$t" ] && t=$(git -C "$repo" tag --list "${lab}-v*" --sort=-v:refname 2>/dev/null | head -1)
   [ -z "$t" ] && t=$(git -C "$repo" tag --list "v*" --sort=-v:refname 2>/dev/null | head -1)
@@ -94,32 +99,104 @@ latest_tag() {
   printf '%s' "$t"
 }
 
+# --- cockpit sources of truth (all best-effort; degrade to omission) --------
+# Per-project config via a `<!-- cockpit: vikunja=3 release-epic=29 pathfilter=apps/x branch=develop -->`
+# marker in summary.md. Vikunja rows need a token (VIKUNJA_MCP_TOKEN); when absent (e.g. the
+# headless weekly run) the TRACKER inner block is PRESERVED, not stripped (see process_project).
+VK_BASE="https://vikunja.kblab.me/api/v1"
+
+cockpit_cfg() { # $1=summary $2=key  → value or ""
+  [ -f "$1" ] || return 0
+  grep -oE '<!--[[:space:]]*cockpit:[^>]*-->' "$1" 2>/dev/null | head -1 \
+    | grep -oE "$2=[^[:space:]]+" | head -1 | sed -E "s/^$2=//" || true
+}
+
+vk_tok()   { printf '%s' "${VIKUNJA_MCP_TOKEN:-${VIKUNJA_API_TOKEN:-}}"; }
+vk_ready() { [ -n "$(vk_tok)" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; }
+vk_get()   { vk_ready || return 0; curl -s --max-time 6 -H "Authorization: Bearer $(vk_tok)" "$VK_BASE$1" 2>/dev/null || true; }
+
+# "Merged since the last tag" — the real built-unshipped scope, path-filtered per app.
+shipping_next() { # $1=repo $2=tag $3=branch $4=pathfilter
+  local repo="$1" tag="$2" branch="$3" pf="$4" ref
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
+  ref="origin/$branch"
+  git -C "$repo" rev-parse --verify -q "$ref" >/dev/null 2>&1 || ref="$branch"
+  git -C "$repo" rev-parse --verify -q "$ref" >/dev/null 2>&1 || return 0
+  # PR-numbered subjects only; skip release/deploy plumbing merges; newest first, cap 6
+  git -C "$repo" log "${tag}..${ref}" --pretty='%s' -- ${pf:-.} 2>/dev/null \
+    | grep -E '\(#[0-9]+\)' | grep -vE '^Merge |release/|deploy/' | head -6 || true
+}
+
+# Highest-version OPEN Vikunja release ticket for this product under the release epic
+# → sets NR_VER/NR_ID/NR_CHK/NR_APPROVAL. $2 filters titles to this product (e.g. placemyparents).
+next_release() { # $1=release-epic $2=product-prefix
+  NR_VER=""; NR_ID=""; NR_CHK=""; NR_APPROVAL=""
+  local epic="$1" name="$2" tasks best desc total checked
+  [ -n "$epic" ] && vk_ready || return 0
+  tasks=$(vk_get "/projects/$epic/tasks")
+  [ -n "$tasks" ] || return 0
+  # candidate titles: open, and versioned for THIS product; pick the highest version (sort -V)
+  best=$(printf '%s' "$tasks" \
+    | jq -r --arg n "$name" '.[]? | select(.done==false) | select(.title|test($n+"-v[0-9]")) | .title' 2>/dev/null \
+    | sort -V | tail -1)
+  [ -n "$best" ] || return 0
+  NR_ID=$(printf '%s' "$tasks" | jq -r --arg t "$best" 'first(.[]? | select(.title==$t) | .id) // empty' 2>/dev/null)
+  NR_VER=$(printf '%s' "$best" | grep -oE 'v[0-9][0-9.]*' | head -1 || true)
+  desc=$(vk_get "/tasks/$NR_ID" | jq -r '.description // ""' 2>/dev/null || true)
+  total=$(printf '%s' "$desc" | grep -cE '\- \[[ xX]\]' || true)
+  checked=$(printf '%s' "$desc" | grep -cE '\- \[[xX]\]' || true)
+  [ "${total:-0}" -gt 0 ] 2>/dev/null && NR_CHK="${checked}/${total}"
+  if printf '%s' "$desc" | grep -qiE '\- \[[xX]\][^]]*HUMAN' 2>/dev/null; then NR_APPROVAL="approved"; else NR_APPROVAL="pending"; fi
+  return 0
+}
+
+# In-Development (label 1), not done, across a project root + its direct children.
+in_progress() { # $1=root-project-id  → "- Area: task" lines
+  local root="$1" kids pid pname
+  [ -n "$root" ] && vk_ready || return 0
+  kids=$(vk_get "/projects" | jq -r --arg r "$root" '.[]? | select(.parent_project_id==($r|tonumber)) | "\(.id)\t\(.title)"' 2>/dev/null || true)
+  { printf '%s\t%s\n' "$root" ""; printf '%s\n' "$kids"; } | while IFS=$'\t' read -r pid pname; do
+    [ -n "$pid" ] || continue
+    vk_get "/projects/$pid/tasks" \
+      | jq -r --arg n "$pname" '.[]? | select(.done==false) | select((.labels//[])|any(.id==1)) | "- \(if $n=="" then "" else $n+": " end)\(.title)"' 2>/dev/null || true
+  done
+}
+
 # --- build the AUTO feed block for one project -----------------------------
 # A compact, human-first dashboard: what version we're on, what's in flight
 # (open PRs), and the last few commits. Agent-runtime detail (plan counts, evals,
 # wind-downs) lives in the anchor — the lab feed is the human view. Every live
 # row is guarded so the block regenerates identically offline.
+# A source-of-truth cockpit: shipped version, what's shipping next (git log since the tag),
+# the tracker view (next-release ticket + in-progress tickets), open PRs, recent commits, and
+# drill-down links. Deterministic git/gh rows always regenerate; the Vikunja TRACKER inner
+# block is preserved when no token is present (headless), never stripped.
 auto_block() {
   local lab="$1" canon="$2" repo="$3"
   local anchor="$HOME/.agent/anchors/$canon.md"
-  local proj_dir="$LAB_CURRENT/$lab"
+  local proj_dir="$LAB_CURRENT/$lab" summary="$LAB_CURRENT/$lab/summary.md"
+
+  # per-project cockpit config (marker overrides; sensible fallbacks)
+  local epic root pf branch
+  epic=$(cockpit_cfg "$summary" release-epic)
+  root=$(cockpit_cfg "$summary" vikunja)
+  pf=$(cockpit_cfg "$summary" pathfilter)
+  branch=$(cockpit_cfg "$summary" branch)
+  [ -n "$branch" ] || branch=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+  [ -n "$branch" ] || branch=main
 
   echo "$START"
   echo "## ← Release & status feed"
-  echo "_Mirror of git + GitHub + ~/.agent · maintained by lab-sync · do not hand-edit; add notes above._"
+  echo "_Source-of-truth mirror: git + GitHub + Vikunja · maintained by lab-sync · do not hand-edit; add notes above._"
   echo
 
-  # --- version line: git tag + lab checklist, aligned ---
-  local tag="" tagdate=""
-  tag=$(latest_tag "$repo" "$lab" "$proj_dir/summary.md")
+  # shipped version (authoritative git tag), else repo-less fallback to lab vX.Y.Z.md
+  local tag tagdate labver
+  tag=$(latest_tag "$repo" "$lab" "$summary")
   [ -n "$tag" ] && tagdate=$(git -C "$repo" log -1 --format=%cs "$tag" 2>/dev/null || true)
-  local labver
   labver=$(ls -1 "$proj_dir"/v*.md 2>/dev/null | sed 's#.*/##; s/\.md$//' | sort -V | tail -1 || true)
-  # The git tag is the authoritative "what version we're at" — show it alone. Only fall
-  # back to the lab vX.Y.Z.md checklist when there's no tag (e.g. a repo-less project),
-  # so a stale checklist number never sits next to the real shipped tag.
   if [ -n "$tag" ]; then
-    echo "**\`$canon\`** — tag \`$tag\`${tagdate:+ ($tagdate)}"
+    echo "**shipped \`$tag\`**${tagdate:+ ($tagdate)}"
   elif [ -n "$labver" ]; then
     echo "**\`$canon\` · $labver** — _(no git tag resolved)_"
   else
@@ -127,19 +204,47 @@ auto_block() {
   fi
   echo
 
-  # --- in flight: open PRs (Vikunja task/version sync → phase 2) ---
-  local prs
-  prs=$(open_prs "$repo")
+  # shipping next — merged since the tag (deterministic; always regenerated)
+  local sn; sn=$(shipping_next "$repo" "$tag" "$branch" "$pf")
+  if [ -n "$sn" ]; then
+    echo "**Shipping next** — merged to \`$branch\` since \`$tag\`:"
+    printf '%s\n' "$sn" | sed 's/^/- /'
+    echo
+  fi
+
+  # tracker view (Vikunja): regenerate if a token is present, else preserve the existing block
+  echo "<!-- TRACKER:START -->"
+  NR_ID=""; NR_VER=""; NR_CHK=""; NR_APPROVAL=""
+  if vk_ready; then
+    next_release "$epic" "$lab"
+    if [ -n "$NR_VER" ]; then
+      echo "**Next release \`$NR_VER\`**${NR_CHK:+ — verification $NR_CHK checked}${NR_APPROVAL:+ · approval $NR_APPROVAL}${NR_ID:+ · ticket #$NR_ID}"
+      echo
+    fi
+    local ip n; ip=$(in_progress "$root")
+    if [ -n "$ip" ]; then
+      n=$(printf '%s\n' "$ip" | grep -c . || true)
+      echo "**In progress** (Vikunja · In Development):"
+      printf '%s\n' "$ip" | head -8
+      { [ "${n:-0}" -gt 8 ] && echo "- …(+$((n-8)) more)"; } || true
+      echo
+    fi
+  else
+    [ -n "${PRESERVED_TRACKER:-}" ] && printf '%s\n' "$PRESERVED_TRACKER"
+  fi
+  echo "<!-- TRACKER:END -->"
+
+  # in flight — open PRs (optionally title-filtered for a monorepo app)
+  local prs; prs=$(open_prs "$repo" "$(cockpit_cfg "$summary" prfilter)")
   if [ -n "$prs" ]; then
-    echo "**In flight**"
+    echo "**In flight** (open PRs)"
     printf '%s\n' "$prs" | sed 's/^/- /'
     echo
   fi
 
-  # --- recent: last 2 commits ---
+  # recent — last 2 commits
   if [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1; then
-    local commits
-    commits=$(git -C "$repo" log --oneline -2 2>/dev/null || true)
+    local commits; commits=$(git -C "$repo" log --oneline -2 2>/dev/null || true)
     if [ -n "$commits" ]; then
       echo "**Recent**"
       printf '%s\n' "$commits" | sed 's/^/- `/; s/$/`/'
@@ -147,11 +252,13 @@ auto_block() {
     fi
   fi
 
-  # --- links row ---
-  local links="Links:"
-  [ -f "$anchor" ] && links="$links anchor \`~/.agent/anchors/$canon.md\` ·"
-  links="$links plans \`~/.agent/plans/$canon/\` · evals \`~/.agent/evals/$canon/\`"
-  [ -f "$proj_dir/changelog.md" ] && links="$links · changelog \`changelog.md\`"
+  # drill-down links
+  local links="Drill down:"
+  { [ -n "$NR_ID" ] && links="$links release ticket [#$NR_ID](https://vikunja.kblab.me/tasks/$NR_ID) ·"; } || true
+  { [ -n "$root" ] && links="$links board [vikunja](https://vikunja.kblab.me/projects/$root) ·"; } || true
+  { [ -f "$anchor" ] && links="$links anchor \`~/.agent/anchors/$canon.md\` ·"; } || true
+  links="$links plans \`~/.agent/plans/$canon/\`"
+  { [ -f "$proj_dir/changelog.md" ] && links="$links · changelog \`changelog.md\`"; } || true
   echo "$links"
   echo "$END"
 }
@@ -165,29 +272,36 @@ process_project() {
     echo "skip: no such lab project: $lab ($proj_dir)" >&2; return 1
   fi
 
-  local canon repo
+  # Preserve the existing Vikunja TRACKER inner block so a headless run (no token) never
+  # strips tracker rows that an interactive /lab-sync wrote. auto_block reuses this global
+  # when vk_ready is false.
+  PRESERVED_TRACKER=""
+  if [ -f "$summary" ]; then
+    PRESERVED_TRACKER=$(awk '/TRACKER:START/{f=1;next} /TRACKER:END/{f=0} f' "$summary" 2>/dev/null || true)
+  fi
+
+  local canon repo repo_over
   canon=$(resolve_canonical "$lab" "$summary")
   repo=$(resolve_repo "$canon")
+  # `<!-- cockpit: repo=NAME -->` overrides the git repo (e.g. a lab project whose code
+  # lives in a shared monorepo) while keeping its own canonical for readback/anchor.
+  repo_over=$(cockpit_cfg "$summary" repo)
+  [ -n "$repo_over" ] && repo=$(resolve_repo "$repo_over")
 
   # scaffold a minimal bus-shaped summary.md if missing
   if [ ! -f "$summary" ]; then
     {
       echo "# $lab"
-      echo
       echo "<!-- canonical: $canon -->"
-      echo
-      echo "## Status"
-      echo "_(one line: where the app is at — live? pre-launch? what shipped)_"
-      echo
-      echo "## This release — target vX.Y.Z"
-      echo "- [ ] _(what you want shipped in the current release)_"
-      echo
-      echo "## Next release — target (tbd)"
-      echo "- [ ] _(nothing yet)_"
+      echo "<!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->"
       echo
       echo "## → For the agents"
-      echo "_Open comments / suggestions / tasks for the agents — read at session start (preflight injects it). \`- [ ]\` = task. lab-sync never edits this section._"
-      echo "- _(nothing yet)_"
+      echo "_Type wants / tasks / direction here — read at session start (preflight injects it). Agents scope each into a Vikunja ticket, which then surfaces in the cockpit below. lab-sync never edits this section._"
+      echo "- _(nothing yet — type a want)_"
+      echo
+      echo "<!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->"
+      echo "_(no status yet)_"
+      echo "<!-- STATUS:END -->"
       echo
       auto_block "$lab" "$canon" "$repo"
     } > "$summary"
