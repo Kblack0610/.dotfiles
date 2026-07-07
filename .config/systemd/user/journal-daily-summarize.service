@@ -1,9 +1,0 @@
-[Unit]
-Description=Summarize yesterday's daily journal entry (notes CLI)
-
-[Service]
-Type=oneshot
-# Dedup-safe summarize of yesterday into the continuous monthly log.
-# --verbose routes INFO/WARN to the systemd journal:
-#   journalctl --user -u journal-daily-summarize
-ExecStart=%h/.local/bin/notes --verbose summarize

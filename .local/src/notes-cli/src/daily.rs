@@ -624,11 +624,11 @@ mod tests {
         // index with a Current lane (plus a placeholder to ignore) → verbatim lines
         std::fs::write(
             p.project_index.as_ref().unwrap(),
-            "# Projects\n\n## Current\n- [[current/placemyparents/summary|placemyparents]]\n- [[current/time-tangle/summary|time-tangle]]\n\n## Backlog\n- _(nothing)_\n",
+            "# Projects\n\n## Current\n- [[current/myapp/summary|myapp]]\n- [[current/time-tangle/summary|time-tangle]]\n\n## Backlog\n- _(nothing)_\n",
         )
         .unwrap();
         let lane = current_lane_from_index(&p).unwrap();
-        assert!(lane.contains("placemyparents"));
+        assert!(lane.contains("myapp"));
         assert!(lane.contains("time-tangle"));
         assert!(!lane.contains("nothing"));
 

@@ -350,11 +350,11 @@ mod tests {
     fn profile_pick_hostname_map() {
         let mut raw = builtin_default();
         raw.hostname_map
-            .insert("corp-laptop".into(), "giganticplayground".into());
+            .insert("corp-laptop".into(), "AcmeCorp".into());
         std::env::remove_var("NOTES_PROFILE");
         std::env::set_var("NOTES_HOSTNAME", "corp-laptop");
         let (name, src) = pick_profile(&raw, None);
-        assert_eq!(name, "giganticplayground");
+        assert_eq!(name, "AcmeCorp");
         assert!(src.contains("hostname_map"));
         std::env::remove_var("NOTES_HOSTNAME");
     }

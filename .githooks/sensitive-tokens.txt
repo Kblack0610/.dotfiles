@@ -1,0 +1,19 @@
+# Sensitive tokens that must never enter the PUBLIC ~/.dotfiles repo.
+# One extended-regex per line (blank lines and #comments ignored). Enforced by
+# .githooks/pre-commit. If you genuinely need one of these, put the file in the
+# private overlay (~/.dotfiles-private) instead.
+placemyparents
+blacknbrownstudios
+[Dd]eloitte
+[Gg]igantic[ _]?[Pp]layground
+giganticplayground
+techdataassets
+\bhealix\b
+\bmyhealix\b
+\bpolicypal\b
+kblab\.me
+do-nyc3-placemyparents-k8s-prod
+\.ondigitalocean\.com
+192\.168\.1\.[0-9]
+keblack@deloitte\.ca
+kenneth\.black@giganticplayground\.com

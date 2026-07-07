@@ -22,7 +22,7 @@ end
 -- Resolve a profile-aware notes path via the `notes` CLI, falling back to the
 -- personal-vault layout when the binary isn't on PATH. This keeps editor nav
 -- (daily note, refs) pointed at whichever profile this machine uses — e.g. on
--- the gigantic-playground box it resolves into employment/jobs/gigantic_playground/.
+-- the acme-playground box it resolves into employment/jobs/AcmeCorp/.
 local function notes_path(target, fallback)
   if vim.fn.executable("notes") == 1 then
     local out = vim.fn.system({ "notes", "path", target })

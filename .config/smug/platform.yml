@@ -1,7 +1,0 @@
-session: platform
-root: ~/dev/bnb/platform
-
-windows:
-  - name: nvim
-    commands:
-      - nvim .

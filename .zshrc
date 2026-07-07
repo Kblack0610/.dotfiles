@@ -129,7 +129,7 @@ alias websnap='ffmpeg -f v4l2 -i /dev/video0 -vf "select=gte(n\,5)" -frames:v 1 
 alias icat='kitten icat --passthrough=tmux'
 alias img='chafa'
 
-export OLLAMA_HOST=192.168.1.4:11434
+export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 
 # --- Bottom Prompt (Ergonomic) ---
 # Push prompt to bottom of terminal on new shell

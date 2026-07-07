@@ -4,8 +4,7 @@
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
     "DISABLE_TELEMETRY": "1",
     "DISABLE_ERROR_REPORTING": "1",
-    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
-    "NTFY_URL": "https://ntfy.kblab.me/agents"
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"
   },
   "attribution": {
     "commit": "",

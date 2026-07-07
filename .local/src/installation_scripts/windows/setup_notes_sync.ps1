@@ -18,7 +18,7 @@ if (-not $BackupUrl)  { $BackupUrl  = $env:NOTES_BACKUP_REMOTE_URL }
 
 if (-not $PrimaryUrl) {
     Write-Skip 'NOTES_PRIMARY_REMOTE_URL not set — skipping notes setup.'
-    Write-Skip 'Re-run with: $env:NOTES_PRIMARY_REMOTE_URL = "https://git.kblab.me/kblack0610/.notes.git"; .\setup_notes_sync.ps1'
+    Write-Skip 'Re-run with: $env:NOTES_PRIMARY_REMOTE_URL = "https://git.example.internal/kblack0610/.notes.git"; .\setup_notes_sync.ps1'
     return
 }
 

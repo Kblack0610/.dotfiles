@@ -2,7 +2,7 @@
 # llm-call.sh — Calls an OpenAI-compatible LLM with judge prompt
 # Supports MLX -> LiteLLM fallback chain.
 
-CONFIG_FILE="$HOME/.dotfiles/.config/llm-judge/config.json"
+CONFIG_FILE="$HOME/.config/llm-judge/config.json"
 
 call_judge_llm() {
   local system_prompt="$1"

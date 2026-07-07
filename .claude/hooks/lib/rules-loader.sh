@@ -6,7 +6,7 @@ load_rules() {
   local rules=""
 
   # Primary rules source
-  local overview="$HOME/.dotfiles/.config/rulesync-global/.rulesync/rules/overview.md"
+  local overview="$HOME/.config/rulesync-global/.rulesync/rules/overview.md"
   if [[ -f "$overview" ]]; then
     rules+="$(strip_frontmatter "$overview")"
     rules+=$'\n\n'

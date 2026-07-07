@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not $MqttHost)   { $MqttHost   = if ($env:NOTES_MQTT_HOST)  { $env:NOTES_MQTT_HOST }  else { 'mosquitto.kblab.me' } }
+if (-not $MqttHost)   { $MqttHost   = if ($env:NOTES_MQTT_HOST)  { $env:NOTES_MQTT_HOST }  else { 'mosquitto.example.internal' } }
 if (-not $MqttPort)   { $MqttPort   = if ($env:NOTES_MQTT_PORT)  { [int]$env:NOTES_MQTT_PORT } else { 31883 } }
 if (-not $Topic)      { $Topic      = if ($env:NOTES_MQTT_TOPIC) { $env:NOTES_MQTT_TOPIC } else { 'notes/sync/needed' } }
 if (-not $SyncScript) { $SyncScript = Join-Path $PSScriptRoot 'notes-sync.ps1' }

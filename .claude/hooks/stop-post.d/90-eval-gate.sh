@@ -24,7 +24,7 @@ fi
 
 # --- project + paths ---
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
-. "$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
+. "$HOME/.config/shared-hooks/project-name.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 DATE_STAMP=$(date +%Y-%m-%d)
 EVAL_FILE="$HOME/.agent/evals/$PROJECT_NAME/${DATE_STAMP}.md"

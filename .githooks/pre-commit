@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Block commits that add client/employer/infra identifiers to this PUBLIC repo.
+# Patterns live in .githooks/sensitive-tokens.txt. Private content belongs in the
+# ~/.dotfiles-private overlay. Bypass (rarely, deliberately) with: git commit --no-verify
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+tokfile="$repo_root/.githooks/sensitive-tokens.txt"
+[ -f "$tokfile" ] || exit 0
+
+# Build one alternation regex from the non-comment lines.
+pattern="$(grep -vE '^\s*(#|$)' "$tokfile" | paste -sd'|' -)"
+[ -n "$pattern" ] || exit 0
+
+# Scan only ADDED lines in the staged diff (skip +++ headers and the token file).
+hits="$(git diff --cached --no-color -U0 -- . ':(exclude).githooks/sensitive-tokens.txt' \
+        | grep -E '^\+[^+]' | grep -Ei "$pattern" || true)"
+
+if [ -n "$hits" ]; then
+  echo "✖ pre-commit: staged changes contain sensitive tokens (this repo is PUBLIC):" >&2
+  echo "$hits" | sed 's/^/    /' | head -30 >&2
+  echo "" >&2
+  echo "  → Move the file into ~/.dotfiles-private, or redact the identifier." >&2
+  echo "  → Deliberate exception: git commit --no-verify" >&2
+  exit 1
+fi
+exit 0

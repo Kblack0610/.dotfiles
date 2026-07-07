@@ -121,7 +121,7 @@ ls -la AGENTS.md GEMINI.md .codex/ .gemini/ opencode.jsonc
 
 - Settings, permissions, hooks, env vars → `update-config` skill.
 - Per-correction lessons → write directly to `~/.agent/lessons/{project}.md`. The SessionStart hook injects them; no rule-layer change needed.
-- User preferences that should ride across projects → `mem0-ops` skill (mem0 at `mem0.kblab.me`), not the rule layer.
+- User preferences that should ride across projects → `mem0-ops` skill (mem0 at `mem0.example.internal`), not the rule layer.
 - Project runbooks → live in the project repo's docs, not in CLAUDE.md or AGENTS.md.
 
 ## Verification after a change

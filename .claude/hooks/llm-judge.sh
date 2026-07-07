@@ -21,9 +21,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$HOME/.dotfiles/.config/llm-judge/config.json"
-AUDIT_TEMPLATE="$HOME/.dotfiles/.config/llm-judge/prompt-template.md"
-EVAL_TEMPLATE="$HOME/.dotfiles/.config/llm-judge/prompt-template-eval.md"
+CONFIG_FILE="$HOME/.config/llm-judge/config.json"
+AUDIT_TEMPLATE="$HOME/.config/llm-judge/prompt-template.md"
+EVAL_TEMPLATE="$HOME/.config/llm-judge/prompt-template-eval.md"
 
 source "$SCRIPT_DIR/lib/rules-loader.sh"
 source "$SCRIPT_DIR/lib/transcript-extractor.sh"

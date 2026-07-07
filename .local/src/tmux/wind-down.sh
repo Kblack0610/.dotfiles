@@ -39,7 +39,7 @@ SPIN_DIR="$HOME/.agent/spin-down"
 
 # Resolve canonical project name (matches the Stop-hook's resolution).
 resolve_project() {
-  local pn="$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
+  local pn="$HOME/.config/shared-hooks/project-name.sh"
   if [ -f "$pn" ]; then
     # shellcheck source=/dev/null
     . "$pn"

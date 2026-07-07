@@ -55,7 +55,7 @@ fn from_index(p: &Profile) -> Option<Vec<(String, PathBuf)>> {
 /// Extract `(target, name)` from a line containing `[[target|name]]` (or bare
 /// `[[target]]`). Without an explicit alias the name is the target's last path
 /// segment — and when that segment is the generic `summary`, its parent dir instead
-/// (so `[[…/placemyparents/summary]]` still names the project `placemyparents`).
+/// (so `[[…/myapp/summary]]` still names the project `myapp`).
 fn parse_wikilink(line: &str) -> Option<(String, String)> {
     let start = line.find("[[")? + 2;
     let end = line[start..].find("]]")? + start;

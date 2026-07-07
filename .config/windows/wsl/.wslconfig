@@ -13,7 +13,7 @@ networkingMode=mirrored
 dnsTunneling=true
 
 # Auto-detect the Windows system proxy (WinHTTP / IE settings) for WSL processes.
-# Useful on Deloitte VDI where outbound traffic may require the corporate proxy.
+# Useful on Client VDI where outbound traffic may require the corporate proxy.
 autoProxy=true
 
 [experimental]

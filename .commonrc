@@ -188,7 +188,7 @@ alias python="/usr/bin/python3"
 alias o="nvim $HOME/.notes"
 
 # Journal helpers — profile-aware: paths come from the `notes` CLI so on a
-# corporate machine (giganticplayground profile) these land in that job's dir.
+# corporate machine (AcmeCorp profile) these land in that job's dir.
 # Fall back to the personal vault if the binary isn't built on this machine.
 ref() {  # today's refs subdir
     local d
@@ -270,3 +270,6 @@ fi
 # Isolated profile so it doesn't share cookies/extensions with main Chromium.
 alias vdi='chromium --user-data-dir="$HOME/.local/share/vdi-chromium-profile" --app="${VDI_URL:-about:blank}" --start-fullscreen'
 
+
+# Machine/infra-private env (overlaid from ~/.dotfiles-private; absent on public-only machines)
+[ -f "$HOME/.config/shell/private.sh" ] && source "$HOME/.config/shell/private.sh"

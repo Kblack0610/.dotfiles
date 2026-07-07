@@ -22,7 +22,7 @@ fi
 
 # --- project + sentinel ---
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
-. "$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
+. "$HOME/.config/shared-hooks/project-name.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 
 # Prefer THIS session's sentinel (keyed by the Stop payload's session_id) so

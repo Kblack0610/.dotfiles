@@ -86,7 +86,7 @@ get_session_status() {
 get_short_name() {
     local session="$1"
     case "$session" in
-        placemyparents) echo "pmp" ;;
+        myapp) echo "pmp" ;;
         ai-lab|ailab) echo "lab" ;;
         dotfiles) echo "dot" ;;
         home) echo "hom" ;;

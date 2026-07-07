@@ -9,7 +9,7 @@
 set -uo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
-. "$HOME/.dotfiles/.config/shared-hooks/project-name.sh"
+. "$HOME/.config/shared-hooks/project-name.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 
 SRC_DIR="$HOME/.claude/plans"

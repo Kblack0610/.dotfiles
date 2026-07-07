@@ -566,7 +566,7 @@ setup_notes_sync() {
     # tooling and profile resolution work even on machines without notes sync.
     if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
         log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git $bootstrap"
+        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
         "$bootstrap" --build-only
         return 0
     fi
@@ -576,7 +576,7 @@ setup_notes_sync() {
 }
 
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden at
-# vault.kblab.me. The `rbw` package itself is installed via PACKAGES_DEV_ARCH;
+# vault.example.internal. The `rbw` package itself is installed via PACKAGES_DEV_ARCH;
 # this just points it at the right server + account so secrets (e.g. Cloudflare
 # API tokens) can be sourced with `rbw get` instead of stale literals in
 # ~/.bash_profile. Idempotent: `rbw config set` is safe to re-run.
@@ -585,14 +585,14 @@ setup_notes_sync() {
 # interactively, and the resulting session/device state is exactly the kind of
 # ephemeral auth-state we never script. We surface the command instead.
 setup_rbw() {
-    log_section "Setting up rbw (Bitwarden CLI → vault.kblab.me)"
+    log_section "Setting up rbw (Bitwarden CLI → vault.example.internal)"
 
     if ! command -v rbw &>/dev/null; then
         log_warning "rbw not installed — skipping (expected in PACKAGES_DEV_ARCH)"
         return 0
     fi
 
-    local vault_url="https://vault.kblab.me"
+    local vault_url="https://vault.example.internal"
     local vault_email="${RBW_EMAIL:-kblack0610@gmail.com}"
 
     rbw config set base_url "$vault_url"

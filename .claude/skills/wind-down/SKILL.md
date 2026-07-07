@@ -69,7 +69,7 @@ A session just ended — a natural point to mirror the latest status into the **
 lab project exists for this repo, refresh its deterministic `## ← Release & status feed` AUTO block:
 
 ```bash
-~/.local/bin/agentctl-lab-sync <lab-project>   # e.g. placemyparents; no-op if none exists
+~/.local/bin/agentctl-lab-sync <lab-project>   # e.g. myapp; no-op if none exists
 ```
 
 This never touches the human `## → For the agents` section. Skip if the repo has no lab project.

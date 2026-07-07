@@ -28,7 +28,7 @@ get_project_from_path() {
         shack) echo "shk" ;;
         dotfiles|.dotfiles) echo "dot" ;;
         binks*) echo "bnk" ;;
-        placemyparents) echo "pmp" ;;
+        myapp) echo "pmp" ;;
         ai-lab) echo "lab" ;;
         *) echo "${dir_name:0:3}" ;;
     esac

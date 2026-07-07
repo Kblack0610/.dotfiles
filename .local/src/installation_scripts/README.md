@@ -151,10 +151,10 @@ install_all()           # Calls all functions in order
 - Docker requires systemd in WSL, which means a one-time `wsl --shutdown` from PowerShell after the script writes `/etc/wsl.conf`
 - See the **WSL installer walkthrough** section below for what each phase actually does
 
-### Windows (Deloitte VDI / Win11)
+### Windows (Client VDI / Win11)
 - The Windows side runs `windows/bootstrap.ps1` to get scoop, GlazeWM, Windows Terminal, PowerShell profile, etc.
 - Configs are *copied* (not symlinked) because Windows symlinks need Developer Mode or admin
-- Tuned for the Deloitte 8 GB VDI: `.wslconfig` caps WSL at 4 GB
+- Tuned for the Client 8 GB VDI: `.wslconfig` caps WSL at 4 GB
 - The Linux dev environment lives inside WSL and is provisioned by `linux/install_wsl.sh` (see above)
 - See `windows/README.md` for the bootstrap one-liner and OneDrive fallback
 

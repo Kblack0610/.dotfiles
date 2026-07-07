@@ -17,7 +17,7 @@ default_profile = "personal"
 # the right directory. Find the name with `hostname -s`, then uncomment + set.
 # The GLOBAL default stays "personal" (journal); only corporate boxes opt in here
 # so a stray default never reroutes the personal master into the corp dir.
-# <corp-machine-hostname> = "giganticplayground"
+# <corp-machine-hostname> = "AcmeCorp"
 
 # --- Personal vault (default) -------------------------------------------------
 [profile.personal]
@@ -36,10 +36,10 @@ projects  = "lab/projects/current"   # `notes today` auto-links these into ## Cu
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
 # On a machine set to this profile (via $NOTES_PROFILE or [hostname_map]), `notes
-# today` writes into employment/jobs/gigantic_playground/ instead of the personal
+# today` writes into employment/jobs/AcmeCorp/ instead of the personal
 # journal. Same git repo — only the active location changes.
-[profile.giganticplayground]
-root      = "~/.notes/employment/jobs/gigantic_playground"
+[profile.AcmeCorp]
+root      = "~/.notes/employment/jobs/AcmeCorp"
 daily     = "log"
 refs      = "refs"
 fun       = "backlogs/fun.md"
@@ -51,11 +51,11 @@ meetings  = "meetings"
 index     = "index"
 inbox     = "inbox"
 
-# --- Lazer (edubot) — Deloitte engagement -------------------------------------
-# Same pattern as giganticplayground: a corporate job profile that roots daily
-# notes inside the Deloitte engagement dir under jobs/lazer/.
+# --- Lazer (edubot) — Client engagement -------------------------------------
+# Same pattern as AcmeCorp: a corporate job profile that roots daily
+# notes inside the Client engagement dir under jobs/lazer/.
 [profile.lazer]
-root      = "~/.notes/employment/jobs/lazer/deloitte"
+root      = "~/.notes/employment/jobs/lazer/client"
 daily     = "log"
 refs      = "refs"
 fun       = "backlogs/fun.md"

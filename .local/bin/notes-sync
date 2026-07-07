@@ -1,3 +1,0 @@
-#!/bin/bash
-
-exec "$HOME/.local/src/git/git-sync-notes.sh" "$@"

@@ -399,7 +399,7 @@ setup_notes_sync() {
     # tooling and profile resolution work even on machines without notes sync.
     if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
         log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git $bootstrap"
+        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
         "$bootstrap" --build-only
         return 0
     fi

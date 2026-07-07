@@ -88,7 +88,7 @@ user can read back:
 name: prod-api
 description: prod API liveness
 probe: http
-target: https://api.placemyparents.com/health
+target: https://api.myapp.com/health
 expect_status: 200
 interval: 5m
 severity: high

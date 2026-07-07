@@ -62,7 +62,7 @@ $MinimalPackages = @(
     'glzr-io.zebar',                  # status bar paired with GlazeWM
     'Flow-Launcher.Flow-Launcher',    # dmenu-equivalent launcher (Alt+D, see flow-launcher/Settings.json)
     'Microsoft.PowerToys',            # FancyZones / Keyboard Manager / etc. (NOT used as launcher anymore)
-    # --- Healix K9S/Freelens cheatsheet (Confluence 1689387031) ----------
+    # --- ClientApp K9S/Freelens cheatsheet (Confluence 1689387031) ----------
     # Auth + Kubernetes access must live on the Windows side because
     # aws-azure-login needs a real browser for SAML+2FA (Puppeteer in WSL
     # is brittle on the VDI). npm install of aws-azure-login itself is
@@ -75,7 +75,7 @@ $MinimalPackages = @(
 )
 
 # gerardog.gsudo intentionally omitted from both tiers: needs admin to install,
-# which the Deloitte Win11 VDI does not grant. Add back if you ever get admin.
+# which the Client Win11 VDI does not grant. Add back if you ever get admin.
 $FullExtraPackages = @(
     'BurntSushi.ripgrep.MSVC',
     'sharkdp.fd',

@@ -1,6 +1,6 @@
 # Windows VDI Setup
 
-Bootstraps a Deloitte Canada Azure Win11 VDI (or any reasonably modern Win11 box) into a usable Linux-first dev environment. Uses **winget** — built into Windows 11, no third-party bootstrapping, no Cloudflare-fronted proxy issues.
+Bootstraps a Client Canada Azure Win11 VDI (or any reasonably modern Win11 box) into a usable Linux-first dev environment. Uses **winget** — built into Windows 11, no third-party bootstrapping, no Cloudflare-fronted proxy issues.
 
 ## What this gives you
 
@@ -18,7 +18,7 @@ The default invocation is **configs-only** — it pulls the dotfiles repo and co
 
 ## Preflight: enable WSL2 on the VDI image
 
-WSL2 is **not enabled by default** on the locked-down Deloitte VDI image. `wsl --install` will fail without it. Before running with `-Install` (or with `-Install -SkipWsl` followed eventually by a non-`-SkipWsl` run):
+WSL2 is **not enabled by default** on the locked-down Client VDI image. `wsl --install` will fail without it. Before running with `-Install` (or with `-Install -SkipWsl` followed eventually by a non-`-SkipWsl` run):
 
 1. Open a ServiceNow ticket (or message Anton, who handles these for the engineering teams) asking for **WSL2 to be enabled on your Azure VDI**.
 2. After they confirm, in PowerShell on the VDI run:
@@ -45,7 +45,7 @@ irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/insta
 
 ### Path B — OneDrive fallback
 
-Clipboard between your Mac and the VDI is **disabled** by Deloitte policy. OneDrive is the bridge:
+Clipboard between your Mac and the VDI is **disabled** by Client policy. OneDrive is the bridge:
 
 1. On your Mac, sync this repo's `bootstrap.ps1` into OneDrive.
 2. In the VDI's PowerShell:
@@ -257,12 +257,12 @@ We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synt
 
 ## Caveats
 
-- **VDI RAM**: this host was upgraded to 32 GB, so WSL runs uncapped (~50% default) with `vm.swappiness=10` + `autoMemoryReclaim=dropcache` to avoid swap thrash. On a smaller (e.g. 8 GB) VDI, add a `memory=` cap to `.wslconfig` and run Teams on your physical Mac (per Deloitte's VDI best-practices slide) rather than doubling up inside the VDI.
+- **VDI RAM**: this host was upgraded to 32 GB, so WSL runs uncapped (~50% default) with `vm.swappiness=10` + `autoMemoryReclaim=dropcache` to avoid swap thrash. On a smaller (e.g. 8 GB) VDI, add a `memory=` cap to `.wslconfig` and run Teams on your physical Mac (per Client's VDI best-practices slide) rather than doubling up inside the VDI.
 - **GlazeWM over RDP**: animations are off. If tiling still stutters, fall back to FancyZones (PowerToys).
 - **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock — no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` — the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.
 - **Weekly reboots**: the VDI re-images on a schedule. WSL persists across reboots, but if your VDI is ever wiped, re-run the bootstrap one-liner.
-- **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Deloitte VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_packages.ps1`.
+- **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Client VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_packages.ps1`.
 
 ## Re-syncing after dotfiles changes
 

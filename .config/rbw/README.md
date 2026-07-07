@@ -1,7 +1,7 @@
 # rbw — Bitwarden CLI → self-hosted Vaultwarden
 
 [`rbw`](https://github.com/doy/rbw) is a lightweight Rust Bitwarden client. We
-point it at the self-hosted Vaultwarden at **`vault.kblab.me`** so secrets
+point it at the self-hosted Vaultwarden at **`vault.example.internal`** so secrets
 (Cloudflare API tokens, etc.) can be sourced at shell-init with `rbw get`
 instead of living as stale literals in `~/.bash_profile`.
 
@@ -25,7 +25,7 @@ instead of living as stale literals in `~/.bash_profile`.
 
 ```bash
 # 1. installed + configured by the installer; or by hand:
-rbw config set base_url https://vault.kblab.me
+rbw config set base_url https://vault.example.internal
 rbw config set email    kblack0610@gmail.com
 
 # 2. log in (prompts for the Vaultwarden master password)

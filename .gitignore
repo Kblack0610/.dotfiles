@@ -58,17 +58,60 @@ Media/Music
 !.cursor/mcp.json
 !.cursor/user_settings.pb
 
-# Claude Code - comprehensive ignore
+# Claude Code - DEFAULT-DENY. The personal agent brain (CLAUDE.md, client/infra
+# skills, kb-*/release agents) lives in the private overlay ~/.dotfiles-private.
+# Only generic, shareable assets are allowlisted below — a NEW skill/agent is
+# private unless you add it here, so nothing client-specific auto-publishes.
 .claude/*
-!.claude/CLAUDE.md
-!.claude/agents/
 !.claude/commands/
+.claude/commands/kb/
+.claude/commands/remember.md
 !.claude/hooks/
-!.claude/skills/
 !.claude/settings.json
-!.claude/.mcp.json
-!.claude/mcp.json
-!.claude/setup-personal-mcp.sh
+# .mcp.json (personal MCP endpoints) lives in the private overlay.
+# Skills: allowlist the generic ones (client/infra skills are in the private overlay).
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/compliance/
+!.claude/skills/deep-research/
+!.claude/skills/deep-research-code/
+!.claude/skills/figma-use/
+!.claude/skills/gh-workflows/
+!.claude/skills/marp-slide/
+!.claude/skills/notes-system/
+!.claude/skills/one-pager/
+!.claude/skills/project-index/
+!.claude/skills/provision-capture/
+!.claude/skills/sentinel/
+!.claude/skills/session-snapshot/
+!.claude/skills/sprint-overseer/
+!.claude/skills/update-rules/
+!.claude/skills/wind-down/
+!.claude/skills/work-comms/
+# Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/backend-architect.md
+!.claude/agents/benchmarker.md
+!.claude/agents/business-panel-experts.md
+!.claude/agents/compliance-counsel.md
+!.claude/agents/deep-research-agent.md
+!.claude/agents/devops-architect.md
+!.claude/agents/frontend-architect.md
+!.claude/agents/learning-guide.md
+!.claude/agents/monitor.md
+!.claude/agents/performance-engineer.md
+!.claude/agents/planner.md
+!.claude/agents/python-expert.md
+!.claude/agents/quality-engineer.md
+!.claude/agents/refactoring-expert.md
+!.claude/agents/requirements-analyst.md
+!.claude/agents/root-cause-analyst.md
+!.claude/agents/security-engineer.md
+!.claude/agents/socratic-mentor.md
+!.claude/agents/system-architect.md
+!.claude/agents/technical-writer.md
+!.claude/agents/zc-architect.md
 
 # Explicitly never track Claude session/cache data
 .claude/.credentials.json
@@ -104,10 +147,8 @@ Media/Music
 # Never track: credentials, projects/, session artifacts (todos, debug, file-history, shell-snapshots, statsig, history)
 .aider*
 
-# DBeaver - only track connection configs
-.local/share/DBeaverData/drivers/
-.local/share/DBeaverData/workspace6/.metadata/
-!.local/share/DBeaverData/workspace6/General/.dbeaver/
+# DBeaver - never track connection configs (they carry DB hosts; machine-local + private)
+.local/share/DBeaverData/
 
 # k9s - ignore cluster state (may contain sensitive data)
 .config/k9s/clusters/
@@ -138,6 +179,66 @@ Media/Music
 test_notifications.sh
 
 .gemini/
+
+# ── Private overlay — moved to the standalone ~/.dotfiles-private repo ──────────
+# These carry client/employer names, infra hosts, or machine-local secrets. They
+# are deployed via the private overlay (stowed on top). Never track here.
+/AGENTS.md
+.k8s-rc
+.ssh/config
+.ssh/README.md
+.bin/csa-firefox-auth-bridge
+.config/agentctl/
+.config/smug/
+.config/infra-dash/
+.config/llm-judge/
+.config/rulesync-global/
+.config/opencode/
+.config/shared-hooks/project-map.json
+.config/shared-hooks/knowledge-bases.json
+.config/firefox/bookmarks/
+.config/firefox/simpletabgroups/
+.config/firefox/policies.vdi.json
+.local/src/ticket/
+.local/src/notes-vikunja/
+.local/src/meeting-notes/
+# personal MCP config + agent/notes tooling kept in place but private-overlaid
+.claude/.mcp.json
+.config/launchd/
+.local/bin/agent-notify
+.local/bin/agentctl-dream
+.local/bin/agentctl-lab-sync
+.local/bin/agentctl-nightly-sync
+.local/bin/agentctl-project-index
+.local/bin/audio-stream
+.local/bin/binks
+.local/bin/captain-watchdog
+.local/bin/fork-sync
+.local/bin/notes-bootstrap
+.local/bin/notes-to-vikunja
+.local/bin/notes-sync
+.local/bin/notes-watch
+.local/bin/inbox-notify
+.local/bin/opencode-binks
+.local/bin/opencode-binks-bootstrap
+.local/bin/watch-companion-loop
+# personal notes/agent systemd units (+ their .target.wants symlinks), both levels
+.config/systemd/user/*notes*
+.config/systemd/user/*agentctl*
+.config/systemd/user/*git-sync*
+.config/systemd/user/*journal*
+.config/systemd/user/*inbox*
+.config/systemd/user/*mqtt*
+.config/systemd/user/*regen-project*
+.config/systemd/user/*lab-sync*
+.config/systemd/user/*/*notes*
+.config/systemd/user/*/*agentctl*
+.config/systemd/user/*/*git-sync*
+.config/systemd/user/*/*journal*
+.config/systemd/user/*/*inbox*
+.config/systemd/user/*/*mqtt*
+.config/systemd/user/*/*regen-project*
+.config/systemd/user/*/*lab-sync*
 
 # Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
 .agent/

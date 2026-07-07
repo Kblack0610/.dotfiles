@@ -37,7 +37,7 @@ layout {
     // }
 
     // Tab 3: Platform
-    tab name="Platform" cwd="~/dev/BlackNBrownStudios/platform" {
+    tab name="Platform" cwd="~/dev/MyStudio/platform" {
             pane name="master_agent" {
                 command "claude"
                 args "--dangerously-skip-permissions"

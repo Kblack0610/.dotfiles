@@ -115,7 +115,7 @@ This dir is loaded by Claude Code as the project's harness layer:
 - **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing, eval format).
 - **`.claude/agents/`** — 25 specialized subagents (`kb-product-owner`, `kb-architect`, `kb-developer`, `kb-qa`, `kb-coordinator`, plus security/python/frontend/backend/devops/perf/refactoring/quality/learning/research/etc.).
 - **`.claude/skills/`** — domain skills auto-invoked by name. Currently:
-  `notes-system`, `gh-workflows`, `k8s-ops`, `cloudflare-ops`, `forgejo-ops`, `mem0-ops`, `adb-ops`, `bnb-quality-gates`, `bug-bash`, `bug-bash-wrapup`, `one-pager`, `placemyparents-release`.
+  `notes-system`, `gh-workflows`, `k8s-ops`, `cloudflare-ops`, `forgejo-ops`, `mem0-ops`, `adb-ops`, `app-quality-gates`, `bug-bash`, `bug-bash-wrapup`, `one-pager`, `myapp-release`.
 - **`.claude/commands/`** — 51 slash commands across four namespaces:
   `/sc:*` (analyze, build, design, implement, improve, troubleshoot, …), `/my:*` (claude-edit, fix-ci, fresh, judge, monitor-pr, pr-merge-flow, worktree-recycle, …), `/kb:*` (workflow, implement, ci, ci-analyze), `/daily:*` (analysis, standup, summary, slack), plus `binks`, `feature`, `remember`.
 - **`.claude/hooks/`** — Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go health), then `stop-post.d/85-sync-plans.sh` (mirror plans → `~/.agent/plans/{project}/`) and `stop-post.d/90-eval-gate.sh` (eval block + lessons capture). Plus `block-pip.sh`, `large-file-warning.sh`, `llm-judge.sh`.

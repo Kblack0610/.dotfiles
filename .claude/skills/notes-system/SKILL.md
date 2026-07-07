@@ -43,7 +43,7 @@ do not reinvent their logic.
 └── _archive/         # incl. retired Obsidian setup (_archive/obsidian/)
 ```
 
-Notes repo has two git remotes: `origin` (Forgejo at `git.kblab.me/kblack0610/.notes`) and `backup` (GitHub `Kblack0610/.notes`, push-only from the master device `cachyos-x8664-main`).
+Notes repo has two git remotes: `origin` (Forgejo at `git.example.internal/kblack0610/.notes`) and `backup` (GitHub `Kblack0610/.notes`, push-only from the master device `cachyos-x8664-main`).
 
 Sync is event-driven by a Forgejo push webhook → in-cluster `notes-sync-bridge` → mosquitto + ntfy fan-out, with a 5-min fallback timer per platform:
 
@@ -60,7 +60,7 @@ Sync is event-driven by a Forgejo push webhook → in-cluster `notes-sync-bridge
 `--profile` flag → `$NOTES_PROFILE` → `[hostname_map]` (by `hostname -s`) → `default_profile`.
 
 - `personal` (default): journal under `~/.notes/journal/`
-- `giganticplayground`: daily notes + refs rooted at `~/.notes/employment/jobs/gigantic_playground/`
+- `AcmeCorp`: daily notes + refs rooted at `~/.notes/employment/jobs/AcmeCorp/`
   (corporate machines). Same git repo — only the active location changes.
 
 `notes config` prints the resolved profile + every path; use it before assuming any location.
@@ -98,7 +98,7 @@ binary** (`cargo build --release`; warns if cargo missing — shell falls back t
 `journal-monthly-archive` on Linux), clones the repo, configures remotes.
 
 ```bash
-notes-bootstrap --primary-url https://git.kblab.me/kblack0610/.notes.git
+notes-bootstrap --primary-url https://git.example.internal/kblack0610/.notes.git
 # or env vars:
 NOTES_PRIMARY_REMOTE_URL=... NOTES_BACKUP_REMOTE_URL=... notes-bootstrap
 ```
@@ -115,13 +115,13 @@ Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detec
 
 ### `notes-to-vikunja`
 
-Bridge that captures **project tasks** from today's daily note into Vikunja (`vikunja.kblab.me`). One-directional: notes are the capture surface, Vikunja stays the source of truth. Script: `~/.local/src/notes-vikunja/notes-to-vikunja` (Python stdlib); runs every 15 min via `notes-vikunja.timer`, or manually (`--dry-run`, `--date YYYY-MM-DD`).
+Bridge that captures **project tasks** from today's daily note into Vikunja (`vikunja.example.internal`). One-directional: notes are the capture surface, Vikunja stays the source of truth. Script: `~/.local/src/notes-vikunja/notes-to-vikunja` (Python stdlib); runs every 15 min via `notes-vikunja.timer`, or manually (`--dry-run`, `--date YYYY-MM-DD`).
 
 What syncs (everything else stays notes-only):
 
 | Line in daily note | Lands in |
 |---|---|
-| `- [ ] placemyparents: fix bug waves` | Vikunja project `placemyparents` (prefix must match an existing project title or a `PROJECT_ALIASES` alias) |
+| `- [ ] myapp: fix bug waves` | Vikunja project `myapp` (prefix must match an existing project title or a `PROJECT_ALIASES` alias) |
 | `- [ ] fix bug waves #dodginballs` | Vikunja project `dodginballs` |
 | `- [ ] renew passport @vk` | Vikunja `Inbox` project (opt-in capture for non-project tasks) |
 

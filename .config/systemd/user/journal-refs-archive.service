@@ -1,6 +1,0 @@
-[Unit]
-Description=Archive old journal ref folders monthly
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/archive-refs

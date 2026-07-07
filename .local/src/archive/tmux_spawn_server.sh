@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Spawns dev servers (api + web) for a platform app
-# Creates a new window with split panes like placemyparents.yml
+# Creates a new window with split panes like myapp.yml
 
 export PATH=$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin
 
-PLATFORM_APPS_DIR="$HOME/dev/bnb/platform/apps"
+PLATFORM_APPS_DIR="$HOME/dev/app/platform/apps"
 
 # 1. Select platform app
 APP=$(find "$PLATFORM_APPS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | \

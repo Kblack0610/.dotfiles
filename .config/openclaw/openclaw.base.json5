@@ -153,7 +153,7 @@
     providers: {
       // LiteLLM gateway (mac-studio mlx-server fronted via in-cluster
       // litellm at apps/litellm/). Replaces the legacy direct-MLX
-      // layout that pointed at 192.168.1.4:8080/8081/8082 — those
+      // layout that pointed at 10.0.0.4:8080/8081/8082 — those
       // ports were retired when mlx-server unified to :8090 and
       // litellm took over routing. Model IDs and provider name match
       // the cluster pod's apps/openclaw/configmap.yaml so the local

@@ -16,7 +16,7 @@ typical, ≤5 min worst case.
    └──────────▲─────────────────┘
               │
    ┌──────────┴─────────────────────────────────────────┐
-   │ Forgejo @ git.kblab.me  (primary git, in-cluster)  │
+   │ Forgejo @ git.example.internal  (primary git, in-cluster)  │
    │ post-receive webhook ──┐                           │
    └────────────────────────┼───────────────────────────┘
                             ▼
@@ -44,14 +44,14 @@ typical, ≤5 min worst case.
 You provision two things outside git:
 
 - An identity that can push to Forgejo (HTTPS token in `~/.git-credentials` is fine)
-- The Forgejo URL: `https://git.kblab.me/kblack0610/.notes.git`
+- The Forgejo URL: `https://git.example.internal/kblack0610/.notes.git`
 
 The master device additionally has `backup` → `git@github.com:Kblack0610/.notes.git`. Other devices skip this.
 
 ## Desktop bootstrap (Linux + macOS)
 
 ```bash
-NOTES_PRIMARY_REMOTE_URL=https://git.kblab.me/kblack0610/.notes.git \
+NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git \
 ~/.dotfiles/.local/bin/notes-bootstrap
 ```
 
@@ -75,7 +75,7 @@ Required system packages (`packages.conf` covers them on a fresh install):
 The full chain is `sync_dotfiles.ps1 → install_packages.ps1 → apply_configs.ps1`. The notes setup runs as part of `apply_configs.ps1`, gated on `$env:NOTES_PRIMARY_REMOTE_URL`:
 
 ```powershell
-$env:NOTES_PRIMARY_REMOTE_URL = 'https://git.kblab.me/kblack0610/.notes.git'
+$env:NOTES_PRIMARY_REMOTE_URL = 'https://git.example.internal/kblack0610/.notes.git'
 ~\.dotfiles\.local\src\installation_scripts\windows\setup_notes_sync.ps1
 ```
 
@@ -91,16 +91,16 @@ Run a task manually: `Start-ScheduledTask -TaskName notes-sync-fallback`.
 
 ```bash
 ~/.dotfiles/.local/bin/notes-termux-bootstrap \
-  --primary-url https://git.kblab.me/kblack0610/.notes.git
+  --primary-url https://git.example.internal/kblack0610/.notes.git
 ```
 
 Plus install the official **ntfy Android app** and subscribe to:
 
 ```
-https://ntfy.kblab.me/notes-sync
+https://ntfy.example.internal/notes-sync
 ```
 
-(Tailscale always-on lets the phone reach `ntfy.kblab.me` even on cellular.)
+(Tailscale always-on lets the phone reach `ntfy.example.internal` even on cellular.)
 
 The ntfy notifications use the OS push channel — near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
 
@@ -126,7 +126,7 @@ TOKEN=$(kubectl --context home-k3s exec -n forgejo deploy/forgejo -- \
 curl -u "kblack0610:$TOKEN" -X PATCH \
   -H 'Content-Type: application/json' \
   -d "{\"config\":{\"secret\":\"$NEW\"}}" \
-  https://git.kblab.me/api/v1/repos/kblack0610/.notes/hooks/<id>
+  https://git.example.internal/api/v1/repos/kblack0610/.notes/hooks/<id>
 ```
 
 ## Runtime overrides
@@ -138,7 +138,7 @@ NOTES_SYNC_PRIMARY_REMOTE=origin
 NOTES_SYNC_BACKUP_REMOTE=backup           # only on the master device
 NOTES_SYNC_MIRROR_REMOTE=nas              # only during the NAS deprecation window
 NOTES_SYNC_BRANCH=master
-NOTES_MQTT_HOST=mosquitto.kblab.me
+NOTES_MQTT_HOST=mosquitto.example.internal
 NOTES_MQTT_PORT=31883
 NOTES_MQTT_TOPIC=notes/sync/needed
 ```
@@ -150,12 +150,12 @@ NOTES_MQTT_TOPIC=notes/sync/needed
 git -C ~/.notes remote -v
 
 # Master device:
-#   origin  https://git.kblab.me/kblack0610/.notes.git
+#   origin  https://git.example.internal/kblack0610/.notes.git
 #   backup  git@github.com:Kblack0610/.notes.git
 #   nas     ssh://...nas.lan:2222/...    (only during deprecation window)
 #
 # Other devices:
-#   origin  https://git.kblab.me/kblack0610/.notes.git
+#   origin  https://git.example.internal/kblack0610/.notes.git
 
 # Push side: edit a file, watch the sync log
 date >> ~/.notes/inbox/_test.md
@@ -172,7 +172,7 @@ journalctl --user -u notes-mqtt -f          # Linux
 ```bash
 cd ~/.notes
 git remote rename origin nas                                       # legacy NAS becomes mirror
-git remote add origin https://git.kblab.me/kblack0610/.notes.git   # Forgejo is primary now
+git remote add origin https://git.example.internal/kblack0610/.notes.git   # Forgejo is primary now
 git fetch origin
 git push -u origin master
 echo "NOTES_SYNC_MIRROR_REMOTE=nas" >> ~/.config/notes-sync.env    # keep mirror push for 2 weeks

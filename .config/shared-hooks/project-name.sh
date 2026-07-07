@@ -12,7 +12,7 @@
 
 resolve_project_name() {
   local abs_path="$1"
-  local map_file="${PROJECT_MAP_FILE:-$HOME/.dotfiles/.config/shared-hooks/project-map.json}"
+  local map_file="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
   local base="${abs_path##*/}"
   base="${base#.}"
 
