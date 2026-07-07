@@ -2,7 +2,9 @@
 set -euo pipefail
 
 DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
-RULESYNC_ROOT="$DOTFILES_ROOT/.config/rulesync-global"
+# rulesync source lives in the private overlay (~/.dotfiles-private), deployed at
+# ~/.config/rulesync-global. Absent on public-only machines (handled below).
+RULESYNC_ROOT="${RULESYNC_ROOT:-$HOME/.config/rulesync-global}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 GEMINI_HOME="${GEMINI_HOME:-$HOME/.gemini}"
@@ -39,8 +41,9 @@ if [ -z "$RULESYNC" ]; then
 fi
 
 if [ ! -d "$RULESYNC_ROOT" ]; then
-    echo "Missing Rulesync source directory: $RULESYNC_ROOT" >&2
-    exit 1
+    # Public-only machine (no private overlay) — nothing to sync; skip cleanly.
+    echo "rulesync source ($RULESYNC_ROOT) absent — skipping AI-config sync." >&2
+    exit 0
 fi
 
 stage_dir="$(mktemp -d)"
