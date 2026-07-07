@@ -415,13 +415,49 @@ apply_dotfiles() {
     [[ -f ~/.bashrc ]] && rm -f ~/.bashrc
     [[ -f ~/.zshrc ]] && rm -f ~/.zshrc
 
-    stow .
+    # --no-folding: per-item symlinks so the private overlay (~/.dotfiles-private)
+    # can contribute siblings into shared dirs (.claude/skills, .config, …) without
+    # stow tree-folding a whole dir into one symlink and blocking the overlay.
+    stow --no-folding .
 
     # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
 
     log_info "Dotfiles applied"
+}
+
+# Clone + stow the PRIVATE overlay (~/.dotfiles-private) on top of the public repo.
+# Optional: a machine is fully functional from the public repo alone. Only clones
+# when GitHub auth is available; skips cleanly otherwise. Idempotent.
+setup_dotfiles_private() {
+    log_section "Applying private dotfiles overlay (optional)"
+
+    if ! command -v stow &>/dev/null; then
+        log_warning "stow not installed, skipping private overlay"
+        return 0
+    fi
+
+    local PRV="$HOME/.dotfiles-private"
+    if [ ! -d "$PRV" ]; then
+        if gh auth status &>/dev/null \
+           || ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@github.com 2>&1 | grep -qiE 'success|authenticat'; then
+            log_info "Cloning private overlay -> $PRV"
+            git clone git@github.com:Kblack0610/.dotfiles-private.git "$PRV" \
+                || { log_warning "Private overlay clone failed; continuing public-only"; return 0; }
+        else
+            log_warning "No GitHub auth; skipping private overlay (public-only machine)"
+            return 0
+        fi
+    else
+        ( cd "$PRV" && git pull --ff-only 2>/dev/null || true )
+    fi
+
+    if ( cd "$PRV" && stow --no-folding --target="$HOME" . ); then
+        log_info "Private overlay applied"
+    else
+        log_warning "Private overlay stow reported conflicts; review manually"
+    fi
 }
 
 # Setup Claude plans directory symlink
@@ -515,7 +551,8 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
-    setup_ai_memory 
+    setup_dotfiles_private
+    setup_ai_memory
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
@@ -528,6 +565,6 @@ export -f install_basics install_tools install_terminal install_gui install_runt
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles install_npm_packages setup_ai_memory
+export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private install_npm_packages setup_ai_memory
 export -f install_all
 export -f _resolve_pkg_name install_package_list
