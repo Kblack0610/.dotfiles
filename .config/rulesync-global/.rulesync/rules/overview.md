@@ -47,6 +47,9 @@ Applies to durable, outward-facing writing — READMEs, commit/PR messages, docs
 - Lead with the fact or the imperative — no throat-clearing ("It's worth noting that…", "Basically…").
 - Prefer concrete, verifiable claims over adjectives: "no Tree-sitter parser required" beats "incredibly lightweight". State caveats plainly instead of hiding them.
 - Match the surrounding document's voice and density.
+- Plain ASCII only. No fancy Unicode symbols: no em dash or en dash (use a regular hyphen, comma, or colon), no section sign (write "Section"), no arrows (write "->"), no >=, <=, x-times, middot, ellipsis, subscripts (write "T0"), or emoji. This applies to anything mirrored into ClickUp or Google Docs too. Why: these are the tells that make a doc read as machine-written, and they render badly in some viewers.
+- Do not invent label schemes (for example "F1..F27" IDs). Refer to things by the source document's own names and numbering.
+- Do not hard-wrap prose or bullets to a column width. Write each paragraph, bullet, and blockquote line as one physical line so renderers (ClickUp, GitHub) soft-wrap. Tables stay one row per line. Why: a hard newline mid-sentence becomes a forced line break in soft-wrapping viewers.
 
 ## Artifact Placement
 
