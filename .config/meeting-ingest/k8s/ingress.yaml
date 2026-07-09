@@ -1,0 +1,30 @@
+# Public ingress for the Krisp webhook receiver.
+#
+# IMPORTANT: this manifest's HOME is the `home-config` GitOps repo (under
+# home-config/apps/krisp-receiver/), NOT this dotfiles repo — it lives here only
+# as the reference template. Pushing it to home-config makes external-dns publish
+# the proxied CNAME and the public-sites tunnel wildcard route it. See README.
+#
+# The host MUST be on a PUBLIC Cloudflare zone (kennethblack.me / kblack.dev /
+# blacknbrownstudios.com / binks.chat) so Krisp (external SaaS) can reach it.
+# *.kblab.me is LAN-only (AdGuard) and will NOT work.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: krisp-receiver
+  namespace: meeting-ingest
+  annotations:
+    # external-dns publishes this host as a proxied Cloudflare CNAME.
+    external-dns.alpha.kubernetes.io/hostname: krisp-hook.kblack.dev
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: krisp-hook.kblack.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: krisp-receiver
+                port: { number: 80 }

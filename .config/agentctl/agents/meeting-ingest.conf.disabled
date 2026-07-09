@@ -1,0 +1,27 @@
+# meeting-ingest — poll Krisp for new meetings and ingest them into the notes vault.
+#
+# DISABLED scaffold. To arm on Linux: rename to `meeting-ingest.conf` (drop the
+# .disabled suffix), then `agentctl reload`. agentctl only reads *.conf, so this
+# file is inert until renamed.
+#
+# This is a recurring POLL (the notes-to-vikunja bridge pattern), NOT a true
+# post-meeting event trigger -- Krisp has no local webhook. It runs hourly, and
+# the helper's dedup ledger (~/.local/state/meeting-ingest/ingested.tsv) makes
+# every run idempotent so only new meetings are written.
+#
+# Ingest needs the Krisp MCP, so COMMAND uses the `claude --print` harness (the
+# only MCP-capable harness) rather than a bare wrapper. Automation is NOTES-ONLY:
+# it must not create tracker tickets unattended (a visible write needs a human
+# OK) -- the prompt says "notes-only, no tickets".
+#
+# macOS note: agentctl is Linux/systemd-only. The work Mac (where the gigantic
+# profile and the meeting-bar tooling live) uses the launchd plist in
+# AUTOMATION.md instead of this conf.
+
+NAME=meeting-ingest
+KIND=oneshot
+DESCRIPTION='Ingest new Krisp meetings into the notes vault (notes-only, dedup-guarded)'
+COMMAND='echo "/meeting-ingest backfill today (notes-only, do not create tickets)" | claude --print --allowedTools "mcp__claude_ai_Krisp__search_meetings,mcp__claude_ai_Krisp__get_multiple_documents,mcp__claude_ai_Krisp__date_time,Bash,Read,Edit"'
+SCHEDULE='*-*-* *:07:00'
+# Agent runtime log — runtime axis, NOT the notes vault (two-axis rule).
+INBOX="$HOME/.local/state/agentctl/meeting-ingest"

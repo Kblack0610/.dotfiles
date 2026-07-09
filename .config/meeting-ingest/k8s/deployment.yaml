@@ -1,0 +1,52 @@
+# Krisp webhook receiver — Phase 3 of meeting-ingest automation.
+# Reuses the notes-sync broker mosquitto.kblab.me:31883 (no auth today), so the
+# only secret is the webhook shared secret. Create it before applying:
+#   kubectl -n meeting-ingest create secret generic krisp-receiver \
+#     --from-literal=webhook-secret="$(openssl rand -hex 24)"
+# Public ingress (so Krisp SaaS can reach it) is a Traefik Ingress on a PUBLIC
+# zone via the home-config GitOps repo — see ingress.yaml + README. *.kblab.me
+# is LAN-only (AdGuard) and will NOT work for an external webhook.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krisp-receiver
+  namespace: meeting-ingest
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: krisp-receiver }
+  template:
+    metadata:
+      labels: { app: krisp-receiver }
+    spec:
+      containers:
+        - name: receiver
+          image: git.kblab.me/kblack/krisp-receiver:latest   # TEMPLATE: your registry
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: MQTT_HOST
+              value: mosquitto.kblab.me        # reuse the notes-sync broker
+            - name: MQTT_PORT
+              value: "31883"                    # k3s NodePort; no auth today
+            - name: MQTT_TOPIC
+              value: meeting-ingest/krisp
+            - name: WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: krisp-receiver, key: webhook-secret } }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: krisp-receiver
+  namespace: meeting-ingest
+spec:
+  selector: { app: krisp-receiver }
+  ports: [{ port: 80, targetPort: 8080 }]
+# Public exposure = a Traefik Ingress on a public zone (see ingress.yaml), added
+# via the home-config GitOps repo so external-dns publishes the proxied CNAME and
+# the tunnel wildcard routes it. Do NOT try to add a per-host Cloudflare tunnel
+# route (obsolete; the cluster token can't edit tunnel config).

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kblack.meeting-ingest-watch</string>
+
+    <!-- Phase 2: local end-trigger. Fires meeting-end-trigger.sh whenever the
+         tracked meeting changes (WatchPaths on the sketchybar calendar cache)
+         AND every 5 min (StartInterval) so a meeting's end+grace is still
+         checked when nothing is writing the cache. The script captures
+         meetings you actually attended (mic/joined) and dispatches a notes-only
+         ingest once end+grace passes. Idempotent (dedup markers). macOS-only:
+         depends on the EventKit/sketchybar layer; Linux uses the agentctl poll. -->
+    <key>WatchPaths</key>
+    <array>
+        <string>~/.local/cache/sketchybar/calendar.state</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>~/.dotfiles/.local/src/meeting-status/meeting-end-trigger.sh</string>
+    </array>
+
+    <!-- Coalesce chatty cache writes; the script is cheap but no need to storm. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/meeting-ingest-watch.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/meeting-ingest-watch.err.log</string>
+</dict>
+</plist>

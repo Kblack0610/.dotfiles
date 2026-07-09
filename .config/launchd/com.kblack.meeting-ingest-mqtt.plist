@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kblack.meeting-ingest-mqtt</string>
+
+    <!-- Phase 3: Mac MQTT subscriber. Long-lived listener for the live push
+         path (Krisp webhook -> cluster receiver -> MQTT). KeepAlive restarts it
+         if the broker connection drops. TEMPLATE: set MQTT_* env to match the
+         receiver's broker before loading. Notes-only ingest; the Phase 1 poll
+         remains the fallback if the broker/receiver is down. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>~/.dotfiles/.local/src/meeting-status/meeting-ingest-mqtt-sub.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MQTT_HOST</key>   <string>mosquitto.kblab.me</string>
+        <key>MQTT_PORT</key>   <string>31883</string>
+        <key>MQTT_TOPIC</key>  <string>meeting-ingest/krisp</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/meeting-ingest-mqtt.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/meeting-ingest-mqtt.err.log</string>
+</dict>
+</plist>

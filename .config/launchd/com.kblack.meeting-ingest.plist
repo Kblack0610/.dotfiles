@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kblack.meeting-ingest</string>
+
+    <!-- Phase 1: safety poll. The guaranteed-catch fallback under the local
+         end-trigger (meeting-ingest-watch) and, later, the Krisp webhook.
+         Notes-only + dedup-guarded (helper ledger), so re-runs are no-ops.
+         Mirrors git-sync-notes (the 5-min notes fallback). 30 min because
+         Krisp lags meeting-end by minutes. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>printf '%s' "/meeting-ingest backfill today -- automated run: notes-only, DO NOT create tickets; add a '## Suggested Tickets' section drafting tickets for my action items." | claude --print --allowedTools "mcp__claude_ai_Krisp__search_meetings,mcp__claude_ai_Krisp__get_multiple_documents,mcp__claude_ai_Krisp__date_time,Bash,Read,Edit"</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/meeting-ingest.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/meeting-ingest.err.log</string>
+</dict>
+</plist>
