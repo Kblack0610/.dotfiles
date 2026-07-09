@@ -11,7 +11,7 @@ sketchybar --add event bose_audio 2>/dev/null
 sketchybar --add item bose_audio right \
            --set bose_audio \
                  icon="$ICON_BOSE" \
-                 icon.font="Symbols Nerd Font:Bold:14.0" \
+                 icon.font="Symbols Nerd Font:Regular:16.0" \
                  icon.color="$DIM" \
                  label.drawing=off \
                  updates=on \
