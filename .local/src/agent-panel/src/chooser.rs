@@ -66,7 +66,7 @@ fn collect() -> Vec<Agent> {
 
         let project = render::project_from_path(&pane.current_path);
         let repo_full = render::basename(&pane.current_path).to_string();
-        let short_target = render::short_target(&pane.session, &pane.window_index, &project);
+        let short_target = render::short_target(&pane.session, &pane.window_index);
 
         agents.push(Agent {
             glyph: session::glyph(&sess.status),

@@ -40,18 +40,20 @@ fn strip_agent_suffix(s: &str) -> &str {
     s
 }
 
-/// Shorten the tmux session for display under a project header, e.g. under
-/// "platform" the session "platform-agent-2" becomes "agent-2".
-pub fn short_target(session: &str, window_index: &str, project: &str) -> String {
+/// Row label under a project header: the worktree's agent number, then the tmux
+/// window index, e.g. session "platform-agent-4" window "2" -> "4:2". These are
+/// two distinct values -- the agent number identifies the worktree, the window
+/// index distinguishes tasks within it. Falls back to the window index alone
+/// when the session carries no "-agent-N" worktree suffix.
+pub fn short_target(session: &str, window_index: &str) -> String {
     let s = session.trim_start_matches(['_', '.']);
-    let shortened = if s == project {
-        ""
-    } else if let Some(rest) = s.strip_prefix(&format!("{project}-")) {
-        rest
-    } else {
-        s
-    };
-    format!("{shortened}:{window_index}")
+    let agent = s.rsplit_once("-agent").map(|(_, rest)| rest.trim_start_matches('-'));
+    match agent {
+        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{n}:{window_index}")
+        }
+        _ => window_index.to_string(),
+    }
 }
 
 fn colorize(g: char) -> String {
@@ -178,10 +180,14 @@ mod tests {
     }
 
     #[test]
-    fn shortens_session() {
-        assert_eq!(short_target("platform-agent-2", "1", "platform"), "agent-2:1");
-        assert_eq!(short_target("platform", "0", "platform"), ":0");
-        assert_eq!(short_target("other", "3", "platform"), "other:3");
+    fn labels_agent_and_window() {
+        // agent number leads (the worktree identity), window index trails.
+        assert_eq!(short_target("platform-agent-4", "2"), "4:2");
+        assert_eq!(short_target("platform-agent-2", "1"), "2:1");
+        assert_eq!(short_target("platform-agent-2", "4"), "2:4");
+        // no "-agent-N" suffix -> window index only.
+        assert_eq!(short_target("platform", "3"), "3");
+        assert_eq!(short_target("_dotfiles", "0"), "0");
     }
 
     #[test]
