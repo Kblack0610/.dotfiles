@@ -86,6 +86,38 @@ button:hover {
     font-weight: bold;
 }
 
+/* Timebox Module - stopwatch + recurring lap countdown */
+#custom-timebox {
+    padding: 2px 12px;
+    margin: 4px 6px;
+    border-radius: 8px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+/* Idle / paused / no active stopwatch - subtle gray */
+#custom-timebox.inactive {
+    background-color: rgba(102, 102, 102, 0.3);
+    color: #666666;
+}
+/* Fresh lap window (> 5 min to switch) - calm green */
+#custom-timebox.ready {
+    background-color: rgba(134, 168, 62, 0.2);
+    color: #86a83e;
+}
+/* Approaching the switch (<= 5 min) - golden */
+#custom-timebox.active {
+    background-color: rgba(255, 204, 47, 0.3);
+    color: #ffcc2f;
+    border-left: 3px solid #ffcc2f;
+}
+/* Switch imminent (<= 1 min) - attention red */
+#custom-timebox.urgent {
+    background-color: rgba(239, 87, 52, 0.4);
+    color: #ef5734;
+    border-left: 3px solid #ef5734;
+    font-weight: bold;
+}
+
 /* Common module styling for right-side modules */
 #clock,
 #battery,
@@ -205,6 +237,50 @@ button:hover {
 #tray > .needs-attention {
     -gtk-icon-effect: highlight;
     background-color: rgba(239, 87, 52, 0.2);
+}
+
+/* ===== Mini pin (overlay-layer floating status bar) ===== */
+/* Rounded floating pill, translucent Jackie Brown theme. */
+window#waybar.pin {
+    background-color: rgba(44, 28, 21, 0.92);
+    border: 2px solid rgba(174, 140, 32, 0.4);
+    border-radius: 12px;
+    border-bottom: 2px solid rgba(174, 140, 32, 0.4);
+}
+
+/* Fleet reachability module */
+#custom-machines {
+    padding: 2px 12px;
+    margin: 4px 6px;
+    border-radius: 8px;
+    font-weight: bold;
+    background-color: rgba(134, 168, 62, 0.15);
+    color: #bfbfbf;
+    transition: all 0.3s ease;
+}
+#custom-machines.urgent {
+    background-color: rgba(239, 87, 52, 0.35);
+    border-left: 3px solid #ef5734;
+}
+
+/* Pin action buttons + size chevron */
+#custom-act-sync,
+#custom-act-pull,
+#custom-act-panel,
+#custom-act-ssh,
+#custom-pin-size {
+    padding: 2px 12px;
+    margin: 4px 3px;
+    border-radius: 8px;
+    background-color: rgba(61, 42, 30, 0.5);
+    color: #ffcc2f;
+}
+#custom-act-sync:hover,
+#custom-act-pull:hover,
+#custom-act-panel:hover,
+#custom-act-ssh:hover,
+#custom-pin-size:hover {
+    background-color: rgba(174, 140, 32, 0.35);
 }
 
 /* Tooltip styling */

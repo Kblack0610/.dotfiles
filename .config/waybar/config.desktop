@@ -8,6 +8,7 @@
         "hyprland/workspaces"
     ],
     "modules-right": [
+        "custom/timebox",
         "custom/ai-agents",
         "idle_inhibitor",
         "pulseaudio",

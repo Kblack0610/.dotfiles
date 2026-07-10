@@ -1,0 +1,65 @@
+// -*- mode: jsonc -*-
+// Mini pin - BIGGER detailed view (wider single row: labels + system + actions).
+// Same overlay-layer floating bar as config.pin-min; pin.sh swaps between them.
+{
+    "include": [
+        "~/.config/waybar/config.base"
+    ],
+    "name": "pin",
+    "layer": "overlay",
+    "position": "top",
+    "height": 34,
+    "width": 940,
+    "margin-top": 8,
+    "spacing": 2,
+    "modules-left": [],
+    "modules-center": [
+        "custom/machines",
+        "custom/ai-agents",
+        "custom/timebox",
+        "cpu",
+        "memory",
+        "custom/act-sync",
+        "custom/act-pull",
+        "custom/act-panel",
+        "custom/act-ssh",
+        "custom/pin-size"
+    ],
+    "modules-right": [],
+
+    "custom/machines": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 10,
+        "exec": "$HOME/.config/waybar/machines.sh full",
+        "on-click": "kitty --class floating-term -e $HOME/.config/waybar/machines.sh pick",
+        "on-click-right": "pkill -RTMIN+8 waybar",
+        "signal": 8,
+        "tooltip": true
+    },
+    "custom/act-sync": {
+        "format": "",
+        "tooltip": "Restow dotfiles (stow .)",
+        "on-click": "kitty --class floating-term -e sh -c 'cd $HOME/.dotfiles && stow -v . ; echo ; echo [done] ; read -r _'"
+    },
+    "custom/act-pull": {
+        "format": "",
+        "tooltip": "git pull --ff-only in ~/.dotfiles and ~/.notes",
+        "on-click": "kitty --class floating-term -e sh -c 'for d in $HOME/.dotfiles $HOME/.notes ; do echo \"== $d ==\" ; git -C \"$d\" pull --ff-only ; done ; echo ; read -r _'"
+    },
+    "custom/act-panel": {
+        "format": "",
+        "tooltip": "Open the agent panel",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel"
+    },
+    "custom/act-ssh": {
+        "format": "",
+        "tooltip": "SSH into a fleet host",
+        "on-click": "kitty --class floating-term -e $HOME/.config/waybar/machines.sh pick"
+    },
+    "custom/pin-size": {
+        "format": "",
+        "tooltip": "Collapse the pin",
+        "on-click": "$HOME/.config/waybar/pin.sh size"
+    }
+}

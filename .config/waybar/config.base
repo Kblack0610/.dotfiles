@@ -97,5 +97,15 @@
         "exec": "/home/kblack0610/.config/waybar/ai_agents.sh",
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
         "tooltip": true
+    },
+    "custom/timebox": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 2,
+        "exec": "$HOME/.local/bin/timebox status --json",
+        "on-click": "$HOME/.local/bin/timebox-menu",
+        "on-click-right": "$HOME/.local/bin/timebox pause",
+        "on-click-middle": "$HOME/.local/bin/timebox lap",
+        "tooltip": true
     }
 }

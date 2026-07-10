@@ -1,0 +1,41 @@
+// -*- mode: jsonc -*-
+// Mini pin - MINIMAL glance view.
+// A second waybar on the `overlay` layer so it floats OVER fullscreen windows
+// (RustDesk remote, games, etc). Toggle via pin.sh / Super+Shift+M.
+// Module DEFINITIONS come from config.base; overrides live here.
+{
+    "include": [
+        "~/.config/waybar/config.base"
+    ],
+    "name": "pin",
+    "layer": "overlay",
+    "position": "top",
+    "height": 34,
+    "width": 380,
+    "margin-top": 8,
+    "spacing": 2,
+    "modules-left": [],
+    "modules-center": [
+        "custom/machines",
+        "custom/ai-agents",
+        "custom/timebox",
+        "custom/pin-size"
+    ],
+    "modules-right": [],
+
+    "custom/machines": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 10,
+        "exec": "$HOME/.config/waybar/machines.sh min",
+        "on-click": "kitty --class floating-term -e $HOME/.config/waybar/machines.sh pick",
+        "on-click-right": "pkill -RTMIN+8 waybar",
+        "signal": 8,
+        "tooltip": true
+    },
+    "custom/pin-size": {
+        "format": "",
+        "tooltip": "Expand the pin",
+        "on-click": "$HOME/.config/waybar/pin.sh size"
+    }
+}
