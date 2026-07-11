@@ -92,7 +92,8 @@
       "Write(/etc/sudoers.d/**)",
       "Write(**/.env)",
       "Write(**/.env.*)"
-    ]
+    ],
+    "defaultMode": "plan"
   },
   "model": "opus[1m]",
   "fallbackModel": [
