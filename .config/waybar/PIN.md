@@ -19,19 +19,19 @@ unit). The pin is toggle-on-demand and never autostarts.
 
 ## Leader menu (tmux-style prefix)
 
-`Super+;` opens a which-key popup; single keys fire actions; submaps nest 3 deep.
+`Super+A` opens a which-key popup; single keys fire actions; submaps nest 3 deep.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
 ```
-Super+;                L1 pinbar      t toggle | s size | a agents | h ssh | u utils> | esc/q exit
+Super+A                L1 pinbar      t toggle | s size | a agents | h ssh | u utils> | esc/q exit
   u utils              L2 pinbar-utils    r reload | y sync> | g git> | esc back | q exit
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
 ```
 
-**Swap the leader key:** in `leader.conf`, comment the `semicolon` bind pair and
-uncomment the `space` or `A` pair (Super+; is the default - lowest accidental-hit
-risk; Super+Space is comfiest but easiest to fat-finger; Super+A is a middle ground).
+**Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
+another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
+is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 
 **Add a leaf:** in the target submap add three lines - `bind = , <key>, exec, <cmd>`,
 `bind = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bind = , <key>, submap, reset`
