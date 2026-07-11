@@ -8,6 +8,7 @@
     "name": "pin",
     "layer": "overlay",
     "position": "top",
+    "exclusive": false,
     "height": 34,
     "width": 940,
     "margin-top": 8,

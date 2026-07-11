@@ -10,6 +10,7 @@
     "name": "pin",
     "layer": "overlay",
     "position": "top",
+    "exclusive": false,
     "height": 34,
     "width": 380,
     "margin-top": 8,
