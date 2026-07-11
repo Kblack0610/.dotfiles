@@ -1,6 +1,25 @@
 # --- AI Tool Aliases & Wrappers ---
 # Sourced from .commonrc
 
+# Claude Code entry point — two-case permission cycle (pairs with settings.json
+# "defaultMode": "plan", which boots every session into plan mode):
+#   Default (corporate-safe): bypass is NOT offered. Boots in plan; one
+#     Shift+Tab toggles plan <-> default (Manual). acceptEdits also sits in
+#     the ring — Claude Code has no setting to hide it.
+#   CLAUDE_YOLO set (personal): adds bypassPermissions to the cycle via
+#     --allow-dangerously-skip-permissions (available, NOT auto-activated), so
+#     it still boots in plan and one Shift+Tab lands on bypass.
+# Opt in per-machine in an UNTRACKED file (e.g. ~/.bash_profile) with:
+#     export CLAUDE_YOLO=1
+# Corporate machines leave it unset (the default) — bypass never appears.
+claude() {
+    if [ -n "$CLAUDE_YOLO" ]; then
+        command claude --allow-dangerously-skip-permissions "$@"
+    else
+        command claude "$@"
+    fi
+}
+
 alias cl="claude --dangerously-skip-permissions"
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
 alias cb="agent" # need to rename to agent
