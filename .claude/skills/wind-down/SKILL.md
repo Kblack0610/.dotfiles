@@ -79,6 +79,23 @@ Then invoke the **`lab-status`** skill (`status` verb) for that project to recor
 "where we are" line from this session's work into the cockpit's `STATUS` block — the narrative
 `lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
 
+### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
+
+The wrap-up note's `## Next step` is durable but passive - it only resurfaces if someone opens
+that file. When the session leaves a real follow-up that should come back up on its own, ALSO
+drop it in the dated-capture **inbox** so it lands in the triage queue:
+
+```bash
+notes inbox add "<project>: <the next action> - see ~/.agent/sessions/<project>/<date>-wind-down.md"
+```
+
+`notes inbox add` appends a timestamped line to today's `inbox/<date>.md`; `notes inbox` (the
+triage view) and `notes today` (which links the inbox into the daily note) surface it later. Use
+it for a concrete next action or a blocked-on-X follow-up - one line, pointing back at the wrap-up
+note or plan for detail. Skip it when the session has no meaningful next step. For work that
+belongs on a tracked board instead, prefer a Vikunja ticket (the repo tracker) or the lab bus
+`## → For the agents` section over the inbox.
+
 ### 2. Arm the teardown
 
 ```bash
