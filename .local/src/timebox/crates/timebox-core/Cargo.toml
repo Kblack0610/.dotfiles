@@ -1,0 +1,10 @@
+[package]
+name = "timebox-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure logic for the timebox stopwatch/timeboxing tool: state machine, computed elapsed, recurring laps, stats, and the JSONL event log. No I/O side effects beyond the store module."
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

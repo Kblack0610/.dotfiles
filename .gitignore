@@ -11,6 +11,8 @@ src/
 # swallow. Re-include every .local/src/<crate>/src tree; per-crate .gitignores
 # still keep build artifacts (target/) out.
 !.local/src/*/src/
+# Cargo workspaces (timebox, …) nest crate sources under crates/<crate>/src/.
+!.local/src/*/crates/*/src/
 
 # notes: the active profile selection is machine-local — each box copies
 # config.toml.example → config.toml and sets its own profile. Only the

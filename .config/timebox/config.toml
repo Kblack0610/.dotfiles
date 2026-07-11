@@ -1,0 +1,27 @@
+# timebox configuration. All keys are optional; delete this file and the built-in
+# defaults apply. Search order: $TIMEBOX_CONFIG -> ~/.config/timebox/config.toml ->
+# ~/.dotfiles/.config/timebox/config.toml -> built-in defaults.
+
+# Where live state + the event log live. Default: ~/.local/state/timebox
+# state_dir = "~/.local/state/timebox"
+
+# Default recurring lap when `timebox start <op>` is given no --lap. Unset = no lap.
+# Accepts 25m | 1h | 90s | a bare number of seconds.
+default_lap = "25m"
+
+# Play a sound on every lap boundary (per-start --sound also enables it for one op).
+sound = true
+
+# Sound asset for the lap boundary. Defaults to the bundled assets/switch.wav.
+# sound_file = "~/.dotfiles/.local/src/timebox/assets/switch.wav"
+
+# Flash the screen red on a lap boundary (runs flash_cmd; Hyprland screen_shader).
+flash = true
+# flash_cmd = "timebox-flash"
+
+# Optional leading glyph/label for the Waybar text. Empty = plain "op M:SS".
+# Set to a Nerd Font clock glyph if you want an icon, e.g. icon = " "
+icon = ""
+
+# What the Waybar module shows when no stopwatch is active (kept visible + clickable).
+idle_text = "timebox"

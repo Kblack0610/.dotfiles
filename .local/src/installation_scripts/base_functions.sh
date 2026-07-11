@@ -364,7 +364,7 @@ build_local_rust_tools() {
     mkdir -p "$HOME/.local/bin"
 
     # name:relative-source-dir pairs
-    local tools=("agent-panel:.local/src/agent-panel")
+    local tools=("agent-panel:.local/src/agent-panel" "timebox:.local/src/timebox")
     local entry name src
     for entry in "${tools[@]}"; do
         name="${entry%%:*}"

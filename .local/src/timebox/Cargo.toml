@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/timebox-core", "crates/timebox-cli"]
+
+# Shared release profile — small static binaries, matching the repo convention
+# (notes-cli / agent-panel use the identical block).
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
