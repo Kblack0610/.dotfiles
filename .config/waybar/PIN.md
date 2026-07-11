@@ -17,6 +17,26 @@ unit). The pin is toggle-on-demand and never autostarts.
 - Bigger view buttons:  restow dotfiles,  git pull (dotfiles + notes),
    agent-panel,  ssh picker
 
+## Leader menu (tmux-style prefix)
+
+`Super+;` opens a which-key popup; single keys fire actions; submaps nest 3 deep.
+`esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
+
+```
+Super+;                L1 pinbar      t toggle | s size | a agents | h ssh | u utils> | esc/q exit
+  u utils              L2 pinbar-utils    r reload | y sync> | g git> | esc back | q exit
+    y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
+    g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
+```
+
+**Swap the leader key:** in `leader.conf`, comment the `semicolon` bind pair and
+uncomment the `space` or `A` pair (Super+; is the default - lowest accidental-hit
+risk; Super+Space is comfiest but easiest to fat-finger; Super+A is a middle ground).
+
+**Add a leaf:** in the target submap add three lines - `bind = , <key>, exec, <cmd>`,
+`bind = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bind = , <key>, submap, reset`
+- then add the key to that level's legend in `pin-hint.sh`.
+
 ## Views
 
 - **Minimal** (`config.pin-min`, ~380px): fleet dots + agents + timebox + chevron.

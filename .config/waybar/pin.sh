@@ -42,5 +42,8 @@ case "${1:-toggle}" in
     min)    start min ;;
     full)   start full ;;
     off)    stop ;;
-    *)      echo "usage: pin.sh {toggle|size|min|full|off}" >&2; exit 2 ;;
+    reload) hyprctl reload >/dev/null 2>&1 || true
+            systemctl --user restart waybar >/dev/null 2>&1 || true
+            if running; then start "$(get_size)"; fi ;;
+    *)      echo "usage: pin.sh {toggle|size|min|full|off|reload}" >&2; exit 2 ;;
 esac
