@@ -1,0 +1,21 @@
+[package]
+name = "timebox"
+version = "0.1.0"
+edition = "2021"
+description = "Stopwatch + recurring-lap timeboxing CLI (and Waybar module). Start named stopwatches per operation, get 'switch now' reminders on a recurring lap, and track per-operation time."
+
+[[bin]]
+name = "timebox"
+path = "src/main.rs"
+
+[dependencies]
+timebox-core = { path = "../timebox-core" }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

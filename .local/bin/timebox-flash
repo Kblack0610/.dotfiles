@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Brief red screen flash for a timebox lap boundary, via Hyprland's screen_shader.
+# Restores any pre-existing shader afterward. No-op when not on Hyprland or when the
+# shader file is missing, so it is safe to call unconditionally.
+set -u
+
+command -v hyprctl >/dev/null 2>&1 || exit 0
+
+SHADER="${TIMEBOX_FLASH_SHADER:-$HOME/.config/hypr/shaders/flash.frag}"
+[ -f "$SHADER" ] || exit 0
+DUR="${TIMEBOX_FLASH_SEC:-0.12}"
+
+# Remember the current shader (if any) so a persistent one is restored, not clobbered.
+cur=$(hyprctl getoption decoration:screen_shader -j 2>/dev/null \
+        | sed -n 's/.*"str"[: ]*"\([^"]*\)".*/\1/p')
+
+hyprctl keyword decoration:screen_shader "$SHADER" >/dev/null 2>&1
+sleep "$DUR"
+if [ -n "${cur:-}" ] && [ "$cur" != "[[EMPTY]]" ]; then
+    hyprctl keyword decoration:screen_shader "$cur" >/dev/null 2>&1
+else
+    hyprctl keyword decoration:screen_shader "[[EMPTY]]" >/dev/null 2>&1
+fi

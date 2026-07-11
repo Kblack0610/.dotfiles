@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# timebox control menu for the Waybar module (bound to left-click). Uses wofi, falling
+# back to rofi. Lets you start/switch/pause/resume/lap/stop and peek at stats from the bar
+# without touching a terminal.
+set -u
+
+menu() {
+    if command -v wofi >/dev/null 2>&1; then
+        wofi --dmenu -i -p "$1"
+    elif command -v rofi >/dev/null 2>&1; then
+        rofi -dmenu -i -p "$1"
+    else
+        return 1
+    fi
+}
+
+action=$(printf '%s\n' start switch pause resume lap stop "stop all" stats | menu "timebox") || exit 0
+[ -n "$action" ] || exit 0
+
+# For start/switch, offer a few common ops but allow typing any name.
+ops="focus\ndeep-work\nemail\nmeeting\nreading\nbreak"
+
+case "$action" in
+    start)  op=$(printf "$ops" | menu "start op"); [ -n "$op" ] && timebox start "$op" ;;
+    switch) op=$(printf "$ops" | menu "switch to"); [ -n "$op" ] && timebox switch "$op" ;;
+    pause)  timebox pause ;;
+    resume) timebox resume ;;
+    lap)    timebox lap ;;
+    stop)   timebox stop ;;
+    "stop all") timebox stop --all ;;
+    stats)  agent-notify -t "timebox stats" "$(timebox stats)" ;;
+esac
