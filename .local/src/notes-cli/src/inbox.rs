@@ -69,6 +69,11 @@ fn extract_title(content: &str) -> String {
         }
         let is_heading = t.starts_with('#');
         let cleaned = t.trim_start_matches('#').trim_start().trim_start_matches(['-', '*']).trim();
+        // Drop a trailing HTML comment (e.g. the `<!-- session:… -->` tag) from the title.
+        let cleaned = match cleaned.find("<!--") {
+            Some(i) => cleaned[..i].trim_end(),
+            None => cleaned,
+        };
         if cleaned.is_empty() {
             continue;
         }
@@ -189,7 +194,12 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
     if !body.ends_with('\n') {
         body.push('\n');
     }
-    body.push_str(&format!("\n- {} {}\n", now.format("%H:%M"), text));
+    // When captured from inside a Claude Code session, tag the capture with the session
+    // id (mirrors the `<!-- since:… -->` marker convention) so it's traceable back to
+    // the conversation via `claude -r <id>`. Absent for plain terminal captures.
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok().filter(|s| !s.is_empty());
+    let marker = session.map(|id| format!(" <!-- session:{id} -->")).unwrap_or_default();
+    body.push_str(&format!("\n- {} {}{}\n", now.format("%H:%M"), text, marker));
     fs::write(&file, body)?;
     log.info("inbox", &format!("captured to {}", file.display()));
     println!("{}", file.display());

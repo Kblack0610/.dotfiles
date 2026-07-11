@@ -15,23 +15,30 @@ pub fn run(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         "fun" => &p.fun,
         // `carryover`/`carry` kept as back-compat aliases — the file moved to scheduled.md.
         "scheduled" | "carryover" | "carry" => &p.scheduled,
-        other => bail!("unknown backlog '{other}' (want: fun | scheduled)"),
+        "recurring" => &p.recurring,
+        other => bail!("unknown backlog '{other}' (want: fun | scheduled | recurring)"),
     };
 
     if !file.exists() {
         if let Some(parent) = file.parent() {
             fs::create_dir_all(parent)?;
         }
-        let (title, desc) = if name == "fun" {
-            ("Fun", "Standing backlog of fun / personal / creative tasks.")
-        } else {
-            ("Scheduled", "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.")
+        let (title, tag, desc) = match name {
+            "fun" => ("Fun", "fun", "Standing backlog of fun / personal / creative tasks."),
+            "recurring" => ("Recurring", "recurring", "Standing habits: a task with an `(every:…)` token surfaces into a daily note's Due each matching day. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last."),
+            _ => ("Scheduled", "scheduled", "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date."),
         };
-        let tag = if name == "fun" { "fun" } else { "scheduled" };
         fs::write(
             file,
             format!("---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"),
         )?;
+    }
+
+    // The recurring master is never checked off — sweeping checked→Done would be wrong,
+    // so just ensure it exists and print its path (for editor integration).
+    if name == "recurring" {
+        println!("{}", file.display());
+        return Ok(());
     }
 
     let content = fs::read_to_string(file)?;

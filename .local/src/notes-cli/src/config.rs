@@ -37,6 +37,24 @@ struct RawProfile {
     /// to a `scheduled.md` sibling of `carryover`.
     #[serde(default)]
     scheduled: Option<String>,
+    /// Standing recurring-task backlog (`(every:…)` cadence lines). Optional — resolve()
+    /// falls back to a `recurring.md` sibling of `scheduled`.
+    #[serde(default)]
+    recurring: Option<String>,
+    /// Which backlogs the daily-note footer links, in order. Each entry is a known name
+    /// (`fun` | `scheduled` | `recurring`) or a vault-relative path. Optional — defaults
+    /// to `["fun", "scheduled"]` when unset. This is the editable lever for that list.
+    #[serde(default)]
+    footer_backlogs: Option<Vec<String>>,
+    /// Sentinel watches dir (`~/.agent/watches`), a RUNTIME path outside the vault. When
+    /// set, `notes today` renders a `## Watches` section from the `*.yaml` manifests +
+    /// their live state. Optional — unset means no watches surface (opt-in).
+    #[serde(default)]
+    watches: Option<String>,
+    /// Dir holding per-watch `<name>.state` files. Optional — defaults to
+    /// `~/.local/state/watch-companion` when `watches` is set.
+    #[serde(default)]
+    watches_state: Option<String>,
     summaries: String,
     archive: String,
     zettel: String,
@@ -77,6 +95,16 @@ pub struct Profile {
     pub fun: PathBuf,
     pub carryover: PathBuf,
     pub scheduled: PathBuf,
+    /// Standing recurring-task backlog — `(every:…)` cadence lines emitted into the
+    /// daily note's Due on matching days. Sibling `recurring.md` by default.
+    pub recurring: PathBuf,
+    /// Resolved backlog paths the daily-note footer links, in order (config-driven).
+    pub footer_backlogs: Vec<PathBuf>,
+    /// Sentinel watches dir (runtime, outside the vault). `None` disables the daily
+    /// note's `## Watches` section (opt-in via config).
+    pub watches: Option<PathBuf>,
+    /// Dir of per-watch `<name>.state` files (runtime).
+    pub watches_state: PathBuf,
     pub summaries: PathBuf,
     pub continuous: PathBuf,
     pub monthly: PathBuf,
@@ -155,6 +183,10 @@ fn builtin_default() -> RawConfig {
             fun: "journal/backlogs/fun.md".into(),
             carryover: "journal/backlogs/carryover.md".into(),
             scheduled: None,
+            recurring: None,
+            footer_backlogs: None,
+            watches: None,
+            watches_state: None,
             summaries: "journal/summaries".into(),
             archive: "journal/daily_archive".into(),
             zettel: "journal/permanent".into(),
@@ -230,6 +262,47 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     let state_dir = home().join(".local/state/notes");
     let log_file = state_dir.join("journal.log");
 
+    // Scheduled (one-shot future dates) and its recurring sibling. Both optional so
+    // configs predating the fields keep working: scheduled falls back to a `scheduled.md`
+    // sibling of carryover, recurring to a `recurring.md` sibling of scheduled.
+    let scheduled = rp
+        .scheduled
+        .as_ref()
+        .map(|s| join(s))
+        .unwrap_or_else(|| join(&rp.carryover).with_file_name("scheduled.md"));
+    let recurring = rp
+        .recurring
+        .as_ref()
+        .map(|s| join(s))
+        .unwrap_or_else(|| scheduled.with_file_name("recurring.md"));
+    let fun = join(&rp.fun);
+
+    // Which backlogs the daily-note footer links, in order. Known names map to their
+    // resolved paths; anything else is treated as a vault-relative path. Defaults to
+    // fun + scheduled so existing behavior is unchanged.
+    let footer_backlogs: Vec<PathBuf> = match &rp.footer_backlogs {
+        Some(names) => names
+            .iter()
+            .map(|n| match n.as_str() {
+                "fun" => fun.clone(),
+                "scheduled" | "carryover" | "carry" => scheduled.clone(),
+                "recurring" => recurring.clone(),
+                other => join(other),
+            })
+            .collect(),
+        None => vec![fun.clone(), scheduled.clone()],
+    };
+
+    // Sentinel watches (runtime paths OUTSIDE the vault; join honors absolute/~). Opt-in:
+    // `watches` unset disables the `## Watches` section. State dir defaults to the
+    // watch-companion runtime dir.
+    let watches = rp.watches.as_ref().map(|s| join(s));
+    let watches_state = rp
+        .watches_state
+        .as_ref()
+        .map(|s| join(s))
+        .unwrap_or_else(|| home().join(".local/state/watch-companion"));
+
     // Dirs scanned by `notes tags`. Explicit `tag_dirs` wins; otherwise derive a
     // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
     let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
@@ -253,13 +326,13 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         daily: join(&rp.daily),
         refs: join(&rp.refs),
         refs_rel: rp.refs.trim_end_matches('/').to_string(),
-        fun: join(&rp.fun),
+        fun,
         carryover: join(&rp.carryover),
-        scheduled: rp
-            .scheduled
-            .as_ref()
-            .map(|s| join(s))
-            .unwrap_or_else(|| join(&rp.carryover).with_file_name("scheduled.md")),
+        scheduled,
+        recurring,
+        footer_backlogs,
+        watches,
+        watches_state,
         continuous: summaries.join("continuous"),
         monthly: summaries.join("monthly"),
         summaries,
@@ -301,6 +374,15 @@ pub fn print(p: &Profile) {
     println!("fun         {}", p.fun.display());
     println!("carryover   {}", p.carryover.display());
     println!("scheduled   {}", p.scheduled.display());
+    println!("recurring   {}", p.recurring.display());
+    println!(
+        "footer      {}",
+        p.footer_backlogs
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("continuous  {}", p.continuous.display());
     println!("monthly     {}", p.monthly.display());
     println!("archive     {}", p.archive.display());
@@ -317,6 +399,10 @@ pub fn print(p: &Profile) {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if let Some(w) = &p.watches {
+        println!("watches     {}", w.display());
+        println!("watch-state {}", p.watches_state.display());
+    }
     if let Some(pr) = &p.projects {
         println!("projects    {}", pr.display());
     }

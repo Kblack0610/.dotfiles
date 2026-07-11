@@ -1,7 +1,7 @@
 //! Shared markdown + task-line helpers. These are the historically fragile bits
 //! (section extraction, day-count stamping) so they carry unit tests.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 
 /// Capture the raw lines under a `## heading` up to the next `## ` or EOF.
 /// Returns `None` if the heading is absent, `Some(vec)` (possibly empty) otherwise.
@@ -230,6 +230,116 @@ pub fn strip_due(line: &str) -> String {
         }
         None => line.to_string(),
     }
+}
+
+/// Locate an inline `(every:…)` recurrence token: returns `(open, close, inner)` as
+/// byte indices of the `(` and `)` plus the cadence text between `every:` and `)`.
+/// Chosen deliberately in parens (not `[...]`) so it never collides with the `[date]`
+/// due-token grammar. Only the first occurrence is returned.
+fn find_every_span(line: &str) -> Option<(usize, usize, &str)> {
+    let marker = "(every:";
+    let open = line.find(marker)?;
+    let inner_start = open + marker.len();
+    let rel = line[inner_start..].find(')')?;
+    let close = inner_start + rel;
+    Some((open, close, &line[inner_start..close]))
+}
+
+/// Remove the first inline `(every:…)` token, collapsing surrounding whitespace so no
+/// double space is left behind. No-op when the line has no token. Mirrors `strip_due`.
+pub fn strip_every(line: &str) -> String {
+    match find_every_span(line) {
+        Some((open, close, _)) => {
+            let head = line[..open].trim_end();
+            let tail = line[close + 1..].trim_start();
+            if tail.is_empty() {
+                head.to_string()
+            } else {
+                format!("{head} {tail}")
+            }
+        }
+        None => line.to_string(),
+    }
+}
+
+/// Map a weekday term (`mon`…`sun`, or a longer form like `monday`) to a `Weekday`.
+/// Matches on the first three letters so both `fri` and `friday` resolve. Terms are
+/// assumed ASCII (cadence tokens always are), so the byte slice is safe.
+fn weekday_from(term: &str) -> Option<Weekday> {
+    let key = if term.len() >= 3 { &term[..3] } else { term };
+    Some(match key {
+        "mon" => Weekday::Mon,
+        "tue" => Weekday::Tue,
+        "wed" => Weekday::Wed,
+        "thu" => Weekday::Thu,
+        "fri" => Weekday::Fri,
+        "sat" => Weekday::Sat,
+        "sun" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
+/// Does a single cadence term fire on `date`? Understands: `day` (always), `weekday`
+/// (Mon–Fri), `weekend` (Sat/Sun), weekday names (`fri`, `friday`), `last` (last day
+/// of the month), and day-of-month (`1st`, `15th`, or a bare `15`). Unknown → false.
+fn term_matches(term: &str, date: NaiveDate) -> bool {
+    let t = term.trim().to_lowercase();
+    match t.as_str() {
+        "" => false,
+        "day" | "daily" => true,
+        "weekday" => !matches!(date.weekday(), Weekday::Sat | Weekday::Sun),
+        "weekend" => matches!(date.weekday(), Weekday::Sat | Weekday::Sun),
+        // last day of the month: tomorrow rolls into a new month.
+        "last" => (date + Duration::days(1)).month() != date.month(),
+        _ => {
+            if let Some(wd) = weekday_from(&t) {
+                return date.weekday() == wd;
+            }
+            // Day-of-month: leading digits of `1st` / `15th` / bare `15`.
+            let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+            match digits.parse::<u32>() {
+                Ok(n) => date.day() == n,
+                Err(_) => false,
+            }
+        }
+    }
+}
+
+/// True when the line carries an `(every:…)` token whose cadence fires on `date`.
+/// Comma-separated terms are OR'd (`every:mon,thu`). No token → false.
+pub fn recurs_on(line: &str, date: NaiveDate) -> bool {
+    match find_every_span(line) {
+        Some((_, _, inner)) => inner.split(',').any(|term| term_matches(term, date)),
+        None => false,
+    }
+}
+
+/// Pull a top-level scalar `key: value` out of flat YAML text (e.g. a Sentinel watch
+/// manifest) without pulling in a YAML crate. Returns the value with surrounding single
+/// or double quotes stripped and whitespace trimmed. First match wins; comment lines
+/// (`# …`) and non-matching keys are skipped. `None` if the key is absent or empty.
+pub fn parse_yaml_scalar(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            let v = rest.trim();
+            let v = v
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                .unwrap_or(v)
+                .trim();
+            if v.is_empty() {
+                return None;
+            }
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 /// Strip a trailing ` (Nd)` day-count suffix, if any.
@@ -495,5 +605,76 @@ nothing here
         assert!(find_hashtags("run `git commit #123` now").is_empty());
         assert_eq!(find_hashtags("done #wedding."), vec!["wedding"]);
         assert_eq!(find_hashtags("(#wedding, #house)"), vec!["wedding", "house"]);
+    }
+
+    #[test]
+    fn recurs_on_weekday() {
+        // 2026-07-10 is a Friday, 2026-07-11 a Saturday.
+        let fri = d("2026-07-10");
+        let sat = d("2026-07-11");
+        assert!(recurs_on("- [ ] timesheets (every:fri)", fri));
+        assert!(!recurs_on("- [ ] timesheets (every:fri)", sat));
+        assert!(recurs_on("- [ ] x (every:friday)", fri));
+    }
+
+    #[test]
+    fn recurs_on_comma_list_is_or() {
+        let mon = d("2026-07-06"); // Monday
+        let thu = d("2026-07-09"); // Thursday
+        let tue = d("2026-07-07"); // Tuesday
+        assert!(recurs_on("- [ ] backup (every:mon,thu)", mon));
+        assert!(recurs_on("- [ ] backup (every:mon,thu)", thu));
+        assert!(!recurs_on("- [ ] backup (every:mon,thu)", tue));
+    }
+
+    #[test]
+    fn recurs_on_weekday_keyword_and_day() {
+        let fri = d("2026-07-10");
+        let sat = d("2026-07-11");
+        assert!(recurs_on("- [ ] standup (every:weekday)", fri));
+        assert!(!recurs_on("- [ ] standup (every:weekday)", sat));
+        assert!(recurs_on("- [ ] chores (every:weekend)", sat));
+        assert!(recurs_on("- [ ] vitamins (every:day)", sat));
+    }
+
+    #[test]
+    fn recurs_on_day_of_month_and_last() {
+        assert!(recurs_on("- [ ] rent (every:1st)", d("2026-07-01")));
+        assert!(!recurs_on("- [ ] rent (every:1st)", d("2026-07-02")));
+        assert!(recurs_on("- [ ] mid (every:15th)", d("2026-07-15")));
+        assert!(recurs_on("- [ ] plain (every:15)", d("2026-07-15")));
+        // July has 31 days; the 31st is the last.
+        assert!(recurs_on("- [ ] month-end (every:last)", d("2026-07-31")));
+        assert!(!recurs_on("- [ ] month-end (every:last)", d("2026-07-30")));
+        // February in a non-leap year: the 28th is the last.
+        assert!(recurs_on("- [ ] feb (every:last)", d("2026-02-28")));
+    }
+
+    #[test]
+    fn recurs_on_no_token_or_garbage_is_false() {
+        let any = d("2026-07-10");
+        assert!(!recurs_on("- [ ] plain task", any));
+        assert!(!recurs_on("- [ ] x (every:blorp)", any));
+        assert!(!recurs_on("- [ ] x (2d)", any));
+    }
+
+    #[test]
+    fn strip_every_removes_token_and_collapses_space() {
+        assert_eq!(strip_every("- [ ] timesheets (every:fri)"), "- [ ] timesheets");
+        assert_eq!(strip_every("- [ ] x (every:mon,thu) more"), "- [ ] x more");
+        assert_eq!(strip_every("- [ ] plain task"), "- [ ] plain task");
+    }
+
+    #[test]
+    fn parse_yaml_scalar_handles_quotes_and_absent() {
+        let y = "name: pmp-api-health\ndescription: \"PMP prod API liveness\"\nprobe: http\n# comment: ignore\ninterval: 5m\nempty:\n";
+        assert_eq!(parse_yaml_scalar(y, "name").as_deref(), Some("pmp-api-health"));
+        assert_eq!(parse_yaml_scalar(y, "description").as_deref(), Some("PMP prod API liveness"));
+        assert_eq!(parse_yaml_scalar(y, "probe").as_deref(), Some("http"));
+        assert_eq!(parse_yaml_scalar(y, "interval").as_deref(), Some("5m"));
+        assert_eq!(parse_yaml_scalar(y, "comment"), None); // comment line skipped
+        assert_eq!(parse_yaml_scalar(y, "empty"), None); // empty value → None
+        assert_eq!(parse_yaml_scalar(y, "missing"), None);
+        assert_eq!(parse_yaml_scalar("k: 'single quoted'", "k").as_deref(), Some("single quoted"));
     }
 }
