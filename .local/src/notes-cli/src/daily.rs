@@ -11,6 +11,7 @@
 //!     **Fun** is a standing backlog. Both are linked at the bottom of the note.
 
 use crate::config::{self, Profile};
+use crate::inbox;
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{Context, Result};
@@ -43,6 +44,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "fun" => p.fun.clone(),
         // `carryover` kept as a back-compat alias — the file moved to scheduled.md.
         "scheduled" | "carryover" | "carry" => p.scheduled.clone(),
+        "recurring" => p.recurring.clone(),
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
@@ -68,6 +70,8 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
 
     link_refs(p, log)?;
     ensure_footer(p, &note)?;
+    refresh_watches(p, log, &note)?;
+    refresh_inbox(p, log, &note)?;
     Ok(())
 }
 
@@ -137,6 +141,18 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         }
     }
 
+    // Recurring backlog: emit a fresh copy of each habit whose `(every:…)` cadence
+    // fires today into Due. The master file is read-only here (unlike scheduled, which
+    // prunes) so the habit returns every cycle. Deduped against carried/promoted items.
+    let recurring_before = fs::read_to_string(&p.recurring).unwrap_or_default();
+    let mut n_recurring = 0;
+    for rec in emit_recurring(&recurring_before, today) {
+        if due_keys.insert(md::task_key(&rec)) {
+            due_lines.push(rec);
+            n_recurring += 1;
+        }
+    }
+
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str(&format!("date: {today_s}\n"));
@@ -165,6 +181,9 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     fs::write(note, s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
         log.info("today", &format!("surfaced {n_promoted} scheduled item(s) into Due"));
+    }
+    if n_recurring > 0 {
+        log.info("today", &format!("emitted {n_recurring} recurring item(s) into Due"));
     }
 
     // Persist the scheduled backlog: pruned (promoted removed) + newly deferred items.
@@ -324,6 +343,29 @@ fn promote_scheduled(content: &str, today: NaiveDate) -> (Vec<String>, String) {
     (promoted, new_content)
 }
 
+/// Emit today's due recurring habits from the recurring backlog's `## Active`: for each
+/// unchecked task whose `(every:…)` cadence fires on `today`, produce a fresh daily copy
+/// with the cadence token stripped and a `(0d) <!-- since:today -->` stamp. Read-only —
+/// the backlog file is never modified (the master line recurs every cycle).
+fn emit_recurring(content: &str, today: NaiveDate) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_active = false;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            in_active = rest.trim().eq_ignore_ascii_case("Active");
+            continue;
+        }
+        if in_active
+            && md::is_task(line)
+            && !md::is_checked(line)
+            && md::recurs_on(line, today)
+        {
+            out.push(md::stamp_line(&md::strip_every(line), today, today));
+        }
+    }
+    out
+}
+
 fn latest_prev(dir: &Path, today_s: &str) -> Result<Option<PathBuf>> {
     if !dir.exists() {
         return Ok(None);
@@ -410,8 +452,14 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if content.contains("Backlogs:") {
         return Ok(());
     }
-    let fun = config::wikilink(&p.root, &p.fun);
-    let sched = config::wikilink(&p.root, &p.scheduled);
+    // The linked backlogs are config-driven (`footer_backlogs`), so the list is edited
+    // in config.toml, not hardcoded here. Defaults to fun + scheduled.
+    let backlogs = p
+        .footer_backlogs
+        .iter()
+        .map(|b| format!("[[{}]]", config::wikilink(&p.root, b)))
+        .collect::<Vec<_>>()
+        .join(" · ");
     if !content.ends_with('\n') {
         content.push('\n');
     }
@@ -420,7 +468,14 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         .as_ref()
         .map(|pi| format!(" · Projects: [[{}]]", config::wikilink(&p.root, pi)))
         .unwrap_or_default();
-    content.push_str(&format!("\n---\nBacklogs: [[{fun}]] · [[{sched}]]{projects_link}\n"));
+    // Surface the inbox as a link + pending count when there's anything to triage.
+    let (pending, _stale) = inbox::backlog_counts(p);
+    let inbox_link = if pending > 0 {
+        format!(" · Inbox ({pending}): [[{}]]", config::wikilink(&p.root, &p.inbox))
+    } else {
+        String::new()
+    };
+    content.push_str(&format!("\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"));
     fs::write(note, content)?;
     Ok(())
 }
@@ -432,6 +487,212 @@ fn insert_before_footer(content: &str, block: &str) -> String {
     } else {
         format!("{}{}", content.trim_end(), block)
     }
+}
+
+/// Remove a `## heading` section (its heading line + body up to the next `## ` heading,
+/// the `---` footer rule, or EOF). Returns the content unchanged when the heading is
+/// absent. Used to re-render the `## Watches` section in place each run.
+fn remove_section(content: &str, heading: &str) -> String {
+    let target = format!("## {heading}");
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim() == target) else {
+        return content.to_string();
+    };
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        if l.trim_start().starts_with("## ") || l.trim() == "---" {
+            end = i;
+            break;
+        }
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    kept.extend_from_slice(&lines[..start]);
+    kept.extend_from_slice(&lines[end..]);
+    let mut out = kept.join("\n");
+    if content.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Render the currently-registered Sentinel watches as daily-note lines, unhealthy
+/// first. Scans `p.watches` for `*.yaml` (active) and `*.yaml.paused` (paused), reads
+/// each manifest's name/description/probe/interval and the live `<name>.state` from
+/// `p.watches_state`, and returns `- <STATE> <name> - <desc> (<probe>, <interval>)`
+/// lines. Empty when `watches` is unset, the dir is absent, or it has no manifests.
+/// Read-only — never writes. ASCII state markers (OK / TRIP / ERROR / paused / -).
+fn discover_watches(p: &Profile) -> Vec<String> {
+    let Some(dir) = p.watches.as_ref() else {
+        return Vec::new();
+    };
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(u8, String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let (stem, paused) = if let Some(s) = fname.strip_suffix(".yaml") {
+            (s, false)
+        } else if let Some(s) = fname.strip_suffix(".yaml.paused") {
+            (s, true)
+        } else {
+            continue;
+        };
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        let name = md::parse_yaml_scalar(&content, "name").unwrap_or_else(|| stem.to_string());
+        let desc = md::parse_yaml_scalar(&content, "description").unwrap_or_default();
+        let probe = md::parse_yaml_scalar(&content, "probe").unwrap_or_else(|| "?".into());
+        let interval = md::parse_yaml_scalar(&content, "interval").unwrap_or_else(|| "?".into());
+        let state = if paused {
+            "paused".to_string()
+        } else {
+            fs::read_to_string(p.watches_state.join(format!("{name}.state")))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "-".to_string())
+        };
+        // Unhealthy first (0), healthy/unknown next (1), paused last (2); then by name.
+        let rank = match state.as_str() {
+            "TRIP" | "ERROR" => 0,
+            "paused" => 2,
+            _ => 1,
+        };
+        let line = if desc.is_empty() {
+            format!("- {state} {name} ({probe}, {interval})")
+        } else {
+            format!("- {state} {name} - {desc} ({probe}, {interval})")
+        };
+        rows.push((rank, name, line));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows.into_iter().map(|(_, _, l)| l).collect()
+}
+
+/// Refresh the daily note's `## Inbox` section with today's quick-captures (the bullet
+/// lines in `inbox/<today>.md`). Runs every `notes today` so captures added during the
+/// day appear at the bottom of the note. Self-hiding: no section when today's inbox file
+/// is absent or has no bullets. Read-only against the inbox (only the daily note is
+/// written).
+fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let inbox_today = p.inbox.join(format!("{today}.md"));
+    // Raw capture lines from today's inbox file (bullet lines only); the render loop
+    // splits each into its core text + optional session marker.
+    let bodies: Vec<String> = fs::read_to_string(&inbox_today)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- "))
+        .map(|l| l.to_string())
+        .collect();
+
+    let content = fs::read_to_string(note)?;
+    // Preserve which captures the user already ticked off in the existing section, so a
+    // re-run doesn't reset the checkmark (the section is rebuilt from the inbox file).
+    // Keyed on the core text (session marker/suffix stripped) so source and rendered match.
+    let checked: std::collections::HashSet<String> = md::section_lines(&content, "Inbox")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| md::is_checked(l))
+        .filter_map(|l| inbox_core(&l))
+        .collect();
+
+    let stripped = remove_section(&content, "Inbox");
+    let new_content = if bodies.is_empty() {
+        stripped
+    } else {
+        let mut block = String::from("\n\n## Inbox\n");
+        for line in &bodies {
+            let Some(core) = inbox_core(line) else { continue };
+            let mark = if checked.contains(&core) { "x" } else { " " };
+            // Surface a short session id (`(sess 8e87fd5e)`) so the capture links back to
+            // its conversation via `claude -r <id>`; only when the source carried a tag.
+            let suffix = inbox_session(line)
+                .map(|id| format!(" (sess {})", id.split('-').next().unwrap_or(&id)))
+                .unwrap_or_default();
+            block.push_str(&format!("- [{mark}] {core}{suffix}\n"));
+        }
+        insert_before_footer(&stripped, &block)
+    };
+    if new_content != content {
+        fs::write(note, new_content)?;
+        log.info("today", &format!("refreshed {} inbox capture(s) in ## Inbox", bodies.len()));
+    }
+    Ok(())
+}
+
+/// Core text of an inbox capture line, for display + dedup: strip a leading bullet or
+/// checkbox (`-`, `- [ ]`, `- [x]`), a trailing `<!-- … -->` comment (the source's
+/// session marker), and a trailing ` (sess …)` suffix (a re-rendered task). `None` when
+/// nothing meaningful remains.
+fn inbox_core(line: &str) -> Option<String> {
+    let t = line.trim();
+    let rest = t
+        .strip_prefix("- [ ]")
+        .or_else(|| t.strip_prefix("- [x]"))
+        .or_else(|| t.strip_prefix("- [X]"))
+        .or_else(|| t.strip_prefix('-'))?;
+    let mut rest = rest.trim();
+    if let Some(i) = rest.find("<!--") {
+        rest = rest[..i].trim_end();
+    }
+    if rest.ends_with(')') {
+        if let Some(p) = rest.rfind(" (sess ") {
+            rest = rest[..p].trim_end();
+        }
+    }
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+/// Extract the full session id from a `<!-- session:ID -->` marker on a line, if present.
+fn inbox_session(line: &str) -> Option<String> {
+    let marker = "<!-- session:";
+    let i = line.find(marker)?;
+    let after = &line[i + marker.len()..];
+    let end = after.find("-->")?;
+    let id = after[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Refresh the daily note's `## Watches` section from the live Sentinel registry. Runs
+/// every `notes today` (like `link_refs`) so state stays current. No-op when `watches`
+/// is unset. Replaces any existing section in place, kept above the footer.
+fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    if p.watches.is_none() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(note)?;
+    let lines = discover_watches(p);
+    let stripped = remove_section(&content, "Watches");
+    let new_content = if lines.is_empty() {
+        stripped
+    } else {
+        let mut block = String::from("\n\n## Watches\n");
+        for l in &lines {
+            block.push_str(l);
+            block.push('\n');
+        }
+        insert_before_footer(&stripped, &block)
+    };
+    if new_content != content {
+        fs::write(note, new_content)?;
+        log.info("today", &format!("refreshed {} watch(es) in ## Watches", lines.len()));
+    }
+    Ok(())
 }
 
 /// Create the standing backlog files from templates if missing.
@@ -477,6 +738,13 @@ fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
         "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.",
         log,
     )?;
+    ensure_backlog_file(
+        &p.recurring,
+        "Recurring",
+        "recurring",
+        "Standing habits: a task with an `(every:…)` token surfaces into a daily note's Due each matching day. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last.",
+        log,
+    )?;
     Ok(())
 }
 
@@ -511,6 +779,13 @@ mod tests {
             fun: r.join("journal/backlogs/fun.md"),
             carryover: r.join("journal/backlogs/carryover.md"),
             scheduled: r.join("journal/backlogs/scheduled.md"),
+            recurring: r.join("journal/backlogs/recurring.md"),
+            footer_backlogs: vec![
+                r.join("journal/backlogs/fun.md"),
+                r.join("journal/backlogs/scheduled.md"),
+            ],
+            watches: None,
+            watches_state: r.join("state/watch-companion"),
             summaries: r.join("journal/summaries"),
             continuous: r.join("journal/summaries/continuous"),
             monthly: r.join("journal/summaries/monthly"),
@@ -635,6 +910,119 @@ mod tests {
         // an empty Current lane → None (so caller falls back)
         std::fs::write(p.project_index.as_ref().unwrap(), "## Current\n- \n\n## Backlog\n- x\n").unwrap();
         assert!(current_lane_from_index(&p).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_recurring_surfaces_matching_active_only() {
+        let content = "\
+# Recurring
+
+## Active
+- [ ] timesheets (every:fri)
+- [ ] rent (every:1st)
+- [ ] standup (every:mon)
+- [x] paused habit (every:fri)
+
+## Done
+- [x] old (done:2026-01-01)
+";
+        // 2026-07-10 is a Friday (not the 1st, not a Monday).
+        let out = emit_recurring(content, d("2026-07-10"));
+        assert_eq!(out.len(), 1);
+        let line = &out[0];
+        // token stripped, since:today stamped, checked/off-cadence/Done items excluded
+        assert!(line.contains("timesheets"));
+        assert!(!line.contains("every:"));
+        assert!(line.contains("(0d) <!-- since:2026-07-10 -->"));
+    }
+
+    #[test]
+    fn remove_section_strips_named_block() {
+        let c = "# t\n\n## Focus\n- a\n\n## Watches\n- OK x\n\n---\nBacklogs: [[fun]]\n";
+        let out = remove_section(c, "Watches");
+        assert!(!out.contains("## Watches"));
+        assert!(out.contains("## Focus"));
+        assert!(out.contains("- a"));
+        assert!(out.contains("Backlogs: [[fun]]"));
+        // absent heading → unchanged
+        assert_eq!(remove_section(c, "Nope"), c);
+    }
+
+    #[test]
+    fn discover_watches_renders_and_sorts() {
+        let dir = std::env::temp_dir().join(format!("notes-watch-{}", std::process::id()));
+        let wdir = dir.join("watches");
+        let sdir = dir.join("state");
+        std::fs::create_dir_all(&wdir).unwrap();
+        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::write(wdir.join("api.yaml"), "name: api\ndescription: prod api\nprobe: http\ninterval: 5m\n").unwrap();
+        std::fs::write(wdir.join("router.yaml"), "name: router\ndescription: 5ghz dfs\nprobe: command\ninterval: 15m\n").unwrap();
+        std::fs::write(wdir.join("parked.yaml.paused"), "name: parked\ndescription: on hold\nprobe: metric\ninterval: 5m\n").unwrap();
+        std::fs::write(sdir.join("api.state"), "OK\n").unwrap();
+        std::fs::write(sdir.join("router.state"), "TRIP\n").unwrap();
+
+        let mut p = profile(dir.to_str().unwrap());
+        p.watches = Some(wdir.clone());
+        p.watches_state = sdir.clone();
+
+        let lines = discover_watches(&p);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "- TRIP router - 5ghz dfs (command, 15m)"); // unhealthy first
+        assert_eq!(lines[1], "- OK api - prod api (http, 5m)");
+        assert_eq!(lines[2], "- paused parked - on hold (metric, 5m)"); // paused last
+
+        // unset → empty (opt-in gate)
+        p.watches = None;
+        assert!(discover_watches(&p).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_inbox_lists_today_captures_and_self_hides() {
+        let dir = std::env::temp_dir().join(format!("notes-inbox-{}", std::process::id()));
+        let inbox = dir.join("inbox");
+        let daily = dir.join("journal/daily");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::create_dir_all(&daily).unwrap();
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let inbox_file = inbox.join(format!("{today}.md"));
+        // second capture carries a session marker (as `notes inbox add` writes it)
+        std::fs::write(&inbox_file, format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank <!-- session:abcd1234-ef56-7890-abcd-ef1234567890 -->\n")).unwrap();
+        let note = daily.join(format!("{today}.md"));
+        std::fs::write(&note, "# note\n\n## Due\n\n---\nBacklogs: [[fun]]\n").unwrap();
+
+        let p = profile(dir.to_str().unwrap()); // profile() sets inbox = <root>/inbox
+        let log = Logger::new(dir.join("log"), false);
+
+        refresh_inbox(&p, &log, &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert!(out.contains("## Inbox"));
+        // rendered as checkbox tasks, not plain bullets
+        assert!(out.contains("- [ ] 09:01 buy milk"));
+        // session marker → short `(sess …)` suffix; raw comment stripped from the note
+        assert!(out.contains("- [ ] 10:15 call bank (sess abcd1234)"));
+        assert!(!out.contains("<!--"));
+        // section sits above the footer
+        assert!(out.find("## Inbox").unwrap() < out.find("---\nBacklogs:").unwrap());
+
+        // check one off, add a new capture, re-run → the checkmark is preserved
+        let ticked = out.replace("- [ ] 09:01 buy milk", "- [x] 09:01 buy milk");
+        std::fs::write(&note, &ticked).unwrap();
+        std::fs::write(&inbox_file, format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank\n- 11:30 new one\n")).unwrap();
+        refresh_inbox(&p, &log, &note).unwrap();
+        let out2 = std::fs::read_to_string(&note).unwrap();
+        assert!(out2.contains("- [x] 09:01 buy milk")); // preserved
+        assert!(out2.contains("- [ ] 10:15 call bank"));
+        assert!(out2.contains("- [ ] 11:30 new one"));
+
+        // empty inbox → section removed (self-hiding), idempotent
+        std::fs::write(&inbox_file, format!("# Inbox - {today}\n")).unwrap();
+        refresh_inbox(&p, &log, &note).unwrap();
+        let out3 = std::fs::read_to_string(&note).unwrap();
+        assert!(!out3.contains("## Inbox"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

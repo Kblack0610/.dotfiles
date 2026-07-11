@@ -44,7 +44,7 @@ daily notes inside `employment/jobs/<job>/` while a personal machine uses
 | `notes link-refs` | Link today's `refs/<date>/*.md` into the note's `## Refs`. |
 | `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |
-| `notes backlog <fun\|carryover>` | Tidy a backlog (sweep checked → `## Done`, restamp day counts) and print its path. |
+| `notes backlog <fun\|scheduled\|recurring>` | Open a standing backlog and print its path. `fun`/`scheduled` are tidied (sweep checked → `## Done`, restamp day counts); `recurring` is only ensured (never swept — its masters aren't checked off). |
 | `notes inbox [list]` | Triage view of the dated-capture inbox — pending captures oldest-first with age + title, stale (≥14d) flagged. |
 | `notes inbox add "<text>"` | Quick-capture: append a timestamped bullet to today's `inbox/<date>.md`. |
 | `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `inbox/_archive/` (pick one selector). |
@@ -62,6 +62,40 @@ Lean by design — only fresh **Focus** + **Priority** live inline. **Fun** and
 **Carry Over** are standing backlog files (`journal/backlogs/`) linked at the bottom.
 Completed backlog items move to a `## Done` section in the same file (history via git +
 `daily_archive/`), so there's no separate done log.
+
+**Recurring tasks** live in `journal/backlogs/recurring.md`. A master line carries an
+`(every:…)` cadence token; on each matching day `notes today` emits a fresh unchecked
+copy into the note's **Due** (token stripped, `since:` stamped, deduped). The master is
+never consumed, so the habit returns every cycle — and missed days are simply skipped
+(no stale pile-up). Cadences: `every:fri`, comma lists `every:mon,thu`, `every:weekday`
+(Mon–Fri), `every:day`, and day-of-month `every:1st` / `every:15th` / `every:last`.
+Contrast **scheduled** (`journal/backlogs/scheduled.md`), which is one-shot future
+`[dates]`. Both `scheduled` and `recurring` resolve via a built-in path fallback, so no
+`config.toml` change is needed.
+
+Which backlogs the footer links is config-driven via `footer_backlogs` (names: `fun` |
+`scheduled` | `recurring`, or a vault-relative path; default `["fun", "scheduled"]`) —
+edit that list in `config.toml`, no recompile.
+
+**Inbox** is surfaced two ways: a footer `Inbox (N): [[inbox]]` link when there are
+pending captures (N = capture files awaiting triage, same count as `notes inbox`), and a
+`## Inbox` section near the bottom of the note listing **today's** quick-captures inline
+(the bullets in `inbox/<today>.md`) as checkbox tasks, refreshed every `notes today` so
+captures added during the day show up. Ticking one off is preserved across refreshes.
+The section self-hides on days with no captures.
+
+**Session tagging** — when `notes inbox add` runs inside a Claude Code session it stamps
+the capture with `<!-- session:<id> -->` (from `$CLAUDE_CODE_SESSION_ID`). The `## Inbox`
+section then shows a short `(sess <8-char>)` suffix, so a capture links back to the
+conversation that produced it via `claude -r <id>`. Plain terminal captures are untagged.
+
+**Sentinel watches** — set `watches = "~/.agent/watches"` in `config.toml` (opt-in;
+default off) and `notes today` renders a `## Watches` section listing each registered
+watch with its live state (`OK` / `TRIP` / `ERROR` / `paused`), unhealthy first,
+refreshed every run. State is read from `~/.local/state/watch-companion/<name>.state`
+(override the dir with `watches_state`). These are runtime paths outside the vault; the
+notes CLI only reads them (it never writes to the Sentinel runtime, and Sentinel never
+writes to the vault).
 
 ## Wiring
 
