@@ -6,20 +6,20 @@
 #   so after editing this file you must copy it across. From PowerShell:
 #     Copy-Item \\wsl$\<distro>\root\.dotfiles\.config\windows\glazewm\config.yaml `
 #               $env:USERPROFILE\.glzr\glazewm\config.yaml
-#   Then reload with alt+shift+r (wm-reload-config) inside GlazeWM.
+#   Then reload with lwin+shift+r (wm-reload-config) inside GlazeWM.
 #
 # i3/Hyprland-style keybinds. Animations disabled because the VDI renders
 # over Azure RDP and animations stutter.
 #
-# Mod key is `alt` (not `lwin`) on purpose: this dotfiles setup is used
-# from the Azure AVD *browser* web client, which deliberately does NOT
-# forward raw LWin/MetaLeft keystrokes to the remote session. Microsoft
-# uses Chromium's `navigator.keyboard.lock()` for some system keys but
-# omits Meta from the locked set; instead Alt+F3 sends a one-shot Win
-# tap. That single-tap cannot serve as a held mod, so `lwin+1` style
-# bindings can never fire from the web client. See
-# .agent/lessons/dotfiles.md ("GlazeWM under Azure AVD web client...")
-# for the workarounds if you ever want lwin back.
+# Mod key is `lwin` (Super/Windows), matching the Hyprland config so there's
+# one muscle memory across both environments. This works ONLY because the
+# session is reached through a *native* RDP client (FreeRDP / the Windows
+# App / MSRDC), which has a kernel-adjacent keyboard hook and forwards raw
+# LWin to the remote session. If you ever go back to the Azure AVD *browser*
+# web client, `lwin+...` bindings will silently stop firing (Microsoft omits
+# Meta from Chromium's keyboard.lock() set and only maps Alt+F3 -> a one-shot
+# Win tap, useless as a held mod) — revert this file's mod key to `alt`.
+# See .agent/lessons/dotfiles.md ("GlazeWM under Azure AVD web client...").
 
 workspaces:
   - name: "1"
@@ -44,8 +44,8 @@ window_rules:
       - window_process: { equals: "msrdc" }
       - window_process: { equals: "ApplicationFrameHost" }
       - window_class: { regex: ".*Microsoft\\.AAD\\.BrokerPlugin.*" }
-      # Flow Launcher (launcher popup bound to Alt+D, see flow-launcher
-      # Settings.json) and PowerToys (FancyZones, Keyboard Manager) are
+      # Flow Launcher (launcher popup opened via lwin+d in the keybindings
+      # below) and PowerToys (FancyZones, Keyboard Manager) are
       # floating overlays, not tileable windows.
       - window_process: { equals: "Flow.Launcher" }
       - window_process: { equals: "PowerToys" }
@@ -83,11 +83,19 @@ binding_modes:
 keybindings:
   # Launchers
   - commands: ["shell-exec explorer.exe"]
-    bindings: ["alt+e"]
+    bindings: ["lwin+e"]
   - commands: ["shell-exec wt.exe nvim"]
-    bindings: ["alt+n"]
+    bindings: ["lwin+n"]
   - commands: ["shell-exec wt.exe psmux"]
-    bindings: ["alt+t"]
+    bindings: ["lwin+t"]
+  # Flow Launcher — Super+D parity with Hyprland's `$mainMod, D`. Flow's own
+  # hotkey is disabled (flow-launcher/Settings.json "Hotkey": "") because a
+  # RegisterHotKey on Win+D loses to the shell's Show-Desktop. GlazeWM's
+  # low-level hook wins, so it opens Flow by relaunching the single-instance
+  # stub (a 2nd launch signals the running instance to show its search box).
+  # Stable stub path, not the versioned app-*/ dir. Keeps Alt+D free.
+  - commands: ["shell-exec %LocalAppData%/FlowLauncher/Flow.Launcher.exe"]
+    bindings: ["lwin+d"]
 
   # Screenshot — region-select via built-in Snipping Tool, then bridge the
   # image from Windows clipboard into the WSL (Arch) Wayland clipboard so
@@ -95,93 +103,93 @@ keybindings:
   # clipboard automatically but not image/png; snip-to-wsl.ps1 forces it.
   # Requires `wl-clipboard` inside the Arch distro.
   - commands: ["shell-exec powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File %userprofile%/.dotfiles/.config/windows/scripts/snip-to-wsl.ps1"]
-    bindings: ["alt+g"]
+    bindings: ["lwin+g"]
 
   # Close focused
   - commands: ["close"]
-    bindings: ["alt+shift+q"]
+    bindings: ["lwin+shift+q"]
 
   # Reload config
   - commands: ["wm-reload-config"]
-    bindings: ["alt+shift+r"]
+    bindings: ["lwin+shift+r"]
 
   # Exit GlazeWM
   - commands: ["wm-exit"]
-    bindings: ["alt+shift+e"]
+    bindings: ["lwin+shift+e"]
 
   # Toggle floating / tiling / fullscreen
   - commands: ["toggle-floating --centered"]
-    bindings: ["alt+shift+space"]
+    bindings: ["lwin+shift+space"]
   - commands: ["toggle-tiling-direction"]
-    bindings: ["alt+v"]
+    bindings: ["lwin+v"]
   - commands: ["toggle-fullscreen"]
-    bindings: ["alt+f"]
+    bindings: ["lwin+f"]
 
-  # Focus
-  # NOTE: alt+hjkl is intentionally NOT bound here — those keys pass through to
-  # the terminal so tmux can use M-hjkl for select-pane (.tmux.conf:26-29).
-  # GlazeWM window focus lives on ctrl+alt+hjkl (+ ctrl+alt+arrows) instead.
+  # Focus (i3/Hyprland-style: mod + hjkl / arrows).
+  # NOTE: alt+hjkl stays free (unbound) on purpose so those keys pass through
+  # to the terminal for tmux's M-hjkl select-pane (.tmux.conf:26-29). GlazeWM
+  # focus now lives on lwin, so alt is no longer needed as a workaround mod.
   - commands: ["focus --direction left"]
-    bindings: ["ctrl+alt+h", "ctrl+alt+left"]
+    bindings: ["lwin+h", "lwin+left"]
   - commands: ["focus --direction right"]
-    bindings: ["ctrl+alt+l", "ctrl+alt+right"]
+    bindings: ["lwin+l", "lwin+right"]
   - commands: ["focus --direction up"]
-    bindings: ["ctrl+alt+k", "ctrl+alt+up"]
+    bindings: ["lwin+k", "lwin+up"]
   - commands: ["focus --direction down"]
-    bindings: ["ctrl+alt+j", "ctrl+alt+down"]
+    bindings: ["lwin+j", "lwin+down"]
 
-  # Move (ctrl+shift — alt+shift was eaten by Windows input-language toggle)
+  # Move focused window (mod + shift + hjkl / arrows)
   - commands: ["move --direction left"]
-    bindings: ["ctrl+shift+h", "ctrl+shift+left"]
+    bindings: ["lwin+shift+h", "lwin+shift+left"]
   - commands: ["move --direction right"]
-    bindings: ["ctrl+shift+l", "ctrl+shift+right"]
+    bindings: ["lwin+shift+l", "lwin+shift+right"]
   - commands: ["move --direction up"]
-    bindings: ["ctrl+shift+k", "ctrl+shift+up"]
+    bindings: ["lwin+shift+k", "lwin+shift+up"]
   - commands: ["move --direction down"]
-    bindings: ["ctrl+shift+j", "ctrl+shift+down"]
+    bindings: ["lwin+shift+j", "lwin+shift+down"]
 
   # Resize mode
   - commands: ["wm-enable-binding-mode --name resize"]
-    bindings: ["alt+r"]
+    bindings: ["lwin+r"]
 
   # Workspaces
   - commands: ["focus --workspace 1"]
-    bindings: ["alt+1"]
+    bindings: ["lwin+1"]
   - commands: ["focus --workspace 2"]
-    bindings: ["alt+2"]
+    bindings: ["lwin+2"]
   - commands: ["focus --workspace 3"]
-    bindings: ["alt+3"]
+    bindings: ["lwin+3"]
   - commands: ["focus --workspace 4"]
-    bindings: ["alt+4"]
+    bindings: ["lwin+4"]
   - commands: ["focus --workspace 5"]
-    bindings: ["alt+5"]
+    bindings: ["lwin+5"]
   - commands: ["focus --workspace 6"]
-    bindings: ["alt+6"]
+    bindings: ["lwin+6"]
   - commands: ["focus --workspace 7"]
-    bindings: ["alt+7"]
+    bindings: ["lwin+7"]
   - commands: ["focus --workspace 8"]
-    bindings: ["alt+8"]
+    bindings: ["lwin+8"]
   - commands: ["focus --workspace 9"]
-    bindings: ["alt+9"]
+    bindings: ["lwin+9"]
   - commands: ["focus --recent-workspace"]
-    bindings: ["alt+tab"]
+    bindings: ["lwin+tab"]
 
   # Move window to workspace
   - commands: ["move --workspace 1"]
-    bindings: ["ctrl+alt+1"]
+    bindings: ["lwin+shift+1"]
   - commands: ["move --workspace 2"]
-    bindings: ["ctrl+alt+2"]
+    bindings: ["lwin+shift+2"]
   - commands: ["move --workspace 3"]
-    bindings: ["ctrl+alt+3"]
+    bindings: ["lwin+shift+3"]
   - commands: ["move --workspace 4"]
-    bindings: ["ctrl+alt+4"]
+    bindings: ["lwin+shift+4"]
   - commands: ["move --workspace 5"]
-    bindings: ["ctrl+alt+5"]
+    bindings: ["lwin+shift+5"]
   - commands: ["move --workspace 6"]
-    bindings: ["ctrl+alt+6"]
+    bindings: ["lwin+shift+6"]
   - commands: ["move --workspace 7"]
-    bindings: ["ctrl+alt+7"]
+    bindings: ["lwin+shift+7"]
   - commands: ["move --workspace 8"]
-    bindings: ["ctrl+alt+8"]
+    bindings: ["lwin+shift+8"]
   - commands: ["move --workspace 9"]
-    bindings: ["ctrl+alt+9"]
+    bindings: ["lwin+shift+9"]
