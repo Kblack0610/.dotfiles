@@ -98,6 +98,14 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
         "tooltip": true
     },
+    "custom/fleet": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 15,
+        "exec": "/home/kblack0610/.config/waybar/fleet_pulse.sh",
+        "on-click": "sh -c '. $HOME/.config/fleet-pulse/env 2>/dev/null; xdg-open ${GATUS_BASE:-https://status.example.com}'",
+        "tooltip": true
+    },
     "custom/timebox": {
         "format": "{}",
         "return-type": "json",

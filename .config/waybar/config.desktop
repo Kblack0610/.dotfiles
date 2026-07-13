@@ -10,6 +10,7 @@
     "modules-right": [
         "custom/timebox",
         "custom/ai-agents",
+        "custom/fleet",
         "idle_inhibitor",
         "pulseaudio",
         "custom/bluetooth",
