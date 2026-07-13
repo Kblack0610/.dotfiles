@@ -317,9 +317,16 @@ function M.setup()
     require("notes.projects").pick()
   end, { desc = "Find notes by project" })
 
-  -- Make `gf` follow vault-root-relative [[wikilinks]] under ~/.notes (e.g.
-  -- [[journal/backlogs/fun]], [[dev/projects/.../v1.8.0.md|alias]]). No wikilink
-  -- plugin — vanilla gf does the work via 'path' + 'suffixesadd'.
+  -- Make `gf` follow [[wikilinks]] under ~/.notes. The `notes` CLI writes links
+  -- relative to the ACTIVE PROFILE ROOT: a personal note links vault-root-relative
+  -- (e.g. [[journal/backlogs/fun]] → ~/.notes/journal/backlogs/fun.md), but a work
+  -- note links relative to its profile root (e.g. [[backlogs/scheduled]] →
+  -- employment/jobs/AcmeCorp/backlogs/scheduled.md). So add BOTH the profile
+  -- root and ~/.notes to 'path' — otherwise a corporate profile's links are
+  -- unresolvable because ~/.notes/backlogs/scheduled.md does not exist. No
+  -- wikilink plugin — vanilla gf does the work via 'path' + 'suffixesadd'.
+  -- The active profile root is stable per session, so resolve it once and cache.
+  local profile_root
   autocmd({ "BufRead", "BufNewFile" }, {
     group = augroup("notes_gf_wikilinks", { clear = true }),
     pattern = "*.md",
@@ -329,6 +336,14 @@ function M.setup()
       if fname:sub(1, #notes_dir) == notes_dir then
         vim.opt_local.suffixesadd:prepend(".md")
         vim.opt_local.path:append(notes_dir)
+        if profile_root == nil then
+          profile_root = notes_path("root", "")
+        end
+        -- Prepend so profile-relative links win; skip when it equals ~/.notes
+        -- (the personal profile, where the two conventions coincide).
+        if profile_root ~= "" and profile_root ~= notes_dir then
+          vim.opt_local.path:prepend(profile_root)
+        end
       end
     end,
   })
