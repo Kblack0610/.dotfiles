@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# vdi - connect to an Azure Virtual Desktop via FreeRDP
+#
+# Uses the SDL client (sdl-freerdp3) built WITH_WEBVIEW=ON, so the Entra ID login
+# is a popup window (no URL copy-paste). Graphics are the full-colour H.264 GFX
+# pipeline, hardware-decoded via VAAPI.
+#
+# Usage:
+#   vdi                      # default RDP file ($VDI_RDP or ~/vdi/avd.rdp)
+#   vdi /path/to/file.rdp    # a specific RDP file
+#   vdi ... /extra:flag      # append extra FreeRDP flags (e.g. /multimon)
+#
+# The RDP file is generated per-deployment from the AVD web portal and lives
+# OUTSIDE this repo (it carries org-specific identifiers). See how to generate it:
+#   ~/.config/freerdp-avd/README.md
+set -euo pipefail
+
+rdp="${VDI_RDP:-$HOME/vdi/avd.rdp}"
+if [[ "${1:-}" == *.rdp ]]; then rdp="$1"; shift; fi
+
+if ! command -v sdl-freerdp3 >/dev/null 2>&1; then
+    echo "vdi: sdl-freerdp3 not found. Build it: freerdp-avd-build" >&2
+    exit 1
+fi
+
+if [[ ! -f "$rdp" ]]; then
+    echo "vdi: RDP file not found: $rdp" >&2
+    echo "  Generate it from the AVD web portal (see ~/.config/freerdp-avd/README.md)," >&2
+    echo "  or point VDI_RDP at yours:  VDI_RDP=/path/to.rdp vdi" >&2
+    exit 1
+fi
+
+# /gateway:type:arm /sec:aad -> AVD ARM broker + Entra ID OAuth (webview popup).
+# /gfx:AVC444                -> full-colour H.264 GFX pipeline (HW-decoded).
+# Two interactive logins on connect: gateway token, then session-host token.
+exec sdl-freerdp3 "$rdp" \
+    /gateway:type:arm /sec:aad /cert:tofu \
+    /gfx:AVC444 /sound:sys:pulse +clipboard \
+    "$@"

@@ -613,6 +613,41 @@ setup_rbw() {
     log_info "rbw setup complete — see .config/rbw/README.md"
 }
 
+# Setup FreeRDP (webview) for Azure Virtual Desktop
+# Stock Arch `freerdp` ships WITH_WEBVIEW=OFF, which forces a manual copy-paste
+# OAuth flow for Entra ID. This rebuilds the same version WITH_WEBVIEW=ON so the
+# AVD login (`/sec:aad`) is a popup window. Reproduces via the reusable build
+# script; connection file + interactive login are surfaced as manual steps.
+setup_freerdp_avd() {
+    log_section "Setting up FreeRDP (webview) for Azure Virtual Desktop"
+
+    # Build dependencies (webkit2gtk-4.1 provides the embedded login browser;
+    # libp11 is a freerdp makedep absent from a minimal base-devel).
+    install_pacman_package "base-devel"
+    install_pacman_package "git"
+    install_pacman_package "cmake"
+    install_pacman_package "ninja"
+    install_pacman_package "webkit2gtk-4.1"
+    install_pacman_package "libp11"
+
+    # Build & install freerdp WITH_WEBVIEW=ON. The build script is idempotent -
+    # it no-ops if the installed freerdp already carries the webview.
+    if command -v sdl-freerdp3 &>/dev/null \
+       && sdl-freerdp3 /buildconfig 2>/dev/null | grep -q "WITH_WEBVIEW=ON"; then
+        log_info "FreeRDP already built WITH_WEBVIEW=ON"
+    elif [[ -x "$HOME/.local/bin/freerdp-avd-build" ]]; then
+        log_info "Building FreeRDP with WITH_WEBVIEW=ON (a few minutes)..."
+        "$HOME/.local/bin/freerdp-avd-build"
+    else
+        log_warning "freerdp-avd-build not found - run 'stow .local' first, then 'freerdp-avd-build'"
+    fi
+
+    # Per-deployment connection file + first-time Entra ID login cannot be automated.
+    log_warning "Manual step: generate your AVD .rdp from the web portal - see ~/.config/freerdp-avd/README.md"
+    log_warning "Manual step: first 'vdi' launch does an interactive Entra ID + MFA login"
+    log_info "FreeRDP AVD setup complete - launch with: vdi"
+}
+
 # Override main installation to include AUR
 install_all() {
     # Create structure
@@ -648,6 +683,9 @@ install_all() {
     # Game streaming
     setup_sunshine
     install_moonlight
+
+    # Remote desktop (Azure Virtual Desktop via FreeRDP webview)
+    setup_freerdp_avd
 
     # Input remapping
     setup_keyd

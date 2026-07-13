@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# freerdp-avd-build - build & install FreeRDP with WITH_WEBVIEW=ON
+#
+# Why: the stock Arch `freerdp` package ships WITH_WEBVIEW=OFF. For Azure Virtual
+# Desktop (Entra ID / `/sec:aad`) that forces a clunky manual copy-paste OAuth
+# flow (FreeRDP prints a login URL, you paste back the redirect URL, twice).
+# Rebuilding the SAME official version with the webview makes `/sec:aad` open a
+# normal login popup window instead - no URL copying.
+#
+# Re-run this after any `pacman -Syu` that upgrades `freerdp`: a system update
+# reverts you to the stock (webview-less) package. This script is idempotent - it
+# no-ops if the installed freerdp already has the webview.
+#
+# Companion launcher: `vdi`. Runbook: ~/.config/freerdp-avd/README.md
+set -euo pipefail
+
+log() { printf '\033[1;34m[freerdp-avd-build]\033[0m %s\n' "$*"; }
+
+# Already a webview build? Nothing to do.
+if command -v sdl-freerdp3 >/dev/null 2>&1 \
+   && sdl-freerdp3 /buildconfig 2>/dev/null | grep -q 'WITH_WEBVIEW=ON'; then
+    log "freerdp already built WITH_WEBVIEW=ON - nothing to do."
+    exit 0
+fi
+
+# Build deps. webkit2gtk-4.1 provides the embedded browser; libp11 is a freerdp
+# makedep missing from a minimal base-devel.
+log "Ensuring build dependencies..."
+sudo pacman -S --needed --noconfirm base-devel git cmake ninja webkit2gtk-4.1 libp11
+
+builddir="$(mktemp -d)"
+trap 'rm -rf "$builddir"' EXIT
+
+log "Cloning the official Arch PKGBUILD (tracks the current repo version)..."
+git clone --depth 1 \
+    https://gitlab.archlinux.org/archlinux/packaging/packages/freerdp.git \
+    "$builddir/freerdp"
+cd "$builddir/freerdp"
+
+# Patch: add the webkit makedep + flip the one cmake option to ON. Both edits are
+# guarded so re-patching a patched tree is a no-op.
+grep -q 'webkit2gtk-4.1' PKGBUILD \
+    || sed -i 's/^  pkcs11-helper$/  pkcs11-helper\n  webkit2gtk-4.1/' PKGBUILD
+grep -q 'WITH_WEBVIEW=ON' PKGBUILD \
+    || sed -i 's/^    -D WITH_WAYLAND=ON$/    -D WITH_WEBVIEW=ON\n    -D WITH_WAYLAND=ON/' PKGBUILD
+
+if ! grep -q 'WITH_WEBVIEW=ON' PKGBUILD; then
+    log "ERROR: could not patch WITH_WEBVIEW into PKGBUILD (upstream format changed)."
+    exit 1
+fi
+
+log "Building & installing (a few minutes)..."
+makepkg -sif --noconfirm --nocheck
+
+log "Done. Verify: sdl-freerdp3 /buildconfig | grep WITH_WEBVIEW"

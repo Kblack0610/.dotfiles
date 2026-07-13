@@ -1,0 +1,47 @@
+# Template - Azure Virtual Desktop connection file for FreeRDP.
+#
+# PREFER generating the real file from the AVD web portal (see README.md) rather
+# than hand-editing this: the portal supplies the signed `loadbalanceinfo` token,
+# which is per-hostpool and cannot be guessed. This template exists to document
+# the required fields and as a hand-build fallback.
+#
+# Replace every <PLACEHOLDER>. IDs come from the portal's downloaded .rdp (grab it
+# from Firefox DevTools -> Network -> the `<resourceId>.rdp` response; see README).
+# Save the filled file somewhere OUTSIDE this repo, e.g. ~/vdi/<name>.rdp, then:
+#   vdi ~/vdi/<name>.rdp
+gatewayusagemethod:i:1
+gatewayprofileusagemethod:i:1
+authentication level:i:1
+gatewaybrokeringtype:i:1
+wvd endpoint pool:s:<ENDPOINT_POOL_GUID>
+geo:s:<GEO>__False
+armpath:s:/subscriptions/<SUBSCRIPTION_GUID>/resourcegroups/<RESOURCE_GROUP>/providers/Microsoft.DesktopVirtualization/hostpools/<HOSTPOOL_NAME>
+aadtenantid:s:<TENANT_GUID>
+full address:s:rdgateway-<REGION>.wvd.microsoft.com
+alternate full address:s:rdgateway-<REGION>.wvd.microsoft.com
+hubdiscoverygeourl:s:https://rdweb-g-<GEO>-<REGION>.wvd.microsoft.com/api/arm/hubdiscovery?resourceId=<ENDPOINT_POOL_GUID>
+resourceprovider:s:arm
+gatewayhostname:s:afdfp-rdgateway-<REGION>.wvd.microsoft.com:443
+loadbalanceinfo:s:<LOADBALANCEINFO_TOKEN>
+workspace id:s:<WORKSPACE_GUID>
+promptcredentialonce:i:1
+gatewaycredentialssource:i:0
+remoteapplicationprogram:s:||<RESOURCE_GUID>
+remotedesktopname:s:<DISPLAY_NAME>
+remoteapplicationmode:i:0
+targetisaadjoined:i:1
+redirectclipboard:i:1
+audiomode:i:0
+videoplaybackmode:i:1
+enablecredsspsupport:i:1
+redirectwebauthn:i:1
+use multimon:i:0
+autoreconnection enabled:i:1
+bandwidthautodetect:i:1
+networkautodetect:i:1
+compression:i:1
+keyboardhook:i:1
+screen mode id:i:1
+smart sizing:i:0
+dynamic resolution:i:1
+enablerdsaadauth:i:0
