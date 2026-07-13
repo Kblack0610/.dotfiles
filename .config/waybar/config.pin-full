@@ -16,6 +16,7 @@
     "modules-left": [],
     "modules-center": [
         "custom/machines",
+        "custom/fleet",
         "custom/ai-agents",
         "custom/timebox",
         "cpu",

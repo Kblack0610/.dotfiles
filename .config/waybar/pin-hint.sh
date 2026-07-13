@@ -20,9 +20,10 @@ close() { command -v dunstify >/dev/null 2>&1 && dunstify -C "$ID" 2>/dev/null |
 
 case "${1:-main}" in
     main)  show " pin leader" "t toggle     s size\na agents     h ssh\nu utils >    esc/q exit" ;;
-    utils) show " pin / utils" "r reload\ny sync >     g git >\nesc back     q exit" ;;
+    utils) show " pin / utils" "r reload     t timebox >\ny sync >     g git >\nesc back     q exit" ;;
     sync)  show " pin / sync" "d restow dotfiles\nn pull notes\nesc back     q exit" ;;
     git)   show " pin / git" "p pull dot+notes\ns git status\nesc back     q exit" ;;
+    timebox) show " pin / timebox" "p pause     r resume\nx stop      o status\ns switch\nesc back     q exit" ;;
     close) close ;;
     *)     echo "usage: pin-hint.sh {main|utils|sync|git|close}" >&2; exit 2 ;;
 esac
