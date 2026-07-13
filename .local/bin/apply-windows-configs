@@ -127,7 +127,7 @@ copy_file "$WIN_CFG/zebar/settings.json" "$USERPROFILE/.glzr/zebar/settings.json
 cyan 'Zebar minimal pack'
 copy_dir  "$WIN_CFG/zebar/kblack-minimal" "$USERPROFILE/.glzr/zebar/kblack-minimal"
 
-cyan 'Flow Launcher settings (Hotkey: Alt+D)'
+cyan 'Flow Launcher settings (Hotkey disabled; opened via GlazeWM lwin+d)'
 # Flow rewrites this file with all defaults on first save, so shipping the
 # partial pin (Hotkey only) is enough -- Flow merges defaults around it.
 # If Flow is currently running, the file is held open and the copy may be
