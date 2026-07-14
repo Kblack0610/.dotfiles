@@ -7,19 +7,29 @@
 # success AND newer than $FLEET_STALE_AFTER seconds. That way a pusher that dies
 # leaves a stale last-result and correctly shows amber.
 #
-#   green  = every fleet host fresh + success
-#   amber  = >=1 host stale/failing (but API reachable)
+# The roster ($FLEET_ROSTER) is what makes that honest. Gatus only materializes an
+# external-endpoint once it receives its FIRST push, so a machine that has never
+# enrolled is absent from the API entirely - not stale, just missing. Counting the
+# API's own rows would take the denominator from the same set as the numerator and
+# render green while half the fleet was never heard from. The roster is the
+# independent list of who SHOULD be reporting; absent from the API means amber.
+#
+#   green  = every roster host fresh + success
+#   amber  = >=1 host never-reported/stale/failing (but API reachable)
 #   red    = statuses API unreachable
 #
 # Emits waybar JSON {text, tooltip, class} with Pango-colored glyph (Catppuccin).
 
 set -u
 
-# Endpoint is machine-local (this repo is public - keep the internal hostname out).
-# Set GATUS_BASE in ~/.config/fleet-pulse/env, e.g.  GATUS_BASE=https://status.your.lan
+# Endpoint + roster are machine-local (this repo is public - keep them out of it).
+# Set both in ~/.config/fleet-pulse/env:
+#   GATUS_BASE=https://fleet.your.lan
+#   FLEET_ROSTER="linux-cachyos mac windows"
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
+ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = infer from API
 ICON="" # nf-md-pulse
 
 C_GRN="#a6e3a1"
@@ -54,7 +64,17 @@ rows="$(echo "$json" | jq -r '
     | [$e.name, (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"
 
-if [[ -z "$rows" ]]; then
+# Without a roster, fall back to whoever the API knows about - the pre-roster
+# behaviour, kept so an unconfigured machine still renders something. It cannot
+# see a never-enrolled host, so say as much in the tooltip rather than quietly
+# reporting on a subset.
+note=""
+if [[ -z "$ROSTER" ]]; then
+    ROSTER="$(cut -f1 <<< "$rows" | tr '\n' ' ')"
+    note="\\n  (FLEET_ROSTER unset: reporting hosts only)"
+fi
+
+if [[ -z "${ROSTER// /}" ]]; then
     emit "$C_YEL" "pending" "Fleet: no hosts reporting yet"
     exit 0
 fi
@@ -64,32 +84,38 @@ total=0
 healthy=0
 tooltip="Fleet pulse:"
 
-while IFS=$'\t' read -r name success ts; do
+for name in $ROSTER; do
     [[ -z "$name" ]] && continue
     ((total++))
+
+    # The roster drives the loop, so a host absent from the API is caught here.
+    row="$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' <<< "$rows")"
+    if [[ -z "$row" ]]; then
+        tooltip="${tooltip}\\n  ${name}: NEVER REPORTED"
+        continue
+    fi
+    success="$(cut -f2 <<< "$row")"
+    ts="$(cut -f3 <<< "$row")"
+
     age=-1
     if [[ -n "$ts" ]]; then
         epoch="$(date -d "$ts" +%s 2>/dev/null || echo "")"
         [[ -n "$epoch" ]] && age=$((now - epoch))
     fi
-    state="stale"
     if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then
-        state="ok"
         ((healthy++))
-    fi
-    if [[ "$state" == "ok" ]]; then
         tooltip="${tooltip}\\n  ${name}: up ($(fmt_age "$age") ago)"
-    elif [[ "$age" -lt 0 ]]; then
+    elif ((age < 0)); then
         tooltip="${tooltip}\\n  ${name}: no data"
     elif [[ "$success" != "true" ]]; then
         tooltip="${tooltip}\\n  ${name}: DOWN ($(fmt_age "$age") ago)"
     else
         tooltip="${tooltip}\\n  ${name}: STALE ($(fmt_age "$age") ago)"
     fi
-done <<< "$rows"
+done
 
 if ((healthy == total)); then
-    emit "$C_GRN" "healthy" "${tooltip}"
+    emit "$C_GRN" "healthy" "${tooltip}${note}"
 else
-    emit "$C_YEL" "degraded" "${tooltip}"
+    emit "$C_YEL" "degraded" "${tooltip}${note}"
 fi

@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet Pulse - push this machine's liveness heartbeat to gatus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/src/fleet-pulse/push.sh
+TimeoutStartSec=30
+# Never fail the unit: the pusher always exits 0, but be explicit.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=default.target

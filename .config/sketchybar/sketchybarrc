@@ -52,6 +52,7 @@ source "$CONFIG_DIR/items/battery.sh"
 source "$CONFIG_DIR/items/volume.sh"
 source "$CONFIG_DIR/items/bose_audio.sh"
 source "$CONFIG_DIR/items/cpu.sh"
+source "$CONFIG_DIR/items/fleet.sh"
 source "$CONFIG_DIR/items/calendar_app.sh"
 source "$CONFIG_DIR/items/calendar.sh"
 

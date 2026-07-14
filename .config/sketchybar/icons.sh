@@ -24,6 +24,9 @@ export ICON_VOLUME_MUTE=""
 
 export ICON_CPU=""
 
+# Fleet-pulse status dot (filled circle, colored by plugins/fleet.sh)
+export ICON_FLEET="●"
+
 # Headphones (Nerd Font U+F025) — rendered with an icon.font override on the bose_audio item,
 # since SF Pro doesn't carry this glyph. Built from octal bytes so it's deterministic in bash 3.2.
 export ICON_BOSE=$(printf '\357\200\245')

@@ -1,0 +1,10 @@
+[Unit]
+Description=Push fleet-pulse heartbeat every minute
+
+[Timer]
+OnCalendar=*:0/1
+AccuracySec=10
+Persistent=true
+
+[Install]
+WantedBy=timers.target
