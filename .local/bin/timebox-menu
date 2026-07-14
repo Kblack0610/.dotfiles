@@ -19,10 +19,22 @@ action=$(printf '%s\n' start switch pause resume lap stop "stop all" stats | men
 
 # For start/switch, offer a few common ops but allow typing any name.
 ops="focus\ndeep-work\nemail\nmeeting\nreading\nbreak"
+# Lap presets; "default" uses config default_lap, and any typed value (e.g. 45m) works.
+laps="default\n25m\n45m\n50m\n1h\n15m\n5m"
+
+# Pick a lap interval; echoes the `--lap X` args (empty for default).
+pick_lap() {
+    local lap
+    lap=$(printf "$laps" | menu "lap for $1")
+    case "$lap" in
+        "" | default) : ;;
+        *) printf -- '--lap %s' "$lap" ;;
+    esac
+}
 
 case "$action" in
-    start)  op=$(printf "$ops" | menu "start op"); [ -n "$op" ] && timebox start "$op" ;;
-    switch) op=$(printf "$ops" | menu "switch to"); [ -n "$op" ] && timebox switch "$op" ;;
+    start)  op=$(printf "$ops" | menu "start op"); [ -n "$op" ] && timebox start "$op" $(pick_lap "$op") ;;
+    switch) op=$(printf "$ops" | menu "switch to"); [ -n "$op" ] && timebox switch "$op" $(pick_lap "$op") ;;
     pause)  timebox pause ;;
     resume) timebox resume ;;
     lap)    timebox lap ;;

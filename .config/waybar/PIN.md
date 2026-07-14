@@ -23,11 +23,12 @@ unit). The pin is toggle-on-demand and never autostarts.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
 ```
-Super+A                L1 pinbar      t toggle | s size | a agents | h ssh | u utils> | esc/q exit
-  u utils              L2 pinbar-utils    r reload | t timebox> | y sync> | g git> | esc back | q exit
-    t timebox          L3 pinbar-timebox  p pause | r resume | x stop | o status | s switch | esc back
+Super+A                L1 pinbar          t toggle | u utils> | s settings> | esc/q exit
+  u utils              L2 pinbar-utils    a agents | h ssh | r reload | t timebox> | y sync> | g git> | esc back
+    t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
+  s settings           L2 pinbar-settings s size | esc back | q exit
 ```
 
 Views: **min** = agents + timebox (glance); **big** = + machines/fleet infra, cpu/mem,
