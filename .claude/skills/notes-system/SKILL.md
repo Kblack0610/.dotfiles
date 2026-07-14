@@ -88,6 +88,16 @@ Daily-note model: only fresh **Focus** + **Priority** inline; Fun/Carry Over liv
 `journal/backlogs/` (footer-linked); no separate done-log (history = git + `daily_archive/`).
 Wikilinks resolve in nvim via a vanilla-`gf` autocmd (path + suffixesadd) — no plugin.
 
+## Task priority tags
+
+Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority as a plain `#hashtag` at the END of the line, so it plugs straight into the existing tag system rather than a parallel scheme.
+
+- **Vocabulary (three levels):** `#low`, `#high`, `#urgent`. No `#medium`.
+- **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
+- **nvim keymap:** `<leader>tp` in a markdown buffer cycles the current line (or a visual selection, converging to one level): `(none) -> #low -> #high -> #urgent -> (none)`. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
+- **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
+- **Vs Vikunja:** complementary, not synced. Vikunja tickets use their own P-labels for tracked work; these tags are for lightweight in-note prioritisation.
+
 ## Other scripts
 
 ### `notes-bootstrap`
