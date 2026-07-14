@@ -120,7 +120,9 @@ Profile: `~/.local/share/vdi-chromium-profile`. Runs on Wayland (for passthrough
 GPU-accelerated. VA-API decode is deliberately **not** forced — forcing it
 black-screens Chromium on NVIDIA+Wayland (`eglCreateImage 0x3009`). If the window
 is ever black, add **`vdi-web --safe`** for pure software rendering (passthrough
-still works).
+still works). To make that sticky on a box whose GPU path can't composite (NVIDIA
++Wayland), set **`export VDI_WEB_SAFE=1`** in `~/.config/shell/private.sh` so plain
+`vdi-web` runs software there without changing the default for other machines.
 
 **Firefox isolation-only alternative** (no key passthrough): a dedicated profile
 walls off tabs/cookies but cannot lock system keys — Super/Alt+Tab stay with Hyprland.

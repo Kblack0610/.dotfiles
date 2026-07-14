@@ -17,10 +17,12 @@
 #   export VDI_URL="https://windows.cloud.microsoft/webclient/avd/...#loginHint=you@org"
 # or pass it as the first argument.
 #
-# Flags:
-#   --safe   Pure software rendering (--disable-gpu). Use if the window is BLACK -
-#            on some NVIDIA+Wayland setups Chromium's GPU/EGL path fails. Keyboard
-#            passthrough still works (it's independent of the GPU).
+# Flags / env:
+#   --safe            Pure software rendering (--disable-gpu). Use if the window is
+#                     BLACK - on some NVIDIA+Wayland setups Chromium's GPU/EGL path
+#                     fails. Keyboard passthrough still works (independent of GPU).
+#   VDI_WEB_SAFE=1    Same as --safe, but sticky - set it per-machine in
+#                     ~/.config/shell/private.sh so plain `vdi-web` runs software.
 set -euo pipefail
 
 url="${VDI_URL:-}"
@@ -32,15 +34,20 @@ if [[ -z "$url" ]]; then
     exit 1
 fi
 
-gpu_args=()
+# Software rendering when --safe is passed OR VDI_WEB_SAFE=1 is in the environment
+# (set it per-machine in ~/.config/shell/private.sh on NVIDIA+Wayland boxes where
+# Chromium's GPU/EGL compositing black-screens).
+safe="${VDI_WEB_SAFE:-0}"
 extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --safe) gpu_args+=( --disable-gpu ) ;;
+        --safe) safe=1 ;;
         *)      extra+=("$1") ;;
     esac
     shift
 done
+gpu_args=()
+[[ "$safe" == 1 ]] && gpu_args+=( --disable-gpu )
 
 bin=""
 for b in chromium chromium-browser google-chrome-stable google-chrome brave; do
