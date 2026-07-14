@@ -116,7 +116,11 @@ sudo pacman -S chromium          # one-time (required; not installed by default)
 vdi-web                          # opens it; or pass one: vdi-web '<url>'
 ```
 
-Profile: `~/.local/share/vdi-chromium-profile`. VA-API hardware decode is enabled.
+Profile: `~/.local/share/vdi-chromium-profile`. Runs on Wayland (for passthrough),
+GPU-accelerated. VA-API decode is deliberately **not** forced — forcing it
+black-screens Chromium on NVIDIA+Wayland (`eglCreateImage 0x3009`). If the window
+is ever black, add **`vdi-web --safe`** for pure software rendering (passthrough
+still works).
 
 **Firefox isolation-only alternative** (no key passthrough): a dedicated profile
 walls off tabs/cookies but cannot lock system keys — Super/Alt+Tab stay with Hyprland.

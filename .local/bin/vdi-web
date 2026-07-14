@@ -16,6 +16,11 @@
 # ~/.config/shell/private.sh (sourced by .commonrc):
 #   export VDI_URL="https://windows.cloud.microsoft/webclient/avd/...#loginHint=you@org"
 # or pass it as the first argument.
+#
+# Flags:
+#   --safe   Pure software rendering (--disable-gpu). Use if the window is BLACK -
+#            on some NVIDIA+Wayland setups Chromium's GPU/EGL path fails. Keyboard
+#            passthrough still works (it's independent of the GPU).
 set -euo pipefail
 
 url="${VDI_URL:-}"
@@ -26,6 +31,16 @@ if [[ -z "$url" ]]; then
     echo "  - vdi-web 'https://windows.cloud.microsoft/webclient/avd/...'" >&2
     exit 1
 fi
+
+gpu_args=()
+extra=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --safe) gpu_args+=( --disable-gpu ) ;;
+        *)      extra+=("$1") ;;
+    esac
+    shift
+done
 
 bin=""
 for b in chromium chromium-browser google-chrome-stable google-chrome brave; do
@@ -39,14 +54,16 @@ fi
 
 profile="$HOME/.local/share/vdi-chromium-profile"
 
-# --app + --user-data-dir : chromeless window, isolated cookies/extensions.
-# --ozone-platform-hint=auto : run on Wayland so keyboard-lock -> shortcuts-inhibit.
-# VA-API : hardware H.264 decode of the AVD stream (smoother, lower CPU).
-# Passthrough engages when you click the web client's fullscreen button.
+# --app + --user-data-dir  : chromeless window, isolated cookies/extensions.
+# --ozone-platform-hint=auto : run on Wayland so keyboard-lock -> shortcuts-inhibit
+#   passthrough works.
+# VA-API decode is intentionally NOT forced: on NVIDIA + Wayland the dmabuf/VA-API
+# path fails EGL image creation (eglCreateImage 0x3009) -> black screen. The web
+# client renders fine without it. If GPU compositing itself misbehaves, use --safe.
 exec "$bin" \
     --user-data-dir="$profile" \
     --app="$url" \
     --start-fullscreen \
     --ozone-platform-hint=auto \
-    --enable-features=VaapiVideoDecoder,VaapiOnNvidiaGPUs \
-    "$@"
+    "${gpu_args[@]}" \
+    "${extra[@]}"
