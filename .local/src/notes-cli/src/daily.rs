@@ -86,8 +86,13 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
     if let Some(prev) = latest_prev(&p.daily, &today_s)? {
         let prev_date = file_date(&prev).unwrap_or(today);
-        let content = fs::read_to_string(&prev)
+        let mut content = fs::read_to_string(&prev)
             .with_context(|| format!("reading previous note {}", prev.display()))?;
+        // Drop the trailing backlog footer before extracting sections. The last H2
+        // (`## Due`, or legacy `## Priority`) sits directly above `\n---\nBacklogs:`,
+        // and `capture` only stops at the next H2 — so without this the footer bleeds
+        // into the carried section and re-seeds a stale `Backlogs:` line downstream.
+        strip_backlog_footer(&mut content);
 
         if let Some(lines) = md::section_lines(&content, "Current Projects") {
             projects = lines.join("\n");
@@ -480,6 +485,16 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Truncate a note at its backlog footer (`\n---\nBacklogs: …`), leaving the body.
+/// Carry-forward reads the previous note's sections, and the last H2 sits directly
+/// above the footer with no H2 between — so stripping it here keeps the footer out
+/// of the carried section (and thus out of tomorrow's note).
+fn strip_backlog_footer(content: &mut String) {
+    if let Some(idx) = content.find("\n---\nBacklogs:") {
+        content.truncate(idx);
+    }
+}
+
 fn insert_before_footer(content: &str, block: &str) -> String {
     if let Some(idx) = content.find("\n---\nBacklogs:") {
         let (head, tail) = content.split_at(idx);
@@ -800,6 +815,31 @@ mod tests {
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
         }
+    }
+
+    #[test]
+    fn strip_backlog_footer_removes_footer_and_keeps_body() {
+        // A note whose last H2 (`## Due`) sits directly above the footer: capture()
+        // would grab the `---`/`Backlogs:` lines into Due, so they must be stripped
+        // before carry-forward. The section then carries clean, and no stale
+        // `Backlogs:` line pre-seeds tomorrow's note.
+        let mut c = String::from(
+            "# 2026-07-08\n\n## Due\n- [ ] ship it\n\n---\nBacklogs: [[backlogs/fun]] · [[backlogs/carryover]]\n",
+        );
+        strip_backlog_footer(&mut c);
+        assert!(c.ends_with("- [ ] ship it\n"), "body preserved, got: {c:?}");
+        assert!(!c.contains("Backlogs:"), "footer stripped");
+        // The carried Due section no longer contains the footer lines.
+        let due = md::section_lines(&c, "Due").unwrap();
+        assert_eq!(due, vec!["- [ ] ship it".to_string()]);
+    }
+
+    #[test]
+    fn strip_backlog_footer_noop_without_footer() {
+        let mut c = String::from("# 2026-07-08\n\n## Due\n- [ ] ship it\n");
+        let before = c.clone();
+        strip_backlog_footer(&mut c);
+        assert_eq!(c, before);
     }
 
     #[test]
