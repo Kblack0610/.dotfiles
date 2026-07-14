@@ -93,7 +93,8 @@
       "Write(**/.env)",
       "Write(**/.env.*)"
     ],
-    "defaultMode": "plan"
+    "defaultMode": "plan",
+    "disableAutoMode": "disable"
   },
   "model": "opus[1m]",
   "fallbackModel": [
