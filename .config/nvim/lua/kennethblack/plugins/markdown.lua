@@ -17,6 +17,61 @@ return {
         },
       }
 
+      -- Task priority tags. These are plain `#hashtags` at the END of a task
+      -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
+      -- <leader>nt, greppable via `notes tags urgent`) and they never collide
+      -- with markdown `# headings` (which are line-start only).
+      --   Cycle order: (none) -> #low -> #high -> #urgent -> (none)
+      --   Keymap:      <leader>tp  (sibling of <leader>t checkbox toggle)
+      local PRIORITIES = { "low", "high", "urgent" }
+
+      -- Return (base_without_tag, current_level_or_nil): strip a trailing
+      -- priority tag (with any leading spaces) and trim trailing whitespace.
+      local function strip_priority(line)
+        for _, p in ipairs(PRIORITIES) do
+          local stripped, n = line:gsub("%s*#" .. p .. "%s*$", "")
+          if n > 0 then
+            return (stripped:gsub("%s+$", "")), p
+          end
+        end
+        return (line:gsub("%s+$", "")), nil
+      end
+
+      -- Next level in the cycle; nil means "back to no tag".
+      local function next_priority(current)
+        if current == nil then
+          return "low"
+        elseif current == "low" then
+          return "high"
+        elseif current == "high" then
+          return "urgent"
+        end
+        return nil -- urgent -> none
+      end
+
+      -- Cycle the priority tag on a range. The next level is computed from the
+      -- FIRST line and applied to every line, so a visual selection converges
+      -- to a single priority.
+      local function cycle_priority(line1, line2)
+        local _, first = strip_priority(vim.fn.getline(line1))
+        local nxt = next_priority(first)
+        for lnum = line1, line2 do
+          local base = strip_priority(vim.fn.getline(lnum))
+          if nxt then
+            local tag = "#" .. nxt
+            vim.fn.setline(lnum, base == "" and tag or (base .. " " .. tag))
+          else
+            vim.fn.setline(lnum, base)
+          end
+        end
+      end
+
+      -- Overlay colors for the priority tags (matchadd draws above treesitter).
+      -- `default = true` yields to any user/colorscheme override.
+      vim.api.nvim_set_hl(0, "TaskPriorityUrgent", { link = "DiagnosticError", default = true })
+      vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
+      vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
+
       -- Toggle markdown task checkboxes: `- [ ]` <-> `- [x]`.
       -- Operates on the current line (normal) or every line in the visual
       -- selection (visual). Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
@@ -70,6 +125,33 @@ return {
             vim.cmd "normal! \27"
             toggle_checkbox(vim.fn.line "'<", vim.fn.line "'>")
           end, { buffer = buf, desc = "Toggle task checkbox(es)", silent = true })
+
+          -- Task priority cycle: current line (normal) / selection (visual).
+          vim.keymap.set("n", "<leader>tp", function()
+            local lnum = vim.api.nvim_win_get_cursor(0)[1]
+            cycle_priority(lnum, lnum)
+          end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
+          vim.keymap.set("x", "<leader>tp", function()
+            vim.cmd "normal! \27"
+            cycle_priority(vim.fn.line "'<", vim.fn.line "'>")
+          end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
+        end,
+      })
+
+      -- Color the priority tags. matchadd is window-local, so (re)apply it once
+      -- per window showing a markdown buffer; a window flag prevents duplicates.
+      -- BufWinEnter fires whenever the buffer is displayed in a window (open,
+      -- split), which is exactly when a fresh window needs its matches.
+      vim.api.nvim_create_autocmd("BufWinEnter", {
+        pattern = "*.md",
+        callback = function()
+          if vim.w.task_priority_matched then
+            return
+          end
+          vim.w.task_priority_matched = true
+          vim.fn.matchadd("TaskPriorityUrgent", [[#urgent\>]])
+          vim.fn.matchadd("TaskPriorityHigh", [[#high\>]])
+          vim.fn.matchadd("TaskPriorityLow", [[#low\>]])
         end,
       })
     end,
