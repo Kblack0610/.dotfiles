@@ -74,6 +74,7 @@ Media/Music
 # Skills: allowlist the generic ones (client/infra skills are in the private overlay).
 !.claude/skills/
 .claude/skills/*
+!.claude/skills/claude-recall/
 !.claude/skills/compliance/
 !.claude/skills/deep-research/
 !.claude/skills/deep-research-code/

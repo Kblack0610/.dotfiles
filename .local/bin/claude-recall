@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""claude-recall - search / list / show raw Claude Code transcripts.
+
+On-demand pull-recall over the verbatim session record that Claude Code writes
+to ~/.claude/projects/**/*.jsonl (and Claude Cowork's local-agent-mode-sessions
+on macOS, when present). No index, no daemon, no cloud: it reads the .jsonl on
+each call. ripgrep is used as a fast prefilter when available.
+
+This is the local, skill-friendly equivalent of local-claude-chat-history-mcp:
+same three capabilities (search / list / show), reached via Bash instead of a
+standing MCP server, so it costs zero session context until invoked.
+
+Usage:
+  claude-recall search TERM [--project P] [--branch B] [--since YYYY-MM-DD]
+                           [--role user|assistant] [--regex] [--thinking]
+                           [--context N] [--limit N] [--ignore-case/-i]
+  claude-recall list [--project P] [--limit N]
+  claude-recall show SESSION_ID_OR_PREFIX [--thinking]
+
+Examples:
+  claude-recall search "privacy overlay" --project dotfiles --since 2026-07-01
+  claude-recall search "TODO|FIXME" --regex --role assistant
+  claude-recall list --project brightsign
+  claude-recall show 15eeee34
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+ROOTS = [HOME / ".claude" / "projects"]
+COWORK = HOME / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+if COWORK.exists():
+    ROOTS.append(COWORK)
+
+# --- ANSI (suppressed when not a TTY) --------------------------------------
+_TTY = sys.stdout.isatty()
+def c(code, s):
+    return f"\033[{code}m{s}\033[0m" if _TTY else s
+DIM, BOLD, CYAN, YEL, GRN, MAG = "2", "1", "36", "33", "32", "35"
+
+
+def iter_files():
+    for root in ROOTS:
+        if root.exists():
+            yield from sorted(root.rglob("*.jsonl"))
+
+
+def parse_line(line):
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+
+def blocks_to_text(content, include_thinking=False):
+    """Render a message's content (str or list of blocks) to readable text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "text":
+            parts.append(b.get("text", ""))
+        elif t == "thinking":
+            if include_thinking:
+                parts.append("[thinking] " + b.get("thinking", ""))
+        elif t == "tool_use":
+            inp = json.dumps(b.get("input", {}), ensure_ascii=False)
+            parts.append(f"[tool_use {b.get('name', '?')}] {inp[:300]}")
+        elif t == "tool_result":
+            rc = b.get("content", "")
+            if isinstance(rc, list):
+                rc = " ".join(
+                    x.get("text", "") for x in rc if isinstance(x, dict)
+                )
+            parts.append("[tool_result] " + str(rc)[:300])
+    return "\n".join(p for p in parts if p)
+
+
+def project_of(rec, path):
+    """Friendly project label: prefer cwd basename, else encoded dir name."""
+    cwd = rec.get("cwd")
+    if cwd:
+        return os.path.basename(cwd.rstrip("/")).lstrip(".") or cwd
+    # fall back to the encoded parent dir (best-effort)
+    return path.parent.name.lstrip("-").split("-")[-1]
+
+
+def rg_prefilter(term, regex, ignore_case):
+    """Return the set of candidate files rg matches, or None if rg is absent."""
+    if not shutil.which("rg"):
+        return None
+    cmd = ["rg", "-l", "--no-messages", "-g", "*.jsonl"]
+    if not regex:
+        cmd.append("-F")
+    if ignore_case:
+        cmd.append("-i")
+    cmd += ["-e", term]
+    cmd += [str(r) for r in ROOTS if r.exists()]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return {Path(p) for p in out.stdout.splitlines() if p}
+
+
+def snippet(text, matcher, context):
+    """A one-window excerpt around the first match in text."""
+    flat = " ".join(text.split())
+    m = matcher.search(flat)
+    if not m:
+        return flat[: context * 2].strip()
+    start = max(0, m.start() - context)
+    end = min(len(flat), m.end() + context)
+    pre = "..." if start > 0 else ""
+    post = "..." if end < len(flat) else ""
+    body = flat[start:end]
+    if _TTY:
+        body = matcher.sub(lambda x: c(f"{YEL};{BOLD}", x.group(0)), body)
+    return f"{pre}{body}{post}"
+
+
+def cmd_search(a):
+    flags = re.IGNORECASE if a.ignore_case else 0
+    if a.regex:
+        matcher = re.compile(a.term, flags)
+    else:
+        matcher = re.compile(re.escape(a.term), flags)
+
+    candidates = rg_prefilter(a.term, a.regex, a.ignore_case)
+    files = sorted(candidates) if candidates is not None else list(iter_files())
+
+    results = []
+    for path in files:
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            rec = parse_line(line)
+            if not rec or rec.get("type") not in ("user", "assistant"):
+                continue
+            msg = rec.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", rec.get("type"))
+            if a.role and role != a.role:
+                continue
+            ts = rec.get("timestamp", "")
+            if a.since and ts[:10] < a.since:
+                continue
+            if a.branch and rec.get("gitBranch") != a.branch:
+                continue
+            proj = project_of(rec, path)
+            if a.project and a.project.lower() not in proj.lower():
+                continue
+            text = blocks_to_text(msg.get("content"), include_thinking=a.thinking)
+            if not matcher.search(text):
+                continue
+            results.append((ts, proj, role, path.stem, text))
+
+    results.sort(key=lambda r: r[0])
+    total = len(results)
+    if a.limit and total > a.limit:
+        results = results[-a.limit :]
+
+    for ts, proj, role, sid, text in results:
+        head = (
+            c(DIM, ts[:19].replace("T", " "))
+            + "  "
+            + c(f"{CYAN};{BOLD}", proj)
+            + c(DIM, f"  ({role})  ")
+            + c(MAG, sid[:8])
+        )
+        print(head)
+        print("  " + snippet(text, matcher, a.context))
+        print()
+    shown = len(results)
+    note = f"{shown} match(es)"
+    if shown < total:
+        note += f" (of {total}; use --limit to widen)"
+    if candidates is not None:
+        note += "  [rg prefilter]"
+    print(c(DIM, note))
+
+
+def session_meta(path):
+    """(sessionId, aiTitle, project, first_ts, last_ts, n_user_msgs)."""
+    sid = path.stem
+    title = None
+    proj = None
+    first = last = None
+    n = 0
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            rec = parse_line(line)
+            if not rec:
+                continue
+            if rec.get("type") == "ai-title":
+                title = rec.get("aiTitle") or title
+            if proj is None:
+                proj = project_of(rec, path) if rec.get("cwd") else proj
+            ts = rec.get("timestamp")
+            if ts:
+                first = first or ts
+                last = ts
+            if rec.get("type") == "user":
+                n += 1
+    except OSError:
+        pass
+    return sid, title, (proj or path.parent.name.lstrip("-").split("-")[-1]), first, last, n
+
+
+def cmd_list(a):
+    metas = []
+    for path in iter_files():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        metas.append((mtime, path))
+    metas.sort(reverse=True)
+
+    rows = []
+    for _, path in metas:
+        sid, title, proj, first, last, n = session_meta(path)
+        if a.project and a.project.lower() not in proj.lower():
+            continue
+        rows.append((last or "", proj, sid, n, title or "(untitled)"))
+        if a.limit and len(rows) >= a.limit:
+            break
+
+    for last, proj, sid, n, title in rows:
+        print(
+            c(DIM, (last[:19].replace("T", " ") if last else "?"))
+            + "  "
+            + c(f"{CYAN};{BOLD}", f"{proj:<22.22}")
+            + " "
+            + c(MAG, sid[:8])
+            + c(DIM, f"  {n:>3} msgs  ")
+            + title
+        )
+    print(c(DIM, f"{len(rows)} session(s)"))
+
+
+def cmd_show(a):
+    target = a.session
+    match = None
+    for path in iter_files():
+        if path.stem == target or path.stem.startswith(target):
+            match = path
+            break
+    if not match:
+        print(c(YEL, f"no session matching '{target}'"), file=sys.stderr)
+        return 1
+    print(c(f"{GRN};{BOLD}", f"# session {match.stem}"))
+    for line in match.read_text(errors="replace").splitlines():
+        rec = parse_line(line)
+        if not rec or rec.get("type") not in ("user", "assistant"):
+            continue
+        msg = rec.get("message")
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", rec.get("type"))
+        ts = rec.get("timestamp", "")[:19].replace("T", " ")
+        text = blocks_to_text(msg.get("content"), include_thinking=a.thinking)
+        if not text.strip():
+            continue
+        label = c(f"{CYAN};{BOLD}", role.upper()) if role == "user" else c(GRN, role.upper())
+        print(f"\n{label} {c(DIM, ts)}")
+        print(text)
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("search", help="full-text/regex search across transcripts")
+    s.add_argument("term")
+    s.add_argument("--project", "-p", help="substring match on project (cwd basename)")
+    s.add_argument("--branch", "-b", help="exact gitBranch match")
+    s.add_argument("--since", help="only messages on/after YYYY-MM-DD")
+    s.add_argument("--role", choices=["user", "assistant"])
+    s.add_argument("--regex", action="store_true", help="treat TERM as a regex")
+    s.add_argument("--thinking", action="store_true", help="include thinking blocks")
+    s.add_argument("--ignore-case", "-i", action="store_true")
+    s.add_argument("--context", type=int, default=120, help="chars of snippet context")
+    s.add_argument("--limit", type=int, default=40, help="max matches (0 = all)")
+    s.set_defaults(func=cmd_search)
+
+    ls = sub.add_parser("list", help="recent sessions with titles")
+    ls.add_argument("--project", "-p")
+    ls.add_argument("--limit", type=int, default=30, help="max sessions (0 = all)")
+    ls.set_defaults(func=cmd_list)
+
+    sh = sub.add_parser("show", help="print a full session by id/prefix")
+    sh.add_argument("session")
+    sh.add_argument("--thinking", action="store_true")
+    sh.set_defaults(func=cmd_show)
+
+    a = p.parse_args()
+    sys.exit(a.func(a) or 0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
