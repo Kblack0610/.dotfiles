@@ -21,11 +21,18 @@
 # $env:FLEET_NAME distinguishes machines that share this script (a personal
 # desktop vs a work laptop vs a VDI each need their own fleet key).
 #   setx FLEET_NAME "work-laptop"
+#
+# $env:FLEET_GROUP must match the group this host is declared under in
+# apps/gatus-fleet/configmap.yaml - gatus keys are <group>_<name>, so a wrong group
+# is a silent HTTP 404 rather than an auth error. Work laptop / VDI = workplace;
+# a personal Windows desktop = homelab.
+#   setx FLEET_GROUP "workplace"
 
 [CmdletBinding()]
 param(
     [string]$GatusBase = $(if ($env:GATUS_BASE) { $env:GATUS_BASE } else { 'https://status.example.com' }),
-    [string]$FleetName = $(if ($env:FLEET_NAME) { $env:FLEET_NAME } else { 'windows' })
+    [string]$FleetName = $(if ($env:FLEET_NAME) { $env:FLEET_NAME } else { 'windows' }),
+    [string]$FleetGroup = $(if ($env:FLEET_GROUP) { $env:FLEET_GROUP } else { 'homelab' })
 )
 
 try {
@@ -41,13 +48,16 @@ try {
         exit 0
     }
 
-    $url = "$GatusBase/api/v1/endpoints/fleet_${FleetName}/external?success=true"
+    $key = "${FleetGroup}_${FleetName}"
+    $url = "$GatusBase/api/v1/endpoints/$key/external?success=true"
     Invoke-RestMethod -Method Post -Uri $url `
         -Headers @{ Authorization = "Bearer $token" } `
         -TimeoutSec 10 | Out-Null
-    Write-Output "fleet-pulse: pushed $FleetName success=true"
+    Write-Output "fleet-pulse: pushed $key success=true"
 } catch {
-    Write-Output "fleet-pulse: push failed for $FleetName - $($_.Exception.Message)"
+    # Log the full key: a 404 here almost always means FLEET_GROUP is wrong, and
+    # naming only the host hides the half of the key at fault.
+    Write-Output "fleet-pulse: push failed for $key - $($_.Exception.Message)"
 }
 
 exit 0

@@ -57,9 +57,14 @@ if [[ -z "$json" ]]; then
     exit 0
 fi
 
-# name<TAB>success<TAB>timestamp for the LAST result of each fleet endpoint.
+# name<TAB>success<TAB>timestamp for the LAST result of EVERY endpoint.
+#
+# No group filter: GATUS_BASE points at the machines-only instance, so the whole
+# instance IS the fleet and groups (workplace/homelab/k3s/android/iot) are just
+# presentation. $FLEET_ROSTER does the selecting - which also means this works
+# uniformly for pushed hosts and polled ones, since both surface a `name` here.
 rows="$(echo "$json" | jq -r '
-    .[] | select(.group=="fleet") | . as $e
+    .[] | . as $e
     | (($e.results // []) | last) as $r
     | [$e.name, (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"

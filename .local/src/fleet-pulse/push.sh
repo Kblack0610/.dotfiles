@@ -21,6 +21,12 @@ set -u
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 FLEET_NAME="${FLEET_NAME:-linux-cachyos}"
+# Gatus keys are <group>_<name>, so this MUST match the group this host is declared
+# under in apps/gatus-fleet/configmap.yaml (homelab for personal computers,
+# workplace for the work laptop / VDI). A wrong group is a silent HTTP 404, not an
+# auth error - which is exactly what a hardcoded "fleet_" prefix produced once the
+# fleet grew groups.
+FLEET_GROUP="${FLEET_GROUP:-homelab}"
 TOKEN_FILE="${FLEET_TOKEN_FILE:-$HOME/.config/fleet-pulse/token}"
 
 # success=false only if an explicit "down" arg is passed (rare; the timer never does).
@@ -38,17 +44,23 @@ if [[ -z "$TOKEN" ]]; then
     exit 0
 fi
 
-URL="${GATUS_BASE}/api/v1/endpoints/fleet_${FLEET_NAME}/external?success=${SUCCESS}"
+KEY="${FLEET_GROUP}_${FLEET_NAME}"
+URL="${GATUS_BASE}/api/v1/endpoints/${KEY}/external?success=${SUCCESS}"
 
 code="$(curl -fsS -m 10 -o /dev/null -w '%{http_code}' \
     -X POST \
     -H "Authorization: Bearer ${TOKEN}" \
     "$URL" 2>/dev/null)" || true
 
+# Log the full KEY, not just the name: a 404 here almost always means the group is
+# wrong rather than the host being unknown, and "push failed for linux-cachyos"
+# hides the half of the key that is actually at fault.
 if [[ "$code" == "200" ]]; then
-    echo "fleet-pulse: pushed ${FLEET_NAME} success=${SUCCESS} (HTTP 200)"
+    echo "fleet-pulse: pushed ${KEY} success=${SUCCESS} (HTTP 200)"
+elif [[ "$code" == "404" ]]; then
+    echo "fleet-pulse: ${KEY} not declared in gatus (HTTP 404) - check FLEET_GROUP/FLEET_NAME against apps/gatus-fleet/configmap.yaml" >&2
 else
-    echo "fleet-pulse: push failed for ${FLEET_NAME} (HTTP ${code:-none})" >&2
+    echo "fleet-pulse: push failed for ${KEY} (HTTP ${code:-none})" >&2
 fi
 
 exit 0

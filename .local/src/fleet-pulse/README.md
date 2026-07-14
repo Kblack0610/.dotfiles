@@ -67,12 +67,23 @@ The shared bearer token is one value: encrypted in the cluster secret, and store
 per-machine in the private overlay (`~/.dotfiles-private/.config/fleet-pulse/token`,
 stowed to `~/.config/fleet-pulse/token`) - never in the public repo.
 
-`GATUS_BASE` and `FLEET_ROSTER` live beside it in `~/.config/fleet-pulse/env` and
-are sourced by `push.sh`, the waybar module, and the sketchybar plugin - so
-re-pointing the fleet is ONE edit per machine, not one per module. The env file
-uses `${VAR:=default}` so an explicit override from the caller's environment still
-wins (plain assignment clobbered it and made the modules untestable). Windows has
-no shell env file; it uses `setx GATUS_BASE` / `setx FLEET_NAME` instead.
+`GATUS_BASE`, `FLEET_ROSTER` and `FLEET_GROUP` live beside it in
+`~/.config/fleet-pulse/env` and are sourced by `push.sh`, the waybar module, and
+the sketchybar plugin - so re-pointing the fleet is ONE edit per machine, not one
+per module. The env file uses `${VAR:=default}` so an explicit override from the
+caller's environment still wins (plain assignment clobbered it and made the
+modules untestable). Windows has no shell env file; it uses `setx GATUS_BASE` /
+`setx FLEET_NAME` / `setx FLEET_GROUP` instead.
+
+### FLEET_GROUP: gatus keys are `<group>_<name>`
+
+A host's key is its group AND its name, so `FLEET_GROUP` must match the group the
+host is declared under server-side (`homelab` for personal computers, `workplace`
+for the work laptop / VDI). **A wrong group is a silent HTTP 404, not an auth
+error** - the push just quietly does nothing, and by contract `push.sh` still exits
+0. This bit once already: the prefix was hardcoded `fleet_`, so every push 404'd
+the moment the fleet grew groups. The log now prints the full key for exactly this
+reason - `push failed for linux-cachyos` hid the half of the key that was wrong.
 
 ## Deploy (do these in order)
 
@@ -121,6 +132,9 @@ setx FLEET_TOKEN "<the-token>"
 setx GATUS_BASE "https://fleet.your.lan"
 # only if this host is not the plain 'windows' key (e.g. a work laptop or VDI):
 setx FLEET_NAME "work-laptop"
+# the group this host is declared under server-side. workplace for work boxes,
+# homelab for a personal desktop. Wrong group = silent 404.
+setx FLEET_GROUP "workplace"
 # re-open the shell so the env vars land, then register the 1-min Scheduled Task:
 powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\setup_fleet_pulse.ps1
 Start-ScheduledTask -TaskName fleet-pulse

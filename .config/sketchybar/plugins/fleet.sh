@@ -46,8 +46,10 @@ if [ -z "$json" ]; then
     exit 0
 fi
 
+# No group filter: GATUS_BASE points at the machines-only instance, so the whole
+# instance IS the fleet. $FLEET_ROSTER does the selecting.
 rows="$(echo "$json" | jq -r '
-    .[] | select(.group=="fleet") | . as $e
+    .[] | . as $e
     | (($e.results // []) | last) as $r
     | [$e.name, (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"
