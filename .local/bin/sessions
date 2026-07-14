@@ -1,0 +1,145 @@
+#!/bin/bash
+# sessions - list / resume / compact important Claude sessions from the
+# agent-facing registry written by stop-post.d/80-session-register.sh.
+#
+#   sessions list [project] [--all]   show registered sessions (newest first)
+#   sessions resume [id] [--pick]     reopen a session transcript (claude -r)
+#   sessions compact <id> [--pick]    distill a transcript into a digest .md
+#
+# Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
+# Agent axis only - nothing here touches ~/.notes/inbox.
+
+set -uo pipefail
+
+SESS_ROOT="$HOME/.agent/sessions"
+
+command -v jq >/dev/null 2>&1 || { echo "sessions: jq is required" >&2; exit 1; }
+
+resolve_project() {
+  # Resolve the current project name the same way the hooks do.
+  local dir="${1:-$PWD}"
+  if [ -f "$HOME/.config/shared-hooks/project-name.sh" ]; then
+    . "$HOME/.config/shared-hooks/project-name.sh"
+    resolve_project_name "$dir"
+  else
+    local base="${dir##*/}"; echo "${base#.}"
+  fi
+}
+
+# Emit registry lines. $1 = project name, or "--all".
+registry_lines() {
+  if [ "${1:-}" = "--all" ]; then
+    find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl -print0 2>/dev/null \
+      | xargs -0 cat 2>/dev/null
+  else
+    cat "$SESS_ROOT/$1/sessions.jsonl" 2>/dev/null
+  fi
+}
+
+fmt_row() {
+  # tsv: id \t date \t edits \t project \t first_prompt  (newest first)
+  jq -rc '[.session_id, (.updated|todate), (.edits|tostring), .project, .first_prompt] | @tsv' 2>/dev/null \
+    | sort -t"$(printf '\t')" -k2,2r
+}
+
+cmd_list() {
+  local scope="" showall=false
+  for a in "$@"; do
+    case "$a" in
+      --all) showall=true ;;
+      *) scope="$a" ;;
+    esac
+  done
+  local key
+  if [ "$showall" = true ]; then key="--all"
+  elif [ -n "$scope" ]; then key="$scope"
+  else key="$(resolve_project)"; fi
+
+  local rows
+  rows=$(registry_lines "$key" | fmt_row)
+  if [ -z "$rows" ]; then
+    echo "No registered sessions for '${key}'." >&2
+    return 0
+  fi
+  printf '%-38s  %-20s  %5s  %-14s  %s\n' "SESSION" "UPDATED" "EDITS" "PROJECT" "PROMPT"
+  printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r id date edits project prompt; do
+    printf '%-38s  %-20s  %5s  %-14s  %s\n' "$id" "$date" "$edits" "$project" "$prompt"
+  done
+}
+
+pick_id() {
+  # fzf-pick a session id from all registries; prints the id.
+  command -v fzf >/dev/null 2>&1 || { echo "sessions: fzf not installed" >&2; return 1; }
+  registry_lines --all | fmt_row \
+    | fzf --with-nth=2.. --delimiter="$(printf '\t')" \
+          --prompt="session> " --preview-window=hidden \
+    | cut -f1
+}
+
+lookup_transcript() {
+  # $1 = session id -> prints "transcript_path" (first match across registries)
+  registry_lines --all | jq -rc --arg id "$1" 'select(.session_id==$id) | .transcript' 2>/dev/null | head -1
+}
+lookup_project() {
+  registry_lines --all | jq -rc --arg id "$1" 'select(.session_id==$id) | .project' 2>/dev/null | head -1
+}
+
+cmd_resume() {
+  local id=""
+  for a in "$@"; do case "$a" in --pick) id="$(pick_id)" || return 1 ;; *) id="$a" ;; esac; done
+  [ -n "$id" ] || { echo "usage: sessions resume <id|--pick>" >&2; return 1; }
+  # cd into the transcript's project dir if we can derive it, else stay put.
+  local t; t="$(lookup_transcript "$id")"
+  if [ -n "$t" ]; then
+    # transcript lives under ~/.claude/projects/<encoded>/... - resume works from anywhere,
+    # but cd to a sane repo dir helps tool context. Fall back to $PWD.
+    :
+  fi
+  exec claude -r "$id"
+}
+
+cmd_compact() {
+  local id=""
+  for a in "$@"; do case "$a" in --pick) id="$(pick_id)" || return 1 ;; *) id="$a" ;; esac; done
+  [ -n "$id" ] || { echo "usage: sessions compact <id|--pick>" >&2; return 1; }
+  local t proj; t="$(lookup_transcript "$id")"; proj="$(lookup_project "$id")"
+  [ -n "$t" ] && [ -f "$t" ] || { echo "sessions: no transcript for $id" >&2; return 1; }
+  [ -n "$proj" ] || proj="$(resolve_project)"
+  command -v claude >/dev/null 2>&1 || { echo "sessions: claude CLI not found" >&2; return 1; }
+
+  local out_dir="$SESS_ROOT/$proj"
+  local out="$out_dir/${id}-digest.md"
+  mkdir -p "$out_dir" 2>/dev/null || true
+
+  echo "Compacting session $id -> $out" >&2
+  local prompt
+  prompt="Read the Claude Code session transcript at $t (JSONL, one message per line). \
+Write a concise digest to $out with these markdown sections: \
+'# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
+Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
+  # Headless, non-interactive; let claude do the read + write.
+  claude -p "$prompt" >/dev/null 2>&1 \
+    && echo "Digest written: $out" >&2 \
+    || echo "sessions: compact run failed (see claude output)" >&2
+}
+
+usage() {
+  cat >&2 <<'EOF'
+sessions - list / resume / compact important Claude sessions
+
+  sessions list [project] [--all]   registered sessions, newest first
+  sessions resume <id|--pick>       reopen a session (claude -r)
+  sessions compact <id|--pick>      distill a transcript into a digest .md
+
+Registry: ~/.agent/sessions/{project}/sessions.jsonl
+EOF
+}
+
+sub="${1:-list}"; shift 2>/dev/null || true
+case "$sub" in
+  list)    cmd_list "$@" ;;
+  resume)  cmd_resume "$@" ;;
+  compact) cmd_compact "$@" ;;
+  -h|--help|help) usage ;;
+  *) echo "sessions: unknown command '$sub'" >&2; usage; exit 1 ;;
+esac
