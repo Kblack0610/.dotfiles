@@ -112,6 +112,7 @@ return {
             vim.api.nvim_command "Neotree toggle current reveal_force_cwd"
           end
         end,
+        desc = "Neo-tree toggle",
       },
     }
   end,

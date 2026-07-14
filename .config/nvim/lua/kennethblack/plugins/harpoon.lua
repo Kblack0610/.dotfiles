@@ -31,7 +31,7 @@ return {
 
         local harpoon_extensions = require("harpoon.extensions")
         harpoon:extend(harpoon_extensions.builtins.highlight_current_file())
-        vim.keymap.set("n", "<leader>a", function() harpoon:list():add() end)
+        vim.keymap.set("n", "<leader>a", function() harpoon:list():add() end, { desc = "Harpoon: add file" })
         vim.keymap.set(
             "n",
             "<C-e>",
@@ -41,7 +41,8 @@ return {
                     title_pos = "center",
                     ui_width_ratio = 0.4,
                 })
-            end
+            end,
+            { desc = "Harpoon: quick menu" }
         )
         vim.keymap.set("n", "<C-n>", function() _G.open_today_refs_in_neotree() end, {
             desc = "Open today's refs in Neo-tree",
@@ -51,10 +52,10 @@ return {
         })
         -- Kitty hack, these are bound to alt, but kitty is binding ctrl + KEY to send this as well
         -- see kitty.conf
-        vim.keymap.set("n", "<C-h>", function() harpoon:list():select(1) end)
-        vim.keymap.set("n", "<C-j>", function() harpoon:list():select(2) end)
-        vim.keymap.set("n", "<C-k>", function() harpoon:list():select(3) end)
-        vim.keymap.set("n", "<C-l>", function() harpoon:list():select(4) end)
+        vim.keymap.set("n", "<C-h>", function() harpoon:list():select(1) end, { desc = "Harpoon: to file 1" })
+        vim.keymap.set("n", "<C-j>", function() harpoon:list():select(2) end, { desc = "Harpoon: to file 2" })
+        vim.keymap.set("n", "<C-k>", function() harpoon:list():select(3) end, { desc = "Harpoon: to file 3" })
+        vim.keymap.set("n", "<C-l>", function() harpoon:list():select(4) end, { desc = "Harpoon: to file 4" })
     end,
     dependencies = { "nvim-lua/plenary.nvim" },
 
