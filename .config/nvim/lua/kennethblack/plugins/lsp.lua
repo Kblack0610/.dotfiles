@@ -107,12 +107,12 @@ return {
       vim.api.nvim_create_autocmd("LspAttach", {
         group = vim.api.nvim_create_augroup("LspKeybindings", { clear = true }),
         callback = function(event)
-          local opts = { buffer = event.buf }
-          vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-          vim.keymap.set("n", "<leader>lR", vim.lsp.buf.rename, opts)
-          vim.keymap.set("n", "<leader>lh", vim.lsp.buf.signature_help, opts)
-          vim.keymap.set("n", "gK", vim.lsp.buf.signature_help, opts)
-          vim.keymap.set({ "n", "v" }, "<leader>la", vim.lsp.buf.code_action, opts)
+          local buf = event.buf
+          vim.keymap.set("n", "K", vim.lsp.buf.hover, { buffer = buf, desc = "Hover docs" })
+          vim.keymap.set("n", "<leader>lR", vim.lsp.buf.rename, { buffer = buf, desc = "Rename symbol" })
+          vim.keymap.set("n", "<leader>lh", vim.lsp.buf.signature_help, { buffer = buf, desc = "Signature help" })
+          vim.keymap.set("n", "gK", vim.lsp.buf.signature_help, { buffer = buf, desc = "Signature help" })
+          vim.keymap.set({ "n", "v" }, "<leader>la", vim.lsp.buf.code_action, { buffer = buf, desc = "Code action" })
         end,
       })
 
