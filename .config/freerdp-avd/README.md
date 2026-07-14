@@ -89,6 +89,35 @@ after the file, e.g. `vdi ~/vdi/x.rdp /multimon`.
 | `/network:auto`         | Auto bandwidth tuning (already set in the .rdp)       |
 | `/scale:140`            | HiDPI scaling                                         |
 
+## Browser fallback (`vdi-web`)
+
+When the native client isn't an option, `vdi-web` opens the AVD **web client** in a
+dedicated, isolated Chromium window — its own profile, app mode (no tabs/omnibox),
+fullscreen — fully walled off from your everyday browser.
+
+**Keyboard passthrough** (Super / Alt+Tab reach the remote, like FreeRDP/RustDesk):
+in fullscreen the web client calls `navigator.keyboard.lock()`, which Chromium on
+Wayland relays to Hyprland's keyboard-shortcuts-inhibit protocol. Click the web
+client's **fullscreen** button to engage it. This is **Chromium-only** — Firefox has
+no Keyboard Lock API, so it cannot grab system keys.
+
+```bash
+sudo pacman -S chromium          # one-time (required; not installed by default)
+# Set the URL once in the PRIVATE repo (never the public one):
+#   export VDI_URL="https://windows.cloud.microsoft/webclient/avd/...#loginHint=you@org"
+# in ~/.config/shell/private.sh  (-> ~/.dotfiles-private)
+vdi-web                          # opens it; or pass one: vdi-web '<url>'
+```
+
+Profile: `~/.local/share/vdi-chromium-profile`. VA-API hardware decode is enabled.
+
+**Firefox isolation-only alternative** (no key passthrough): a dedicated profile
+walls off tabs/cookies but cannot lock system keys — Super/Alt+Tab stay with Hyprland.
+
+```bash
+firefox -P avd --no-remote --kiosk "$VDI_URL"   # creates the 'avd' profile first run
+```
+
 ## Troubleshooting
 
 - **`loadBalanceInfo and RemoteApplicationProgram needed`** - the `.rdp` is

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# vdi-web - browser fallback for the Azure Virtual Desktop web client.
+#
+# A dedicated, isolated Chromium instance in app mode (no tabs/omnibox, its own
+# profile) so it's fully separated from your everyday browser. In fullscreen the
+# AVD web client calls navigator.keyboard.lock(), and Chromium on Wayland relays
+# that to the compositor's keyboard-shortcuts-inhibit protocol - so Super / Alt+Tab
+# go to the remote session instead of Hyprland. That's the browser equivalent of
+# the FreeRDP / RustDesk key grab.
+#
+# Chromium-only: Firefox has no Keyboard Lock API, so it can't do system-key
+# passthrough. For a Firefox isolation-only profile (no passthrough), see
+# ~/.config/freerdp-avd/README.md.
+#
+# Set your AVD web URL (org-specific - keep it out of the public repo), in
+# ~/.config/shell/private.sh (sourced by .commonrc):
+#   export VDI_URL="https://windows.cloud.microsoft/webclient/avd/...#loginHint=you@org"
+# or pass it as the first argument.
+set -euo pipefail
+
+url="${VDI_URL:-}"
+if [[ "${1:-}" == http* ]]; then url="$1"; shift; fi
+if [[ -z "$url" ]]; then
+    echo "vdi-web: no URL set. Either:" >&2
+    echo "  - export VDI_URL=... in ~/.config/shell/private.sh, or" >&2
+    echo "  - vdi-web 'https://windows.cloud.microsoft/webclient/avd/...'" >&2
+    exit 1
+fi
+
+bin=""
+for b in chromium chromium-browser google-chrome-stable google-chrome brave; do
+    if command -v "$b" >/dev/null 2>&1; then bin="$b"; break; fi
+done
+if [[ -z "$bin" ]]; then
+    echo "vdi-web: no Chromium-family browser found. Install one: sudo pacman -S chromium" >&2
+    echo "  (Chromium is required for keyboard-lock passthrough; Firefox can't do it.)" >&2
+    exit 1
+fi
+
+profile="$HOME/.local/share/vdi-chromium-profile"
+
+# --app + --user-data-dir : chromeless window, isolated cookies/extensions.
+# --ozone-platform-hint=auto : run on Wayland so keyboard-lock -> shortcuts-inhibit.
+# VA-API : hardware H.264 decode of the AVD stream (smoother, lower CPU).
+# Passthrough engages when you click the web client's fullscreen button.
+exec "$bin" \
+    --user-data-dir="$profile" \
+    --app="$url" \
+    --start-fullscreen \
+    --ozone-platform-hint=auto \
+    --enable-features=VaapiVideoDecoder,VaapiOnNvidiaGPUs \
+    "$@"

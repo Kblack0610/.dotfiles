@@ -265,13 +265,12 @@ if grep -qiE 'wsl|microsoft' /proc/version 2>/dev/null \
     wsl-screenshot-cli start --daemon >/dev/null 2>&1
 fi
 
-# --- VDI ---
-# Native client: `vdi` is ~/.local/bin/vdi (FreeRDP webview -> Azure Virtual
-# Desktop, HW-decoded). See ~/.config/freerdp-avd/README.md.
-# Browser fallback (`vdi-web`): Chromium app-mode kiosk with an isolated profile
-# and navigator.keyboard.lock support, for a browser-based VDI web client.
-# Usage: VDI_URL=https://your-vdi.example.com vdi-web
-alias vdi-web='chromium --user-data-dir="$HOME/.local/share/vdi-chromium-profile" --app="${VDI_URL:-about:blank}" --start-fullscreen'
+# --- VDI (both are scripts in ~/.local/bin) ---
+# `vdi`     -> native FreeRDP webview client (Azure Virtual Desktop, HW-decoded).
+# `vdi-web` -> browser fallback: isolated Chromium in app mode with keyboard-lock
+#              passthrough (Super/Alt+Tab -> remote), separate from your main browser.
+# Set the org-specific URL as VDI_URL in ~/.config/shell/private.sh.
+# Runbook: ~/.config/freerdp-avd/README.md
 
 
 # Machine/infra-private env (overlaid from ~/.dotfiles-private; absent on public-only machines)
