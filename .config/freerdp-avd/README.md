@@ -74,7 +74,14 @@ sdl-freerdp3 <file>.rdp /gateway:type:arm /sec:aad /cert:tofu \
 Override the default file with `$VDI_RDP` or a path argument. Append extra flags
 after the file, e.g. `vdi ~/vdi/x.rdp /multimon`.
 
-### Tuning flags worth knowing
+### `vdi` flags (handled by the launcher, not FreeRDP)
+
+| Flag               | Effect                                                       |
+|--------------------|--------------------------------------------------------------|
+| `-k`, `--keepalive`| Auto-reconnect when the session drops. Relaunches you into your still-running Windows session. Each reconnect re-shows the login popup (no token cache) — best when you're at the desk. Ctrl+C to stop. Bails after 5 quick failures. |
+| `-s`, `--soft`     | Software (progressive) decode instead of H.264/VAAPI. Use if you see video glitches / `avc420_decompress failure -38` (nvidia-vaapi-driver flakiness). A bit more CPU, no glitches. |
+
+### Tuning flags worth knowing (passed through to FreeRDP)
 
 | Flag                    | Effect                                                |
 |-------------------------|-------------------------------------------------------|
@@ -126,7 +133,19 @@ firefox -P avd --no-remote --kiosk "$VDI_URL"   # creates the 'avd' profile firs
 - **`Smart sizing and dynamic resolution are mutually exclusive`** - set
   `smart sizing:i:0` in the `.rdp` (they can't both be on).
 - **`HTTP_STATUS_BAD_REQUEST [400]` at the gateway** - old FreeRDP regression,
-  fixed in 3.27.0+. Ensure `sdl-freerdp3 /version` >= 3.27.1.
+  fixed in 3.27.0+. Ensure `sdl-freerdp3 /version` >= 3.27.1. Also legitimately
+  returned as **`Session Host ... has been deallocated ... retry after 5 minutes`**
+  when the VM is asleep (Start-VM-on-Connect) - quit, wait ~5 min, relaunch fresh.
+- **Session drops after a while with `ERRINFO_RPC_INITIATED_DISCONNECT`** - AVD's
+  server-side **idle-session-disconnect** policy (fires ~10-15 min after your last
+  input; total session length varies with how long you were active). Not a client
+  bug. Mitigations: `vdi --keepalive` to auto-reconnect (re-prompts login each time),
+  or keep the session busy from **inside** Windows (PowerToys Awake / a jiggler) so
+  it never goes idle - the only thing that actually stops it. Ask IT if the host
+  pool's idle timeout can be relaxed.
+- **Video glitches / `avc420_decompress failure -38 (Function not implemented)`** -
+  nvidia-vaapi-driver choking on some H.264 frames. Not fatal (frames are skipped),
+  but if it's ugly use `vdi --soft` (software progressive decode, no VAAPI).
 - **`OAuth2 Authorization code was already redeemed` (AADSTS54005)** - you reused
   a login code. With the webview build this shouldn't happen; without it, each
   `Browse to:` URL needs its own fresh browser visit (two different scopes:

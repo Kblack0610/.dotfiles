@@ -2,27 +2,49 @@
 # vdi - connect to an Azure Virtual Desktop via FreeRDP
 #
 # Uses the SDL client (sdl-freerdp3) built WITH_WEBVIEW=ON, so the Entra ID login
-# is a popup window (no URL copy-paste). Graphics are the full-colour H.264 GFX
-# pipeline, hardware-decoded via VAAPI.
+# is a popup window (no URL copy-paste). Graphics default to the full-colour H.264
+# GFX pipeline, hardware-decoded via VAAPI.
 #
 # Usage:
 #   vdi                      # default RDP file ($VDI_RDP or ~/vdi/avd.rdp)
 #   vdi /path/to/file.rdp    # a specific RDP file
 #   vdi ... /extra:flag      # append extra FreeRDP flags (e.g. /multimon)
 #
-# The RDP file is generated per-deployment from the AVD web portal and lives
-# OUTSIDE this repo (it carries org-specific identifiers). See how to generate it:
-#   ~/.config/freerdp-avd/README.md
+# Flags:
+#   -k, --keepalive   Auto-reconnect when the session drops. AVD disconnects idle
+#                     sessions server-side (~10-15 min after your last input); this
+#                     relaunches you back into your still-running Windows session.
+#                     NOTE: each reconnect re-shows the login popup (no token cache),
+#                     so it's for when you're AT the desk. Ctrl+C to stop. To stop
+#                     the idle-disconnect entirely, keep the session busy from inside
+#                     Windows (PowerToys Awake) - see the README.
+#   -s, --soft        Software (progressive) decode instead of H.264/VAAPI. Use if
+#                     you see video glitches / 'avc420_decompress failure -38' (a
+#                     known nvidia-vaapi-driver flakiness). Bit more CPU, no glitches.
+#
+# The RDP file is generated per-deployment from the AVD web portal and lives OUTSIDE
+# this repo (org-specific identifiers). Generation steps: ~/.config/freerdp-avd/README.md
 set -euo pipefail
 
 rdp="${VDI_RDP:-$HOME/vdi/avd.rdp}"
-if [[ "${1:-}" == *.rdp ]]; then rdp="$1"; shift; fi
+keepalive=0
+gfx="/gfx:AVC444"                                   # default: HW-decoded H.264
+extra=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -k|--keepalive) keepalive=1 ;;
+        -s|--soft)      gfx="/gfx:AVC444:off,AVC420:off,progressive:on" ;;
+        *.rdp)          rdp="$1" ;;
+        *)              extra+=("$1") ;;
+    esac
+    shift
+done
 
 if ! command -v sdl-freerdp3 >/dev/null 2>&1; then
     echo "vdi: sdl-freerdp3 not found. Build it: freerdp-avd-build" >&2
     exit 1
 fi
-
 if [[ ! -f "$rdp" ]]; then
     echo "vdi: RDP file not found: $rdp" >&2
     echo "  Generate it from the AVD web portal (see ~/.config/freerdp-avd/README.md)," >&2
@@ -31,9 +53,28 @@ if [[ ! -f "$rdp" ]]; then
 fi
 
 # /gateway:type:arm /sec:aad -> AVD ARM broker + Entra ID OAuth (webview popup).
-# /gfx:AVC444                -> full-colour H.264 GFX pipeline (HW-decoded).
 # Two interactive logins on connect: gateway token, then session-host token.
-exec sdl-freerdp3 "$rdp" \
-    /gateway:type:arm /sec:aad /cert:tofu \
-    /gfx:AVC444 /sound:sys:pulse +clipboard \
-    "$@"
+cmd=( sdl-freerdp3 "$rdp"
+      /gateway:type:arm /sec:aad /cert:tofu
+      "$gfx" /sound:sys:pulse +clipboard
+      "${extra[@]}" )
+
+if (( keepalive )); then
+    fails=0
+    while :; do
+        start=$SECONDS
+        "${cmd[@]}" || true
+        dur=$(( SECONDS - start ))
+        # A healthy session resets the failure counter; a burst of quick exits
+        # (auth loop, VM not booting) stops us instead of spinning forever.
+        if (( dur >= 60 )); then fails=0; else fails=$(( fails + 1 )); fi
+        if (( fails >= 5 )); then
+            echo "vdi: 5 short-lived attempts in a row - stopping (check auth / VM state)." >&2
+            exit 1
+        fi
+        echo "vdi: session ended after ${dur}s - reconnecting in 5s (Ctrl+C to stop)..." >&2
+        sleep 5
+    done
+else
+    exec "${cmd[@]}"
+fi
