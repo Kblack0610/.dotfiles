@@ -33,6 +33,16 @@ meetings  = "journal/meetings"        # `notes meeting new` → structured meeti
 index     = "journal/index"
 inbox     = "inbox"                   # dated captures (/remember, /daily:analysis, `notes inbox add`)
 projects  = "lab/projects/current"   # `notes today` auto-links these into ## Current Projects
+# Job rollup: mirror these profiles' OPEN Focus tasks into this note's ## Focus as
+# `### <name>` subsections, so one note shows every job's open work. Read-only - edit
+# the task in the job's own note; the block is regenerated every run. Omit = off.
+#
+# This file is machine-local (the live config.toml is gitignored), so a machine without
+# the key simply never renders the block and never touches one another machine wrote.
+# Every machine must be running a `notes` build that knows the rollup sentinel BEFORE
+# any machine enables this, or an older build will carry the mirrored tasks forward as
+# if they were your own.
+# rollup  = ["AcmeCorp"]
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
 # On a machine set to this profile (via $NOTES_PROFILE or [hostname_map]), `notes

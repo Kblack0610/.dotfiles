@@ -73,6 +73,10 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
+    /// Other profiles whose open Focus tasks are MIRRORED into this profile's daily note
+    /// as `### <name>` subsections (`rollup = ["acmecorp"]`). Empty = off.
+    #[serde(default)]
+    rollup: Vec<String>,
 }
 
 fn default_profile_name() -> String {
@@ -105,6 +109,12 @@ pub struct Profile {
     pub watches: Option<PathBuf>,
     /// Dir of per-watch `<name>.state` files (runtime).
     pub watches_state: PathBuf,
+    /// Profile NAMES whose Focus is mirrored into this profile's daily note. Empty = off.
+    ///
+    /// Deliberately left unresolved: `resolve()` calling itself for each entry would
+    /// recurse forever on a config cycle (personal -> job -> personal). `daily::rollup_entries`
+    /// resolves each name lazily instead, and tolerates one that does not resolve.
+    pub rollup: Vec<String>,
     pub summaries: PathBuf,
     pub continuous: PathBuf,
     pub monthly: PathBuf,
@@ -195,6 +205,7 @@ fn builtin_default() -> RawConfig {
             meetings: None,
             inbox: "inbox".into(),
             tag_dirs: Vec::new(),
+            rollup: Vec::new(),
         },
     );
     RawConfig {
@@ -333,6 +344,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         footer_backlogs,
         watches,
         watches_state,
+        rollup: rp.rollup.clone(),
         continuous: summaries.join("continuous"),
         monthly: summaries.join("monthly"),
         summaries,
@@ -382,6 +394,14 @@ pub fn print(p: &Profile) {
             .map(|d| d.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
+    );
+    println!(
+        "rollup      {}",
+        if p.rollup.is_empty() {
+            "(off)".to_string()
+        } else {
+            p.rollup.join(", ")
+        }
     );
     println!("continuous  {}", p.continuous.display());
     println!("monthly     {}", p.monthly.display());

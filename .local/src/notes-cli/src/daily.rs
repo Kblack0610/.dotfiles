@@ -70,6 +70,10 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
 
     link_refs(p, log)?;
     ensure_footer(p, &note)?;
+    // Sole renderer of the rollup block - create_note deliberately does not emit it,
+    // exactly as it leaves `## Watches` to refresh_watches. Running here (not only at
+    // creation) is what surfaces another machine's tasks as they git-sync in.
+    refresh_rollup(p, log, &note)?;
     refresh_watches(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
     Ok(())
@@ -530,6 +534,115 @@ fn remove_section(content: &str, heading: &str) -> String {
     out
 }
 
+/// One job profile's contribution to the rollup block.
+struct RollupEntry {
+    /// Profile name, used as the `### ` subsection label.
+    label: String,
+    /// `[[wikilink]]` to the source note - the surface to actually edit.
+    link: String,
+    /// Date of the note the tasks came from; `None` when it is today's.
+    /// Rendered so a mirror of a 3-day-old note cannot read as current.
+    stale: Option<String>,
+    tasks: Vec<String>,
+}
+
+/// Open tasks from a note's `## Focus`, verbatim.
+///
+/// Tasks only, matching what `create_note` already carries forward from Focus: the job
+/// notes mix prose, pasted terminal output and `---` rules into that section, and none
+/// of it belongs in a mirror. Real nesting there is task-under-task, so the original
+/// indentation is preserved (NOT trimmed) and the parent relation survives on its own.
+///
+/// Lines are copied byte-for-byte: they already carry `(2d) <!-- since:... -->` stamped
+/// by the source machine's own run. Re-stamping here would invent a `since:today` that
+/// resets to `0d` daily, which would be a lie about someone else's note.
+///
+/// `md::section_lines` stops at [`md::ROLLUP_START`], so a job note containing its own
+/// rollup block never re-mirrors it.
+fn job_focus_tasks(content: &str) -> Vec<String> {
+    md::section_lines(content, "Focus")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| md::is_task(l) && !md::is_checked(l) && !md::is_empty_unchecked(l))
+        .collect()
+}
+
+/// Render the rollup block: sentinel, then a `### ` subsection per entry.
+/// Entries with no open tasks are omitted entirely; when nothing is left the block is
+/// empty, so a fully-done fleet leaves no residue in the note.
+fn render_rollup(entries: &[RollupEntry]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in entries.iter().filter(|e| !e.tasks.is_empty()) {
+        if out.is_empty() {
+            out.push(md::ROLLUP_START.to_string());
+            out.push(String::new());
+        }
+        let head = match &e.stale {
+            Some(d) => format!("### {} ({}) {}", e.label, d, e.link),
+            None => format!("### {} {}", e.label, e.link),
+        };
+        out.push(head);
+        out.extend(e.tasks.iter().cloned());
+        out.push(String::new());
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+/// Replace the rollup block - [`md::ROLLUP_START`] through the end of `## Focus` - with
+/// `block`. Returns content unchanged when there is no `## Focus`.
+///
+/// A raw line-walk (shaped after `remove_section` above) rather than a `md::capture`
+/// reader: capture deliberately stops AT the sentinel, but the splice has to see and
+/// replace what lies beyond it.
+///
+/// Byte-stability is a hard requirement, not a nicety: `notes today` runs on every shell
+/// startup and the vault git-syncs every 5 minutes, so any run-to-run whitespace jitter
+/// would turn into an endless commit/merge churn across machines.
+fn splice_rollup(content: &str, block: &[String]) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(focus) = lines.iter().position(|l| l.trim() == "## Focus") else {
+        return content.to_string();
+    };
+
+    // End of the Focus section: next H2, footer rule, or EOF.
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(focus + 1) {
+        if l.trim_start().starts_with("## ") || l.trim() == "---" {
+            end = i;
+            break;
+        }
+    }
+    // Existing block start, if any; else the authored part runs to `end`.
+    let start = lines[focus + 1..end]
+        .iter()
+        .position(|l| l.trim() == md::ROLLUP_START)
+        .map(|i| focus + 1 + i)
+        .unwrap_or(end);
+
+    let mut kept: Vec<String> = lines[..start].iter().map(|s| s.to_string()).collect();
+    // Exactly one blank line between the authored tasks and the block (or the next
+    // section), regardless of what was there before - this is what makes repeat runs
+    // byte-identical.
+    while kept.last().is_some_and(|l| l.trim().is_empty()) {
+        kept.pop();
+    }
+    if !block.is_empty() {
+        kept.push(String::new());
+        kept.extend(block.iter().cloned());
+    }
+    kept.push(String::new());
+    kept.extend(lines[end..].iter().map(|s| s.to_string()));
+
+    let mut out = kept.join("\n");
+    if content.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 /// Render the currently-registered Sentinel watches as daily-note lines, unhealthy
 /// first. Scans `p.watches` for `*.yaml` (active) and `*.yaml.paused` (paused), reads
 /// each manifest's name/description/probe/interval and the live `<name>.state` from
@@ -683,6 +796,94 @@ fn inbox_session(line: &str) -> Option<String> {
     }
 }
 
+/// Collect each rollup profile's open Focus tasks.
+///
+/// Infallible by construction, like `discover_watches`. `config::resolve` returns `Err`
+/// for a name that is not defined, and `notes today` runs from the shell rc on every new
+/// shell - so a single typo in `rollup` must not be able to take the command down. An
+/// unresolvable entry is warned (Logger::warn always reaches stderr, so a genuine
+/// misconfiguration still gets noticed) and skipped.
+///
+/// Source is the job's note for today, falling back to its most recent one: the whole
+/// point is to see a job's open work on a day you have not opened that profile, or from
+/// the other machine before it has synced today's note over.
+fn rollup_entries(p: &Profile, log: &Logger) -> Vec<RollupEntry> {
+    let today = Local::now().date_naive();
+    let today_s = today.format("%Y-%m-%d").to_string();
+    let mut out = Vec::new();
+
+    for name in &p.rollup {
+        if name == &p.name {
+            continue; // a profile mirroring itself would duplicate its own Focus
+        }
+        let jp = match config::resolve(Some(name)) {
+            Ok(jp) => jp,
+            Err(e) => {
+                log.warn("today", &format!("rollup: skipping '{name}': {e}"));
+                continue;
+            }
+        };
+
+        let today_note = jp.daily.join(format!("{today_s}.md"));
+        let (src, stale) = if today_note.exists() {
+            (today_note, None)
+        } else {
+            match latest_prev(&jp.daily, &today_s) {
+                Ok(Some(prev)) => {
+                    let d = file_date(&prev).map(|d| d.format("%Y-%m-%d").to_string());
+                    (prev, d)
+                }
+                // No note yet (a job whose log dir does not exist) contributes nothing.
+                _ => continue,
+            }
+        };
+
+        let content = fs::read_to_string(&src).unwrap_or_default();
+        let tasks = job_focus_tasks(&content);
+        if tasks.is_empty() {
+            continue;
+        }
+        out.push(RollupEntry {
+            label: name.clone(),
+            // `wikilink` returns a bare vault-relative path; brackets are the caller's
+            // job here, same as every other call site.
+            link: format!("[[{}]]", config::wikilink(&p.root, &src)),
+            stale,
+            tasks,
+        });
+    }
+    out
+}
+
+/// Refresh the generated rollup block inside the daily note's `## Focus`.
+///
+/// No-op when `rollup` is empty, which is what keeps this safe across the fleet: the
+/// notes config is machine-local and gitignored, so the Mac may not have `rollup` set
+/// while sharing the very same synced note. If this rendered an empty block there, one
+/// machine would add it and the other strip it, forever, once every 5-minute sync. Same
+/// guard, same reason, as `refresh_watches` below.
+///
+/// Note the two different empties: `rollup` unset means DO NOT TOUCH (above), whereas
+/// `rollup` set with no open tasks anywhere means remove the block (self-hiding).
+fn refresh_rollup(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    if p.rollup.is_empty() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(note)?;
+    let entries = rollup_entries(p, log);
+    let block = render_rollup(&entries);
+    let new_content = splice_rollup(&content, &block);
+    if new_content != content {
+        fs::write(note, new_content)?;
+        let n: usize = entries.iter().map(|e| e.tasks.len()).sum();
+        log.info(
+            "today",
+            &format!("rolled up {n} task(s) from {} job note(s)", entries.len()),
+        );
+    }
+    Ok(())
+}
+
 /// Refresh the daily note's `## Watches` section from the live Sentinel registry. Runs
 /// every `notes today` (like `link_refs`) so state stays current. No-op when `watches`
 /// is unset. Replaces any existing section in place, kept above the footer.
@@ -801,6 +1002,7 @@ mod tests {
             ],
             watches: None,
             watches_state: r.join("state/watch-companion"),
+            rollup: Vec::new(),
             summaries: r.join("journal/summaries"),
             continuous: r.join("journal/summaries/continuous"),
             monthly: r.join("journal/summaries/monthly"),
@@ -815,6 +1017,178 @@ mod tests {
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
         }
+    }
+
+    /// The real `## Focus` shape from a job-profile note (2026-07-15): a pasted
+    /// terminal blob, plain prose bullets, a `----` rule, a malformed `- [ ]change` with
+    /// no space, an indented child task, and a trailing empty `- [ ]`. Anything that
+    /// mirrors this section has to survive all of it.
+    const JOB_FOCUS: &str = "\
+## Focus
+
+
+❯ thansk, is  eveyrhgin up?... first wehn i hit rebot it sayis \"cant reboot\"
+  first .. ... lastly.. when i rebooted intor runteim admin after restart
+
+- for universal boot.
+    - boot diff color(orange?)
+    - player loop (reset)
+
+
+----
+- [ ] clarify boot layer is for networked use cases (2d) <!-- since:2026-07-13 -->
+- [ ]change the endpoint autorun.zip, and call it /runtime (2d) <!-- since:2026-07-13 -->
+- [x] already done thing (2d) <!-- since:2026-07-13 -->
+- [ ] clickup ticket for investiagation of index.js renaming (2d) <!-- since:2026-07-13 -->
+    - [ ] admin local ui (2d) <!-- since:2026-07-13 -->
+- [ ]
+
+## Notes
+after
+";
+
+    #[test]
+    fn job_focus_tasks_filters_prose_and_preserves_indent() {
+        let tasks = job_focus_tasks(JOB_FOCUS);
+        assert_eq!(
+            tasks,
+            vec![
+                "- [ ] clarify boot layer is for networked use cases (2d) <!-- since:2026-07-13 -->",
+                "- [ ]change the endpoint autorun.zip, and call it /runtime (2d) <!-- since:2026-07-13 -->",
+                "- [ ] clickup ticket for investiagation of index.js renaming (2d) <!-- since:2026-07-13 -->",
+                "    - [ ] admin local ui (2d) <!-- since:2026-07-13 -->",
+            ]
+        );
+        // The child task keeps its indentation, which is the only thing tying it to its
+        // parent once the mirror drops everything that is not a task.
+        assert!(tasks[3].starts_with("    - [ ]"));
+        // Prose, pasted output, rules and the empty placeholder are all gone.
+        assert!(!tasks.iter().any(|t| t.contains("universal boot")));
+        assert!(!tasks.iter().any(|t| t.contains("eveyrhgin")));
+        assert!(!tasks.iter().any(|t| t.contains("----")));
+        assert!(!tasks.iter().any(|t| md::is_checked(t)));
+        assert!(!tasks.iter().any(|t| md::is_empty_unchecked(t)));
+    }
+
+    /// A job note that already carries its own rollup block must not re-mirror it.
+    #[test]
+    fn job_focus_tasks_ignores_a_nested_rollup_block() {
+        let note = format!(
+            "## Focus\n- [ ] mine\n\n{}\n\n### other\n- [ ] someone elses\n\n## Notes\n",
+            md::ROLLUP_START
+        );
+        assert_eq!(job_focus_tasks(&note), vec!["- [ ] mine"]);
+    }
+
+    fn entry(label: &str, tasks: &[&str]) -> RollupEntry {
+        RollupEntry {
+            label: label.into(),
+            link: format!("[[{label}/log]]"),
+            stale: None,
+            tasks: tasks.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn render_rollup_omits_empty_jobs_and_marks_stale() {
+        // A job with nothing open contributes no heading at all.
+        let out = render_rollup(&[entry("acmecorp", &["- [ ] a"]), entry("othercorp", &[])]);
+        assert_eq!(
+            out,
+            vec![
+                md::ROLLUP_START.to_string(),
+                String::new(),
+                "### acmecorp [[acmecorp/log]]".to_string(),
+                "- [ ] a".to_string(),
+            ]
+        );
+        assert!(!out.iter().any(|l| l.contains("othercorp")));
+
+        // Nothing open anywhere renders nothing - not a bare sentinel.
+        assert!(render_rollup(&[entry("othercorp", &[])]).is_empty());
+
+        // A mirror of an older note says so, so it cannot read as current.
+        let mut e = entry("acmecorp", &["- [ ] a"]);
+        e.stale = Some("2026-07-13".into());
+        assert!(render_rollup(&[e])[2].starts_with("### acmecorp (2026-07-13) "));
+    }
+
+    #[test]
+    fn splice_rollup_replaces_in_place_and_is_idempotent() {
+        let note = "\
+---
+date: 2026-07-15
+---
+
+# 2026-07-15
+
+## Focus
+- [ ] my own task
+- [ ]
+
+## Notes
+
+## Due
+- [ ] later
+
+---
+Backlogs: [[backlogs/fun]]
+";
+        let block = render_rollup(&[entry("acmecorp", &["- [ ] theirs"])]);
+        let once = splice_rollup(note, &block);
+
+        // Mirror landed inside Focus, above the next section.
+        assert!(once.contains(md::ROLLUP_START));
+        assert!(once.contains("### acmecorp"));
+        assert!(once.contains("- [ ] theirs"));
+        // The authored parts of the note are untouched.
+        assert!(once.contains("- [ ] my own task"));
+        assert!(once.contains("## Notes"));
+        assert!(once.contains("## Due"));
+        assert!(once.contains("- [ ] later"));
+        assert!(once.contains("Backlogs: [[backlogs/fun]]"));
+        // Focus still precedes the block, which still precedes Notes.
+        let f = once.find("## Focus").unwrap();
+        let r = once.find(md::ROLLUP_START).unwrap();
+        let n = once.find("## Notes").unwrap();
+        assert!(f < r && r < n, "rollup must sit at the end of Focus");
+
+        // Byte-identical on a re-run: `notes today` fires on every shell startup and the
+        // vault syncs every 5 min, so any jitter here becomes cross-machine commit churn.
+        let twice = splice_rollup(&once, &block);
+        assert_eq!(once, twice, "splice must be byte-stable");
+
+        // And re-reading it back gives only the authored task - this is what stops
+        // carry-forward from adopting another profile's work as your own.
+        assert_eq!(
+            md::section_lines(&once, "Focus").unwrap(),
+            vec!["- [ ] my own task", "- [ ]"]
+        );
+    }
+
+    #[test]
+    fn splice_rollup_empty_block_removes_it() {
+        let with = splice_rollup(
+            "## Focus\n- [ ] mine\n\n## Notes\n",
+            &render_rollup(&[entry("acmecorp", &["- [ ] theirs"])]),
+        );
+        assert!(with.contains("### acmecorp"));
+        // Job finished everything -> the block disappears rather than lingering empty.
+        let without = splice_rollup(&with, &[]);
+        assert!(!without.contains(md::ROLLUP_START));
+        assert!(!without.contains("acmecorp"));
+        assert!(without.contains("- [ ] mine"));
+        assert_eq!(without, splice_rollup(&without, &[]), "removal is stable");
+    }
+
+    #[test]
+    fn splice_rollup_noop_without_focus() {
+        let note = "# 2026-07-15\n\n## Notes\nnothing\n";
+        assert_eq!(splice_rollup(note, &[]), note);
+        assert_eq!(
+            splice_rollup(note, &render_rollup(&[entry("g", &["- [ ] x"])])),
+            note
+        );
     }
 
     #[test]

@@ -3,9 +3,21 @@
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 
-/// Capture the raw lines under a `## heading` up to the next `## ` or EOF.
-/// Returns `None` if the heading is absent, `Some(vec)` (possibly empty) otherwise.
-/// Heading match is case-insensitive and tolerant of trailing whitespace.
+/// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
+/// Everything from this line to the end of the section is MIRRORED FROM ANOTHER PROFILE,
+/// not authored here, and `capture` ends the section at it.
+///
+/// That boundary is what keeps generated content from being mistaken for the user's own:
+/// carry-forward (`daily::create_note`) would otherwise promote another profile's tasks
+/// into this note's Focus overnight, and `summarize` would fold them into the append-only
+/// continuous log permanently. Both read through `capture`, so both are fixed here rather
+/// than at each call site.
+pub const ROLLUP_START: &str = "<!-- rollup:start -->";
+
+/// Capture the raw lines under a `## heading` up to the next `## `, a [`ROLLUP_START`]
+/// sentinel, or EOF. Returns `None` if the heading is absent, `Some(vec)` (possibly
+/// empty) otherwise. Heading match is case-insensitive and tolerant of trailing
+/// whitespace. `### ` subsections do NOT end a section (see tests).
 fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
     let mut collecting = false;
     let mut out = Vec::new();
@@ -20,6 +32,9 @@ fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
             }
         }
         if collecting {
+            if line.trim() == ROLLUP_START {
+                break; // generated rollup block ends the authored part of the section
+            }
             out.push(line);
         }
     }
@@ -450,6 +465,72 @@ nothing here
         let lines = section_lines(NOTE, "Focus").unwrap();
         assert_eq!(lines, vec!["- [ ] write the plan", "- [x] done thing"]);
         assert!(section_lines(NOTE, "Missing").is_none());
+    }
+
+    /// `### ` must NOT end a section: `strip_prefix("## ")` fails on `"### x"` only
+    /// because the third byte is `#` rather than a space. The whole job-rollup layout
+    /// (H3 subsections living inside `## Focus`) rests on that, so pin it down here
+    /// rather than leave it as an accident one refactor away from silently breaking.
+    #[test]
+    fn capture_keeps_h3_subsections() {
+        let note = "\
+## Focus
+- [ ] mine
+
+### acmecorp
+- [ ] theirs
+
+## Notes
+after
+";
+        let lines = section_lines(note, "Focus").unwrap();
+        assert_eq!(
+            lines,
+            vec!["- [ ] mine", "### acmecorp", "- [ ] theirs"]
+        );
+    }
+
+    /// The rollup sentinel ends the AUTHORED part of a section. This single boundary is
+    /// what stops `daily::create_note` carry-forward from promoting mirrored job tasks
+    /// into personal Focus, and what stops `summarize` from baking them into the
+    /// append-only continuous log. Assert both readers, since both go through `capture`.
+    #[test]
+    fn capture_stops_at_rollup_sentinel() {
+        let note = format!(
+            "\
+## Focus
+- [ ] mine
+- [x] my done thing
+
+{}
+
+### acmecorp (2026-07-13)
+- [ ] theirs
+    - [ ] their child
+
+## Notes
+after
+",
+            ROLLUP_START
+        );
+
+        // section_lines: carry-forward's reader
+        let lines = section_lines(&note, "Focus").unwrap();
+        assert_eq!(lines, vec!["- [ ] mine", "- [x] my done thing"]);
+        assert!(!lines.iter().any(|l| l.contains("theirs")));
+        assert!(!lines.iter().any(|l| l.contains("acmecorp")));
+
+        // section_text: summarize's reader
+        let text = section_text(&note, "Focus").unwrap();
+        assert!(text.contains("- [ ] mine"));
+        assert!(!text.contains("theirs"));
+        assert!(!text.contains("acmecorp"));
+
+        // A section with no sentinel is unaffected.
+        assert_eq!(
+            section_lines(NOTE, "Focus").unwrap(),
+            vec!["- [ ] write the plan", "- [x] done thing"]
+        );
     }
 
     #[test]
