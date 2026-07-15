@@ -75,6 +75,7 @@ Media/Music
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/claude-recall/
+!.claude/skills/compact-prep/
 !.claude/skills/compliance/
 !.claude/skills/deep-research/
 !.claude/skills/deep-research-code/
