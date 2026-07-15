@@ -18,7 +18,11 @@
 
 set -uo pipefail
 
-PN="$HOME/.config/shared-hooks/project-name.sh"
+# Resolve project-name.sh next to this script first (robust regardless of how the
+# script is invoked — repo path or the ~/.config stow symlink), then fall back to
+# the stowed home path.
+PN="$(dirname "$0")/project-name.sh"
+[ -f "$PN" ] || PN="$HOME/.config/shared-hooks/project-name.sh"
 resolve_project() {
   if [ -f "$PN" ]; then
     # shellcheck source=/dev/null

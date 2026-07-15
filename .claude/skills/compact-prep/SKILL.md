@@ -44,7 +44,7 @@ Get the paths from the executor so project resolution matches the hooks exactly 
 `{project}` by hand):
 
 ```bash
-~/.config/shared-hooks/compact-prep.sh paths
+~/.dotfiles/.config/shared-hooks/compact-prep.sh paths
 ```
 
 It prints `KEY=VALUE` lines: `PROJECT`, `ANCHOR`, `PLAN_DIR`, `CLAUDE_PLAN_DIR`, `LESSONS`,
@@ -114,7 +114,7 @@ configurable), which is exactly why we hand it over rather than trying to reshap
 If a `MARKER` file exists (an auto-compact already happened and the preflight surfaced it), this run
 is a *post-hoc reconcile*: the archived transcript at the path in the marker is the ground truth —
 read from it to recover anything the summary dropped, close the gaps, then clear the marker with
-`~/.config/shared-hooks/compact-prep.sh marker --clear`.
+`~/.dotfiles/.config/shared-hooks/compact-prep.sh marker --clear`.
 
 ## Related machinery (do not invoke directly)
 
