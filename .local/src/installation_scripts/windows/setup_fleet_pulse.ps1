@@ -15,17 +15,24 @@
 # rights required, which is what makes this viable on a managed corporate machine.
 
 [CmdletBinding()]
-param()
+param(
+    # Path to fleet-push.ps1. Defaults to the dotfiles checkout, but takes a path so
+    # a machine can enroll with ONLY that one file present.
+    #
+    # This matters for managed/corporate hosts: the pusher is self-contained (four
+    # env vars, one HTTPS POST), so cloning a whole personal dotfiles repo onto a
+    # work laptop or VDI just to send a heartbeat is clutter you would rather not
+    # have to justify. Drop fleet-push.ps1 anywhere and point this at it.
+    [string]$PushScript = (Join-Path $env:USERPROFILE '.dotfiles\.config\windows\scripts\fleet-push.ps1')
+)
 
 $ErrorActionPreference = 'Stop'
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Skip($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 
-$DotfilesDir = Join-Path $env:USERPROFILE '.dotfiles'
-$PushScript  = Join-Path $DotfilesDir '.config\windows\scripts\fleet-push.ps1'
-
+$PushScript = [System.IO.Path]::GetFullPath($PushScript)
 if (-not (Test-Path $PushScript)) {
-    throw "Expected $PushScript - run sync_dotfiles.ps1 / apply_configs first."
+    throw "No fleet-push.ps1 at $PushScript. Either sync the dotfiles, or drop that one file somewhere and pass -PushScript <path>."
 }
 
 if (-not $env:FLEET_TOKEN -and -not (Test-Path (Join-Path $env:USERPROFILE '.config\fleet-pulse\token'))) {

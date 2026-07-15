@@ -139,7 +139,25 @@ setx FLEET_GROUP "workplace"
 powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\setup_fleet_pulse.ps1
 Start-ScheduledTask -TaskName fleet-pulse
 ```
-Expect `fleet_windows` to green on the dashboard.
+Expect that host to green on the dashboard.
+
+### Managed / corporate hosts: you do NOT need the dotfiles
+
+`fleet-push.ps1` is self-contained - four env vars and one HTTPS POST. Nothing else
+in this repo is involved at run time, so a work laptop or VDI does not need a
+personal dotfiles checkout just to send a heartbeat (and having one on a monitored
+machine is clutter you would rather not have to explain). Drop that single file
+anywhere and point the installer at it:
+
+```powershell
+setx FLEET_TOKEN "<the-token>" ; setx GATUS_BASE "https://fleet.your.lan"
+setx FLEET_NAME "work-laptop"  ; setx FLEET_GROUP "workplace"
+# re-open the shell, then PROBE FIRST - never register a task that pushes into the void:
+powershell -ExecutionPolicy Bypass -File C:\path\to\fleet-push.ps1
+#   expect: fleet-pulse: pushed workplace_work-laptop success=true
+powershell -ExecutionPolicy Bypass -File .\setup_fleet_pulse.ps1 -PushScript C:\path\to\fleet-push.ps1
+Start-ScheduledTask -TaskName fleet-pulse
+```
 
 The task registers at `RunLevel Limited` / `LogonType Interactive` - a user-level
 task needing no admin rights, which is what makes it viable on a managed corporate
