@@ -2,9 +2,16 @@
 # deepfrog - PATH wrapper for the BNB platform's rainfrog DB connector.
 #
 # The real tool lives in the monorepo at tools/deepfrog/deepfrog and resolves
-# its config and SOPS paths relative to that checkout. There are many platform
-# worktrees, so this prefers whichever one you're standing in and falls back to
-# the canonical checkout when you're anywhere else.
+# its config and SOPS paths relative to that checkout, so it needs a real
+# worktree to run out of. Picking one is the whole job of this wrapper:
+#
+#   1. the worktree you're standing in  - you want that branch's config
+#   2. $DEEPFROG_REPO                   - explicit override
+#   3. whichever worktree is on develop, else main - the integration branches,
+#      where merged fixes actually live. Named checkouts sit on feature
+#      branches for days at a time, and a stale one means a stale (possibly
+#      broken) deepfrog, silently.
+#   4. ~/dev/bnb/platform               - last resort
 #
 # Usage (identical to the underlying tool):
 #   deepfrog <app> [env]      Connect via rainfrog   (deepfrog pmp prod)
@@ -12,22 +19,40 @@
 #   deepfrog url <app> [env]  Print connection URL only
 #   deepfrog --help           Show help
 
-set -euo pipefail
+set -uo pipefail
 
-FALLBACK_REPO="${DEEPFROG_REPO:-$HOME/dev/bnb/platform}"
 REL="tools/deepfrog/deepfrog"
+ANCHOR="$HOME/dev/bnb/platform"
 
-# Prefer the worktree the caller is in, so `deepfrog pmp prod` reads the config
-# and SOPS secrets of the branch they're actually working on.
+# 1. The worktree the caller is in.
 if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -x "$root/$REL" ]; then
     exec "$root/$REL" "$@"
 fi
 
-if [ -x "$FALLBACK_REPO/$REL" ]; then
-    exec "$FALLBACK_REPO/$REL" "$@"
+# 2. Explicit override.
+if [ -n "${DEEPFROG_REPO:-}" ] && [ -x "${DEEPFROG_REPO}/$REL" ]; then
+    exec "${DEEPFROG_REPO}/$REL" "$@"
+fi
+
+# 3. The worktree parked on an integration branch.
+if [ -d "$ANCHOR" ]; then
+    for branch in develop main; do
+        wt=$(git -C "$ANCHOR" worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$branch" '
+            /^worktree /  { path = substr($0, 10) }
+            /^branch /    { if ($2 == want) { print path; exit } }')
+        if [ -n "$wt" ] && [ -x "$wt/$REL" ]; then
+            exec "$wt/$REL" "$@"
+        fi
+    done
+fi
+
+# 4. Last resort.
+if [ -x "$ANCHOR/$REL" ]; then
+    exec "$ANCHOR/$REL" "$@"
 fi
 
 echo "deepfrog: can't find $REL" >&2
-echo "  Looked in: the current git worktree, and $FALLBACK_REPO" >&2
+echo "  Looked in: the current git worktree, \$DEEPFROG_REPO, the develop/main" >&2
+echo "  worktrees, and $ANCHOR." >&2
 echo "  Set DEEPFROG_REPO=/path/to/platform to point at another checkout." >&2
 exit 1
