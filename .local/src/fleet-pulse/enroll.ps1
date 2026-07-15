@@ -20,7 +20,15 @@ param(
     [Parameter(Mandatory = $true)][string]$Group,    # workplace | homelab
     [string]$Gatus,                                  # https://fleet.your.lan
     [string]$Token,                                  # prefer the prompt
-    [switch]$ProbeOnly
+    [switch]$ProbeOnly,
+    # Last resort for machines whose policy denies the task scheduler entirely
+    # (some managed hosts deny both Register-ScheduledTask and schtasks.exe). Uses an
+    # HKCU Run key, which is per-user registry and needs no admin or scheduler.
+    # TRADE-OFF: a Run key fires at LOGON and the loop dies at logoff, so it
+    # answers "is someone logged into this box" rather than "is this box up".
+    # On a VDI that distinction is close to meaningless - the VDI only exists
+    # while you are in it - but on a real laptop it is a downgrade.
+    [switch]$UseRunKey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +97,35 @@ if ($out -match 'pushed') {
 }
 if ($ProbeOnly) { Say '-ProbeOnly: stopping here'; exit 0 }
 
+if ($UseRunKey) {
+    # No scheduler at all: a hidden loop started by an HKCU Run key at logon.
+    Say 'installing an HKCU Run key + 60s loop (no scheduler, no admin)'
+    $loop = Join-Path $Dir 'fleet-loop.ps1'
+    @"
+# Started at logon by the HKCU Run key. Pushes every 60s for as long as this
+# session lives. Never throws: fleet-push.ps1 swallows its own errors by
+# contract, and a dead push should degrade to stale, not to a popup.
+while (`$true) {
+    try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$Push" | Out-Null } catch { }
+    Start-Sleep -Seconds 60
+}
+"@ | Set-Content -Path $loop -Encoding UTF8
+    $runCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$loop`""
+    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'fleet-pulse' -Value $runCmd -ErrorAction SilentlyContinue
+    # Verify the KEY, not the absence of an error.
+    $got = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'fleet-pulse' -ErrorAction SilentlyContinue).'fleet-pulse'
+    if (-not $got) { Die 'could not write the HKCU Run key either - this machine denies every persistence mechanism tried.' }
+    OK 'Run key installed'
+    # Start it now so you do not have to log out and back in.
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$loop`"" -WindowStyle Hidden
+    OK 'loop started for this session'
+    Write-Host ""
+    Write-Host "Enrolled as ${Group}_${Name} -> $Gatus (via Run key)" -ForegroundColor Green
+    Write-Host "NOTE: this reports only while you are LOGGED IN. It stops at logoff."
+    Write-Host "Add `"$Name`" to FLEET_ROSTER on every machine that renders the glyph."
+    exit 0
+}
+
 # --- scheduled task -------------------------------------------------------
 Say 'registering the fleet-pulse Scheduled Task'
 $Task   = 'fleet-pulse'
@@ -106,17 +143,62 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 # managed box, stop and rethink rather than forcing it.
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
-if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
-    Set-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Settings $settings | Out-Null
-    OK "updated Scheduled Task: $Task"
-} else {
-    Register-ScheduledTask -TaskName $Task -InputObject (New-ScheduledTask -Action $action -Trigger $trigger `
-        -Settings $settings -Principal $principal -Description 'fleet-pulse: push this host liveness heartbeat to gatus') | Out-Null
-    OK "registered Scheduled Task: $Task (every 1 min)"
+# Register via the ScheduledTasks module, then FALL BACK to schtasks.exe.
+#
+# Register-ScheduledTask goes through CIM/WMI, which a managed machine can deny
+# outright ("Access is denied", HRESULT 0x80070005) even for a
+# user-level RunLevel Limited task. schtasks.exe is a different code path and is
+# sometimes still permitted, so it is worth a second attempt before giving up.
+#
+# CRITICAL: verify by LOOKING FOR THE TASK, never by the absence of an error.
+# Register-ScheduledTask raises a NON-TERMINATING CIM error that slips past
+# $ErrorActionPreference='Stop', so the old code printed "ok registered" directly
+# underneath "Access is denied" and then claimed the machine was enrolled. It had
+# installed nothing. Trusting a cmdlet not to throw is how you get a green light
+# over a failure - the same bug that let four machines go unnoticed for weeks.
+function Test-TaskExists {
+    return [bool](Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue)
 }
-Start-ScheduledTask -TaskName $Task
 
-Write-Host ""
-Write-Host "Enrolled as ${Group}_${Name} -> $Gatus" -ForegroundColor Green
-Write-Host "Add `"$Name`" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted."
-Write-Host "On a VDI: reboot, then 'Get-ScheduledTask fleet-pulse' - a non-persistent image may not keep it."
+$installed = $false
+
+
+if (Test-TaskExists) {
+    Set-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Settings $settings -ErrorAction SilentlyContinue | Out-Null
+    $installed = Test-TaskExists
+    if ($installed) { OK "updated Scheduled Task: $Task" }
+} else {
+    Register-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue -InputObject (New-ScheduledTask -Action $action -Trigger $trigger `
+        -Settings $settings -Principal $principal -Description 'fleet-pulse: push this host liveness heartbeat to gatus') 2>$null | Out-Null
+    $installed = Test-TaskExists
+    if ($installed) {
+        OK "registered Scheduled Task: $Task (every 1 min)"
+    } else {
+        Say 'Register-ScheduledTask was denied; retrying via schtasks.exe (different API)'
+        $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Push`""
+        schtasks.exe /Create /TN $Task /TR $cmd /SC MINUTE /MO 1 /F 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $installed = Test-TaskExists
+        if ($installed) { OK "registered via schtasks.exe: $Task (every 1 min)" }
+    }
+}
+
+if ($installed) {
+    Start-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
+    Write-Host ""
+    Write-Host "Enrolled as ${Group}_${Name} -> $Gatus" -ForegroundColor Green
+    Write-Host "Add `"$Name`" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted."
+    Write-Host "On a VDI: reboot, then 'Get-ScheduledTask fleet-pulse' - a non-persistent image may not keep it."
+} else {
+    # Say the true thing. The heartbeat itself WORKS - the probe proved that - so
+    # this host is one working scheduler away, and claiming otherwise would hide
+    # exactly which half failed.
+    Write-Host ""
+    Write-Host "PARTIAL: the heartbeat works, but NO scheduler could be installed." -ForegroundColor Yellow
+    Write-Host "  Your push reached gatus (the probe above succeeded), so egress and the token are fine."
+    Write-Host "  This machine's policy denies BOTH Register-ScheduledTask and schtasks.exe."
+    Write-Host ""
+    Write-Host "  Nothing is scheduled, so ${Group}_${Name} will go stale in a few minutes."
+    Write-Host "  Fallback - a per-logon Run key, no admin and no task scheduler:"
+    Write-Host "    .\enroll.ps1 -Name $Name -Group $Group -Gatus $Gatus -UseRunKey"
+    exit 1
+}
