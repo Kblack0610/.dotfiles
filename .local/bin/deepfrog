@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# deepfrog - PATH wrapper for the BNB platform's rainfrog DB connector.
+#
+# The real tool lives in the monorepo at tools/deepfrog/deepfrog and resolves
+# its config and SOPS paths relative to that checkout. There are many platform
+# worktrees, so this prefers whichever one you're standing in and falls back to
+# the canonical checkout when you're anywhere else.
+#
+# Usage (identical to the underlying tool):
+#   deepfrog <app> [env]      Connect via rainfrog   (deepfrog pmp prod)
+#   deepfrog list             List configured connections
+#   deepfrog url <app> [env]  Print connection URL only
+#   deepfrog --help           Show help
+
+set -euo pipefail
+
+FALLBACK_REPO="${DEEPFROG_REPO:-$HOME/dev/bnb/platform}"
+REL="tools/deepfrog/deepfrog"
+
+# Prefer the worktree the caller is in, so `deepfrog pmp prod` reads the config
+# and SOPS secrets of the branch they're actually working on.
+if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -x "$root/$REL" ]; then
+    exec "$root/$REL" "$@"
+fi
+
+if [ -x "$FALLBACK_REPO/$REL" ]; then
+    exec "$FALLBACK_REPO/$REL" "$@"
+fi
+
+echo "deepfrog: can't find $REL" >&2
+echo "  Looked in: the current git worktree, and $FALLBACK_REPO" >&2
+echo "  Set DEEPFROG_REPO=/path/to/platform to point at another checkout." >&2
+exit 1
