@@ -97,31 +97,29 @@ refreshed every run. State is read from `~/.local/state/watch-companion/<name>.s
 notes CLI only reads them (it never writes to the Sentinel runtime, and Sentinel never
 writes to the vault).
 
-**Job rollup** - set `rollup = ["acmecorp", "othercorp"]` on a profile (opt-in;
-default off) and `notes today` mirrors each of those profiles' OPEN `## Focus` tasks into
-this note's `## Focus` as `### <name>` subsections, refreshed every run. One note shows
-every job's open work while each job's own note stays the place you edit.
+**Work roster** - set `rollup = ["acmecorp", "othercorp"]` on a profile (opt-in; default
+off) and `notes today` renders a `## Work` section: one collapsed line per job with a link
+to that job's latest note and its open-task count, e.g. `- acmecorp - [[..]] (7 open)`.
+It is its own H2 section (kept above the footer like `## Watches`), regenerated every run,
+so it is never carried forward into tomorrow's note nor folded into summaries. The tasks
+themselves stay in the job's own note - the point is a glance-value pointer, not a copy;
+`gf` on the link jumps you into the job note where you read and complete them. Every
+configured job is listed even at zero open (a stable roster); a job with no note yet is
+listed link-less as `(no note yet)`.
 
-The block is generated: it starts at a `<!-- rollup:start -->` sentinel and runs to the
-end of `## Focus`. Ticking a mirrored task here does nothing - the block is rebuilt from
-the source each run, so tick it in the job's note (the `### ` heading wikilinks straight
-there). Tasks are copied verbatim, keeping their indentation and their `(Nd)` stamp,
-which belongs to the source note's own last run. A job with nothing open renders no
-heading; the source date is shown (`### acmecorp (2026-07-13)`) whenever the
-mirror is of an older note rather than today's.
+`## Work` is separate from `## Focus` by design: Focus is your personal now, Work is the
+per-job pointer. (An earlier design mirrored each job's tasks inline under Focus behind a
+`<!-- rollup:start -->` sentinel; `refresh_work` still strips any such legacy block from an
+existing note - surgically, preserving any tasks the user interleaved with it - so notes
+upgrade in place.)
 
-The sentinel is the boundary between what you wrote and what was generated: `md::capture`
-ends a section there, which is what stops carry-forward from adopting another profile's
-tasks as your own overnight and stops `summarize` from folding them into the permanent
-continuous log. Two consequences worth knowing:
+Two properties worth knowing:
 
-- **Every machine sharing the vault needs a build that knows the sentinel before any
-  machine turns `rollup` on.** An older build will happily carry the mirrored tasks
-  forward as yours. The feature is off by default precisely so the binary can be rolled
-  out everywhere first.
-- A machine whose (machine-local, gitignored) config lacks `rollup` never renders the
-  block *and never strips one another machine wrote* - otherwise, with the vault syncing
-  every 5 minutes, two machines would add and remove it forever.
+- No-op when `rollup` is empty. The config is machine-local and gitignored, so a machine
+  without the key must not add a `## Work` section the next 5-minute sync would strip off
+  the machine that has it - the same ping-pong guard `## Watches` uses.
+- The count regenerates from the job note each run, so it tracks reality as you complete
+  tasks there; byte-stable between runs when nothing changed (no cross-machine churn).
 
 ## Wiring
 
