@@ -1,0 +1,11 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif", "fontSize": "15px", "primaryColor": "#e8f0fe", "primaryTextColor": "#1a2233", "primaryBorderColor": "#4a72b8", "lineColor": "#667085", "textColor": "#1a2233"}}}%%
+%% If rendering with `mmdc -c mermaid-config.json`, delete the init line above.
+%% Requires a recent Mermaid (architecture-beta). If the renderer is older, use a flowchart with subgraph groups instead.
+%% Edge ports: T top, B bottom, L left, R right (e.g. api:R --> L:db).
+architecture-beta
+  group platform(cloud)[Control Plane]
+  service api(server)[API] in platform
+  service db(database)[Postgres] in platform
+  service store(disk)[Content Bucket] in platform
+  api:R --> L:db
+  api:B --> T:store

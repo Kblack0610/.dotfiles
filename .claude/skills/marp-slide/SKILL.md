@@ -160,8 +160,12 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
      `marp presentation.md -o presentation.pdf` (use `--html` for an HTML preview)
    - Watch marp-cli output for overflow / content-bleed warnings, and confirm no slide
      spills past its frame. If a slide overflows, split it — don't shrink the font.
-   - If marp-cli is **not** installed, print the install hint
-     (`brew install marp-cli`) and skip rendering — do not fail the task.
+   - If marp-cli is **not** installed, print the install hint and skip rendering — do
+     not fail the task. Install, most to least portable: macOS `brew install marp-cli`;
+     any OS with Node `npm install -g @marp-team/marp-cli`; one-off/CI `npx -y
+     @marp-team/marp-cli@4 slides.md -o slides.pdf`; container/CI `docker run --rm
+     -v "$PWD":/home/marp/app marpteam/marp-cli slides.md -o slides.pdf`.
+     PDF/PPTX export needs Chrome/Chromium present (the Docker image bundles it).
 
 ## Handling "Make It Look Good" Requests
 
@@ -217,7 +221,7 @@ Save the final Marp file to the current working directory (or a path the user sp
 - `seminar-slides.md`
 - `lecture-materials.md`
 
-If the user wants to render to PDF/HTML/PPTX, they need `marp-cli` installed (`brew install marp-cli`) or the Marp VS Code extension.
+If the user wants to render to PDF/HTML/PPTX, they need `marp-cli` (macOS `brew install marp-cli`; any OS with Node `npm install -g @marp-team/marp-cli`; no-install `npx -y @marp-team/marp-cli@4`; container `docker run --rm -v "$PWD":/home/marp/app marpteam/marp-cli`) or the Marp VS Code extension. PDF/PPTX export needs Chrome/Chromium present.
 
 ## Quality Checklist
 
