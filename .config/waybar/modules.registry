@@ -1,0 +1,20 @@
+# Toggleable waybar modules, read by modules.sh (see PIN.md).
+# Format:  key|label|module-id [module-id...]
+#   key       what you type / the leader-menu leaf
+#   label     shown in `modules.sh list` and the picker
+#   module-id one or more waybar module ids, toggled as a group
+#
+# Only custom modules can be listed here: the toggle works by making a module's
+# exec print nothing, which built-in modules (cpu, clock, tray...) cannot do.
+# Adding a row is not enough - the module's exec must also be wrapped in
+# `modules.sh gate <id>` and given "signal": 10 in config.base / config.pin-full.
+
+agents|AI agents|custom/ai-agents
+fleet|Fleet health|custom/fleet
+timebox|Timebox|custom/timebox
+machines|Machines (pin only)|custom/machines
+
+# Not listed: the custom/act-* pin buttons. Their "format" is an empty string in
+# config.pin-full, so they render nothing today and there is no view to toggle.
+# Fix those icons first, then add:
+#   buttons|Pin action buttons|custom/act-sync custom/act-pull custom/act-panel custom/act-ssh

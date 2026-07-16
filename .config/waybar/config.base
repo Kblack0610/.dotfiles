@@ -90,11 +90,17 @@
         },
         "on-click": "pavucontrol"
     },
+    // The `modules.sh gate <id>` prefix below is what makes these toggleable at
+    // runtime: while a module is off the gate prints nothing and waybar drops it.
+    // "signal": 10 is the shared re-run signal every gated module listens on.
+    // See modules.registry and PIN.md.
     "custom/ai-agents": {
         "format": "{}",
         "return-type": "json",
         "interval": 3,
-        "exec": "/home/kblack0610/.config/waybar/ai_agents.sh",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/ai-agents /home/kblack0610/.config/waybar/ai_agents.sh",
+        "signal": 10,
+        "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
         "tooltip": true
     },
@@ -102,7 +108,9 @@
         "format": "{}",
         "return-type": "json",
         "interval": 15,
-        "exec": "/home/kblack0610/.config/waybar/fleet_pulse.sh",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/fleet /home/kblack0610/.config/waybar/fleet_pulse.sh",
+        "signal": 10,
+        "hide-empty-text": true,
         "on-click": "sh -c '. $HOME/.config/fleet-pulse/env 2>/dev/null; xdg-open ${GATUS_BASE:-https://status.example.com}'",
         "tooltip": true
     },
@@ -110,7 +118,9 @@
         "format": "{}",
         "return-type": "json",
         "interval": 2,
-        "exec": "$HOME/.local/bin/timebox status --json",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/timebox $HOME/.local/bin/timebox status --json",
+        "signal": 10,
+        "hide-empty-text": true,
         "on-click": "$HOME/.local/bin/timebox-menu",
         "on-click-right": "$HOME/.local/bin/timebox pause",
         "on-click-middle": "$HOME/.local/bin/timebox lap",
