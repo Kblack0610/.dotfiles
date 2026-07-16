@@ -97,6 +97,32 @@ refreshed every run. State is read from `~/.local/state/watch-companion/<name>.s
 notes CLI only reads them (it never writes to the Sentinel runtime, and Sentinel never
 writes to the vault).
 
+**Job rollup** - set `rollup = ["acmecorp", "othercorp"]` on a profile (opt-in;
+default off) and `notes today` mirrors each of those profiles' OPEN `## Focus` tasks into
+this note's `## Focus` as `### <name>` subsections, refreshed every run. One note shows
+every job's open work while each job's own note stays the place you edit.
+
+The block is generated: it starts at a `<!-- rollup:start -->` sentinel and runs to the
+end of `## Focus`. Ticking a mirrored task here does nothing - the block is rebuilt from
+the source each run, so tick it in the job's note (the `### ` heading wikilinks straight
+there). Tasks are copied verbatim, keeping their indentation and their `(Nd)` stamp,
+which belongs to the source note's own last run. A job with nothing open renders no
+heading; the source date is shown (`### acmecorp (2026-07-13)`) whenever the
+mirror is of an older note rather than today's.
+
+The sentinel is the boundary between what you wrote and what was generated: `md::capture`
+ends a section there, which is what stops carry-forward from adopting another profile's
+tasks as your own overnight and stops `summarize` from folding them into the permanent
+continuous log. Two consequences worth knowing:
+
+- **Every machine sharing the vault needs a build that knows the sentinel before any
+  machine turns `rollup` on.** An older build will happily carry the mirrored tasks
+  forward as yours. The feature is off by default precisely so the binary can be rolled
+  out everywhere first.
+- A machine whose (machine-local, gitignored) config lacks `rollup` never renders the
+  block *and never strips one another machine wrote* - otherwise, with the vault syncing
+  every 5 minutes, two machines would add and remove it forever.
+
 ## Wiring
 
 - Aliases (`.commonrc`): `today`, `fun`, `co`, `zk`, `ndoctor` → the binary.
