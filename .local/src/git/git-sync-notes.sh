@@ -12,10 +12,58 @@ BACKUP_REMOTE="${NOTES_SYNC_BACKUP_REMOTE:-backup}"
 MIRROR_REMOTE="${NOTES_SYNC_MIRROR_REMOTE:-}"
 HOST_TAG="${NOTES_SYNC_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
 CONNECT_TIMEOUT="${NOTES_SYNC_CONNECT_TIMEOUT:-10}"
+# Consecutive backup-push failures before we alert. The timer runs every 5 min,
+# so 12 is roughly an hour of a genuinely dead backup rather than one bad Wi-Fi
+# moment. See track_backup_push below.
+BACKUP_ALERT_AFTER="${NOTES_SYNC_BACKUP_ALERT_AFTER:-12}"
+BACKUP_FAIL_FILE="$STATE_DIR/backup-failures"
 
 log() {
     mkdir -p "$STATE_DIR"
     printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$HOST_TAG" "$1" | tee -a "$LOG_FILE"
+}
+
+notify() {
+    # Resolve explicitly: under systemd the manager's PATH is not the login PATH,
+    # and an alert that silently evaporates is the failure this function exists to
+    # prevent. agent-notify always exits 0, but never let it fail the sync anyway.
+    local n
+    n=$(command -v agent-notify 2>/dev/null || true)
+    [ -n "$n" ] || n="$HOME/.local/bin/agent-notify"
+    [ -x "$n" ] || return 0
+    "$n" -t "notes-sync" -p "$1" "$2" >/dev/null 2>&1 || true
+}
+
+backup_failures() {
+    local n
+    n=$(cat "$BACKUP_FAIL_FILE" 2>/dev/null || echo 0)
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s' "$n"
+}
+
+# Backup is redundancy: one failed push must not fail the sync, and that is why
+# the failure below is non-fatal. But "non-fatal" silently swallowed a month of
+# non-fast-forward rejections once already, which is how the offsite backup went
+# stale from 2026-06-17 without anyone noticing. So count CONSECUTIVE failures and
+# alert once on the way out and once on recovery: state changes, not every tick,
+# or the alert becomes noise and gets ignored just as thoroughly as the WARN was.
+track_backup_push() {
+    local prev
+    prev=$(backup_failures)
+    if [ "$1" -eq 0 ]; then
+        if [ "$prev" -ge "$BACKUP_ALERT_AFTER" ]; then
+            notify normal "Notes backup remote '$BACKUP_REMOTE' recovered on $HOST_TAG after $prev failed pushes."
+        fi
+        printf '0\n' > "$BACKUP_FAIL_FILE"
+        log "BACKUP: Updated $BACKUP_REMOTE/$BRANCH"
+    else
+        local n=$((prev + 1))
+        printf '%s\n' "$n" > "$BACKUP_FAIL_FILE"
+        log "WARN: Backup push to '$BACKUP_REMOTE' failed (non-fatal, $n consecutive)"
+        if [ "$n" -eq "$BACKUP_ALERT_AFTER" ]; then
+            notify high "Notes backup remote '$BACKUP_REMOTE' has failed $n consecutive pushes on $HOST_TAG. The offsite backup is going stale. See $LOG_FILE"
+        fi
+    fi
 }
 
 rotate_log() {
@@ -156,9 +204,9 @@ fi
 if [ "$backup_enabled" -eq 1 ]; then
     # Backup is redundancy; a failure here must not undo a successful primary sync.
     if git push "$BACKUP_REMOTE" "$BRANCH" 2>>"$LOG_FILE"; then
-        log "BACKUP: Updated $BACKUP_REMOTE/$BRANCH"
+        track_backup_push 0
     else
-        log "WARN: Backup push to '$BACKUP_REMOTE' failed (non-fatal)"
+        track_backup_push 1
     fi
 else
     log "SKIP: Backup remote '$BACKUP_REMOTE' is not configured"
