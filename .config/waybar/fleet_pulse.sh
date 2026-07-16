@@ -30,7 +30,10 @@ set -u
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
 ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = infer from API
-ICON="" # nf-md-pulse
+# Written as a \U escape, not the raw glyph: the literal character has been
+# silently stripped from this file once already (it was ICON="", which rendered
+# an empty span and made the module invisible).
+ICON=$'\U000F0430' # nf-md-pulse
 
 C_GRN="#a6e3a1"
 C_YEL="#f9e2af"
