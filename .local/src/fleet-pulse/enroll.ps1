@@ -6,6 +6,21 @@
 # from this repo. That matters on a managed/corporate host, where cloning a
 # personal dotfiles checkout is clutter you would rather not have to justify.
 #
+# DO YOU DRIVE THIS BOX THROUGH WSL? Then enroll INSIDE WSL instead:
+#
+#     ~/.dotfiles/.local/src/fleet-pulse/enroll.sh --name <name> --group <group>
+#
+# That path needs no Windows admin and no Windows scheduler, and it NEVER draws a
+# window. This script cannot make that last promise: it registers a task with
+# LogonType Interactive, so conhost.exe paints a console every 60s before
+# PowerShell can hide itself (-WindowStyle Hidden loses that race, by design, 1440
+# times a day). The clean native fix is -LogonType S4U (session 0, no desktop), but
+# it needs SeBatchLogonRight, which a managed image may deny - and a non-persistent
+# VDI may not keep the task across a reboot regardless. On a VDI you only ever use
+# via WSL, none of that is worth fighting: use enroll.sh. See README.md.
+#
+# This script is for NATIVE Windows hosts (no WSL in the loop).
+#
 # Registers a USER-LEVEL task (RunLevel Limited / LogonType Interactive) - no
 # admin rights, which is what makes this viable on a locked-down work machine.
 #

@@ -52,15 +52,16 @@ it as a degraded mode, not a default.
 
 | Piece | Path | Repo |
 |-------|------|------|
-| Cluster: fleet external-endpoints | `apps/gatus/configmap.yaml` (`external-endpoints`) | home-config |
-| Cluster: shared token secret | `apps/gatus/fleet-token-secret.sops.yaml` -> deployment env `FLEET_TOKEN` | home-config |
+| Cluster: fleet external-endpoints | `apps/gatus-fleet/configmap.yaml` (`external-endpoints`) | home-config |
+| Cluster: shared token secret | `apps/gatus-fleet/fleet-token-secret.sops.yaml` -> deployment env `FLEET_TOKEN` | home-config |
 | Per-machine config (endpoint + roster) | `~/.config/fleet-pulse/env` (`GATUS_BASE`, `FLEET_ROSTER`) | dotfiles-private |
 | Shared pusher (Linux + Mac) | `~/.local/src/fleet-pulse/push.sh` | dotfiles |
 | Linux timer | `~/.config/systemd/user/fleet-pulse.{service,timer}` | dotfiles |
 | Linux widget | `~/.config/waybar/fleet_pulse.sh` + `custom/fleet` in `config.{base,desktop,laptop}` | dotfiles |
 | Mac pusher (launchd) | `~/.config/launchd/com.kblack.fleet-pulse.plist` (runs `push.sh` FLEET_NAME=mac) | dotfiles |
 | Mac widget | `sketchybar/items/fleet.sh` + `plugins/fleet.sh` (+ `sketchybarrc` source) | dotfiles |
-| Windows pusher | `.config/windows/scripts/fleet-push.ps1` + `installation_scripts/windows/setup_fleet_pulse.ps1` | dotfiles |
+| Windows pusher (native only) | `.config/windows/scripts/fleet-push.ps1` + `installation_scripts/windows/setup_fleet_pulse.ps1` | dotfiles |
+| Windows-via-WSL pusher | `push.sh` + the systemd user timer, enrolled INSIDE WSL (see below) | dotfiles |
 | Windows widget | BLOCKED - zebar pack `kblack-minimal` sources not in repo | dotfiles |
 
 The shared bearer token is one value: encrypted in the cluster secret, and stored
@@ -89,14 +90,21 @@ reason - `push failed for linux-cachyos` hid the half of the key that was wrong.
 
 ### 1. Cluster (home-config) - REQUIRED FIRST; nothing pushes 200 until this lands
 
-LANDED. `apps/gatus/configmap.yaml` carries the `external-endpoints` block and the
-SOPS `FLEET_TOKEN` secret is deployed; `fleet_linux-cachyos` reports today.
+LANDED. `apps/gatus-fleet/configmap.yaml` carries the `external-endpoints` block and
+the SOPS `FLEET_TOKEN` secret is deployed; `homelab_linux-cachyos` reports today.
+(`apps/gatus` is the separate APPS dashboard - machines live on the `gatus-fleet`
+instance at your fleet endpoint. They are two different gatus instances; don't edit
+the wrong one.)
 
 Verify (reads the endpoint from your env file rather than hardcoding it):
 ```bash
 . ~/.config/fleet-pulse/env
-curl -s "$GATUS_BASE/api/v1/endpoints/statuses" | jq -r '.[] | select(.group=="fleet") | .key'
+curl -s "$GATUS_BASE/api/v1/endpoints/statuses" | jq -r '.[].key' | sort
+#   homelab_linux-cachyos, workplace_lazer-machine, k3s_pi5-master, android_h0001, ...
 ```
+
+The single `fleet` group is gone - keys are now `<group>_<name>` across `homelab`,
+`workplace`, `k3s`, and `android`. Filtering on `.group=="fleet"` returns nothing.
 
 Note that only hosts which have pushed at least once appear there - that is the
 behaviour the roster exists to compensate for.
@@ -120,9 +128,51 @@ dotfiles path; the token arrives via the private overlay. Then:
 launchctl load -w ~/Library/LaunchAgents/com.kblack.fleet-pulse.plist   # or your load path
 sketchybar --reload
 ```
-Expect `fleet_mac` to green on the dashboard and the sketchybar dot to go green.
+Expect that Mac's key (`homelab_mac-studio` / `homelab_mac-mini`, or
+`workplace_gp-mac`) to green on the dashboard and the sketchybar dot to go green.
 
 ### 4. Windows
+
+**If you use the box through WSL, enroll INSIDE WSL and stop reading here.** That
+covers the VDI, and it is strictly better on it:
+
+```bash
+# in WSL (needs [boot] systemd=true in /etc/wsl.conf - install_wsl.sh already writes it)
+~/.dotfiles/.local/src/fleet-pulse/enroll.sh --name lazer-machine --group workplace
+```
+
+Why not the PowerShell path there:
+
+- **It flashes a console window every 60 seconds and you cannot stop it.** The task
+  runs `powershell.exe -WindowStyle Hidden`, but `conhost.exe` allocates and paints
+  the console *before* PowerShell parses its own arguments and hides itself. Hidden
+  loses the race, 1440 times a day. The real fix is `-LogonType S4U` (session 0, no
+  desktop), but that needs `SeBatchLogonRight`, which a locked-down corporate image
+  may deny - and a non-persistent VDI may not keep the task across a reboot anyway.
+- **WSL needs no Windows admin and no Windows scheduler at all**, so it sidesteps
+  both of those. You have root inside WSL, which is all systemd wants.
+- It is the same `push.sh` + timer Linux and Mac already run - no Windows-only code
+  path to maintain.
+
+The usual objection - *WSL's uptime is not Windows' uptime, so this measures the
+wrong thing* - is real on a laptop and void on a VDI: the VDI only exists while you
+are logged into it, so "am I in the VDI" IS the liveness question. If you ever use
+the machine WITHOUT WSL, that objection comes back and you want the native path.
+
+Two WSL-specific gotchas, both handled by `enroll.sh`:
+
+- **linger.** Without `loginctl enable-linger`, systemd tears the user manager down
+  with your last shell, so the heartbeat stops when you close your final terminal
+  even though the distro is still up.
+- **the proxy.** `.wslconfig`'s `autoProxy=true` exports proxy vars into *login
+  shells only*. A systemd unit is started by PID 1 and inherits none of it, so the
+  enroll probe (your shell) can pass while every scheduled push (the service)
+  fails - and `push.sh` exits 0 by contract, so nothing would ever say so. That is
+  why `enroll.sh` re-verifies through the unit's own journal, not the probe. If it
+  reports PARTIAL, put the proxy in `~/.config/environment.d/`, which the systemd
+  user manager *does* read.
+
+#### Native Windows (no WSL)
 
 ```powershell
 # set the shared token once (same value as the cluster secret):
@@ -161,8 +211,10 @@ Start-ScheduledTask -TaskName fleet-pulse
 
 The task registers at `RunLevel Limited` / `LogonType Interactive` - a user-level
 task needing no admin rights, which is what makes it viable on a managed corporate
-machine. Probe a managed host in this order before assuming it works: push once by
-hand and confirm HTTP 200, then confirm the task registers, then reboot and confirm
+machine. **The cost of `Interactive` is the 60s console flash** (see above); it buys
+no-admin, and on a box you drive through WSL that trade is not worth making. Probe a
+managed host in this order before assuming it works: push once by hand and confirm
+HTTP 200, then confirm the task registers, then reboot and confirm
 `Get-ScheduledTask fleet-pulse` survives (a non-persistent VDI may not keep it).
 
 Zebar widget: still blocked. The `kblack-minimal` pack referenced by
@@ -174,10 +226,10 @@ freshness rule. The pusher above works regardless.
 
 ## Reading the token / rotating it
 
-The token lives encrypted at `apps/gatus/fleet-token-secret.sops.yaml`. To read it
-(e.g. to set `FLEET_TOKEN` on Windows):
+The token lives encrypted at `apps/gatus-fleet/fleet-token-secret.sops.yaml`. To read
+it (e.g. to set `FLEET_TOKEN` on Windows):
 ```bash
-sops -d ~/dev/home/home-config/apps/gatus/fleet-token-secret.sops.yaml | grep FLEET_TOKEN
+sops -d ~/dev/home/home-config/apps/gatus-fleet/fleet-token-secret.sops.yaml | grep FLEET_TOKEN
 ```
 To rotate: regenerate, re-encrypt the secret, and update the per-machine token files.
 

@@ -1,10 +1,16 @@
 # fleet-push.ps1 - report this Windows machine's liveness to gatus.
 #
 # PowerShell analog of ~/.local/src/fleet-pulse/push.sh. POSTs a success
-# heartbeat to the gatus external-endpoint fleet_windows so the fleet-pulse
-# indicator on every machine's status bar sees this host is alive. Gatus records
-# a timestamped result; staleness is judged bar-side. Run every 60s by the
-# fleet-pulse Scheduled Task.
+# heartbeat to this host's gatus external-endpoint - key <FLEET_GROUP>_<FLEET_NAME>,
+# defaulting to homelab_windows below (NOT fleet_windows: the single `fleet` group
+# is long gone, and a wrong group is a silent 404) - so the fleet-pulse indicator on
+# every machine's status bar sees this host is alive. Gatus records a timestamped
+# result; staleness is judged bar-side. Run every 60s by the fleet-pulse Scheduled
+# Task.
+#
+# NATIVE Windows only. If you drive this box through WSL, run push.sh inside WSL
+# instead (see ../../../.local/src/fleet-pulse/README.md) - the Scheduled Task this
+# script pairs with flashes a console window every 60s and cannot be silenced.
 #
 # Contract: NEVER throw (always exit 0) - a failed push just lets this host go
 # stale on the others, which is the intended degrade path.
