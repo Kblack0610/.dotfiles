@@ -3,9 +3,21 @@
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 
-/// Capture the raw lines under a `## heading` up to the next `## ` or EOF.
-/// Returns `None` if the heading is absent, `Some(vec)` (possibly empty) otherwise.
-/// Heading match is case-insensitive and tolerant of trailing whitespace.
+/// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
+/// Everything from this line to the end of the section is MIRRORED FROM ANOTHER PROFILE,
+/// not authored here, and `capture` ends the section at it.
+///
+/// That boundary is what keeps generated content from being mistaken for the user's own:
+/// carry-forward (`daily::create_note`) would otherwise promote another profile's tasks
+/// into this note's Focus overnight, and `summarize` would fold them into the append-only
+/// continuous log permanently. Both read through `capture`, so both are fixed here rather
+/// than at each call site.
+pub const ROLLUP_START: &str = "<!-- rollup:start -->";
+
+/// Capture the raw lines under a `## heading` up to the next `## `, a [`ROLLUP_START`]
+/// sentinel, or EOF. Returns `None` if the heading is absent, `Some(vec)` (possibly
+/// empty) otherwise. Heading match is case-insensitive and tolerant of trailing
+/// whitespace. `### ` subsections do NOT end a section (see tests).
 fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
     let mut collecting = false;
     let mut out = Vec::new();
@@ -20,6 +32,9 @@ fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
             }
         }
         if collecting {
+            if line.trim() == ROLLUP_START {
+                break; // generated rollup block ends the authored part of the section
+            }
             out.push(line);
         }
     }
@@ -356,18 +371,113 @@ fn strip_trailing_day(s: &str) -> String {
     t.to_string()
 }
 
+/// Priority hashtags, most-urgent first. A task carries at most one; it always rides
+/// at the very end of the line, after the `(Nd) <!-- since -->` stamp, so it stays
+/// visible and never gets a stale duplicate appended in front of the stamp.
+const PRIORITY_TAGS: [&str; 4] = ["urgent", "high", "medium", "low"];
+const PRIORITY_HASH: [&str; 4] = ["#urgent", "#high", "#medium", "#low"];
+
+/// Strip every priority hashtag (`#urgent`/`#high`/`#medium`/`#low`, case-insensitive)
+/// from `line`, collapsing the space each one leaves behind, and return the cleaned line
+/// plus the single most-urgent tag found (as `#low` etc.), or `None` if the line has none.
+/// Tag detection mirrors [`find_hashtags`] (heading marker, glued `#`, and code spans skipped).
+fn split_priority(line: &str) -> (String, Option<&'static str>) {
+    let bytes = line.as_bytes();
+
+    // Skip a leading heading marker: optional indent, a run of '#', then a space.
+    let indent_end = line.len() - line.trim_start().len();
+    let mut j = indent_end;
+    while j < bytes.len() && bytes[j] == b'#' {
+        j += 1;
+    }
+    let start = if j > indent_end && bytes.get(j) == Some(&b' ') {
+        j + 1
+    } else {
+        0
+    };
+
+    // Byte ranges to cut, each already extended to swallow one adjacent space.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut best: Option<usize> = None; // index into PRIORITY_TAGS (lower = more urgent)
+    let mut in_code = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'`' {
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if b == b'#' && !in_code {
+            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+            let glued = matches!(prev, Some(p)
+                if p.is_ascii_alphanumeric() || matches!(p, b'_' | b'/' | b'.' | b'[' | b'#'));
+            let tag_start = i + 1;
+            if !glued
+                && bytes
+                    .get(tag_start)
+                    .is_some_and(|c| c.is_ascii_alphabetic())
+            {
+                let mut k = tag_start;
+                while k < bytes.len()
+                    && (bytes[k].is_ascii_alphanumeric() || matches!(bytes[k], b'_' | b'-' | b'/'))
+                {
+                    k += 1;
+                }
+                let mut end = k;
+                while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
+                    end -= 1;
+                }
+                if let Some(rank) = PRIORITY_TAGS.iter().position(|t| *t == line[tag_start..end].to_lowercase()) {
+                    // Cut `#tag` plus one neighbouring space so no double space is left.
+                    let (mut cut_s, mut cut_e) = (i, k);
+                    if cut_s > start && bytes[cut_s - 1] == b' ' {
+                        cut_s -= 1;
+                    } else if bytes.get(cut_e) == Some(&b' ') {
+                        cut_e += 1;
+                    }
+                    spans.push((cut_s, cut_e));
+                    best = Some(best.map_or(rank, |b| b.min(rank)));
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if spans.is_empty() {
+        return (line.to_string(), None);
+    }
+    let mut cleaned = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for (s, e) in &spans {
+        cleaned.push_str(&line[cursor..*s]);
+        cursor = *e;
+    }
+    cleaned.push_str(&line[cursor..]);
+    (
+        cleaned.trim_end().to_string(),
+        best.map(|r| PRIORITY_HASH[r]),
+    )
+}
+
 /// Stamp a task line with an up-to-date `(Nd) <!-- since:DATE -->`.
 /// - If the line already has a `since:` origin, recompute the day count from it.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
+/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped.
 /// Non-task lines pass through unchanged.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
     }
-    match find_since(line) {
+    // Lift any priority tag(s) off the whole line first so the stamp lands in front of
+    // the single canonical tag rather than behind a buried one.
+    let (core, prio) = split_priority(line);
+    let stamped = match find_since(&core) {
         Some(date) => {
-            let comment_start = line.find("<!--").unwrap_or(line.len());
-            let before = strip_trailing_day(line[..comment_start].trim_end());
+            let comment_start = core.find("<!--").unwrap_or(core.len());
+            let before = strip_trailing_day(core[..comment_start].trim_end());
             let days = (today - date).num_days().max(0);
             format!("{} ({}d) <!-- since:{} -->", before, days, date.format("%Y-%m-%d"))
         }
@@ -375,11 +485,15 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
             let days = (today - origin_if_new).num_days().max(0);
             format!(
                 "{} ({}d) <!-- since:{} -->",
-                line.trim_end(),
+                core.trim_end(),
                 days,
                 origin_if_new.format("%Y-%m-%d")
             )
         }
+    };
+    match prio {
+        Some(tag) => format!("{stamped} {tag}"),
+        None => stamped,
     }
 }
 
@@ -390,6 +504,9 @@ pub fn task_key(line: &str) -> String {
         t = t[..i].trim_end();
     }
     let stripped = strip_trailing_day(t);
+    // A task's identity is independent of its priority tag (and where it sits), so
+    // carried/promoted copies dedupe even if the tag was added or moved.
+    let (stripped, _) = split_priority(&stripped);
     let t = stripped.trim();
     let t = t
         .strip_prefix("- [ ]")
@@ -452,6 +569,72 @@ nothing here
         assert!(section_lines(NOTE, "Missing").is_none());
     }
 
+    /// `### ` must NOT end a section: `strip_prefix("## ")` fails on `"### x"` only
+    /// because the third byte is `#` rather than a space. The whole job-rollup layout
+    /// (H3 subsections living inside `## Focus`) rests on that, so pin it down here
+    /// rather than leave it as an accident one refactor away from silently breaking.
+    #[test]
+    fn capture_keeps_h3_subsections() {
+        let note = "\
+## Focus
+- [ ] mine
+
+### acmecorp
+- [ ] theirs
+
+## Notes
+after
+";
+        let lines = section_lines(note, "Focus").unwrap();
+        assert_eq!(
+            lines,
+            vec!["- [ ] mine", "### acmecorp", "- [ ] theirs"]
+        );
+    }
+
+    /// The rollup sentinel ends the AUTHORED part of a section. This single boundary is
+    /// what stops `daily::create_note` carry-forward from promoting mirrored job tasks
+    /// into personal Focus, and what stops `summarize` from baking them into the
+    /// append-only continuous log. Assert both readers, since both go through `capture`.
+    #[test]
+    fn capture_stops_at_rollup_sentinel() {
+        let note = format!(
+            "\
+## Focus
+- [ ] mine
+- [x] my done thing
+
+{}
+
+### acmecorp (2026-07-13)
+- [ ] theirs
+    - [ ] their child
+
+## Notes
+after
+",
+            ROLLUP_START
+        );
+
+        // section_lines: carry-forward's reader
+        let lines = section_lines(&note, "Focus").unwrap();
+        assert_eq!(lines, vec!["- [ ] mine", "- [x] my done thing"]);
+        assert!(!lines.iter().any(|l| l.contains("theirs")));
+        assert!(!lines.iter().any(|l| l.contains("acmecorp")));
+
+        // section_text: summarize's reader
+        let text = section_text(&note, "Focus").unwrap();
+        assert!(text.contains("- [ ] mine"));
+        assert!(!text.contains("theirs"));
+        assert!(!text.contains("acmecorp"));
+
+        // A section with no sentinel is unaffected.
+        assert_eq!(
+            section_lines(NOTE, "Focus").unwrap(),
+            vec!["- [ ] write the plan", "- [x] done thing"]
+        );
+    }
+
     #[test]
     fn section_text_filters_comments() {
         let t = section_text(NOTE, "Priority").unwrap();
@@ -492,6 +675,63 @@ nothing here
         let b = task_key("- [x] ship it");
         assert_eq!(a, b);
         assert_eq!(a, "ship it");
+    }
+
+    #[test]
+    fn task_key_ignores_priority_tag() {
+        // Same task, tag before the stamp vs. no tag -> same identity.
+        let a = task_key("- [ ] ship it #low (3d) <!-- since:2026-05-31 -->");
+        let b = task_key("- [ ] ship it");
+        assert_eq!(a, b);
+        assert_eq!(a, "ship it");
+    }
+
+    #[test]
+    fn split_priority_extracts_and_dedupes() {
+        // The reported bug shape: tag buried before the stamp AND a stale dup after it.
+        let (core, prio) =
+            split_priority("- [ ] add priority tags #low (1d) <!-- since:2026-07-13 --> #low");
+        assert_eq!(core, "- [ ] add priority tags (1d) <!-- since:2026-07-13 -->");
+        assert_eq!(prio, Some("#low"));
+    }
+
+    #[test]
+    fn split_priority_keeps_most_urgent() {
+        let (core, prio) = split_priority("- [ ] triage #low the thing #urgent");
+        assert_eq!(core, "- [ ] triage the thing");
+        assert_eq!(prio, Some("#urgent"));
+    }
+
+    #[test]
+    fn split_priority_leaves_content_tags_and_indent() {
+        // Non-priority hashtags and nested indentation are untouched.
+        let (core, prio) = split_priority("  - [ ] book #wedding venue");
+        assert_eq!(core, "  - [ ] book #wedding venue");
+        assert_eq!(prio, None);
+    }
+
+    #[test]
+    fn stamp_moves_priority_tag_last() {
+        // New item: tag ends up after the stamp, not before it.
+        let out = stamp_line("- [ ] get androids onto fleet #low", d("2026-07-14"), d("2026-07-13"));
+        assert_eq!(
+            out,
+            "- [ ] get androids onto fleet (1d) <!-- since:2026-07-13 --> #low"
+        );
+    }
+
+    #[test]
+    fn stamp_heals_before_and_after_dup() {
+        // Re-stamping the buggy line collapses the two tags into one trailing tag.
+        let line = "- [ ] add priority tags #low (1d) <!-- since:2026-07-13 --> #low";
+        let out = stamp_line(line, d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(
+            out,
+            "- [ ] add priority tags (2d) <!-- since:2026-07-13 --> #low"
+        );
+        // Idempotent: stamping the healed line again is stable (bar the day count).
+        let out2 = stamp_line(&out, d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(out2, out);
     }
 
     #[test]
