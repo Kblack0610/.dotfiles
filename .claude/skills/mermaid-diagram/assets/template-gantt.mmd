@@ -1,0 +1,11 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif", "fontSize": "13px", "primaryColor": "#e8f0fe", "primaryTextColor": "#1a2233", "primaryBorderColor": "#4a72b8", "lineColor": "#667085", "textColor": "#1a2233"}, "gantt": {"useMaxWidth": true, "barHeight": 22}}}%%
+%% If rendering with `mmdc -c mermaid-config.json`, delete the init line above.
+gantt
+  title Rollout plan
+  dateFormat YYYY-MM-DD
+  axisFormat %m-%d
+  section Staging
+  Validate       :a1, 2026-07-20, 3d
+  section Prod
+  Cut release    :after a1, 2d
+  Bake window    :1d

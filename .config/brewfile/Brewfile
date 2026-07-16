@@ -54,6 +54,7 @@ brew "rustup"            # Rust toolchain installer (notes-cli, ticket CLI, etc.
 brew "awscli"           # AWS CLI
 brew "cloudflared"      # Cloudflare tunnel daemon / DNS-over-HTTPS client
 brew "marp-cli"         # Marp slide deck renderer (marp-slide skill)
+brew "mermaid-cli"      # Mermaid diagram renderer / mmdc (mermaid-diagram skill)
 
 # --- Skills support ---
 brew "imagesnap"        # webcam capture CLI — webcam-ops / brightsign-visual-check skills

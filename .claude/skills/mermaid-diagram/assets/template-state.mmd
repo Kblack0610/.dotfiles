@@ -1,0 +1,9 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif", "fontSize": "15px", "primaryColor": "#e8f0fe", "primaryTextColor": "#1a2233", "primaryBorderColor": "#4a72b8", "lineColor": "#667085", "textColor": "#1a2233"}}}%%
+%% If rendering with `mmdc -c mermaid-config.json`, delete the init line above.
+stateDiagram-v2
+  [*] --> Provisioning
+  Provisioning --> Online : registered
+  Online --> Offline : heartbeat lost
+  Offline --> Online : reconnect
+  Online --> [*] : decommission
+  note right of Offline : retries with backoff
