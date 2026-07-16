@@ -21,7 +21,7 @@ close() { command -v dunstify >/dev/null 2>&1 && dunstify -C "$ID" 2>/dev/null |
 case "${1:-main}" in
     main)  show " pin leader" "t toggle\nu utils >     s settings >\nesc/q exit" ;;
     utils) show " pin / utils" "a agents      h ssh\nr reload      t timebox >\ny sync >      g git >\nesc back      q exit" ;;
-    settings) show " pin / settings" "s size\nesc back      q exit" ;;
+    settings) show " pin / settings" "a agents      f fleet\nt timebox     m machines\nl list...      s size\nesc back      q exit" ;;
     sync)  show " pin / sync" "d restow dotfiles\nn pull notes\nesc back     q exit" ;;
     git)   show " pin / git" "p pull dot+notes\ns git status\nesc back     q exit" ;;
     timebox) show " pin / timebox" "s start      w switch\np pause      r resume\nx stop       o status\nesc back      q exit" ;;

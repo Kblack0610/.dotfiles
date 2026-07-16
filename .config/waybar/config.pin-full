@@ -29,14 +29,18 @@
     ],
     "modules-right": [],
 
+    // Gated + signal 10 like the config.base modules, so `modules.sh` can hide
+    // them. Signal 10 doubles as this module's manual re-probe (it was 8, which
+    // hypr/scripts/voice_to_text.sh also fires at an unrelated module).
     "custom/machines": {
         "format": "{}",
         "return-type": "json",
         "interval": 10,
-        "exec": "$HOME/.config/waybar/machines.sh full",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/machines $HOME/.config/waybar/machines.sh full",
         "on-click": "kitty --class floating-term -e $HOME/.config/waybar/machines.sh pick",
-        "on-click-right": "pkill -RTMIN+8 waybar",
-        "signal": 8,
+        "on-click-right": "pkill -RTMIN+10 waybar",
+        "signal": 10,
+        "hide-empty-text": true,
         "tooltip": true
     },
     "custom/act-sync": {

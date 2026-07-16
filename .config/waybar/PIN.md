@@ -28,7 +28,7 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
-  s settings           L2 pinbar-settings s size | esc back | q exit
+  s settings           L2 pinbar-settings a agents | f fleet | t timebox | m machines | l list> | s size | esc back
 ```
 
 Views: **min** = agents + timebox (glance); **big** = + machines/fleet infra, cpu/mem,
@@ -50,8 +50,46 @@ is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 Both are single-row (a Waybar bar is one horizontal row). A multi-row card would
 need eww; intentionally out of scope.
 
+## Module toggles
+
+`Super+A` -> `s settings` hides or shows a module on **both** bars at once, with no
+restart. Also a plain CLI:
+
+```
+modules.sh list                 every module and whether it is on
+modules.sh toggle agents        flip one (on / off take the same keys)
+modules.sh menu                 fzf picker (leader `s l`)
+```
+
+How it works: Waybar disables a custom module whose `exec` prints nothing (see
+`hide-empty-text` in `man waybar-custom`). Each module's `exec` in `config.base` /
+`config.pin-full` is wrapped in `modules.sh gate <id>`, which prints nothing while
+the module is off, so the bar drops it. The toggle then fires `SIGRTMIN+10` and
+every gated module re-runs, so the change lands instantly instead of waiting out
+that module's `interval`. Nothing is generated and no config is rewritten.
+
+Disabled ids live in `~/.local/state/waybar/modules.off` (absent or empty = all on).
+That is machine-local - the desktop and the laptop want different answers - and it
+survives a reboot, unlike `pin.sh`'s `/tmp` state.
+
+**Add a toggle:** add a row to `modules.registry` (`key|label|module-id ...`, one key
+may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and give it
+`"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
+`leader.conf` and the key to `pin-hint.sh`'s settings legend.
+
+Only **custom** modules can be toggled. Built-ins (cpu, memory, clock, tray...) have
+no `exec` to gate; hiding those would mean generating the config and restarting the
+bar on every toggle, which is why they are out of scope.
+
+`SIGRTMIN+10` is the shared contract: every gated module listens on it. An unhandled
+RT signal is a harmless no-op to Waybar, so signalling a bar that predates this is
+safe. Note `hypr/scripts/voice_to_text.sh` still fires `RTMIN+8` and `gungan` fires
+`RTMIN+9` at modules that no longer exist - keep new modules off 8 and 9.
+
 ## Files
 
+- `modules.sh`       - module toggles (`gate|list|menu|on|off|toggle`)
+- `modules.registry` - which modules are toggleable (`key|label|ids`)
 - `machines.sh`      - fleet probe module (`min|full`) + `pick` ssh chooser
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
