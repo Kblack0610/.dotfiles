@@ -1,6 +1,29 @@
 # --- AI Tool Aliases & Wrappers ---
 # Sourced from .commonrc
 
+# --- Claude Code OpenTelemetry ---
+# Ships coding-session metrics + tool-call event logs to the home-k3s Alloy
+# DaemonSet's OTLP receiver, which fans out to Prometheus (remote_write) and
+# Loki. Claude Code calls Anthropic directly, so this is separate from the
+# LiteLLM->Langfuse gateway tracing. Target hp-victus (always-on amd64 k3s node
+# running Alloy; static DHCP lease, LAN-DNS name). Alloy binds the OTLP port as
+# a hostPort on every node, so any node IP works; hp-victus is the stable pick.
+# Guarded on LAN reachability so it silently no-ops off-network (the exporter
+# would otherwise fire OTLP batches into the void).
+# Cluster wiring: apps/alloy/{configmap,daemonset}.yaml in home-config.
+if getent hosts hp-victus >/dev/null 2>&1; then
+    export CLAUDE_CODE_ENABLE_TELEMETRY=1
+    export OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318
+    export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    export OTEL_METRICS_EXPORTER=otlp
+    export OTEL_LOGS_EXPORTER=otlp
+    # REQUIRED for the Prometheus path: Claude Code defaults to delta
+    # temporality, but otelcol.exporter.prometheus only forwards cumulative -
+    # without this, only target_info lands and all counters are silently
+    # dropped. (Verified: cumulative makes session/token/cost metrics appear.)
+    export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+fi
+
 # Claude Code entry point — two-case permission cycle (pairs with settings.json
 # "defaultMode": "plan", which boots every session into plan mode):
 #   Default (corporate-safe): bypass is NOT offered. Boots in plan; one
