@@ -118,11 +118,22 @@
     ],
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup|resume|compact",
         "hooks": [
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.config/shared-hooks/session-preflight.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/compact-prep.sh precompact"
           }
         ]
       }

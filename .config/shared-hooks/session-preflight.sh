@@ -11,9 +11,40 @@ PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
+# Compaction marker — canonical path is defined in compact-prep.sh (kept in sync here).
+# Read on a `source == compact` SessionStart to surface a "just compacted" banner.
+COMPACT_MARKER="$HOME/.agent/compact/${PROJECT_NAME}.pending"
+
+# Read the hook payload's `source` from stdin (JSON) — only when piped, so manual
+# TTY runs of this script don't block on a read. Valid sources: startup|resume|compact.
+HOOK_SOURCE=""
+if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
+  HOOK_SOURCE=$(cat 2>/dev/null | jq -r '.source // empty' 2>/dev/null || true)
+fi
 
 CONTEXT=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
+
+  # Post-compaction banner — after auto/manual compaction Claude Code fires a fresh
+  # SessionStart with source=compact. The raw conversation was just summarized, so
+  # re-surface the durable pointers (below) and flag that uncaptured in-flight work
+  # may have been dropped. The PreCompact hook (compact-prep.sh) archived the full
+  # transcript and left a marker; point at it. The marker is left in place for the
+  # /compact-prep reconcile run to clear — it owns the pointer to the archive.
+  if [ "$HOOK_SOURCE" = "compact" ]; then
+    echo "🗜  Context was just compacted."
+    if [ -f "$COMPACT_MARKER" ]; then
+      c_reason=$(awk -F= '/^reason=/{print $2; exit}' "$COMPACT_MARKER" 2>/dev/null)
+      c_arch=$(awk -F= '/^archived=/{print $2; exit}' "$COMPACT_MARKER" 2>/dev/null)
+      echo "   Trigger: ${c_reason:-unknown}. Durable-layer pointers are re-injected below."
+      echo "   In-flight work not written to the durable layer may have been summarized away."
+      echo "   Run /compact-prep check to reconcile${c_arch:+ against the archived transcript:}"
+      [ -n "$c_arch" ] && echo "     $c_arch"
+    else
+      echo "   Durable-layer pointers re-injected below. Run /compact-prep check if unsure nothing was lost."
+    fi
+    echo
+  fi
 
   # Anchor = the project's front door (memory/index.md). Inject first, whole.
   if [ -f "$ANCHOR_FILE" ]; then
