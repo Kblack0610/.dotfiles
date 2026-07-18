@@ -1,7 +1,33 @@
 //! Shared markdown + task-line helpers. These are the historically fragile bits
 //! (section extraction, day-count stamping) so they carry unit tests.
 
+use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use std::path::Path;
+
+/// Atomically write `contents` to `path`: stage into a sibling `.<name>.tmp` file, then
+/// `rename` it over the target. The rename is atomic on POSIX, so a concurrent reader (a
+/// daily note open in Nvim, the session preflight, another `notes` run) never observes a
+/// half-written file - it sees either the old bytes or the new ones, never a torn mix.
+///
+/// This is the CLI half of the "don't clobber my open buffer" fix: the editor half is
+/// `autoread` + the `checktime` autocmd, which reloads the buffer once the new bytes land.
+/// The temp file is a sibling (same directory/filesystem) so the rename stays within one
+/// filesystem - a cross-device rename would fail.
+pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("note");
+    // PID keeps concurrent `notes` invocations from staging into the same temp file.
+    let tmp = dir.join(format!(".{stem}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, contents)
+        .with_context(|| format!("staging temp write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| {
+        // Best-effort cleanup so a failed rename doesn't litter the vault with temp files.
+        let _ = std::fs::remove_file(&tmp);
+        format!("atomically renaming {} -> {}", tmp.display(), path.display())
+    })?;
+    Ok(())
+}
 
 /// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
 /// Everything from this line to the end of the section is MIRRORED FROM ANOTHER PROFILE,
@@ -560,6 +586,25 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("notes-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("2026-07-18.md");
+        std::fs::write(&note, "old\n").unwrap();
+
+        write_atomic(&note, "new content\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "new content\n");
+
+        // No `.<name>.<pid>.tmp` sibling is left behind after a successful rename.
+        let leftover = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!leftover, "atomic write left a temp file behind");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     const NOTE: &str = "\

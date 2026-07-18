@@ -33,11 +33,17 @@ autocmd("TermClose", {
   end,
 })
 
--- Make sure any changes are reflected
-autocmd({ "FocusGained", "TermClose", "TermLeave" }, {
-  desc = "Check if buffers changed on editor focus",
+-- Make sure any changes are reflected. CursorHold/BufEnter are the fallback for terminals
+-- that don't emit focus events, so an external write (e.g. `notes focus add` in another
+-- pane) reloads here instead of being clobbered on the next `:w`. Pairs with autoread.
+autocmd({ "FocusGained", "BufEnter", "CursorHold", "CursorHoldI", "TermClose", "TermLeave" }, {
+  desc = "Check if buffers changed on disk and reload (autoread)",
   group = augroup("checktime", { clear = true }),
-  command = "checktime",
+  callback = function()
+    if vim.fn.mode() ~= "c" and vim.bo.buftype == "" then
+      vim.cmd("checktime")
+    end
+  end,
 })
 
 autocmd("BufWinEnter", {
