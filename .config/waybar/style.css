@@ -184,6 +184,31 @@ button:hover {
     margin-right: 4px;
 }
 
+/* Fleet pulse - background pill like the other right-side modules, with a
+   health-class tint so the state reads at a glance (the glyph/dot colors are
+   set inline via Pango in fleet_pulse.sh). */
+#custom-fleet {
+    padding: 2px 12px;
+    margin: 5px 3px;
+    border-radius: 6px;
+    background-color: rgba(61, 42, 30, 0.4);
+    color: #bfbfbf;
+}
+
+#custom-fleet.healthy {
+    background-color: rgba(134, 168, 62, 0.25);
+}
+
+#custom-fleet.degraded {
+    background-color: rgba(255, 204, 47, 0.3);
+    border-left: 3px solid #ffcc2f;
+}
+
+#custom-fleet.unreachable {
+    background-color: rgba(239, 87, 52, 0.35);
+    border-left: 3px solid #ef5734;
+}
+
 #idle_inhibitor {
     background-color: rgba(189, 190, 0, 0.2);
     color: #bdbe00;
@@ -217,83 +242,4 @@ tooltip {
 tooltip label {
     color: #bfbfbf;
     padding: 4px;
-}
-
-/* ===== Mini pin + shared custom modules (restored after theme regen) ===== */
-window#waybar.pin {
-    background-color: rgba(44, 28, 21, 0.92);
-    border: 2px solid rgba(174, 140, 32, 0.4);
-    border-radius: 12px;
-    border-bottom: 2px solid rgba(174, 140, 32, 0.4);
-}
-
-/* AI agents - module id is custom-ai-agents (custom-claude-agents kept above for legacy) */
-#custom-ai-agents {
-    padding: 2px 12px;
-    margin: 4px 6px;
-    border-radius: 8px;
-    font-weight: bold;
-    transition: all 0.3s ease;
-}
-#custom-ai-agents.inactive { background-color: rgba(102, 102, 102, 0.3); color: #666666; }
-#custom-ai-agents.ready    { background-color: rgba(134, 168, 62, 0.2); color: #86a83e; }
-#custom-ai-agents.working  { background-color: rgba(255, 204, 47, 0.3); color: #ffcc2f; border-left: 3px solid #ffcc2f; }
-#custom-ai-agents.urgent   { background-color: rgba(239, 87, 52, 0.4); color: #ef5734; border-left: 3px solid #ef5734; font-weight: bold; }
-
-/* Timebox countdown */
-#custom-timebox {
-    padding: 2px 12px;
-    margin: 4px 6px;
-    border-radius: 8px;
-    font-weight: bold;
-    transition: all 0.3s ease;
-}
-#custom-timebox.inactive { background-color: rgba(102, 102, 102, 0.3); color: #666666; }
-#custom-timebox.ready    { background-color: rgba(134, 168, 62, 0.2); color: #86a83e; }
-#custom-timebox.active   { background-color: rgba(255, 204, 47, 0.3); color: #ffcc2f; border-left: 3px solid #ffcc2f; }
-#custom-timebox.urgent   { background-color: rgba(239, 87, 52, 0.4); color: #ef5734; border-left: 3px solid #ef5734; font-weight: bold; }
-
-/* Fleet reachability (machines module - pin only) */
-#custom-machines {
-    padding: 2px 12px;
-    margin: 4px 6px;
-    border-radius: 8px;
-    font-weight: bold;
-    background-color: rgba(134, 168, 62, 0.15);
-    color: #bfbfbf;
-    transition: all 0.3s ease;
-}
-#custom-machines.urgent { background-color: rgba(239, 87, 52, 0.35); border-left: 3px solid #ef5734; }
-
-/* Fleet-pulse glyph (main bar + pin full) */
-#custom-fleet {
-    padding: 2px 12px;
-    margin: 4px 3px;
-    border-radius: 8px;
-    font-weight: bold;
-    background-color: rgba(61, 42, 30, 0.4);
-}
-#custom-fleet.healthy     { color: #86a83e; }
-#custom-fleet.degraded    { color: #ffcc2f; }
-#custom-fleet.pending     { color: #ffcc2f; }
-#custom-fleet.unreachable { color: #ef5734; background-color: rgba(239, 87, 52, 0.25); }
-
-/* Pin action buttons + size chevron */
-#custom-act-sync,
-#custom-act-pull,
-#custom-act-panel,
-#custom-act-ssh,
-#custom-pin-size {
-    padding: 2px 12px;
-    margin: 4px 3px;
-    border-radius: 8px;
-    background-color: rgba(61, 42, 30, 0.5);
-    color: #ffcc2f;
-}
-#custom-act-sync:hover,
-#custom-act-pull:hover,
-#custom-act-panel:hover,
-#custom-act-ssh:hover,
-#custom-pin-size:hover {
-    background-color: rgba(174, 140, 32, 0.35);
 }

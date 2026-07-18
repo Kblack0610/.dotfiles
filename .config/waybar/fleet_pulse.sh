@@ -30,14 +30,29 @@ set -u
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
 ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = infer from API
+
+# How the bar renders the fleet (the tooltip always lists everyone). Ordered,
+# space-separated tokens - one dot per token, left to right:
+#   <name>=<label>    expand ONE machine as its own labeled dot (gp-mac=gp).
+#                     Always drawn, so a box that stops reporting goes red here
+#                     instead of silently vanishing.
+#   @<group>=<label>  collapse a gatus group to a single dot colored by its
+#                     worst member (@k3s=k3s -> one dot for the pi cluster).
+# Groups not named here stay in the tooltip only. Gatus group names are the key
+# (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
+# a future settings submenu just rewrites this line and signals the module.
+: "${FLEET_DISPLAY:=gp-mac=gp lazer-machine=lzr @k3s=k3s}"
+
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
 # an empty span and made the module invisible).
 ICON=$'\U000F0430' # nf-md-pulse
 
-C_GRN="#a6e3a1"
-C_YEL="#f9e2af"
-C_RED="#f38ba8"
+# Bar theme (Jackie Brown) colors, not Catppuccin: the pale Catppuccin amber was
+# invisible on the dark bar. These match the module background pills in style.css.
+C_GRN="#a6e34a" # bright green
+C_YEL="#ffcc2f" # bright gold - the amber that now actually shows
+C_RED="#ef5734" # orange-red
 
 emit() { # text_color class tooltip
     printf '{"text": "<span color=\x27%s\x27>%s</span>", "tooltip": "%s", "class": "%s"}\n' \
@@ -69,7 +84,7 @@ fi
 rows="$(echo "$json" | jq -r '
     .[] | . as $e
     | (($e.results // []) | last) as $r
-    | [$e.name, (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
+    | [$e.name, ($e.group // ""), (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"
 
 # Without a roster, fall back to whoever the API knows about - the pre-roster
@@ -88,42 +103,104 @@ if [[ -z "${ROSTER// /}" ]]; then
 fi
 
 now="$(date +%s)"
-total=0
-healthy=0
-tooltip="Fleet pulse:"
 
-for name in $ROSTER; do
-    [[ -z "$name" ]] && continue
-    ((total++))
+# rows are name<TAB>group<TAB>success<TAB>timestamp (last result per endpoint).
+row_of()   { awk -F'\t' -v n="$1" '$1 == n { print; exit }' <<< "$rows"; }
+members_of() { awk -F'\t' -v g="$1" '$2 == g { print $1 }' <<< "$rows"; }  # API hosts in a group
 
-    # The roster drives the loop, so a host absent from the API is caught here.
-    row="$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' <<< "$rows")"
-    if [[ -z "$row" ]]; then
-        tooltip="${tooltip}\\n  ${name}: NEVER REPORTED"
-        continue
-    fi
-    success="$(cut -f2 <<< "$row")"
-    ts="$(cut -f3 <<< "$row")"
-
+# name -> up | stale | down (down folds in missing / no-data: anything not fresh-ok).
+classify() {
+    local n="$1" row success ts age epoch
+    row="$(row_of "$n")"
+    [[ -z "$row" ]] && { echo down; return; }      # never reported
+    success="$(cut -f3 <<< "$row")"
+    ts="$(cut -f4 <<< "$row")"
     age=-1
     if [[ -n "$ts" ]]; then
         epoch="$(date -d "$ts" +%s 2>/dev/null || echo "")"
         [[ -n "$epoch" ]] && age=$((now - epoch))
     fi
-    if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then
-        ((healthy++))
-        tooltip="${tooltip}\\n  ${name}: up ($(fmt_age "$age") ago)"
-    elif ((age < 0)); then
-        tooltip="${tooltip}\\n  ${name}: no data"
-    elif [[ "$success" != "true" ]]; then
-        tooltip="${tooltip}\\n  ${name}: DOWN ($(fmt_age "$age") ago)"
-    else
-        tooltip="${tooltip}\\n  ${name}: STALE ($(fmt_age "$age") ago)"
+    if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then echo up
+    elif [[ "$success" == "true" ]] && ((age >= 0)); then echo stale
+    else echo down; fi
+}
+
+# name -> human status for the tooltip.
+status_text() {
+    local n="$1" row success ts age epoch
+    row="$(row_of "$n")"
+    [[ -z "$row" ]] && { echo "NEVER REPORTED"; return; }
+    success="$(cut -f3 <<< "$row")"
+    ts="$(cut -f4 <<< "$row")"
+    age=-1
+    if [[ -n "$ts" ]]; then
+        epoch="$(date -d "$ts" +%s 2>/dev/null || echo "")"
+        [[ -n "$epoch" ]] && age=$((now - epoch))
     fi
+    if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then echo "up ($(fmt_age "$age") ago)"
+    elif ((age < 0)); then echo "no data"
+    elif [[ "$success" != "true" ]]; then echo "DOWN ($(fmt_age "$age") ago)"
+    else echo "STALE ($(fmt_age "$age") ago)"; fi
+}
+
+# state -> pango-colored dot. Filled ● when reporting, hollow ○ when not.
+dot() {
+    case "$1" in
+        up)    printf "<span color='%s'>●</span>" "$C_GRN" ;;
+        stale) printf "<span color='%s'>●</span>" "$C_YEL" ;;
+        *)     printf "<span color='%s'>○</span>" "$C_RED" ;;
+    esac
+}
+rank() { case "$1" in up) echo 1 ;; stale) echo 2 ;; *) echo 3 ;; esac; }
+worst_of() {  # names... -> worst state (down > stale > up); empty -> down
+    local best=0 st=down s rk
+    for s in "$@"; do local c; c="$(classify "$s")"; rk="$(rank "$c")"; ((rk > best)) && { best=$rk; st=$c; }; done
+    echo "$st"
+}
+
+# Roster membership set (the expected fleet), for filtering + the denominator.
+declare -A in_roster=()
+for m in $ROSTER; do [[ -n "$m" ]] && in_roster[$m]=1; done
+
+# Aggregate health over the whole roster (drives the module class + icon color),
+# independent of what the bar chooses to display.
+total=0; healthy=0
+for m in $ROSTER; do
+    [[ -z "$m" ]] && continue
+    ((total++))
+    [[ "$(classify "$m")" == "up" ]] && ((healthy++))
+done
+if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degraded"; icon_col="$C_YEL"; fi
+
+# --- bar text: the pulse icon, then one dot per FLEET_DISPLAY token -----------
+text="$(printf "<span color='%s'>%s</span>" "$icon_col" "$ICON")"
+for tok in $FLEET_DISPLAY; do
+    lbl="${tok#*=}"; key="${tok%%=*}"
+    if [[ "$key" == @* ]]; then
+        # collapse a group: worst of its API members that are also on the roster
+        mem=(); while IFS= read -r m; do [[ -n "${in_roster[$m]:-}" ]] && mem+=("$m"); done < <(members_of "${key#@}")
+        st="$(worst_of "${mem[@]}")"
+    else
+        st="$(classify "$key")"
+    fi
+    text="${text} ${lbl}$(dot "$st")"
 done
 
-if ((healthy == total)); then
-    emit "$C_GRN" "healthy" "${tooltip}${note}"
-else
-    emit "$C_YEL" "degraded" "${tooltip}${note}"
-fi
+# --- tooltip: full fleet, grouped by gatus group -----------------------------
+tooltip="Fleet pulse:"
+while IFS= read -r g; do
+    [[ -z "$g" ]] && continue
+    section=""
+    while IFS= read -r m; do
+        [[ -n "${in_roster[$m]:-}" ]] || continue
+        section="${section}\\n  ${m}: $(status_text "$m")"
+    done < <(members_of "$g" | sort)
+    [[ -n "$section" ]] && tooltip="${tooltip}\\n${g}:${section}"
+done < <(cut -f2 <<< "$rows" | sort -u)
+# rostered hosts the API has never materialized (no group to file them under)
+for m in $ROSTER; do
+    [[ -z "$m" ]] && continue
+    [[ -z "$(row_of "$m")" ]] && tooltip="${tooltip}\\n  ${m}: NEVER REPORTED"
+done
+
+printf '{"text": "%s", "tooltip": "%s", "class": "%s"}\n' "$text" "${tooltip}${note}" "$cls"
