@@ -10,6 +10,7 @@ mod backlog;
 mod config;
 mod daily;
 mod doctor;
+mod focus;
 mod inbox;
 mod index;
 mod logging;
@@ -85,6 +86,16 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Today's cockpit: the daily note's `## Focus` active-task list (list / add / done).
+    /// No subcommand = list. Same items the session-start hook surfaces.
+    Focus {
+        /// Aggregate open Focus across ALL configured profiles, for the cross-profile
+        /// cockpit (TSV: `profile<TAB>file<TAB>line<TAB>key<TAB>text`). Read-only.
+        #[arg(long)]
+        all: bool,
+        #[command(subcommand)]
+        sub: Option<FocusCmd>,
+    },
     /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
@@ -123,6 +134,24 @@ enum Cmd {
     Doctor,
     /// Print the resolved profile + paths
     Config,
+}
+
+#[derive(Subcommand)]
+enum FocusCmd {
+    /// List today's open focus items (the default)
+    List,
+    /// Add a focus item — keep it a couple words, plain, no fluff
+    Add {
+        /// Task text (free-form)
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Check off the first open item whose text matches
+    Done {
+        /// A word (or two) from the task to close
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -221,6 +250,18 @@ fn main() -> Result<()> {
         }
         Cmd::SeedBacklogs { from, force } => {
             backlog::seed(&prof, &log, from.as_deref(), force)?;
+            0
+        }
+        Cmd::Focus { all, sub } => {
+            if all {
+                focus::list_all(&log)?;
+            } else {
+                match sub {
+                    None | Some(FocusCmd::List) => focus::list(&prof, &log)?,
+                    Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
+                    Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
+                }
+            }
             0
         }
         Cmd::Inbox { sub } => {
