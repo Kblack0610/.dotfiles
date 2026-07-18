@@ -96,7 +96,39 @@ note or plan for detail. Skip it when the session has no meaningful next step. F
 belongs on a tracked board instead, prefer a Vikunja ticket (the repo tracker) or the lab bus
 `## → For the agents` section over the inbox.
 
-### 2. Arm the teardown
+Do NOT auto-write to the daily `## Focus` cockpit here - that lane is for tasks you deliberately
+choose to surface every session, so multiple wind-downs don't flood it. The cockpit's write path
+(`notes focus add`) stays explicit: the user, or an agent when the user asks, adds to it directly.
+
+### 2. Land the session's work (commit, push, clean up)
+
+Wind-down means leaving the tree the way you'd hand it to someone else: nothing this session
+produced should be stranded uncommitted, and no scratch artifacts should be left behind. The
+teardown is already **gated** on this (the Stop content checks defer the kill over a dirty or
+unpushed tree, see the intro) - this step is Claude doing it deliberately instead of relying on
+the gate to catch it.
+
+1. **Survey the tree.** `git status --short`. Separate what THIS session changed from any
+   pre-existing WIP that was already dirty when the session started.
+2. **Land this session's work.** For the changes this session made, follow the repo's normal
+   flow: branch off the default branch (never commit straight to `main`/`develop`), group by
+   concern into scoped conventional commits, push, and open a PR. Prefer the `ingest-worktree`
+   skill when the session touched several unrelated concerns - it fans a mixed tree into
+   correctly-scoped PRs and holds ephemeral/secret-bearing churn back.
+3. **Do NOT force-commit unrelated WIP.** Pre-existing uncommitted work that this session did
+   not touch stays as-is. Never `git add -A` a mixed tree. If landing the session's work is
+   entangled with someone else's unfinished WIP in the same files, **surface it and ask** rather
+   than bundling or misattributing it.
+4. **Clean up after yourself.** Remove this session's scratch artifacts (the session scratchpad
+   dir, temp files, stray `*.tmp`, throwaway test output). Leave the working tree and `/tmp`
+   scratch area as clean as you found them.
+5. **Report the landing state** in your closing message: branch + PR link for what shipped, and
+   an explicit line for anything intentionally left uncommitted (so the gate deferring the kill,
+   if it does, is never a surprise).
+
+If the session produced nothing to commit (pure Q&A / read-only), say so and skip to arming.
+
+### 3. Arm the teardown
 
 ```bash
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm            # close just Claude's window (default)
@@ -113,7 +145,7 @@ The script prints what it armed. Relay that to the user. Two cases to handle:
 - **Sole window in the session** — `arm` notes that closing the window ends the session too.
   Pass that along.
 
-### 3. Stop
+### 4. Stop
 
 End the turn normally. Do **not** try to kill tmux yourself — the hook owns the teardown so the
 Stop pipeline can finish first. A short closing message to the user is fine; it will be the last
