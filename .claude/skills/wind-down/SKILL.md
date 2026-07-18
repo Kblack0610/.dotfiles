@@ -96,6 +96,10 @@ note or plan for detail. Skip it when the session has no meaningful next step. F
 belongs on a tracked board instead, prefer a Vikunja ticket (the repo tracker) or the lab bus
 `## → For the agents` section over the inbox.
 
+Do NOT auto-write to the daily `## Focus` cockpit here - that lane is for tasks you deliberately
+choose to surface every session, so multiple wind-downs don't flood it. The cockpit's write path
+(`notes focus add`) stays explicit: the user, or an agent when the user asks, adds to it directly.
+
 ### 2. Arm the teardown
 
 ```bash

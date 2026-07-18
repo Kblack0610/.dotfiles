@@ -370,6 +370,17 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     })
 }
 
+/// Every profile NAME defined in the active config, sorted. Cross-profile aggregation
+/// (`notes focus --all`) iterates this to visit all profiles without knowing them ahead
+/// of time. Falls back to the built-in default's single `personal` profile when no config
+/// file exists — the same source `resolve` reads, so the two never disagree.
+pub fn all_profile_names() -> Result<Vec<String>> {
+    let (raw, _src) = load_raw()?;
+    let mut names: Vec<String> = raw.profile.keys().cloned().collect();
+    names.sort();
+    Ok(names)
+}
+
 /// Build a vault-relative `[[wikilink]]` body for a file under `root`.
 pub fn wikilink(root: &Path, file: &Path) -> String {
     let rel = file.strip_prefix(root).unwrap_or(file);
