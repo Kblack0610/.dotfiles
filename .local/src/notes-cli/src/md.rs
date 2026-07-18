@@ -462,18 +462,33 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     )
 }
 
+/// Reset a carried task's in-progress checkbox `[/]` back to an open `[ ]`, preserving
+/// indentation. Status (`[/]`) is a same-day signal set in the editor (see markdown.lua's
+/// `<leader>t` cycle); it does not survive the daily carry — only the open todo + its
+/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry).
+fn reset_status(line: &str) -> String {
+    let indent_end = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_end);
+    match rest.strip_prefix("- [/]") {
+        Some(tail) => format!("{indent}- [ ]{tail}"),
+        None => line.to_string(),
+    }
+}
+
 /// Stamp a task line with an up-to-date `(Nd) <!-- since:DATE -->`.
 /// - If the line already has a `since:` origin, recompute the day count from it.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
-/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped.
+/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped;
+/// an in-progress `[/]` checkbox is reset to `[ ]` (status is a same-day signal).
 /// Non-task lines pass through unchanged.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
     }
     // Lift any priority tag(s) off the whole line first so the stamp lands in front of
-    // the single canonical tag rather than behind a buried one.
-    let (core, prio) = split_priority(line);
+    // the single canonical tag rather than behind a buried one; drop the in-progress mark.
+    let line = reset_status(line);
+    let (core, prio) = split_priority(&line);
     let stamped = match find_since(&core) {
         Some(date) => {
             let comment_start = core.find("<!--").unwrap_or(core.len());
@@ -718,6 +733,20 @@ after
             out,
             "- [ ] get androids onto fleet (1d) <!-- since:2026-07-13 --> #low"
         );
+    }
+
+    #[test]
+    fn stamp_resets_in_progress_checkbox() {
+        // An in-progress task carried to the next day reverts to an open todo, but
+        // keeps its priority tag (which does carry).
+        let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(
+            out,
+            "- [ ] wire it up (1d) <!-- since:2026-07-14 --> #high"
+        );
+        // Indentation on a nested task is preserved.
+        let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(nested, "  - [ ] sub-step (1d) <!-- since:2026-07-14 -->");
     }
 
     #[test]
