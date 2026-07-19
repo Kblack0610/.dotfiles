@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# sudo-time - report whether your sudo timestamp is still valid, WITHOUT ever
+# triggering a password prompt. A pre-flight check before a privileged batch
+# (pacman -Syu, etc.) so it doesn't stall waiting for a password partway.
+#
+# ---------------------------------------------------------------------------
+# THE FLOW (why it works this way)
+# ---------------------------------------------------------------------------
+# sudo caches successful auth per-tty in  /run/sudo/ts/<username>.
+# That store is ROOT-OWNED, mode 0700 - a normal user cannot even stat it.
+# Consequences:
+#   * You CANNOT read the exact remaining seconds without root. By design.
+#   * The only no-password signal is `sudo -n` (non-interactive): it never
+#     prompts and never records a failed-auth attempt. If the ticket is cold
+#     it just prints "a password is required" and returns non-zero.
+#   * The timeout itself is `Defaults timestamp_timeout` in /etc/sudoers
+#     (minutes; Arch/CachyOS default 15; 0 = always prompt; negative = never).
+#
+# CAVEAT: any *successful* sudo call - including the `-nv` check below - slides
+# the timeout window forward by timestamp_timeout. There is no read-only peek
+# for a non-root user; reading the ticket via sudo would itself refresh it.
+# So "exact time left" is only obtainable from a NON-sudo root context (a root
+# TTY / `su -`) running: stat -c %Y /run/sudo/ts/<user>. Not worth it in
+# practice - the boolean below is what you actually need.
+#
+# ---------------------------------------------------------------------------
+# USAGE
+#   sudo-time            # is it hot?  (no prompt; refreshes window if valid)
+#   sudo-time refresh    # warm it before a batch (prompts once, resets timer)
+#   sudo-time drop       # invalidate now (sudo -k)
+# ---------------------------------------------------------------------------
+set -euo pipefail
+TIMEOUT_MIN="${SUDO_TIMESTAMP_TIMEOUT:-15}"   # keep in sync with sudoers
+
+case "${1:-check}" in
+    check)
+        if sudo -n -v 2>/dev/null; then
+            echo "HOT - valid, window refreshed to ~${TIMEOUT_MIN}m"
+            exit 0
+        else
+            echo "COLD - expired. Warm it with: sudo-time refresh"
+            exit 1
+        fi
+        ;;
+    refresh|warm)
+        sudo -v && echo "warmed for ~${TIMEOUT_MIN}m"
+        ;;
+    drop|kill)
+        sudo -k && echo "timestamp invalidated"
+        ;;
+    -h|--help|help)
+        sed -n '2,33p' "$0"
+        ;;
+    *)
+        echo "unknown arg: $1  (try: check | refresh | drop | help)" >&2
+        exit 2
+        ;;
+esac
