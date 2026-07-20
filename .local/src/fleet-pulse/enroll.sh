@@ -251,6 +251,58 @@ UNIT_EOF
     systemctl --user daemon-reload
     systemctl --user enable --now fleet-pulse.timer
     ok "systemd timer enabled (every 60s)"
+
+    # WSL: keep the user manager - and therefore the timer - alive once the last
+    # terminal closes. Without linger, systemd tears the user session down with
+    # your last shell, so the heartbeat stops while the distro is still running
+    # and the glyph reads "this machine died" the moment you close a tab.
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; then
+        if loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null; then
+            ok "linger enabled (WSL) - the timer survives closing your last terminal"
+        else
+            say "WARNING: could not enable linger. The timer stops when you close your last WSL terminal."
+            say "  fix:  sudo loginctl enable-linger ${USER:-$(id -un)}"
+        fi
+    fi
+
+    # VERIFY THROUGH THE UNIT - the probe above proves nothing about this.
+    #
+    # The probe ran in YOUR shell, with your environment. The service runs under
+    # the systemd user manager, which does NOT inherit it - most notably a proxy
+    # (WSL's autoProxy exports one into login shells ONLY). So the probe can pass
+    # while every scheduled push fails, and push.sh exits 0 by contract, so
+    # nothing anywhere would ever say so. That is the same
+    # installs-clean-then-reports-nothing-forever failure the probe exists to
+    # prevent, just moved one context over. Scope the log read to THIS run: a
+    # stale "HTTP 200" from a previous enroll would read as a pass.
+    say "verifying the push from the SERVICE's context (not your shell's)"
+    since="$(date '+%Y-%m-%d %H:%M:%S')"
+    systemctl --user start fleet-pulse.service 2>/dev/null || true
+    unit_out="$(journalctl --user -u fleet-pulse --since "$since" --no-pager 2>/dev/null || true)"
+    case "$unit_out" in
+        *"HTTP 200"*)
+            ok "the service itself pushed - the timer will too"
+            ;;
+        *)
+            printf '\n\033[33mPARTIAL:\033[0m the timer is installed, but its first push did NOT succeed.\n'
+            printf '  Your shell probe reached gatus, so the token and endpoint are fine.\n'
+            printf '  The SERVICE context is what failed - most likely it has no proxy.\n\n'
+            if [ -n "$unit_out" ]; then printf '%s\n' "$unit_out" | sed 's/^/    /'; else printf '    (no journal output)\n'; fi
+            cat <<VERIFY_EOF
+
+  WSL autoProxy only exports the proxy into login shells. The systemd user
+  manager reads ~/.config/environment.d instead:
+
+    mkdir -p ~/.config/environment.d
+    printf 'HTTPS_PROXY=%s\\nHTTP_PROXY=%s\\nNO_PROXY=localhost,127.0.0.1\\n' \\
+        "\$HTTPS_PROXY" "\$HTTP_PROXY" > ~/.config/environment.d/proxy.conf
+    systemctl --user daemon-reload && systemctl --user restart fleet-pulse.service
+
+  ${GROUP}_${NAME} will stay stale until that push succeeds.
+VERIFY_EOF
+            exit 1
+            ;;
+    esac
     say "verify:  systemctl --user status fleet-pulse.service"
 fi
 
