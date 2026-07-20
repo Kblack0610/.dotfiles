@@ -7,6 +7,7 @@
 
 mod archive;
 mod backlog;
+mod comms;
 mod config;
 mod daily;
 mod doctor;
@@ -130,10 +131,27 @@ enum Cmd {
         /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
     },
+    /// Surface multi-account email triage into the daily note's `## Comms` section.
+    /// No subcommand = list the currently-surfaced items for the active profile.
+    /// The pull/label/classify work is done out-of-band by the triage poller.
+    Comms {
+        #[command(subcommand)]
+        sub: Option<CommsCmd>,
+    },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor,
     /// Print the resolved profile + paths
     Config,
+}
+
+#[derive(Subcommand)]
+enum CommsCmd {
+    /// List the currently-surfaced comms items for the active profile (the default)
+    List,
+    /// Re-render today's note's `## Comms` section from the triage surface file
+    Refresh,
+    /// Show configured accounts + whether each has a surface file (read-only)
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -304,9 +322,22 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Comms { sub } => {
+            match sub {
+                None | Some(CommsCmd::List) => comms::list(&prof, &log)?,
+                Some(CommsCmd::Refresh) => comms::refresh_cmd(&prof, &log)?,
+                Some(CommsCmd::Status) => comms::status(&log)?,
+            }
+            0
+        }
         Cmd::Doctor => doctor::run(&prof, &log)?,
         Cmd::Config => {
             config::print(&prof);
+            if let Ok(c) = config::comms_config() {
+                if !c.accounts.is_empty() {
+                    config::print_comms(&c);
+                }
+            }
             0
         }
     };

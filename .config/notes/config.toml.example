@@ -74,3 +74,28 @@ zettel    = "permanent"
 meetings  = "meetings"
 index     = "index"
 inbox     = "inbox"
+
+# --- comms: multi-account email triage (`notes comms`) ------------------------
+# Global (spans profiles): each account names the profile whose daily note its
+# CRITICAL/ACTION items surface into (`## Comms`). An empty/absent [comms] means
+# the feature is OFF on this machine (so it never strips a `## Comms` another
+# machine wrote). The network + secrets half (comms-fetch.py) reads THIS block too,
+# so accounts are defined once. See the private `comms` skill's SETUP.md for P0.
+# [comms]
+# state_dir    = "~/.local/state/notes-comms"   # dedup ledger + surface files (runtime)
+# ollama_url   = "http://127.0.0.1:11434"       # local model for tier-2 classify
+# ollama_model = "qwen3-coder:30b"
+#
+# One [[comms.account]] per mailbox. rbw_entry defaults to gmail_oauth_<name>.
+# [[comms.account]]
+# name           = "personal"
+# address        = "you@gmail.com"
+# surface_profile = "personal"
+# [[comms.account]]
+# name           = "work"
+# address        = "you@company.com"
+# surface_profile = "work"
+# [[comms.account]]
+# name           = "biz"
+# address        = "you@yourbiz.com"
+# surface_profile = "personal"
