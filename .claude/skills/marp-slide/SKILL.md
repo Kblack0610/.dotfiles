@@ -301,10 +301,12 @@ Before delivering slides, verify:
 ### Quality & Selection Guides
 - **Theme selection**: `references/theme-selection.md` - How to choose the right theme for content
 - **Best practices**: `references/best-practices.md` - Quality guidelines for "cool" slides
+- **Deck workflow**: `references/deck-workflow.md` - The `deck` CLI loop, our conventions (theme-by-name, notes deck home, diagrams-as-text), and the gotchas (chrome, stdin, stow). Read before authoring/rendering.
 
 ### Templates & Assets
 - **Templates**: `assets/template-*.md` - Starting points for each theme (7 themes); each sets `theme: kb-<name>` in frontmatter (no embedded `<style>` block)
 - **Theme-set**: `assets/themes/theme-*.css` - the standalone Marp themes (`/* @theme kb-<name> */`), the single source of truth for styling, applied via the `deck` CLI or `marp --theme-set assets/themes`
+- **Worked example** (few-shot): `assets/example/` - a complete deck about the deck system (`deck-system.md`, `theme: kb-tech`) with a D2 diagram (`pipeline.d2` -> `pipeline.svg`) and a Mermaid diagram (`flow.mmd` -> `flow.svg`) embedded. Copy its shape when a deck needs diagrams. Build it: `deck build assets/example/deck-system.md`
 
 ### Official External Links
 - **Marp Official Site**: https://marp.app/
