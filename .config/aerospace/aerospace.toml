@@ -142,8 +142,13 @@ shift-cmd-9 = 'move-node-to-workspace 9'
     if.app-id = 'org.mozilla.firefox'
     run = 'move-node-to-workspace 2'
 
+# Playwright / automation test browser (Google Chrome) -> workspace 7
 [[on-window-detected]]
-    if.app-id = 'com.google.android.studio' 
+    if.app-id = 'com.google.Chrome'
+    run = 'move-node-to-workspace 7'
+
+[[on-window-detected]]
+    if.app-id = 'com.google.android.studio'
     run = 'move-node-to-workspace 4'
 
 [[on-window-detected]]
