@@ -9,9 +9,13 @@
 # running Alloy; static DHCP lease, LAN-DNS name). Alloy binds the OTLP port as
 # a hostPort on every node, so any node IP works; hp-victus is the stable pick.
 # Guarded on LAN reachability so it silently no-ops off-network (the exporter
-# would otherwise fire OTLP batches into the void).
+# would otherwise fire OTLP batches into the void). The lookup is wrapped in
+# `timeout 1` because off the home LAN (e.g. on the VDI/corporate network) the
+# resolver blocks ~8s on this name before failing, which would hang EVERY new
+# shell (.commonrc -> .ai-rc). On-LAN it resolves in well under 1s (telemetry
+# on); off-LAN it is killed at 1s and telemetry stays off, which is the intent.
 # Cluster wiring: apps/alloy/{configmap,daemonset}.yaml in home-config.
-if getent hosts hp-victus >/dev/null 2>&1; then
+if timeout 1 getent hosts hp-victus >/dev/null 2>&1; then
     export CLAUDE_CODE_ENABLE_TELEMETRY=1
     export OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318
     export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
