@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+#
+# deck — build, watch, and scaffold Marp slide decks anywhere, on any machine.
+#
+# A thin global wrapper around marp-cli that injects the shared kb-* theme-set
+# (shipped with the marp-slide skill) via --theme-set, so decks render fully
+# styled from ANY directory — no per-project code repo needed. This is the
+# generalized, portable version of the fleet-platform `pnpm deck:build|deck:watch`.
+#
+# Usage:
+#   deck new      <name> [--theme NAME] [--dir DIR] [--force]  Scaffold a deck from a template
+#   deck watch    [TARGET] [--port N]                          Live-reloading preview server
+#   deck build    [TARGET] [--format pdf|html|pptx] [-o OUT]   Render deck(s) (diagrams first)
+#   deck diagrams [TARGET]                                     Render sibling .mmd/.d2 -> .svg
+#   deck list     [DIR]                                        List Marp decks in a directory
+#   deck themes                                                List available kb-* themes
+#   deck doctor                                                Check the toolchain on this machine
+#   deck help                                                  Show this help
+#
+# Verb aliases: view, serve -> watch.
+#
+# Diagrams: author diagrams as editable text next to the deck — Mermaid (`.mmd`,
+# rendered by `mmdc`) or D2 (`.d2`, rendered by `d2`, the fleet-manager convention).
+# Both render to sibling `.svg` you embed in the deck (`![w:600](arch.svg)`), then
+# edit the source and re-render. `deck build` runs `deck diagrams` first automatically
+# (opt out with --no-diagrams).
+#
+# TARGET resolution (watch/build/diagrams): empty -> $DECK_HOME; an existing file ->
+# that deck (and its sibling diagrams); an existing dir -> every `marp: true` deck in
+# it; a bare name -> the deck $DECK_HOME/<name>.md.
+#
+# Theme names may be given with or without the `kb-` prefix (tech == kb-tech).
+#
+# Env:
+#   DECK_HOME        deck workspace           (default: ~/.notes/lab/decks)
+#   DECK_THEMES_DIR  theme-set directory      (default: the marp-slide skill's themes)
+#   PORT             watch server port        (default: 8088)
+#   CHROME_PATH      browser for PDF/PPTX/PNG (set if not auto-detected)
+#
+# Renders decks with `marp` if on PATH, else `npx --yes @marp-team/marp-cli@4`
+# (slower first run, needs network). PDF/PPTX/image export — and Mermaid diagrams —
+# additionally need a system Chrome/Chromium. D2 diagrams need no browser.
+# Run `deck doctor` to see what is present/missing here.
+
+set -euo pipefail
+
+# --- resolve this script's real directory, following symlinks (macOS has no
+#     GNU `readlink -f`; deck is invoked via a symlink in ~/.local/bin). --------
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+die()   { printf 'deck: %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '2,/^$/p' "$SOURCE" | sed 's/^# \{0,1\}//'; }
+
+# --- resolve the theme-set directory -----------------------------------------
+# Preference: explicit env -> stowed skill path -> in-repo path (relative to src).
+resolve_themes_dir() {
+  local candidates=(
+    "${DECK_THEMES_DIR:-}"
+    "$HOME/.claude/skills/marp-slide/assets/themes"
+    "$SCRIPT_DIR/../../../.claude/skills/marp-slide/assets/themes"
+  )
+  local d
+  for d in "${candidates[@]}"; do
+    [[ -n "$d" && -d "$d" ]] && { cd -P "$d" && pwd; return 0; }
+  done
+  die "theme-set not found. Expected the marp-slide skill at ~/.claude/skills/marp-slide/assets/themes (re-stow your dotfiles), or set DECK_THEMES_DIR."
+}
+
+THEMES_DIR="$(resolve_themes_dir)"
+TEMPLATES_DIR="$(cd -P "$THEMES_DIR/.." && pwd)"   # assets/ — holds template-*.md
+DECK_HOME="${DECK_HOME:-$HOME/.notes/lab/decks}"
+
+# --- marp binary or npx fallback ---------------------------------------------
+if command -v marp >/dev/null 2>&1; then
+  MARP=(marp)
+else
+  MARP=(npx --yes @marp-team/marp-cli@4)
+fi
+
+# normalize a theme argument to its bare name (tech, kb-tech -> tech)
+theme_base() { local t="${1#kb-}"; printf '%s' "$t"; }
+
+# resolve a TARGET arg to an absolute path (file or dir); honors bare deck names
+resolve_target() {
+  local arg="$1"
+  if [[ -z "$arg" ]]; then
+    printf '%s' "$DECK_HOME"; return 0
+  fi
+  if [[ -e "$arg" ]]; then
+    printf '%s' "$arg"; return 0
+  fi
+  if [[ -f "$DECK_HOME/$arg.md" ]]; then
+    printf '%s' "$DECK_HOME/$arg.md"; return 0
+  fi
+  if [[ -e "$DECK_HOME/$arg" ]]; then
+    printf '%s' "$DECK_HOME/$arg"; return 0
+  fi
+  die "no such deck or path: $arg (looked in ./ and $DECK_HOME)"
+}
+
+is_deck() { grep -q '^marp: true' "$1" 2>/dev/null; }
+
+# =============================================================================
+cmd_themes() {
+  local f name
+  shopt -s nullglob
+  for f in "$THEMES_DIR"/theme-*.css; do
+    name="$(sed -n 's|^/\* @theme \([a-zA-Z0-9_-]*\) \*/|\1|p' "$f" | head -1)"
+    printf '%-14s %s\n' "${name:-?}" "$f"
+  done
+}
+
+cmd_new() {
+  local name="" theme="kb-basic" dir="$DECK_HOME" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --theme) theme="${2:?--theme needs a name}"; shift 2 ;;
+      --dir)   dir="${2:?--dir needs a path}"; shift 2 ;;
+      --force) force=1; shift ;;
+      -*)      die "new: unknown option: $1" ;;
+      *)       [[ -z "$name" ]] && name="$1" || die "new: unexpected arg: $1"; shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || die "new: need a deck name (deck new <name> [--theme NAME])"
+
+  local base template target
+  base="$(theme_base "$theme")"
+  template="$TEMPLATES_DIR/template-$base.md"
+  [[ -f "$template" ]] || die "new: no template for theme '$theme'. Try: deck themes"
+
+  name="${name%.md}"
+  target="$dir/$name.md"
+  mkdir -p "$dir"
+  [[ -e "$target" && $force -eq 0 ]] && die "new: $target exists (use --force to overwrite)"
+
+  cp "$template" "$target"
+  printf 'Created %s (theme kb-%s)\n' "$target" "$base"
+  printf 'Next:  deck watch %s   # live preview\n' "$name"
+  printf '       deck build %s   # render to PDF\n' "$name"
+}
+
+cmd_watch() {
+  local target="" port="${PORT:-8088}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port) port="${2:?--port needs a number}"; shift 2 ;;
+      -*)     die "watch: unknown option: $1" ;;
+      *)      [[ -z "$target" ]] && target="$1" || die "watch: unexpected arg: $1"; shift ;;
+    esac
+  done
+
+  local resolved serve_dir deep=""
+  resolved="$(resolve_target "$target")"
+  if [[ -f "$resolved" ]]; then
+    serve_dir="$(cd -P "$(dirname "$resolved")" && pwd)"
+    deep="$(basename "$resolved")"   # marp server mode serves the deck at its .md path
+  else
+    mkdir -p "$resolved"
+    serve_dir="$(cd -P "$resolved" && pwd)"
+  fi
+
+  export PORT="$port"
+  printf 'Serving %s at http://localhost:%s/ (Ctrl-C to stop)\n' "$serve_dir" "$port"
+  [[ -n "$deep" ]] && printf 'Open:   http://localhost:%s/%s\n' "$port" "$deep"
+  printf 'If it 404s the port is taken — re-run with --port 9000.\n'
+  exec "${MARP[@]}" -s "$serve_dir" --theme-set "$THEMES_DIR" --allow-local-files
+}
+
+# the directory holding a target's sibling diagrams (a deck file -> its dir)
+target_dir() {
+  local r="$1"
+  if [[ -f "$r" ]]; then cd -P "$(dirname "$r")" && pwd; else cd -P "$r" && pwd; fi
+}
+
+# Render sibling editable diagram sources to .svg: Mermaid (.mmd via mmdc) and
+# D2 (.d2 via d2, the fleet-manager convention). A format whose tool is absent is
+# skipped with a hint — never fatal, so a deck with no diagrams (or a machine
+# missing a renderer) still builds.
+render_diagrams() {
+  local dir="$1" f skipped=""
+  shopt -s nullglob
+  for f in "$dir"/*.mmd; do
+    if command -v mmdc >/dev/null 2>&1; then
+      printf -- '-> %s => %s\n' "$f" "${f%.mmd}.svg"
+      mmdc -i "$f" -o "${f%.mmd}.svg" >/dev/null 2>&1 || printf 'deck: mmdc failed on %s\n' "$f" >&2
+    else
+      skipped="mermaid (mmdc)"
+    fi
+  done
+  for f in "$dir"/*.d2; do
+    if command -v d2 >/dev/null 2>&1; then
+      printf -- '-> %s => %s\n' "$f" "${f%.d2}.svg"
+      d2 "$f" "${f%.d2}.svg" >/dev/null 2>&1 || printf 'deck: d2 failed on %s\n' "$f" >&2
+    else
+      skipped="${skipped:+$skipped, }d2"
+    fi
+  done
+  [[ -n "$skipped" ]] && printf 'deck: skipped diagrams — missing: %s (run: deck doctor)\n' "$skipped" >&2
+  return 0
+}
+
+cmd_diagrams() {
+  local resolved
+  resolved="$(resolve_target "${1:-}")"
+  render_diagrams "$(target_dir "$resolved")"
+}
+
+render_one() {
+  local in="$1" out="$2"
+  printf -- '-> %s => %s\n' "$in" "$out"
+  # </dev/null: marp-cli blocks waiting on stdin when run without a TTY (agents/CI),
+  # so detach stdin — we always convert an explicit input file, never a stream.
+  "${MARP[@]}" "$in" -o "$out" --theme-set "$THEMES_DIR" --allow-local-files </dev/null
+}
+
+cmd_build() {
+  local target="" format="pdf" out="" do_diagrams=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --format)      format="${2:?--format needs a value}"; shift 2 ;;
+      -o|--out)      out="${2:?-o needs a path}"; shift 2 ;;
+      --no-diagrams) do_diagrams=0; shift ;;
+      -*)            die "build: unknown option: $1" ;;
+      *)             [[ -z "$target" ]] && target="$1" || die "build: unexpected arg: $1"; shift ;;
+    esac
+  done
+  case "$format" in pdf|html|pptx) ;; *) die "build: --format must be pdf|html|pptx" ;; esac
+
+  local resolved
+  resolved="$(resolve_target "$target")"
+
+  # Render editable diagrams to SVG first (fleet's `deck:diagrams && build` order).
+  [[ $do_diagrams -eq 1 ]] && render_diagrams "$(target_dir "$resolved")"
+
+  if [[ -f "$resolved" ]]; then
+    render_one "$resolved" "${out:-${resolved%.md}.$format}"
+    return
+  fi
+
+  [[ -n "$out" ]] && die "build: -o only applies to a single deck file, not a directory"
+  local f built=0
+  shopt -s nullglob
+  for f in "$resolved"/*.md; do
+    is_deck "$f" || continue
+    render_one "$f" "${f%.md}.$format"
+    built=$((built + 1))
+  done
+  printf 'Built %d deck(s).\n' "$built"
+}
+
+cmd_list() {
+  local dir="${1:-$DECK_HOME}" f theme
+  [[ -d "$dir" ]] || die "list: no such directory: $dir"
+  shopt -s nullglob
+  for f in "$dir"/*.md; do
+    is_deck "$f" || continue
+    theme="$(sed -n 's/^theme: *//p' "$f" | head -1)"
+    printf '%-30s %s\n' "$(basename "$f")" "${theme:+[$theme]}"
+  done
+}
+
+find_chrome() {
+  local candidates=( "${CHROME_PATH:-}" )
+  local c
+  for c in google-chrome chromium chromium-browser; do
+    command -v "$c" >/dev/null 2>&1 && candidates+=("$(command -v "$c")")
+  done
+  candidates+=(
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+  )
+  for c in "${candidates[@]}"; do
+    [[ -n "$c" && -x "$c" ]] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+cmd_doctor() {
+  local row='  %-16s %-8s %s\n'
+  printf 'deck doctor (%s)\n\n' "$(uname -s)"
+
+  if command -v marp >/dev/null 2>&1; then
+    printf "$row" "marp"           "OK"      "$(command -v marp)"
+  elif command -v npx >/dev/null 2>&1; then
+    printf "$row" "marp"           "npx"     "not installed; falls back to npx @marp-team/marp-cli@4 (slow 1st run)"
+  else
+    printf "$row" "marp"           "MISSING" "brew install marp-cli | npm i -g @marp-team/marp-cli"
+  fi
+
+  if command -v mmdc >/dev/null 2>&1; then
+    printf "$row" "mmdc (mermaid)" "OK"      "$(command -v mmdc)"
+  else
+    printf "$row" "mmdc (mermaid)" "MISSING" "npm i -g @mermaid-js/mermaid-cli"
+  fi
+
+  if command -v d2 >/dev/null 2>&1; then
+    printf "$row" "d2"             "OK"      "$(command -v d2)"
+  else
+    printf "$row" "d2"             "MISSING" "brew install d2 | curl -fsSL https://d2lang.com/install.sh | sh"
+  fi
+
+  local chrome
+  if chrome="$(find_chrome)"; then
+    printf "$row" "chrome"         "OK"      "$chrome (PDF/PPTX/PNG + mermaid)"
+  else
+    printf "$row" "chrome"         "MISSING" "needed for PDF/PPTX/PNG + mermaid; set CHROME_PATH or install a browser"
+  fi
+
+  local n; n="$(ls "$THEMES_DIR"/theme-*.css 2>/dev/null | wc -l | tr -d ' ')"
+  printf "$row" "theme-set"        "OK"      "$n themes @ $THEMES_DIR"
+
+  if [[ -d "$DECK_HOME" ]]; then
+    printf "$row" "deck home"      "OK"      "$DECK_HOME"
+  else
+    printf "$row" "deck home"      "todo"    "$DECK_HOME (created on first 'deck new')"
+  fi
+}
+
+# =============================================================================
+CMD="${1:-}"; shift || true
+case "$CMD" in
+  new)                cmd_new "$@" ;;
+  watch|view|serve)   cmd_watch "$@" ;;
+  build)              cmd_build "$@" ;;
+  diagrams)           cmd_diagrams "$@" ;;
+  list)               cmd_list "$@" ;;
+  themes)             cmd_themes "$@" ;;
+  doctor)             cmd_doctor "$@" ;;
+  help|--help|-h|"")  usage ;;
+  *)                  die "unknown command: $CMD (try: deck help)" ;;
+esac
