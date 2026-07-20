@@ -187,6 +187,72 @@ pub fn done(p: &Profile, log: &Logger, query: &str) -> Result<()> {
     }
 }
 
+/// Pure core of `rm`: DELETE the first OPEN `## Focus` task whose normalised text
+/// contains `query` (already lower-cased) — the line is removed entirely, unlike `done`
+/// which only ticks it. Same authored-region boundary as [`close_first`] (stops at the
+/// next H2 or [`md::ROLLUP_START`]), so a mirrored job task is never removed here.
+/// Returns `(new_content, removed_line)`, or `None` when nothing matches.
+fn remove_first(content: &str, query: &str) -> Option<(String, String)> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_focus = false;
+    let mut removed: Option<String> = None;
+    for line in content.lines() {
+        if removed.is_none() {
+            if let Some(rest) = line.strip_prefix("## ") {
+                in_focus = rest.trim().eq_ignore_ascii_case("Focus");
+            } else if in_focus && line.trim() == md::ROLLUP_START {
+                in_focus = false; // authored region only
+            } else if in_focus
+                && md::is_task(line)
+                && !md::is_checked(line)
+                && !md::is_empty_unchecked(line)
+                && md::task_key(line).contains(query)
+            {
+                removed = Some(line.to_string());
+                continue; // drop the matched line entirely
+            }
+        }
+        out.push(line.to_string());
+    }
+    removed.map(|r| {
+        let mut joined = out.join("\n");
+        if content.ends_with('\n') && !joined.ends_with('\n') {
+            joined.push('\n');
+        }
+        (joined, r)
+    })
+}
+
+/// `notes focus rm <query>` — DELETE the first open `## Focus` task whose text matches
+/// `<query>` (case-insensitive), removing the line. Reports what was removed, or lists
+/// the open items when nothing matches so the caller can retry.
+pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<()> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        bail!("which one? (provide a word from the task)");
+    }
+    let note = daily::today_path(p);
+    if !note.exists() {
+        bail!("no daily note yet — run: notes today");
+    }
+    let content = fs::read_to_string(&note)?;
+    match remove_first(&content, &query) {
+        Some((new_content, removed)) => {
+            fs::write(&note, new_content)?;
+            log.info("focus", &format!("removed in {}", note.display()));
+            println!("removed {}", removed.trim());
+            Ok(())
+        }
+        None => {
+            println!("no open focus item matches '{query}'. Open now:");
+            for l in open_focus(&content) {
+                println!("  {l}");
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +370,29 @@ after
         // The second match remains open — done() closes one at a time.
         assert!(out.contains("- [ ] fix the other bug"));
         assert!(!out.contains("- [x] fix the other bug"));
+    }
+
+    #[test]
+    fn remove_first_deletes_matching_open_task() {
+        let (out, removed) = remove_first(NOTE, "backup").unwrap();
+        assert_eq!(removed, "- [ ] buy backup drive (2d) <!-- since:2026-07-14 -->");
+        // The line is gone entirely (not just ticked).
+        assert!(!out.contains("buy backup drive"));
+        // The other open task and the checked one are untouched.
+        assert!(out.contains("    - [ ] admin local ui"));
+        assert!(out.contains("- [x] disassemble venty"));
+        assert!(out.ends_with("after\n"));
+    }
+
+    #[test]
+    fn remove_first_ignores_tasks_past_the_rollup_sentinel() {
+        let note = format!(
+            "## Focus\n- [ ] mine\n\n{}\n- [ ] mirrored theirs\n\n## Notes\n",
+            md::ROLLUP_START
+        );
+        // A mirrored (post-sentinel) task must never be removed.
+        assert!(remove_first(&note, "mirrored").is_none());
+        let (_out, removed) = remove_first(&note, "mine").unwrap();
+        assert_eq!(removed, "- [ ] mine");
     }
 }

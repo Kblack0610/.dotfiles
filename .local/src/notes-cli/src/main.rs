@@ -170,6 +170,12 @@ enum FocusCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Delete the first open item whose text matches (removes the line entirely)
+    Rm {
+        /// A word (or two) from the task to delete
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -278,6 +284,7 @@ fn main() -> Result<()> {
                     None | Some(FocusCmd::List) => focus::list(&prof, &log)?,
                     Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
                     Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
                 }
             }
             0
