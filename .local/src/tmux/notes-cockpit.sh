@@ -25,6 +25,15 @@ set -uo pipefail
 SELF="$(realpath "$0")"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
 SECTIONS=(all personal work projects)
+# Optional machine-local prefix->project alias file (keeps private project names OUT of
+# this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
+# project name), so a `tag:` prefix classifies under that project.
+ALIAS_FILE="${NOTES_COCKPIT_ALIASES:-$HOME/.config/notes-cockpit/aliases}"
+
+alias_of() { # $1=prefix -> mapped project name (or nothing)
+  [ -f "$ALIAS_FILE" ] || return 0
+  awk -F= -v k="$1" '!/^[[:space:]]*#/ && $1==k { print $2; exit }' "$ALIAS_FILE"
+}
 
 C_BOX=$'\033[36m'    # checkbox (cyan)
 C_HEAD=$'\033[1;37m' # group header (bold white)
@@ -44,6 +53,8 @@ classify() {
   lc="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
   if [[ "$lc" =~ ^([a-z0-9_-]+): ]]; then
     prefix="${BASH_REMATCH[1]}"
+    local mapped; mapped="$(alias_of "$prefix")"    # short tag -> full project (machine-local)
+    [ -n "$mapped" ] && prefix="$mapped"
     for p in $projects_lc; do [ "$prefix" = "$p" ] && { echo "projects/$p"; return; }; done
     echo "personal"; return
   fi
@@ -121,22 +132,29 @@ rail() {
   printf '\n%s 1-4 / Tab%s\n%s to switch%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
 }
 
-next_section() {
-  local cur i; cur="$(read_section)"
+_cycle_section() { # $1 = +1 (next) or -1 (prev)
+  local cur i n=${#SECTIONS[@]}; cur="$(read_section)"
   for i in "${!SECTIONS[@]}"; do
     if [ "${SECTIONS[$i]}" = "$cur" ]; then
-      echo "${SECTIONS[$(((i + 1) % ${#SECTIONS[@]}))]}" > "$STATE"; return
+      echo "${SECTIONS[$(((i + $1 + n) % n))]}" > "$STATE"; return
     fi
   done
   echo all > "$STATE"
 }
+next_section() { _cycle_section 1; }
+prev_section() { _cycle_section -1; }
 
+# Add a task to whatever SECTION you're on: work/<profile> -> that job profile;
+# projects/<name> -> a personal task tagged `<name>:` (so it re-classifies to that
+# project); else a plain personal task. Lets you add to pmp while browsing projects.
 add_task() {
-  local profile="$1"
-  [ -z "$profile" ] && return 0
-  local text
-  read -r -p "add to ${profile}: " text || return 0
-  [ -n "${text// /}" ] && notes --profile "$profile" focus add "$text"
+  local section="${1:-personal}" profile="personal" prefix="" text
+  case "$section" in
+    work/*) profile="${section#work/}" ;;
+    projects/*) prefix="${section#projects/}: " ;;
+  esac
+  read -r -p "add to ${section}: " text || return 0
+  [ -n "${text// /}" ] && notes --profile "$profile" focus add "${prefix}${text}"
 }
 
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
@@ -151,6 +169,7 @@ case "${1:-}" in
   --list) shift; list_section "${1:-}"; exit 0 ;;
   --rail) rail; exit 0 ;;
   --next-section) next_section; exit 0 ;;
+  --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
 esac
@@ -159,25 +178,36 @@ command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
 echo all > "$STATE" # every launch starts on the all-tasks view
-HEADER='1-4/Tab section   enter edit   C-x done   C-a add   C-d del   esc quit'
+HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   q quit'
+# modal nav: the printable keys that mean "command" in normal mode but must TYPE while
+# searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
+MODAL='j,k,h,l,i,q,1,2,3,4'
 
+# start in --no-input (browse) mode: no query box, hjkl navigate, i enters search.
 list_section all | fzf \
-  --ansi --reverse --cycle --no-sort --border \
+  --ansi --reverse --cycle --no-sort --border --no-input \
   --delimiter=$'\t' --with-nth='7..' \
-  --prompt='cockpit > ' \
+  --prompt='search > ' \
   --header="$HEADER" \
   --preview "$SELF --rail" \
   --preview-window 'left:22%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
+  --bind 'j:down+transform:[ {1} = head ] && echo down' \
+  --bind 'k:up+transform:[ {1} = head ] && echo up' \
   --bind 'up:up+transform:[ {1} = head ] && echo up' \
   --bind 'down:down+transform:[ {1} = head ] && echo down' \
   --bind 'load:transform:[ {1} = head ] && echo down' \
+  --bind "h:execute-silent($SELF --prev-section)+reload($SELF --list)+refresh-preview" \
+  --bind "l:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
   --bind "1:execute-silent(echo all > $STATE)+reload($SELF --list)+refresh-preview" \
   --bind "2:execute-silent(echo personal > $STATE)+reload($SELF --list)+refresh-preview" \
   --bind "3:execute-silent(echo work > $STATE)+reload($SELF --list)+refresh-preview" \
   --bind "4:execute-silent(echo projects > $STATE)+reload($SELF --list)+refresh-preview" \
   --bind "tab:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
+  --bind "i:show-input+unbind($MODAL)" \
+  --bind "esc:transform:[ \"\$FZF_INPUT_STATE\" = hidden ] && echo abort || echo \"clear-query+hide-input+rebind($MODAL)\"" \
+  --bind 'q:abort' \
   --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
-  --bind "ctrl-a:execute($SELF --add {2})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
