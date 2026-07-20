@@ -136,6 +136,33 @@ CONTEXT=$(
     fi
   fi
 
+  # Focus cockpit — surface today's open `## Focus` tasks (your daily-note task list, the
+  # thing you actually work from) at turn 1, so every session opens knowing what's actively
+  # in progress. If none are set, nudge to capture them. Read-only + best-effort here; task
+  # WRITES stay in the `notes` CLI (never hand-edit ~/.notes markdown). Keep items terse.
+  if command -v notes >/dev/null 2>&1; then
+    DAILY_NOTE=$(notes path daily 2>/dev/null || true)
+    [ -n "$DAILY_NOTE" ] || DAILY_NOTE="$HOME/.notes/journal/daily/$(date +%F).md"
+    FOCUS_OPEN=""
+    if [ -f "$DAILY_NOTE" ]; then
+      # Open `- [ ]` items under `## Focus` (to the next H2). Drop the `<!-- since:… -->`
+      # comment + trailing #tags and the checkbox glyph; keep the `(Nd)` staleness age.
+      FOCUS_OPEN=$(awk '/^## Focus/{f=1;next} f&&/^## /{exit} f' "$DAILY_NOTE" 2>/dev/null \
+        | grep -E '^[[:space:]]*- \[ \] .' \
+        | sed -E 's/<!--[^>]*-->//g; s/- \[ \] /- /; s/[[:space:]]+#[[:alnum:]_-]+//g; s/[[:space:]]+$//' || true)
+    fi
+    if [ -n "$FOCUS_OPEN" ]; then
+      n=$(printf '%s\n' "$FOCUS_OPEN" | grep -c . || true)
+      echo "🎯 Focus (today — $(basename "$DAILY_NOTE"), ${n:-0} open):"
+      printf '%s\n' "$FOCUS_OPEN" | head -8 | sed 's/^/  /'
+      [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
+      echo
+    else
+      echo "🎯 Focus: none set — run \`notes today\`, then capture what we're on (terse, plain, a couple words)."
+      echo
+    fi
+  fi
+
   cd "$PROJECT_DIR" 2>/dev/null || true
   if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "Recent commits (last 5):"

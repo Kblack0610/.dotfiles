@@ -60,5 +60,14 @@ if git -C "$REPO" merge --ff-only "@{u}" >/dev/null 2>&1; then
   # Only speak when attached to a terminal in the foreground; stays silent when
   # backgrounded from .zshrc.
   [ -t 1 ] && echo "$msg"
+
+  # A fast-forward may have advanced submodule pointers (e.g. android-suite); check
+  # them out so their symlinks do not dangle. Force HTTPS to avoid SSH:22 hangs on
+  # networks that block it, cap the time, and stay fail-soft.
+  timeout 120 git -C "$REPO" -c url."https://github.com/".insteadOf="git@github.com:" \
+    submodule update --init --recursive --quiet >/dev/null 2>&1 || true
+  # Re-attach the private overlay in case the pull moved anything into it.
+  [ -x "$REPO/.local/bin/dotfiles-overlay-link" ] && \
+    "$REPO/.local/bin/dotfiles-overlay-link" >/dev/null 2>&1 || true
 fi
 exit 0

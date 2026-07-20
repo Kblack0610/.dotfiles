@@ -7,9 +7,11 @@
 
 mod archive;
 mod backlog;
+mod comms;
 mod config;
 mod daily;
 mod doctor;
+mod focus;
 mod inbox;
 mod index;
 mod logging;
@@ -85,6 +87,16 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Today's cockpit: the daily note's `## Focus` active-task list (list / add / done).
+    /// No subcommand = list. Same items the session-start hook surfaces.
+    Focus {
+        /// Aggregate open Focus across ALL configured profiles, for the cross-profile
+        /// cockpit (TSV: `profile<TAB>file<TAB>line<TAB>key<TAB>text`). Read-only.
+        #[arg(long)]
+        all: bool,
+        #[command(subcommand)]
+        sub: Option<FocusCmd>,
+    },
     /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
@@ -119,10 +131,45 @@ enum Cmd {
         /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
     },
+    /// Surface multi-account email triage into the daily note's `## Comms` section.
+    /// No subcommand = list the currently-surfaced items for the active profile.
+    /// The pull/label/classify work is done out-of-band by the triage poller.
+    Comms {
+        #[command(subcommand)]
+        sub: Option<CommsCmd>,
+    },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor,
     /// Print the resolved profile + paths
     Config,
+}
+
+#[derive(Subcommand)]
+enum CommsCmd {
+    /// List the currently-surfaced comms items for the active profile (the default)
+    List,
+    /// Re-render today's note's `## Comms` section from the triage surface file
+    Refresh,
+    /// Show configured accounts + whether each has a surface file (read-only)
+    Status,
+}
+
+#[derive(Subcommand)]
+enum FocusCmd {
+    /// List today's open focus items (the default)
+    List,
+    /// Add a focus item — keep it a couple words, plain, no fluff
+    Add {
+        /// Task text (free-form)
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Check off the first open item whose text matches
+    Done {
+        /// A word (or two) from the task to close
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,6 +270,18 @@ fn main() -> Result<()> {
             backlog::seed(&prof, &log, from.as_deref(), force)?;
             0
         }
+        Cmd::Focus { all, sub } => {
+            if all {
+                focus::list_all(&log)?;
+            } else {
+                match sub {
+                    None | Some(FocusCmd::List) => focus::list(&prof, &log)?,
+                    Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
+                    Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
+                }
+            }
+            0
+        }
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
@@ -263,9 +322,22 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Comms { sub } => {
+            match sub {
+                None | Some(CommsCmd::List) => comms::list(&prof, &log)?,
+                Some(CommsCmd::Refresh) => comms::refresh_cmd(&prof, &log)?,
+                Some(CommsCmd::Status) => comms::status(&log)?,
+            }
+            0
+        }
         Cmd::Doctor => doctor::run(&prof, &log)?,
         Cmd::Config => {
             config::print(&prof);
+            if let Ok(c) = config::comms_config() {
+                if !c.accounts.is_empty() {
+                    config::print_comms(&c);
+                }
+            }
             0
         }
     };

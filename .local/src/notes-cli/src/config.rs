@@ -23,6 +23,52 @@ struct RawConfig {
     hostname_map: HashMap<String, String>,
     #[serde(default)]
     profile: HashMap<String, RawProfile>,
+    /// Multi-account email triage (`notes comms`). Global (spans profiles), so it lives at
+    /// the top level rather than per-profile — each account names the profile whose daily
+    /// note its critical items surface into. Optional: an empty `[comms]` means the feature
+    /// is off on this machine (so it never strips a `## Comms` another machine wrote).
+    #[serde(default)]
+    comms: RawComms,
+}
+
+/// Global comms (email triage) config. Read independently of the active profile via
+/// [`comms_config`], the same way [`all_profile_names`] reads the raw config directly.
+#[derive(Debug, Deserialize, Default)]
+struct RawComms {
+    /// Runtime state dir the triage poller writes to (dedup ledger + per-profile surface
+    /// files). Outside the vault. Defaults to `~/.local/state/notes-comms`.
+    #[serde(default)]
+    state_dir: Option<String>,
+    /// Local Ollama base URL for tier-2 classification. Defaults to the lab box.
+    #[serde(default)]
+    ollama_url: Option<String>,
+    /// Ollama model for tier-2 classification. Defaults to `qwen3-coder:30b`.
+    #[serde(default)]
+    ollama_model: Option<String>,
+    /// One entry per mailbox (`[[comms.account]]`).
+    #[serde(default, rename = "account")]
+    account: Vec<RawAccount>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RawAccount {
+    /// Short handle (used for rbw item + state filenames), e.g. `personal`, `work`, `biz`.
+    name: String,
+    /// The email address (display only). Optional.
+    #[serde(default)]
+    address: Option<String>,
+    /// rbw/Vaultwarden item holding this account's OAuth refresh token. Defaults to
+    /// `gmail_oauth_<name>` (the immich per-account convention).
+    #[serde(default)]
+    rbw_entry: Option<String>,
+    /// Which profile's daily note this account's critical items surface into. Defaults to
+    /// `personal`.
+    #[serde(default = "default_surface_profile")]
+    surface_profile: String,
+}
+
+fn default_surface_profile() -> String {
+    "personal".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -134,6 +180,22 @@ pub struct Profile {
     pub log_file: PathBuf,
 }
 
+/// One resolved comms account (email mailbox) with defaults filled in.
+pub struct Account {
+    pub name: String,
+    pub address: String,
+    pub rbw_entry: String,
+    pub surface_profile: String,
+}
+
+/// Resolved global comms config. `accounts` empty == the feature is off on this machine.
+pub struct Comms {
+    pub state_dir: PathBuf,
+    pub ollama_url: String,
+    pub ollama_model: String,
+    pub accounts: Vec<Account>,
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
 }
@@ -212,6 +274,7 @@ fn builtin_default() -> RawConfig {
         default_profile: "personal".into(),
         hostname_map: HashMap::new(),
         profile,
+        comms: RawComms::default(),
     }
 }
 
@@ -368,6 +431,79 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         state_dir,
         log_file,
     })
+}
+
+/// Every profile NAME defined in the active config, sorted. Cross-profile aggregation
+/// (`notes focus --all`) iterates this to visit all profiles without knowing them ahead
+/// of time. Falls back to the built-in default's single `personal` profile when no config
+/// file exists — the same source `resolve` reads, so the two never disagree.
+pub fn all_profile_names() -> Result<Vec<String>> {
+    let (raw, _src) = load_raw()?;
+    let mut names: Vec<String> = raw.profile.keys().cloned().collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Resolve the global comms config (defaults filled in). Read independently of the active
+/// profile, like [`all_profile_names`] — the same raw source `resolve` reads. `accounts`
+/// empty means comms is not configured on this machine (feature off).
+pub fn comms_config() -> Result<Comms> {
+    let (raw, _src) = load_raw()?;
+    let rc = raw.comms;
+    let state_dir = rc
+        .state_dir
+        .as_ref()
+        .map(|s| expand(s))
+        .unwrap_or_else(|| home().join(".local/state/notes-comms"));
+    let ollama_url = rc
+        .ollama_url
+        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+    let ollama_model = rc
+        .ollama_model
+        .unwrap_or_else(|| "qwen3-coder:30b".to_string());
+    let accounts = rc
+        .account
+        .into_iter()
+        .map(|a| {
+            let name = a.name;
+            let rbw_entry = a.rbw_entry.unwrap_or_else(|| format!("gmail_oauth_{name}"));
+            Account {
+                address: a.address.unwrap_or_default(),
+                rbw_entry,
+                surface_profile: a.surface_profile,
+                name,
+            }
+        })
+        .collect();
+    Ok(Comms {
+        state_dir,
+        ollama_url,
+        ollama_model,
+        accounts,
+    })
+}
+
+/// Per-profile surface file the triage poller writes and `## Comms` renders from.
+pub fn comms_surface_file(c: &Comms, profile: &str) -> PathBuf {
+    c.state_dir.join("surface").join(format!("{profile}.md"))
+}
+
+/// Print the resolved comms config (`notes config` appends this when comms is configured).
+pub fn print_comms(c: &Comms) {
+    println!();
+    println!("comms-state {}", c.state_dir.display());
+    println!("comms-ollama {} ({})", c.ollama_url, c.ollama_model);
+    for a in &c.accounts {
+        let addr = if a.address.is_empty() {
+            String::new()
+        } else {
+            format!(" <{}>", a.address)
+        };
+        println!(
+            "comms-acct  {}{} -> {} (rbw: {})",
+            a.name, addr, a.surface_profile, a.rbw_entry
+        );
+    }
 }
 
 /// Build a vault-relative `[[wikilink]]` body for a file under `root`.

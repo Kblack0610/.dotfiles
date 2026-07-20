@@ -74,6 +74,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // `## Watches`. Running every `notes today` keeps the counts current as job notes sync in.
     refresh_work(p, log, &note)?;
     refresh_watches(p, log, &note)?;
+    // Renders the `## Comms` section from the triage poller's per-profile surface file,
+    // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
+    crate::comms::refresh(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
     Ok(())
 }
@@ -498,7 +501,7 @@ fn strip_backlog_footer(content: &mut String) {
     }
 }
 
-fn insert_before_footer(content: &str, block: &str) -> String {
+pub(crate) fn insert_before_footer(content: &str, block: &str) -> String {
     if let Some(idx) = content.find("\n---\nBacklogs:") {
         let (head, tail) = content.split_at(idx);
         format!("{}{}{}", head.trim_end(), block, tail)
@@ -510,7 +513,7 @@ fn insert_before_footer(content: &str, block: &str) -> String {
 /// Remove a `## heading` section (its heading line + body up to the next `## ` heading,
 /// the `---` footer rule, or EOF). Returns the content unchanged when the heading is
 /// absent. Used to re-render the `## Watches` section in place each run.
-fn remove_section(content: &str, heading: &str) -> String {
+pub(crate) fn remove_section(content: &str, heading: &str) -> String {
     let target = format!("## {heading}");
     let lines: Vec<&str> = content.lines().collect();
     let Some(start) = lines.iter().position(|l| l.trim() == target) else {
