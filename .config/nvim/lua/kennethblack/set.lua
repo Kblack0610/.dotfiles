@@ -40,8 +40,11 @@ vim.opt.wrap = false -- Disable wrapping of lines longer than the width of windo
 vim.opt.writebackup = false -- Disable making a backup before overwriting a file
 vim.opt.scrolloff = 8 -- How many lines to keep on top/bottom of screen when scrolling
 
--- for external editors
--- vim.opt.autoread = true
+-- Reload buffers that changed on disk (paired with the `checktime` autocmd in autocmds.lua).
+-- This is the editor half of the "notes CLI clobbers my open daily note" fix: the `notes`
+-- binary writes atomically (rename over the file), and autoread reloads the buffer so a
+-- `notes focus add/done` from another pane never gets stomped by a stale buffer on :w.
+vim.opt.autoread = true
 
 -- rewrite this
 -- autocmd FocusGained * checktim

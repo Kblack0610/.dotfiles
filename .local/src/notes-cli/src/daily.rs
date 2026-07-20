@@ -189,7 +189,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     }
     s.push('\n');
 
-    fs::write(note, s).with_context(|| format!("writing {}", note.display()))?;
+    md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
         log.info("today", &format!("surfaced {n_promoted} scheduled item(s) into Due"));
     }
@@ -215,7 +215,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         md::insert_under_heading(&sched_pruned, "Active", &fresh)
     };
     if sched_after != sched_before {
-        fs::write(&p.scheduled, &sched_after)
+        md::write_atomic(&p.scheduled, &sched_after)
             .with_context(|| format!("writing {}", p.scheduled.display()))?;
         if n_deferred > 0 {
             log.info("today", &format!("deferred {n_deferred} item(s) to scheduled backlog"));
@@ -452,7 +452,7 @@ pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
         // keep Refs above any trailing footer
         content = insert_before_footer(&content, &block);
     }
-    fs::write(&note, content)?;
+    md::write_atomic(&note, &content)?;
     log.info("link-refs", &format!("linked {} ref(s)", links.len()));
     Ok(())
 }
@@ -487,7 +487,7 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!("\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"));
-    fs::write(note, content)?;
+    md::write_atomic(note, &content)?;
     Ok(())
 }
 
@@ -702,7 +702,7 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
         insert_before_footer(&stripped, &block)
     };
     if new_content != content {
-        fs::write(note, new_content)?;
+        md::write_atomic(note, &new_content)?;
         log.info("today", &format!("refreshed {} inbox capture(s) in ## Inbox", bodies.len()));
     }
     Ok(())
@@ -844,7 +844,7 @@ fn refresh_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
         insert_before_footer(&stripped, &block)
     };
     if new_content != content {
-        fs::write(note, new_content)?;
+        md::write_atomic(note, &new_content)?;
         log.info("today", &format!("refreshed ## Work ({} job(s))", lines.len()));
     }
     Ok(())
@@ -871,7 +871,7 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
         insert_before_footer(&stripped, &block)
     };
     if new_content != content {
-        fs::write(note, new_content)?;
+        md::write_atomic(note, &new_content)?;
         log.info("today", &format!("refreshed {} watch(es) in ## Watches", lines.len()));
     }
     Ok(())

@@ -1,7 +1,33 @@
 //! Shared markdown + task-line helpers. These are the historically fragile bits
 //! (section extraction, day-count stamping) so they carry unit tests.
 
+use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use std::path::Path;
+
+/// Atomically write `contents` to `path`: stage into a sibling `.<name>.tmp` file, then
+/// `rename` it over the target. The rename is atomic on POSIX, so a concurrent reader (a
+/// daily note open in Nvim, the session preflight, another `notes` run) never observes a
+/// half-written file - it sees either the old bytes or the new ones, never a torn mix.
+///
+/// This is the CLI half of the "don't clobber my open buffer" fix: the editor half is
+/// `autoread` + the `checktime` autocmd, which reloads the buffer once the new bytes land.
+/// The temp file is a sibling (same directory/filesystem) so the rename stays within one
+/// filesystem - a cross-device rename would fail.
+pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("note");
+    // PID keeps concurrent `notes` invocations from staging into the same temp file.
+    let tmp = dir.join(format!(".{stem}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, contents)
+        .with_context(|| format!("staging temp write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| {
+        // Best-effort cleanup so a failed rename doesn't litter the vault with temp files.
+        let _ = std::fs::remove_file(&tmp);
+        format!("atomically renaming {} -> {}", tmp.display(), path.display())
+    })?;
+    Ok(())
+}
 
 /// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
 /// Everything from this line to the end of the section is MIRRORED FROM ANOTHER PROFILE,
@@ -462,18 +488,33 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     )
 }
 
+/// Reset a carried task's in-progress checkbox `[/]` back to an open `[ ]`, preserving
+/// indentation. Status (`[/]`) is a same-day signal set in the editor (see markdown.lua's
+/// `<leader>t` cycle); it does not survive the daily carry — only the open todo + its
+/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry).
+fn reset_status(line: &str) -> String {
+    let indent_end = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_end);
+    match rest.strip_prefix("- [/]") {
+        Some(tail) => format!("{indent}- [ ]{tail}"),
+        None => line.to_string(),
+    }
+}
+
 /// Stamp a task line with an up-to-date `(Nd) <!-- since:DATE -->`.
 /// - If the line already has a `since:` origin, recompute the day count from it.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
-/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped.
+/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped;
+/// an in-progress `[/]` checkbox is reset to `[ ]` (status is a same-day signal).
 /// Non-task lines pass through unchanged.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
     }
     // Lift any priority tag(s) off the whole line first so the stamp lands in front of
-    // the single canonical tag rather than behind a buried one.
-    let (core, prio) = split_priority(line);
+    // the single canonical tag rather than behind a buried one; drop the in-progress mark.
+    let line = reset_status(line);
+    let (core, prio) = split_priority(&line);
     let stamped = match find_since(&core) {
         Some(date) => {
             let comment_start = core.find("<!--").unwrap_or(core.len());
@@ -545,6 +586,25 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("notes-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("2026-07-18.md");
+        std::fs::write(&note, "old\n").unwrap();
+
+        write_atomic(&note, "new content\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "new content\n");
+
+        // No `.<name>.<pid>.tmp` sibling is left behind after a successful rename.
+        let leftover = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!leftover, "atomic write left a temp file behind");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     const NOTE: &str = "\
@@ -718,6 +778,20 @@ after
             out,
             "- [ ] get androids onto fleet (1d) <!-- since:2026-07-13 --> #low"
         );
+    }
+
+    #[test]
+    fn stamp_resets_in_progress_checkbox() {
+        // An in-progress task carried to the next day reverts to an open todo, but
+        // keeps its priority tag (which does carry).
+        let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(
+            out,
+            "- [ ] wire it up (1d) <!-- since:2026-07-14 --> #high"
+        );
+        // Indentation on a nested task is preserved.
+        let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
+        assert_eq!(nested, "  - [ ] sub-step (1d) <!-- since:2026-07-14 -->");
     }
 
     #[test]

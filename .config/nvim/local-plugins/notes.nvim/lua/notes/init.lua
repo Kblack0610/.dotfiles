@@ -316,6 +316,13 @@ function M.setup()
   vim.keymap.set("n", "<leader>np", function()
     require("notes.projects").pick()
   end, { desc = "Find notes by project" })
+  -- Task cockpit — reachable as <leader>nc (notes group) and <leader>tc (tasks
+  -- group; one-handed). Both open the same global cross-profile cockpit.
+  local open_cockpit = function()
+    require("notes.cockpit").open()
+  end
+  vim.keymap.set("n", "<leader>nc", open_cockpit, { desc = "Task cockpit (all profiles + projects)" })
+  vim.keymap.set("n", "<leader>tc", open_cockpit, { desc = "Task cockpit (all profiles + projects)" })
 
   -- Make `gf` follow [[wikilinks]] under ~/.notes. The `notes` CLI writes links
   -- relative to the ACTIVE PROFILE ROOT: a personal note links vault-root-relative

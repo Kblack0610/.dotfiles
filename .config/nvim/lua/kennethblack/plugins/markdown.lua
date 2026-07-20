@@ -22,7 +22,7 @@ return {
       -- <leader>nt, greppable via `notes tags urgent`) and they never collide
       -- with markdown `# headings` (which are line-start only).
       --   Cycle order: (none) -> #low -> #high -> #urgent -> (none)
-      --   Keymap:      <leader>tp  (sibling of <leader>t checkbox toggle)
+      --   Keymap:      <leader>tp  (sibling of <leader>ts / <leader>tt)
       local PRIORITIES = { "low", "high", "urgent" }
 
       -- Return (base_without_tag, current_level_or_nil): strip a trailing
@@ -72,22 +72,136 @@ return {
       vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
 
-      -- Toggle markdown task checkboxes: `- [ ]` <-> `- [x]`.
-      -- Operates on the current line (normal) or every line in the visual
-      -- selection (visual). Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
-      local function toggle_checkbox(line1, line2)
-        for lnum = line1, line2 do
-          local line = vim.fn.getline(lnum)
-          local toggled
-          if line:match "%[ %]" then
-            toggled = line:gsub("%[ %]", "[x]", 1)
-          elseif line:match "%[[xX]%]" then
-            toggled = line:gsub("%[[xX]%]", "[ ]", 1)
-          end
-          if toggled then
-            vim.fn.setline(lnum, toggled)
+      -- Task status = the checkbox state. `<leader>ts` cycles it:
+      --   [ ] todo -> [/] in progress -> [x] done -> [ ] todo
+      -- `[/]` is a SAME-DAY signal: the `notes` CLI resets it to `[ ]` on the next
+      -- daily carry (stamp_line/reset_status), so only the open todo + its priority
+      -- tag survive overnight. Finishing a Focus task also files it under a
+      -- `--- / ### Done` block at the foot of the section (see sweep_focus below).
+      -- Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
+      local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
+      local STATUS_PAT = "%[[ /xX]%]"
+
+      -- Pure rebuild of the `## Focus` body: active tasks stay on top, finished ones
+      -- (`[x]`) collect under a `--- / ### Done` block, the single empty `- [ ]`
+      -- placeholder is kept last among the active items. `nil` means "nothing to
+      -- do" (no done task and no existing Done block). Idempotent.
+      local function rebuild_focus_body(body)
+        local active, done, placeholder, had_scaffold = {}, {}, nil, false
+        for _, l in ipairs(body) do
+          if l:match "^###%s+Done%s*$" or l:match "^%-%-%-%s*$" then
+            had_scaffold = true
+          elseif l:match "^%s*%- %[[xX]%]" then
+            done[#done + 1] = l
+          elseif l:match "^%s*%- %[ %]%s*$" then
+            placeholder = l
+          elseif l:match "%S" then
+            active[#active + 1] = l
           end
         end
+        if #done == 0 and not had_scaffold then
+          return nil
+        end
+        local out = {}
+        for _, l in ipairs(active) do
+          out[#out + 1] = l
+        end
+        out[#out + 1] = placeholder or "- [ ] "
+        if #done > 0 then
+          out[#out + 1] = ""
+          out[#out + 1] = "---"
+          out[#out + 1] = "### Done"
+          for _, l in ipairs(done) do
+            out[#out + 1] = l
+          end
+        end
+        return out
+      end
+
+      -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
+      -- section is rewritten; everything else is passed through untouched.
+      local function sweep_focus(lines)
+        local s
+        for i, l in ipairs(lines) do
+          if l:match "^##%s+Focus%s*$" then
+            s = i
+            break
+          end
+        end
+        if not s then
+          return lines, false
+        end
+        local e = #lines + 1
+        for i = s + 1, #lines do
+          if lines[i]:match "^##%s" then
+            e = i
+            break
+          end
+        end
+        local body = {}
+        for i = s + 1, e - 1 do
+          body[#body + 1] = lines[i]
+        end
+        while #body > 0 and body[#body]:match "^%s*$" do
+          table.remove(body)
+        end
+        local rebuilt = rebuild_focus_body(body)
+        if not rebuilt then
+          return lines, false
+        end
+        rebuilt[#rebuilt + 1] = "" -- one blank line before the next section / EOF
+        local out = {}
+        for i = 1, s do
+          out[#out + 1] = lines[i]
+        end
+        for _, l in ipairs(rebuilt) do
+          out[#out + 1] = l
+        end
+        for i = e, #lines do
+          out[#out + 1] = lines[i]
+        end
+        return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
+      end
+
+      -- Apply sweep_focus to the current buffer, restoring the cursor row.
+      local function file_focus_done()
+        local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+        local out, changed = sweep_focus(lines)
+        if not changed then
+          return
+        end
+        local cur = vim.api.nvim_win_get_cursor(0)
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
+        local row = math.min(cur[1], vim.api.nvim_buf_line_count(0))
+        pcall(vim.api.nvim_win_set_cursor, 0, { row, cur[2] })
+      end
+
+      -- Cycle checkbox status on a range. The next state is computed from the FIRST
+      -- line and applied to every line, so a visual selection converges to one state.
+      -- After the change, finished Focus tasks are filed under the Done block.
+      local function cycle_status(line1, line2)
+        local first = vim.fn.getline(line1):match(STATUS_PAT)
+        if not first then
+          return
+        end
+        local nxt = STATUS_NEXT[first]
+        for lnum = line1, line2 do
+          local line = vim.fn.getline(lnum)
+          if line:match(STATUS_PAT) then
+            vim.fn.setline(lnum, (line:gsub(STATUS_PAT, nxt, 1)))
+          end
+        end
+        file_focus_done()
+      end
+
+      -- Open a fresh `- [ ] ` task below the cursor (indentation-matched) and drop
+      -- into insert mode at its end.
+      local function new_task_below()
+        local lnum = vim.api.nvim_win_get_cursor(0)[1]
+        local indent = vim.fn.getline(lnum):match "^%s*" or ""
+        vim.fn.append(lnum, indent .. "- [ ] ")
+        vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
+        vim.cmd "startinsert!"
       end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
@@ -115,16 +229,23 @@ return {
             "<CMD>RenderMarkdown disable<CR>",
             { desc = "Markdown disable", silent = true }
           )
-          -- Task checkbox toggle: current line (normal) / selection (visual).
-          vim.keymap.set("n", "<leader>t", function()
+          -- Task ops, all under the `<leader>t` (tasks) group:
+          --   ts  status cycle   [ ] -> [/] -> [x] -> [ ]
+          --   tt  new task below
+          --   tp  priority cycle #low -> #high -> #urgent -> (none)
+          -- Current line (normal) / selection (visual).
+          vim.keymap.set("n", "<leader>ts", function()
             local lnum = vim.api.nvim_win_get_cursor(0)[1]
-            toggle_checkbox(lnum, lnum)
-          end, { buffer = buf, desc = "Toggle task checkbox", silent = true })
-          vim.keymap.set("x", "<leader>t", function()
-            -- Leave visual mode so '< and '> marks are set, then toggle the range.
+            cycle_status(lnum, lnum)
+          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
+          vim.keymap.set("x", "<leader>ts", function()
+            -- Leave visual mode so '< and '> marks are set, then cycle the range.
             vim.cmd "normal! \27"
-            toggle_checkbox(vim.fn.line "'<", vim.fn.line "'>")
-          end, { buffer = buf, desc = "Toggle task checkbox(es)", silent = true })
+            cycle_status(vim.fn.line "'<", vim.fn.line "'>")
+          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
+
+          -- New task below the cursor.
+          vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
 
           -- Task priority cycle: current line (normal) / selection (visual).
           vim.keymap.set("n", "<leader>tp", function()
