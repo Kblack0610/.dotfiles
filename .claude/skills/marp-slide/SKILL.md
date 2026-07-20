@@ -131,7 +131,9 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 4. **Apply template**
    - Load appropriate template from `assets/`
-   - CSS is already embedded - no external files needed
+   - Each template sets `theme: kb-<name>` in frontmatter; the matching CSS lives in
+     `assets/themes/theme-<name>.css` and is applied at render time by the `deck` CLI
+     (or `marp --theme-set assets/themes`). Templates no longer embed a `<style>` block.
    - Maintain template structure
 
 5. **Structure content**
@@ -156,16 +158,61 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
    - Use descriptive filename like `presentation.md`
 
 9. **Render & verify** (built-in quality gate)
-   - If `marp` (marp-cli) is on PATH, render and check it renders clean:
-     `marp presentation.md -o presentation.pdf` (use `--html` for an HTML preview)
+   - Prefer the global **`deck`** CLI — it auto-injects the kb-* theme-set so the deck
+     renders styled from any directory: `deck build presentation.md` (PDF), or
+     `deck watch presentation.md` for a live-reloading preview server. See the
+     "Global `deck` CLI" section below.
+   - Raw marp works too, but you MUST pass the theme-set for kb-* themes to resolve:
+     `marp presentation.md -o presentation.pdf --theme-set ~/.claude/skills/marp-slide/assets/themes`
+     (add `--html` for an HTML preview).
    - Watch marp-cli output for overflow / content-bleed warnings, and confirm no slide
      spills past its frame. If a slide overflows, split it — don't shrink the font.
-   - If marp-cli is **not** installed, print the install hint and skip rendering — do
-     not fail the task. Install, most to least portable: macOS `brew install marp-cli`;
-     any OS with Node `npm install -g @marp-team/marp-cli`; one-off/CI `npx -y
-     @marp-team/marp-cli@4 slides.md -o slides.pdf`; container/CI `docker run --rm
-     -v "$PWD":/home/marp/app marpteam/marp-cli slides.md -o slides.pdf`.
+   - If neither `deck` nor `marp` is installed, print the install hint and skip
+     rendering — do not fail the task. Install, most to least portable: macOS
+     `brew install marp-cli`; any OS with Node `npm install -g @marp-team/marp-cli`;
+     one-off/CI `npx -y @marp-team/marp-cli@4 ...`; container/CI
+     `docker run --rm -v "$PWD":/home/marp/app marpteam/marp-cli ...`.
      PDF/PPTX export needs Chrome/Chromium present (the Docker image bundles it).
+
+## Global `deck` CLI
+
+`deck` (on PATH via `~/.local/bin/deck`) is a thin, cross-machine wrapper around
+marp-cli that auto-injects this skill's theme-set (`--theme-set assets/themes`), so
+decks render fully styled from **any** directory — no per-project code repo needed. It
+is the portable generalization of the fleet-platform `pnpm deck:build`/`deck:watch`.
+
+```
+deck new      <name> [--theme NAME] [--dir DIR]  Scaffold from a template into DECK_HOME
+deck watch    [TARGET] [--port N]                 Live-reloading preview server (view it here)
+deck build    [TARGET] [--format pdf|html|pptx]   Render deck(s) (renders diagrams first)
+deck diagrams [TARGET]                            Render sibling .mmd/.d2 -> .svg
+deck list     [DIR]                               List Marp decks in a directory
+deck themes                                        List available kb-* themes
+deck doctor                                        Check the toolchain on this machine
+```
+
+- **TARGET** may be empty (uses `DECK_HOME`), a file, a directory (renders every
+  `marp: true` deck in it), or a bare deck name resolved under `DECK_HOME`.
+- **Theme names** accept the bare or prefixed form (`tech` == `kb-tech`).
+- **Deck home**: `DECK_HOME` (default `~/.notes/lab/decks`), so decks ride the notes
+  vault sync across machines. Override with `--dir` or `$DECK_HOME`.
+- **View it**: `deck watch <name>` starts a marp server at `http://localhost:8088/`
+  (port via `--port`/`$PORT`) and serves the deck at `/<name>.md` with live reload.
+- Renders with `marp` if present, else `npx --yes @marp-team/marp-cli@4`. PDF/PPTX/PNG
+  export needs a system Chrome/Chromium (`CHROME_PATH` if not auto-detected); the HTML
+  `deck watch` server needs no browser.
+- **Diagrams**: author diagrams as editable text *next to* the deck and embed the
+  rendered SVG — either Mermaid (`arch.mmd`, rendered by `mmdc`) or D2 (`arch.d2`,
+  rendered by `d2`; the fleet-manager convention). `deck build` runs `deck diagrams`
+  first automatically (opt out with `--no-diagrams`). In the deck reference the output
+  SVG: `![w:640](arch.svg)`. So the flow is: agent writes `deck.md` + `arch.mmd`/`arch.d2`,
+  `deck build` renders diagrams->SVG then the deck, and you edit either the slide text
+  or the diagram source and re-run. Mermaid needs Chrome (like PDF); D2 does not.
+- **`deck doctor`** reports what is present/missing on the current machine (marp, mmdc,
+  d2, a browser, the theme-set, DECK_HOME) with an install hint per missing tool.
+
+When authoring for a user who just wants slides fast, still write the `.md` (theme by
+name), then offer `deck watch <name>` to preview and `deck build <name>` to export.
 
 ## Handling "Make It Look Good" Requests
 
@@ -221,13 +268,19 @@ Save the final Marp file to the current working directory (or a path the user sp
 - `seminar-slides.md`
 - `lecture-materials.md`
 
-If the user wants to render to PDF/HTML/PPTX, they need `marp-cli` (macOS `brew install marp-cli`; any OS with Node `npm install -g @marp-team/marp-cli`; no-install `npx -y @marp-team/marp-cli@4`; container `docker run --rm -v "$PWD":/home/marp/app marpteam/marp-cli`) or the Marp VS Code extension. PDF/PPTX export needs Chrome/Chromium present.
+To render or preview, prefer `deck build <name>` / `deck watch <name>` (see "Global
+`deck` CLI"). Under the hood this needs `marp-cli` (macOS `brew install marp-cli`; any
+OS with Node `npm install -g @marp-team/marp-cli`; no-install `npx -y
+@marp-team/marp-cli@4`; container `docker run --rm -v "$PWD":/home/marp/app
+marpteam/marp-cli`) or the Marp VS Code extension. PDF/PPTX export needs Chrome/Chromium
+present. On a fresh machine, `marp-cli` is provisioned cross-OS (packages.conf
+`NPM_PACKAGES`, or the Brewfile on macOS).
 
 ## Quality Checklist
 
 Before delivering slides, verify:
 - [ ] Theme selected appropriately for content
-- [ ] CSS theme is embedded in the file
+- [ ] Frontmatter sets `theme: kb-<name>` matching a theme in `assets/themes/`
 - [ ] Title slide uses `<!-- _class: lead -->`
 - [ ] All h2 titles are concise (short noun phrase, ~2–6 words)
 - [ ] Bullet points are 3-5 items per slide, one line each
@@ -250,8 +303,8 @@ Before delivering slides, verify:
 - **Best practices**: `references/best-practices.md` - Quality guidelines for "cool" slides
 
 ### Templates & Assets
-- **Templates**: `assets/template-*.md` - Starting points with embedded CSS for each theme (7 themes)
-- **Standalone CSS**: `assets/theme-*.css` - CSS files for reference (already embedded in templates)
+- **Templates**: `assets/template-*.md` - Starting points for each theme (7 themes); each sets `theme: kb-<name>` in frontmatter (no embedded `<style>` block)
+- **Theme-set**: `assets/themes/theme-*.css` - the standalone Marp themes (`/* @theme kb-<name> */`), the single source of truth for styling, applied via the `deck` CLI or `marp --theme-set assets/themes`
 
 ### Official External Links
 - **Marp Official Site**: https://marp.app/
