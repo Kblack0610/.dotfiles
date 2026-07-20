@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# dotfiles-overlay-link - attach the private overlay (~/.dotfiles-private) onto a
+# box that uses the FOLDED stow layout for the public repo (~/.dotfiles).
+#
+# Why this exists:
+#   The public repo is stowed into ~ (folded). Anything moved into the private
+#   overlay after the public/private split leaves behind a symlink that still
+#   points at the (now-empty) public path. When `stow` runs from the overlay it
+#   refuses to replace those pre-existing links - it calls them conflicts and
+#   silently skips ("review manually") - so the private half never attaches and
+#   ~/.config/smug, ~/.local/bin/agent-notify, etc. dangle.
+#
+#   This repoints every dead link straight at the overlay. It is idempotent and
+#   SAFE: it only ever touches a link that is missing or dangling, and never
+#   overwrites a real file or a link that already resolves. See
+#   ~/.agent/lessons/dotfiles.md ("folded WSL box + private overlay").
+set -u
+
+OVL="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+if [ ! -d "$OVL" ]; then
+  echo "dotfiles-overlay-link: no overlay at $OVL; nothing to do"
+  exit 0
+fi
+
+# Immediate children of these overlay dirs get linked to the same path under $HOME.
+# (~/.local/src is itself a folded symlink into the public tree, so linking a
+# child there naturally nests the overlay dir inside the gitignored public tree,
+# which is what the committed .local/bin/{ticket,...} symlinks resolve through.)
+ROOTS=(.config .local/bin .local/src .local/share .ssh .bin)
+
+# Never touch these: machine-local runtime state, or attached by another mechanism.
+#   fleet-pulse -> machine-local .config/fleet-pulse/env must not be clobbered
+#   launchd     -> macOS-only, inert on Linux
+#   .claude     -> overlay .claude content is attached via nested symlinks already
+#   *.log,/env  -> runtime state
+SKIP_RE='(^|/)(fleet-pulse|launchd|\.claude)(/|$)|\.log$|/env$'
+
+changed=0
+heal() { # $1 = path relative to $HOME
+  local rel="$1" dst="$HOME/$1" src="$OVL/$1"
+  printf '%s\n' "$rel" | grep -qE "$SKIP_RE" && return 0
+  [ -e "$src" ] || return 0                      # overlay does not provide it
+  [ -e "$dst" ] && [ ! -L "$dst" ] && return 0   # real file/dir present: leave it
+  [ -e "$dst" ] && return 0                       # symlink already resolves: leave it
+  mkdir -p "$(dirname "$dst")"
+  ln -sfn "$src" "$dst"                            # missing or dangling: attach
+  echo "  linked $rel -> overlay"
+  changed=$((changed + 1))
+}
+
+for root in "${ROOTS[@]}"; do
+  [ -d "$OVL/$root" ] || continue
+  for child in "$OVL/$root"/*; do
+    [ -e "$child" ] || continue
+    heal "$root/$(basename "$child")"
+  done
+done
+
+# Root-level single files the overlay provides.
+for f in .k8s-rc; do heal "$f"; done
+
+if [ "$changed" -eq 0 ]; then
+  echo "dotfiles-overlay-link: already in sync"
+else
+  echo "dotfiles-overlay-link: attached $changed link(s)"
+fi

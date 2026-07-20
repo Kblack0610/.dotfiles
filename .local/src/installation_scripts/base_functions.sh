@@ -420,6 +420,13 @@ apply_dotfiles() {
     # stow tree-folding a whole dir into one symlink and blocking the overlay.
     stow --no-folding .
 
+    # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
+    # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
+    # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
+    timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
+        submodule update --init --recursive 2>/dev/null \
+        || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
+
     # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
@@ -456,7 +463,14 @@ setup_dotfiles_private() {
     if ( cd "$PRV" && stow --no-folding --target="$HOME" . ); then
         log_info "Private overlay applied"
     else
-        log_warning "Private overlay stow reported conflicts; review manually"
+        log_warning "Private overlay stow reported conflicts (expected on a folded box); reconciling links directly"
+    fi
+
+    # stow silently skips any overlay path that a pre-existing (public-pointing)
+    # symlink already occupies, so on a folded box it attaches nothing. Repoint the
+    # dead links straight at the overlay - idempotent, only touches broken links.
+    if [ -x "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" ]; then
+        "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" || true
     fi
 }
 

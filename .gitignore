@@ -205,9 +205,9 @@ test_notifications.sh
 .config/firefox/bookmarks/
 .config/firefox/simpletabgroups/
 .config/firefox/policies.vdi.json
-.local/src/ticket/
-.local/src/notes-vikunja/
-.local/src/meeting-notes/
+.local/src/ticket
+.local/src/notes-vikunja
+.local/src/meeting-notes
 # personal MCP config + agent/notes tooling kept in place but private-overlaid
 .claude/.mcp.json
 .config/launchd/

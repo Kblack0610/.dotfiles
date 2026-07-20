@@ -224,6 +224,13 @@ EOF
 
     stow .
 
+    # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
+    # don't dangle. Force HTTPS + gh credential (SSH:22 is blocked on WSL, which
+    # hangs the SSH submodule URLs), cap the time, fail-soft.
+    timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
+        submodule update --init --recursive 2>/dev/null \
+        || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
+
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
 
@@ -272,6 +279,7 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
+    setup_dotfiles_private   # attach the private overlay (~/.dotfiles-private) on top
     setup_ai_memory
 
     setup_notes_sync

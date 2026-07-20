@@ -1,1 +1,1 @@
-../../tools/claude-wrapper/bin/claude-notify
+../src/claude-wrapper/bin/claude-notify

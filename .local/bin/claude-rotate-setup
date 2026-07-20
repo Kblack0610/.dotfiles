@@ -1,1 +1,1 @@
-../../tools/claude-wrapper/bin/claude-rotate-setup
+../src/claude-wrapper/bin/claude-rotate-setup
