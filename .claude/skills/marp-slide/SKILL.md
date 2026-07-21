@@ -201,13 +201,12 @@ deck doctor                                        Check the toolchain on this m
 - Renders with `marp` if present, else `npx --yes @marp-team/marp-cli@4`. PDF/PPTX/PNG
   export needs a system Chrome/Chromium (`CHROME_PATH` if not auto-detected); the HTML
   `deck watch` server needs no browser.
-- **Diagrams**: author diagrams as editable text *next to* the deck and embed the
-  rendered SVG — either Mermaid (`arch.mmd`, rendered by `mmdc`) or D2 (`arch.d2`,
-  rendered by `d2`; the fleet-manager convention). `deck build` runs `deck diagrams`
-  first automatically (opt out with `--no-diagrams`). In the deck reference the output
-  SVG: `![w:640](arch.svg)`. So the flow is: agent writes `deck.md` + `arch.mmd`/`arch.d2`,
-  `deck build` renders diagrams->SVG then the deck, and you edit either the slide text
-  or the diagram source and re-run. Mermaid needs Chrome (like PDF); D2 does not.
+- **Diagrams**: the preferred method is a **hand-authored SVG** next to the deck -
+  the `.svg` file is the source (plain `<rect>`/`<text>`/`<path>`), so there is NO
+  render step and no `mmdc`/`d2` dependency. Embed it directly: `![w:900](arch.svg)`.
+  Edit the slide text or the `.svg` and re-run `deck build`. See
+  `references/handauthored-svg-diagrams.md` for the full convention and copy
+  `assets/example/architecture-layers.svg` as your template.
 - **`deck doctor`** reports what is present/missing on the current machine (marp, mmdc,
   d2, a browser, the theme-set, DECK_HOME) with an install hint per missing tool.
 
@@ -297,16 +296,17 @@ Before delivering slides, verify:
 - **Theme CSS guide**: `references/theme-css-guide.md` - How to create custom themes based on Marpit specification
 - **Advanced features**: `references/advanced-features.md` - Math, emoji, fragmented lists, Marp CLI, VS Code
 - **Official themes**: `references/official-themes.md` - default, gaia, uncover themes documentation
+- **Hand-authored SVG diagrams**: `references/handauthored-svg-diagrams.md` - the preferred diagram method: clean, diffable, theme-neutral SVGs authored by hand (layer bands, body cards, arrow semantics, palette, C4 altitude). Read before drawing any diagram.
 
 ### Quality & Selection Guides
 - **Theme selection**: `references/theme-selection.md` - How to choose the right theme for content
 - **Best practices**: `references/best-practices.md` - Quality guidelines for "cool" slides
-- **Deck workflow**: `references/deck-workflow.md` - The `deck` CLI loop, our conventions (theme-by-name, notes deck home, diagrams-as-text), and the gotchas (chrome, stdin, stow). Read before authoring/rendering.
+- **Deck workflow**: `references/deck-workflow.md` - The `deck` CLI loop, our conventions (theme-by-name, notes deck home, hand-authored SVG diagrams), and the gotchas (chrome, stdin, stow). Read before authoring/rendering.
 
 ### Templates & Assets
 - **Templates**: `assets/template-*.md` - Starting points for each theme (7 themes); each sets `theme: kb-<name>` in frontmatter (no embedded `<style>` block)
 - **Theme-set**: `assets/themes/theme-*.css` - the standalone Marp themes (`/* @theme kb-<name> */`), the single source of truth for styling, applied via the `deck` CLI or `marp --theme-set assets/themes`
-- **Worked example** (few-shot): `assets/example/` - a complete deck about the deck system (`deck-system.md`, `theme: kb-tech`) with a D2 diagram (`pipeline.d2` -> `pipeline.svg`) and a Mermaid diagram (`flow.mmd` -> `flow.svg`) embedded. Copy its shape when a deck needs diagrams. Build it: `deck build assets/example/deck-system.md`
+- **Worked example** (few-shot): `assets/example/` - a complete deck about the deck system (`deck-system.md`, `theme: kb-tech`) that embeds a **hand-authored SVG** (`architecture-layers.svg`, a clean three-tier layered diagram) directly, no render step. Copy its shape when a deck needs diagrams. Build it: `deck build assets/example/deck-system.md`
 
 ### Official External Links
 - **Marp Official Site**: https://marp.app/
