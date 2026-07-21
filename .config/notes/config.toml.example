@@ -83,8 +83,14 @@ inbox     = "inbox"
 # so accounts are defined once. See the private `comms` skill's SETUP.md for P0.
 # [comms]
 # state_dir    = "~/.local/state/notes-comms"   # dedup ledger + surface files (runtime)
-# ollama_url   = "http://127.0.0.1:11434"       # local model for tier-2 classify
-# ollama_model = "qwen3-coder:30b"
+# llm_base_url = "https://<your-llm-gateway>/v1" # OpenAI-compatible gateway (e.g. LiteLLM)
+# llm_model    = "fast (Qwen3-4B)"              # tier-2 classify model
+# llm_key_rbw  = "litellm_comms_triage_key"     # rbw ITEM NAME, not the key itself
+#
+# Point llm_base_url at a GATEWAY, never at a model host by IP -- hardcoded
+# host:port is what rots when a backend is swapped. The key it names must be
+# scoped to local models only, so mail can never be routed to a paid/cloud
+# upstream by a typo in llm_model (the gateway rejects it server-side).
 #
 # One [[comms.account]] per mailbox. rbw_entry defaults to gmail_oauth_<name>.
 # [[comms.account]]
