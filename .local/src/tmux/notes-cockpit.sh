@@ -176,6 +176,27 @@ add_task() {
   [ -n "${text// /}" ] && notes --profile "$profile" focus add "${prefix}${text}"
 }
 
+# ── move a task between sections (personal / work profile / project) ──
+# A job section IS a profile; a project section is a `<project>:` prefix on a personal
+# task. `focus mv` handles both, carrying the task's original age across the move.
+move_task() { # $1=row section  $2=row profile  $3=row key
+  local section="${1:-}" profile="${2:-}" key="${3:-}" dest
+  if [ -z "$key" ] || [ -z "$profile" ]; then
+    echo "not on a task row"; sleep 1; return 0
+  fi
+  dest="$( {
+      echo personal
+      notes config --profiles 2>/dev/null | grep -vx personal | sed 's|^|work/|'
+      notes projects 2>/dev/null | cut -f1 | sed 's|^|projects/|'
+    } | grep -vxF "$section" | fzf --prompt='move to > ' --height=100% --reverse )" || return 0
+  [ -z "$dest" ] && return 0
+  case "$dest" in
+    personal) notes --profile "$profile" focus mv "$key" --to personal --untag ;;
+    work/*) notes --profile "$profile" focus mv "$key" --to "${dest#work/}" --untag ;;
+    projects/*) notes --profile "$profile" focus mv "$key" --to personal --tag "${dest#projects/}" ;;
+  esac
+}
+
 # ── project lifecycle (create / archive / restore), via the notes CLI ──
 new_project() {
   local name
@@ -216,6 +237,7 @@ case "${1:-}" in
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
+  --move) shift; move_task "$@"; exit 0 ;;
   --new-project) new_project; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project; exit 0 ;;
@@ -225,10 +247,10 @@ command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
 echo all > "$STATE" # every launch starts on the all-tasks view
-HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   n/A/R project   T today   q quit'
+HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   m move   n/A/R project   T today   q quit'
 # modal nav: the printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
-MODAL='j,k,h,l,i,q,n,A,R,T,1,2,3,4'
+MODAL='j,k,h,l,i,q,m,n,A,R,T,1,2,3,4'
 
 # start in --no-input (browse) mode: no query box, hjkl navigate, i enters search.
 list_section all | fzf \
@@ -257,6 +279,7 @@ list_section all | fzf \
   --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
+  --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project)+reload($SELF --list)+refresh-preview" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project)+reload($SELF --list)+refresh-preview" \

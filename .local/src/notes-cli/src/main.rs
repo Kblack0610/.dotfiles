@@ -12,6 +12,7 @@ mod config;
 mod daily;
 mod doctor;
 mod focus;
+mod focus_move;
 mod inbox;
 mod index;
 mod logging;
@@ -173,7 +174,11 @@ enum Cmd {
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor,
     /// Print the resolved profile + paths
-    Config,
+    Config {
+        /// List every configured profile name instead
+        #[arg(long)]
+        profiles: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -201,6 +206,21 @@ enum FocusCmd {
         /// A word (or two) from the task to close
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+    },
+    /// Move a task to another profile and/or re-tag its project
+    Mv {
+        /// A word (or two) from the task to move
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Destination profile (default: stay in the current one)
+        #[arg(long)]
+        to: Option<String>,
+        /// Set the project tag (prefix), replacing any existing one
+        #[arg(long)]
+        tag: Option<String>,
+        /// Remove the project tag
+        #[arg(long)]
+        untag: bool,
     },
     /// Delete the first open item whose text matches (removes the line entirely)
     Rm {
@@ -345,6 +365,9 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
                     Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
                     Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Mv { query, to, tag, untag }) => focus_move::mv(
+                        &prof, &log, &query.join(" "), to.as_deref(), tag.as_deref(), untag,
+                    )?,
                 }
             }
         }
@@ -415,11 +438,17 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Doctor => doctor::run(&prof, &log)?,
-        Cmd::Config => {
-            config::print(&prof);
-            if let Ok(c) = config::comms_config() {
-                if !c.accounts.is_empty() {
-                    config::print_comms(&c);
+        Cmd::Config { profiles } => {
+            if profiles {
+                for name in config::all_profile_names()? {
+                    println!("{name}");
+                }
+            } else {
+                config::print(&prof);
+                if let Ok(c) = config::comms_config() {
+                    if !c.accounts.is_empty() {
+                        config::print_comms(&c);
+                    }
                 }
             }
             0
