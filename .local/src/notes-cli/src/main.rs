@@ -146,6 +146,18 @@ enum Cmd {
         /// List archived projects instead of the current ones
         #[arg(long)]
         archived: bool,
+        /// Start the next version's note for a project (seeds v0.0.1 when it has none)
+        #[arg(long, value_name = "NAME")]
+        bump: Option<String>,
+        /// With --bump: step the minor (v0.1.2 -> v0.2.0)
+        #[arg(long)]
+        minor: bool,
+        /// With --bump: step the major (v0.1.2 -> v1.0.0)
+        #[arg(long)]
+        major: bool,
+        /// Print a project's current version
+        #[arg(long, value_name = "NAME")]
+        version_of: Option<String>,
     },
     /// Surface multi-account email triage into the daily note's `## Comms` section.
     /// No subcommand = list the currently-surfaced items for the active profile.
@@ -350,14 +362,25 @@ fn main() -> Result<()> {
             }
             0
         }
-        Cmd::Projects { name, new, archive, restore, archived } => {
-            // lifecycle flags take precedence over the read paths
-            match (new, archive, restore, archived, name) {
+        Cmd::Projects {
+            name, new, archive, restore, archived, bump, minor, major, version_of,
+        } => {
+            let level = if major {
+                projects::Bump::Major
+            } else if minor {
+                projects::Bump::Minor
+            } else {
+                projects::Bump::Patch
+            };
+            // lifecycle/version flags take precedence over the read paths
+            match (new, archive, restore, bump, version_of, archived, name) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
-                (_, _, _, true, _) => projects::list_archived(&prof)?,
-                (_, _, _, _, Some(n)) => projects::show(&prof, &n)?,
+                (_, _, _, Some(n), ..) => projects::bump(&prof, &log, &n, level)?,
+                (_, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
+                (_, _, _, _, _, true, _) => projects::list_archived(&prof)?,
+                (_, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
                 _ => projects::list(&prof)?,
             }
             0
