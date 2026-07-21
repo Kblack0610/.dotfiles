@@ -71,7 +71,9 @@ emit_tasks() {
     local section clean
     # strip the checkbox + <!-- since --> comment FIRST, then classify on the clean text
     # so a leading `prefix:` (pmp:, home-config:) is at the start of the string.
-    clean="$(printf '%s' "$text" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ xX]\] //')"
+    # `/` is the in-progress state (the editor's <leader>t cycle) and is a genuine open
+    # task, so it must strip like ` `/`x` — otherwise the row renders as "[ ] - [/] text".
+    clean="$(printf '%s' "$text" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
     section="$(classify "$clean" "$profile" "$PROJECTS_LC")"
     printf 'task\t%s\t%s\t%s\t%s\t%s\t%s\n' "$profile" "$file" "$line" "$key" "$section" "$clean"
   done
@@ -98,6 +100,23 @@ _work_groups() { # $1=rows — one header per distinct work/<profile>
   names="$(printf '%s\n' "$1" | awk -F'\t' '$6 ~ /^work\// { sub(/^work\//,"",$6); print $6 }' | sort -u)"
   while IFS= read -r n; do [ -n "$n" ] && _group "$1" "work/$n" "$n"; done <<< "$names"
 }
+# The projects VIEW lists EVERY lab project (from `notes projects`), even empty ones,
+# with a selectable placeholder so C-a can add to a project that has no tasks yet.
+_all_projects() { # $1=rows
+  local n lc body
+  notes projects 2>/dev/null | cut -f1 | while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
+    _header "$n"
+    body="$(_flat "$1" "projects/$lc")"
+    if [ -n "$body" ]; then
+      printf '%s\n' "$body"
+    else
+      # placeholder row: selectable (type=add), carries the section so C-a targets it
+      printf 'add\t\t\t\t\tprojects/%s\t%s(no tasks — C-a to add)%s\n' "$lc" "$C_DIM" "$C_OFF"
+    fi
+  done
+}
 
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
@@ -108,7 +127,7 @@ list_section() {
       _work_groups "$rows"
       _project_groups "$rows"
       ;;
-    projects) _project_groups "$rows" ;;
+    projects) _all_projects "$rows" ;;
     work) _work_groups "$rows" ;;
     personal) _flat "$rows" "$want" ;;
     *) _flat "$rows" "$want" ;;
@@ -129,7 +148,6 @@ rail() {
       printf '  %-9s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
     fi
   done
-  printf '\n%s 1-4 / Tab%s\n%s to switch%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
 }
 
 _cycle_section() { # $1 = +1 (next) or -1 (prev)
