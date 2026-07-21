@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
-# notes-cockpit.sh — a native fzf task cockpit over EVERY notes profile + projects,
-# organized into navigable SECTIONS (all / personal / work / projects).
-#   work = any non-personal (job) profile, grouped per profile.
+# notes-cockpit.sh — a native fzf task cockpit over every notes profile + its projects.
+#
+# SECTIONS ARE PROFILES. Each profile (personal + every job) is its own section, and a
+# profile's own projects are nested inside it — because projects are per-profile in the
+# vault (each profile config points at its own `projects/current` root). So the sidebar
+# reads `all / personal / <job> / <job>`, and drilling into one shows that context's
+# untagged tasks followed by a group per project.
 #
 # Same practice as agent-panel / sessionizer.sh: fzf + tmux stay the UI, the `notes`
 # Rust CLI stays the data + mutation core. NO editor hosts the picker, so Esc just
 # closes the popup. nvim opens ONLY when you deliberately press Enter to edit a line.
 #
-# Data:   `notes focus --all`  -> profile<TAB>file<TAB>line<TAB>key<TAB>text
-#         `notes projects`     -> name<TAB>summary<TAB>status   (project-name source)
-# Writes: `notes --profile <p> focus done|rm|add …`  (the vault-safe CLI verbs)
+# Data:   `notes focus --all`            -> profile<TAB>file<TAB>line<TAB>key<TAB>text
+#         `notes config --profiles`      -> the section list
+#         `notes --profile P projects`   -> that profile's projects
+# Writes: `notes --profile P focus add|done|rm|mv …`   (the vault-safe CLI verbs)
 #
-# Sections: a slim LEFT sidebar (the fzf preview pane) lists all/personal/machines/
-# projects with open counts + the active one marked. fzf has ONE selectable list, so
-# you switch sections with number keys 1-4 or Tab (the rail is the indicator); the
-# main list is the selectable, actionable task pane.
+# A task belongs to a project via a `<project>:` text prefix; a task belongs to a
+# profile by living in that profile's daily note. So `section` is `<profile>` for an
+# untagged task and `<profile>/<project>` for a tagged one, and moving a task is
+# `focus mv --to <profile> [--tag <project>|--untag]`.
 #
 # Row wire format (TAB-delimited), consumed by fzf with --with-nth=7..:
-#   1 type(task|head)  2 profile  3 file  4 line  5 key  6 section  7 DISPLAY(ANSI)
+#   1 type(task|head|add|hint)  2 profile  3 file  4 line  5 key  6 section  7 DISPLAY
 #
-# Modes: (no args)=UI · --list [section] · --rail · --next-section · --add · --jump
+# Modes: (no args)=UI · --list [section] · --rail · --next/prev-section · --add
+#        --move · --jump · --new-project · --archive-project · --restore-project
 
 set -uo pipefail
 SELF="$(realpath "$0")"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
-SECTIONS=(all personal work projects)
 # Optional machine-local prefix->project alias file (keeps private project names OUT of
 # this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
 # project name), so a `tag:` prefix classifies under that project.
@@ -36,79 +41,83 @@ alias_of() { # $1=prefix -> mapped project name (or nothing)
 }
 
 C_BOX=$'\033[36m'    # checkbox (cyan)
-C_HEAD=$'\033[1;37m' # group header (bold white)
+C_HEAD=$'\033[1;37m' # profile header (bold white)
+C_PROJ=$'\033[1;35m' # project sub-header (magenta)
 C_SEL=$'\033[1;32m'  # active section (bold green)
 C_DIM=$'\033[90m'    # dim
 C_OFF=$'\033[0m'
 
 read_section() { cat "$STATE" 2>/dev/null || echo all; }
 
-# ── classify one task's text into a section ─────────────────────────
-# Precedence: any non-personal (job) profile → work; then an explicit `prefix:` or a
-# keyword that matches a live project name (from `notes projects`) → projects; else
-# personal. Project/profile names are RUNTIME data — never hardcoded here.
+profiles() { notes config --profiles 2>/dev/null; }
+sections_list() { printf 'all\n'; profiles; } # the sidebar: all + one per profile
+
+# projects_of <profile> -> space-separated lowercase project names
+projects_of() {
+  notes --profile "$1" projects 2>/dev/null | cut -f1 | tr '[:upper:]' '[:lower:]' | tr '\n' ' '
+}
+
+# ── classify a task into `<profile>` or `<profile>/<project>` ───────
+# A leading `tag:` (optionally via the alias file) that names one of THAT PROFILE's
+# projects wins; else a bare mention of one of them; else the profile itself.
 classify() {
   local text="$1" profile="$2" projects_lc="$3" lc prefix p
-  [ "$profile" != "personal" ] && { echo "work/$profile"; return; }
   lc="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
   if [[ "$lc" =~ ^([a-z0-9_-]+): ]]; then
     prefix="${BASH_REMATCH[1]}"
-    local mapped; mapped="$(alias_of "$prefix")"    # short tag -> full project (machine-local)
+    local mapped; mapped="$(alias_of "$prefix")" # short tag -> full project name
     [ -n "$mapped" ] && prefix="$mapped"
-    for p in $projects_lc; do [ "$prefix" = "$p" ] && { echo "projects/$p"; return; }; done
-    echo "personal"; return
+    for p in $projects_lc; do [ "$prefix" = "$p" ] && { echo "$profile/$p"; return; }; done
+    echo "$profile"; return
   fi
-  for p in $projects_lc; do case "$lc" in *"$p"*) echo "projects/$p"; return ;; esac; done
-  echo "personal"
+  for p in $projects_lc; do case "$lc" in *"$p"*) echo "$profile/$p"; return ;; esac; done
+  echo "$profile"
 }
 
 # ── emit every open task as: type profile file line key section cleantext ──
 emit_tasks() {
-  local PROJECTS_LC
-  PROJECTS_LC="$(notes projects 2>/dev/null | cut -f1 | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+  # project lists are per-profile, so resolve them once up front
+  declare -gA PROJ_OF=()
+  local prof
+  while IFS= read -r prof; do
+    [ -n "$prof" ] && PROJ_OF["$prof"]="$(projects_of "$prof")"
+  done < <(profiles)
+
   notes focus --all 2>/dev/null | while IFS=$'\t' read -r profile file line key text; do
     [ -z "$profile" ] && continue
     local section clean
     # strip the checkbox + <!-- since --> comment FIRST, then classify on the clean text
-    # so a leading `prefix:` (pmp:, home-config:) is at the start of the string.
-    # `/` is the in-progress state (the editor's <leader>t cycle) and is a genuine open
-    # task, so it must strip like ` `/`x` — otherwise the row renders as "[ ] - [/] text".
+    # so a leading `prefix:` is at the start. `/` is the in-progress state and is still
+    # an open task, so it strips like ` `/`x`.
     clean="$(printf '%s' "$text" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
-    section="$(classify "$clean" "$profile" "$PROJECTS_LC")"
+    section="$(classify "$clean" "$profile" "${PROJ_OF[$profile]:-}")"
     printf 'task\t%s\t%s\t%s\t%s\t%s\t%s\n' "$profile" "$file" "$line" "$key" "$section" "$clean"
   done
 }
 
-# ── render helpers (final fzf rows: col7 = "[ ] text", headers are type=head) ──
+# ── render helpers (final rows: col7 = "[ ] text"; headers are type=head) ──
 _flat() { # $1=rows $2=exact-section
   printf '%s\n' "$1" | awk -F'\t' -v w="$2" -v b="$C_BOX" -v o="$C_OFF" \
     '$6==w { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s[ ]%s %s\n", $1,$2,$3,$4,$5,$6,b,o,$7 }'
 }
 _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_OFF"; }
-_group() { # $1=rows $2=exact-section $3=label — header only when non-empty
-  local body; body="$(_flat "$1" "$2")"
-  [ -z "$body" ] && return 0
-  _header "$3"; printf '%s\n' "$body"
-}
-_work_groups() { # $1=rows — one header per distinct work/<profile>
-  local names n
-  names="$(printf '%s\n' "$1" | awk -F'\t' '$6 ~ /^work\// { sub(/^work\//,"",$6); print $6 }' | sort -u)"
-  while IFS= read -r n; do [ -n "$n" ] && _group "$1" "work/$n" "$n"; done <<< "$names"
-}
-# The projects VIEW lists EVERY lab project (from `notes projects`), even empty ones,
-# with a selectable placeholder so C-a can add to a project that has no tasks yet.
-_all_projects() { # $1=rows
-  local n lc body
-  notes projects 2>/dev/null | cut -f1 | while IFS= read -r n; do
+_subheader() { printf 'head\t\t\t\t\t\t%s  %s%s\n' "$C_PROJ" "$1" "$C_OFF"; }
+
+# One profile's view: its untagged tasks, then a group per project (empty projects get
+# a selectable placeholder so C-a / m can target them).
+_profile_view() { # $1=rows $2=profile
+  local rows="$1" prof="$2" n lc body
+  _flat "$rows" "$prof"
+  notes --profile "$prof" projects 2>/dev/null | cut -f1 | while IFS= read -r n; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
-    _header "$n"
-    body="$(_flat "$1" "projects/$lc")"
+    _subheader "$n"
+    body="$(_flat "$rows" "$prof/$lc")"
     if [ -n "$body" ]; then
       printf '%s\n' "$body"
     else
-      # placeholder row: selectable (type=add), carries the section so C-a targets it
-      printf 'add\t\t\t\t\tprojects/%s\t%s(no tasks — C-a to add)%s\n' "$lc" "$C_DIM" "$C_OFF"
+      printf 'add\t%s\t\t\t\t%s/%s\t%s  (no tasks — C-a to add)%s\n' \
+        "$prof" "$prof" "$lc" "$C_DIM" "$C_OFF"
     fi
   done
 }
@@ -122,40 +131,45 @@ list_section() {
     printf 'hint\t\t\t\t\t\t%s(no daily note for today — press T to create it and carry tasks forward)%s\n' \
       "$C_DIM" "$C_OFF"
   fi
-  case "$want" in
-    all)
-      _group "$rows" personal personal
-      _work_groups "$rows"
-      _all_projects "$rows"
-      ;;
-    projects) _all_projects "$rows" ;;
-    work) _work_groups "$rows" ;;
-    personal) _flat "$rows" "$want" ;;
-    *) _flat "$rows" "$want" ;;
-  esac
+  if [ "$want" = all ]; then
+    # every profile, its tasks under one header (tags stay visible in the text)
+    local prof body
+    while IFS= read -r prof; do
+      [ -z "$prof" ] && continue
+      body="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$prof" -v b="$C_BOX" -v o="$C_OFF" \
+        '$2==p { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s[ ]%s %s\n", $1,$2,$3,$4,$5,$6,b,o,$7 }')"
+      [ -z "$body" ] && continue
+      _header "$prof"; printf '%s\n' "$body"
+    done < <(profiles)
+  else
+    _profile_view "$rows" "$want"
+  fi
 }
 
-# ── the left sidebar rail (fzf preview): sections + counts, active marked ──
+# ── the left sidebar rail: sections + counts, active marked ─────────
 rail() {
   local cur ct s n
   cur="$(read_section)"
-  ct="$(emit_tasks | awk -F'\t' '{ s=$6; sub(/\/.*/,"",s); c[s]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
+  ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
   printf '%s SECTIONS%s\n\n' "$C_HEAD" "$C_OFF"
-  for s in "${SECTIONS[@]}"; do
+  while IFS= read -r s; do
+    [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
     if [ "$s" = "$cur" ]; then
-      printf '%s> %-9s %s%s\n' "$C_SEL" "$s" "$n" "$C_OFF"
+      printf '%s> %-20s %s%s\n' "$C_SEL" "$s" "$n" "$C_OFF"
     else
-      printf '  %-9s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
+      printf '  %-20s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
     fi
-  done
+  done < <(sections_list)
 }
 
 _cycle_section() { # $1 = +1 (next) or -1 (prev)
-  local cur i n=${#SECTIONS[@]}; cur="$(read_section)"
-  for i in "${!SECTIONS[@]}"; do
-    if [ "${SECTIONS[$i]}" = "$cur" ]; then
-      echo "${SECTIONS[$(((i + $1 + n) % n))]}" > "$STATE"; return
+  local cur i n; cur="$(read_section)"
+  local -a s=(); while IFS= read -r i; do [ -n "$i" ] && s+=("$i"); done < <(sections_list)
+  n=${#s[@]}
+  for i in "${!s[@]}"; do
+    if [ "${s[$i]}" = "$cur" ]; then
+      echo "${s[$(((i + $1 + n) % n))]}" > "$STATE"; return
     fi
   done
   echo all > "$STATE"
@@ -163,37 +177,39 @@ _cycle_section() { # $1 = +1 (next) or -1 (prev)
 next_section() { _cycle_section 1; }
 prev_section() { _cycle_section -1; }
 
-# Add a task to whatever SECTION you're on: work/<profile> -> that job profile;
-# projects/<name> -> a personal task tagged `<name>:` (so it re-classifies to that
-# project); else a plain personal task. Lets you add to pmp while browsing projects.
+# Every place a task can live: each profile, plus each of its projects.
+destinations() {
+  local p n
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    echo "$p"
+    for n in $(projects_of "$p"); do echo "$p/$n"; done
+  done < <(profiles)
+}
+
+# Add to whatever SECTION you're on: `<profile>/<project>` tags the text with the
+# project so it re-classifies there; a bare `<profile>` adds an untagged task.
 add_task() {
-  local section="${1:-personal}" profile="personal" prefix="" text
-  case "$section" in
-    work/*) profile="${section#work/}" ;;
-    projects/*) prefix="${section#projects/}: " ;;
-  esac
+  local section="${1:-}" profile prefix="" text
+  [ -z "$section" ] && section="$(read_section)"
+  [ "$section" = all ] && section=personal
+  profile="${section%%/*}"
+  case "$section" in */*) prefix="${section#*/}: " ;; esac
   read -r -p "add to ${section}: " text || return 0
   [ -n "${text// /}" ] && notes --profile "$profile" focus add "${prefix}${text}"
 }
 
-# ── move a task between sections (personal / work profile / project) ──
-# A job section IS a profile; a project section is a `<project>:` prefix on a personal
-# task. `focus mv` handles both, carrying the task's original age across the move.
+# Move a task to another profile and/or project. A numbered read prompt rather than a
+# nested fzf: fzf-inside-fzf-execute is fragile in a tmux popup.
 move_task() { # $1=row section  $2=row profile  $3=row key
   local section="${1:-}" profile="${2:-}" key="${3:-}" dest pick i
   if [ -z "$key" ] || [ -z "$profile" ]; then
     echo "not on a task row"; sleep 1; return 0
   fi
-  # A numbered read-prompt rather than a nested fzf: fzf-inside-fzf-execute is fragile
-  # in a tmux popup, and `read` is the same mechanism the add prompt already uses.
   local -a dests=()
   while IFS= read -r dest; do
     [ -n "$dest" ] && [ "$dest" != "$section" ] && dests+=("$dest")
-  done < <(
-    echo personal
-    notes config --profiles 2>/dev/null | grep -vx personal | sed 's|^|work/|'
-    notes projects 2>/dev/null | cut -f1 | sed 's|^|projects/|'
-  )
+  done < <(destinations)
   if [ ${#dests[@]} -eq 0 ]; then
     echo "no destinations available"; sleep 1; return 0
   fi
@@ -204,43 +220,48 @@ move_task() { # $1=row section  $2=row profile  $3=row key
   if [ "$pick" -lt 1 ] || [ "$pick" -gt ${#dests[@]} ]; then return 0; fi
   dest="${dests[$((pick - 1))]}"
   case "$dest" in
-    personal) notes --profile "$profile" focus mv "$key" --to personal --untag ;;
-    work/*) notes --profile "$profile" focus mv "$key" --to "${dest#work/}" --untag ;;
-    projects/*) notes --profile "$profile" focus mv "$key" --to personal --tag "${dest#projects/}" ;;
+    */*) notes --profile "$profile" focus mv "$key" --to "${dest%%/*}" --tag "${dest#*/}" ;;
+    *) notes --profile "$profile" focus mv "$key" --to "$dest" --untag ;;
   esac || { echo "move failed"; sleep 2; }
 }
 
-# ── project lifecycle (create / archive / restore), via the notes CLI ──
+# ── project lifecycle, scoped to the section's profile ──────────────
 new_project() {
-  local name
-  read -r -p "new project name: " name || return 0
-  [ -n "${name// /}" ] && notes projects --new "$name"
+  local section="${1:-}" profile name
+  [ -z "$section" ] && section="$(read_section)"
+  [ "$section" = all ] && section=personal
+  profile="${section%%/*}"
+  read -r -p "new project in ${profile}: " name || return 0
+  [ -n "${name// /}" ] && notes --profile "$profile" projects --new "$name"
 }
 
-archive_project() { # $1 = section of the highlighted row (projects/<name>)
-  local section="${1:-}" name ans
+archive_project() { # $1 = section of the highlighted row (<profile>/<project>)
+  local section="${1:-}" profile name ans
   case "$section" in
-    projects/*) name="${section#projects/}" ;;
-    *) echo "not on a project row (go to the projects section)"; sleep 1; return 0 ;;
+    */*) profile="${section%%/*}"; name="${section#*/}" ;;
+    *) echo "not on a project row"; sleep 1; return 0 ;;
   esac
-  read -r -p "archive project '$name'? [y/N] " ans || return 0
-  case "$ans" in y | Y) notes projects --archive "$name" ;; esac
+  read -r -p "archive project '$name' in $profile? [y/N] " ans || return 0
+  case "$ans" in y | Y) notes --profile "$profile" projects --archive "$name" ;; esac
 }
 
 restore_project() {
-  local pick i
+  local section="${1:-}" profile pick i
+  [ -z "$section" ] && section="$(read_section)"
+  [ "$section" = all ] && section=personal
+  profile="${section%%/*}"
   local -a names=()
   while IFS= read -r pick; do [ -n "$pick" ] && names+=("$pick"); done \
-    < <(notes projects --archived 2>/dev/null | cut -f1)
+    < <(notes --profile "$profile" projects --archived 2>/dev/null | cut -f1)
   if [ ${#names[@]} -eq 0 ]; then
-    echo "no archived projects"; sleep 1; return 0
+    echo "no archived projects in $profile"; sleep 1; return 0
   fi
-  echo "restore which project?"
+  echo "restore which project in $profile?"
   for i in "${!names[@]}"; do printf '  %d) %s\n' "$((i + 1))" "${names[$i]}"; done
   read -r -p "project [1-${#names[@]}]: " pick || return 0
   case "$pick" in '' | *[!0-9]*) return 0 ;; esac
   if [ "$pick" -lt 1 ] || [ "$pick" -gt ${#names[@]} ]; then return 0; fi
-  notes projects --restore "${names[$((pick - 1))]}"
+  notes --profile "$profile" projects --restore "${names[$((pick - 1))]}"
 }
 
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
@@ -257,30 +278,29 @@ case "${1:-}" in
   --next-section) next_section; exit 0 ;;
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
-  --jump) shift; jump_row "$@"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
-  --new-project) new_project; exit 0 ;;
+  --jump) shift; jump_row "$@"; exit 0 ;;
+  --new-project) new_project "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
-  --restore-project) restore_project; exit 0 ;;
+  --restore-project) restore_project "${2:-}"; exit 0 ;;
 esac
 
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
-echo all > "$STATE" # every launch starts on the all-tasks view
+echo all > "$STATE" # every launch starts on the all view
 HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   m move   n/A/R project   T today   q quit'
-# modal nav: the printable keys that mean "command" in normal mode but must TYPE while
+# modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
-MODAL='j,k,h,l,i,q,m,n,A,R,T,1,2,3,4'
+MODAL='j,k,h,l,i,q,m,n,A,R,T'
 
-# start in --no-input (browse) mode: no query box, hjkl navigate, i enters search.
 list_section all | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
   --header="$HEADER" \
   --preview "$SELF --rail" \
-  --preview-window 'left:22%:wrap:border-right' \
+  --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
   --bind 'j:down+transform:[ {1} = head ] && echo down' \
   --bind 'k:up+transform:[ {1} = head ] && echo up' \
@@ -289,10 +309,6 @@ list_section all | fzf \
   --bind 'load:transform:[ {1} = head ] && echo down' \
   --bind "h:execute-silent($SELF --prev-section)+reload($SELF --list)+refresh-preview" \
   --bind "l:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
-  --bind "1:execute-silent(echo all > $STATE)+reload($SELF --list)+refresh-preview" \
-  --bind "2:execute-silent(echo personal > $STATE)+reload($SELF --list)+refresh-preview" \
-  --bind "3:execute-silent(echo work > $STATE)+reload($SELF --list)+refresh-preview" \
-  --bind "4:execute-silent(echo projects > $STATE)+reload($SELF --list)+refresh-preview" \
   --bind "tab:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
   --bind "i:show-input+unbind($MODAL)" \
   --bind "esc:transform:[ \"\$FZF_INPUT_STATE\" = hidden ] && echo abort || echo \"clear-query+hide-input+rebind($MODAL)\"" \
@@ -301,8 +317,8 @@ list_section all | fzf \
   --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
-  --bind "n:execute($SELF --new-project)+reload($SELF --list)+refresh-preview" \
+  --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
-  --bind "R:execute($SELF --restore-project)+reload($SELF --list)+refresh-preview" \
+  --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
