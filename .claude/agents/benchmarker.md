@@ -1,1 +1,1 @@
-/home/kblack0610/.agent/agents/benchmarker.md
+../../../.agent/agents/benchmarker.md
