@@ -180,21 +180,34 @@ add_task() {
 # A job section IS a profile; a project section is a `<project>:` prefix on a personal
 # task. `focus mv` handles both, carrying the task's original age across the move.
 move_task() { # $1=row section  $2=row profile  $3=row key
-  local section="${1:-}" profile="${2:-}" key="${3:-}" dest
+  local section="${1:-}" profile="${2:-}" key="${3:-}" dest pick i
   if [ -z "$key" ] || [ -z "$profile" ]; then
     echo "not on a task row"; sleep 1; return 0
   fi
-  dest="$( {
-      echo personal
-      notes config --profiles 2>/dev/null | grep -vx personal | sed 's|^|work/|'
-      notes projects 2>/dev/null | cut -f1 | sed 's|^|projects/|'
-    } | grep -vxF "$section" | fzf --prompt='move to > ' --height=100% --reverse )" || return 0
-  [ -z "$dest" ] && return 0
+  # A numbered read-prompt rather than a nested fzf: fzf-inside-fzf-execute is fragile
+  # in a tmux popup, and `read` is the same mechanism the add prompt already uses.
+  local -a dests=()
+  while IFS= read -r dest; do
+    [ -n "$dest" ] && [ "$dest" != "$section" ] && dests+=("$dest")
+  done < <(
+    echo personal
+    notes config --profiles 2>/dev/null | grep -vx personal | sed 's|^|work/|'
+    notes projects 2>/dev/null | cut -f1 | sed 's|^|projects/|'
+  )
+  if [ ${#dests[@]} -eq 0 ]; then
+    echo "no destinations available"; sleep 1; return 0
+  fi
+  printf 'move: %s\n' "$key"
+  for i in "${!dests[@]}"; do printf '  %d) %s\n' "$((i + 1))" "${dests[$i]}"; done
+  read -r -p "destination [1-${#dests[@]}]: " pick || return 0
+  case "$pick" in '' | *[!0-9]*) return 0 ;; esac
+  if [ "$pick" -lt 1 ] || [ "$pick" -gt ${#dests[@]} ]; then return 0; fi
+  dest="${dests[$((pick - 1))]}"
   case "$dest" in
     personal) notes --profile "$profile" focus mv "$key" --to personal --untag ;;
     work/*) notes --profile "$profile" focus mv "$key" --to "${dest#work/}" --untag ;;
     projects/*) notes --profile "$profile" focus mv "$key" --to personal --tag "${dest#projects/}" ;;
-  esac
+  esac || { echo "move failed"; sleep 2; }
 }
 
 # ── project lifecycle (create / archive / restore), via the notes CLI ──
@@ -215,11 +228,19 @@ archive_project() { # $1 = section of the highlighted row (projects/<name>)
 }
 
 restore_project() {
-  local pick name
-  pick="$(notes projects --archived 2>/dev/null \
-    | fzf --delimiter=$'\t' --with-nth=1 --prompt='restore project > ' --height=100% --reverse)" || return 0
-  name="$(printf '%s' "$pick" | cut -f1)"
-  [ -n "$name" ] && notes projects --restore "$name"
+  local pick i
+  local -a names=()
+  while IFS= read -r pick; do [ -n "$pick" ] && names+=("$pick"); done \
+    < <(notes projects --archived 2>/dev/null | cut -f1)
+  if [ ${#names[@]} -eq 0 ]; then
+    echo "no archived projects"; sleep 1; return 0
+  fi
+  echo "restore which project?"
+  for i in "${!names[@]}"; do printf '  %d) %s\n' "$((i + 1))" "${names[$i]}"; done
+  read -r -p "project [1-${#names[@]}]: " pick || return 0
+  case "$pick" in '' | *[!0-9]*) return 0 ;; esac
+  if [ "$pick" -lt 1 ] || [ "$pick" -gt ${#names[@]} ]; then return 0; fi
+  notes projects --restore "${names[$((pick - 1))]}"
 }
 
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window

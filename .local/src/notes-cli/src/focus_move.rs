@@ -59,14 +59,24 @@ fn task_text(line: &str) -> (String, Option<String>) {
         }
     }
 
-    let t = t.trim_start();
-    let t = t
+    (strip_checkboxes(&t), prio)
+}
+
+/// Strip leading `- [ ]` checkboxes, REPEATEDLY. Hand-edited lines sometimes carry a
+/// doubled `- [ ] - [ ] text`, and a leftover inner box renders a moved task as a nested
+/// checkbox. Applied both to the raw line and to the text left after a tag is removed
+/// (a doubled box can hide behind the tag: `- [ ] proj: - [ ] text`).
+fn strip_checkboxes(s: &str) -> String {
+    let mut t = s.trim_start().to_string();
+    while let Some(rest) = t
         .strip_prefix("- [ ]")
         .or_else(|| t.strip_prefix("- [x]"))
         .or_else(|| t.strip_prefix("- [X]"))
         .or_else(|| t.strip_prefix("- [/]"))
-        .unwrap_or(t);
-    (t.trim().to_string(), prio)
+    {
+        t = rest.trim_start().to_string();
+    }
+    t.trim().to_string()
 }
 
 /// True when `head` looks like a project tag rather than part of a sentence or a URL
@@ -84,7 +94,8 @@ fn is_tag_head(head: &str) -> bool {
 /// untouched. `tag = None` removes any existing prefix.
 fn retag(text: &str, tag: Option<&str>) -> String {
     let stripped = match text.split_once(':') {
-        Some((head, rest)) if is_tag_head(head) => rest.trim_start().to_string(),
+        // a doubled checkbox can hide behind the tag (`proj: - [ ] text`) — clean it too
+        Some((head, rest)) if is_tag_head(head) => strip_checkboxes(rest),
         _ => text.to_string(),
     };
     match tag {
@@ -223,11 +234,30 @@ after
     }
 
     #[test]
+    fn task_text_strips_a_doubled_checkbox() {
+        // hand-edited notes sometimes carry `- [ ] - [ ] text`; the inner box must not
+        // survive into the moved text or it renders as a nested checkbox.
+        let (t, _) = task_text("- [ ] - [ ] reset julies account (2d) <!-- since:2026-07-19 -->");
+        assert_eq!(t, "reset julies account");
+    }
+
+    #[test]
     fn retag_adds_swaps_and_removes_the_prefix() {
         assert_eq!(retag("ship it", Some("binks")), "binks: ship it");
         assert_eq!(retag("pmp: ship it", Some("binks")), "binks: ship it");
         assert_eq!(retag("pmp: ship it", None), "ship it");
         assert_eq!(retag("ship it", None), "ship it");
+    }
+
+    #[test]
+    fn retag_cleans_a_checkbox_hiding_behind_the_tag() {
+        // `- [ ] proj: - [ ] text` — the inner box sits AFTER the tag, so stripping
+        // checkboxes off the raw line alone isn't enough.
+        assert_eq!(
+            retag("myproj: - [ ] fix the thing", Some("myproj")),
+            "myproj: fix the thing"
+        );
+        assert_eq!(retag("myproj: - [ ] fix the thing", None), "fix the thing");
     }
 
     #[test]
