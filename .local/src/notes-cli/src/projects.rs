@@ -296,6 +296,8 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     fs::create_dir_all(&dir)?;
     let summary = dir.join("summary.md");
     fs::write(&summary, summary_template(name))?;
+    // every lab project is version-based and starts at v0.0.1
+    write_version_note(&dir, "v0.0.1")?;
 
     if let Some(idx) = &p.project_index {
         let content = fs::read_to_string(idx).unwrap_or_default();
@@ -359,6 +361,139 @@ pub fn restore(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     move_lane(p, "Archived", "Current", name, &dest.join("summary.md"))?;
     log.info("projects", &format!("restored {name}"));
     println!("restored {name} -> {}", dest.display());
+    Ok(())
+}
+
+// ── versions ────────────────────────────────────────────────────────────────
+//
+// Every lab project is version-based and starts at v0.0.1. A version is a
+// `vX.Y.Z.md` note holding that release's task list — the third level of the
+// projects hub ("a vX.Y.Z.md file — deep detail for one release").
+
+/// How far to bump: `v0.1.2` -> patch `v0.1.3`, minor `v0.2.0`, major `v1.0.0`.
+#[derive(Clone, Copy)]
+pub enum Bump {
+    Patch,
+    Minor,
+    Major,
+}
+
+/// Parse `vX.Y.Z` from a file stem. `None` when it isn't a version note.
+fn parse_version(stem: &str) -> Option<(u32, u32, u32)> {
+    let rest = stem.strip_prefix('v')?;
+    let mut it = rest.split('.');
+    let v = (
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    );
+    if it.next().is_some() {
+        return None;
+    }
+    Some(v)
+}
+
+fn fmt_version(v: (u32, u32, u32)) -> String {
+    format!("v{}.{}.{}", v.0, v.1, v.2)
+}
+
+fn scan_versions(dir: &Path, best: &mut Option<(u32, u32, u32)>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if let Some(v) = parse_version(stem) {
+            if best.is_none_or(|b| v > b) {
+                *best = Some(v);
+            }
+        }
+    }
+}
+
+/// Highest version note in a project — its root plus a `changelog/` subdir.
+fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
+    let mut best = None;
+    scan_versions(dir, &mut best);
+    scan_versions(&dir.join("changelog"), &mut best);
+    best
+}
+
+/// The next version after `cur` (or the v0.0.1 seed when the project has none).
+fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
+    match cur {
+        None => (0, 0, 1), // every lab project starts here
+        Some((a, b, c)) => match level {
+            Bump::Patch => (a, b, c + 1),
+            Bump::Minor => (a, b + 1, 0),
+            Bump::Major => (a + 1, 0, 0),
+        },
+    }
+}
+
+/// New version notes land in `changelog/` when the project keeps one, else at its root
+/// — so each project's existing layout is preserved.
+fn version_dir(project_dir: &Path) -> PathBuf {
+    let cl = project_dir.join("changelog");
+    if cl.is_dir() {
+        cl
+    } else {
+        project_dir.to_path_buf()
+    }
+}
+
+/// A version note: frontmatter + an open task line, matching the existing convention.
+fn version_template(ver: &str) -> String {
+    format!("---\nid: {ver}\naliases: []\ntags: []\n---\n\n- [ ] \n")
+}
+
+fn write_version_note(project_dir: &Path, ver: &str) -> Result<PathBuf> {
+    let dir = version_dir(project_dir);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{ver}.md"));
+    if path.exists() {
+        bail!("{} already exists", path.display());
+    }
+    fs::write(&path, version_template(ver))?;
+    Ok(path)
+}
+
+/// Resolve a current project's directory by name (case-insensitive).
+fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
+    let want = name.trim().to_lowercase();
+    let Some((_, summary)) = indexed(p).into_iter().find(|(n, _)| n.to_lowercase() == want) else {
+        bail!("no current project named '{name}'");
+    };
+    summary
+        .parent()
+        .map(|d| d.to_path_buf())
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the project dir for '{name}'"))
+}
+
+/// `notes projects --bump <name>` — start the next version's note so you can scope
+/// tasks into it. A project with no version yet is seeded at v0.0.1.
+pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let ver = fmt_version(next_version(current_version(&dir), level));
+    let path = write_version_note(&dir, &ver)?;
+    log.info("projects", &format!("{name} -> {ver}"));
+    println!("{}", path.display());
+    Ok(())
+}
+
+/// `notes projects --version-of <name>` — print the project's current version (empty
+/// when it has none yet), for pickers/status lines.
+pub fn show_version(p: &Profile, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    if let Some(v) = current_version(&dir) {
+        println!("{}", fmt_version(v));
+    }
     Ok(())
 }
 
@@ -491,6 +626,38 @@ _(nothing yet)_
         assert!(check_name("").is_err());
         assert!(check_name("index").is_err());
         assert!(check_name("my-app").is_ok());
+    }
+
+    #[test]
+    fn parses_only_real_version_stems() {
+        assert_eq!(parse_version("v1.8.0"), Some((1, 8, 0)));
+        assert_eq!(parse_version("v0.0.1"), Some((0, 0, 1)));
+        assert_eq!(parse_version("summary"), None);
+        assert_eq!(parse_version("v1.8"), None); // not three parts
+        assert_eq!(parse_version("v1.8.0.1"), None);
+        assert_eq!(parse_version("1.8.0"), None); // missing the v
+    }
+
+    #[test]
+    fn version_less_project_seeds_at_v0_0_1() {
+        assert_eq!(next_version(None, Bump::Patch), (0, 0, 1));
+        assert_eq!(next_version(None, Bump::Major), (0, 0, 1));
+    }
+
+    #[test]
+    fn bump_levels_step_correctly() {
+        let cur = Some((1, 8, 0));
+        assert_eq!(next_version(cur, Bump::Patch), (1, 8, 1));
+        assert_eq!(next_version(cur, Bump::Minor), (1, 9, 0));
+        assert_eq!(next_version(cur, Bump::Major), (2, 0, 0));
+        assert_eq!(fmt_version((2, 0, 0)), "v2.0.0");
+    }
+
+    #[test]
+    fn version_note_is_scoped_as_a_task_list() {
+        let t = version_template("v0.0.1");
+        assert!(t.contains("id: v0.0.1"));
+        assert!(t.contains("- [ ]")); // an open task to scope into
     }
 
     #[test]
