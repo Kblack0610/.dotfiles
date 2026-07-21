@@ -22,11 +22,15 @@ mod summarize;
 mod tags;
 mod zettel;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "notes", version, about = "Profile-aware journal + zettelkasten CLI")]
+#[command(
+    name = "notes",
+    version,
+    about = "Profile-aware journal + zettelkasten CLI"
+)]
 struct Cli {
     /// Echo log lines to stderr as well as the journal log file
     #[arg(short, long, global = true)]
@@ -130,6 +134,18 @@ enum Cmd {
     Projects {
         /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
+        /// Create a new project under `current/` + the index's `## Current` lane
+        #[arg(long, value_name = "NAME")]
+        new: Option<String>,
+        /// Archive a project: move to `archived/` + the `## Archived` lane
+        #[arg(long, value_name = "NAME")]
+        archive: Option<String>,
+        /// Restore an archived project back into `current/` + `## Current`
+        #[arg(long, value_name = "NAME")]
+        restore: Option<String>,
+        /// List archived projects instead of the current ones
+        #[arg(long)]
+        archived: bool,
     },
     /// Surface multi-account email triage into the daily note's `## Comms` section.
     /// No subcommand = list the currently-surfaced items for the active profile.
@@ -264,7 +280,11 @@ fn main() -> Result<()> {
             summarize::run(&prof, &log, date.as_deref(), force)?;
             0
         }
-        Cmd::Archive { month, dry_run, backfill } => {
+        Cmd::Archive {
+            month,
+            dry_run,
+            backfill,
+        } => {
             archive::run(&prof, &log, month.as_deref(), dry_run, backfill)?;
             0
         }
@@ -277,8 +297,15 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Focus { all, sub } => {
+            // `--all` is a read-only cross-profile dump; pairing it with a write verb is
+            // always a mistake. Reject it rather than silently discarding the write.
+            // (Clap's `conflicts_with` takes an arg id and cannot reference a subcommand,
+            // so the check lives here.)
+            if all && !matches!(sub, None | Some(FocusCmd::List)) {
+                bail!("`--all` is read-only and cannot be combined with a write subcommand");
+            }
             if all {
-                focus::list_all(&log)?;
+                focus::list_all(&log)?
             } else {
                 match sub {
                     None | Some(FocusCmd::List) => focus::list(&prof, &log)?,
@@ -287,15 +314,16 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
                 }
             }
-            0
         }
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
                 Some(InboxCmd::Add { text }) => inbox::add(&prof, &log, &text.join(" "))?,
-                Some(InboxCmd::Archive { target, stale, before }) => {
-                    inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?
-                }
+                Some(InboxCmd::Archive {
+                    target,
+                    stale,
+                    before,
+                }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
             }
             0
         }
@@ -322,10 +350,15 @@ fn main() -> Result<()> {
             }
             0
         }
-        Cmd::Projects { name } => {
-            match name {
-                Some(n) => projects::show(&prof, &n)?,
-                None => projects::list(&prof)?,
+        Cmd::Projects { name, new, archive, restore, archived } => {
+            // lifecycle flags take precedence over the read paths
+            match (new, archive, restore, archived, name) {
+                (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
+                (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
+                (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
+                (_, _, _, true, _) => projects::list_archived(&prof)?,
+                (_, _, _, _, Some(n)) => projects::show(&prof, &n)?,
+                _ => projects::list(&prof)?,
             }
             0
         }
