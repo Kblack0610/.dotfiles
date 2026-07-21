@@ -90,11 +90,6 @@ _group() { # $1=rows $2=exact-section $3=label — header only when non-empty
   [ -z "$body" ] && return 0
   _header "$3"; printf '%s\n' "$body"
 }
-_project_groups() { # $1=rows — one header per distinct projects/<name>
-  local names n
-  names="$(printf '%s\n' "$1" | awk -F'\t' '$6 ~ /^projects\// { sub(/^projects\//,"",$6); print $6 }' | sort -u)"
-  while IFS= read -r n; do [ -n "$n" ] && _group "$1" "projects/$n" "$n"; done <<< "$names"
-}
 _work_groups() { # $1=rows — one header per distinct work/<profile>
   local names n
   names="$(printf '%s\n' "$1" | awk -F'\t' '$6 ~ /^work\// { sub(/^work\//,"",$6); print $6 }' | sort -u)"
@@ -125,7 +120,7 @@ list_section() {
     all)
       _group "$rows" personal personal
       _work_groups "$rows"
-      _project_groups "$rows"
+      _all_projects "$rows"
       ;;
     projects) _all_projects "$rows" ;;
     work) _work_groups "$rows" ;;
