@@ -47,7 +47,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
-    Today,
+    Today {
+        /// Create today's note for EVERY configured profile, not just the active one
+        #[arg(long)]
+        all: bool,
+    },
     /// Print a resolved profile path for editor/shell integration.
     /// target: daily (default) | daily-dir | refs | refs-today | root | fun | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
     Path {
@@ -268,8 +272,25 @@ fn main() -> Result<()> {
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
 
     let code = match cli.cmd {
-        Cmd::Today => {
-            daily::run(&prof, &log)?;
+        Cmd::Today { all } => {
+            if all {
+                // The daily note is per-profile and `focus --all` only reads notes that
+                // already EXIST, so on a fresh day an uncreated profile silently reads
+                // as zero in a cross-profile cockpit. Bootstrap every profile so each
+                // lane's Focus carries forward. One bad profile warns, never aborts.
+                for name in config::all_profile_names()? {
+                    match config::resolve(Some(&name)) {
+                        Ok(p) => {
+                            if let Err(e) = daily::run(&p, &log) {
+                                log.warn("today", &format!("{name}: {e}"));
+                            }
+                        }
+                        Err(e) => log.warn("today", &format!("{name}: {e}")),
+                    }
+                }
+            } else {
+                daily::run(&prof, &log)?;
+            }
             0
         }
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {

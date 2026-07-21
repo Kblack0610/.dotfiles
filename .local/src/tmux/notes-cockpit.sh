@@ -116,6 +116,12 @@ _all_projects() { # $1=rows
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
   local rows; rows="$(emit_tasks)"
+  # A fresh day has no daily note yet, so `focus --all` is empty and every section
+  # reads 0 — which looks like data loss. Say so, and offer the one-key fix.
+  if [ -z "$rows" ]; then
+    printf 'hint\t\t\t\t\t\t%s(no daily note for today — press T to create it and carry tasks forward)%s\n' \
+      "$C_DIM" "$C_OFF"
+  fi
   case "$want" in
     all)
       _group "$rows" personal personal
@@ -219,10 +225,10 @@ command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
 echo all > "$STATE" # every launch starts on the all-tasks view
-HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   n/A/R project   q quit'
+HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   n/A/R project   T today   q quit'
 # modal nav: the printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
-MODAL='j,k,h,l,i,q,n,A,R,1,2,3,4'
+MODAL='j,k,h,l,i,q,n,A,R,T,1,2,3,4'
 
 # start in --no-input (browse) mode: no query box, hjkl navigate, i enters search.
 list_section all | fzf \
@@ -254,4 +260,5 @@ list_section all | fzf \
   --bind "n:execute($SELF --new-project)+reload($SELF --list)+refresh-preview" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project)+reload($SELF --list)+refresh-preview" \
+  --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
