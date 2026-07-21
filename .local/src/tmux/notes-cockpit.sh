@@ -170,6 +170,31 @@ add_task() {
   [ -n "${text// /}" ] && notes --profile "$profile" focus add "${prefix}${text}"
 }
 
+# ── project lifecycle (create / archive / restore), via the notes CLI ──
+new_project() {
+  local name
+  read -r -p "new project name: " name || return 0
+  [ -n "${name// /}" ] && notes projects --new "$name"
+}
+
+archive_project() { # $1 = section of the highlighted row (projects/<name>)
+  local section="${1:-}" name ans
+  case "$section" in
+    projects/*) name="${section#projects/}" ;;
+    *) echo "not on a project row (go to the projects section)"; sleep 1; return 0 ;;
+  esac
+  read -r -p "archive project '$name'? [y/N] " ans || return 0
+  case "$ans" in y | Y) notes projects --archive "$name" ;; esac
+}
+
+restore_project() {
+  local pick name
+  pick="$(notes projects --archived 2>/dev/null \
+    | fzf --delimiter=$'\t' --with-nth=1 --prompt='restore project > ' --height=100% --reverse)" || return 0
+  name="$(printf '%s' "$pick" | cut -f1)"
+  [ -n "$name" ] && notes projects --restore "$name"
+}
+
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
   local type="$1" file="$2" line="$3"
   [ "$type" = "task" ] || return 0
@@ -185,16 +210,19 @@ case "${1:-}" in
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
+  --new-project) new_project; exit 0 ;;
+  --archive-project) archive_project "${2:-}"; exit 0 ;;
+  --restore-project) restore_project; exit 0 ;;
 esac
 
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
 echo all > "$STATE" # every launch starts on the all-tasks view
-HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   q quit'
+HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   n/A/R project   q quit'
 # modal nav: the printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
-MODAL='j,k,h,l,i,q,1,2,3,4'
+MODAL='j,k,h,l,i,q,n,A,R,1,2,3,4'
 
 # start in --no-input (browse) mode: no query box, hjkl navigate, i enters search.
 list_section all | fzf \
@@ -223,4 +251,7 @@ list_section all | fzf \
   --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
+  --bind "n:execute($SELF --new-project)+reload($SELF --list)+refresh-preview" \
+  --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
+  --bind "R:execute($SELF --restore-project)+reload($SELF --list)+refresh-preview" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
