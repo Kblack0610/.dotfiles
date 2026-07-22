@@ -101,7 +101,10 @@ fn ensure_header(path: &Path, month: &str) -> Result<()> {
 
 fn append(path: &Path, summary: &str) -> Result<()> {
     use std::io::Write;
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     f.write_all(summary.as_bytes())?;
     Ok(())
 }

@@ -68,7 +68,11 @@ fn extract_title(content: &str) -> String {
             continue;
         }
         let is_heading = t.starts_with('#');
-        let cleaned = t.trim_start_matches('#').trim_start().trim_start_matches(['-', '*']).trim();
+        let cleaned = t
+            .trim_start_matches('#')
+            .trim_start()
+            .trim_start_matches(['-', '*'])
+            .trim();
         // Drop a trailing HTML comment (e.g. the `<!-- session:… -->` tag) from the title.
         let cleaned = match cleaned.find("<!--") {
             Some(i) => cleaned[..i].trim_end(),
@@ -124,7 +128,12 @@ fn scan(dir: &Path, today: NaiveDate) -> Result<Vec<Item>> {
             None => mtime_age_days(&path, today),
         };
         let content = fs::read_to_string(&path).unwrap_or_default();
-        items.push(Item { path, date, age_days, title: extract_title(&content) });
+        items.push(Item {
+            path,
+            date,
+            age_days,
+            title: extract_title(&content),
+        });
     }
     // Oldest first; undated items (age via mtime) interleave by age.
     items.sort_by(|a, b| b.age_days.cmp(&a.age_days).then(a.path.cmp(&b.path)));
@@ -197,8 +206,12 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
     // When captured from inside a Claude Code session, tag the capture with the session
     // id (mirrors the `<!-- since:… -->` marker convention) so it's traceable back to
     // the conversation via `claude -r <id>`. Absent for plain terminal captures.
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok().filter(|s| !s.is_empty());
-    let marker = session.map(|id| format!(" <!-- session:{id} -->")).unwrap_or_default();
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let marker = session
+        .map(|id| format!(" <!-- session:{id} -->"))
+        .unwrap_or_default();
     body.push_str(&format!("\n- {} {}{}\n", now.format("%H:%M"), text, marker));
     fs::write(&file, body)?;
     log.info("inbox", &format!("captured to {}", file.display()));
@@ -227,7 +240,11 @@ pub fn archive(
         // Accept a bare filename or a path; resolve against the inbox.
         let candidate = {
             let raw = Path::new(name);
-            if raw.is_absolute() { raw.to_path_buf() } else { p.inbox.join(name) }
+            if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                p.inbox.join(name)
+            }
         };
         if !candidate.is_file() {
             bail!("no such inbox capture: {}", candidate.display());
@@ -265,7 +282,10 @@ pub fn archive(
         println!("archived {}", name.to_string_lossy());
         moved += 1;
     }
-    log.info("inbox", &format!("archived {moved} capture(s) to {}", archive_dir.display()));
+    log.info(
+        "inbox",
+        &format!("archived {moved} capture(s) to {}", archive_dir.display()),
+    );
     Ok(())
 }
 
@@ -287,8 +307,14 @@ mod tests {
 
     #[test]
     fn date_prefix_parses_known_shapes() {
-        assert_eq!(parse_date_prefix("2026-06-16"), NaiveDate::from_ymd_opt(2026, 6, 16));
-        assert_eq!(parse_date_prefix("2026-06-16-analysis"), NaiveDate::from_ymd_opt(2026, 6, 16));
+        assert_eq!(
+            parse_date_prefix("2026-06-16"),
+            NaiveDate::from_ymd_opt(2026, 6, 16)
+        );
+        assert_eq!(
+            parse_date_prefix("2026-06-16-analysis"),
+            NaiveDate::from_ymd_opt(2026, 6, 16)
+        );
         assert_eq!(
             parse_date_prefix("2026-01-16_ghee-sheets_plan"),
             NaiveDate::from_ymd_opt(2026, 1, 16)
@@ -299,9 +325,15 @@ mod tests {
 
     #[test]
     fn title_prefers_heading_then_first_line() {
-        assert_eq!(extract_title("# Inbox - 2026-06-16\n\n- a thing"), "Inbox - 2026-06-16");
+        assert_eq!(
+            extract_title("# Inbox - 2026-06-16\n\n- a thing"),
+            "Inbox - 2026-06-16"
+        );
         assert_eq!(extract_title("just a line\nmore"), "just a line");
-        assert_eq!(extract_title("---\ntags: [x]\n---\n# Real Title\n"), "Real Title");
+        assert_eq!(
+            extract_title("---\ntags: [x]\n---\n# Real Title\n"),
+            "Real Title"
+        );
         assert_eq!(extract_title("\n\n"), "(empty)");
     }
 
@@ -313,7 +345,10 @@ mod tests {
         // A bare horizontal rule with no real content falls through to (empty).
         assert_eq!(extract_title("---\n***\n"), "(empty)");
         // Hyphens inside a title are preserved (only leading markers stripped).
-        assert_eq!(extract_title("- 2026-01-17 did a thing"), "2026-01-17 did a thing");
+        assert_eq!(
+            extract_title("- 2026-01-17 did a thing"),
+            "2026-01-17 did a thing"
+        );
     }
 
     #[test]

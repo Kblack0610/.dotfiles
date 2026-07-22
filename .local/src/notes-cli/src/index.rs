@@ -105,7 +105,10 @@ pub fn scan(p: &Profile) -> Result<Scan> {
         let links = extract_links(content);
         for target in &links {
             if known.contains(target) {
-                backlinks.entry(target.clone()).or_default().push(stem.clone());
+                backlinks
+                    .entry(target.clone())
+                    .or_default()
+                    .push(stem.clone());
             } else {
                 dead.push((stem.clone(), target.clone()));
             }
@@ -163,7 +166,10 @@ pub fn run(p: &Profile, log: &Logger, rebuild: bool) -> Result<()> {
     let mut by_tag: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in &s.notes {
         if n.tags.is_empty() {
-            by_tag.entry("untagged".to_string()).or_default().push(n.stem.clone());
+            by_tag
+                .entry("untagged".to_string())
+                .or_default()
+                .push(n.stem.clone());
         } else {
             for tag in &n.tags {
                 by_tag.entry(tag.clone()).or_default().push(n.stem.clone());
@@ -182,7 +188,11 @@ pub fn run(p: &Profile, log: &Logger, rebuild: bool) -> Result<()> {
 
     log.info(
         "index",
-        &format!("rebuilt index ({} notes) at {}", s.notes.len(), p.index.display()),
+        &format!(
+            "rebuilt index ({} notes) at {}",
+            s.notes.len(),
+            p.index.display()
+        ),
     );
     Ok(())
 }

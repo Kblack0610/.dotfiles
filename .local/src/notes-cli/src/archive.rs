@@ -62,7 +62,11 @@ fn process_month(p: &Profile, log: &Logger, year: i32, month: u32, dry_run: bool
     let mut appended = 0usize;
     let mut buf = String::new();
     for note in &notes {
-        let date_s = note.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let date_s = note
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         if existing.contains(&format!("### {date_s}")) {
             continue;
         }
