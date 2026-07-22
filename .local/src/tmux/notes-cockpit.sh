@@ -101,17 +101,28 @@ _flat() { # $1=rows $2=exact-section
     '$6==w { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s[ ]%s %s\n", $1,$2,$3,$4,$5,$6,b,o,$7 }'
 }
 _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_OFF"; }
-_subheader() { printf 'head\t\t\t\t\t\t%s  %s%s\n' "$C_PROJ" "$1" "$C_OFF"; }
+# A project sub-header, with its `notes projects` status trailing dim (like the
+# `## Current Projects` status in the vault). Status can be long/multi-line — collapse
+# and truncate so it fits one row.
+_subheader() { # $1=name $2=status
+  local name="$1" status="${2:-}" short
+  if [ -n "$status" ]; then
+    short="$(printf '%s' "$status" | tr '\n\t' '  ' | sed -E 's/^_[0-9-]+_ *(—|-) *//; s/  +/ /g' | cut -c1-64)"
+    printf 'head\t\t\t\t\t\t%s  %s%s   %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$C_DIM" "$short" "$C_OFF"
+  else
+    printf 'head\t\t\t\t\t\t%s  %s%s\n' "$C_PROJ" "$name" "$C_OFF"
+  fi
+}
 
 # One profile's view: its untagged tasks, then a group per project (empty projects get
 # a selectable placeholder so C-a / m can target them).
 _profile_view() { # $1=rows $2=profile
-  local rows="$1" prof="$2" n lc body
+  local rows="$1" prof="$2" n st lc body
   _flat "$rows" "$prof"
-  notes --profile "$prof" projects 2>/dev/null | cut -f1 | while IFS= read -r n; do
+  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n _summary st; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
-    _subheader "$n"
+    _subheader "$n" "$st"
     body="$(_flat "$rows" "$prof/$lc")"
     if [ -n "$body" ]; then
       printf '%s\n' "$body"
@@ -287,6 +298,11 @@ esac
 
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
+
+# Bootstrap today's note for every profile so a fresh day never shows spurious zeros
+# (the daily note is per-profile and `focus --all` only reads notes that exist).
+# Idempotent — a no-op once today's notes are present.
+notes today --all >/dev/null 2>&1 || true
 
 echo all > "$STATE" # every launch starts on the all view
 HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   m move   n/A/R project   T today   q quit'
