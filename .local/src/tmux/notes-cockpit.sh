@@ -40,7 +40,8 @@ alias_of() { # $1=prefix -> mapped project name (or nothing)
   awk -F= -v k="$1" '!/^[[:space:]]*#/ && $1==k { print $2; exit }' "$ALIAS_FILE"
 }
 
-C_BOX=$'\033[36m'    # checkbox (cyan)
+C_BOX=$'\033[36m'    # todo checkbox (cyan)
+C_INP=$'\033[1;33m'  # in-progress checkbox (yellow)
 C_HEAD=$'\033[1;37m' # profile header (bold white)
 C_PROJ=$'\033[1;35m' # project sub-header (magenta)
 C_SEL=$'\033[1;32m'  # active section (bold green)
@@ -91,14 +92,22 @@ emit_tasks() {
     # an open task, so it strips like ` `/`x`.
     clean="$(printf '%s' "$text" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
     section="$(classify "$clean" "$profile" "${PROJ_OF[$profile]:-}")"
-    printf 'task\t%s\t%s\t%s\t%s\t%s\t%s\n' "$profile" "$file" "$line" "$key" "$section" "$clean"
+    # bake a status-colored checkbox into the display so in-progress ([/]) stands out;
+    # done ([x]) never reaches here (focus --all is open-only)
+    local glyph
+    if [[ "$text" =~ ^[[:space:]]*-\ \[/\] ]]; then
+      glyph="${C_INP}[/]${C_OFF}"
+    else
+      glyph="${C_BOX}[ ]${C_OFF}"
+    fi
+    printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s\n' "$profile" "$file" "$line" "$key" "$section" "$glyph" "$clean"
   done
 }
 
 # ── render helpers (final rows: col7 = "[ ] text"; headers are type=head) ──
-_flat() { # $1=rows $2=exact-section
-  printf '%s\n' "$1" | awk -F'\t' -v w="$2" -v b="$C_BOX" -v o="$C_OFF" \
-    '$6==w { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s[ ]%s %s\n", $1,$2,$3,$4,$5,$6,b,o,$7 }'
+_flat() { # $1=rows $2=exact-section — col7 already carries the status-colored glyph
+  printf '%s\n' "$1" | awk -F'\t' -v w="$2" \
+    '$6==w { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1,$2,$3,$4,$5,$6,$7 }'
 }
 _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_OFF"; }
 # A project sub-header, with its `notes projects` status trailing dim (like the
@@ -147,8 +156,8 @@ list_section() {
     local prof body
     while IFS= read -r prof; do
       [ -z "$prof" ] && continue
-      body="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$prof" -v b="$C_BOX" -v o="$C_OFF" \
-        '$2==p { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s[ ]%s %s\n", $1,$2,$3,$4,$5,$6,b,o,$7 }')"
+      body="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$prof" \
+        '$2==p { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1,$2,$3,$4,$5,$6,$7 }')"
       [ -z "$body" ] && continue
       _header "$prof"; printf '%s\n' "$body"
     done < <(profiles)
@@ -305,10 +314,10 @@ command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfil
 notes today --all >/dev/null 2>&1 || true
 
 echo all > "$STATE" # every launch starts on the all view
-HEADER='j/k move   h/l section   i search   enter edit   C-x done   C-a add   C-d del   m move   n/A/R project   T today   q quit'
+HEADER='j/k move  h/l section  i search  enter edit  s progress  C-x done  C-a add  C-d del  m move  n/A/R project  T today  q quit'
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
-MODAL='j,k,h,l,i,q,m,n,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,A,R,T'
 
 list_section all | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input \
@@ -329,7 +338,8 @@ list_section all | fzf \
   --bind "i:show-input+unbind($MODAL)" \
   --bind "esc:transform:[ \"\$FZF_INPUT_STATE\" = hidden ] && echo abort || echo \"clear-query+hide-input+rebind($MODAL)\"" \
   --bind 'q:abort' \
-  --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5}; notes --profile {2} focus sweep)+reload($SELF --list)+refresh-preview" \
+  --bind "s:execute-silent(notes --profile {2} focus start {5}; notes --profile {2} focus sweep)+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
