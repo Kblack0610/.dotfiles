@@ -82,31 +82,42 @@ return {
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
       local STATUS_PAT = "%[[ /xX]%]"
 
-      -- Pure rebuild of the `## Focus` body: active tasks stay on top, finished ones
-      -- (`[x]`) collect under a `--- / ### Done` block, the single empty `- [ ]`
-      -- placeholder is kept last among the active items. `nil` means "nothing to
-      -- do" (no done task and no existing Done block). Idempotent.
+      -- Pure rebuild of the `## Focus` body, grouped by STATUS so a task moves between
+      -- lanes as you cycle it: todo (`[ ]`) stays on top, in-progress (`[/]`) collects
+      -- under `### In progress`, finished (`[x]`) under `--- / ### Done`. The single
+      -- empty `- [ ]` placeholder is kept last among the todo items. `nil` means
+      -- "nothing to organize" (no in-progress / done task and no existing scaffold).
+      -- Idempotent.
       local function rebuild_focus_body(body)
-        local active, done, placeholder, had_scaffold = {}, {}, nil, false
+        local todo, inprog, done, placeholder, had_scaffold = {}, {}, {}, nil, false
         for _, l in ipairs(body) do
-          if l:match "^###%s+Done%s*$" or l:match "^%-%-%-%s*$" then
+          if l:match "^###%s+Done%s*$" or l:match "^###%s+In progress%s*$" or l:match "^%-%-%-%s*$" then
             had_scaffold = true
           elseif l:match "^%s*%- %[[xX]%]" then
             done[#done + 1] = l
+          elseif l:match "^%s*%- %[/%]" then
+            inprog[#inprog + 1] = l
           elseif l:match "^%s*%- %[ %]%s*$" then
             placeholder = l
           elseif l:match "%S" then
-            active[#active + 1] = l
+            todo[#todo + 1] = l
           end
         end
-        if #done == 0 and not had_scaffold then
+        if #inprog == 0 and #done == 0 and not had_scaffold then
           return nil
         end
         local out = {}
-        for _, l in ipairs(active) do
+        for _, l in ipairs(todo) do
           out[#out + 1] = l
         end
         out[#out + 1] = placeholder or "- [ ] "
+        if #inprog > 0 then
+          out[#out + 1] = ""
+          out[#out + 1] = "### In progress"
+          for _, l in ipairs(inprog) do
+            out[#out + 1] = l
+          end
+        end
         if #done > 0 then
           out[#out + 1] = ""
           out[#out + 1] = "---"

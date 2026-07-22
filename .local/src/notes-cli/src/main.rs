@@ -13,6 +13,7 @@ mod daily;
 mod doctor;
 mod focus;
 mod focus_move;
+mod focus_sweep;
 mod inbox;
 mod index;
 mod logging;
@@ -228,6 +229,14 @@ enum FocusCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Toggle the first matching task between todo and in-progress ([ ] <-> [/])
+    Start {
+        /// A word (or two) from the task
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Reorganize today's `## Focus` by status (todo / in progress / done)
+    Sweep,
 }
 
 #[derive(Subcommand)]
@@ -368,6 +377,8 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Mv { query, to, tag, untag }) => focus_move::mv(
                         &prof, &log, &query.join(" "), to.as_deref(), tag.as_deref(), untag,
                     )?,
+                    Some(FocusCmd::Start { query }) => focus_sweep::start(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Sweep) => focus_sweep::sweep(&prof, &log)?,
                 }
             }
         }
