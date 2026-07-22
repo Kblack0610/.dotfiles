@@ -32,6 +32,14 @@ workspaces:
     display_name: "4 · chat"
   - name: "5"
     display_name: "5 · agent"
+  - name: "6"
+    display_name: "6"
+  - name: "7"
+    display_name: "7"
+  - name: "8"
+    display_name: "8"
+  - name: "9"
+    display_name: "9"
 
 window_rules:
   - commands: ["ignore"]
