@@ -306,15 +306,26 @@ return {
           -- New task below the cursor.
           vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
 
-          -- Task priority cycle: current line (normal) / selection (visual).
+          -- Task priority cycle: current line (normal) / selection (visual). Re-sweeps
+          -- so the task jumps to its new priority lane immediately, like <leader>ts does.
           vim.keymap.set("n", "<leader>tp", function()
             local lnum = vim.api.nvim_win_get_cursor(0)[1]
             cycle_priority(lnum, lnum)
+            file_focus_done()
           end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
           vim.keymap.set("x", "<leader>tp", function()
             vim.cmd "normal! \27"
             cycle_priority(vim.fn.line "'<", vim.fn.line "'>")
+            file_focus_done()
           end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
+
+          -- Sweep `## Focus` on save too, so the note lands organized however a task
+          -- was edited (typing a #tag by hand, pasting, etc.), not only via the cycles.
+          -- No-op when there is no `## Focus` section or nothing changed.
+          vim.api.nvim_create_autocmd("BufWritePre", {
+            buffer = buf,
+            callback = file_focus_done,
+          })
         end,
       })
 
