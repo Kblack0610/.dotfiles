@@ -558,6 +558,13 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     )
 }
 
+/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#medium"`/`"#low"`), or
+/// `None`. Detection matches [`split_priority`] (heading marker, glued `#`, code spans skipped),
+/// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
+pub fn task_priority(line: &str) -> Option<&'static str> {
+    split_priority(line).1
+}
+
 /// Rewrite a task line's checkbox to `mark` (`' '`, `'/'`, `'x'`) WHATEVER its current
 /// state, preserving indentation and everything after the checkbox. Non-task lines, and
 /// malformed ones whose `- [` is not closed by a single-character state, pass through

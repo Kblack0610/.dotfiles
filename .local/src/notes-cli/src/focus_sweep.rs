@@ -1,12 +1,14 @@
-//! `notes focus sweep` — reorganize today's `## Focus` by task status, so a task moves
-//! between lanes as its checkbox is cycled: todo (`[ ]`) on top, in-progress (`[/]`)
-//! under `### In progress`, done (`[x]`) under `--- / ### Done`.
+//! `notes focus sweep` — reorganize today's `## Focus` by priority + status, so a task
+//! moves between lanes as its `#urgent`/`#high`/`#medium`/`#low` tag is cycled or its
+//! checkbox is checked: untagged todos on top, then `### Urgent` / `### High` /
+//! `### Medium` / `### Low` (open tasks, in-priority order), done (`[x]`) under
+//! `--- / ### Done`. An in-progress `[/]` task keeps its mark inside its priority lane.
 //!
 //! This mirrors the nvim buffer sweep (markdown.lua `rebuild_focus_body`) so that
-//! marking a task done from the cockpit organizes the note exactly like cycling its
-//! status in the editor does — the note stays grouped by status no matter which surface
-//! you touch. Only the AUTHORED region is reorganized: a rollup mirror (everything from
-//! `md::ROLLUP_START` on) is left untouched at the end of the section.
+//! tagging/checking a task from the cockpit organizes the note exactly like cycling it in
+//! the editor does — the note stays grouped no matter which surface you touch. Only the
+//! AUTHORED region is reorganized: a rollup mirror (everything from `md::ROLLUP_START` on)
+//! is left untouched at the end of the section.
 //!
 //! Lives in its own module to stay clear of a concurrent `focus.rs` refactor.
 
@@ -17,45 +19,79 @@ use crate::md;
 use anyhow::{bail, Result};
 use std::fs;
 
-fn is_inprogress(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("- [/]") || t.starts_with("- [-]")
+/// The priority lanes, most-urgent first. Untagged open tasks (rank == `LANES.len()`)
+/// stay unheaded on top; checked tasks go under `### Done`; each open task otherwise
+/// buckets by its `md::task_priority` tag. Keep in sync with markdown.lua's LANES.
+const LANES: [(&str, &str); 4] = [
+    ("#urgent", "### Urgent"),
+    ("#high", "### High"),
+    ("#medium", "### Medium"),
+    ("#low", "### Low"),
+];
+
+/// Lane index for an open task: 0..LANES.len() by priority tag, else LANES.len() (untagged).
+fn lane_of(line: &str) -> usize {
+    match md::task_priority(line) {
+        Some(tag) => LANES
+            .iter()
+            .position(|(t, _)| *t == tag)
+            .unwrap_or(LANES.len()),
+        None => LANES.len(),
+    }
 }
 
-/// Rebuild the authored `## Focus` body grouped by status. `None` when there is nothing
-/// to organize (no in-progress / done task and no leftover scaffold to collapse).
+/// A `### `-heading or `---` rule this sweep owns — stripped so it can be re-emitted only
+/// where a lane is non-empty (an authored heading elsewhere is preserved as content).
+fn is_scaffold(line: &str) -> bool {
+    let t = line.trim();
+    t == "---"
+        || t.eq_ignore_ascii_case("### Done")
+        || t.eq_ignore_ascii_case("### In progress")
+        || LANES
+            .iter()
+            .any(|(_, h)| t.eq_ignore_ascii_case(h))
+}
+
+/// Rebuild the authored `## Focus` body grouped by priority lane + a trailing `### Done`.
+/// `None` when there is nothing to organize (only untagged todos and no done/scaffold —
+/// the flat list is already the sorted form).
 fn rebuild(body: &[&str]) -> Option<Vec<String>> {
-    let (mut todo, mut inprog, mut done): (Vec<String>, Vec<String>, Vec<String>) =
-        (Vec::new(), Vec::new(), Vec::new());
+    // one open-task bucket per lane + a trailing untagged bucket, then the done bucket
+    let mut open: Vec<Vec<String>> = vec![Vec::new(); LANES.len() + 1];
+    let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
     let mut had_scaffold = false;
     for l in body {
         let t = l.trim();
-        if t.eq_ignore_ascii_case("### Done")
-            || t.eq_ignore_ascii_case("### In progress")
-            || t == "---"
-        {
+        if is_scaffold(l) {
             had_scaffold = true;
         } else if md::is_checked(l) {
             done.push((*l).to_string());
-        } else if is_inprogress(l) {
-            inprog.push((*l).to_string());
         } else if md::is_empty_unchecked(l) {
             placeholder = Some((*l).to_string());
+        } else if md::is_task(l) {
+            open[lane_of(l)].push((*l).to_string());
         } else if !t.is_empty() {
-            todo.push((*l).to_string());
+            // a stray prose line — keep it with the untagged top bucket
+            open[LANES.len()].push((*l).to_string());
         }
     }
-    if inprog.is_empty() && done.is_empty() && !had_scaffold {
+    let tagged = open[..LANES.len()].iter().any(|b| !b.is_empty());
+    // Nothing to reorganize: no priority tags, no done tasks, no leftover scaffold.
+    if !tagged && done.is_empty() && !had_scaffold {
         return None;
     }
     let mut out: Vec<String> = Vec::new();
-    out.extend(todo);
+    // untagged open tasks stay on top, unheaded, followed by the empty-task placeholder
+    out.extend(open[LANES.len()].drain(..));
     out.push(placeholder.unwrap_or_else(|| "- [ ] ".to_string()));
-    if !inprog.is_empty() {
+    for (i, (_, heading)) in LANES.iter().enumerate() {
+        if open[i].is_empty() {
+            continue;
+        }
         out.push(String::new());
-        out.push("### In progress".to_string());
-        out.extend(inprog);
+        out.push((*heading).to_string());
+        out.extend(open[i].drain(..));
     }
     if !done.is_empty() {
         out.push(String::new());
@@ -174,30 +210,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn groups_todo_inprogress_done_into_lanes() {
+    fn buckets_open_tasks_by_priority() {
         let note = "\
 ## Focus
-- [ ] todo one
+- [ ] untagged one
+- [ ] top task #high
 - [x] finished it
-- [/] doing this
-- [ ] todo two
+- [ ] fire #urgent
+- [ ] someday #low
 - [ ]
 
 ## Notes
 after
 ";
         let out = sweep_content(note).unwrap();
-        // todo on top (in original order), placeholder kept, then In progress, then Done
         let focus = out.split("## Notes").next().unwrap();
-        let todo_pos = focus.find("todo one").unwrap();
-        let ip_hdr = focus.find("### In progress").unwrap();
-        let ip_task = focus.find("doing this").unwrap();
-        let done_hdr = focus.find("### Done").unwrap();
-        let done_task = focus.find("finished it").unwrap();
-        assert!(todo_pos < ip_hdr, "todo above In progress");
-        assert!(ip_hdr < ip_task && ip_task < done_hdr, "in-progress task under its header");
-        assert!(done_hdr < done_task, "done task under Done header");
+        // untagged stays on top; lanes descend urgent -> high -> low; done at the foot
+        let untagged = focus.find("untagged one").unwrap();
+        let urgent = focus.find("### Urgent").unwrap();
+        let high = focus.find("### High").unwrap();
+        let low = focus.find("### Low").unwrap();
+        let done = focus.find("### Done").unwrap();
+        assert!(untagged < urgent, "untagged above the priority lanes");
+        assert!(urgent < high && high < low, "lanes ordered urgent > high > low");
+        assert!(focus.find("fire").unwrap() > urgent && focus.find("fire").unwrap() < high);
+        assert!(low < done, "Done is last");
+        assert!(focus.find("finished it").unwrap() > done, "checked task under Done");
+        // no Medium lane emitted when empty
+        assert!(!focus.contains("### Medium"));
         assert!(out.contains("## Notes\nafter"), "later sections untouched");
+    }
+
+    #[test]
+    fn checked_go_to_done_regardless_of_tag() {
+        // a checked task with a priority tag lands under Done, not its priority lane
+        let note = "## Focus\n- [x] shipped it #high\n- [ ] open #high\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        let done = out.find("### Done").unwrap();
+        assert!(out.find("shipped it").unwrap() > done, "checked+tagged under Done");
+        assert!(out.find("open").unwrap() < done, "open task stays in its High lane");
+    }
+
+    #[test]
+    fn inprogress_keeps_its_mark_in_its_lane() {
+        let note = "## Focus\n- [/] doing #urgent\n- [ ] x\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        assert!(out.contains("### Urgent"));
+        // the in-progress mark survives, under its priority lane (no separate In progress)
+        assert!(out.contains("- [/] doing #urgent"));
+        assert!(!out.contains("### In progress"));
     }
 
     #[test]
@@ -216,15 +277,15 @@ after
     }
 
     #[test]
-    fn no_change_when_only_todos() {
-        // nothing to organize: no in-progress, no done, no scaffold
+    fn no_change_when_only_untagged_todos() {
+        // nothing to organize: no priority tags, no done, no scaffold
         let note = "## Focus\n- [ ] a\n- [ ] b\n- [ ] \n\n## Notes\n";
         assert!(sweep_content(note).is_none());
     }
 
     #[test]
     fn idempotent_on_already_swept() {
-        let note = "## Focus\n- [ ] a\n- [ ] \n\n### In progress\n- [/] b\n\n---\n### Done\n- [x] c\n\n## Notes\n";
+        let note = "## Focus\n- [ ] a\n- [ ] \n\n### Urgent\n- [ ] b #urgent\n\n---\n### Done\n- [x] c\n\n## Notes\n";
         // a second sweep of swept content produces no further change
         let once = sweep_content(note);
         let twice = match &once {
