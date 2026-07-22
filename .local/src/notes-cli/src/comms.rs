@@ -15,6 +15,7 @@
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
+use crate::md;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -69,8 +70,11 @@ pub fn refresh(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     let lines = surface_lines(&p.name);
     let new_content = render_comms(&content, &lines);
     if new_content != content {
-        fs::write(note, &new_content)?;
-        log.info("today", &format!("refreshed ## Comms ({} item(s))", lines.len()));
+        md::write_atomic(note, &new_content)?;
+        log.info(
+            "today",
+            &format!("refreshed ## Comms ({} item(s))", lines.len()),
+        );
     }
     Ok(())
 }
@@ -102,7 +106,7 @@ pub fn refresh_cmd(p: &Profile, log: &Logger) -> Result<()> {
 
 /// `notes comms status`: show configured accounts and whether each surface file exists.
 /// Read-only introspection — no network, no secrets touched (rbw item names only).
-pub fn status(_p: &Logger) -> Result<()> {
+pub fn status(_log: &Logger) -> Result<()> {
     let c = config::comms_config()?;
     if c.accounts.is_empty() {
         println!("comms: not configured (no [[comms.account]] entries)");
@@ -112,7 +116,11 @@ pub fn status(_p: &Logger) -> Result<()> {
     println!("ollama:      {} ({})", c.ollama_url, c.ollama_model);
     for a in &c.accounts {
         let surface = config::comms_surface_file(&c, &a.surface_profile);
-        let has = if surface.exists() { "surfaced" } else { "no surface file" };
+        let has = if surface.exists() {
+            "surfaced"
+        } else {
+            "no surface file"
+        };
         println!(
             "  {} -> {} (rbw: {}) [{}]",
             a.name, a.surface_profile, a.rbw_entry, has
@@ -146,7 +154,10 @@ mod tests {
         ];
         let once = render_comms(BASE, &lines);
         let twice = render_comms(&once, &lines);
-        assert_eq!(once, twice, "re-rendering its own output must be byte-stable");
+        assert_eq!(
+            once, twice,
+            "re-rendering its own output must be byte-stable"
+        );
     }
 
     #[test]

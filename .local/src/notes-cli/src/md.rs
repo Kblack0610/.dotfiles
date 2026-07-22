@@ -24,7 +24,11 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     std::fs::rename(&tmp, path).with_context(|| {
         // Best-effort cleanup so a failed rename doesn't litter the vault with temp files.
         let _ = std::fs::remove_file(&tmp);
-        format!("atomically renaming {} -> {}", tmp.display(), path.display())
+        format!(
+            "atomically renaming {} -> {}",
+            tmp.display(),
+            path.display()
+        )
     })?;
     Ok(())
 }
@@ -40,35 +44,82 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
 /// than at each call site.
 pub const ROLLUP_START: &str = "<!-- rollup:start -->";
 
-/// Capture the raw lines under a `## heading` up to the next `## `, a [`ROLLUP_START`]
-/// sentinel, or EOF. Returns `None` if the heading is absent, `Some(vec)` (possibly
-/// empty) otherwise. Heading match is case-insensitive and tolerant of trailing
-/// whitespace. `### ` subsections do NOT end a section (see tests).
+/// 0-based `[start, end)` line indices of the AUTHORED region under `## heading`: the
+/// lines after the heading, up to the next `## ` H2, a [`ROLLUP_START`] sentinel, or EOF.
+/// `None` when the heading is absent. Heading match is case-insensitive and tolerant of
+/// trailing whitespace; `### ` subsections do NOT end a section (their third byte is `#`,
+/// not a space, so they never match the `"## "` prefix).
+///
+/// THE single place that knows the authored-region boundary rule. Every reader and writer
+/// of a note section resolves its bounds here — [`capture`], [`section_lines`],
+/// [`section_text`], [`section_numbered`] and [`edit_first_in_section`] are all slice
+/// operations over this span. Hand-rolling the walk per call site is what let the read and
+/// write paths drift apart (e.g. only the first `## heading` matching here, but a re-armed
+/// flag matching a second one there).
+pub fn section_span(lines: &[&str], heading: &str) -> Option<std::ops::Range<usize>> {
+    let start = lines.iter().position(|l| {
+        l.strip_prefix("## ")
+            .is_some_and(|rest| rest.trim().eq_ignore_ascii_case(heading))
+    })? + 1;
+    let end = lines[start..]
+        .iter()
+        .position(|l| l.starts_with("## ") || l.trim() == ROLLUP_START)
+        .map_or(lines.len(), |i| start + i);
+    Some(start..end)
+}
+
+/// Capture the raw lines of the authored region under `## heading`. Returns `None` if the
+/// heading is absent, `Some(vec)` (possibly empty) otherwise. Thin wrapper over
+/// [`section_span`]; see it for the boundary rule.
 fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
-    let mut collecting = false;
-    let mut out = Vec::new();
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("## ") {
-            if collecting {
-                break; // next H2 section ends the current one
-            }
-            if rest.trim().eq_ignore_ascii_case(heading) {
-                collecting = true;
-                continue;
-            }
-        }
-        if collecting {
-            if line.trim() == ROLLUP_START {
-                break; // generated rollup block ends the authored part of the section
-            }
-            out.push(line);
+    let lines: Vec<&str> = content.lines().collect();
+    let span = section_span(&lines, heading)?;
+    Some(lines[span].to_vec())
+}
+
+/// Authored-region lines paired with their 1-based FILE line number, for callers that need
+/// to JUMP to a line rather than just read it (the cross-profile cockpit). Empty when the
+/// heading is absent. Same boundary rule as [`section_span`].
+pub fn section_numbered<'a>(content: &'a str, heading: &str) -> Vec<(usize, &'a str)> {
+    let lines: Vec<&str> = content.lines().collect();
+    match section_span(&lines, heading) {
+        Some(span) => span.map(|i| (i + 1, lines[i])).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Rewrite the FIRST line in `## heading`'s authored region satisfying `pred`. `f` returns
+/// `Some(new_line)` to replace that line, or `None` to delete it entirely. Returns
+/// `(new_content, matched_original_line)`, or `None` when the heading is absent or nothing
+/// matched. `content`'s trailing-newline shape is preserved.
+///
+/// The single mutation path for section edits, so "which lines may I touch?" is answered by
+/// [`section_span`] rather than re-derived per verb.
+pub fn edit_first_in_section<P, F>(
+    content: &str,
+    heading: &str,
+    pred: P,
+    f: F,
+) -> Option<(String, String)>
+where
+    P: Fn(&str) -> bool,
+    F: FnOnce(&str) -> Option<String>,
+{
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
+    let matched = lines[idx].to_string();
+    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    match f(lines[idx]) {
+        Some(new_line) => out[idx] = new_line,
+        None => {
+            out.remove(idx);
         }
     }
-    if collecting {
-        Some(out)
-    } else {
-        None
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
     }
+    Some((joined, matched))
 }
 
 fn is_comment_only(line: &str) -> bool {
@@ -114,6 +165,14 @@ pub fn is_checked(line: &str) -> bool {
     t.starts_with("- [x]") || t.starts_with("- [X]")
 }
 
+/// An OPEN task line: a real task, not checked off, not the empty `- [ ]` placeholder.
+/// The shared definition of "something still on the list" — `## Focus` cockpit verbs and
+/// the `## Work` job roster must agree on it, so it lives here rather than being spelled
+/// out at each call site.
+pub fn is_open_task(line: &str) -> bool {
+    is_task(line) && !is_checked(line) && !is_empty_unchecked(line)
+}
+
 /// `- [ ]` with no text after it.
 pub fn is_empty_unchecked(line: &str) -> bool {
     match line.trim().strip_prefix("- [ ]") {
@@ -133,16 +192,22 @@ pub fn find_since(line: &str) -> Option<NaiveDate> {
 /// Parse a bracket's inner text as a due date. Accepts a few human-friendly forms
 /// (separator `-` or `/`), all requiring an explicit year so bare `[3-4]` prose
 /// never false-matches:
-///   - ISO   `YYYY-MM-DD`      (e.g. `2026-07-02`)
-///   - US     `M-D-YY`         (e.g. `7-02-26` → 2026-07-02)
-///   - US     `M-D-YYYY`       (e.g. `7/2/2026`)
-/// Two-part first group of length 4 ⇒ ISO (year-first); otherwise month-first with
+///
+/// - ISO   `YYYY-MM-DD`      (e.g. `2026-07-02`)
+/// - US     `M-D-YY`         (e.g. `7-02-26` -> 2026-07-02)
+/// - US     `M-D-YYYY`       (e.g. `7/2/2026`)
+///
+/// Two-part first group of length 4 means ISO (year-first); otherwise month-first with
 /// the year last (US ordering — the author's convention). Returns None on anything
 /// that isn't three all-numeric groups with a 2- or 4-digit year.
 fn parse_due_token(inner: &str) -> Option<NaiveDate> {
     let sep = if inner.contains('/') { '/' } else { '-' };
     let parts: Vec<&str> = inner.split(sep).collect();
-    if parts.len() != 3 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
     let (ys, ms, ds) = if parts[0].len() == 4 {
@@ -194,11 +259,13 @@ pub fn find_due(line: &str) -> Option<NaiveDate> {
 /// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
 /// then `[A-Za-z0-9_/-]*`, so `#wedding` and nested `#wedding/venue` both parse.
 /// Deliberately skips (mirroring the care `find_due_span` takes with brackets):
-///   - the leading `##`-style markdown **heading marker** (its text is still scanned);
-///   - a `#` glued to the end of a word/number, `_`, `/`, `.`, `[`, or another `#`
-///     — covers `foo#bar`, URL fragments `site.com/#top`, and the `[[note#anchor]]`
+///
+/// - the leading `##`-style markdown **heading marker** (its text is still scanned);
+/// - a `#` glued to the end of a word/number, `_`, `/`, `.`, `[`, or another `#`
+///   - covers `foo#bar`, URL fragments `site.com/#top`, and the `[[note#anchor]]`
 ///     wikilink form;
-///   - anything inside a `` `backtick` `` inline-code span.
+/// - anything inside a `` `backtick` `` inline-code span.
+///
 /// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
     let bytes = line.as_bytes();
@@ -454,7 +521,10 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
                 while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
                     end -= 1;
                 }
-                if let Some(rank) = PRIORITY_TAGS.iter().position(|t| *t == line[tag_start..end].to_lowercase()) {
+                if let Some(rank) = PRIORITY_TAGS
+                    .iter()
+                    .position(|t| *t == line[tag_start..end].to_lowercase())
+                {
                     // Cut `#tag` plus one neighbouring space so no double space is left.
                     let (mut cut_s, mut cut_e) = (i, k);
                     if cut_s > start && bytes[cut_s - 1] == b' ' {
@@ -488,22 +558,48 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     )
 }
 
+/// Rewrite a task line's checkbox to `mark` (`' '`, `'/'`, `'x'`) WHATEVER its current
+/// state, preserving indentation and everything after the checkbox. Non-task lines, and
+/// malformed ones whose `- [` is not closed by a single-character state, pass through
+/// unchanged.
+///
+/// This exists because `[/]` (in-progress, set by the editor's `<leader>t` cycle) is a
+/// first-class checkbox state alongside `[ ]` and `[x]`. A caller that closes a task by
+/// searching for the literal `- [ ]` silently no-ops on an in-progress task — it matches
+/// the open-task filter but contains no `- [ ]` to replace. Route every checkbox mutation
+/// through here so that class of bug cannot recur.
+pub fn set_checkbox(line: &str, mark: char) -> String {
+    if !is_task(line) {
+        return line.to_string();
+    }
+    let indent_end = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_end);
+    // `is_task` guarantees `rest` opens with `- [`; byte 4 is the closing `]` exactly when
+    // the state is a single character. Bytes 0..5 are then all ASCII, so slicing is safe.
+    match rest.as_bytes().get(4) {
+        Some(b']') => format!("{indent}- [{mark}]{}", &rest[5..]),
+        _ => line.to_string(),
+    }
+}
+
 /// Reset a carried task's in-progress checkbox `[/]` back to an open `[ ]`, preserving
 /// indentation. Status (`[/]`) is a same-day signal set in the editor (see markdown.lua's
 /// `<leader>t` cycle); it does not survive the daily carry — only the open todo + its
-/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry).
+/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry),
+/// and are deliberately left alone should they ever arrive: only `[/]` is reset.
 fn reset_status(line: &str) -> String {
-    let indent_end = line.len() - line.trim_start().len();
-    let (indent, rest) = line.split_at(indent_end);
-    match rest.strip_prefix("- [/]") {
-        Some(tail) => format!("{indent}- [ ]{tail}"),
-        None => line.to_string(),
+    if line.trim_start().starts_with("- [/]") {
+        set_checkbox(line, ' ')
+    } else {
+        line.to_string()
     }
 }
 
 /// Stamp a task line with an up-to-date `(Nd) <!-- since:DATE -->`.
+///
 /// - If the line already has a `since:` origin, recompute the day count from it.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
+///
 /// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped;
 /// an in-progress `[/]` checkbox is reset to `[ ]` (status is a same-day signal).
 /// Non-task lines pass through unchanged.
@@ -520,7 +616,12 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
             let comment_start = core.find("<!--").unwrap_or(core.len());
             let before = strip_trailing_day(core[..comment_start].trim_end());
             let days = (today - date).num_days().max(0);
-            format!("{} ({}d) <!-- since:{} -->", before, days, date.format("%Y-%m-%d"))
+            format!(
+                "{} ({}d) <!-- since:{} -->",
+                before,
+                days,
+                date.format("%Y-%m-%d")
+            )
         }
         None => {
             let days = (today - origin_if_new).num_days().max(0);
@@ -549,8 +650,11 @@ pub fn task_key(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved.
     let (stripped, _) = split_priority(&stripped);
     let t = stripped.trim();
+    // Every checkbox state must strip, including the in-progress `[/]` — otherwise an
+    // in-progress task's key carries the checkbox and never matches its open counterpart.
     let t = t
         .strip_prefix("- [ ]")
+        .or_else(|| t.strip_prefix("- [/]"))
         .or_else(|| t.strip_prefix("- [x]"))
         .or_else(|| t.strip_prefix("- [X]"))
         .unwrap_or(t);
@@ -646,10 +750,7 @@ nothing here
 after
 ";
         let lines = section_lines(note, "Focus").unwrap();
-        assert_eq!(
-            lines,
-            vec!["- [ ] mine", "### acmecorp", "- [ ] theirs"]
-        );
+        assert_eq!(lines, vec!["- [ ] mine", "### acmecorp", "- [ ] theirs"]);
     }
 
     /// The rollup sentinel ends the AUTHORED part of a section. This single boundary is
@@ -738,6 +839,38 @@ after
     }
 
     #[test]
+    fn task_key_strips_the_in_progress_checkbox() {
+        // `[/]` is a real checkbox state; if it does not strip, an in-progress task's key
+        // carries the checkbox and never matches its open counterpart (so `focus done`
+        // cannot find it by text).
+        assert_eq!(task_key("- [/] wire it up"), "wire it up");
+        assert_eq!(task_key("- [/] wire it up"), task_key("- [ ] wire it up"));
+        assert_eq!(
+            task_key("    - [/] Wire It Up (2d) <!-- since:2026-07-14 -->"),
+            "wire it up"
+        );
+    }
+
+    #[test]
+    fn set_checkbox_rewrites_every_state_and_keeps_indent() {
+        // The point of the helper: it does not care what the current state is.
+        assert_eq!(set_checkbox("- [ ] a", 'x'), "- [x] a");
+        assert_eq!(set_checkbox("- [/] a", 'x'), "- [x] a"); // the bug this prevents
+        assert_eq!(set_checkbox("- [x] a", 'x'), "- [x] a");
+        assert_eq!(set_checkbox("- [X] a", ' '), "- [ ] a");
+        assert_eq!(set_checkbox("- [x] a", '/'), "- [/] a");
+        // Indentation and everything after the checkbox survive verbatim.
+        assert_eq!(
+            set_checkbox("    - [/] a (2d) <!-- since:2026-07-14 --> #low", 'x'),
+            "    - [x] a (2d) <!-- since:2026-07-14 --> #low"
+        );
+        // Non-tasks and malformed checkboxes pass through untouched.
+        assert_eq!(set_checkbox("just prose", 'x'), "just prose");
+        assert_eq!(set_checkbox("- [] a", 'x'), "- [] a");
+        assert_eq!(set_checkbox("- [", 'x'), "- [");
+    }
+
+    #[test]
     fn task_key_ignores_priority_tag() {
         // Same task, tag before the stamp vs. no tag -> same identity.
         let a = task_key("- [ ] ship it #low (3d) <!-- since:2026-05-31 -->");
@@ -751,7 +884,10 @@ after
         // The reported bug shape: tag buried before the stamp AND a stale dup after it.
         let (core, prio) =
             split_priority("- [ ] add priority tags #low (1d) <!-- since:2026-07-13 --> #low");
-        assert_eq!(core, "- [ ] add priority tags (1d) <!-- since:2026-07-13 -->");
+        assert_eq!(
+            core,
+            "- [ ] add priority tags (1d) <!-- since:2026-07-13 -->"
+        );
         assert_eq!(prio, Some("#low"));
     }
 
@@ -773,7 +909,11 @@ after
     #[test]
     fn stamp_moves_priority_tag_last() {
         // New item: tag ends up after the stamp, not before it.
-        let out = stamp_line("- [ ] get androids onto fleet #low", d("2026-07-14"), d("2026-07-13"));
+        let out = stamp_line(
+            "- [ ] get androids onto fleet #low",
+            d("2026-07-14"),
+            d("2026-07-13"),
+        );
         assert_eq!(
             out,
             "- [ ] get androids onto fleet (1d) <!-- since:2026-07-13 --> #low"
@@ -785,10 +925,7 @@ after
         // An in-progress task carried to the next day reverts to an open todo, but
         // keeps its priority tag (which does carry).
         let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(
-            out,
-            "- [ ] wire it up (1d) <!-- since:2026-07-14 --> #high"
-        );
+        assert_eq!(out, "- [ ] wire it up (1d) <!-- since:2026-07-14 --> #high");
         // Indentation on a nested task is preserved.
         let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
         assert_eq!(nested, "  - [ ] sub-step (1d) <!-- since:2026-07-14 -->");
@@ -824,8 +961,14 @@ after
 
     #[test]
     fn find_due_parses_inline() {
-        assert_eq!(find_due("- [ ] pay rent [2026-07-15]"), Some(d("2026-07-15")));
-        assert_eq!(find_due("- [ ] renew [2026-08-01] (2d)"), Some(d("2026-08-01")));
+        assert_eq!(
+            find_due("- [ ] pay rent [2026-07-15]"),
+            Some(d("2026-07-15"))
+        );
+        assert_eq!(
+            find_due("- [ ] renew [2026-08-01] (2d)"),
+            Some(d("2026-08-01"))
+        );
     }
 
     #[test]
@@ -843,7 +986,10 @@ after
 
     #[test]
     fn find_due_checkbox_and_date_coexist() {
-        assert_eq!(find_due("- [x] done early [2026-01-02]"), Some(d("2026-01-02")));
+        assert_eq!(
+            find_due("- [x] done early [2026-01-02]"),
+            Some(d("2026-01-02"))
+        );
     }
 
     #[test]
@@ -867,7 +1013,10 @@ after
 
     #[test]
     fn find_due_picks_date_past_wikilink() {
-        assert_eq!(find_due("[[note]] thing [2026-07-15]"), Some(d("2026-07-15")));
+        assert_eq!(
+            find_due("[[note]] thing [2026-07-15]"),
+            Some(d("2026-07-15"))
+        );
     }
 
     #[test]
@@ -894,7 +1043,10 @@ after
     #[test]
     fn hashtags_case_insensitive_and_nested() {
         assert_eq!(find_hashtags("#Wedding"), vec!["wedding"]);
-        assert_eq!(find_hashtags("plan #wedding/venue now"), vec!["wedding/venue"]);
+        assert_eq!(
+            find_hashtags("plan #wedding/venue now"),
+            vec!["wedding/venue"]
+        );
     }
 
     #[test]
@@ -918,7 +1070,10 @@ after
     fn hashtags_skip_code_span_and_trim_punctuation() {
         assert!(find_hashtags("run `git commit #123` now").is_empty());
         assert_eq!(find_hashtags("done #wedding."), vec!["wedding"]);
-        assert_eq!(find_hashtags("(#wedding, #house)"), vec!["wedding", "house"]);
+        assert_eq!(
+            find_hashtags("(#wedding, #house)"),
+            vec!["wedding", "house"]
+        );
     }
 
     #[test]
@@ -974,7 +1129,10 @@ after
 
     #[test]
     fn strip_every_removes_token_and_collapses_space() {
-        assert_eq!(strip_every("- [ ] timesheets (every:fri)"), "- [ ] timesheets");
+        assert_eq!(
+            strip_every("- [ ] timesheets (every:fri)"),
+            "- [ ] timesheets"
+        );
         assert_eq!(strip_every("- [ ] x (every:mon,thu) more"), "- [ ] x more");
         assert_eq!(strip_every("- [ ] plain task"), "- [ ] plain task");
     }
@@ -982,13 +1140,22 @@ after
     #[test]
     fn parse_yaml_scalar_handles_quotes_and_absent() {
         let y = "name: pmp-api-health\ndescription: \"PMP prod API liveness\"\nprobe: http\n# comment: ignore\ninterval: 5m\nempty:\n";
-        assert_eq!(parse_yaml_scalar(y, "name").as_deref(), Some("pmp-api-health"));
-        assert_eq!(parse_yaml_scalar(y, "description").as_deref(), Some("PMP prod API liveness"));
+        assert_eq!(
+            parse_yaml_scalar(y, "name").as_deref(),
+            Some("pmp-api-health")
+        );
+        assert_eq!(
+            parse_yaml_scalar(y, "description").as_deref(),
+            Some("PMP prod API liveness")
+        );
         assert_eq!(parse_yaml_scalar(y, "probe").as_deref(), Some("http"));
         assert_eq!(parse_yaml_scalar(y, "interval").as_deref(), Some("5m"));
         assert_eq!(parse_yaml_scalar(y, "comment"), None); // comment line skipped
         assert_eq!(parse_yaml_scalar(y, "empty"), None); // empty value → None
         assert_eq!(parse_yaml_scalar(y, "missing"), None);
-        assert_eq!(parse_yaml_scalar("k: 'single quoted'", "k").as_deref(), Some("single quoted"));
+        assert_eq!(
+            parse_yaml_scalar("k: 'single quoted'", "k").as_deref(),
+            Some("single quoted")
+        );
     }
 }

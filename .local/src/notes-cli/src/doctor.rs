@@ -54,7 +54,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     if p.root.is_dir() {
         r.add(Status::Pass, "root", &p.root.display().to_string());
     } else {
-        r.add(Status::Fail, "root", &format!("missing {}", p.root.display()));
+        r.add(
+            Status::Fail,
+            "root",
+            &format!("missing {}", p.root.display()),
+        );
     }
     dir_check(&mut r, "daily", &p.daily, false);
     dir_check(&mut r, "refs", &p.refs, true);
@@ -92,8 +96,12 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
             if s.dead.is_empty() {
                 r.add(Status::Pass, "dead links", "none");
             } else {
-                let sample: Vec<String> =
-                    s.dead.iter().take(5).map(|(a, b)| format!("{a}→{b}")).collect();
+                let sample: Vec<String> = s
+                    .dead
+                    .iter()
+                    .take(5)
+                    .map(|(a, b)| format!("{a}→{b}"))
+                    .collect();
                 r.add(
                     Status::Warn,
                     "dead links",
@@ -127,7 +135,11 @@ fn dir_check(r: &mut Report, label: &str, path: &Path, warn_only: bool) {
     if path.is_dir() {
         r.add(Status::Pass, label, &path.display().to_string());
     } else {
-        let status = if warn_only { Status::Warn } else { Status::Fail };
+        let status = if warn_only {
+            Status::Warn
+        } else {
+            Status::Fail
+        };
         r.add(status, label, &format!("missing {}", path.display()));
     }
 }
@@ -136,7 +148,11 @@ fn file_check(r: &mut Report, label: &str, path: &Path) {
     if path.is_file() {
         r.add(Status::Pass, label, "");
     } else {
-        r.add(Status::Warn, label, &format!("missing {} (run `notes today`)", path.display()));
+        r.add(
+            Status::Warn,
+            label,
+            &format!("missing {} (run `notes today`)", path.display()),
+        );
     }
 }
 
@@ -189,7 +205,11 @@ fn check_gaps(r: &mut Report, p: &Profile) {
                 "{} un-summarized day(s): {}{}",
                 gaps.len(),
                 sample.join(", "),
-                if gaps.len() > sample.len() { " …" } else { "" }
+                if gaps.len() > sample.len() {
+                    " …"
+                } else {
+                    ""
+                }
             ),
         );
     }
@@ -225,7 +245,11 @@ fn check_headings(r: &mut Report, p: &Profile) {
         r.add(
             Status::Warn,
             "daily headings",
-            &format!("{} note(s) missing Focus/Due: {}", bad.len(), bad.join(", ")),
+            &format!(
+                "{} note(s) missing Focus/Due: {}",
+                bad.len(),
+                bad.join(", ")
+            ),
         );
     }
 }
@@ -234,7 +258,11 @@ fn check_sync(r: &mut Report) {
     let home = std::env::var("HOME").unwrap_or_default();
     let log = Path::new(&home).join(".local/state/notes-sync/sync.log");
     if !log.exists() {
-        r.add(Status::Warn, "sync log", "not found (sync may be unconfigured here)");
+        r.add(
+            Status::Warn,
+            "sync log",
+            "not found (sync may be unconfigured here)",
+        );
         return;
     }
     match fs::metadata(&log).and_then(|m| m.modified()) {

@@ -30,7 +30,9 @@ pub fn run(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         };
         fs::write(
             file,
-            format!("---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"),
+            format!(
+                "---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"
+            ),
         )?;
     }
 
@@ -151,7 +153,10 @@ fn seed_one(
             if !active.is_empty() && !force {
                 log.warn(
                     "seed",
-                    &format!("{} already has Active items — skipping (use --force)", path.display()),
+                    &format!(
+                        "{} already has Active items — skipping (use --force)",
+                        path.display()
+                    ),
                 );
                 return Ok(());
             }
@@ -177,7 +182,12 @@ fn seed_one(
     fs::write(path, out)?;
     log.info(
         "seed",
-        &format!("wrote {} ({} active, {} done)", path.display(), active.len(), done.len()),
+        &format!(
+            "wrote {} ({} active, {} done)",
+            path.display(),
+            active.len(),
+            done.len()
+        ),
     );
     Ok(())
 }

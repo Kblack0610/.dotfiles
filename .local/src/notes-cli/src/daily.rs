@@ -49,7 +49,10 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
         "inbox" => p.inbox.clone(),
-        "inbox-today" => p.inbox.join(format!("{}.md", Local::now().date_naive().format("%Y-%m-%d"))),
+        "inbox-today" => p.inbox.join(format!(
+            "{}.md",
+            Local::now().date_naive().format("%Y-%m-%d")
+        )),
         _ => return None,
     })
 }
@@ -109,7 +112,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         if let Some(lines) = md::section_lines(&content, "Focus") {
             let carried: Vec<String> = lines
                 .iter()
-                .filter(|l| md::is_task(l) && !md::is_checked(l) && !md::is_empty_unchecked(l))
+                .filter(|l| md::is_open_task(l))
                 .map(|l| md::stamp_line(l, today, prev_date))
                 .collect();
             (focus_keep, focus_defer) = route_by_due(&carried, today);
@@ -117,8 +120,8 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
         // Due = "on deck" (formerly Priority): carry forward, pushing far-future items
         // out to scheduled. Fall back to a legacy `## Priority` section for migration.
-        let due_src = md::section_lines(&content, "Due")
-            .or_else(|| md::section_lines(&content, "Priority"));
+        let due_src =
+            md::section_lines(&content, "Due").or_else(|| md::section_lines(&content, "Priority"));
         if let Some(lines) = due_src {
             let carried = carry(&lines, today, prev_date);
             (due_keep, due_defer) = route_by_due(&carried, today);
@@ -191,10 +194,16 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
-        log.info("today", &format!("surfaced {n_promoted} scheduled item(s) into Due"));
+        log.info(
+            "today",
+            &format!("surfaced {n_promoted} scheduled item(s) into Due"),
+        );
     }
     if n_recurring > 0 {
-        log.info("today", &format!("emitted {n_recurring} recurring item(s) into Due"));
+        log.info(
+            "today",
+            &format!("emitted {n_recurring} recurring item(s) into Due"),
+        );
     }
 
     // Persist the scheduled backlog: pruned (promoted removed) + newly deferred items.
@@ -218,7 +227,10 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         md::write_atomic(&p.scheduled, &sched_after)
             .with_context(|| format!("writing {}", p.scheduled.display()))?;
         if n_deferred > 0 {
-            log.info("today", &format!("deferred {n_deferred} item(s) to scheduled backlog"));
+            log.info(
+                "today",
+                &format!("deferred {n_deferred} item(s) to scheduled backlog"),
+            );
         }
     }
     Ok(())
@@ -366,11 +378,7 @@ fn emit_recurring(content: &str, today: NaiveDate) -> Vec<String> {
             in_active = rest.trim().eq_ignore_ascii_case("Active");
             continue;
         }
-        if in_active
-            && md::is_task(line)
-            && !md::is_checked(line)
-            && md::recurs_on(line, today)
-        {
+        if in_active && md::is_task(line) && !md::is_checked(line) && md::recurs_on(line, today) {
             out.push(md::stamp_line(&md::strip_every(line), today, today));
         }
     }
@@ -482,11 +490,16 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // Surface the inbox as a link + pending count when there's anything to triage.
     let (pending, _stale) = inbox::backlog_counts(p);
     let inbox_link = if pending > 0 {
-        format!(" · Inbox ({pending}): [[{}]]", config::wikilink(&p.root, &p.inbox))
+        format!(
+            " · Inbox ({pending}): [[{}]]",
+            config::wikilink(&p.root, &p.inbox)
+        )
     } else {
         String::new()
     };
-    content.push_str(&format!("\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"));
+    content.push_str(&format!(
+        "\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"
+    ));
     md::write_atomic(note, &content)?;
     Ok(())
 }
@@ -544,7 +557,7 @@ fn job_focus_tasks(content: &str) -> Vec<String> {
     md::section_lines(content, "Focus")
         .unwrap_or_default()
         .into_iter()
-        .filter(|l| md::is_task(l) && !md::is_checked(l) && !md::is_empty_unchecked(l))
+        .filter(|l| md::is_open_task(l))
         .collect()
 }
 
@@ -690,7 +703,9 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     } else {
         let mut block = String::from("\n\n## Inbox\n");
         for line in &bodies {
-            let Some(core) = inbox_core(line) else { continue };
+            let Some(core) = inbox_core(line) else {
+                continue;
+            };
             let mark = if checked.contains(&core) { "x" } else { " " };
             // Surface a short session id (`(sess 8e87fd5e)`) so the capture links back to
             // its conversation via `claude -r <id>`; only when the source carried a tag.
@@ -703,7 +718,10 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     };
     if new_content != content {
         md::write_atomic(note, &new_content)?;
-        log.info("today", &format!("refreshed {} inbox capture(s) in ## Inbox", bodies.len()));
+        log.info(
+            "today",
+            &format!("refreshed {} inbox capture(s) in ## Inbox", bodies.len()),
+        );
     }
     Ok(())
 }
@@ -845,7 +863,10 @@ fn refresh_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     };
     if new_content != content {
         md::write_atomic(note, &new_content)?;
-        log.info("today", &format!("refreshed ## Work ({} job(s))", lines.len()));
+        log.info(
+            "today",
+            &format!("refreshed ## Work ({} job(s))", lines.len()),
+        );
     }
     Ok(())
 }
@@ -872,7 +893,10 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     };
     if new_content != content {
         md::write_atomic(note, &new_content)?;
-        log.info("today", &format!("refreshed {} watch(es) in ## Watches", lines.len()));
+        log.info(
+            "today",
+            &format!("refreshed {} watch(es) in ## Watches", lines.len()),
+        );
     }
     Ok(())
 }
@@ -892,8 +916,13 @@ fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
         if let Some(parent) = p.scheduled.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::rename(&p.carryover, &p.scheduled)
-            .with_context(|| format!("migrating {} → {}", p.carryover.display(), p.scheduled.display()))?;
+        fs::rename(&p.carryover, &p.scheduled).with_context(|| {
+            format!(
+                "migrating {} → {}",
+                p.carryover.display(),
+                p.scheduled.display()
+            )
+        })?;
         // Relabel the default header/tag/description so the migrated file reads as
         // Scheduled. Exact-match replacements — a no-op if the user customized them.
         if let Ok(c) = fs::read_to_string(&p.scheduled) {
@@ -930,7 +959,13 @@ fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
     Ok(())
 }
 
-fn ensure_backlog_file(path: &Path, title: &str, tag: &str, desc: &str, log: &Logger) -> Result<()> {
+fn ensure_backlog_file(
+    path: &Path,
+    title: &str,
+    tag: &str,
+    desc: &str,
+    log: &Logger,
+) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
@@ -1122,17 +1157,27 @@ after
 
         // The `## Work` roster: g with a link + count, e listed link-less.
         assert!(out.contains("## Work"), "no Work section: {out}");
-        assert!(out.contains(&format!("- g - [[employment/jobs/g/log/{today}]] (2 open)")), "{out}");
+        assert!(
+            out.contains(&format!("- g - [[employment/jobs/g/log/{today}]] (2 open)")),
+            "{out}"
+        );
         assert!(out.contains("- e - (no note yet)"), "{out}");
         // The legacy inline block is gone from Focus; the personal task and footer survive.
-        assert!(!out.contains(md::ROLLUP_START), "legacy block not migrated: {out}");
+        assert!(
+            !out.contains(md::ROLLUP_START),
+            "legacy block not migrated: {out}"
+        );
         assert!(!out.contains("### g "), "legacy heading left behind: {out}");
         assert!(out.contains("- [ ] mine"));
         assert!(out.contains("Backlogs: [[backlogs/fun]]"));
 
         // Byte-stable on a second run (no churn given shell-startup + 5-min sync).
         refresh_work(&prof, &log, &pnote).unwrap();
-        assert_eq!(fs::read_to_string(&pnote).unwrap(), out, "Work section churned");
+        assert_eq!(
+            fs::read_to_string(&pnote).unwrap(),
+            out,
+            "Work section churned"
+        );
 
         std::env::remove_var("NOTES_CONFIG");
         let _ = fs::remove_dir_all(&dir);
@@ -1166,13 +1211,26 @@ after
     #[test]
     fn resolve_known_targets() {
         let p = profile("/vault");
-        assert_eq!(resolve_path(&p, "daily-dir").unwrap(), PathBuf::from("/vault/journal/daily"));
-        assert_eq!(resolve_path(&p, "refs").unwrap(), PathBuf::from("/vault/journal/refs"));
+        assert_eq!(
+            resolve_path(&p, "daily-dir").unwrap(),
+            PathBuf::from("/vault/journal/daily")
+        );
+        assert_eq!(
+            resolve_path(&p, "refs").unwrap(),
+            PathBuf::from("/vault/journal/refs")
+        );
         assert_eq!(resolve_path(&p, "root").unwrap(), PathBuf::from("/vault"));
-        assert_eq!(resolve_path(&p, "fun").unwrap(), PathBuf::from("/vault/journal/backlogs/fun.md"));
+        assert_eq!(
+            resolve_path(&p, "fun").unwrap(),
+            PathBuf::from("/vault/journal/backlogs/fun.md")
+        );
         // refs-today is under refs; daily note is under daily-dir
-        assert!(resolve_path(&p, "refs-today").unwrap().starts_with("/vault/journal/refs"));
-        assert!(resolve_path(&p, "daily").unwrap().starts_with("/vault/journal/daily"));
+        assert!(resolve_path(&p, "refs-today")
+            .unwrap()
+            .starts_with("/vault/journal/refs"));
+        assert!(resolve_path(&p, "daily")
+            .unwrap()
+            .starts_with("/vault/journal/daily"));
         assert!(resolve_path(&p, "daily").unwrap().extension().is_some()); // .md file
     }
 
@@ -1203,7 +1261,11 @@ after
         assert_eq!(defer, v(&["- [ ] far [2026-07-15]"]));
         assert_eq!(
             keep,
-            v(&["- [ ] soon [2026-07-01]", "- [ ] overdue [2026-06-01]", "- [ ] undated"])
+            v(&[
+                "- [ ] soon [2026-07-01]",
+                "- [ ] overdue [2026-06-01]",
+                "- [ ] undated"
+            ])
         );
     }
 
@@ -1233,8 +1295,12 @@ after
         // soon + overdue surface; far + undated stay; Done is never touched
         assert_eq!(promoted.len(), 2);
         // surfaced lines have the [date] token stripped and a since: stamp added
-        assert!(promoted.iter().any(|l| l.contains("soon") && !l.contains("2026-07-01") && l.contains("since:2026-06-30")));
-        assert!(promoted.iter().any(|l| l.contains("overdue") && !l.contains("2026-06-20") && l.contains("since:2026-06-30")));
+        assert!(promoted.iter().any(|l| l.contains("soon")
+            && !l.contains("2026-07-01")
+            && l.contains("since:2026-06-30")));
+        assert!(promoted.iter().any(|l| l.contains("overdue")
+            && !l.contains("2026-06-20")
+            && l.contains("since:2026-06-30")));
         // the pen keeps the far-future + undated items and the whole Done section
         assert!(remaining.contains("- [ ] far [2026-07-15]"));
         assert!(remaining.contains("- [ ] undated task"));
@@ -1269,7 +1335,11 @@ after
         assert!(!lane.contains("nothing"));
 
         // an empty Current lane → None (so caller falls back)
-        std::fs::write(p.project_index.as_ref().unwrap(), "## Current\n- \n\n## Backlog\n- x\n").unwrap();
+        std::fs::write(
+            p.project_index.as_ref().unwrap(),
+            "## Current\n- \n\n## Backlog\n- x\n",
+        )
+        .unwrap();
         assert!(current_lane_from_index(&p).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1318,9 +1388,21 @@ after
         let sdir = dir.join("state");
         std::fs::create_dir_all(&wdir).unwrap();
         std::fs::create_dir_all(&sdir).unwrap();
-        std::fs::write(wdir.join("api.yaml"), "name: api\ndescription: prod api\nprobe: http\ninterval: 5m\n").unwrap();
-        std::fs::write(wdir.join("router.yaml"), "name: router\ndescription: 5ghz dfs\nprobe: command\ninterval: 15m\n").unwrap();
-        std::fs::write(wdir.join("parked.yaml.paused"), "name: parked\ndescription: on hold\nprobe: metric\ninterval: 5m\n").unwrap();
+        std::fs::write(
+            wdir.join("api.yaml"),
+            "name: api\ndescription: prod api\nprobe: http\ninterval: 5m\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wdir.join("router.yaml"),
+            "name: router\ndescription: 5ghz dfs\nprobe: command\ninterval: 15m\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wdir.join("parked.yaml.paused"),
+            "name: parked\ndescription: on hold\nprobe: metric\ninterval: 5m\n",
+        )
+        .unwrap();
         std::fs::write(sdir.join("api.state"), "OK\n").unwrap();
         std::fs::write(sdir.join("router.state"), "TRIP\n").unwrap();
 
@@ -1372,7 +1454,11 @@ after
         // check one off, add a new capture, re-run → the checkmark is preserved
         let ticked = out.replace("- [ ] 09:01 buy milk", "- [x] 09:01 buy milk");
         std::fs::write(&note, &ticked).unwrap();
-        std::fs::write(&inbox_file, format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank\n- 11:30 new one\n")).unwrap();
+        std::fs::write(
+            &inbox_file,
+            format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank\n- 11:30 new one\n"),
+        )
+        .unwrap();
         refresh_inbox(&p, &log, &note).unwrap();
         let out2 = std::fs::read_to_string(&note).unwrap();
         assert!(out2.contains("- [x] 09:01 buy milk")); // preserved
