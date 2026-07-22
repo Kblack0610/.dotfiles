@@ -256,22 +256,13 @@ alias mic-stop="audio-stream --stop"
 alias mic-status="audio-stream --status"
 alias mic-list="audio-stream --list"
 
-# --- WSL: screenshot clipboard bridge ---
-# Lets Windows screenshots (Win+Shift+S / our Ctrl+Alt+C hotkey) paste as a
-# file path in WSL terminals. `start --daemon` is idempotent.
-# Install: ~/.dotfiles/scripts/windows/install-wsl-screenshot-cli.sh
-if grep -qiE 'wsl|microsoft' /proc/version 2>/dev/null \
-    && command -v wsl-screenshot-cli >/dev/null 2>&1; then
-    wsl-screenshot-cli start --daemon >/dev/null 2>&1
-fi
-
-# --- VDI (both are scripts in ~/.local/bin) ---
-# `vdi`     -> native FreeRDP webview client (Azure Virtual Desktop, HW-decoded).
-# `vdi-web` -> browser fallback: isolated Chromium in app mode with keyboard-lock
-#              passthrough (Super/Alt+Tab -> remote), separate from your main browser.
-# Set the org-specific URL as VDI_URL in ~/.config/shell/private.sh.
-# Runbook: ~/.config/freerdp-avd/README.md
-
-
 # Machine/infra-private env (overlaid from ~/.dotfiles-private; absent on public-only machines)
 [ -f "$HOME/.config/shell/private.sh" ] && source "$HOME/.config/shell/private.sh"
+
+# WSL-only shell config (Windows interop: AWS creds bridge, WIN_DOCS, VDI
+# keep-awake, screenshot bridge). Lives in the private overlay
+# (~/.dotfiles-private/.config/shell/wsl.sh); only sourced under WSL, so it
+# no-ops on every non-WSL machine and never touches the shared rc files.
+if grep -qiE 'wsl|microsoft' /proc/version 2>/dev/null; then
+    [ -f "$HOME/.config/shell/wsl.sh" ] && source "$HOME/.config/shell/wsl.sh"
+fi
