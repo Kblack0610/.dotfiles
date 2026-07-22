@@ -160,9 +160,16 @@ fn archived_dir(p: &Profile) -> Option<PathBuf> {
     p.projects.as_ref()?.parent().map(|d| d.join("archived"))
 }
 
-/// `- [[<vault-relative target>|<name>]]` — the index lane entry for a summary file.
-fn lane_line(p: &Profile, summary: &Path, name: &str) -> String {
-    format!("- [[{}|{}]]", config::wikilink(&p.root, summary), name)
+/// `- [[<vault-relative target>|<name>]]` — the index lane entry for a project note.
+fn lane_line(p: &Profile, target: &Path, name: &str) -> String {
+    format!("- [[{}|{}]]", config::wikilink(&p.root, target), name)
+}
+
+/// The index-lane link target for a project dir: its working sheet if it has one, else
+/// `summary.md` — so the hub `## Current` lane (and thus the daily note) point at the
+/// editable sheet, not the machine cockpit.
+fn lane_target(dir: &Path) -> PathBuf {
+    sheet_path(dir).unwrap_or_else(|| dir.join("summary.md"))
 }
 
 /// Real (non-placeholder) entries in a lane.
@@ -263,17 +270,20 @@ fn check_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Scaffold for a new `summary.md`. Mirrors the existing lab convention exactly — the
-/// `## → For the agents` heading and the STATUS/AUTO markers are load-bearing (the
-/// session preflight and lab-sync grep for them), so they are reproduced verbatim.
+/// Scaffold for a new `summary.md` — the machine COCKPIT. The task list lives on the
+/// README sheet ([`sheet_body`]); this file only carries what the tools grep. The
+/// `## → For the agents` heading and the canonical/cockpit/STATUS/AUTO markers are
+/// load-bearing (the session preflight and lab-sync key on them), so they are verbatim.
 fn summary_template(name: &str) -> String {
     format!(
-        "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n<!-- canonical: {name} -->\n\n\
+        "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
+<!-- canonical: {name} -->\n\
+<!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
+Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
 ## → For the agents\n\
 _Type wants / tasks / direction here — read at session start (preflight injects it). \
 Agents scope each into a ticket, which then surfaces in the cockpit below. \
 lab-sync never edits this section._\n- _(nothing yet — type a want)_\n\n\
-## Reference\n_(what this project is)_\n\n\
 <!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
 _(no status yet)_\n<!-- STATUS:END -->\n\n\
 <!-- AUTO:START — maintained by /lab-sync (regen-lab-feed.sh); edits below are overwritten -->\n\
@@ -296,13 +306,17 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     fs::create_dir_all(&dir)?;
     let summary = dir.join("summary.md");
     fs::write(&summary, summary_template(name))?;
-    // every lab project is version-based and starts at v0.0.1
-    write_version_note(&dir, "v0.0.1")?;
+    // the working sheet (README.md) holds the task list; every project starts at v0.0.1.
+    fs::write(
+        dir.join("README.md"),
+        sheet_body(&format!("# {name}"), "v0.0.1"),
+    )?;
 
     if let Some(idx) = &p.project_index {
         let content = fs::read_to_string(idx).unwrap_or_default();
         let content = strip_lane_placeholder(&content, "Current");
-        let content = md::insert_under_heading(&content, "Current", &[lane_line(p, &summary, name)]);
+        let target = lane_target(&dir);
+        let content = md::insert_under_heading(&content, "Current", &[lane_line(p, &target, name)]);
         fs::write(idx, content)?;
     }
     log.info("projects", &format!("created {}", dir.display()));
@@ -331,7 +345,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         bail!("'{name}' is already archived at {}", dest.display());
     }
     fs::rename(&src, &dest)?;
-    move_lane(p, "Current", "Archived", name, &dest.join("summary.md"))?;
+    move_lane(p, "Current", "Archived", name, &lane_target(&dest))?;
     log.info("projects", &format!("archived {name}"));
     println!("archived {name} -> {}", dest.display());
     Ok(())
@@ -358,7 +372,7 @@ pub fn restore(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     }
     fs::create_dir_all(cur_root)?;
     fs::rename(&src, &dest)?;
-    move_lane(p, "Archived", "Current", name, &dest.join("summary.md"))?;
+    move_lane(p, "Archived", "Current", name, &lane_target(&dest))?;
     log.info("projects", &format!("restored {name}"));
     println!("restored {name} -> {}", dest.display());
     Ok(())
@@ -417,8 +431,40 @@ fn scan_versions(dir: &Path, best: &mut Option<(u32, u32, u32)>) {
     }
 }
 
-/// Highest version note in a project — its root plus a `changelog/` subdir.
+/// The `Version: vX.Y.Z` declared on a working sheet (first such line), parsed. `None`
+/// when the sheet has no version line.
+fn sheet_version(content: &str) -> Option<(u32, u32, u32)> {
+    content
+        .lines()
+        .find_map(|l| parse_version(l.trim().strip_prefix("Version:")?.trim()))
+}
+
+/// A project's working SHEET — the human-edited task list (title + `Version: vX.Y.Z` +
+/// waves). `README.md` is the sheet when it carries a `Version:` line; otherwise (a prose
+/// brief, e.g. media_player_fleet) `tasks.md` is. `None` for a summary-cockpit-only /
+/// legacy version-note project, which has no sheet to edit or roll.
+pub(crate) fn sheet_path(dir: &Path) -> Option<PathBuf> {
+    let readme = dir.join("README.md");
+    if fs::read_to_string(&readme)
+        .ok()
+        .as_deref()
+        .is_some_and(|c| sheet_version(c).is_some())
+    {
+        return Some(readme);
+    }
+    let tasks = dir.join("tasks.md");
+    tasks.exists().then_some(tasks)
+}
+
+/// A project's current version: the sheet's `Version:` line is the source of truth;
+/// legacy projects with no sheet fall back to the highest `vX.Y.Z.md` note (root +
+/// `changelog/`).
 fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
+    if let Some(sheet) = sheet_path(dir) {
+        if let Some(v) = fs::read_to_string(&sheet).ok().and_then(|c| sheet_version(&c)) {
+            return Some(v);
+        }
+    }
     let mut best = None;
     scan_versions(dir, &mut best);
     scan_versions(&dir.join("changelog"), &mut best);
@@ -478,12 +524,60 @@ fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
 
 /// `notes projects --bump <name>` — start the next version's note so you can scope
 /// tasks into it. A project with no version yet is seeded at v0.0.1.
+///
+/// Legacy verb for the version-note projects (each `vX.Y.Z.md` is its own task list). New
+/// sheet-model projects use `--roll` instead, which freezes the whole sheet on rollover.
 pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     let dir = project_dir(p, name)?;
     let ver = fmt_version(next_version(current_version(&dir), level));
     let path = write_version_note(&dir, &ver)?;
     log.info("projects", &format!("{name} -> {ver}"));
     println!("{}", path.display());
+    Ok(())
+}
+
+/// The reset body of a freshly-rolled (or newly-created) sheet: title, the version line,
+/// and an empty current wave. Kept lean for fast iteration — the convention (waves =
+/// sprints within a version, completed versions in versions/) is documented in the hub.
+fn sheet_body(title: &str, ver: &str) -> String {
+    format!("{title}\nVersion: {ver}\n\n## Wave: new (current)\n- [ ] \n")
+}
+
+/// `notes projects --roll <name> [--minor|--major]` — close the current version and open
+/// the next on the working sheet: freeze the whole sheet into `versions/<vX.Y.Z>.md`
+/// (never overwriting a frozen one), bump the semver, and reset the sheet to a fresh
+/// `## Wave: new`. The sheet's `Version:` line stays the single source of truth.
+pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let Some(sheet) = sheet_path(&dir) else {
+        bail!("'{name}' has no working sheet (a README.md with a `Version:` line, or tasks.md) to roll");
+    };
+    let content = fs::read_to_string(&sheet)?;
+    let cur = sheet_version(&content)
+        .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
+
+    // freeze the whole current sheet under versions/<cur>.md
+    let versions = dir.join("versions");
+    fs::create_dir_all(&versions)?;
+    let frozen = versions.join(format!("{}.md", fmt_version(cur)));
+    if frozen.exists() {
+        bail!(
+            "{} already exists — refusing to overwrite a frozen version",
+            frozen.display()
+        );
+    }
+    fs::write(&frozen, &content)?;
+
+    // reset the sheet to the next version, keeping its title line
+    let next = fmt_version(next_version(Some(cur), level));
+    let title = content.lines().next().unwrap_or("# project");
+    fs::write(&sheet, sheet_body(title, &next))?;
+
+    log.info(
+        "projects",
+        &format!("{name} {} -> {next} (froze {})", fmt_version(cur), frozen.display()),
+    );
+    println!("rolled {name}: {} -> {next} (froze {})", fmt_version(cur), frozen.display());
     Ok(())
 }
 
@@ -668,5 +762,27 @@ _(nothing yet)_
         assert!(t.contains("STATUS:START") && t.contains("STATUS:END"));
         assert!(t.contains("AUTO:START") && t.contains("AUTO:END"));
         assert!(t.contains("<!-- canonical: my-app -->"));
+        // the cockpit points at the working sheet; the task list is NOT in summary.md
+        assert!(t.contains("Working sheet: [[README]]"));
+    }
+
+    #[test]
+    fn sheet_version_reads_the_version_line() {
+        let sheet = "# My App\nVersion: v0.2.0\n\n## Wave: new\n- [ ] a\n";
+        assert_eq!(sheet_version(sheet), Some((0, 2, 0)));
+        // a prose brief (no Version: line) is not a sheet
+        assert_eq!(sheet_version("# My App\n\nsome docs\n"), None);
+        // a non-semver version line does not parse (the roll math needs vX.Y.Z)
+        assert_eq!(sheet_version("Version: v1\n"), None);
+    }
+
+    #[test]
+    fn sheet_body_seeds_a_versioned_wave_list() {
+        let b = sheet_body("# My App", "v0.0.1");
+        assert!(b.starts_with("# My App\nVersion: v0.0.1"));
+        assert!(b.contains("## Wave: new (current)"));
+        assert!(b.contains("- [ ]"));
+        // round-trips: the version we seed is the version the sheet reports
+        assert_eq!(sheet_version(&b), Some((0, 0, 1)));
     }
 }
