@@ -82,40 +82,88 @@ return {
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
       local STATUS_PAT = "%[[ /xX]%]"
 
-      -- Pure rebuild of the `## Focus` body, grouped by STATUS so a task moves between
-      -- lanes as you cycle it: todo (`[ ]`) stays on top, in-progress (`[/]`) collects
-      -- under `### In progress`, finished (`[x]`) under `--- / ### Done`. The single
-      -- empty `- [ ]` placeholder is kept last among the todo items. `nil` means
-      -- "nothing to organize" (no in-progress / done task and no existing scaffold).
-      -- Idempotent.
+      -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (focus_sweep.rs LANES)
+      -- so the on-save sweep here and `notes focus sweep` produce identical output. The
+      -- cycle keymap only emits low/high/urgent, but the sweep still buckets a stray
+      -- #medium so both surfaces agree.
+      local LANES = {
+        { "urgent", "### Urgent" },
+        { "high", "### High" },
+        { "medium", "### Medium" },
+        { "low", "### Low" },
+      }
+
+      -- Lane index for an open task by its priority tag (space-preceded #tag, word-ended),
+      -- else #LANES + 1 (untagged). Most-urgent tag wins.
+      local function task_lane(line)
+        for i, lane in ipairs(LANES) do
+          local pat = "%f[%S]#" .. lane[1] .. "%f[%W]"
+          if line:match(pat) then
+            return i
+          end
+        end
+        return #LANES + 1
+      end
+
+      -- Any `### `-heading / `---` rule this sweep owns (stripped, re-emitted only where a
+      -- lane is non-empty). An unrelated authored heading is preserved as content.
+      local function is_scaffold(l)
+        if l:match "^%-%-%-%s*$" or l:match "^###%s+Done%s*$" or l:match "^###%s+In progress%s*$" then
+          return true
+        end
+        for _, lane in ipairs(LANES) do
+          if l:lower():match("^###%s+" .. lane[1] .. "%s*$") then
+            return true
+          end
+        end
+        return false
+      end
+
+      -- Pure rebuild of the `## Focus` body, grouped by priority + status: untagged todos
+      -- on top, then `### Urgent`/`### High`/`### Medium`/`### Low` (open tasks), finished
+      -- (`[x]`) under `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane.
+      -- The single empty `- [ ]` placeholder is kept after the untagged block. `nil` means
+      -- "nothing to organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
       local function rebuild_focus_body(body)
-        local todo, inprog, done, placeholder, had_scaffold = {}, {}, {}, nil, false
+        local open, done, placeholder, had_scaffold = {}, {}, nil, false
+        for _ = 1, #LANES + 1 do
+          open[#open + 1] = {}
+        end
         for _, l in ipairs(body) do
-          if l:match "^###%s+Done%s*$" or l:match "^###%s+In progress%s*$" or l:match "^%-%-%-%s*$" then
+          if is_scaffold(l) then
             had_scaffold = true
           elseif l:match "^%s*%- %[[xX]%]" then
             done[#done + 1] = l
-          elseif l:match "^%s*%- %[/%]" then
-            inprog[#inprog + 1] = l
           elseif l:match "^%s*%- %[ %]%s*$" then
             placeholder = l
+          elseif l:match "^%s*%- %[" then
+            local lane = task_lane(l)
+            table.insert(open[lane], l)
           elseif l:match "%S" then
-            todo[#todo + 1] = l
+            table.insert(open[#LANES + 1], l)
           end
         end
-        if #inprog == 0 and #done == 0 and not had_scaffold then
+        local tagged = false
+        for i = 1, #LANES do
+          if #open[i] > 0 then
+            tagged = true
+          end
+        end
+        if not tagged and #done == 0 and not had_scaffold then
           return nil
         end
         local out = {}
-        for _, l in ipairs(todo) do
+        for _, l in ipairs(open[#LANES + 1]) do -- untagged, on top
           out[#out + 1] = l
         end
         out[#out + 1] = placeholder or "- [ ] "
-        if #inprog > 0 then
-          out[#out + 1] = ""
-          out[#out + 1] = "### In progress"
-          for _, l in ipairs(inprog) do
-            out[#out + 1] = l
+        for i, lane in ipairs(LANES) do
+          if #open[i] > 0 then
+            out[#out + 1] = ""
+            out[#out + 1] = lane[2]
+            for _, l in ipairs(open[i]) do
+              out[#out + 1] = l
+            end
           end
         end
         if #done > 0 then
