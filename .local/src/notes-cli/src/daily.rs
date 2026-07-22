@@ -295,11 +295,20 @@ pub(crate) fn discover_project_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
 }
 
 /// Discover active projects from the configured `projects` dir as daily-note wikilinks:
-/// one `- [[…|name]]` per `discover_project_dirs` entry. Returns "" when there are none.
+/// one `- [[…|name]]` per `discover_project_dirs` entry. The link targets the project's
+/// working SHEET (README/tasks) when it has one, else its `summary.md` cockpit — so
+/// clicking a project lands on the editable task list, not the machine cockpit. Returns
+/// "" when there are none.
 fn discover_projects(p: &Profile) -> String {
     discover_project_dirs(p)
         .iter()
-        .map(|(name, summary)| format!("- [[{}|{}]]", config::wikilink(&p.root, summary), name))
+        .map(|(name, summary)| {
+            let target = summary
+                .parent()
+                .and_then(crate::projects::sheet_path)
+                .unwrap_or_else(|| summary.clone());
+            format!("- [[{}|{}]]", config::wikilink(&p.root, &target), name)
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

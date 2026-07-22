@@ -152,13 +152,17 @@ enum Cmd {
         /// List archived projects instead of the current ones
         #[arg(long)]
         archived: bool,
-        /// Start the next version's note for a project (seeds v0.0.1 when it has none)
+        /// Roll a project's working sheet to the next version: freeze it into versions/
+        /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
+        #[arg(long, value_name = "NAME")]
+        roll: Option<String>,
+        /// Start the next version's note for a legacy version-note project (seeds v0.0.1)
         #[arg(long, value_name = "NAME")]
         bump: Option<String>,
-        /// With --bump: step the minor (v0.1.2 -> v0.2.0)
+        /// With --roll/--bump: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
-        /// With --bump: step the major (v0.1.2 -> v1.0.0)
+        /// With --roll/--bump: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
         major: bool,
         /// Print a project's current version
@@ -418,7 +422,7 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Projects {
-            name, new, archive, restore, archived, bump, minor, major, version_of,
+            name, new, archive, restore, archived, roll, bump, minor, major, version_of,
         } => {
             let level = if major {
                 projects::Bump::Major
@@ -428,14 +432,15 @@ fn main() -> Result<()> {
                 projects::Bump::Patch
             };
             // lifecycle/version flags take precedence over the read paths
-            match (new, archive, restore, bump, version_of, archived, name) {
+            match (new, archive, restore, roll, bump, version_of, archived, name) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
-                (_, _, _, Some(n), ..) => projects::bump(&prof, &log, &n, level)?,
-                (_, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, true, _) => projects::list_archived(&prof)?,
-                (_, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
+                (_, _, _, Some(n), ..) => projects::roll(&prof, &log, &n, level)?,
+                (_, _, _, _, Some(n), ..) => projects::bump(&prof, &log, &n, level)?,
+                (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
+                (_, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
+                (_, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
                 _ => projects::list(&prof)?,
             }
             0
