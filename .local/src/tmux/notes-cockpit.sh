@@ -48,10 +48,14 @@ C_SEL=$'\033[1;32m'  # active section (bold green)
 C_DIM=$'\033[90m'    # dim
 C_OFF=$'\033[0m'
 
-read_section() { cat "$STATE" 2>/dev/null || echo all; }
+read_section() { cat "$STATE" 2>/dev/null || echo personal; }
 
 profiles() { notes config --profiles 2>/dev/null; }
-sections_list() { printf 'all\n'; profiles; } # the sidebar: all + one per profile
+# the sidebar: one section per profile, personal first, then the rest
+sections_list() {
+  profiles | grep -xF personal
+  profiles | grep -vxF personal
+}
 
 # projects_of <profile> -> space-separated lowercase project names
 projects_of() {
@@ -105,9 +109,16 @@ emit_tasks() {
 }
 
 # ── render helpers (final rows: col7 = "[ ] text"; headers are type=head) ──
-_flat() { # $1=rows $2=exact-section — col7 already carries the status-colored glyph
-  printf '%s\n' "$1" | awk -F'\t' -v w="$2" \
-    '$6==w { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1,$2,$3,$4,$5,$6,$7 }'
+# Tasks of one section, grouped by STATUS: todo first, then an "in progress" sub-lane
+# for [/] tasks (the glyph in col7). Done ([x]) lives in the note's ### Done, not here.
+_flat() { # $1=rows $2=exact-section
+  local rows="$1" sec="$2" ip
+  printf '%s\n' "$rows" | awk -F'\t' -v w="$sec" '$6==w && $7 !~ /\[\/\]/ { print }'
+  ip="$(printf '%s\n' "$rows" | awk -F'\t' -v w="$sec" '$6==w && $7 ~ /\[\/\]/ { print }')"
+  if [ -n "$ip" ]; then
+    printf 'head\t\t\t\t\t\t%s  in progress%s\n' "$C_INP" "$C_OFF"
+    printf '%s\n' "$ip"
+  fi
 }
 _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_OFF"; }
 # A project sub-header, with its `notes projects` status trailing dim (like the
@@ -151,19 +162,7 @@ list_section() {
     printf 'hint\t\t\t\t\t\t%s(no daily note for today — press T to create it and carry tasks forward)%s\n' \
       "$C_DIM" "$C_OFF"
   fi
-  if [ "$want" = all ]; then
-    # every profile, its tasks under one header (tags stay visible in the text)
-    local prof body
-    while IFS= read -r prof; do
-      [ -z "$prof" ] && continue
-      body="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$prof" \
-        '$2==p { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1,$2,$3,$4,$5,$6,$7 }')"
-      [ -z "$body" ] && continue
-      _header "$prof"; printf '%s\n' "$body"
-    done < <(profiles)
-  else
-    _profile_view "$rows" "$want"
-  fi
+  _profile_view "$rows" "$want"
 }
 
 # ── the left sidebar rail: sections + counts, active marked ─────────
@@ -284,6 +283,38 @@ restore_project() {
   notes --profile "$profile" projects --restore "${names[$((pick - 1))]}"
 }
 
+# `?` opens this in a pager (press q to return to the cockpit).
+help_view() {
+  cat <<'EOF'
+
+  notes cockpit — keys        (press q to close)
+
+  navigate
+    j / k          move down / up
+    h / l          previous / next section
+    i              search  (esc leaves search)
+    enter          edit the task in nvim
+
+  task
+    s              toggle in-progress  ( [ ] <-> [/] )
+    C-x            mark done
+    C-a            add a task to the section
+    C-d            delete the task
+    m              move to another section / project
+
+  project
+    n              new project in this section
+    A              archive the highlighted project
+    R              restore an archived project
+
+  other
+    T              create today's notes (all profiles)
+    ?              this help
+    q / esc        quit
+
+EOF
+}
+
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
   local type="$1" file="$2" line="$3"
   [ "$type" = "task" ] || return 0
@@ -303,6 +334,7 @@ case "${1:-}" in
   --new-project) new_project "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project "${2:-}"; exit 0 ;;
+  --help-view) help_view; exit 0 ;;
 esac
 
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
@@ -313,20 +345,21 @@ command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfil
 # Idempotent — a no-op once today's notes are present.
 notes today --all >/dev/null 2>&1 || true
 
-echo all > "$STATE" # every launch starts on the all view
-HEADER='j/k move  h/l section  i search  enter edit  s progress  C-x done  C-a add  C-d del  m move  n/A/R project  T today  q quit'
+echo personal > "$STATE" # every launch starts on personal
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
+# `?` is intentionally NOT modal — it opens the help pager.
 MODAL='j,k,h,l,i,q,s,m,n,A,R,T'
 
-list_section all | fzf \
-  --ansi --reverse --cycle --no-sort --border --no-input \
+list_section personal | fzf \
+  --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header="$HEADER" \
+  --header='?  keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
+  --bind "?:execute($SELF --help-view | less -R)" \
   --bind 'j:down+transform:[ {1} = head ] && echo down' \
   --bind 'k:up+transform:[ {1} = head ] && echo up' \
   --bind 'up:up+transform:[ {1} = head ] && echo up' \
