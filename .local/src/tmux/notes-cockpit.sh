@@ -50,7 +50,8 @@ C_OFF=$'\033[0m'
 
 read_section() { cat "$STATE" 2>/dev/null || echo personal; }
 
-# Priority filter: `p` cycles the view through #urgent -> #high -> #medium -> #low -> (all).
+# Priority filter: `p` cycles the view through #urgent -> #high -> #low -> (all).
+# Same levels as md::PRIORITIES / the nvim <leader>tp cycle (the shared source of truth).
 PFILTER="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.pfilter"
 read_pfilter() { cat "$PFILTER" 2>/dev/null || true; }
 cycle_pfilter() {
@@ -60,8 +61,7 @@ cycle_pfilter() {
   case "$cur" in
     "")     next=urgent ;;
     urgent) next=high ;;
-    high)   next=medium ;;
-    medium) next=low ;;
+    high)   next=low ;;
     *)      next="" ;; # low (or anything) -> back to all
   esac
   printf '%s' "$next" > "$PFILTER"
@@ -426,7 +426,7 @@ help_view() {
   navigate
     j / k          move down / up
     h / l          previous / next section
-    p              cycle priority filter  (urgent -> high -> medium -> low -> all)
+    p              cycle priority filter  (urgent -> high -> low -> all)
     i              search  (esc leaves search)
     enter          edit the task in nvim
 

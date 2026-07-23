@@ -82,14 +82,12 @@ return {
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
       local STATUS_PAT = "%[[ /xX]%]"
 
-      -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (focus_sweep.rs LANES)
-      -- so the on-save sweep here and `notes focus sweep` produce identical output. The
-      -- cycle keymap only emits low/high/urgent, but the sweep still buckets a stray
-      -- #medium so both surfaces agree.
+      -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (md::PRIORITIES, the
+      -- shared source of truth) so the on-save sweep here and `notes focus sweep` produce
+      -- identical output. Same set as the cycle keymap: low -> high -> urgent.
       local LANES = {
         { "urgent", "### Urgent" },
         { "high", "### High" },
-        { "medium", "### Medium" },
         { "low", "### Low" },
       }
 

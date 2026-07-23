@@ -21,9 +21,6 @@ use anyhow::{bail, Result};
 use chrono::Local;
 use std::fs;
 
-/// Priority hashtags the daily-note convention keeps pinned at the end of a task line.
-const PRIORITIES: [&str; 4] = ["#urgent", "#high", "#medium", "#low"];
-
 /// The human text of a task line — checkbox, `(Nd)` day-count, `<!-- since -->` comment
 /// and a trailing priority tag stripped — with ORIGINAL CASE preserved (unlike
 /// `md::task_key`, which lower-cases for matching). Returns `(text, priority)`.
@@ -31,9 +28,10 @@ fn task_text(line: &str) -> (String, Option<String>) {
     let mut t = line.trim().to_string();
 
     // Priority FIRST: `stamp_line` pins it after the comment (`… <!-- since --> #high`),
-    // so truncating at `<!--` before lifting it would silently drop the tag.
+    // so truncating at `<!--` before lifting it would silently drop the tag. The priority
+    // hashtags are `md::PRIORITIES` (shared source of truth).
     let mut prio = None;
-    for p in PRIORITIES {
+    for (_, p, _) in md::PRIORITIES {
         if t.ends_with(p) {
             prio = Some(p.to_string());
             t.truncate(t.len() - p.len());
