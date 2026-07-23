@@ -121,16 +121,17 @@ _flat() { # $1=rows $2=exact-section
   fi
 }
 _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_OFF"; }
-# A project sub-header, with its `notes projects` status trailing dim (like the
-# `## Current Projects` status in the vault). Status can be long/multi-line — collapse
-# and truncate so it fits one row.
-_subheader() { # $1=name $2=status
-  local name="$1" status="${2:-}" short
+# A project sub-header: name, its version (dim cyan), then its `notes projects` status
+# trailing dim (like the `## Current Projects` status in the vault). Status can be
+# long/multi-line — collapse and truncate so it fits one row.
+_subheader() { # $1=name $2=status $3=version
+  local name="$1" status="${2:-}" version="${3:-}" short ver=""
+  [ -n "$version" ] && ver=" ${C_BOX}${version}${C_OFF}"
   if [ -n "$status" ]; then
     short="$(printf '%s' "$status" | tr '\n\t' '  ' | sed -E 's/^_[0-9-]+_ *(—|-) *//; s/  +/ /g' | cut -c1-64)"
-    printf 'head\t\t\t\t\t\t%s  %s%s   %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$C_DIM" "$short" "$C_OFF"
+    printf 'head\t\t\t\t\t\t%s  %s%s%s   %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver" "$C_DIM" "$short" "$C_OFF"
   else
-    printf 'head\t\t\t\t\t\t%s  %s%s\n' "$C_PROJ" "$name" "$C_OFF"
+    printf 'head\t\t\t\t\t\t%s  %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver"
   fi
 }
 
@@ -139,10 +140,10 @@ _subheader() { # $1=name $2=status
 _profile_view() { # $1=rows $2=profile
   local rows="$1" prof="$2" n st lc body
   _flat "$rows" "$prof"
-  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n _summary st; do
+  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n _summary st ver; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
-    _subheader "$n" "$st"
+    _subheader "$n" "$st" "$ver"
     body="$(_flat "$rows" "$prof/$lc")"
     if [ -n "$body" ]; then
       printf '%s\n' "$body"
@@ -264,6 +265,24 @@ archive_project() { # $1 = section of the highlighted row (<profile>/<project>)
   case "$ans" in y | Y) notes --profile "$profile" projects --archive "$name" ;; esac
 }
 
+# Roll a project to its next version: freeze the current version + open the next (the
+# sheet-model rollover; falls back to a version-note bump for legacy projects).
+roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
+  local section="${1:-}" profile name cur lvl
+  case "$section" in
+    */*) profile="${section%%/*}"; name="${section#*/}" ;;
+    *) echo "not on a project row"; sleep 1; return 0 ;;
+  esac
+  cur="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+  read -r -p "roll '$name' ${cur:-v?} -> next  [enter=patch / m=minor / M=major / other=cancel]: " lvl || return 0
+  case "$lvl" in
+    '' | p | P) notes --profile "$profile" projects --roll "$name" ;;
+    m) notes --profile "$profile" projects --roll "$name" --minor ;;
+    M) notes --profile "$profile" projects --roll "$name" --major ;;
+    *) return 0 ;;
+  esac || { echo "roll failed"; sleep 2; }
+}
+
 restore_project() {
   local section="${1:-}" profile pick i
   [ -z "$section" ] && section="$(read_section)"
@@ -304,6 +323,7 @@ help_view() {
 
   project
     n              new project in this section
+    V              roll the highlighted project to its next version
     A              archive the highlighted project
     R              restore an archived project
 
@@ -332,6 +352,7 @@ case "${1:-}" in
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
+  --roll-project) roll_project "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project "${2:-}"; exit 0 ;;
   --help-view) help_view; exit 0 ;;
@@ -349,7 +370,7 @@ echo personal > "$STATE" # every launch starts on personal
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
@@ -377,6 +398,7 @@ list_section personal | fzf \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
+  --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \

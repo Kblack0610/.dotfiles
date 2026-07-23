@@ -406,15 +406,19 @@ function projects_node()
     fetch = function()
       local items = {}
       for _, l in ipairs(run({ "projects" })) do
-        local name, summary, status = l:match("^(.-)\t(.-)\t(.*)$")
+        local name, summary, status, version = l:match("^(.-)\t(.-)\t(.-)\t(.*)$")
         if name then
-          items[#items + 1] = { name = name, file = summary, status = status, _label = name }
+          items[#items + 1] =
+            { name = name, file = summary, status = status, version = version, _label = name }
         end
       end
       return items
     end,
     format = function(item)
       local row = { { item.name, "Identifier" } }
+      if item.version and item.version ~= "" then
+        row[#row + 1] = { "  " .. item.version, "Special" }
+      end
       if item.status and item.status ~= "" then
         row[#row + 1] = { "  " .. item.status, "Comment" }
       end

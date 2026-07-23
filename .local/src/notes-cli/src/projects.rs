@@ -77,18 +77,26 @@ fn parse_wikilink(line: &str) -> Option<(String, String)> {
     Some((target, name))
 }
 
-/// `notes projects` — print `"<name>\t<summary-path>\t<status>"` per indexed project.
-/// `<status>` is the agent-written note in the summary's `STATUS:START`/`STATUS:END`
-/// block (empty when unwritten — the `_(no status yet)_` placeholder counts as empty).
+/// `notes projects` — print `"<name>\t<summary-path>\t<status>\t<version>"` per indexed
+/// project. `<status>` is the agent-written note in the summary's `STATUS:START`/`STATUS:END`
+/// block (empty when unwritten); `<version>` is the sheet's `Version:` line, else the highest
+/// version note (empty when neither).
 pub fn list(p: &Profile) -> Result<()> {
     for (name, summary) in indexed(p) {
         let status = fs::read_to_string(&summary)
             .ok()
             .and_then(|c| status_line(&c))
             .unwrap_or_default();
-        println!("{}\t{}\t{}", name, summary.display(), status);
+        let version = summary.parent().map(version_str).unwrap_or_default();
+        println!("{}\t{}\t{}\t{}", name, summary.display(), status, version);
     }
     Ok(())
+}
+
+/// The project's current version as a display string (`"v0.0.1"`), or "" when it has none.
+/// `dir` is the project directory (the summary's parent).
+fn version_str(dir: &Path) -> String {
+    current_version(dir).map(fmt_version).unwrap_or_default()
 }
 
 /// First real line of the summary's `<!-- STATUS:START --> … <!-- STATUS:END -->`
@@ -550,7 +558,13 @@ fn sheet_body(title: &str, ver: &str) -> String {
 pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_path(&dir) else {
-        bail!("'{name}' has no working sheet (a README.md with a `Version:` line, or tasks.md) to roll");
+        // No sheet (a legacy / changelog-only project): advance by writing the next version
+        // note, so the cockpit's roll shortcut still does something sensible everywhere.
+        let ver = fmt_version(next_version(current_version(&dir), level));
+        let path = write_version_note(&dir, &ver)?;
+        log.info("projects", &format!("{name} -> {ver} (version note)"));
+        println!("rolled {name}: -> {ver} ({})", path.display());
+        return Ok(());
     };
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
@@ -578,6 +592,135 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
         &format!("{name} {} -> {next} (froze {})", fmt_version(cur), frozen.display()),
     );
     println!("rolled {name}: {} -> {next} (froze {})", fmt_version(cur), frozen.display());
+    Ok(())
+}
+
+/// Root `vX.Y.Z.md` version notes (NOT `changelog/` — those are release history), sorted
+/// ascending. Each is `(version, path)`.
+fn root_version_notes(dir: &Path) -> Vec<((u32, u32, u32), PathBuf)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            if let Some(v) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(parse_version)
+            {
+                out.push((v, path));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The task body of a version note: drop its `---` frontmatter block and a leading `# …`
+/// title line, keep the rest (the `## Wave …` content), trimmed.
+fn note_body(content: &str) -> String {
+    let mut lines: Vec<&str> = content.lines().collect();
+    // strip a leading frontmatter block (--- … ---)
+    if lines.first().map(|l| l.trim()) == Some("---") {
+        if let Some(end) = lines.iter().skip(1).position(|l| l.trim() == "---") {
+            lines.drain(0..=end + 1);
+        }
+    }
+    // drop leading blanks, then a single leading `# …` H1 title
+    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        lines.remove(0);
+    }
+    if lines.first().map(|l| l.starts_with("# ")).unwrap_or(false) {
+        lines.remove(0);
+    }
+    lines.join("\n").trim().to_string()
+}
+
+/// Ensure `summary.md` carries the `Working sheet: [[README]]` pointer (idempotent). Inserts
+/// it just before the first `## ` heading (i.e. `## → For the agents`) when absent.
+fn ensure_sheet_pointer(summary: &Path) -> Result<()> {
+    let content = fs::read_to_string(summary).unwrap_or_default();
+    if content.contains("Working sheet:") {
+        return Ok(());
+    }
+    let pointer = "Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.";
+    let mut out: Vec<String> = Vec::new();
+    let mut inserted = false;
+    for line in content.lines() {
+        if !inserted && line.starts_with("## ") {
+            out.push(pointer.to_string());
+            out.push(String::new());
+            inserted = true;
+        }
+        out.push(line.to_string());
+    }
+    if !inserted {
+        out.push(String::new());
+        out.push(pointer.to_string());
+    }
+    let mut joined = out.join("\n");
+    if !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    fs::write(summary, joined)?;
+    Ok(())
+}
+
+/// `notes projects --migrate <name>` — upgrade a legacy root-version-note project to the
+/// sheet model (idempotent): the highest `vX.Y.Z.md` becomes the `README.md` sheet (its
+/// tasks + a `Version:` line), lower notes move to `versions/`, `summary.md` gains the
+/// `[[README]]` pointer, and the hub `## Current` lane repoints at the sheet. Projects with
+/// a sheet already, or only `changelog/` notes (release-managed), are left untouched.
+pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    if sheet_path(&dir).is_some() {
+        println!("{name}: already sheet-model — nothing to migrate");
+        return Ok(());
+    }
+    let notes = root_version_notes(&dir);
+    let Some(((cur, cur_path), older)) = notes.split_last().map(|(l, r)| (l.clone(), r)) else {
+        println!("{name}: no root version note to migrate (changelog-only / release-managed) — skipped");
+        return Ok(());
+    };
+
+    // highest note -> README sheet (Version line + its task body), then drop the note
+    let body = note_body(&fs::read_to_string(&cur_path)?);
+    let readme = dir.join("README.md");
+    let title = format!("# {name}");
+    let sheet = if body.is_empty() {
+        sheet_body(&title, &fmt_version(cur))
+    } else {
+        format!("{title}\nVersion: {}\n\n{body}\n", fmt_version(cur))
+    };
+    fs::write(&readme, sheet)?;
+    fs::remove_file(&cur_path)?;
+
+    // older notes -> versions/
+    if !older.is_empty() {
+        let versions = dir.join("versions");
+        fs::create_dir_all(&versions)?;
+        for (v, path) in older {
+            let dest = versions.join(format!("{}.md", fmt_version(*v)));
+            if !dest.exists() {
+                fs::rename(path, &dest)?;
+            }
+        }
+    }
+
+    // summary pointer + repoint the hub lane at the sheet
+    ensure_sheet_pointer(&dir.join("summary.md"))?;
+    if let Some(idx) = &p.project_index {
+        let content = fs::read_to_string(idx).unwrap_or_default();
+        if let Some(removed) = remove_from_lane(&content, "Current", name) {
+            let with = md::insert_under_heading(&removed, "Current", &[lane_line(p, &readme, name)]);
+            fs::write(idx, with)?;
+        }
+    }
+
+    log.info("projects", &format!("migrated {name} to sheet model at {}", fmt_version(cur)));
+    println!("migrated {name}: {} -> README.md sheet (versions/ for older)", fmt_version(cur));
     Ok(())
 }
 
@@ -624,7 +767,8 @@ pub fn list_archived(p: &Profile) -> Result<()> {
             .ok()
             .and_then(|c| status_line(&c))
             .unwrap_or_default();
-        println!("{}\t{}\t{}", name, summary.display(), status);
+        let version = summary.parent().map(version_str).unwrap_or_default();
+        println!("{}\t{}\t{}\t{}", name, summary.display(), status, version);
     }
     Ok(())
 }
