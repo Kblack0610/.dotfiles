@@ -118,7 +118,7 @@ return {
       end
 
       -- Pure rebuild of the `## Focus` body, grouped by priority + status: untagged todos
-      -- on top, then `### Urgent`/`### High`/`### Medium`/`### Low` (open tasks), finished
+      -- on top, then `### Urgent`/`### High`/`### Low` (open tasks), finished
       -- (`[x]`) under `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane.
       -- The single empty `- [ ]` placeholder is kept after the untagged block. `nil` means
       -- "nothing to organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
