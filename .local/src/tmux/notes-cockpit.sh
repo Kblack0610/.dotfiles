@@ -355,6 +355,9 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
     echo "summarizing $(basename "$frozen") ..."
     notes-version-summary "$profile" "$name" "$frozen" \
       || echo "(summary skipped — see ~/.config/notes-cockpit/llm.env)"
+    # a new release changes "what's next" — refresh the project overview too (best-effort)
+    echo "refreshing overview ..."
+    notes-version-summary --overview "$profile" "$name" || true
   fi
 }
 
@@ -378,23 +381,30 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   rows="$( for d in "$root/versions" "$root/changelog"; do
              [ -d "$d" ] && ls -1 "$d"/*.md 2>/dev/null
            done | awk -F/ 'NF{print $NF"\t"$0}' | sort -rV )"
-  if [ -z "$rows" ]; then
-    echo "no release notes for $name yet — roll one with V (or backfill changelog/)"; sleep 1.5; exec "$SELF"
+  # pin the project overview (summary.md — the "where we are / next up" index) at the very TOP,
+  # above the version list. Enter opens it; C-s regenerates the overview (vs a version summary).
+  local pinned="" all
+  [ -n "$summary" ] && [ -f "$summary" ] && pinned="$(printf '= overview =\t%s' "$summary")"
+  if [ -n "$pinned" ] && [ -n "$rows" ]; then all="$pinned"$'\n'"$rows"
+  elif [ -n "$pinned" ]; then all="$pinned"
+  else all="$rows"; fi
+  if [ -z "$all" ]; then
+    echo "nothing for $name yet — roll a version with V, or generate an overview"; sleep 1.5; exec "$SELF"
   fi
   if command -v bat >/dev/null 2>&1; then
     prev="bat --color=always --style=plain --language=markdown {2}"
   else
     prev="cat {2}"
   fi
-  printf '%s\n' "$rows" | fzf \
+  printf '%s\n' "$all" | fzf \
     --ansi --reverse --delimiter='\t' --with-nth=1 \
     --preview "$prev" --preview-window 'right:62%:wrap' \
-    --prompt "versions: $name > " \
-    --header 'enter: nvim   C-d/C-u: scroll   C-s: (re)summarize   q/esc: back' \
+    --prompt "$name > " \
+    --header 'enter: nvim   C-d/C-u: scroll   C-s: (re)generate   q/esc: back' \
     --bind 'enter:execute(nvim {2})' --bind 'q:abort' \
     --bind 'ctrl-d:preview-half-page-down' \
     --bind 'ctrl-u:preview-half-page-up' \
-    --bind "ctrl-s:execute(notes-version-summary --force '$profile' '$name' {2})+refresh-preview"
+    --bind "ctrl-s:execute(f={2}; if [ \"\$(basename \"\$f\" .md)\" = summary ]; then notes-version-summary --overview '$profile' '$name'; else notes-version-summary --force '$profile' '$name' \"\$f\"; fi)+refresh-preview"
   exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
 }
 
@@ -440,7 +450,7 @@ help_view() {
   project
     n              new project in this section
     V              roll to next version  (freezes + writes an LLM summary)
-    o              browse frozen versions  (C-d/C-u scroll · C-s (re)summarize)
+    o              overview + frozen versions  (top = where we are / next up · C-d/C-u scroll · C-s regen)
     A              archive the highlighted project
     R              restore an archived project
 
