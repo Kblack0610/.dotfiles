@@ -46,8 +46,19 @@ ask_hidden() {
 
 command -v pkg >/dev/null 2>&1 || die "not Termux (no 'pkg'). Run this inside the Termux app."
 
+# A fresh Termux ships a curl whose libcurl.so is linked against a NEWER ngtcp2 than
+# the base image installed, so curl fails to even load ("CANNOT LINK EXECUTABLE ...
+# ngtcp2_crypto_get_path_challenge_data2_cb"). A full upgrade resyncs them. This MUST
+# run before any curl use, or the fetch below dies on a fresh phone.
+export DEBIAN_FRONTEND=noninteractive
+say "updating Termux base packages (fixes the fresh-install libcurl/ngtcp2 mismatch)"
+pkg update -y  >/dev/null 2>&1 || true
+pkg upgrade -y >/dev/null 2>&1 || true
 say "installing prerequisites (git curl openssh cronie termux-services)"
 pkg install -y git curl openssh cronie termux-services >/dev/null 2>&1 || die "pkg install failed"
+if ! curl --version >/dev/null 2>&1; then
+    die "curl still cannot load after upgrade. Run 'pkg upgrade -y' manually (answer y to prompts), then re-run this."
+fi
 ok "packages ready"
 
 # --- identity + token ------------------------------------------------------
