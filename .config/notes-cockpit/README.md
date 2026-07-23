@@ -86,3 +86,24 @@ Model notes:
   ticket/PR ref but reshapes the prose, so it DRIFTS from the upstream product-repo CHANGELOG. Safe
   because the vault is git-tracked (recoverable) and the product repo stays the source of truth; use
   `--dry-run --rewrite` to preview first.
+
+## Project overview / "Next up" index
+
+`notes-version-summary --overview <profile> <project>` (or `--overview --all`) writes a small
+`<!-- nextup:auto -->` block into the project's `summary.md`, just above `## → For the agents`:
+
+```
+## Next up (suggested)
+State: <one line - current version + the main thing in flight>
+- [ ] <suggested next task>
+- [ ] <...>   (2 to 4, most important first)
+```
+
+It is generated from the latest release summary + recent repo commits, and deliberately does NOT repeat
+tasks already on the project sheet - these are additive SUGGESTIONS you can accept. It owns only its own
+marker block; STATUS (lab-status), the AUTO feed (lab-sync), and `## → For the agents` (yours) are left
+untouched.
+
+Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
+browser (the whole `summary.md` in the preview) above the version list; `C-s` on that row regenerates
+the overview. Rolling a version (`V`) refreshes the overview automatically. `--dry-run` previews.

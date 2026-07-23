@@ -16,6 +16,8 @@
 #   notes-version-summary <profile> <project> <frozen-file.md>   # one version
 #   notes-version-summary --backfill <profile> <project>         # every version in a project
 #   notes-version-summary --backfill --all                       # every project, every profile
+#   notes-version-summary --overview <profile> <project>         # write the "Next up" index into summary.md
+#   notes-version-summary --overview --all                       # overview for every project
 #   flags: --dry-run (print, write nothing)  --force (regenerate an existing block)
 #          --rewrite (also rewrite the changelog BODY into clean legible prose, then summarize)
 #
@@ -50,6 +52,7 @@ FORCE=0
 BACKFILL=0
 ALL=0
 REWRITE=0
+OVERVIEW=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
@@ -231,6 +234,38 @@ splice() {
   rm -f "$tmp"
 }
 
+# splice_nextup <file> <block> — replace the <!-- nextup:auto --> block in a project summary.md,
+# inserting it just ABOVE the first "## " heading (i.e. above `## → For the agents`, under the
+# title/markers), else after frontmatter, else at top. Leaves every other region untouched.
+splice_nextup() {
+  local file="$1" block="$2" tmp ins fm_end
+  tmp="$(mktemp)" || return 1
+  awk '
+    /<!-- nextup:auto -->/   { inblk=1; next }
+    /<!-- \/nextup:auto -->/ { inblk=0; next }
+    !inblk { print }
+  ' "$file" > "$tmp"
+  ins="$(awk '/^## /{print NR; exit}' "$tmp")"
+  if [ -n "$ins" ]; then
+    {
+      sed -n "1,$((ins - 1))p" "$tmp"
+      printf '%s\n\n' "$block"
+      sed -n "${ins},\$p" "$tmp"
+    } > "$file"
+  else
+    fm_end=""
+    [ "$(head -1 "$tmp")" = "---" ] && fm_end="$(awk 'NR>1 && $0=="---"{print NR; exit}' "$tmp")"
+    {
+      if [ -n "$fm_end" ]; then
+        sed -n "1,${fm_end}p" "$tmp"; printf '\n%s\n' "$block"; sed -n "$((fm_end + 1)),\$p" "$tmp"
+      else
+        printf '%s\n\n' "$block"; cat "$tmp"
+      fi
+    } > "$file"
+  fi
+  rm -f "$tmp"
+}
+
 # frontmatter <file> -> the YAML frontmatter block (lines 1..closing ---, inclusive), or nothing.
 frontmatter() {
   [ "$(head -1 "$1")" = "---" ] || return 0
@@ -373,6 +408,82 @@ backfill_all() {
   return $rc
 }
 
+# ── project overview (the "where we are / next up" index in summary.md) ──
+# latest_summary <root> -> the freshest release's Summary block text (or its body), for context.
+latest_summary() {
+  local root="$1" f
+  f="$(all_versions "$root" | head -1 | cut -f2)"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  if grep -q '<!-- summary:auto -->' "$f"; then
+    awk '/<!-- summary:auto -->/{s=1;next} /<!-- \/summary:auto -->/{s=0} s' "$f"
+  else
+    note_body "$f"
+  fi
+}
+
+# ptask_open <profile> <project> -> the open sheet tasks (text column of `ptask list`), one per line.
+ptask_open() {
+  notes --profile "$1" ptask "$2" list 2>/dev/null | cut -f4
+}
+
+# generate_overview <profile> <project> — write the <!-- nextup:auto --> block into summary.md from the
+# latest release summary + current sheet tasks + recent repo commits. deepseek+fallback, ASCII.
+generate_overview() {
+  local profile="$1" project="$2" root summary_md latest tasks recent sys usr sum block
+  root="$(root_of "$profile" "$project")" || return 1
+  [ -n "$root" ] || { echo "no such project: $profile/$project" >&2; return 1; }
+  summary_md="$root/summary.md"
+  [ -f "$summary_md" ] || { echo "no summary.md for $profile/$project" >&2; return 1; }
+  latest="$(latest_summary "$root")"
+  tasks="$(ptask_open "$profile" "$project")"
+  repo_of "$project"; recent=""
+  if [ -n "$REPO" ] && [ -d "$REPO/.git" ]; then
+    if [ -n "$PATHFILTER" ]; then
+      recent="$(git -C "$REPO" log --no-merges --pretty=%s -n 25 -- "$PATHFILTER" 2>/dev/null)"
+    else
+      recent="$(git -C "$REPO" log --no-merges --pretty=%s -n 25 2>/dev/null)"
+    fi
+  fi
+  sys='You propose the NEXT tasks for a developer'\''s project - a tiny "where we are / what to do next"
+index. Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no marketing words.
+Propose NEW, concrete next steps that follow from the latest release: unfinished threads, verification,
+follow-ups, and known gaps. Do NOT repeat tasks already on the sheet (the user lists them) - suggest
+what should come next given them. Do not invent scope; reference ticket/PR refs (e.g. VK 563, #490)
+when the inputs mention them. Output EXACTLY this and nothing else:
+## Next up (suggested)
+State: <ONE line - current version and the single most important thing in flight or just shipped>
+- [ ] <concrete, imperative NEW next task>
+- [ ] <another>   (2 to 4 tasks total, most important first)'
+  usr="Project: $project"$'\n\n'"Latest release summary:"$'\n'"${latest:-(no releases yet)}"
+  [ -n "$recent" ] && usr="$usr"$'\n\n'"Recent commits:"$'\n'"$recent"
+  usr="$usr"$'\n\n'"Already on the sheet (do NOT repeat these):"$'\n'"${tasks:-(none)}"
+
+  sum="$(call_llm "$sys" "$usr")" || { echo "overview failed: $profile/$project" >&2; return 1; }
+  sum="$(printf '%s' "$sum" | strip_think | sanitize | sed -e 's/[[:space:]]*$//' -e '/./,$!d')"
+  [ -n "$sum" ] || { echo "empty overview: $profile/$project" >&2; return 1; }
+  grep -q '^## Next up' <<<"$sum" || sum="## Next up (suggested)"$'\n'"$sum"
+  block="<!-- nextup:auto -->"$'\n'"$sum"$'\n'"<!-- /nextup:auto -->"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "=== overview: $profile/$project ($summary_md) ==="
+    printf '%s\n' "$block"
+    return 0
+  fi
+  splice_nextup "$summary_md" "$block" && echo "overview: $profile/$project" || return 1
+}
+
+overview_all() {
+  local rc=0 prof name
+  while IFS= read -r prof; do
+    [ -n "$prof" ] || continue
+    while IFS=$'\t' read -r name _; do
+      [ -n "$name" ] || continue
+      generate_overview "$prof" "$name" || rc=1
+    done < <(notes --profile "$prof" projects 2>/dev/null)
+  done < <(notes config --profiles 2>/dev/null)
+  return $rc
+}
+
 # ── args ────────────────────────────────────────────────────────────
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 command -v curl >/dev/null 2>&1 || die "curl not found on PATH"
@@ -386,11 +497,22 @@ for a in "$@"; do
     --backfill) BACKFILL=1 ;;
     --all)     ALL=1 ;;
     --rewrite) REWRITE=1 ;;
+    --overview) OVERVIEW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*)        die "unknown flag: $a" ;;
     *)         POS+=("$a") ;;
   esac
 done
+
+if [ "$OVERVIEW" -eq 1 ]; then
+  if [ "$ALL" -eq 1 ]; then
+    overview_all
+  else
+    [ ${#POS[@]} -ge 2 ] || die "usage: --overview <profile> <project>   (or --overview --all)"
+    generate_overview "${POS[0]}" "${POS[1]}"
+  fi
+  exit $?
+fi
 
 if [ "$BACKFILL" -eq 1 ]; then
   if [ "$ALL" -eq 1 ]; then
