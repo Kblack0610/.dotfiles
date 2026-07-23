@@ -286,9 +286,11 @@ archive_project() { # $1 = section of the highlighted row (<profile>/<project>)
 }
 
 # Roll a project to its next version: freeze the current version + open the next (the
-# sheet-model rollover; falls back to a version-note bump for legacy projects).
+# sheet-model rollover; falls back to a version-note bump for legacy projects). After the
+# freeze, generate an LLM summary block on the just-frozen note (best-effort — a gateway
+# outage or missing config never fails the roll).
 roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
-  local section="${1:-}" profile name cur lvl
+  local section="${1:-}" profile name cur lvl flag out frozen
   case "$section" in
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) echo "not on a project row"; sleep 1; return 0 ;;
@@ -296,11 +298,21 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   cur="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
   read -r -p "roll '$name' ${cur:-v?} -> next  [enter=patch / m=minor / M=major / other=cancel]: " lvl || return 0
   case "$lvl" in
-    '' | p | P) notes --profile "$profile" projects --roll "$name" ;;
-    m) notes --profile "$profile" projects --roll "$name" --minor ;;
-    M) notes --profile "$profile" projects --roll "$name" --major ;;
+    '' | p | P) flag='' ;;
+    m) flag='--minor' ;;
+    M) flag='--major' ;;
     *) return 0 ;;
-  esac || { echo "roll failed"; sleep 2; }
+  esac
+  out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
+    || { echo "$out"; echo "roll failed"; sleep 2; return 0; }
+  echo "$out"
+  # summarize the note that was just frozen (path is in the `(froze <path>)` line)
+  frozen="$(sed -n 's/.*(froze \(.*\))$/\1/p' <<<"$out")"
+  if [ -n "$frozen" ] && command -v notes-version-summary >/dev/null 2>&1; then
+    echo "summarizing $(basename "$frozen") ..."
+    notes-version-summary "$profile" "$name" "$frozen" \
+      || echo "(summary skipped — see ~/.config/notes-cockpit/llm.env)"
+  fi
 }
 
 # Browse a project's release notes — per-version `.md` from BOTH `versions/` (sheet-model
@@ -335,8 +347,11 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
     --ansi --reverse --delimiter='\t' --with-nth=1 \
     --preview "$prev" --preview-window 'right:62%:wrap' \
     --prompt "versions: $name > " \
-    --header 'enter: open in nvim    q / esc: back to cockpit' \
-    --bind 'enter:execute(nvim {2})' --bind 'q:abort'
+    --header 'enter: nvim   C-d/C-u: scroll   C-s: (re)summarize   q/esc: back' \
+    --bind 'enter:execute(nvim {2})' --bind 'q:abort' \
+    --bind 'ctrl-d:preview-half-page-down' \
+    --bind 'ctrl-u:preview-half-page-up' \
+    --bind "ctrl-s:execute(notes-version-summary --force '$profile' '$name' {2})+refresh-preview"
   exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
 }
 
@@ -380,8 +395,8 @@ help_view() {
 
   project
     n              new project in this section
-    V              roll the highlighted project to its next version
-    o              browse the project's old (frozen) versions
+    V              roll to next version  (freezes + writes an LLM summary)
+    o              browse frozen versions  (C-d/C-u scroll · C-s (re)summarize)
     A              archive the highlighted project
     R              restore an archived project
 
