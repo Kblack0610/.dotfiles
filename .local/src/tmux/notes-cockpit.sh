@@ -135,11 +135,18 @@ _subheader() { # $1=name $2=status $3=version
   fi
 }
 
-# One profile's view: its untagged tasks, then a group per project (empty projects get
-# a selectable placeholder so C-a / m can target them).
+# One profile's view: its untagged tasks, then a group per project. Both the profile's own
+# (non-project) lane AND each empty project get a selectable "(no tasks — C-a to add)"
+# placeholder, so an empty profile (e.g. a fresh job) still has a row to add/move onto.
 _profile_view() { # $1=rows $2=profile
-  local rows="$1" prof="$2" n st lc body
-  _flat "$rows" "$prof"
+  local rows="$1" prof="$2" n st lc body untagged
+  untagged="$(_flat "$rows" "$prof")"
+  if [ -n "$untagged" ]; then
+    printf '%s\n' "$untagged"
+  else
+    printf 'add\t%s\t\t\t\t%s\t%s  (no tasks — C-a to add)%s\n' \
+      "$prof" "$prof" "$C_DIM" "$C_OFF"
+  fi
   notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n _summary st ver; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
