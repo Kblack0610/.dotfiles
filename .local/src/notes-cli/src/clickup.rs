@@ -46,15 +46,16 @@ struct Ticket {
     title: String,
 }
 
-/// Map a ClickUp priority word to the note's priority hashtag; `""` (none) → no tag, so the
-/// task sweeps into the untagged top bucket rather than a lane.
+/// Map a ClickUp priority word to the note's priority hashtag. The note model has three
+/// levels (`md::PRIORITIES`: urgent/high/low); ClickUp's "normal" (its default) has no
+/// lane, so it maps to `""` (no tag) like "none" — the task sweeps into the untagged top
+/// bucket rather than a lane.
 fn priority_tag(word: &str) -> &'static str {
     match word.trim().to_lowercase().as_str() {
         "urgent" => "#urgent",
         "high" => "#high",
-        "normal" => "#medium",
         "low" => "#low",
-        _ => "",
+        _ => "", // "normal" / "none" / unknown -> untagged
     }
 }
 
@@ -229,7 +230,7 @@ mod tests {
     fn priority_tag_maps_clickup_words() {
         assert_eq!(priority_tag("urgent"), "#urgent");
         assert_eq!(priority_tag("High"), "#high");
-        assert_eq!(priority_tag("normal"), "#medium");
+        assert_eq!(priority_tag("normal"), ""); // "normal" has no lane in the 3-level model
         assert_eq!(priority_tag("low"), "#low");
         assert_eq!(priority_tag(""), "");
         assert_eq!(priority_tag("bogus"), "");
