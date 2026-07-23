@@ -235,7 +235,8 @@ return {
 
       -- Cycle checkbox status on a range. The next state is computed from the FIRST
       -- line and applied to every line, so a visual selection converges to one state.
-      -- After the change, finished Focus tasks are filed under the Done block.
+      -- The edit is applied in place; the Focus sweep (regroup into lanes / Done)
+      -- runs on save, so tasks don't jump around under the cursor as you cycle.
       local function cycle_status(line1, line2)
         local first = vim.fn.getline(line1):match(STATUS_PAT)
         if not first then
@@ -248,7 +249,6 @@ return {
             vim.fn.setline(lnum, (line:gsub(STATUS_PAT, nxt, 1)))
           end
         end
-        file_focus_done()
       end
 
       -- Open a fresh `- [ ] ` task below the cursor (indentation-matched) and drop
@@ -304,17 +304,16 @@ return {
           -- New task below the cursor.
           vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
 
-          -- Task priority cycle: current line (normal) / selection (visual). Re-sweeps
-          -- so the task jumps to its new priority lane immediately, like <leader>ts does.
+          -- Task priority cycle: current line (normal) / selection (visual). Edits the
+          -- tag in place; the task moves to its new priority lane on save, not as you
+          -- cycle, so the note doesn't reshuffle under the cursor.
           vim.keymap.set("n", "<leader>tp", function()
             local lnum = vim.api.nvim_win_get_cursor(0)[1]
             cycle_priority(lnum, lnum)
-            file_focus_done()
           end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
           vim.keymap.set("x", "<leader>tp", function()
             vim.cmd "normal! \27"
             cycle_priority(vim.fn.line "'<", vim.fn.line "'>")
-            file_focus_done()
           end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
 
           -- Sweep `## Focus` on save too, so the note lands organized however a task
