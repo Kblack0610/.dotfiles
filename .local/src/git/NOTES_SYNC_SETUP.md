@@ -125,12 +125,21 @@ The ntfy notifications use the OS push channel — near-zero battery cost. The T
 
 `notes-termux-bootstrap` also installs `neovim`, `tmux`, and `rust` (to build the `notes` CLI) and writes a Termux:Widget shortcut at `~/.shortcuts/notes` that runs `notes-mobile`: pull, open today's daily note in neovim inside a persistent `notes` tmux session, push on exit. The tmux session means reopening the phone reattaches where you left off.
 
-To get the home-screen icon:
+To get the home-screen icon: long-press the launcher home screen -> Widgets -> **Termux:Widget** (built into Termux, no add-on) -> pick `notes`. Tapping it lands you straight in today's daily note. `notes-mobile` also runs on desktop/macOS for testing.
 
-1. Install the **Termux:Widget** add-on APK (F-Droid).
-2. Long-press the launcher home screen -> Widgets -> Termux:Widget -> pick `notes`.
+### Glance widget: today's note on the home screen
 
-Tapping it lands you straight in today's daily note. `notes-mobile` also runs on desktop/macOS for testing.
+Other apps cannot read `~/.notes` (Termux private storage), so `notes-mobile` and the phone's sync cron mirror today's note into shared storage via `notes-mirror-shared`:
+
+- `/sdcard/notes/today.md` — the full note (for a content widget)
+- `/sdcard/notes/tasks.txt` — checkbox lines as todo.txt (for a read-only task widget)
+
+`notes-phone-setup` runs `termux-setup-storage` (one Android permission tap) and wires the mirror into boot + hourly sync. Then:
+
+- **Content panel (recommended):** install **KWGT**, add its widget, add one Text layer with formula `fl("content", "/sdcard/notes/today.md")`. Always-on, read-only, refreshes each sync.
+- **Task list:** install **Simpletask** (FOSS) pointed at `/sdcard/notes/tasks.txt` (read-only for now).
+
+The mirror is one-way; nothing writes back into the vault. A checkable widget that folds check-offs back into the note is a separate, deliberately-scoped feature.
 
 ## Webhook fan-out (cluster side)
 

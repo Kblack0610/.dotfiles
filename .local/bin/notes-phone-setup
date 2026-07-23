@@ -34,12 +34,22 @@ pkg update -y >/dev/null 2>&1 || true
 pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null 2>&1 \
     || warn "some packages may already be present"
 
-# 2. Put the launcher + real sync engine on PATH.
-say "Linking notes-mobile + notes-sync…"
+# 2. Put the launcher + real sync engine + widget mirror on PATH.
+say "Linking notes-mobile + notes-sync + notes-mirror-shared…"
 mkdir -p "$BIN"
 ln -sf "$DOTFILES/.local/bin/notes-mobile" "$BIN/notes-mobile"
+ln -sf "$DOTFILES/.local/bin/notes-mirror-shared" "$BIN/notes-mirror-shared"
 ln -sf "$DOTFILES/.local/src/git/git-sync-notes.sh" "$BIN/notes-sync"
-chmod +x "$DOTFILES/.local/bin/notes-mobile" "$DOTFILES/.local/src/git/git-sync-notes.sh" 2>/dev/null || true
+chmod +x "$DOTFILES/.local/bin/notes-mobile" "$DOTFILES/.local/bin/notes-mirror-shared" "$DOTFILES/.local/src/git/git-sync-notes.sh" 2>/dev/null || true
+
+# 2b. Shared storage for home-screen widgets. termux-setup-storage pops a one-time
+#     Android permission dialog (the user taps Allow); it cannot be silent.
+if [ ! -d "$HOME/storage/shared" ]; then
+    say "Requesting storage access (tap Allow when Android asks)…"
+    termux-setup-storage 2>/dev/null || warn "termux-setup-storage unavailable — widget mirror will be skipped"
+    for _ in 1 2 3 4 5; do [ -d "$HOME/storage/shared" ] && break; sleep 1; done
+fi
+[ -d "$HOME/storage/shared" ] && mkdir -p "$HOME/storage/shared/notes"
 
 # 3. Notes remote URL (env -> existing config -> prompt).
 if [ -z "${NOTES_REMOTE:-}" ] && [ -f "$HOME/.config/notes-sync.env" ]; then
@@ -94,22 +104,24 @@ exec "$BIN/notes-mobile"
 EOF
 chmod +x "$HOME/.shortcuts/notes"
 
-# 7. Background sync: pull on boot + hourly.
+# 7. Background sync: pull on boot + hourly, refreshing the widget mirror each time.
 say "Setting up boot + hourly sync…"
 mkdir -p "$HOME/.termux/boot"
 cat > "$HOME/.termux/boot/notes-sync.sh" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 sleep 15
 "$BIN/notes-sync" >/dev/null 2>&1
+"$BIN/notes-mirror-shared" >/dev/null 2>&1
 EOF
 chmod +x "$HOME/.termux/boot/notes-sync.sh"
 if command -v crontab >/dev/null 2>&1; then
-    existing="$(crontab -l 2>/dev/null || true)"
-    if ! printf '%s\n' "$existing" | grep -Fq "$BIN/notes-sync"; then
-        { printf '%s\n' "$existing" | sed '/^$/d'; printf '0 * * * * %s/notes-sync >/dev/null 2>&1\n' "$BIN"; } | crontab -
-    fi
+    existing="$(crontab -l 2>/dev/null | grep -Fv "$BIN/notes-sync" || true)"
+    { printf '%s\n' "$existing" | sed '/^$/d'; printf '0 * * * * %s/notes-sync >/dev/null 2>&1; %s/notes-mirror-shared >/dev/null 2>&1\n' "$BIN" "$BIN"; } | crontab -
     command -v sv-enable >/dev/null 2>&1 && sv-enable crond >/dev/null 2>&1 || true
 fi
+
+# Seed the mirror now so the widget has content immediately.
+"$BIN/notes-mirror-shared" >/dev/null 2>&1 || true
 
 cat <<EOF
 
@@ -117,9 +129,15 @@ $(say "Done.")
   Notes:    $NOTES_DIR
   Launcher: $BIN/notes-mobile   (tap-target: ~/.shortcuts/notes)
 
-Last step (once):
-  Long-press your home screen -> Widgets -> Termux:Widget -> drop it -> tap "notes".
+Last steps (once):
+  1. Tap launcher: long-press home screen -> Widgets -> Termux:Widget -> drop it -> tap "notes".
+  2. Glance widget (optional): today's note is mirrored to  /sdcard/notes/today.md
+     (tasks also at  /sdcard/notes/tasks.txt).
+       - Content panel: install KWGT, add its widget, one Text layer, formula:
+           fl("content", "/sdcard/notes/today.md")
+       - Task list (read-only): install Simpletask, point it at /sdcard/notes/tasks.txt
 
 Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
+Background sync + the widget mirror refresh on boot and hourly.
 Test it now:  ~/.shortcuts/notes
 EOF
