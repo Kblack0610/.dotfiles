@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# notes-mirror-shared — mirror today's daily note into Android shared storage so
+# home-screen widget apps (KWGT, Simpletask, any text/todo widget) can read it.
+#
+# Termux keeps ~/.notes in app-private storage that other apps cannot see; this
+# copies today's note out to ~/storage/shared/notes/ (== /sdcard/notes/) after
+# each sync. It is a NO-OP anywhere ~/storage/shared does not exist (desktop,
+# macOS), so it is safe to call unconditionally from notes-mobile and the phone's
+# sync cron.
+#
+# Writes:
+#   today.md   — the full note, for a content widget (KWGT etc.)
+#   tasks.txt  — checkbox lines as todo.txt, for a read-only task widget (Simpletask)
+#
+# Read-only mirror: nothing here writes back into the vault. The check-off-syncs-back
+# round-trip is a separate, deliberately-scoped feature.
+
+set -uo pipefail
+
+SHARED="${NOTES_SHARED_DIR:-$HOME/storage/shared/notes}"
+
+# Off-Termux (or before termux-setup-storage) there is no shared storage — skip cleanly.
+[ -d "$HOME/storage/shared" ] || exit 0
+
+# Resolve today's daily note the same way notes-mobile does: profile-aware via the
+# CLI when present, else the personal-profile date path.
+daily=""
+if command -v notes >/dev/null 2>&1; then
+    daily="$(notes path daily 2>/dev/null || true)"
+fi
+daily="${daily:-$HOME/.notes/journal/daily/$(date +%F).md}"
+
+[ -f "$daily" ] || exit 0
+
+mkdir -p "$SHARED"
+
+# 1. Full note -> today.md
+cp -f "$daily" "$SHARED/today.md"
+
+# 2. Checkbox lines -> tasks.txt (todo.txt-ish). "- [x]" becomes a leading "x ".
+#    A trailing priority tag (#urgent/#high/#low) is preserved as-is.
+awk '
+    /^[[:space:]]*- \[[ xX]\] / {
+        done = ($0 ~ /^[[:space:]]*- \[[xX]\] /)
+        sub(/^[[:space:]]*- \[[ xX]\] /, "")
+        print (done ? "x " $0 : $0)
+    }
+' "$daily" > "$SHARED/tasks.txt" 2>/dev/null || : > "$SHARED/tasks.txt"
+
+exit 0
