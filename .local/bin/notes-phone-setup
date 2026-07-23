@@ -1,0 +1,125 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# notes-phone-setup — one-command Termux provisioning for ~/.notes on a phone.
+#
+# Installs the runtime, wires the real git sync engine (git-sync-notes.sh),
+# clones ~/.notes, drops the home-screen shortcut (~/.shortcuts/notes -> the
+# notes-mobile launcher), and sets up boot + hourly background sync. No private
+# repo needed — everything here ships in the public dotfiles.
+#
+# Run it after cloning the public dotfiles:
+#   pkg install -y git \
+#     && git clone --depth 1 https://github.com/Kblack0610/.dotfiles ~/.dotfiles \
+#     && ~/.dotfiles/.local/bin/notes-phone-setup
+#
+# Non-interactive override (skips prompts):
+#   NOTES_REMOTE=https://<host>/kblack0610/.notes.git NOTES_TOKEN=<tok> ~/.dotfiles/.local/bin/notes-phone-setup
+
+set -uo pipefail
+
+DOTFILES="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+NOTES_DIR="${NOTES_DIR:-$HOME/.notes}"
+BIN="$HOME/.local/bin"
+GITUSER="${NOTES_GIT_USER:-kblack0610}"
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
+warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$1" >&2; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
+
+command -v pkg >/dev/null 2>&1 || die "not Termux (no pkg). Run this inside the Termux app."
+[ -d "$DOTFILES/.local/bin" ] || die "public dotfiles not at $DOTFILES — clone it first (see header)."
+
+# 1. Runtime packages.
+say "Installing packages (git, openssh, neovim, tmux, cron)…"
+pkg update -y >/dev/null 2>&1 || true
+pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null 2>&1 \
+    || warn "some packages may already be present"
+
+# 2. Put the launcher + real sync engine on PATH.
+say "Linking notes-mobile + notes-sync…"
+mkdir -p "$BIN"
+ln -sf "$DOTFILES/.local/bin/notes-mobile" "$BIN/notes-mobile"
+ln -sf "$DOTFILES/.local/src/git/git-sync-notes.sh" "$BIN/notes-sync"
+chmod +x "$DOTFILES/.local/bin/notes-mobile" "$DOTFILES/.local/src/git/git-sync-notes.sh" 2>/dev/null || true
+
+# 3. Notes remote URL (env -> existing config -> prompt).
+if [ -z "${NOTES_REMOTE:-}" ] && [ -f "$HOME/.config/notes-sync.env" ]; then
+    NOTES_REMOTE="$(sed -n 's/^NOTES_PRIMARY_REMOTE_URL=//p' "$HOME/.config/notes-sync.env" | head -1)"
+fi
+if [ -z "${NOTES_REMOTE:-}" ] && [ -d "$NOTES_DIR/.git" ]; then
+    NOTES_REMOTE="$(git -C "$NOTES_DIR" remote get-url origin 2>/dev/null || true)"
+fi
+if [ -z "${NOTES_REMOTE:-}" ]; then
+    printf 'Notes git URL (e.g. https://<your-git-host>/kblack0610/.notes.git): '
+    read -r NOTES_REMOTE
+fi
+[ -n "${NOTES_REMOTE:-}" ] || die "no notes remote URL given."
+
+# 4. Credentials. For an HTTPS remote, seed the git credential store from a token
+#    so the clone/push never prompts. SSH remotes assume a key is already present.
+git config --global user.name  "${NOTES_GIT_NAME:-Kenneth}"
+git config --global user.email "${NOTES_GIT_EMAIL:-notes@$(getprop net.hostname 2>/dev/null || echo phone)}"
+case "$NOTES_REMOTE" in
+    https://*)
+        host="${NOTES_REMOTE#https://}"; host="${host%%/*}"
+        if [ -z "${NOTES_TOKEN:-}" ] && ! grep -q "@$host\$" "$HOME/.git-credentials" 2>/dev/null; then
+            printf 'Access token for %s (input hidden): ' "$host"
+            read -rs NOTES_TOKEN; echo
+        fi
+        if [ -n "${NOTES_TOKEN:-}" ]; then
+            git config --global credential.helper store
+            touch "$HOME/.git-credentials"; chmod 600 "$HOME/.git-credentials"
+            grep -qF "@$host" "$HOME/.git-credentials" 2>/dev/null \
+                || printf 'https://%s:%s@%s\n' "$GITUSER" "$NOTES_TOKEN" "$host" >> "$HOME/.git-credentials"
+        fi
+        ;;
+esac
+
+# 5. Clone ~/.notes (idempotent).
+if [ -d "$NOTES_DIR/.git" ]; then
+    say "~/.notes already present — pulling latest…"
+    git -C "$NOTES_DIR" pull --rebase --autostash -q 2>/dev/null || warn "pull failed (offline / not on Tailscale?)"
+else
+    say "Cloning ~/.notes…"
+    if ! git clone -q "$NOTES_REMOTE" "$NOTES_DIR"; then
+        die "clone failed. If the host is private, connect Tailscale first, then re-run."
+    fi
+fi
+
+# 6. Home-screen shortcut (Termux:Widget reads ~/.shortcuts; it is built into Termux).
+say "Writing the home-screen shortcut…"
+mkdir -p "$HOME/.shortcuts"
+cat > "$HOME/.shortcuts/notes" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+exec "$BIN/notes-mobile"
+EOF
+chmod +x "$HOME/.shortcuts/notes"
+
+# 7. Background sync: pull on boot + hourly.
+say "Setting up boot + hourly sync…"
+mkdir -p "$HOME/.termux/boot"
+cat > "$HOME/.termux/boot/notes-sync.sh" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+sleep 15
+"$BIN/notes-sync" >/dev/null 2>&1
+EOF
+chmod +x "$HOME/.termux/boot/notes-sync.sh"
+if command -v crontab >/dev/null 2>&1; then
+    existing="$(crontab -l 2>/dev/null || true)"
+    if ! printf '%s\n' "$existing" | grep -Fq "$BIN/notes-sync"; then
+        { printf '%s\n' "$existing" | sed '/^$/d'; printf '0 * * * * %s/notes-sync >/dev/null 2>&1\n' "$BIN"; } | crontab -
+    fi
+    command -v sv-enable >/dev/null 2>&1 && sv-enable crond >/dev/null 2>&1 || true
+fi
+
+cat <<EOF
+
+$(say "Done.")
+  Notes:    $NOTES_DIR
+  Launcher: $BIN/notes-mobile   (tap-target: ~/.shortcuts/notes)
+
+Last step (once):
+  Long-press your home screen -> Widgets -> Termux:Widget -> drop it -> tap "notes".
+
+Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
+Test it now:  ~/.shortcuts/notes
+EOF

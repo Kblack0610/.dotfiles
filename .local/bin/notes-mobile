@@ -28,14 +28,19 @@ sync() {
 
 resolve_daily() {
     # `notes today` is idempotent (creates + links refs/backlogs); `notes path
-    # daily` prints the profile-aware path. Fall back to the notes root so the
-    # launcher still opens something if the CLI isn't built on this device.
+    # daily` prints the profile-aware path. When the Rust CLI isn't built on this
+    # device (e.g. a bare Termux phone), fall back to the personal-profile daily
+    # path computed from the date so we still land on TODAY's note, not the root.
     local daily=""
     if command -v notes >/dev/null 2>&1; then
         notes today >/dev/null 2>&1 || true
         daily="$(notes path daily 2>/dev/null || true)"
     fi
-    printf '%s' "${daily:-$HOME/.notes}"
+    if [ -z "$daily" ]; then
+        daily="$HOME/.notes/journal/daily/$(date +%F).md"
+        mkdir -p "$(dirname "$daily")"
+    fi
+    printf '%s' "$daily"
 }
 
 # 1. Pull latest before opening.
