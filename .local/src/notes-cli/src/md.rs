@@ -482,13 +482,18 @@ fn strip_trailing_day(s: &str) -> String {
     t.to_string()
 }
 
-/// Priority hashtags, most-urgent first. A task carries at most one; it always rides
-/// at the very end of the line, after the `(Nd) <!-- since -->` stamp, so it stays
-/// visible and never gets a stale duplicate appended in front of the stamp.
-const PRIORITY_TAGS: [&str; 4] = ["urgent", "high", "medium", "low"];
-const PRIORITY_HASH: [&str; 4] = ["#urgent", "#high", "#medium", "#low"];
+/// The priority levels, most-urgent first — `(bare-word, #hashtag, lane-heading)`. The
+/// SINGLE source of truth, shared by tag detection here and the Focus/Wave lane sweep
+/// (`focus_sweep::PRIORITIES`). Matches the nvim `<leader>tp` cycle (low -> high -> urgent).
+/// A task carries at most one; it rides at the very end of the line, after the
+/// `(Nd) <!-- since -->` stamp, so it stays visible and never gets a stale duplicate.
+pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
+    ("urgent", "#urgent", "### Urgent"),
+    ("high", "#high", "### High"),
+    ("low", "#low", "### Low"),
+];
 
-/// Strip every priority hashtag (`#urgent`/`#high`/`#medium`/`#low`, case-insensitive)
+/// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
 /// from `line`, collapsing the space each one leaves behind, and return the cleaned line
 /// plus the single most-urgent tag found (as `#low` etc.), or `None` if the line has none.
 /// Tag detection mirrors [`find_hashtags`] (heading marker, glued `#`, and code spans skipped).
@@ -539,9 +544,9 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
                 while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
                     end -= 1;
                 }
-                if let Some(rank) = PRIORITY_TAGS
+                if let Some(rank) = PRIORITIES
                     .iter()
-                    .position(|t| *t == line[tag_start..end].to_lowercase())
+                    .position(|(t, _, _)| *t == line[tag_start..end].to_lowercase())
                 {
                     // Cut `#tag` plus one neighbouring space so no double space is left.
                     let (mut cut_s, mut cut_e) = (i, k);
@@ -572,11 +577,11 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     cleaned.push_str(&line[cursor..]);
     (
         cleaned.trim_end().to_string(),
-        best.map(|r| PRIORITY_HASH[r]),
+        best.map(|r| PRIORITIES[r].1),
     )
 }
 
-/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#medium"`/`"#low"`), or
+/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#low"`), or
 /// `None`. Detection matches [`split_priority`] (heading marker, glued `#`, code spans skipped),
 /// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
 pub fn task_priority(line: &str) -> Option<&'static str> {

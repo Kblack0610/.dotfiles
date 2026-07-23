@@ -1,16 +1,16 @@
 //! `notes focus sweep` — reorganize today's `## Focus` by priority + status, so a task
-//! moves between lanes as its `#urgent`/`#high`/`#medium`/`#low` tag is cycled or its
+//! moves between lanes as its `#urgent`/`#high`/`#low` tag is cycled or its
 //! checkbox is checked: untagged todos on top, then `### Urgent` / `### High` /
-//! `### Medium` / `### Low` (open tasks, in-priority order), done (`[x]`) under
+//! `### Low` (open tasks, in-priority order), done (`[x]`) under
 //! `--- / ### Done`. An in-progress `[/]` task keeps its mark inside its priority lane.
 //!
-//! This mirrors the nvim buffer sweep (markdown.lua `rebuild_focus_body`) so that
+//! This mirrors the nvim buffer sweep (markdown.lua rebuild_focus_body) so that
 //! tagging/checking a task from the cockpit organizes the note exactly like cycling it in
 //! the editor does — the note stays grouped no matter which surface you touch. Only the
-//! AUTHORED region is reorganized: a rollup mirror (everything from `md::ROLLUP_START` on)
+//! AUTHORED region is reorganized: a rollup mirror (everything from md::ROLLUP_START on)
 //! is left untouched at the end of the section.
 //!
-//! Lives in its own module to stay clear of a concurrent `focus.rs` refactor.
+//! Lives in its own module to stay clear of a concurrent focus.rs refactor.
 
 use crate::config::Profile;
 use crate::daily;
@@ -19,45 +19,41 @@ use crate::md;
 use anyhow::{bail, Result};
 use std::fs;
 
-/// The priority lanes, most-urgent first. Untagged open tasks (rank == `LANES.len()`)
-/// stay unheaded on top; checked tasks go under `### Done`; each open task otherwise
-/// buckets by its `md::task_priority` tag. Keep in sync with markdown.lua's LANES.
-const LANES: [(&str, &str); 4] = [
-    ("#urgent", "### Urgent"),
-    ("#high", "### High"),
-    ("#medium", "### Medium"),
-    ("#low", "### Low"),
-];
+// The priority lanes are md::PRIORITIES (the single source of truth, most-urgent first),
+// shared with tag detection. Untagged open tasks (rank == PRIORITIES.len()) stay unheaded on
+// top; checked tasks go under ### Done; each open task otherwise buckets by its tag. The
+// nvim sweep (markdown.lua LANES) mirrors the same set.
 
-/// Lane index for an open task: 0..LANES.len() by priority tag, else LANES.len() (untagged).
+/// Lane index for an open task: 0..PRIORITIES.len() by priority tag, else PRIORITIES.len()
+/// (untagged).
 fn lane_of(line: &str) -> usize {
     match md::task_priority(line) {
-        Some(tag) => LANES
+        Some(tag) => md::PRIORITIES
             .iter()
-            .position(|(t, _)| *t == tag)
-            .unwrap_or(LANES.len()),
-        None => LANES.len(),
+            .position(|(_, hash, _)| *hash == tag)
+            .unwrap_or(md::PRIORITIES.len()),
+        None => md::PRIORITIES.len(),
     }
 }
 
-/// A `### `-heading or `---` rule this sweep owns — stripped so it can be re-emitted only
+/// A ### -heading or `---` rule this sweep owns — stripped so it can be re-emitted only
 /// where a lane is non-empty (an authored heading elsewhere is preserved as content).
 fn is_scaffold(line: &str) -> bool {
     let t = line.trim();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
         || t.eq_ignore_ascii_case("### In progress")
-        || LANES
+        || md::PRIORITIES
             .iter()
-            .any(|(_, h)| t.eq_ignore_ascii_case(h))
+            .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
 }
 
-/// Rebuild the authored `## Focus` body grouped by priority lane + a trailing `### Done`.
-/// `None` when there is nothing to organize (only untagged todos and no done/scaffold —
+/// Rebuild the authored ## Focus body grouped by priority lane + a trailing `### Done`.
+/// None when there is nothing to organize (only untagged todos and no done/scaffold —
 /// the flat list is already the sorted form).
 fn rebuild(body: &[&str]) -> Option<Vec<String>> {
     // one open-task bucket per lane + a trailing untagged bucket, then the done bucket
-    let mut open: Vec<Vec<String>> = vec![Vec::new(); LANES.len() + 1];
+    let mut open: Vec<Vec<String>> = vec![Vec::new(); md::PRIORITIES.len() + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
     let mut had_scaffold = false;
@@ -73,19 +69,19 @@ fn rebuild(body: &[&str]) -> Option<Vec<String>> {
             open[lane_of(l)].push((*l).to_string());
         } else if !t.is_empty() {
             // a stray prose line — keep it with the untagged top bucket
-            open[LANES.len()].push((*l).to_string());
+            open[md::PRIORITIES.len()].push((*l).to_string());
         }
     }
-    let tagged = open[..LANES.len()].iter().any(|b| !b.is_empty());
+    let tagged = open[..md::PRIORITIES.len()].iter().any(|b| !b.is_empty());
     // Nothing to reorganize: no priority tags, no done tasks, no leftover scaffold.
     if !tagged && done.is_empty() && !had_scaffold {
         return None;
     }
     let mut out: Vec<String> = Vec::new();
     // untagged open tasks stay on top, unheaded, followed by the empty-task placeholder
-    out.extend(open[LANES.len()].drain(..));
+    out.extend(open[md::PRIORITIES.len()].drain(..));
     out.push(placeholder.unwrap_or_else(|| "- [ ] ".to_string()));
-    for (i, (_, heading)) in LANES.iter().enumerate() {
+    for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
         if open[i].is_empty() {
             continue;
         }
@@ -102,7 +98,7 @@ fn rebuild(body: &[&str]) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// Pure core: reorganize the `## Focus` section of `content` by status. `None` when the
+/// Pure core: reorganize the ## Focus section of `content` by status. `None` when the
 /// section is absent or already organized (no change).
 fn sweep_content(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
@@ -138,10 +134,10 @@ fn sweep_content(content: &str) -> Option<String> {
     (joined != content).then_some(joined)
 }
 
-/// `notes focus start <query>` — toggle the first matching authored `## Focus` task
-/// between `[ ]` (todo) and `[/]` (in progress). Pair with a sweep to move it into the
+/// notes focus start <query> — toggle the first matching authored `## Focus` task
+/// between [ ] (todo) and `[/]` (in progress). Pair with a sweep to move it into the
 /// right lane. Only the authored region is scanned (stops at the next H2 / rollup
-/// sentinel), matching by the same normalised key as `done`.
+/// sentinel), matching by the same normalised key as done.
 pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -191,7 +187,7 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     Ok(0)
 }
 
-/// `notes focus sweep` — organize today's `## Focus` by status in place.
+/// notes focus sweep — organize today's `## Focus` by status in place.
 pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
     let note = daily::today_path(p);
     if !note.exists() {
@@ -236,8 +232,6 @@ after
         assert!(focus.find("fire").unwrap() > urgent && focus.find("fire").unwrap() < high);
         assert!(low < done, "Done is last");
         assert!(focus.find("finished it").unwrap() > done, "checked task under Done");
-        // no Medium lane emitted when empty
-        assert!(!focus.contains("### Medium"));
         assert!(out.contains("## Notes\nafter"), "later sections untouched");
     }
 
