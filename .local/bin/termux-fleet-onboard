@@ -1,0 +1,131 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# termux-fleet-onboard - put an Android phone on the fleet, from Termux, in one run.
+#
+# Tier A (light touch, NO Headwind MDM). Chains three opt-in pieces:
+#   1. fleet-pulse heartbeat  -> the phone shows on your gatus fleet board (Termux:Boot + cron)
+#   2. sshd over the tailnet   -> `ssh -p 8022 <phone>` from any fleet machine (key-based)
+#   3. notes-on-phone          -> the notes CLI + sync + widget (delegates to notes-bootstrap)
+#
+# Prereqs on the phone (the irreducible manual bit):
+#   - Termux + Termux:Boot installed from the SAME source (F-Droid).
+#   - Tailscale installed and connected to your tailnet / headscale server.
+#
+# Host-generic: pass your fleet board URL via FLEET_GATUS (else it prompts). Run it
+# downloaded, not piped, so the prompts have a terminal:
+#   curl -fsSLO https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/bin/termux-fleet-onboard
+#   FLEET_GATUS=https://fleet.example.lan bash termux-fleet-onboard
+# (It also reads prompts from /dev/tty, so `curl ... | bash` still works.)
+set -euo pipefail
+
+RAW_BASE="${DOTFILES_RAW_BASE:-https://raw.githubusercontent.com/Kblack0610/.dotfiles/main}"
+GATUS="${FLEET_GATUS:-}"
+GROUP="${FLEET_GROUP:-android}"
+SRC_DIR="$HOME/.local/src/fleet-pulse"
+BIN_DIR="$HOME/.local/bin"
+
+die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()  { printf '  \033[32mok\033[0m %s\n' "$*"; }
+
+# Read a prompt from the controlling terminal so prompts work even under `curl | bash`
+# (where plain stdin is the piped script, not the keyboard).
+ask() {
+    if [ -r /dev/tty ]; then read -r "$1" < /dev/tty || true; else read -r "$1" || true; fi
+}
+ask_hidden() {
+    printf '%s' "$2" >&2
+    if [ -r /dev/tty ]; then
+        stty -echo < /dev/tty 2>/dev/null || true
+        read -r "$1" < /dev/tty || true
+        stty echo < /dev/tty 2>/dev/null || true
+    else
+        read -r "$1" || true
+    fi
+    printf '\n' >&2
+}
+
+command -v pkg >/dev/null 2>&1 || die "not Termux (no 'pkg'). Run this inside the Termux app."
+
+say "installing prerequisites (git curl openssh cronie termux-services)"
+pkg install -y git curl openssh cronie termux-services >/dev/null 2>&1 || die "pkg install failed"
+ok "packages ready"
+
+# --- identity + token ------------------------------------------------------
+if [ -z "$GATUS" ]; then
+    printf 'fleet board URL (e.g. https://fleet.example.lan): ' >&2
+    ask GATUS
+fi
+[ -n "${GATUS:-}" ] || die "no fleet board URL (set FLEET_GATUS or answer the prompt)"
+GATUS="${GATUS%/}"
+printf 'fleet name for this phone (kebab-case; must match the gatus-fleet config, e.g. ken-phone): ' >&2
+ask NAME
+[ -n "${NAME:-}" ] || die "no name given"
+ask_hidden TOKEN 'shared fleet token (input hidden): '
+[ -n "${TOKEN:-}" ] || die "no token given"
+
+# --- fetch fleet-pulse (enroll.sh fetches push.sh itself, but pre-place both) ---
+mkdir -p "$SRC_DIR" "$BIN_DIR"
+say "fetching fleet-pulse enroll.sh + push.sh"
+curl -fsSL -o "$SRC_DIR/enroll.sh" "$RAW_BASE/.local/src/fleet-pulse/enroll.sh" || die "could not fetch enroll.sh"
+curl -fsSL -o "$SRC_DIR/push.sh"   "$RAW_BASE/.local/src/fleet-pulse/push.sh"   || die "could not fetch push.sh"
+chmod +x "$SRC_DIR/enroll.sh" "$SRC_DIR/push.sh"
+ok "fleet-pulse scripts installed"
+
+# --- enroll heartbeat via a temp token file (never on the command line) -----
+TF="$(mktemp "${TMPDIR:-/data/data/com.termux/files/usr/tmp}/fleet-tok.XXXXXX")"
+chmod 600 "$TF"; printf '%s' "$TOKEN" > "$TF"
+trap 'rm -f "$TF"' EXIT INT TERM
+say "enrolling heartbeat (probe-first: nothing installs unless gatus knows ${GROUP}_${NAME})"
+"$SRC_DIR/enroll.sh" --name "$NAME" --group "$GROUP" --gatus "$GATUS" --token-file "$TF"
+rm -f "$TF"; trap - EXIT INT TERM
+
+# --- optional: sshd over the tailnet ---------------------------------------
+printf '\nSet up SSH into this phone over the tailnet? [Y/n]: ' >&2
+ask SSH_ANS
+case "${SSH_ANS:-Y}" in
+    [nN]*) say "skipping sshd" ;;
+    *)
+        say "configuring Termux sshd (port 8022, key-based over the tailnet)"
+        mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+        printf 'paste your DESKTOP public key (contents of ~/.ssh/id_ed25519.pub), or blank to skip: ' >&2
+        ask PUBKEY
+        if [ -n "${PUBKEY:-}" ]; then
+            touch "$HOME/.ssh/authorized_keys"
+            grep -qxF "$PUBKEY" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$PUBKEY" >> "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
+            ok "authorized_keys updated (key auth)"
+        else
+            say "no key pasted - set a password with: passwd   (key auth is preferred over a password)"
+        fi
+        mkdir -p "$HOME/.termux/boot"
+        cat > "$HOME/.termux/boot/start-sshd.sh" <<'SSHD_EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+sleep 10
+sshd
+SSHD_EOF
+        chmod +x "$HOME/.termux/boot/start-sshd.sh"
+        sshd 2>/dev/null || true
+        ok "sshd up on :8022 (and at boot via Termux:Boot)"
+        ip="$( (command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1) || true )"
+        printf '  connect from a fleet machine:  \033[36mssh -p 8022 %s\033[0m\n' "${ip:-<phone-tailnet-ip>}"
+        ;;
+esac
+
+# --- optional: notes on phone ----------------------------------------------
+printf '\nSet up notes-on-phone (notes CLI + sync + home-screen widget)? [y/N]: ' >&2
+ask NOTES_ANS
+case "${NOTES_ANS:-N}" in
+    [yY]*)
+        if command -v notes-termux-bootstrap >/dev/null 2>&1; then
+            notes-termux-bootstrap || say "notes bootstrap needs your SSH key / repo URL - re-run notes-termux-bootstrap later"
+        else
+            say "fetching notes-bootstrap + notes-termux-bootstrap"
+            curl -fsSL -o "$BIN_DIR/notes-bootstrap"        "$RAW_BASE/.local/bin/notes-bootstrap"        && chmod +x "$BIN_DIR/notes-bootstrap"
+            curl -fsSL -o "$BIN_DIR/notes-termux-bootstrap" "$RAW_BASE/.local/bin/notes-termux-bootstrap" && chmod +x "$BIN_DIR/notes-termux-bootstrap"
+            "$BIN_DIR/notes-termux-bootstrap" || say "notes bootstrap needs your SSH key / repo URL - re-run notes-termux-bootstrap later"
+        fi
+        ;;
+    *) say "skipping notes" ;;
+esac
+
+printf '\n\033[32mDone.\033[0m This phone is on the fleet (%s). Termux:Boot keeps it wired across reboots.\n' "$GATUS"

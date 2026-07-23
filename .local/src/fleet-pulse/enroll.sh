@@ -61,11 +61,18 @@ PROBE_ONLY="${PROBE_ONLY:-0}"
 case "$NAME" in *[!a-z0-9-]*) die "--name must be kebab-case: [a-z0-9-] only. The status bars match a space-separated roster, so a space or capital can never be rostered." ;; esac
 case "$GROUP" in *[!a-z0-9-]*) die "--group must be kebab-case: [a-z0-9-] only" ;; esac
 
-case "$(uname -s)" in
-    Darwin) OS=macos ;;
-    Linux)  OS=linux ;;
-    *) die "unsupported OS: $(uname -s) (Windows: use enroll.ps1)" ;;
-esac
+# Termux reports uname=Linux but has NO systemd - detect it first so it does not
+# fall into the Linux branch and try to write a systemd user unit that will never
+# run. Liveness on Termux rides Termux:Boot + cron instead (see the launcher below).
+if [ -n "${TERMUX_VERSION:-}" ] || [ -d /data/data/com.termux/files/usr ] || command -v termux-setup-storage >/dev/null 2>&1; then
+    OS=termux
+else
+    case "$(uname -s)" in
+        Darwin) OS=macos ;;
+        Linux)  OS=linux ;;
+        *) die "unsupported OS: $(uname -s) (Windows: use enroll.ps1)" ;;
+    esac
+fi
 
 mkdir -p "$CFG_DIR" "$SRC_DIR"
 
@@ -164,7 +171,62 @@ else
 fi
 
 # --- launcher (per-machine identity lives here) ---------------------------
-if [ "$OS" = macos ]; then
+if [ "$OS" = termux ]; then
+    # Termux has no systemd/launchd. Liveness rides Termux:Boot + cron (cronie) -
+    # the same mechanism notes-bootstrap uses. Identity (FLEET_NAME/FLEET_GROUP)
+    # lives in the crontab line here, mirroring the plist/unit on the other OSes.
+    if ! command -v crontab >/dev/null 2>&1; then
+        say "installing cronie + termux-services (the heartbeat scheduler)"
+        pkg install -y cronie termux-services >/dev/null 2>&1 || die "could not install cronie/termux-services (needs Termux 'pkg')"
+    fi
+
+    BOOT="$HOME/.termux/boot/start-fleet-pulse.sh"
+    mkdir -p "$HOME/.termux/boot"
+    if [ -e "$BOOT" ]; then
+        ok "$BOOT already exists - left untouched"
+    else
+        # Termux:Boot runs ~/.termux/boot/* at device boot. Bring cron up so the
+        # heartbeat fires with no terminal open. Needs the Termux:Boot add-on APK.
+        cat > "$BOOT" <<'BOOT_EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+sleep 15
+crond 2>/dev/null || sv up crond 2>/dev/null || true
+BOOT_EOF
+        chmod +x "$BOOT"
+        ok "wrote $BOOT (install the Termux:Boot add-on for it to run at boot)"
+    fi
+
+    # Every 15 min, not 60s: Android Doze pauses cron while the phone sleeps, so a
+    # tighter interval buys nothing. Liveness is best-effort-while-awake by design -
+    # the phone shows last-seen on the board and is kept OUT of FLEET_ROSTER.
+    CRON_LINE="*/15 * * * * FLEET_NAME=$NAME FLEET_GROUP=$GROUP $SRC_DIR/push.sh >/dev/null 2>&1"
+    existing="$(crontab -l 2>/dev/null || true)"
+    if printf '%s\n' "$existing" | grep -Fq "$SRC_DIR/push.sh"; then
+        ok "crontab already runs push.sh - left untouched"
+    else
+        { printf '%s\n' "$existing" | sed '/^$/d'; printf '%s\n' "$CRON_LINE"; } | crontab -
+        ok "added crontab entry (every 15 min)"
+    fi
+    command -v sv-enable >/dev/null 2>&1 && sv-enable crond >/dev/null 2>&1 || true
+    crond 2>/dev/null || true
+
+    # VERIFY through the real scheduled command line, not the probe (which ran in
+    # your shell). Confirms the name/group baked into cron actually posts 200.
+    say "verifying the scheduled heartbeat posts (name=$NAME group=$GROUP)"
+    verify_out="$(FLEET_NAME="$NAME" FLEET_GROUP="$GROUP" "$SRC_DIR/push.sh" 2>&1)" || true
+    case "$verify_out" in
+        *"HTTP 200"*)
+            ok "heartbeat posted - cron keeps it fresh while the phone is awake"
+            ;;
+        *)
+            printf '\n\033[33mPARTIAL:\033[0m boot script + crontab installed, but the verify push did not return 200:\n'
+            printf '%s\n' "$verify_out" | sed 's/^/    /'
+            exit 1
+            ;;
+    esac
+    say "verify later:  crontab -l   and   $SRC_DIR/push.sh"
+
+elif [ "$OS" = macos ]; then
     PLIST="$HOME/Library/LaunchAgents/com.kblack.fleet-pulse.plist"
     mkdir -p "$HOME/Library/LaunchAgents"
     # Same guard as the systemd path: if this is a stow symlink into a dotfiles
@@ -307,4 +369,10 @@ VERIFY_EOF
 fi
 
 printf '\n\033[32mEnrolled as %s_%s\033[0m -> %s\n' "$GROUP" "$NAME" "$GATUS"
-printf 'Add "%s" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted.\n' "$NAME"
+if [ "$OS" = termux ]; then
+    # A phone sleeps (Doze pauses cron), so rostering it would pin the desktop glyph
+    # amber forever. It shows on the board with last-seen instead. See docs/mobile-fleet.md.
+    printf 'Phone enrolled: it shows on the board with last-seen. Do NOT add "%s" to FLEET_ROSTER (it sleeps).\n' "$NAME"
+else
+    printf 'Add "%s" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted.\n' "$NAME"
+fi
