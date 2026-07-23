@@ -283,9 +283,11 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   esac || { echo "roll failed"; sleep 2; }
 }
 
-# Open a window to browse a project's frozen `versions/*.md` (newest first), each
-# previewed; Enter opens the version in nvim. `notes projects` gives the summary path,
-# whose parent holds `versions/`.
+# Browse a project's frozen `versions/*.md` (newest first, previewed) as a transient
+# OVERLAY on the current cockpit — a nested `display-popup` (NOT a new window, which would
+# pile up in the window list; NOT fzf-in-fzf-execute, which is fragile inside a popup — see
+# move_task). `q`/esc closes the overlay back to the cockpit; enter opens a version in nvim
+# inside the overlay. `notes projects` gives the summary path, whose parent holds `versions/`.
 browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   local section="${1:-}" profile name summary dir prev
   case "$section" in
@@ -304,10 +306,11 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   else
     prev="cat {}"
   fi
-  tmux new-window -n "ver:$name" "cd '$dir' && ls -1 *.md | sort -rV | fzf \
-    --ansi --reverse --preview '$prev' --preview-window 'right:62%:wrap' \
-    --header 'old versions of $name — enter opens in nvim · esc closes' \
-    --bind 'enter:execute(nvim {})'"
+  tmux display-popup -E -w 85% -h 85% -T " versions: $name " \
+    "cd '$dir' && ls -1 *.md | sort -rV | fzf \
+      --ansi --reverse --preview '$prev' --preview-window 'right:62%:wrap' \
+      --header 'enter: open in nvim    q / esc: back' \
+      --bind 'enter:execute(nvim {})' --bind 'q:abort'"
 }
 
 restore_project() {
