@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# svg-diagram-watch [--once] [--tree] <dir> [topic]
+#
+# Publish hand-authored SVG diagrams to the Windows-viewable docs home.
+# For each *.svg it rasterizes a crisp PNG (paste-safe for Confluence) and
+# copies BOTH the svg (editable master) and png into
+#   $WIN_DOCS/diagrams/<topic>/
+# Without --once it then WATCHES and republishes on every save, so you edit
+# the .svg in WSL and just refresh the file open on the Windows side.
+#
+# Modes:
+#   (default)     <dir> is one topic folder. topic = arg 2, else basename <dir>.
+#   --tree <root> watch the WHOLE tree under <root>: every *.svg is published to
+#                 $WIN_DOCS/diagrams/<its-parent-dir-basename>/. topic is derived
+#                 per-file, so one command covers many topics (rbac/ system/ ...).
+#                 Non-svg files and folders with no *.svg produce nothing.
+#
+# Deps: rsvg-convert (librsvg), inotifywait (inotify-tools).
+set -euo pipefail
+
+WIN_DOCS="${WIN_DOCS:-/mnt/c/Users/$USER/Documents/docs}"
+
+ONCE=0
+TREE=0
+while [ "${1:-}" ]; do
+  case "$1" in
+    --once) ONCE=1; shift ;;
+    --tree) TREE=1; shift ;;
+    *) break ;;
+  esac
+done
+SRC="${1:?usage: svg-diagram-watch [--once] [--tree] <dir> [topic]}"
+# Explicit topic override only applies in single-dir mode; in --tree mode the
+# topic is always derived per-file from its parent folder.
+TOPIC_OVERRIDE="${2:-}"
+
+# publish <svgfile> -- topic/dest/png derived from the file's own path.
+publish() {
+  local f="$1" base dir topic dest png
+  base="$(basename "$f" .svg)"
+  dir="$(dirname "$f")"
+  if [ "$TREE" = 0 ] && [ -n "$TOPIC_OVERRIDE" ]; then
+    topic="$TOPIC_OVERRIDE"
+  else
+    topic="$(basename "$dir")"
+  fi
+  dest="$WIN_DOCS/diagrams/$topic"
+  png="$dir/$base.png"
+  mkdir -p "$dest"
+  if rsvg-convert -b white -z 2 "$f" -o "$png" 2>/dev/null; then
+    cp "$f" "$png" "$dest/"
+    printf '[%s] published %-22s svg+png -> %s\n' "$(date +%H:%M:%S)" "$base" "$dest"
+  else
+    printf '[%s] RENDER FAILED %-18s (invalid SVG) - not published\n' "$(date +%H:%M:%S)" "$base"
+  fi
+}
+
+publish_all() {
+  local f
+  if [ "$TREE" = 1 ]; then
+    while IFS= read -r f; do [ -e "$f" ] && publish "$f"; done \
+      < <(find "$SRC" -type f -name '*.svg')
+  else
+    for f in "$SRC"/*.svg; do [ -e "$f" ] && publish "$f"; done
+  fi
+}
+
+publish_all
+[ "$ONCE" = 1 ] && exit 0
+
+if ! command -v inotifywait >/dev/null; then
+  echo "inotifywait missing (pacman -S inotify-tools) - did one-shot publish only."
+  exit 0
+fi
+
+if [ "$TREE" = 1 ]; then
+  echo "watching $SRC/**/*.svg  (Ctrl-C to stop)  ->  $WIN_DOCS/diagrams/<topic>/"
+  inotifywait -m -q -r -e close_write,create,moved_to --format '%w%f' "$SRC" | while read -r path; do
+    case "$path" in *.svg) publish "$path" ;; esac
+  done
+else
+  echo "watching $SRC/*.svg  (Ctrl-C to stop)  ->  $WIN_DOCS/diagrams/${TOPIC_OVERRIDE:-$(basename "$SRC")}"
+  inotifywait -m -q -e close_write,create,moved_to --format '%f' "$SRC" | while read -r fn; do
+    case "$fn" in *.svg) publish "$SRC/$fn" ;; esac
+  done
+fi

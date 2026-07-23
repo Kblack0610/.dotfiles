@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 630" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <!-- ================================================================
+       KB-GROUPS HERO - the diagram that defines the docs.
+       One physical corpus; group scoping rides in corpus_ids, which is
+       WRITTEN at ingest (green) and FILTERED at retrieval (blue).
+       OpenSearch is the shared hub both paths meet at.
+       Hand-editable: classes in <style>, one <g> per lane.
+       =============================================================== -->
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2f7a3a"/></marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2f4d7a"/></marker>
+    <marker id="an" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#667085"/></marker>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#1a2233" flood-opacity="0.12"/></filter>
+    <style>
+      .title    { font-size:24px; font-weight:700; fill:#1a2233; text-anchor:middle; }
+      .subtitle { font-size:14px; fill:#5a6472; text-anchor:middle; }
+      .lane        { stroke-width:2; }
+      .lane.write  { fill:#eef7ee; stroke:#2f7a3a; }
+      .lane.read   { fill:#eef2f8; stroke:#2f4d7a; }
+      .lane-title       { font-size:15px; font-weight:700; text-anchor:middle; }
+      .lane-title.write { fill:#2f7a3a; }
+      .lane-title.read  { fill:#2f4d7a; }
+      .node   { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .hub    { fill:#fff8ec; stroke:#b9791f; stroke-width:2.5; }
+      .label  { font-size:14px; fill:#1a2233; text-anchor:middle; dominant-baseline:middle; }
+      .label.sm { font-size:12.5px; fill:#3a4457; }
+      .label.hub { font-weight:700; }
+      .accent { fill:#b9791f; font-weight:700; }
+      .edge   { fill:none; stroke-width:2.2; }
+      .edge.g { stroke:#2f7a3a; marker-end:url(#ag); }
+      .edge.b { stroke:#2f4d7a; marker-end:url(#ab); }
+      .edge.n { stroke:#667085; stroke-width:1.8; marker-end:url(#an); }
+      .elabel      { font-size:13px; text-anchor:middle; }
+      .elabel.g    { fill:#2f7a3a; font-weight:600; }
+      .elabel.b    { fill:#2f4d7a; font-weight:600; }
+      .elabel.n    { fill:#667085; }
+    </style>
+  </defs>
+
+  <text class="title" x="800" y="42">KB Groups: one physical corpus, group-scoped retrieval</text>
+  <text class="subtitle" x="800" y="68">corpus_ids is the through-line - written once at ingest, filtered at retrieval</text>
+
+  <!-- ===================== WRITE lane (green) ===================== -->
+  <g>
+    <rect class="lane write" x="40" y="95" width="1130" height="185" rx="12"/>
+    <text class="lane-title write" x="605" y="120">Write path - ingestion</text>
+    <rect class="node" x="70" y="150" width="290" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="215" y="188">Upstream source</text>
+    <text class="label sm" x="215" y="210">(admin upload; swappable)</text>
+    <rect class="node" x="440" y="150" width="300" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="590" y="180">Healix API</text>
+    <text class="label sm" x="590" y="201">create doc + group memberships</text>
+    <text class="label sm" x="590" y="221">publish CORPUS_INSERT</text>
+    <rect class="node" x="830" y="150" width="310" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="985" y="180">LLM ingest</text>
+    <text class="label sm" x="985" y="201">parse, chunk, embed, sync</text>
+    <text class="label sm accent" x="985" y="221">corpus_ids = corpus + groups</text>
+    <path class="edge n" d="M362,200 L436,200"/>
+    <path class="edge n" d="M742,200 L826,200"/>
+    <text class="elabel n" x="784" y="190">NATS</text>
+  </g>
+
+  <!-- ===================== READ lane (blue) ===================== -->
+  <g>
+    <rect class="lane read" x="40" y="370" width="1130" height="185" rx="12"/>
+    <text class="lane-title read" x="605" y="395">Read path - retrieval</text>
+    <rect class="node" x="70" y="425" width="290" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="215" y="475">User question</text>
+    <rect class="node" x="440" y="425" width="300" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="590" y="455">Healix API</text>
+    <text class="label sm" x="590" y="476">resolve visible kbGroupIds</text>
+    <text class="label sm" x="590" y="496">publish PROMPT</text>
+    <rect class="node" x="830" y="425" width="310" height="100" rx="7" filter="url(#soft)"/>
+    <text class="label" x="985" y="455">LLM chat</text>
+    <text class="label sm" x="985" y="476">scope = kbGroupIds else [corpusId]</text>
+    <text class="label sm" x="985" y="496">filter: terms corpus_ids = scope</text>
+    <path class="edge n" d="M362,475 L436,475"/>
+    <path class="edge n" d="M742,475 L826,475"/>
+    <text class="elabel n" x="784" y="465">NATS</text>
+  </g>
+
+  <!-- ===================== OpenSearch hub (through-line) ===================== -->
+  <g>
+    <path class="hub" d="M1248,286 a122,20 0 0,1 244,0 v66 a122,20 0 0,1 -244,0 z"/>
+    <ellipse class="hub" cx="1370" cy="286" rx="122" ry="20"/>
+    <text x="1370" y="323" text-anchor="middle" dominant-baseline="middle" style="font-size:15px;font-weight:700;fill:#1a2233">OpenSearch</text>
+    <text class="label sm" x="1370" y="344">vectors tagged</text>
+    <text class="label accent" x="1370" y="365" font-size="14">corpus_ids</text>
+  </g>
+
+  <!-- ===================== hub edges ===================== -->
+  <path class="edge g" d="M1140,195 Q1300,205 1345,266"/>
+  <text class="elabel g" x="1268" y="235">write tagged vectors</text>
+
+  <path class="edge b" d="M1345,374 Q1300,470 1144,478"/>
+  <text class="elabel b" x="1250" y="418">return docs whose</text>
+  <text class="elabel b" x="1250" y="436">corpus_ids intersect scope</text>
+
+  <!-- ===================== legend ===================== -->
+  <g>
+    <rect x="70" y="585" width="18" height="18" rx="3" fill="#eef7ee" stroke="#2f7a3a" stroke-width="2"/>
+    <text x="96" y="599" font-size="13" fill="#3a4457">Write path (ingestion)</text>
+    <rect x="300" y="585" width="18" height="18" rx="3" fill="#eef2f8" stroke="#2f4d7a" stroke-width="2"/>
+    <text x="326" y="599" font-size="13" fill="#3a4457">Read path (retrieval)</text>
+    <text x="540" y="599" font-size="13" class="accent">corpus_ids</text>
+    <text x="620" y="599" font-size="13" fill="#3a4457">= the shared tag, written then filtered</text>
+  </g>
+</svg>

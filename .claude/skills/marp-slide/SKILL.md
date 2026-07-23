@@ -204,9 +204,10 @@ deck doctor                                        Check the toolchain on this m
 - **Diagrams**: the preferred method is a **hand-authored SVG** next to the deck -
   the `.svg` file is the source (plain `<rect>`/`<text>`/`<path>`), so there is NO
   render step and no `mmdc`/`d2` dependency. Embed it directly: `![w:900](arch.svg)`.
-  Edit the slide text or the `.svg` and re-run `deck build`. See
-  `references/handauthored-svg-diagrams.md` for the full convention and copy
-  `assets/example/architecture-layers.svg` as your template.
+  Edit the slide text or the `.svg` and re-run `deck build`. The authoring doctrine +
+  themes + templates live in the **`svg-diagram` skill**; `references/handauthored-svg-diagrams.md`
+  is the marp-specific embedding note (transparent canvas, no in-SVG title, size on slide).
+  Copy `assets/example/architecture-layers.svg` as your template.
 - **`deck doctor`** reports what is present/missing on the current machine (marp, mmdc,
   d2, a browser, the theme-set, DECK_HOME) with an install hint per missing tool.
 
@@ -296,7 +297,7 @@ Before delivering slides, verify:
 - **Theme CSS guide**: `references/theme-css-guide.md` - How to create custom themes based on Marpit specification
 - **Advanced features**: `references/advanced-features.md` - Math, emoji, fragmented lists, Marp CLI, VS Code
 - **Official themes**: `references/official-themes.md` - default, gaia, uncover themes documentation
-- **Hand-authored SVG diagrams**: `references/handauthored-svg-diagrams.md` - the preferred diagram method: clean, diffable, theme-neutral SVGs authored by hand (layer bands, body cards, arrow semantics, palette, C4 altitude). Read before drawing any diagram.
+- **Hand-authored SVG diagrams**: `references/handauthored-svg-diagrams.md` - marp-specific embedding rules; the full authoring doctrine, both house styles (layered/C4 + process-flow), palette, templates, and render/publish tooling live in the **`svg-diagram` skill**. Read before drawing any diagram.
 
 ### Quality & Selection Guides
 - **Theme selection**: `references/theme-selection.md` - How to choose the right theme for content

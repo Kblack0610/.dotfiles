@@ -84,7 +84,6 @@ Media/Music
 !.claude/skills/gh-workflows/
 !.claude/skills/ingest-worktree/
 !.claude/skills/marp-slide/
-!.claude/skills/mermaid-diagram/
 !.claude/skills/notes-system/
 !.claude/skills/one-pager/
 !.claude/skills/project-index/
@@ -92,6 +91,7 @@ Media/Music
 !.claude/skills/sentinel/
 !.claude/skills/session-snapshot/
 !.claude/skills/sprint-overseer/
+!.claude/skills/svg-diagram/
 !.claude/skills/update-rules/
 !.claude/skills/wind-down/
 !.claude/skills/work-comms/

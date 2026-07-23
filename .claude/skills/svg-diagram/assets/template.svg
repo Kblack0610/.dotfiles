@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <!-- ================================================================
+       HOUSE SVG THEME - few-shot template. Copy this, keep the <style>
+       block, swap the body. One <style>, held shape vocabulary, so every
+       diagram in a set reads as one system.
+
+       Shapes (shape carries meaning, never decoration):
+         .lane      rect            = service / subsystem boundary (bold)
+         .node      rounded rect    = process step
+         .node + rx=h/2             = terminal (stadium: start / end)
+         .decision  <polygon>       = branch (diamond)
+         .store     cylinder path+ellipse = datastore
+       Edges: .edge (arrow), .edge.dashed (optional/future), .edge.strong (contract).
+       Accent (#b9791f) = the ONE through-line concept, used sparingly.
+
+       librsvg gotcha: a <style> rule beats a presentation attribute. To
+       override ONE element's color use inline style="fill:#..", not fill="..".
+       Render/publish:  svg-diagram-watch <dir> [topic]  (add the once flag for a single pass)
+       =============================================================== -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#667085"/></marker>
+    <style>
+      .lane { fill:#eef2f8; stroke:#2f4d7a; stroke-width:2; }
+      .lane-title { font-size:14px; font-weight:600; fill:#2f4d7a; text-anchor:middle; }
+      .node { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .decision { fill:#eaf0fb; stroke:#4a72b8; stroke-width:1.5; }
+      .store { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .label { font-size:14px; fill:#1a2233; text-anchor:middle; dominant-baseline:middle; }
+      .label.sm { font-size:12px; }
+      .accent { fill:#b9791f; font-weight:600; }
+      .edge { fill:none; stroke:#667085; stroke-width:1.6; marker-end:url(#arrow); }
+      .edge.dashed { stroke-dasharray:5 4; }
+      .edge.strong { stroke-width:2.6; }
+      .elabel { font-size:12.5px; fill:#33415c; text-anchor:middle; }
+    </style>
+  </defs>
+
+  <!-- terminal (stadium) -->
+  <rect class="node" x="30" y="172" width="130" height="52" rx="26"/>
+  <text class="label" x="95" y="198">Start / end</text>
+
+  <!-- lane with process nodes + a decision -->
+  <rect class="lane" x="210" y="60" width="470" height="290" rx="10"/>
+  <text class="lane-title" x="445" y="86">Service boundary (.lane)</text>
+
+  <rect class="node" x="240" y="172" width="140" height="52" rx="6"/>
+  <text class="label" x="310" y="198">Process step</text>
+
+  <polygon class="decision" points="500,158 566,198 500,238 434,198"/>
+  <text class="label sm" x="500" y="198">Branch?</text>
+
+  <rect class="node" x="600" y="130" width="70" height="44" rx="6"/>
+  <text class="label sm" x="635" y="152">yes</text>
+  <rect class="node" x="600" y="224" width="70" height="44" rx="6"/>
+  <text class="label sm" x="635" y="246">no</text>
+
+  <!-- datastore (cylinder) -->
+  <path class="store" d="M730,180 a70,12 0 0,1 140,0 v50 a70,12 0 0,1 -140,0 z"/>
+  <ellipse class="store" cx="800" cy="180" rx="70" ry="12"/>
+  <text class="label" x="800" y="208">Datastore</text>
+  <text class="label sm accent" x="800" y="228">through-line</text>
+
+  <!-- edges -->
+  <path class="edge" d="M160,198 L238,198"/>
+  <path class="edge strong" d="M380,198 L432,198"/>
+  <text class="elabel" x="406" y="188">contract</text>
+  <path class="edge" d="M566,180 L598,152"/>
+  <path class="edge dashed" d="M566,216 L598,246"/>
+  <path class="edge" d="M672,152 L726,190"/>
+</svg>
