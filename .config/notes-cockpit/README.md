@@ -36,22 +36,30 @@ shown only when refs are found.
 
 ### `llm.env` - the LiteLLM gateway seam (for version summaries)
 
-Sourced by `notes-version-summary`. Points at the gateway, never a model host by IP. The model MUST be
-a local MLX route - lab project notes are personal and must never touch the paid Lazer/cloud tiers; the
-virtual key's `allowed_models` enforces that server-side.
+Sourced by `notes-version-summary`. Points at the gateway, never a model host by IP.
 
 ```
 # ~/.config/notes-cockpit/llm.env
-LLM_BASE_URL="https://<your-llm-gateway>/v1"   # OpenAI-compatible gateway (e.g. LiteLLM)
-LLM_MODEL="fast (Qwen3-4B)"                    # recommended for this use
-LLM_KEY_RBW="litellm_notes_summary_key"        # rbw ITEM NAME, not the key
+LLM_BASE_URL="https://<your-llm-gateway>/v1"           # OpenAI-compatible gateway (e.g. LiteLLM)
+LLM_MODEL="reasoning (deepseek-v4-pro)"                # primary
+LLM_MODEL_FALLBACK="reasoning (Qwen3.5-397B-A17B-4bit)"  # used only when primary errors (proxy down)
+# either point at an rbw item OR inline the scoped key (this file is chmod 600, uncommitted):
+LLM_API_KEY="sk-..."                                   # or: LLM_KEY_RBW="litellm_notes_summary_key"
+# LLM_MAXTOK=3000  LLM_MAXTOK_REWRITE=6000             # reasoning models need a big token budget
 ```
 
-`fast` (~5s/version) is recommended: it returns a clean 2-3 sentence summary. A `reasoning` model
-emits `<think>` blocks the gateway does not strip and often truncates inside them - the script strips
-`<think>` defensively, but `fast` is the reliable choice here. If `LLM_BASE_URL` is unset the feature
-stays dormant: rolls still succeed and summaries are simply skipped (best-effort). Point base_url at a
-GATEWAY, never a model host by IP.
+Model notes:
+- The primary may be a **paid** route (best prose); keep `LLM_MODEL_FALLBACK` on a **local** model so a
+  proxy outage degrades gracefully instead of failing the run. The tool tries primary, then fallback.
+- Reasoning models (deepseek, the large local Qwen) return their thinking in a separate
+  `reasoning_content` field the gateway keeps out of `content`, so summaries stay clean - but give them
+  a big token budget (`LLM_MAXTOK*`) or `content` comes back empty. The script also strips any inline
+  `<think>` blocks defensively. `fast (Qwen3-4B)` is the quick, free local option if you do not need
+  top prose quality.
+- The virtual key's `allowed_models` is the real guard on WHERE data can go: scope it to exactly the
+  tiers this consumer may use, so a wrong model name fails closed at the gateway. Do not route personal
+  data through a proxy you have not vetted for it.
+- If `LLM_BASE_URL` is unset the feature stays dormant: rolls still succeed, summaries are skipped.
 
 ## One-time setup
 
@@ -72,3 +80,9 @@ GATEWAY, never a model host by IP.
 - Backfill existing versions: `notes-version-summary --backfill <profile> <project>` (add `--all` for
   every project, `--dry-run` to preview, `--force` to regenerate). The block sits between markers and
   is regenerable; the original note body is never touched.
+- Rewrite the bodies too: add `--rewrite` to also regenerate the changelog BODY into clean, legible
+  ASCII prose (grouped Added/Changed/Fixed), then summarize from the clean version -
+  `notes-version-summary --backfill --rewrite <profile> <project>`. This preserves every real fact and
+  ticket/PR ref but reshapes the prose, so it DRIFTS from the upstream product-repo CHANGELOG. Safe
+  because the vault is git-tracked (recoverable) and the product repo stays the source of truth; use
+  `--dry-run --rewrite` to preview first.

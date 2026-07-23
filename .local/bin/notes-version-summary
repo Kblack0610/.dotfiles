@@ -16,12 +16,14 @@
 #   notes-version-summary <profile> <project> <frozen-file.md>   # one version
 #   notes-version-summary --backfill <profile> <project>         # every version in a project
 #   notes-version-summary --backfill --all                       # every project, every profile
-#   flags: --dry-run (print block, write nothing)   --force (regenerate an existing block)
+#   flags: --dry-run (print, write nothing)  --force (regenerate an existing block)
+#          --rewrite (also rewrite the changelog BODY into clean legible prose, then summarize)
 #
 # Config (machine-local, not committed — see ~/.config/notes-cockpit/README.md):
-#   ~/.config/notes-cockpit/llm.env   LLM_BASE_URL / LLM_MODEL / LLM_KEY_RBW (rbw item name)
+#   ~/.config/notes-cockpit/llm.env   LLM_BASE_URL / LLM_MODEL [/ LLM_MODEL_FALLBACK] / key
 #   ~/.config/notes-cockpit/repos     project=/abs/repo[:pathfilter]  (optional; git-log source)
-# Model MUST be a local MLX route — lab notes are personal, never route via Lazer/cloud.
+# Primary model may be a paid route; keep a LOCAL fallback so a proxy outage degrades gracefully.
+# Never route personal data through a proxy you have not vetted for it.
 
 set -uo pipefail
 
@@ -31,9 +33,15 @@ LLM_ENV="$CONF_DIR/llm.env"
 
 # Gateway comes from llm.env / the environment — never hardcode a host in this public repo.
 # Model defaults to the fast local tier; base_url must be set (feature stays dormant otherwise).
+# LLM_MODEL_FALLBACK (optional) is tried when the primary model errors — e.g. primary is a paid
+# route and its upstream is down, fallback is a local model on the same gateway. Reasoning models
+# need a big token budget (they spend tokens thinking before the answer), hence the high default.
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 LLM_MODEL="${LLM_MODEL:-fast (Qwen3-4B)}"
+LLM_MODEL_FALLBACK="${LLM_MODEL_FALLBACK:-}"
 LLM_KEY_RBW="${LLM_KEY_RBW:-}"
+LLM_MAXTOK="${LLM_MAXTOK:-3000}"           # summary calls
+LLM_MAXTOK_REWRITE="${LLM_MAXTOK_REWRITE:-6000}"  # body rewrites (longer output)
 # shellcheck source=/dev/null
 [ -f "$LLM_ENV" ] && . "$LLM_ENV"
 
@@ -41,6 +49,7 @@ DRY_RUN=0
 FORCE=0
 BACKFILL=0
 ALL=0
+REWRITE=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
@@ -148,18 +157,42 @@ sanitize() {
 }
 
 # ── LLM call ────────────────────────────────────────────────────────
-call_llm() { # $1=system $2=user  -> summary text on stdout, non-zero on failure
-  local sys="$1" usr="$2" key resp body
+# _one_call <key> <model> <maxtok> <sys> <usr> -> message content on stdout; non-zero on
+# transport error, a gateway/upstream error object, or empty content (so the caller falls back).
+# Reads .message.content — reasoning models return their thinking in a separate .reasoning_content
+# field the gateway keeps out of content, so no manual strip is needed for those.
+_one_call() {
+  local key="$1" model="$2" maxtok="$3" sys="$4" usr="$5" body resp content
+  body="$(jq -n --arg m "$model" --arg s "$sys" --arg u "$usr" --argjson mt "$maxtok" \
+    '{model:$m, temperature:0.2, max_tokens:$mt,
+      messages:[{role:"system",content:$s},{role:"user",content:$u}]}')" || return 1
+  resp="$(curl -sS --max-time 240 "$LLM_BASE_URL/chat/completions" \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+    -d "$body" 2>/dev/null)" || return 1
+  if printf '%s' "$resp" | jq -e '.error' >/dev/null 2>&1; then
+    printf 'gateway error: %s\n' "$(printf '%s' "$resp" | jq -r '.error.message // .error')" >&2
+    return 1
+  fi
+  content="$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
+  [ -n "$content" ] || return 1
+  printf '%s' "$content"
+}
+
+call_llm() { # $1=system $2=user [$3=max_tokens]  -> content; tries primary then fallback model
+  local sys="$1" usr="$2" maxtok="${3:-$LLM_MAXTOK}" key out
   [ -n "$LLM_BASE_URL" ] || { echo "no gateway (set LLM_BASE_URL in ~/.config/notes-cockpit/llm.env)" >&2; return 1; }
   key="$(resolve_key)"
   [ -n "$key" ] || { echo "no gateway key (set LLM_KEY_RBW / LLM_API_KEY)" >&2; return 1; }
-  body="$(jq -n --arg m "$LLM_MODEL" --arg s "$sys" --arg u "$usr" \
-    '{model:$m, temperature:0.2, max_tokens:450,
-      messages:[{role:"system",content:$s},{role:"user",content:$u}]}')" || return 1
-  resp="$(curl -sS --max-time 90 "$LLM_BASE_URL/chat/completions" \
-    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
-    -d "$body" 2>/dev/null)" || { echo "gateway unreachable" >&2; return 1; }
-  printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null
+  if out="$(_one_call "$key" "$LLM_MODEL" "$maxtok" "$sys" "$usr")"; then
+    printf '%s' "$out"; return 0
+  fi
+  if [ -n "$LLM_MODEL_FALLBACK" ]; then
+    echo "primary '$LLM_MODEL' failed; falling back to '$LLM_MODEL_FALLBACK'" >&2
+    if out="$(_one_call "$key" "$LLM_MODEL_FALLBACK" "$maxtok" "$sys" "$usr")"; then
+      printf '%s' "$out"; return 0
+    fi
+  fi
+  return 1
 }
 
 # ── block build + splice ────────────────────────────────────────────
@@ -198,6 +231,44 @@ splice() {
   rm -f "$tmp"
 }
 
+# frontmatter <file> -> the YAML frontmatter block (lines 1..closing ---, inclusive), or nothing.
+frontmatter() {
+  [ "$(head -1 "$1")" = "---" ] || return 0
+  awk 'NR==1{print;next} {print} NR>1 && $0=="---"{exit}' "$1"
+}
+
+# write_full <file> <block> <newbody> — replace the whole note: frontmatter + summary block +
+# the rewritten body. Used by --rewrite (splice() only swaps the block and keeps the old body).
+write_full() {
+  local file="$1" block="$2" newbody="$3" fm
+  fm="$(frontmatter "$file")"
+  {
+    [ -n "$fm" ] && printf '%s\n' "$fm"
+    printf '\n%s\n\n' "$block"
+    printf '%s\n' "$newbody" | sed '/./,$!d'
+  } > "$file"
+}
+
+# rewrite_body <project> <ver> <body> <subjects> -> a clean, legible changelog body on stdout.
+# Preserves every real fact + ticket/PR ref; only reshapes the prose into scannable ASCII.
+rewrite_body() {
+  local project="$1" ver="$2" body="$3" subjects="$4" sys usr out
+  sys='You rewrite a software release changelog entry into a clean, legible version.
+Rules:
+- Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no arrows, no marketing words.
+- Preserve EVERY real fact, feature name, file/flag name, and ticket/PR reference (e.g. #490) from the
+  input. Never invent, never drop a change. If unsure, keep it.
+- Organize under the standard headers that apply: ### Added, ### Changed, ### Fixed, ### Removed.
+- One concise, concrete bullet per change; merge obvious duplicates; cut filler and hype. Keep it
+  scannable - a human should grasp the release in a quick skim.
+- Keep the top "## [x.y.z] - DATE" heading if the input has one.
+Output ONLY the rewritten changelog markdown, nothing else.'
+  usr="Project: $project   Version: $ver"$'\n\n'"Changelog to rewrite:"$'\n'"$body"
+  [ -n "$subjects" ] && usr="$usr"$'\n\n'"Commit subjects for reference:"$'\n'"$subjects"
+  out="$(call_llm "$sys" "$usr" "$LLM_MAXTOK_REWRITE")" || return 1
+  printf '%s' "$out" | strip_think | sanitize | sed -e 's/[[:space:]]*$//'
+}
+
 # ── one version ─────────────────────────────────────────────────────
 # all_versions <root> -> "vX.Y.Z<TAB>path" for every note under versions/ + changelog/, desc.
 all_versions() {
@@ -214,16 +285,25 @@ prev_of() { # $1=version $2=versions-list("ver\tpath"…desc) -> the next-lower 
 process_file() { # $1=profile $2=project $3=file $4=versions-list
   local profile="$1" project="$2" file="$3" vlist="$4"
   [ -f "$file" ] || { echo "no such file: $file" >&2; return 1; }
-  if [ "$FORCE" -eq 0 ] && grep -q '<!-- summary:auto -->' "$file"; then
+  # --rewrite always reprocesses; plain summarize skips a note that already has a block.
+  if [ "$REWRITE" -eq 0 ] && [ "$FORCE" -eq 0 ] && grep -q '<!-- summary:auto -->' "$file"; then
     echo "skip (has summary): $(basename "$file")"; return 0
   fi
-  local ver prev body subjects tickets sys usr sum block
+  local ver prev body subjects tickets sys usr sum block newbody=""
   ver="$(basename "$file" .md)"
   prev="$(prev_of "$ver" "$vlist")"
   body="$(note_body "$file")"
   repo_of "$project"
   subjects="$(git_subjects "$REPO" "$PATHFILTER" "$prev" "$ver")"
   tickets="$(extract_tickets "$body"$'\n'"$subjects")"
+
+  # rewrite the body first (if asked), then summarize from the CLEAN version
+  if [ "$REWRITE" -eq 1 ]; then
+    newbody="$(rewrite_body "$project" "$ver" "$body" "$subjects")" \
+      || { echo "rewrite failed: $project $ver" >&2; return 1; }
+    [ -n "$newbody" ] || { echo "empty rewrite: $project $ver" >&2; return 1; }
+    body="$newbody"
+  fi
 
   sys='You write terse release summaries for a developer'\''s personal project tracker.
 Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no marketing words.
@@ -249,9 +329,14 @@ Do NOT output a Tickets line.'
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "=== $project $ver ($file) ==="
     printf '%s\n' "$block"
+    if [ "$REWRITE" -eq 1 ]; then printf -- '--- rewritten body ---\n%s\n' "$newbody"; fi
     return 0
   fi
-  splice "$file" "$block" && echo "summarized: $project $ver" || return 1
+  if [ "$REWRITE" -eq 1 ]; then
+    write_full "$file" "$block" "$newbody" && echo "rewrote+summarized: $project $ver" || return 1
+  else
+    splice "$file" "$block" && echo "summarized: $project $ver" || return 1
+  fi
 }
 
 # root_of <profile> <project> -> the project's directory (via `notes projects`)
@@ -300,6 +385,7 @@ for a in "$@"; do
     --force)   FORCE=1 ;;
     --backfill) BACKFILL=1 ;;
     --all)     ALL=1 ;;
+    --rewrite) REWRITE=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*)        die "unknown flag: $a" ;;
     *)         POS+=("$a") ;;
