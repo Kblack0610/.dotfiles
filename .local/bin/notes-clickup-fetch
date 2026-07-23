@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# notes-clickup-fetch — the FETCH half of the ClickUp -> daily-note Focus bridge.
+#
+# Queries ClickUp for in-progress tickets assigned to me and writes a TSV cache that
+# `notes clickup sync` reconciles into today's `## Focus`. This is the ClickUp analogue of
+# lab-sync's Vikunja `in_progress()`; it is kept OUT of the notes CLI so the public notes
+# crate carries no auth/network code (mirrors the Sentinel writes-state / notes-renders split).
+#
+# Auth: personal token in the macOS login keychain, item CLICKUP_API_TOKEN, sent as a RAW
+# `Authorization` header (NOT `Bearer`), falling back to the CLICKUP_API_TOKEN env var. The
+# token is never printed. Self-bounds every HTTP call with `curl --max-time` so a caller can
+# just wait on it — there is no background timer.
+#
+# Output (atomic): TSV rows `id<TAB>priority<TAB>title`, one in-progress ticket per line.
+# priority is the ClickUp word (urgent|high|normal|low) or empty. On any failure it exits
+# non-zero WITHOUT touching --out, so `notes clickup sync` falls back to the last-known cache.
+#
+#   notes-clickup-fetch --list <list_id> --out <path> [--status "in progress"] [--assignee me|<id>]
+set -euo pipefail
+
+BASE="https://api.clickup.com/api/v2"
+MAX_TIME=10          # per-request HTTP timeout guard (seconds); the only "timer", and a real one
+STATUS="in progress" # ClickUp status name that means "actively working" on this board
+ASSIGNEE="me"
+LIST=""
+OUT=""
+
+die() { echo "notes-clickup-fetch: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list)     LIST="${2:-}"; shift 2 ;;
+    --out)      OUT="${2:-}"; shift 2 ;;
+    --status)   STATUS="${2:-}"; shift 2 ;;
+    --assignee) ASSIGNEE="${2:-}"; shift 2 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+[ -n "$LIST" ] || die "missing --list <list_id>"
+[ -n "$OUT" ]  || die "missing --out <path>"
+
+# --- token (keychain, then env) --------------------------------------------
+TOKEN="$(security find-generic-password -s CLICKUP_API_TOKEN -w 2>/dev/null || true)"
+[ -n "$TOKEN" ] || TOKEN="${CLICKUP_API_TOKEN:-}"
+[ -n "$TOKEN" ] || die "no token: keychain item 'CLICKUP_API_TOKEN' and env CLICKUP_API_TOKEN both empty"
+
+# One GET with the raw Authorization header, bounded by --max-time. --fail turns an HTTP
+# error into a non-zero exit so we never write a cache from an error body.
+cu_get() { # $1=path-with-query
+  curl -fsS --max-time "$MAX_TIME" -H "Authorization: $TOKEN" "$BASE$1"
+}
+
+# --- resolve the assignee id ("me" -> my user id) --------------------------
+UID_=""
+if [ "$ASSIGNEE" = "me" ]; then
+  UID_="$(cu_get "/user" | jq -r '.user.id')" || die "could not resolve current user"
+else
+  UID_="$ASSIGNEE"
+fi
+[ -n "$UID_" ] && [ "$UID_" != "null" ] || die "empty assignee id"
+
+# --- page through the list's in-progress tasks assigned to me --------------
+# The list task endpoint filters server-side by assignee + status; loop pages until
+# last_page. `page` is 0-indexed. Titles are emitted via @tsv (tabs/newlines escaped) so
+# each ticket stays one line.
+tmp="$(mktemp "${OUT}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+page=0
+while :; do
+  resp="$(cu_get "/list/${LIST}/task?page=${page}&include_closed=false&subtasks=true&assignees%5B%5D=${UID_}&statuses%5B%5D=$(jq -rn --arg s "$STATUS" '$s|@uri')")" \
+    || die "list query failed (page ${page})"
+  printf '%s' "$resp" \
+    | jq -r '.tasks[]? | [.id, (.priority.priority // ""), .name] | @tsv' >> "$tmp"
+  # Stop when ClickUp says this was the last page (or, defensively, on an empty page).
+  last="$(printf '%s' "$resp" | jq -r '.last_page // true')"
+  count="$(printf '%s' "$resp" | jq -r '.tasks | length')"
+  { [ "$last" = "true" ] || [ "${count:-0}" -eq 0 ]; } && break
+  page=$((page + 1))
+  [ "$page" -gt 50 ] && break   # hard stop against a pathological non-terminating pager
+done
+
+mv -f "$tmp" "$OUT"
+trap - EXIT

@@ -181,6 +181,24 @@ pub fn is_empty_unchecked(line: &str) -> bool {
     }
 }
 
+/// Parse the ClickUp task id from a trailing `<!-- cu:ID -->` marker, if present. The
+/// ClickUp -> Focus bridge (`notes clickup sync`) tags each mirrored task with this so a
+/// re-sync updates the same line instead of duplicating it. Note the marker is a
+/// same-day signal: `stamp_line` drops any trailing comment on the overnight carry, so the
+/// bridge re-attaches it (matching on `task_key` derived from the ClickUp title) each day.
+pub fn cu_marker(line: &str) -> Option<String> {
+    let marker = "<!-- cu:";
+    let i = line.find(marker)?;
+    let after = &line[i + marker.len()..];
+    let end = after.find("-->")?;
+    let id = after[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 /// Parse the `<!-- since:YYYY-MM-DD -->` origin date from a line, if present.
 pub fn find_since(line: &str) -> Option<NaiveDate> {
     let marker = "since:";
@@ -835,6 +853,19 @@ after
         let line = "- [ ] brand new";
         let out = stamp_line(line, d("2026-06-03"), d("2026-06-01"));
         assert_eq!(out, "- [ ] brand new (2d) <!-- since:2026-06-01 -->");
+    }
+
+    #[test]
+    fn cu_marker_parses_and_is_ignored_by_task_key() {
+        let line = "- [/] wire flow (0d) <!-- since:2026-07-22 --> #high <!-- cu:abc123 -->";
+        assert_eq!(cu_marker(line).as_deref(), Some("abc123"));
+        // The marker never leaks into the dedup key (task_key truncates at the first comment),
+        // so a cu-tagged line dedupes against its plain counterpart derived from the title.
+        assert_eq!(task_key(line), "wire flow");
+        assert_eq!(task_key(line), task_key("- [ ] Wire Flow"));
+        // Absent / malformed markers are None.
+        assert_eq!(cu_marker("- [ ] plain task"), None);
+        assert_eq!(cu_marker("- [ ] x <!-- cu: -->"), None);
     }
 
     #[test]
