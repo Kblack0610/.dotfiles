@@ -283,34 +283,36 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   esac || { echo "roll failed"; sleep 2; }
 }
 
-# Browse a project's frozen `versions/*.md` (newest first, previewed) as a transient
-# OVERLAY on the current cockpit — a nested `display-popup` (NOT a new window, which would
-# pile up in the window list; NOT fzf-in-fzf-execute, which is fragile inside a popup — see
-# move_task). `q`/esc closes the overlay back to the cockpit; enter opens a version in nvim
-# inside the overlay. `notes projects` gives the summary path, whose parent holds `versions/`.
+# Browse a project's frozen `versions/*.md` (newest first, previewed). Reached via fzf
+# `become` (the `o` bind), so THIS runs as the sole fzf in the cockpit's window — a fresh
+# fzf that owns the terminal, not a nested one (fzf-in-fzf-execute / a popup launched from
+# execute are both fragile inside the cockpit's display-popup — see move_task, and they
+# render the cockpit instead of the versions). `q`/esc returns by re-`exec`ing the cockpit;
+# enter opens a version in nvim. `notes projects` gives the summary path -> parent/versions.
 browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   local section="${1:-}" profile name summary dir prev
   case "$section" in
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
-    *) echo "not on a project row"; sleep 1; return 0 ;;
+    *) exec "$SELF" ;; # not a project row — just go back to the cockpit
   esac
   summary="$(notes --profile "$profile" projects 2>/dev/null \
     | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
-  [ -n "$summary" ] || { echo "no such project: $name"; sleep 1; return 0; }
-  dir="$(dirname "$summary")/versions"
-  if [ ! -d "$dir" ] || ! ls "$dir"/*.md >/dev/null 2>&1; then
-    echo "no frozen versions for $name yet — roll one with V"; sleep 1.5; return 0
+  dir=""
+  [ -n "$summary" ] && dir="$(dirname "$summary")/versions"
+  if [ -z "$dir" ] || [ ! -d "$dir" ] || ! ls "$dir"/*.md >/dev/null 2>&1; then
+    echo "no frozen versions for $name yet — roll one with V"; sleep 1.2; exec "$SELF"
   fi
   if command -v bat >/dev/null 2>&1; then
     prev="bat --color=always --style=plain --language=markdown {}"
   else
     prev="cat {}"
   fi
-  tmux display-popup -E -w 85% -h 85% -T " versions: $name " \
-    "cd '$dir' && ls -1 *.md | sort -rV | fzf \
-      --ansi --reverse --preview '$prev' --preview-window 'right:62%:wrap' \
-      --header 'enter: open in nvim    q / esc: back' \
-      --bind 'enter:execute(nvim {})' --bind 'q:abort'"
+  ( cd "$dir" && ls -1 *.md | sort -rV | fzf \
+      --ansi --reverse --preview "$prev" --preview-window 'right:62%:wrap' \
+      --prompt "versions: $name > " \
+      --header 'enter: open in nvim    q / esc: back to cockpit' \
+      --bind 'enter:execute(nvim {})' --bind 'q:abort' )
+  exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
 }
 
 restore_project() {
@@ -431,7 +433,7 @@ list_section personal | fzf \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
-  --bind "o:execute($SELF --browse-versions {6})" \
+  --bind "o:become($SELF --browse-versions {6})" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
