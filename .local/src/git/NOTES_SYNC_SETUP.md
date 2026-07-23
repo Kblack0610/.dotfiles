@@ -136,8 +136,8 @@ Other apps cannot read `~/.notes` (Termux private storage), so `notes-mobile` an
 
 `notes-phone-setup` runs `termux-setup-storage` (one Android permission tap) and wires the mirror into boot + hourly sync. Then:
 
-- **Content panel (recommended):** install **KWGT**, add its widget, add one Text layer with formula `fl("content", "/sdcard/notes/today.md")`. Always-on, read-only, refreshes each sync.
-- **Task list:** install **Simpletask** (FOSS) pointed at `/sdcard/notes/tasks.txt` (read-only for now).
+- **Task list (recommended, least fuss):** install **Simpletask** (FOSS) pointed at `/sdcard/notes/tasks.txt`. Renders a clean checklist widget, no formulas. Read-only for now (checking off does not sync back yet).
+- **Full note text:** install **KWGT**, add its widget, add one Text layer, and in the text field enter (wrapped in `$...$` so Kustom evaluates it rather than showing it literally): `$wg("/sdcard/notes/today.md", raw)$`. Grant KWGT storage access; if it comes up blank try `$wg("file:///sdcard/notes/today.md", raw)$`. KWGT shows plain text — markdown is not rendered. (`wg(path, raw)` reads a local file; `fl()` is for evaluating formulas, not file reads.)
 
 The mirror is one-way; nothing writes back into the vault. A checkable widget that folds check-offs back into the note is a separate, deliberately-scoped feature.
 
