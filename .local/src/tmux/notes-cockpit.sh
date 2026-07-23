@@ -50,6 +50,45 @@ C_OFF=$'\033[0m'
 
 read_section() { cat "$STATE" 2>/dev/null || echo personal; }
 
+# Priority filter: `p` cycles the view through #urgent -> #high -> #medium -> #low -> (all).
+PFILTER="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.pfilter"
+read_pfilter() { cat "$PFILTER" 2>/dev/null || true; }
+cycle_pfilter() {
+  # read the current value BEFORE opening the file for write (a `case … > "$PFILTER"`
+  # redirect truncates it first, so read_pfilter would always see empty).
+  local cur next; cur="$(read_pfilter)"
+  case "$cur" in
+    "")     next=urgent ;;
+    urgent) next=high ;;
+    high)   next=medium ;;
+    medium) next=low ;;
+    *)      next="" ;; # low (or anything) -> back to all
+  esac
+  printf '%s' "$next" > "$PFILTER"
+}
+
+# Filter emitted rows to the active priority. A task row survives only if its display
+# carries `#<pf>`; a HEAD row (project sub-header / "in progress") survives only if a
+# matching task follows it before the next head; add-placeholders drop; hints stay.
+_apply_pfilter() {
+  local pf; pf="$(read_pfilter)"
+  [ -n "$pf" ] || { cat; return; }
+  awk -F'\t' -v tag="#$pf" '
+    { n++; type[n]=$1; row[n]=$0; disp[n]=$7 }
+    END {
+      for (i=1;i<=n;i++) {
+        if (type[i]=="task") { if (index(disp[i], tag)) print row[i] }
+        else if (type[i]=="head") {
+          keep=0
+          for (j=i+1;j<=n && type[j]!="head";j++)
+            if (type[j]=="task" && index(disp[j], tag)) { keep=1; break }
+          if (keep) print row[i]
+        }
+        else if (type[i]=="hint") print row[i]
+      }
+    }'
+}
+
 profiles() { notes config --profiles 2>/dev/null; }
 # the sidebar: one section per profile, personal first, then the rest
 sections_list() {
@@ -161,11 +200,13 @@ list_section() {
   local rows; rows="$(emit_tasks)"
   # A fresh day has no daily note yet, so `focus --all` is empty and every section
   # reads 0 — which looks like data loss. Say so, and offer the one-key fix.
-  if [ -z "$rows" ]; then
-    printf 'hint\t\t\t\t\t\t%s(no daily note for today — press T to create it and carry tasks forward)%s\n' \
-      "$C_DIM" "$C_OFF"
-  fi
-  _profile_view "$rows" "$want"
+  {
+    if [ -z "$rows" ]; then
+      printf 'hint\t\t\t\t\t\t%s(no daily note for today — press T to create it and carry tasks forward)%s\n' \
+        "$C_DIM" "$C_OFF"
+    fi
+    _profile_view "$rows" "$want"
+  } | _apply_pfilter
 }
 
 # ── the left sidebar rail: sections + counts, active marked ─────────
@@ -183,6 +224,8 @@ rail() {
       printf '  %-20s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
     fi
   done < <(sections_list)
+  local pf; pf="$(read_pfilter)"
+  [ -n "$pf" ] && printf '\n  %sfilter #%s%s %s(p)%s\n' "$C_INP" "$pf" "$C_OFF" "$C_DIM" "$C_OFF"
 }
 
 _cycle_section() { # $1 = +1 (next) or -1 (prev)
@@ -383,6 +426,7 @@ help_view() {
   navigate
     j / k          move down / up
     h / l          previous / next section
+    p              cycle priority filter  (urgent -> high -> medium -> low -> all)
     i              search  (esc leaves search)
     enter          edit the task in nvim
 
@@ -425,6 +469,7 @@ case "${1:-}" in
   --task-op) shift; task_op "$@"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
+  --cycle-pfilter) cycle_pfilter; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
@@ -442,10 +487,11 @@ command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfil
 notes today --all >/dev/null 2>&1 || true
 
 echo personal > "$STATE" # every launch starts on personal
+: > "$PFILTER"           # ...and unfiltered (priority filter cleared)
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
@@ -477,5 +523,6 @@ list_section personal | fzf \
   --bind "o:become($SELF --browse-versions {6})" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
+  --bind "p:execute-silent($SELF --cycle-pfilter)+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
