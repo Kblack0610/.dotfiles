@@ -101,6 +101,11 @@ struct RawProfile {
     /// `~/.local/state/watch-companion` when `watches` is set.
     #[serde(default)]
     watches_state: Option<String>,
+    /// ClickUp list id whose in-progress tickets assigned to me are mirrored into the
+    /// daily note's `## Focus` (`notes clickup sync`). Optional — unset means the ClickUp
+    /// bridge is off (opt-in, per-profile: only the work profile sets it). An id, NOT a path.
+    #[serde(default)]
+    clickup_list: Option<String>,
     summaries: String,
     archive: String,
     zettel: String,
@@ -155,6 +160,9 @@ pub struct Profile {
     pub watches: Option<PathBuf>,
     /// Dir of per-watch `<name>.state` files (runtime).
     pub watches_state: PathBuf,
+    /// ClickUp list id whose in-progress tickets are mirrored into `## Focus`. `None`
+    /// disables the ClickUp bridge (`notes clickup sync` is a no-op), opt-in via config.
+    pub clickup_list: Option<String>,
     /// Profile NAMES whose Focus is mirrored into this profile's daily note. Empty = off.
     ///
     /// Deliberately left unresolved: `resolve()` calling itself for each entry would
@@ -259,6 +267,7 @@ fn builtin_default() -> RawConfig {
             footer_backlogs: None,
             watches: None,
             watches_state: None,
+            clickup_list: None,
             summaries: "journal/summaries".into(),
             archive: "journal/daily_archive".into(),
             zettel: "journal/permanent".into(),
@@ -407,6 +416,8 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         footer_backlogs,
         watches,
         watches_state,
+        // A list id (not a path) — carried through verbatim; `None` keeps the bridge off.
+        clickup_list: rp.clickup_list.clone(),
         rollup: rp.rollup.clone(),
         continuous: summaries.join("continuous"),
         monthly: summaries.join("monthly"),
@@ -558,6 +569,9 @@ pub fn print(p: &Profile) {
     if let Some(w) = &p.watches {
         println!("watches     {}", w.display());
         println!("watch-state {}", p.watches_state.display());
+    }
+    if let Some(cl) = &p.clickup_list {
+        println!("clickup     list {cl}");
     }
     if let Some(pr) = &p.projects {
         println!("projects    {}", pr.display());
