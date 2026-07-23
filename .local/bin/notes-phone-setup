@@ -133,9 +133,13 @@ Last steps (once):
   1. Tap launcher: long-press home screen -> Widgets -> Termux:Widget -> drop it -> tap "notes".
   2. Glance widget (optional): today's note is mirrored to  /sdcard/notes/today.md
      (tasks also at  /sdcard/notes/tasks.txt).
-       - Content panel: install KWGT, add its widget, one Text layer, formula:
-           fl("content", "/sdcard/notes/today.md")
-       - Task list (read-only): install Simpletask, point it at /sdcard/notes/tasks.txt
+       - Easiest task list: install Simpletask, point it at /sdcard/notes/tasks.txt
+         (clean checklist widget, no formulas; read-only for now).
+       - Full note text: install KWGT, add its widget, one Text layer, and in the
+         text field (wrapped in $...$ so it evaluates):
+           $wg("/sdcard/notes/today.md", raw)$
+         Grant KWGT storage access; if blank try $wg("file:///sdcard/notes/today.md", raw)$.
+         Note: KWGT shows plain text -- markdown is not rendered.
 
 Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
 Background sync + the widget mirror refresh on boot and hourly.
