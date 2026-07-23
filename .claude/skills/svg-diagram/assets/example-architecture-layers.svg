@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <!-- ============================================================
+       HAND-AUTHORED LAYERED DIAGRAM  (few-shot exemplar)
+       The file IS the source: no build step, plain rect/text/path.
+       Transparent canvas: no background rect, so it reads on a light
+       OR a dark slide. The slide's ## heading carries the title, so
+       there is NO title text inside the SVG.
+
+       Palette (swap these 4-5 hex values for your brand):
+         INK    #16243f  deep navy   badges, headings, mono, solid arrows
+         STRUCT #25406b  mid navy    band strokes + header bars
+         MUTED  #5a6478  body copy   secondary description lines
+         FAINT  #8a8f99  footnotes
+         CORAL  #ca5f4c  ACCENT      the ONE focal layer + its arrow
+         TEAL   #2f9e8f  async edge  dashed network/async flows (optional)
+       ============================================================ -->
+  <defs>
+    <!-- one marker per arrow SEMANTIC, coloured to match its line -->
+    <marker id="nav" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#16243f"/>
+    </marker>
+    <marker id="cor" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#ca5f4c"/>
+    </marker>
+    <marker id="net" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2f9e8f"/>
+    </marker>
+  </defs>
+
+  <!-- transparent canvas - reads on light + dark; title lives in the embedding doc -->
+
+  <!-- layer number badges (left gutter): focal layer's badge is coral -->
+  <circle cx="26" cy="117" r="15" fill="#16243f"/>
+  <text x="26" y="122" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">1</text>
+  <circle cx="26" cy="322" r="15" fill="#16243f"/>
+  <text x="26" y="327" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">2</text>
+  <circle cx="26" cy="502" r="15" fill="#ca5f4c"/>
+  <text x="26" y="507" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+
+  <!-- ============ LAYER 1 - Client edge ============ -->
+  <!-- band = outer white rect (structure stroke) + a header BAR rect on top -->
+  <rect x="52" y="44" width="576" height="146" rx="12" fill="#ffffff" stroke="#25406b" stroke-width="1.5"/>
+  <rect x="52" y="44" width="576" height="30" rx="12" fill="#25406b"/>
+  <text x="66" y="64" font-size="13" font-weight="700" fill="#ffffff">Layer 1  -  Client edge</text>
+  <text x="614" y="64" font-size="10" fill="#c9d4e6" text-anchor="end">runs in the browser + CDN</text>
+
+  <!-- card A -->
+  <rect x="68" y="92" width="176" height="84" rx="9" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1.2"/>
+  <text x="156" y="112" font-size="11" font-weight="700" fill="#16243f" text-anchor="middle">Browser</text>
+  <text x="156" y="130" font-size="10" font-family="monospace" fill="#16243f" text-anchor="middle">app.js (SPA)</text>
+  <text x="156" y="147" font-size="9.5" fill="#5a6478" text-anchor="middle">renders the UI</text>
+  <text x="156" y="161" font-size="9.5" fill="#5a6478" text-anchor="middle">calls the API</text>
+
+  <!-- card B -->
+  <rect x="256" y="92" width="176" height="84" rx="9" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1.2"/>
+  <text x="344" y="112" font-size="11" font-weight="700" fill="#16243f" text-anchor="middle">CDN</text>
+  <text x="344" y="130" font-size="10" font-family="monospace" fill="#16243f" text-anchor="middle">static assets</text>
+  <text x="344" y="147" font-size="9.5" fill="#5a6478" text-anchor="middle">caches JS / CSS / img</text>
+  <text x="344" y="161" font-size="9.5" fill="#5a6478" text-anchor="middle">edge-close to user</text>
+
+  <!-- card C -->
+  <rect x="444" y="92" width="176" height="84" rx="9" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1.2"/>
+  <text x="532" y="112" font-size="11" font-weight="700" fill="#16243f" text-anchor="middle">Load balancer</text>
+  <text x="532" y="130" font-size="10" font-family="monospace" fill="#16243f" text-anchor="middle">TLS terminate</text>
+  <text x="532" y="147" font-size="9.5" fill="#5a6478" text-anchor="middle">routes to a service</text>
+  <text x="532" y="161" font-size="9.5" fill="#5a6478" text-anchor="middle">health-checks pods</text>
+
+  <!-- card A->B->C flow (solid navy = synchronous control flow) -->
+  <line x1="244" y1="134" x2="255" y2="134" stroke="#16243f" stroke-width="1.8" marker-end="url(#nav)"/>
+  <line x1="432" y1="134" x2="443" y2="134" stroke="#16243f" stroke-width="1.8" marker-end="url(#nav)"/>
+
+  <!-- ============ LAYER 2 - Application ============ -->
+  <rect x="52" y="224" width="576" height="196" rx="12" fill="#ffffff" stroke="#25406b" stroke-width="1.5"/>
+  <rect x="52" y="224" width="576" height="30" rx="12" fill="#25406b"/>
+  <text x="66" y="244" font-size="13" font-weight="700" fill="#ffffff">Layer 2  -  Application</text>
+
+  <!-- full-width row: API server -->
+  <rect x="68" y="262" width="544" height="64" rx="9" fill="#eef2f8" stroke="#25406b" stroke-width="1.3"/>
+  <text x="80" y="282" font-size="11.5" font-weight="700" fill="#16243f">API server</text>
+  <text x="180" y="282" font-size="10" font-family="monospace" fill="#5a6478">http handlers</text>
+  <text x="80" y="302" font-size="9.8" fill="#5a6478">validate  ->  authorize  ->  dispatch  ->  serialize response</text>
+  <text x="80" y="317" font-size="9.8" fill="#5a6478">stateless: any pod can serve any request</text>
+
+  <!-- full-width row: Worker -->
+  <rect x="68" y="338" width="544" height="72" rx="9" fill="#eef2f8" stroke="#25406b" stroke-width="1.3"/>
+  <text x="80" y="358" font-size="11.5" font-weight="700" fill="#16243f">Worker</text>
+  <text x="150" y="358" font-size="10" font-family="monospace" fill="#5a6478">job queue</text>
+  <text x="230" y="358" font-size="9.5" fill="#ca5f4c">async</text>
+  <text x="80" y="378" font-size="9.8" fill="#5a6478">picks up jobs  ->  does the slow work  ->  writes results to the store</text>
+  <text x="80" y="396" font-size="9.8" fill="#5a6478">failures retry with backoff; the API stays fast and responsive</text>
+
+  <!-- API "enqueues" Worker (solid navy arrow; label greyed so it reads on any theme) -->
+  <line x1="128" y1="326" x2="128" y2="337" stroke="#16243f" stroke-width="1.8" marker-end="url(#nav)"/>
+  <text x="138" y="335" font-size="9" fill="#8a8f99">enqueues</text>
+
+  <!-- worker retry self-loop (dashed teal = async) -->
+  <path d="M596 396 C 624 396, 624 356, 596 356" fill="none" stroke="#2f9e8f" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#net)"/>
+  <text x="620" y="379" font-size="8.5" fill="#2f9e8f">retry</text>
+
+  <!-- ============ LAYER 3 - Data (the ONE focal layer, coral) ============ -->
+  <rect x="52" y="444" width="576" height="116" rx="12" fill="#fbeeea" stroke="#ca5f4c" stroke-width="1.8"/>
+  <rect x="52" y="444" width="576" height="30" rx="12" fill="#ca5f4c"/>
+  <text x="66" y="464" font-size="13" font-weight="700" fill="#ffffff">Layer 3  -  Data</text>
+  <text x="614" y="464" font-size="10" fill="#f7e7e3" text-anchor="end">system of record</text>
+
+  <rect x="68" y="482" width="544" height="64" rx="9" fill="#ffffff" stroke="#ca5f4c" stroke-width="1.3"/>
+  <text x="340" y="506" font-size="10.5" fill="#16243f" text-anchor="middle">primary store  &lt;-&gt;  read-through cache</text>
+  <text x="340" y="525" font-size="9.8" fill="#5a6478" text-anchor="middle">writes fan out to replicas; hot reads served from cache in a few ms</text>
+
+  <!-- layer progression arrows (left gutter): the coral one marks the focal step -->
+  <line x1="100" y1="190" x2="100" y2="223" stroke="#16243f" stroke-width="2" marker-end="url(#nav)"/>
+  <text x="108" y="210" font-size="9" fill="#8a8f99">request enters the service</text>
+  <line x1="100" y1="420" x2="100" y2="443" stroke="#ca5f4c" stroke-width="2.6" marker-end="url(#cor)"/>
+  <text x="108" y="437" font-size="9.5" font-weight="700" fill="#ca5f4c">reads + writes</text>
+
+  <!-- ============ SIDE COLUMN - Platform (external / cloud) ============ -->
+  <rect x="724" y="44" width="232" height="502" rx="12" fill="#ffffff" stroke="#25406b" stroke-width="1.5"/>
+  <rect x="724" y="44" width="232" height="46" rx="12" fill="#16243f"/>
+  <text x="840" y="66" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="middle">Platform</text>
+  <text x="840" y="82" font-size="8.8" font-family="monospace" fill="#c9d4e6" text-anchor="middle">api.example.com</text>
+
+  <!-- service rows, vertically aligned with the layer they feed -->
+  <rect x="740" y="104" width="200" height="52" rx="8" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1"/>
+  <text x="840" y="124" font-size="10" font-weight="600" fill="#16243f" text-anchor="middle">serves assets</text>
+  <text x="840" y="141" font-size="8.8" font-family="monospace" fill="#5a6478" text-anchor="middle">GET /assets/*</text>
+
+  <rect x="740" y="322" width="200" height="52" rx="8" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1"/>
+  <text x="840" y="342" font-size="10" font-weight="600" fill="#16243f" text-anchor="middle">serves the API</text>
+  <text x="840" y="359" font-size="8.5" font-family="monospace" fill="#5a6478" text-anchor="middle">GET/POST /v1/*</text>
+
+  <rect x="740" y="462" width="200" height="52" rx="8" fill="#f4f6fa" stroke="#c9cdd6" stroke-width="1"/>
+  <text x="840" y="482" font-size="10" font-weight="600" fill="#16243f" text-anchor="middle">managed database</text>
+  <text x="840" y="499" font-size="8.3" font-family="monospace" fill="#5a6478" text-anchor="middle">Postgres + replicas</text>
+
+  <!-- faint clarifier row (like a footnote inside the panel) -->
+  <text x="840" y="534" font-size="8" fill="#8a8f99" text-anchor="middle">runs as autoscaled containers</text>
+
+  <!-- network fetch arrows (dashed teal) from the platform into each layer -->
+  <path d="M740 116 C 560 66, 430 66, 344 90" fill="none" stroke="#2f9e8f" stroke-width="1.8" stroke-dasharray="5,4" marker-end="url(#net)"/>
+  <line x1="740" y1="348" x2="614" y2="368" stroke="#2f9e8f" stroke-width="1.8" stroke-dasharray="5,4" marker-end="url(#net)"/>
+  <line x1="740" y1="488" x2="614" y2="510" stroke="#2f9e8f" stroke-width="1.8" stroke-dasharray="5,4" marker-end="url(#net)"/>
+
+  <!-- footnote (muted): call out anything a reader might misread -->
+  <text x="52" y="588" font-size="9.5" fill="#8a8f99">Solid navy = synchronous call - dashed teal = async / network fetch - coral = the focal tier this slide is about.</text>
+</svg>
