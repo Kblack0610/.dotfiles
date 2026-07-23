@@ -34,6 +34,10 @@ STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
 # this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
 # project name), so a `tag:` prefix classifies under that project.
 ALIAS_FILE="${NOTES_COCKPIT_ALIASES:-$HOME/.config/notes-cockpit/aliases}"
+# Optional machine-local project->repo map (same dir/format as notes-version-summary uses):
+# `project=/abs/repo[:pathfilter]` per line. Lets the accept flow `cd` into a project's repo to
+# file a Vikunja ticket; absent/unmapped -> the accept flow adds to the sheet only.
+REPOS_FILE="${NOTES_COCKPIT_REPOS:-$HOME/.config/notes-cockpit/repos}"
 
 alias_of() { # $1=prefix -> mapped project name (or nothing)
   [ -f "$ALIAS_FILE" ] || return 0
@@ -408,6 +412,80 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
 }
 
+# ── accept the overview's "Next up" suggestions (the `g` key) ────────
+# Read the `- [ ]` tasks from a project's summary.md nextup:auto block, multi-select them, and for
+# each accepted one: add it to the project sheet (ptask), then optionally file it as a tracker ticket.
+nextup_tasks() { # $1 = summary.md path -> one suggested task per line (marker + checkbox stripped)
+  awk '/<!-- nextup:auto -->/{s=1;next} /<!-- \/nextup:auto -->/{s=0} s' "$1" \
+    | sed -n 's/^- \[ \] //p'
+}
+
+# repo_path_of <project> -> /abs/repo from REPOS_FILE (pathfilter stripped), or nothing.
+repo_path_of() {
+  [ -f "$REPOS_FILE" ] || return 0
+  local v
+  v="$(awk -F= -v k="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
+    '!/^[[:space:]]*#/ { key=tolower($1); gsub(/[[:space:]]/,"",key); if (key==k){ sub(/^[^=]*=/,""); print; exit } }' \
+    "$REPOS_FILE")"
+  v="${v%%:*}"; v="${v/#\~/$HOME}"; printf '%s' "$v"
+}
+
+# epic_of <summary.md> -> the tracker epic id from the `<!-- cockpit: … -->` marker
+# (prefers release-epic, falls back to the vikunja project id). Empty when unset.
+epic_of() {
+  local m e
+  m="$(grep -o '<!-- cockpit:[^>]*-->' "$1" 2>/dev/null | head -1)"
+  e="$(sed -n 's/.*release-epic=\([0-9][0-9]*\).*/\1/p' <<<"$m")"
+  [ -z "$e" ] && e="$(sed -n 's/.*[[:space:]]vikunja=\([0-9][0-9]*\).*/\1/p' <<<"$m")"
+  printf '%s' "$e"
+}
+
+accept_next() { # $1 = section of the highlighted row (<profile>/<project>)
+  local section="${1:-}" profile name summary_md tasks selected repo epic task ans line can_ticket=0
+  case "$section" in
+    */*) profile="${section%%/*}"; name="${section#*/}" ;;
+    *) exec "$SELF" ;; # not a project row
+  esac
+  summary_md="$(notes --profile "$profile" projects 2>/dev/null \
+    | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
+  [ -n "$summary_md" ] && [ -f "$summary_md" ] \
+    || { echo "no summary.md for $name"; sleep 1.5; exec "$SELF"; }
+  tasks="$(nextup_tasks "$summary_md")"
+  if [ -z "$tasks" ]; then
+    echo "no suggestions for $name yet — press o, then C-s on the overview to generate them"; sleep 2; exec "$SELF"
+  fi
+  selected="$(printf '%s\n' "$tasks" | fzf --multi --ansi --reverse \
+    --prompt "accept for $name > " \
+    --header 'TAB mark · enter accept selected · esc cancel')"
+  [ -z "$selected" ] && exec "$SELF"
+  repo="$(repo_path_of "$name")"
+  epic="$(epic_of "$summary_md")"
+  [ -n "$repo" ] && [ -d "$repo" ] && command -v ticket >/dev/null 2>&1 && [ -n "$epic" ] && can_ticket=1
+  while IFS= read -r task; do
+    [ -n "$task" ] || continue
+    if notes --profile "$profile" ptask "$name" add "$task" >/dev/null 2>&1; then
+      echo "+ sheet: $task"
+    else
+      echo "! sheet add failed: $task"; continue
+    fi
+    if [ "$can_ticket" -eq 1 ]; then
+      read -r -p "  file '$task' as a ticket? [y/N] " ans </dev/tty
+      case "$ans" in
+        y | Y)
+          if line="$( (cd "$repo" && ticket create "$epic" "$task" --labels=todo) 2>&1 )"; then
+            echo "  -> $line"
+          else
+            echo "  (ticket create failed: $line)"
+          fi
+          ;;
+      esac
+    fi
+  done <<< "$selected"
+  echo "refreshing overview ..."
+  notes-version-summary --overview "$profile" "$name" >/dev/null 2>&1 || true
+  sleep 1; exec "$SELF"
+}
+
 restore_project() {
   local section="${1:-}" profile pick i
   [ -z "$section" ] && section="$(read_section)"
@@ -451,6 +529,7 @@ help_view() {
     n              new project in this section
     V              roll to next version  (freezes + writes an LLM summary)
     o              overview + frozen versions  (top = where we are / next up · C-d/C-u scroll · C-s regen)
+    g              accept "next up" suggestions -> sheet (+ optional ticket)
     A              archive the highlighted project
     R              restore an archived project
 
@@ -483,6 +562,7 @@ case "${1:-}" in
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
+  --accept-next) accept_next "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project "${2:-}"; exit 0 ;;
   --help-view) help_view; exit 0 ;;
@@ -501,7 +581,7 @@ echo personal > "$STATE" # every launch starts on personal
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,p,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
@@ -531,6 +611,7 @@ list_section personal | fzf \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "o:become($SELF --browse-versions {6})" \
+  --bind "g:become($SELF --accept-next {6})" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "p:execute-silent($SELF --cycle-pfilter)+reload($SELF --list)+refresh-preview" \

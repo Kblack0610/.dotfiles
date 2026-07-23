@@ -107,3 +107,12 @@ untouched.
 Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
 browser (the whole `summary.md` in the preview) above the version list; `C-s` on that row regenerates
 the overview. Rolling a version (`V`) refreshes the overview automatically. `--dry-run` previews.
+
+### Accepting suggestions (the `g` key)
+
+`g` on a project row opens a multi-select of that project's `Next up` tasks (TAB to mark, enter to
+accept). Each accepted task is added to the project sheet via `ptask add`, then - if the project has a
+`repos` entry (for the `cd` target) and a wired tracker with an epic in its `<!-- cockpit: … -->`
+marker - you are offered to file it as a ticket (`ticket create <epic> "<task>" --labels=todo`). No
+`repos` entry, no tracker, or no `ticket` on PATH -> it adds to the sheet only, no error. The overview
+refreshes afterward.
