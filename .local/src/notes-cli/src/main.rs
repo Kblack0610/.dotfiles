@@ -7,6 +7,7 @@
 
 mod archive;
 mod backlog;
+mod clickup;
 mod comms;
 mod config;
 mod daily;
@@ -176,6 +177,12 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<CommsCmd>,
     },
+    /// Mirror in-progress ClickUp tickets assigned to me into today's `## Focus`.
+    /// Opt-in per profile via `clickup_list`; a no-op where it is unset.
+    Clickup {
+        #[command(subcommand)]
+        sub: ClickupCmd,
+    },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor,
     /// Print the resolved profile + paths
@@ -184,6 +191,12 @@ enum Cmd {
         #[arg(long)]
         profiles: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ClickupCmd {
+    /// Pull in-progress ClickUp tickets into today's `## Focus` (fetch + reconcile).
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -378,10 +391,22 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
                     Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
                     Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
-                    Some(FocusCmd::Mv { query, to, tag, untag }) => focus_move::mv(
-                        &prof, &log, &query.join(" "), to.as_deref(), tag.as_deref(), untag,
+                    Some(FocusCmd::Mv {
+                        query,
+                        to,
+                        tag,
+                        untag,
+                    }) => focus_move::mv(
+                        &prof,
+                        &log,
+                        &query.join(" "),
+                        to.as_deref(),
+                        tag.as_deref(),
+                        untag,
                     )?,
-                    Some(FocusCmd::Start { query }) => focus_sweep::start(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Start { query }) => {
+                        focus_sweep::start(&prof, &log, &query.join(" "))?
+                    }
                     Some(FocusCmd::Sweep) => focus_sweep::sweep(&prof, &log)?,
                 }
             }
@@ -422,7 +447,16 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Projects {
-            name, new, archive, restore, archived, roll, bump, minor, major, version_of,
+            name,
+            new,
+            archive,
+            restore,
+            archived,
+            roll,
+            bump,
+            minor,
+            major,
+            version_of,
         } => {
             let level = if major {
                 projects::Bump::Major
@@ -432,7 +466,9 @@ fn main() -> Result<()> {
                 projects::Bump::Patch
             };
             // lifecycle/version flags take precedence over the read paths
-            match (new, archive, restore, roll, bump, version_of, archived, name) {
+            match (
+                new, archive, restore, roll, bump, version_of, archived, name,
+            ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
@@ -453,6 +489,9 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Clickup { sub } => match sub {
+            ClickupCmd::Sync => clickup::sync(&prof, &log)?,
+        },
         Cmd::Doctor => doctor::run(&prof, &log)?,
         Cmd::Config { profiles } => {
             if profiles {
