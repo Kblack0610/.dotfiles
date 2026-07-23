@@ -519,7 +519,7 @@ fn write_version_note(project_dir: &Path, ver: &str) -> Result<PathBuf> {
 }
 
 /// Resolve a current project's directory by name (case-insensitive).
-fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
+pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
     let want = name.trim().to_lowercase();
     let Some((_, summary)) = indexed(p).into_iter().find(|(n, _)| n.to_lowercase() == want) else {
         bail!("no current project named '{name}'");
