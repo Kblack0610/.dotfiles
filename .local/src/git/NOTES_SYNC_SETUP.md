@@ -104,6 +104,17 @@ https://ntfy.example.internal/notes-sync
 
 The ntfy notifications use the OS push channel — near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
 
+### One-tap into today's note
+
+`notes-termux-bootstrap` also installs `neovim`, `tmux`, and `rust` (to build the `notes` CLI) and writes a Termux:Widget shortcut at `~/.shortcuts/notes` that runs `notes-mobile`: pull, open today's daily note in neovim inside a persistent `notes` tmux session, push on exit. The tmux session means reopening the phone reattaches where you left off.
+
+To get the home-screen icon:
+
+1. Install the **Termux:Widget** add-on APK (F-Droid).
+2. Long-press the launcher home screen -> Widgets -> Termux:Widget -> pick `notes`.
+
+Tapping it lands you straight in today's daily note. `notes-mobile` also runs on desktop/macOS for testing.
+
 ## Webhook fan-out (cluster side)
 
 If you ever need to redeploy the bridge or rotate the HMAC, the manifests live in `home-config/apps/`:

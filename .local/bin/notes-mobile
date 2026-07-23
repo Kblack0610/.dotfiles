@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# notes-mobile — one-tap entry into today's daily note.
+#
+# Pull latest, open today's `~/.notes` daily note in neovim inside a persistent
+# tmux session, then push on exit. Designed for the Termux:Widget home-screen
+# shortcut (~/.shortcuts/notes) but works on any machine for testing.
+#
+# The persistent `notes` tmux session is what makes it "stay there": reopening
+# the phone reattaches to the same nvim with the cursor where you left it. It is
+# also the seam the future mobile roadmap (swipeable panels/views) hangs off.
+#
+# No new sync logic — reuses notes-sync + the `notes` CLI + the notes.nvim plugin
+# (loads automatically when nvim opens a file under ~/.notes).
+#
+# Env overrides:
+#   NOTES_SYNC_CMD              sync command (default: ~/.local/bin/notes-sync)
+#   NOTES_MOBILE_TMUX_SESSION   tmux session name (default: notes)
+
+set -uo pipefail
+
+SYNC_CMD="${NOTES_SYNC_CMD:-$HOME/.local/bin/notes-sync}"
+SESSION="${NOTES_MOBILE_TMUX_SESSION:-notes}"
+
+sync() {
+    # Best-effort: offline or an unreachable remote must never block the editor.
+    [ -x "$SYNC_CMD" ] && "$SYNC_CMD" >/dev/null 2>&1 || true
+}
+
+resolve_daily() {
+    # `notes today` is idempotent (creates + links refs/backlogs); `notes path
+    # daily` prints the profile-aware path. Fall back to the notes root so the
+    # launcher still opens something if the CLI isn't built on this device.
+    local daily=""
+    if command -v notes >/dev/null 2>&1; then
+        notes today >/dev/null 2>&1 || true
+        daily="$(notes path daily 2>/dev/null || true)"
+    fi
+    printf '%s' "${daily:-$HOME/.notes}"
+}
+
+# 1. Pull latest before opening.
+sync
+
+# 2. Resolve today's note.
+DAILY="$(resolve_daily)"
+
+# 3. Open in a persistent tmux session (attach if it already exists).
+if command -v tmux >/dev/null 2>&1; then
+    tmux new-session -A -s "$SESSION" nvim "$DAILY"
+else
+    nvim "$DAILY"
+fi
+
+# 4. Push whatever changed on detach/exit.
+sync
