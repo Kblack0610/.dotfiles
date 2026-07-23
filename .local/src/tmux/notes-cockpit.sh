@@ -79,32 +79,23 @@ classify() {
   echo "$profile"
 }
 
-# ── emit every open task as: type profile file line key section cleantext ──
-emit_tasks() {
-  # project lists are per-profile, so resolve them once up front
-  declare -gA PROJ_OF=()
-  local prof
-  while IFS= read -r prof; do
-    [ -n "$prof" ] && PROJ_OF["$prof"]="$(projects_of "$prof")"
-  done < <(profiles)
+# ── one task row: type profile file line key section cleantext ──
+# Shared formatter for both daily `## Focus` tasks and project-sheet `## Wave` tasks (both
+# arrive as `path<TAB>line<TAB>key<TAB>rawtext`). `section` places the row: `<profile>` for
+# an untagged/main task, `<profile>/<project>` for a project task.
+_task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
+  local clean glyph
+  clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
+  if [[ "$6" =~ ^[[:space:]]*-\ \[/\] ]]; then glyph="${C_INP}[/]${C_OFF}"; else glyph="${C_BOX}[ ]${C_OFF}"; fi
+  printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$clean"
+}
 
+# ── the profile's UNTAGGED/main lane: its daily `## Focus` tasks (project tasks live in the
+# project sheets, read per-project in _profile_view — NOT prefix-classified here) ──
+emit_tasks() {
   notes focus --all 2>/dev/null | while IFS=$'\t' read -r profile file line key text; do
-    [ -z "$profile" ] && continue
-    local section clean
-    # strip the checkbox + <!-- since --> comment FIRST, then classify on the clean text
-    # so a leading `prefix:` is at the start. `/` is the in-progress state and is still
-    # an open task, so it strips like ` `/`x`.
-    clean="$(printf '%s' "$text" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
-    section="$(classify "$clean" "$profile" "${PROJ_OF[$profile]:-}")"
-    # bake a status-colored checkbox into the display so in-progress ([/]) stands out;
-    # done ([x]) never reaches here (focus --all is open-only)
-    local glyph
-    if [[ "$text" =~ ^[[:space:]]*-\ \[/\] ]]; then
-      glyph="${C_INP}[/]${C_OFF}"
-    else
-      glyph="${C_BOX}[ ]${C_OFF}"
-    fi
-    printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s\n' "$profile" "$file" "$line" "$key" "$section" "$glyph" "$clean"
+    [ -n "$profile" ] || continue
+    _task_row "$profile" "$file" "$line" "$key" "$profile" "$text"
   done
 }
 
@@ -151,7 +142,11 @@ _profile_view() { # $1=rows $2=profile
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
     _subheader "$n" "$st" "$ver"
-    body="$(_flat "$rows" "$prof/$lc")"
+    # project tasks come from the SHEET's `## Wave` (ptask), keyed for done/start/rm on it
+    body="$(notes --profile "$prof" ptask "$n" list 2>/dev/null \
+      | while IFS=$'\t' read -r path line key text; do
+          [ -n "$key" ] && _task_row "$prof" "$path" "$line" "$key" "$prof/$lc" "$text"
+        done)"
     if [ -n "$body" ]; then
       printf '%s\n' "$body"
     else
@@ -214,16 +209,34 @@ destinations() {
   done < <(profiles)
 }
 
-# Add to whatever SECTION you're on: `<profile>/<project>` tags the text with the
-# project so it re-classifies there; a bare `<profile>` adds an untagged task.
+# Add to whatever SECTION you're on. A `<profile>/<project>` row adds to the project's
+# SHEET (`## Wave`, the project analog of the daily `## Focus`); a bare `<profile>` adds an
+# untagged/main task to the daily note.
 add_task() {
-  local section="${1:-}" profile prefix="" text
+  local section="${1:-}" profile proj text
   [ -z "$section" ] && section="$(read_section)"
   [ "$section" = all ] && section=personal
   profile="${section%%/*}"
-  case "$section" in */*) prefix="${section#*/}: " ;; esac
   read -r -p "add to ${section}: " text || return 0
-  [ -n "${text// /}" ] && notes --profile "$profile" focus add "${prefix}${text}"
+  [ -n "${text// /}" ] || return 0
+  case "$section" in
+    */*) proj="${section#*/}"; notes --profile "$profile" ptask "$proj" add "$text" ;;
+    *)   notes --profile "$profile" focus add "$text" ;;
+  esac
+}
+
+# Route a task op (done|start|rm) to the right store based on the row's SECTION: a project
+# row edits the project sheet's `## Wave` (`ptask`); an untagged/profile row edits the daily
+# `## Focus` (`focus`, then a sweep to re-lane it). Called from the fzf key binds.
+task_op() { # $1=verb(done|start|rm)  $2=section  $3=key
+  local verb="${1:-}" section="${2:-}" key="${3:-}" profile proj
+  [ -n "$key" ] || return 0
+  profile="${section%%/*}"
+  case "$section" in
+    */*) proj="${section#*/}"; notes --profile "$profile" ptask "$proj" "$verb" "$key" ;;
+    *)   notes --profile "$profile" focus "$verb" "$key"
+         [ "$verb" = rm ] || notes --profile "$profile" focus sweep ;;
+  esac
 }
 
 # Move a task to another profile and/or project. A numbered read prompt rather than a
@@ -394,6 +407,7 @@ case "${1:-}" in
   --next-section) next_section; exit 0 ;;
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
+  --task-op) shift; task_op "$@"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
@@ -438,9 +452,9 @@ list_section personal | fzf \
   --bind "i:show-input+unbind($MODAL)" \
   --bind "esc:transform:[ \"\$FZF_INPUT_STATE\" = hidden ] && echo abort || echo \"clear-query+hide-input+rebind($MODAL)\"" \
   --bind 'q:abort' \
-  --bind "ctrl-x:execute-silent(notes --profile {2} focus done {5}; notes --profile {2} focus sweep)+reload($SELF --list)+refresh-preview" \
-  --bind "s:execute-silent(notes --profile {2} focus start {5}; notes --profile {2} focus sweep)+reload($SELF --list)+refresh-preview" \
-  --bind "ctrl-d:execute-silent(notes --profile {2} focus rm {5})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-x:execute-silent($SELF --task-op done {6} {5})+reload($SELF --list)+refresh-preview" \
+  --bind "s:execute-silent($SELF --task-op start {6} {5})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-d:execute-silent($SELF --task-op rm {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \

@@ -19,6 +19,7 @@ mod index;
 mod logging;
 mod md;
 mod meeting;
+mod project_tasks;
 mod projects;
 mod summarize;
 mod tags;
@@ -106,6 +107,14 @@ enum Cmd {
         all: bool,
         #[command(subcommand)]
         sub: Option<FocusCmd>,
+    },
+    /// Per-project task list — the `## Wave` on a project's sheet (the project analog of
+    /// `focus`, which is the daily note's `## Focus`). Project tasks live in the project .md.
+    Ptask {
+        /// Project name (case-insensitive)
+        name: String,
+        #[command(subcommand)]
+        sub: Option<PtaskCmd>,
     },
     /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
@@ -245,6 +254,33 @@ enum FocusCmd {
     },
     /// Reorganize today's `## Focus` by status (todo / in progress / done)
     Sweep,
+}
+
+/// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Wave`.
+#[derive(clap::Subcommand)]
+enum PtaskCmd {
+    /// List the project's open wave tasks (TSV: `path<TAB>line<TAB>key<TAB>text`)
+    List,
+    /// Add a task to the project's current wave
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Check off the first open wave task whose text matches
+    Done {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Toggle the first matching wave task between todo and in-progress (`[ ]` <-> `[/]`)
+    Start {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Delete the first open wave task whose text matches
+    Rm {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,6 +426,13 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::Ptask { name, sub } => match sub {
+            None | Some(PtaskCmd::List) => project_tasks::list(&prof, &name)?,
+            Some(PtaskCmd::Add { text }) => project_tasks::add(&prof, &log, &name, &text.join(" "))?,
+            Some(PtaskCmd::Done { query }) => project_tasks::done(&prof, &log, &name, &query.join(" "))?,
+            Some(PtaskCmd::Start { query }) => project_tasks::start(&prof, &log, &name, &query.join(" "))?,
+            Some(PtaskCmd::Rm { query }) => project_tasks::rm(&prof, &log, &name, &query.join(" "))?,
+        },
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
