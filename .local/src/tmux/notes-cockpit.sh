@@ -283,6 +283,33 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   esac || { echo "roll failed"; sleep 2; }
 }
 
+# Open a window to browse a project's frozen `versions/*.md` (newest first), each
+# previewed; Enter opens the version in nvim. `notes projects` gives the summary path,
+# whose parent holds `versions/`.
+browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
+  local section="${1:-}" profile name summary dir prev
+  case "$section" in
+    */*) profile="${section%%/*}"; name="${section#*/}" ;;
+    *) echo "not on a project row"; sleep 1; return 0 ;;
+  esac
+  summary="$(notes --profile "$profile" projects 2>/dev/null \
+    | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
+  [ -n "$summary" ] || { echo "no such project: $name"; sleep 1; return 0; }
+  dir="$(dirname "$summary")/versions"
+  if [ ! -d "$dir" ] || ! ls "$dir"/*.md >/dev/null 2>&1; then
+    echo "no frozen versions for $name yet — roll one with V"; sleep 1.5; return 0
+  fi
+  if command -v bat >/dev/null 2>&1; then
+    prev="bat --color=always --style=plain --language=markdown {}"
+  else
+    prev="cat {}"
+  fi
+  tmux new-window -n "ver:$name" "cd '$dir' && ls -1 *.md | sort -rV | fzf \
+    --ansi --reverse --preview '$prev' --preview-window 'right:62%:wrap' \
+    --header 'old versions of $name — enter opens in nvim · esc closes' \
+    --bind 'enter:execute(nvim {})'"
+}
+
 restore_project() {
   local section="${1:-}" profile pick i
   [ -z "$section" ] && section="$(read_section)"
@@ -324,6 +351,7 @@ help_view() {
   project
     n              new project in this section
     V              roll the highlighted project to its next version
+    o              browse the project's old (frozen) versions
     A              archive the highlighted project
     R              restore an archived project
 
@@ -353,6 +381,7 @@ case "${1:-}" in
   --jump) shift; jump_row "$@"; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
+  --browse-versions) browse_versions "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project "${2:-}"; exit 0 ;;
   --help-view) help_view; exit 0 ;;
@@ -370,7 +399,7 @@ echo personal > "$STATE" # every launch starts on personal
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
@@ -399,6 +428,7 @@ list_section personal | fzf \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
+  --bind "o:execute($SELF --browse-versions {6})" \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
