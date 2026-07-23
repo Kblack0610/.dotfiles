@@ -81,7 +81,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
     crate::comms::refresh(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
-    // Bucket `## Focus` by priority (Urgent/High/Medium/Low + Done) so a day whose items
+    // Bucket `## Focus` by priority (Urgent/High/Low + Done) so a day whose items
     // just carried forward flat lands organized, matching the nvim on-save sweep. Idempotent,
     // writes only on change; a failure here never aborts note creation.
     let _ = crate::focus_sweep::sweep(p, log);

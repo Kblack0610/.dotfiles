@@ -514,7 +514,7 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
 
     // Byte ranges to cut, each already extended to swallow one adjacent space.
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut best: Option<usize> = None; // index into PRIORITY_TAGS (lower = more urgent)
+    let mut best: Option<usize> = None; // index into PRIORITIES (lower = more urgent)
     let mut in_code = false;
     let mut i = start;
     while i < bytes.len() {
