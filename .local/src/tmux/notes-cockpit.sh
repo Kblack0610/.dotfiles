@@ -283,35 +283,40 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   esac || { echo "roll failed"; sleep 2; }
 }
 
-# Browse a project's frozen `versions/*.md` (newest first, previewed). Reached via fzf
-# `become` (the `o` bind), so THIS runs as the sole fzf in the cockpit's window — a fresh
-# fzf that owns the terminal, not a nested one (fzf-in-fzf-execute / a popup launched from
-# execute are both fragile inside the cockpit's display-popup — see move_task, and they
-# render the cockpit instead of the versions). `q`/esc returns by re-`exec`ing the cockpit;
-# enter opens a version in nvim. `notes projects` gives the summary path -> parent/versions.
+# Browse a project's release notes — per-version `.md` from BOTH `versions/` (sheet-model
+# rollovers) and `changelog/` (release-managed projects keep their release notes here),
+# newest first, previewed. Reached via fzf `become` (the `o` bind), so THIS runs as the sole
+# fzf in the cockpit's window — a fresh fzf that owns the terminal, not a nested one
+# (fzf-in-fzf-execute / a popup launched from execute are both fragile inside the cockpit's
+# display-popup — see move_task; they render the cockpit instead). `q`/esc returns by
+# re-`exec`ing the cockpit; enter opens a version in nvim. Rows are `basename<TAB>fullpath`.
 browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
-  local section="${1:-}" profile name summary dir prev
+  local section="${1:-}" profile name summary root rows prev d
   case "$section" in
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) exec "$SELF" ;; # not a project row — just go back to the cockpit
   esac
   summary="$(notes --profile "$profile" projects 2>/dev/null \
     | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
-  dir=""
-  [ -n "$summary" ] && dir="$(dirname "$summary")/versions"
-  if [ -z "$dir" ] || [ ! -d "$dir" ] || ! ls "$dir"/*.md >/dev/null 2>&1; then
-    echo "no frozen versions for $name yet — roll one with V"; sleep 1.2; exec "$SELF"
+  [ -n "$summary" ] && root="$(dirname "$summary")"
+  # gather version notes from versions/ + changelog/; show basename, keep the path for preview
+  rows="$( for d in "$root/versions" "$root/changelog"; do
+             [ -d "$d" ] && ls -1 "$d"/*.md 2>/dev/null
+           done | awk -F/ 'NF{print $NF"\t"$0}' | sort -rV )"
+  if [ -z "$rows" ]; then
+    echo "no release notes for $name yet — roll one with V (or backfill changelog/)"; sleep 1.5; exec "$SELF"
   fi
   if command -v bat >/dev/null 2>&1; then
-    prev="bat --color=always --style=plain --language=markdown {}"
+    prev="bat --color=always --style=plain --language=markdown {2}"
   else
-    prev="cat {}"
+    prev="cat {2}"
   fi
-  ( cd "$dir" && ls -1 *.md | sort -rV | fzf \
-      --ansi --reverse --preview "$prev" --preview-window 'right:62%:wrap' \
-      --prompt "versions: $name > " \
-      --header 'enter: open in nvim    q / esc: back to cockpit' \
-      --bind 'enter:execute(nvim {})' --bind 'q:abort' )
+  printf '%s\n' "$rows" | fzf \
+    --ansi --reverse --delimiter='\t' --with-nth=1 \
+    --preview "$prev" --preview-window 'right:62%:wrap' \
+    --prompt "versions: $name > " \
+    --header 'enter: open in nvim    q / esc: back to cockpit' \
+    --bind 'enter:execute(nvim {2})' --bind 'q:abort'
   exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
 }
 
