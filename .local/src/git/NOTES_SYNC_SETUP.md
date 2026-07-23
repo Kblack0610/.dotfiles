@@ -89,6 +89,23 @@ Run a task manually: `Start-ScheduledTask -TaskName notes-sync-fallback`.
 
 ## Termux (Android) bootstrap
 
+**Fast path (one command, no private repo, no Rust build).** Connect Tailscale first, then in Termux:
+
+```bash
+pkg install -y git \
+  && git clone --depth 1 https://github.com/Kblack0610/.dotfiles ~/.dotfiles \
+  && ~/.dotfiles/.local/bin/notes-phone-setup
+```
+
+`notes-phone-setup` installs the runtime (git/nvim/tmux/cron), wires the real sync engine
+(`git-sync-notes.sh`), clones `~/.notes`, drops the `~/.shortcuts/notes` home-screen shortcut
+(Termux:Widget is built into Termux), and sets up boot + hourly sync. It prompts once for the notes
+URL + an access token (or pass `NOTES_REMOTE=` / `NOTES_TOKEN=` to skip prompts). The launcher works
+without the Rust `notes` CLI — it falls back to today's dated daily note. Last step: long-press the
+home screen -> Widgets -> Termux:Widget -> tap `notes`.
+
+**Full path (builds the Rust CLI + all services).** Uses the private-overlay `notes-bootstrap`:
+
 ```bash
 ~/.dotfiles/.local/bin/notes-termux-bootstrap \
   --primary-url https://git.example.internal/kblack0610/.notes.git
