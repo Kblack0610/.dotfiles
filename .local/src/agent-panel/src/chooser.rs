@@ -18,6 +18,8 @@ pub struct Agent {
     pub repo_full: String, // basename incl. worktree suffix, for preview header
     pub summary: String,
     pub jsonl: Option<PathBuf>,
+    /// Window tags (Prefix+T, see tags.sh). Empty when the window is untagged.
+    pub tags: String,
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
@@ -76,6 +78,7 @@ fn collect() -> Vec<Agent> {
             repo_full,
             summary,
             jsonl: jsonl_path.exists().then_some(jsonl_path),
+            tags: pane.tags.clone(),
         });
     }
     agents

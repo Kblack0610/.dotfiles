@@ -11,6 +11,7 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
+const ORANGE: &str = "\x1b[38;5;214m"; // window tags, matching the tmux status bar
 
 /// Normalize a working-directory path to a project name: basename with any
 /// `-agent`, `-agent2`, `-agent-2` worktree suffix stripped, and the dotfiles
@@ -105,10 +106,17 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 
         for a in group {
             let g = colorize(a.glyph);
-            let display = if a.summary.is_empty() {
-                format!(" {g} {}", a.short_target)
+            // Window tags (Prefix+T) sit between the target and the summary so
+            // the row still reads target-first when a window is untagged.
+            let tags = if a.tags.is_empty() {
+                String::new()
             } else {
-                format!(" {g} {} {DIM}{}{RESET}", a.short_target, a.summary)
+                format!(" {ORANGE}[{}]{RESET}", a.tags.replace(' ', ","))
+            };
+            let display = if a.summary.is_empty() {
+                format!(" {g} {}{tags}", a.short_target)
+            } else {
+                format!(" {g} {}{tags} {DIM}{}{RESET}", a.short_target, a.summary)
             };
             rows.push(Row {
                 target: a.target.clone(),
