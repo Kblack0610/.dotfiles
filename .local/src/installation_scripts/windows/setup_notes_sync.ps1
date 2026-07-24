@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [string]$PrimaryUrl,
-    [string]$BackupUrl
+    [string]$BackupUrl,
+    [string]$NtfyUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,7 @@ function Write-Skip($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 
 if (-not $PrimaryUrl) { $PrimaryUrl = $env:NOTES_PRIMARY_REMOTE_URL }
 if (-not $BackupUrl)  { $BackupUrl  = $env:NOTES_BACKUP_REMOTE_URL }
+if (-not $NtfyUrl)    { $NtfyUrl    = $env:NOTES_NTFY_URL }
 
 if (-not $PrimaryUrl) {
     Write-Skip 'NOTES_PRIMARY_REMOTE_URL not set — skipping notes setup.'
@@ -28,6 +30,7 @@ $ScriptsDir  = Join-Path $DotfilesDir '.config\windows\scripts'
 $SyncScript  = Join-Path $ScriptsDir 'notes-sync.ps1'
 $WatchScript = Join-Path $ScriptsDir 'notes-watch.ps1'
 $MqttScript  = Join-Path $ScriptsDir 'notes-mqtt.ps1'
+$NtfyScript  = Join-Path $ScriptsDir 'notes-ntfy.ps1'
 
 if (-not (Test-Path $SyncScript)) {
     throw "Expected $SyncScript — run sync_dotfiles.ps1 first."
@@ -57,10 +60,13 @@ function Register-NotesTask {
         [string]$Name,
         [string]$Script,
         [string[]]$Triggers,    # 'logon' or 'every5min'
-        [bool]  $RestartOnFail = $false
+        [bool]  $RestartOnFail = $false,
+        [string]$ScriptArgs = ''
     )
+    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`""
+    if ($ScriptArgs) { $arg += " $ScriptArgs" }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Script`""
+        -Argument $arg
     $triggerList = @()
     foreach ($t in $Triggers) {
         switch ($t) {
@@ -102,9 +108,19 @@ function Register-NotesTask {
 Register-NotesTask -Name 'notes-sync-fallback' -Script $SyncScript  -Triggers @('every5min')
 Register-NotesTask -Name 'notes-watch'         -Script $WatchScript -Triggers @('logon') -RestartOnFail $true
 Register-NotesTask -Name 'notes-mqtt'          -Script $MqttScript  -Triggers @('logon') -RestartOnFail $true
+# notes-ntfy: public/off-LAN pull transport (ntfy over HTTPS). The real topic URL
+# is injected here so the placeholder default in the script never ships; skip the
+# task if no URL is configured (mosquitto + the 5-min fallback still cover sync).
+if ($NtfyUrl) {
+    Register-NotesTask -Name 'notes-ntfy'      -Script $NtfyScript  -Triggers @('logon') -RestartOnFail $true `
+        -ScriptArgs ("-NtfyUrl `"{0}`"" -f $NtfyUrl)
+} else {
+    Write-Skip 'NOTES_NTFY_URL not set — skipping notes-ntfy (off-LAN realtime pull).'
+}
 
 Write-Step 'notes sync setup complete'
 Write-Skip "  fallback timer: notes-sync-fallback (every 5 min)"
 Write-Skip "  push watcher:   notes-watch (at logon, restart on fail)"
-Write-Skip "  pull listener:  notes-mqtt (at logon, restart on fail)"
+Write-Skip "  pull listener:  notes-mqtt (LAN mosquitto, at logon, restart on fail)"
+if ($NtfyUrl) { Write-Skip "  pull listener:  notes-ntfy (public ntfy, at logon, restart on fail)" }
 Write-Skip "Run a task manually with:  Start-ScheduledTask -TaskName notes-sync-fallback"
