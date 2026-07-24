@@ -220,6 +220,7 @@ test_notifications.sh
 .local/bin/audio-stream
 .local/bin/binks
 .local/bin/captain-watchdog
+.local/bin/delivery-loop
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
 .local/bin/notes-to-vikunja
