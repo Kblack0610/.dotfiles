@@ -136,9 +136,9 @@ Last steps (once):
        - Easiest task list: install Simpletask, point it at /sdcard/notes/tasks.txt
          (clean checklist widget, no formulas; read-only for now).
        - Full note text: install KWGT, add its widget, one Text layer, and in the
-         text field (wrapped in $...$ so it evaluates):
-           $wg("/sdcard/notes/today.md", raw)$
-         Grant KWGT storage access; if blank try $wg("file:///sdcard/notes/today.md", raw)$.
+         text field (wrapped in \$...\$ so it evaluates):
+           \$wg("/sdcard/notes/today.md", raw)\$
+         Grant KWGT storage access; if blank try \$wg("file:///sdcard/notes/today.md", raw)\$.
          Note: KWGT shows plain text -- markdown is not rendered.
 
 Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
