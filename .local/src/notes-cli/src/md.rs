@@ -484,7 +484,7 @@ fn strip_trailing_day(s: &str) -> String {
 
 /// The priority levels, most-urgent first — `(bare-word, #hashtag, lane-heading)`. The
 /// SINGLE source of truth, shared by tag detection here and the Focus/Wave lane sweep
-/// (`focus_sweep::PRIORITIES`). Matches the nvim `<leader>tp` cycle (low -> high -> urgent).
+/// (`focus_sweep::PRIORITIES`). Matches the nvim priority set-keys (<leader>tu/th/tl).
 /// A task carries at most one; it rides at the very end of the line, after the
 /// `(Nd) <!-- since -->` stamp, so it stays visible and never gets a stale duplicate.
 pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
