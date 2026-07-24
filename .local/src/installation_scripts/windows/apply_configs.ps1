@@ -142,6 +142,16 @@ Write-Step 'Windows Terminal settings.json'
 $wtPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
 Copy-Config (Join-Path $WinCfg 'terminal\settings.json') $wtPath
 
+Write-Step 'Desktop wallpaper'
+# The transparent terminal shows the desktop behind it, so the wallpaper is part
+# of the look. Copy the image to a stable path and set it via set-wallpaper.ps1
+# (idempotent - no-ops if already set).
+$wpDst = Join-Path $env:USERPROFILE 'Pictures\Wallpapers\tokyo-night-2.jpg'
+Copy-Config (Join-Path $DotfilesDir 'Media\Wallpapers\tokyo-night-2.jpg') $wpDst
+if (Test-Path $wpDst) {
+    & (Join-Path $WinCfg 'scripts\set-wallpaper.ps1') -ImagePath $wpDst
+}
+
 Write-Step 'PowerShell profile'
 Copy-Config (Join-Path $WinCfg 'powershell\Microsoft.PowerShell_profile.ps1') $PROFILE
 

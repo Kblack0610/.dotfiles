@@ -20,6 +20,7 @@
             },
             "colorScheme": "Dracula",
             "useAcrylic": false,
+            "opacity": 85,
             "padding": "8",
             "antialiasingMode": "grayscale",
             "scrollbarState": "hidden",

@@ -110,6 +110,24 @@ for pkg in Microsoft.WindowsTerminal_8wekyb3d8bbwe Microsoft.WindowsTerminal_8we
     fi
 done
 
+cyan 'Desktop wallpaper'
+# The transparent terminal (opacity in settings.json) shows the desktop behind
+# it, so the wallpaper is part of the look. Copy the image to a stable Windows
+# path and set it via set-wallpaper.ps1 (idempotent - no-ops if already set).
+wp_dst="$USERPROFILE/Pictures/Wallpapers/tokyo-night-2.jpg"
+copy_file "$DOTFILES/Media/Wallpapers/tokyo-night-2.jpg" "$wp_dst"
+if (( DRY )); then
+    dim "would set wallpaper -> $wp_dst"
+elif [[ -f "$wp_dst" ]] && command -v powershell.exe >/dev/null 2>&1; then
+    if out="$(powershell.exe -NoProfile -ExecutionPolicy Bypass \
+                -File "$(wslpath -w "$WIN_CFG/scripts/set-wallpaper.ps1")" \
+                -ImagePath "$(wslpath -w "$wp_dst")" 2>/dev/null | tr -d '\r')"; then
+        dim "${out:-wallpaper set}"
+    else
+        warn "could not set desktop wallpaper"
+    fi
+fi
+
 cyan 'PowerShell profile'
 # PS7 lives under Documents\PowerShell, PS5.1 under Documents\WindowsPowerShell.
 # Push to both so whichever shell the user launches picks it up.
