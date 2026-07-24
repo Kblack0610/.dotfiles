@@ -21,8 +21,9 @@ return {
       -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
       -- <leader>nt, greppable via `notes tags urgent`) and they never collide
       -- with markdown `# headings` (which are line-start only).
-      --   Cycle order: (none) -> #low -> #high -> #urgent -> (none)
-      --   Keymap:      <leader>tp  (sibling of <leader>ts / <leader>tt)
+      --   Levels:  #low  #high  #urgent
+      --   Keymaps: <leader>tu urgent / th high / tl low / tn none
+      --            (direct set, siblings of <leader>ts / <leader>tt)
       local PRIORITIES = { "low", "high", "urgent" }
 
       -- Return (base_without_tag, current_level_or_nil): strip a trailing
@@ -37,31 +38,20 @@ return {
         return (line:gsub("%s+$", "")), nil
       end
 
-      -- Next level in the cycle; nil means "back to no tag".
-      local function next_priority(current)
-        if current == nil then
-          return "low"
-        elseif current == "low" then
-          return "high"
-        elseif current == "high" then
-          return "urgent"
-        end
-        return nil -- urgent -> none
-      end
-
-      -- Cycle the priority tag on a range. The next level is computed from the
-      -- FIRST line and applied to every line, so a visual selection converges
-      -- to a single priority.
-      local function cycle_priority(line1, line2)
-        local _, first = strip_priority(vim.fn.getline(line1))
-        local nxt = next_priority(first)
+      -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
+      -- when `level` is nil. Direct (not a cycle): one keystroke lands the exact priority,
+      -- so the task can move straight to its lane. Non-task lines are left alone.
+      local function set_priority(line1, line2, level)
         for lnum = line1, line2 do
-          local base = strip_priority(vim.fn.getline(lnum))
-          if nxt then
-            local tag = "#" .. nxt
-            vim.fn.setline(lnum, base == "" and tag or (base .. " " .. tag))
-          else
-            vim.fn.setline(lnum, base)
+          local raw = vim.fn.getline(lnum)
+          if raw:match "^%s*%- %[" then
+            local base = strip_priority(raw)
+            if level then
+              local tag = "#" .. level
+              vim.fn.setline(lnum, base == "" and tag or (base .. " " .. tag))
+            else
+              vim.fn.setline(lnum, base)
+            end
           end
         end
       end
@@ -233,6 +223,30 @@ return {
         pcall(vim.api.nvim_win_set_cursor, 0, { row, cur[2] })
       end
 
+      -- Sweep, then put the cursor on wherever the line currently at `track_lnum` ended up
+      -- (matched by exact text), so a direct priority set lands the cursor on the task it
+      -- just moved instead of leaving it on the old row. Falls back to a row-clamp when the
+      -- line can't be found (e.g. it was the placeholder). No-op when the sweep changes nothing.
+      local function sweep_and_follow(track_lnum)
+        local target = vim.fn.getline(track_lnum)
+        local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+        local out, changed = sweep_focus(lines)
+        if not changed then
+          return
+        end
+        local col = vim.api.nvim_win_get_cursor(0)[2]
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
+        local row
+        for i, l in ipairs(out) do
+          if l == target then
+            row = i
+            break
+          end
+        end
+        row = row or math.min(track_lnum, vim.api.nvim_buf_line_count(0))
+        pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
+      end
+
       -- Cycle checkbox status on a range. The next state is computed from the FIRST
       -- line and applied to every line, so a visual selection converges to one state.
       -- The edit is applied in place; the Focus sweep (regroup into lanes / Done)
@@ -304,17 +318,30 @@ return {
           -- New task below the cursor.
           vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
 
-          -- Task priority cycle: current line (normal) / selection (visual). Edits the
-          -- tag in place; the task moves to its new priority lane on save, not as you
-          -- cycle, so the note doesn't reshuffle under the cursor.
-          vim.keymap.set("n", "<leader>tp", function()
-            local lnum = vim.api.nvim_win_get_cursor(0)[1]
-            cycle_priority(lnum, lnum)
-          end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
-          vim.keymap.set("x", "<leader>tp", function()
-            vim.cmd "normal! \27"
-            cycle_priority(vim.fn.line "'<", vim.fn.line "'>")
-          end, { buffer = buf, desc = "Cycle task priority (#low/#high/#urgent)", silent = true })
+          -- Task priority: direct set-keys (not a cycle). Each lands the exact priority in
+          -- one press on the current line (normal) / selection (visual), then re-sweeps and
+          -- follows the task to its new lane so the cursor rides along:
+          --   tu urgent   th high   tl low   tn none (clear)
+          local prio_maps = {
+            { "u", "urgent", "Set task priority urgent" },
+            { "h", "high", "Set task priority high" },
+            { "l", "low", "Set task priority low" },
+            { "n", nil, "Clear task priority" },
+          }
+          for _, m in ipairs(prio_maps) do
+            local key, level, desc = m[1], m[2], m[3]
+            vim.keymap.set("n", "<leader>t" .. key, function()
+              local lnum = vim.api.nvim_win_get_cursor(0)[1]
+              set_priority(lnum, lnum, level)
+              sweep_and_follow(lnum)
+            end, { buffer = buf, desc = desc, silent = true })
+            vim.keymap.set("x", "<leader>t" .. key, function()
+              vim.cmd "normal! \27"
+              local l1, l2 = vim.fn.line "'<", vim.fn.line "'>"
+              set_priority(l1, l2, level)
+              sweep_and_follow(l1)
+            end, { buffer = buf, desc = desc, silent = true })
+          end
 
           -- Sweep `## Focus` on save too, so the note lands organized however a task
           -- was edited (typing a #tag by hand, pasting, etc.), not only via the cycles.
