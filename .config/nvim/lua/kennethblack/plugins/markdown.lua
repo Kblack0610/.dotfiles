@@ -107,26 +107,49 @@ return {
         return false
       end
 
+      -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
+      -- (`---`, `### Done`, `### In progress`) that closes the priority region.
+      local function scaffold_lane(l)
+        for i, lane in ipairs(LANES) do
+          if l:lower():match("^###%s+" .. lane[1] .. "%s*$") then
+            return i
+          end
+        end
+        return nil
+      end
+
       -- Pure rebuild of the `## Focus` body, grouped by priority + status: untagged todos
-      -- on top, then `### Urgent`/`### High`/`### Low` (open tasks), finished
-      -- (`[x]`) under `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane.
-      -- The single empty `- [ ]` placeholder is kept after the untagged block. `nil` means
+      -- on top, then `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under
+      -- `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane. Once the
+      -- section is active, ALL lane headers + Done are emitted even when empty, so the
+      -- columns stay put as stable drop targets. A task's #tag is the source of truth, but an
+      -- untagged task sitting under a lane header inherits that lane's tag (drop-to-tag). The
+      -- single empty `- [ ]` placeholder is kept after the untagged block. `nil` means
       -- "nothing to organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
       local function rebuild_focus_body(body)
         local open, done, placeholder, had_scaffold = {}, {}, nil, false
         for _ = 1, #LANES + 1 do
           open[#open + 1] = {}
         end
+        local cur_lane = nil -- LANES index of the header we're under, else nil
         for _, l in ipairs(body) do
           if is_scaffold(l) then
             had_scaffold = true
+            cur_lane = scaffold_lane(l)
           elseif l:match "^%s*%- %[[xX]%]" then
             done[#done + 1] = l
           elseif l:match "^%s*%- %[ %]%s*$" then
             placeholder = l
           elseif l:match "^%s*%- %[" then
-            local lane = task_lane(l)
-            table.insert(open[lane], l)
+            local _, lvl = strip_priority(l)
+            if lvl then
+              table.insert(open[task_lane(l)], l) -- tag is the source of truth
+            elseif cur_lane then
+              local base = strip_priority(l) -- untagged under a lane -> inherit its tag
+              table.insert(open[cur_lane], base .. " #" .. LANES[cur_lane][1])
+            else
+              table.insert(open[#LANES + 1], l) -- untagged, no lane -> top bucket
+            end
           elseif l:match "%S" then
             table.insert(open[#LANES + 1], l)
           end
@@ -145,22 +168,18 @@ return {
           out[#out + 1] = l
         end
         out[#out + 1] = placeholder or "- [ ] "
-        for i, lane in ipairs(LANES) do
-          if #open[i] > 0 then
-            out[#out + 1] = ""
-            out[#out + 1] = lane[2]
-            for _, l in ipairs(open[i]) do
-              out[#out + 1] = l
-            end
-          end
-        end
-        if #done > 0 then
+        for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
           out[#out + 1] = ""
-          out[#out + 1] = "---"
-          out[#out + 1] = "### Done"
-          for _, l in ipairs(done) do
+          out[#out + 1] = lane[2]
+          for _, l in ipairs(open[i]) do
             out[#out + 1] = l
           end
+        end
+        out[#out + 1] = "" -- Done placeholder is always present too
+        out[#out + 1] = "---"
+        out[#out + 1] = "### Done"
+        for _, l in ipairs(done) do
+          out[#out + 1] = l
         end
         return out
       end

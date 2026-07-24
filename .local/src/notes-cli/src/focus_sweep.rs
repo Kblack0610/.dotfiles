@@ -1,8 +1,10 @@
 //! `notes focus sweep` — reorganize today's `## Focus` by priority + status, so a task
-//! moves between lanes as its `#urgent`/`#high`/`#low` tag is cycled or its
+//! moves between lanes as its `#urgent`/`#high`/`#low` tag is set or its
 //! checkbox is checked: untagged todos on top, then `### Urgent` / `### High` /
 //! `### Low` (open tasks, in-priority order), done (`[x]`) under
 //! `--- / ### Done`. An in-progress `[/]` task keeps its mark inside its priority lane.
+//! Once active, empty lane headers + Done persist as drop targets, and an untagged task
+//! dropped under a lane header inherits that lane's tag.
 //!
 //! This mirrors the nvim buffer sweep (markdown.lua rebuild_focus_body) so that
 //! tagging/checking a task from the cockpit organizes the note exactly like cycling it in
@@ -49,24 +51,37 @@ fn is_scaffold(line: &str) -> bool {
 }
 
 /// Rebuild the authored ## Focus body grouped by priority lane + a trailing `### Done`.
-/// None when there is nothing to organize (only untagged todos and no done/scaffold —
-/// the flat list is already the sorted form).
+/// Once the section is active, ALL lane headers and Done are emitted even when empty, so the
+/// columns persist as stable drop targets. A task's tag is the source of truth, but an
+/// untagged task under a lane header inherits that lane's tag (drop-to-tag). None when there
+/// is nothing to organize (only untagged todos, no done, no scaffold — already the sorted form).
 fn rebuild(body: &[&str]) -> Option<Vec<String>> {
     // one open-task bucket per lane + a trailing untagged bucket, then the done bucket
     let mut open: Vec<Vec<String>> = vec![Vec::new(); md::PRIORITIES.len() + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
     let mut had_scaffold = false;
+    let mut cur_lane: Option<usize> = None; // lane header we're under, else None
     for l in body {
         let t = l.trim();
         if is_scaffold(l) {
             had_scaffold = true;
+            cur_lane = md::PRIORITIES
+                .iter()
+                .position(|(_, _, h)| t.eq_ignore_ascii_case(h));
         } else if md::is_checked(l) {
             done.push((*l).to_string());
         } else if md::is_empty_unchecked(l) {
             placeholder = Some((*l).to_string());
         } else if md::is_task(l) {
-            open[lane_of(l)].push((*l).to_string());
+            match md::task_priority(l) {
+                Some(_) => open[lane_of(l)].push((*l).to_string()), // tag is the source of truth
+                None => match cur_lane {
+                    // untagged task under a lane header inherits that lane's tag
+                    Some(i) => open[i].push(format!("{} {}", l.trim_end(), md::PRIORITIES[i].1)),
+                    None => open[md::PRIORITIES.len()].push((*l).to_string()),
+                },
+            }
         } else if !t.is_empty() {
             // a stray prose line — keep it with the untagged top bucket
             open[md::PRIORITIES.len()].push((*l).to_string());
@@ -81,20 +96,17 @@ fn rebuild(body: &[&str]) -> Option<Vec<String>> {
     // untagged open tasks stay on top, unheaded, followed by the empty-task placeholder
     out.extend(open[md::PRIORITIES.len()].drain(..));
     out.push(placeholder.unwrap_or_else(|| "- [ ] ".to_string()));
+    // every lane header, even when empty, so the columns stay put as drop targets
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
-        if open[i].is_empty() {
-            continue;
-        }
         out.push(String::new());
         out.push((*heading).to_string());
         out.extend(open[i].drain(..));
     }
-    if !done.is_empty() {
-        out.push(String::new());
-        out.push("---".to_string());
-        out.push("### Done".to_string());
-        out.extend(done);
-    }
+    // Done placeholder is always present too
+    out.push(String::new());
+    out.push("---".to_string());
+    out.push("### Done".to_string());
+    out.extend(done);
     Some(out)
 }
 
@@ -279,13 +291,46 @@ after
 
     #[test]
     fn idempotent_on_already_swept() {
-        let note = "## Focus\n- [ ] a\n- [ ] \n\n### Urgent\n- [ ] b #urgent\n\n---\n### Done\n- [x] c\n\n## Notes\n";
-        // a second sweep of swept content produces no further change
-        let once = sweep_content(note);
-        let twice = match &once {
-            Some(s) => sweep_content(s),
-            None => None,
-        };
-        assert!(twice.is_none(), "sweep is idempotent");
+        let note = "## Focus\n- [ ] a\n- [ ] b #urgent\n- [x] c\n\n## Notes\n";
+        // organizing once, then sweeping the result, produces no further change
+        let once = sweep_content(note).expect("first sweep organizes");
+        let twice = sweep_content(&once);
+        assert!(twice.is_none(), "a second sweep of swept content is a no-op");
+    }
+
+    #[test]
+    fn golden_matches_the_nvim_buffer_sweep() {
+        // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
+        // (markdown.lua rebuild_focus_body), locking the two surfaces in parity.
+        let note = "## Focus\n- [ ] plain top\n- [ ] task #high\n### Urgent\n- [ ] dropped\n- [ ] \n\n## Notes\nafter\n";
+        let expected = "## Focus\n- [ ] plain top\n- [ ] \n\n### Urgent\n- [ ] dropped #urgent\n\n### High\n- [ ] task #high\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        assert_eq!(sweep_content(note).unwrap(), expected);
+    }
+
+    #[test]
+    fn empty_lanes_are_kept_as_placeholders() {
+        // one #high task -> all lane headers + Done are emitted, even the empty ones
+        let note = "## Focus\n- [ ] task #high\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        let focus = out.split("## Notes").next().unwrap();
+        assert!(focus.contains("### Urgent"), "empty Urgent lane kept as a column");
+        assert!(focus.contains("### High"), "High lane present");
+        assert!(focus.contains("### Low"), "empty Low lane kept as a column");
+        assert!(focus.contains("### Done"), "empty Done kept");
+    }
+
+    #[test]
+    fn untagged_task_under_a_lane_inherits_its_tag() {
+        // a plain task physically under ### Urgent gets #urgent (drop-to-tag), and stays put
+        let note = "## Focus\n### Urgent\n- [ ] dropped here\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        assert!(out.contains("- [ ] dropped here #urgent"), "inherited the lane's tag");
+        let focus = out.split("## Notes").next().unwrap();
+        let urgent = focus.find("### Urgent").unwrap();
+        let task = focus.find("dropped here").unwrap();
+        let high = focus.find("### High").unwrap();
+        assert!(task > urgent && task < high, "stays in the Urgent lane");
+        // and the inherited tag is stable on a re-sweep (tag now wins, no double-tagging)
+        assert!(sweep_content(&out).is_none(), "drop-to-tag is idempotent");
     }
 }
