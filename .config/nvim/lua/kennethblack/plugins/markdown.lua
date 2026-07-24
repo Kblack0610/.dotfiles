@@ -369,6 +369,21 @@ return {
             buffer = buf,
             callback = file_focus_done,
           })
+
+          -- After save, push ClickUp status edits up: a `[/]`/`[x]` on a cu-linked Focus
+          -- item flows to ClickUp (the write-back half of the bridge). Fires only for a
+          -- daily note (`YYYY-MM-DD.md`); async via jobstart so the save never blocks; and
+          -- inherently a no-op when the profile has no `clickup_list`, the cache is empty,
+          -- or nothing changed (`notes clickup push` decides — this just triggers it).
+          vim.api.nvim_create_autocmd("BufWritePost", {
+            buffer = buf,
+            callback = function(args)
+              local base = vim.fn.fnamemodify(args.file, ":t")
+              if base:match "^%d%d%d%d%-%d%d%-%d%d%.md$" and vim.fn.executable "notes" == 1 then
+                vim.fn.jobstart { "notes", "clickup", "push" }
+              end
+            end,
+          })
         end,
       })
 

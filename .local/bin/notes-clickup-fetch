@@ -11,11 +11,14 @@
 # token is never printed. Self-bounds every HTTP call with `curl --max-time` so a caller can
 # just wait on it — there is no background timer.
 #
-# Output (atomic): TSV rows `id<TAB>priority<TAB>title`, one in-progress ticket per line.
-# priority is the ClickUp word (urgent|high|normal|low) or empty. On any failure it exits
-# non-zero WITHOUT touching --out, so `notes clickup sync` falls back to the last-known cache.
+# Output (atomic): TSV rows `id<TAB>priority<TAB>status<TAB>title`, one in-progress ticket per
+# line. priority is the ClickUp word (urgent|high|normal|low) or empty; status is the ClickUp
+# status name at fetch time. On any failure it exits non-zero WITHOUT touching --out, so
+# `notes clickup sync` falls back to the last-known cache.
 #
+# Two modes:
 #   notes-clickup-fetch --list <list_id> --out <path> [--status "in progress"] [--assignee me|<id>]
+#   notes-clickup-fetch --patch-status <task_id> <status>     # write-back: PUT the task's status
 set -euo pipefail
 
 BASE="https://api.clickup.com/api/v2"
@@ -24,6 +27,8 @@ STATUS="in progress" # ClickUp status name that means "actively working" on this
 ASSIGNEE="me"
 LIST=""
 OUT=""
+PATCH_ID=""          # set by --patch-status -> switches to write-back mode
+PATCH_STATUS=""
 
 die() { echo "notes-clickup-fetch: $*" >&2; exit 1; }
 
@@ -33,11 +38,10 @@ while [ $# -gt 0 ]; do
     --out)      OUT="${2:-}"; shift 2 ;;
     --status)   STATUS="${2:-}"; shift 2 ;;
     --assignee) ASSIGNEE="${2:-}"; shift 2 ;;
+    --patch-status) PATCH_ID="${2:-}"; PATCH_STATUS="${3:-}"; shift 3 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
-[ -n "$LIST" ] || die "missing --list <list_id>"
-[ -n "$OUT" ]  || die "missing --out <path>"
 
 # --- token (keychain, then env) --------------------------------------------
 TOKEN="$(security find-generic-password -s CLICKUP_API_TOKEN -w 2>/dev/null || true)"
@@ -49,6 +53,22 @@ TOKEN="$(security find-generic-password -s CLICKUP_API_TOKEN -w 2>/dev/null || t
 cu_get() { # $1=path-with-query
   curl -fsS --max-time "$MAX_TIME" -H "Authorization: $TOKEN" "$BASE$1"
 }
+
+# --- write-back mode: PUT a task's status, then exit -----------------------
+# `notes clickup push` calls this per changed ticket. The status name must match the list's
+# vocabulary exactly (ClickUp validates it). Body built with jq so the status is JSON-safe.
+if [ -n "$PATCH_ID" ]; then
+  [ -n "$PATCH_STATUS" ] || die "missing status for --patch-status"
+  body="$(jq -rn --arg s "$PATCH_STATUS" '{status:$s}')"
+  curl -fsS --max-time "$MAX_TIME" -X PUT \
+    -H "Authorization: $TOKEN" -H "Content-Type: application/json" \
+    -d "$body" "$BASE/task/${PATCH_ID}" >/dev/null \
+    || die "patch task ${PATCH_ID} -> '${PATCH_STATUS}' failed"
+  exit 0
+fi
+
+[ -n "$LIST" ] || die "missing --list <list_id>"
+[ -n "$OUT" ]  || die "missing --out <path>"
 
 # --- resolve the assignee id ("me" -> my user id) --------------------------
 UID_=""
@@ -70,7 +90,7 @@ while :; do
   resp="$(cu_get "/list/${LIST}/task?page=${page}&include_closed=false&subtasks=true&assignees%5B%5D=${UID_}&statuses%5B%5D=$(jq -rn --arg s "$STATUS" '$s|@uri')")" \
     || die "list query failed (page ${page})"
   printf '%s' "$resp" \
-    | jq -r '.tasks[]? | [.id, (.priority.priority // ""), .name] | @tsv' >> "$tmp"
+    | jq -r '.tasks[]? | [.id, (.priority.priority // ""), (.status.status // ""), .name] | @tsv' >> "$tmp"
   # Stop when ClickUp says this was the last page (or, defensively, on an empty page).
   last="$(printf '%s' "$resp" | jq -r '.last_page // true')"
   count="$(printf '%s' "$resp" | jq -r '.tasks | length')"

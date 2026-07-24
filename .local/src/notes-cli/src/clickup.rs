@@ -27,8 +27,9 @@ use crate::logging::Logger;
 use crate::md;
 use anyhow::{bail, Result};
 use chrono::Local;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 /// The section the bridge writes into (the daily cockpit's active-task lane).
@@ -39,10 +40,18 @@ const FOCUS: &str = "Focus";
 /// crate carries no ClickUp auth or network code (and no extra deps).
 const FETCH_BIN: &str = "notes-clickup-fetch";
 
-/// One in-progress ClickUp ticket, as read from the TSV cache.
+/// Board status names the write-back targets (list 901713708011 vocabulary). Board-specific;
+/// promote to config if a second board with different status names ever uses the bridge.
+/// A note `[/]` maps to in-progress, a `[x]` to the closed/done status.
+const IN_PROGRESS_STATUS: &str = "in progress";
+const DONE_STATUS: &str = "completed";
+
+/// One in-progress ClickUp ticket, as read from the TSV cache. `status` is ClickUp's current
+/// status word at last fetch — the baseline the write-back delta compares the note against.
 struct Ticket {
     id: String,
     priority: String, // clickup priority word: urgent|high|normal|low|"" (none)
+    status: String,   // clickup status word at last fetch (e.g. "in progress")
     title: String,
 }
 
@@ -59,9 +68,10 @@ fn priority_tag(word: &str) -> &'static str {
     }
 }
 
-/// Parse the TSV cache (`id<TAB>priority<TAB>title`, one ticket per line). Blank lines and
-/// `#`-comment lines are skipped; a row missing the id or title is dropped rather than
-/// injecting a malformed task. Tolerant by design — the cache is written by a separate tool.
+/// Parse the TSV cache. Phase 2 format is 4-col `id<TAB>priority<TAB>status<TAB>title`; a
+/// legacy 3-col `id<TAB>priority<TAB>title` line (written by a Phase-1 fetch) is still read,
+/// with an empty status. Blank/`#`-comment lines are skipped; a row missing the id or title is
+/// dropped rather than injecting a malformed task. Tolerant by design — a separate tool writes it.
 fn parse_cache(text: &str) -> Vec<Ticket> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -69,20 +79,38 @@ fn parse_cache(text: &str) -> Vec<Ticket> {
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
-        let mut cols = line.splitn(3, '\t');
-        let id = cols.next().unwrap_or("").trim();
-        let priority = cols.next().unwrap_or("").trim();
-        let title = cols.next().unwrap_or("").trim();
+        let cols: Vec<&str> = line.splitn(4, '\t').collect();
+        let (id, priority, status, title) = match cols.as_slice() {
+            [id, priority, status, title] => (*id, *priority, *status, *title),
+            [id, priority, title] => (*id, *priority, "", *title), // legacy Phase-1 cache
+            _ => continue,
+        };
+        let (id, title) = (id.trim(), title.trim());
         if id.is_empty() || title.is_empty() {
             continue;
         }
         out.push(Ticket {
             id: id.to_string(),
-            priority: priority.to_string(),
+            priority: priority.trim().to_string(),
+            status: status.trim().to_string(),
             title: title.to_string(),
         });
     }
     out
+}
+
+/// Rewrite the 4-col TSV cache from `tickets` (atomic). Called after a push updates statuses in
+/// memory so a back-to-back push (e.g. two editor saves) sees no delta and is a no-op. Best
+/// effort: a write failure only means the next push may re-PATCH an already-correct status.
+fn write_cache(path: &Path, tickets: &[Ticket]) {
+    let mut s = String::new();
+    for t in tickets {
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\n",
+            t.id, t.priority, t.status, t.title
+        ));
+    }
+    let _ = md::write_atomic(path, &s);
 }
 
 /// Refresh the cache by running `notes-clickup-fetch --list <id> --out <cache>`. Best-effort:
@@ -112,6 +140,106 @@ fn refresh_cache(list: &str, cache: &std::path::Path, log: &Logger) {
             &format!("{FETCH_BIN} not run ({e}); using last-known cache"),
         ),
     }
+}
+
+/// The ClickUp status a Focus line's checkbox implies, or `None` for a line that should not be
+/// pushed. `[x]` -> done, `[/]` -> in progress. A plain `[ ]` is deliberately NOT pushed: it is
+/// ambiguous (it is also what the overnight carry leaves after resetting an in-progress mark).
+fn implied_status(line: &str) -> Option<&'static str> {
+    if md::is_checked(line) {
+        Some(DONE_STATUS)
+    } else if line.trim_start().starts_with("- [/]") {
+        Some(IN_PROGRESS_STATUS)
+    } else {
+        None
+    }
+}
+
+/// Pure planning core of the write-back: which cache tickets need a status PATCH given the
+/// note's `## Focus` checkboxes. For each authored, cu-linked task line whose implied status
+/// differs from the cache baseline, emit `(ticket_index, target_status)`. Testable without
+/// touching ClickUp. Identity is two-tier like the pull: the `<!-- cu:ID -->` marker first
+/// (same-day), then `md::task_key` from the title (recovers the id after the marker is dropped
+/// on the overnight carry). One push per ticket even if two lines map to it.
+fn plan_pushes(content: &str, tickets: &[Ticket]) -> Vec<(usize, &'static str)> {
+    let by_id: HashMap<&str, usize> = tickets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.as_str(), i))
+        .collect();
+    let mut by_key: HashMap<String, usize> = HashMap::new();
+    for (i, t) in tickets.iter().enumerate() {
+        by_key
+            .entry(md::task_key(&format!("- [ ] {}", t.title)))
+            .or_insert(i);
+    }
+    let mut plans: Vec<(usize, &'static str)> = Vec::new();
+    let mut seen: HashSet<usize> = HashSet::new();
+    for line in md::section_lines(content, FOCUS)
+        .unwrap_or_default()
+        .iter()
+        .filter(|l| md::is_task(l))
+    {
+        let Some(implied) = implied_status(line) else {
+            continue;
+        };
+        let idx = md::cu_marker(line)
+            .and_then(|id| by_id.get(id.as_str()).copied())
+            .or_else(|| by_key.get(&md::task_key(line)).copied());
+        let Some(idx) = idx else {
+            continue; // not a mirrored ticket (or its ticket left the in-progress cache)
+        };
+        if !seen.insert(idx) {
+            continue; // already planned this ticket from an earlier line
+        }
+        if tickets[idx].status.eq_ignore_ascii_case(implied) {
+            continue; // no delta — ClickUp already has this status
+        }
+        plans.push((idx, implied));
+    }
+    plans
+}
+
+/// PATCH one ticket's status through the fetch helper (`--patch-status <id> <status>`), keeping
+/// all HTTP in that script. Best-effort: a failure warns and returns false so the caller leaves
+/// the cache baseline unchanged (the delta stays live and the next push retries).
+fn patch_status(id: &str, status: &str, log: &Logger) -> bool {
+    match Command::new(FETCH_BIN)
+        .arg("--patch-status")
+        .arg(id)
+        .arg(status)
+        .output()
+    {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            log.warn(
+                "clickup",
+                &format!(
+                    "patch {id} -> '{status}' failed ({}): {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            );
+            false
+        }
+        Err(e) => {
+            log.warn("clickup", &format!("patch {id} not run ({e})"));
+            false
+        }
+    }
+}
+
+/// Apply planned pushes: PATCH each in ClickUp and, on success, advance the in-memory cache
+/// baseline so a repeat push is a no-op. Returns the count actually pushed.
+fn apply_pushes(tickets: &mut [Ticket], plans: &[(usize, &'static str)], log: &Logger) -> usize {
+    let mut n = 0;
+    for &(idx, status) in plans {
+        if patch_status(&tickets[idx].id, status, log) {
+            tickets[idx].status = status.to_string();
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Build the Focus line for a new ticket: a stamped, in-progress (`[/]`) task carrying its
@@ -145,7 +273,7 @@ pub fn sync(p: &Profile, log: &Logger) -> Result<i32> {
     let cache = p.state_dir.join("clickup-inprogress.tsv");
     // Always try for fresh data on a manual run; fall back to the cache on any failure.
     refresh_cache(list, &cache, log);
-    let tickets = parse_cache(&fs::read_to_string(&cache).unwrap_or_default());
+    let mut tickets = parse_cache(&fs::read_to_string(&cache).unwrap_or_default());
 
     // Bootstrap today's note (+ `## Focus`) exactly like `focus add`, and refuse to append
     // when the heading is absent — a section appended below the backlog footer would be
@@ -160,6 +288,15 @@ pub fn sync(p: &Profile, log: &Logger) -> Result<i32> {
             "no `## Focus` section in {} — run `notes today` first",
             note.display()
         );
+    }
+
+    // PUSH first: reflect the user's status edits ([/]/[x] on cu-linked lines) up to ClickUp
+    // against the freshly-fetched baseline, then PULL new in-progress tickets down. Push only
+    // writes to ClickUp + the cache, never the note, so `content` is still valid for the pull.
+    let plans = plan_pushes(&content, &tickets);
+    let pushed = apply_pushes(&mut tickets, &plans, log);
+    if pushed > 0 {
+        write_cache(&cache, &tickets);
     }
 
     // What's already in the authored Focus region: cu-ids (same-day marker) + normalised keys
@@ -198,10 +335,42 @@ pub fn sync(p: &Profile, log: &Logger) -> Result<i32> {
         );
     }
     println!(
-        "clickup sync: {} in-progress ticket(s), {} new in Focus",
+        "clickup sync: {} in-progress ticket(s), {pushed} pushed, {} new in Focus",
         tickets.len(),
         new_lines.len()
     );
+    Ok(0)
+}
+
+/// `notes clickup push` — push the user's status edits on cu-linked `## Focus` items up to
+/// ClickUp, WITHOUT a network fetch (fast; this is the on-save trigger). Delta is computed
+/// against the existing cache, so a `[x]` on a mirrored line closes its ticket and a repeat
+/// push is a no-op. No-op when the bridge is unconfigured, the cache is absent, or the note
+/// does not exist yet (push is reactive — it never bootstraps the note).
+pub fn push(p: &Profile, log: &Logger) -> Result<i32> {
+    if p.clickup_list.is_none() {
+        println!(
+            "clickup bridge not configured for profile '{}' (set `clickup_list` in the notes config)",
+            p.name
+        );
+        return Ok(0);
+    }
+    let cache = p.state_dir.join("clickup-inprogress.tsv");
+    let mut tickets = parse_cache(&fs::read_to_string(&cache).unwrap_or_default());
+
+    let note = daily::today_path(p);
+    let Ok(content) = fs::read_to_string(&note) else {
+        // No note yet -> nothing to push. Silent-ish: push runs from editor save, so keep quiet.
+        return Ok(0);
+    };
+
+    let plans = plan_pushes(&content, &tickets);
+    let pushed = apply_pushes(&mut tickets, &plans, log);
+    if pushed > 0 {
+        write_cache(&cache, &tickets);
+        log.info("clickup", &format!("pushed {pushed} status update(s)"));
+    }
+    println!("clickup push: {pushed} status update(s)");
     Ok(0)
 }
 
@@ -214,16 +383,79 @@ mod tests {
     }
 
     #[test]
-    fn parse_cache_skips_blank_comment_and_malformed_rows() {
-        let tsv = "# header\n\nabc\thigh\tWire pin-code flow\ndef\t\tReboot pause\nnoTitle\tlow\t\n\tlow\tno id\n";
+    fn parse_cache_reads_4col_and_legacy_3col() {
+        // 4-col (Phase 2) mixed with a legacy 3-col row; blank/comment/malformed dropped.
+        let tsv = "# header\n\nabc\thigh\tin progress\tWire pin-code flow\nleg\tlow\tLegacy 3-col\nnoTitle\tlow\tin progress\t\n\tlow\tin progress\tno id\n";
         let t = parse_cache(tsv);
         assert_eq!(t.len(), 2);
         assert_eq!(t[0].id, "abc");
         assert_eq!(t[0].priority, "high");
+        assert_eq!(t[0].status, "in progress");
         assert_eq!(t[0].title, "Wire pin-code flow");
-        // A row with an empty priority is fine (maps to no tag); id/title-empty rows are dropped.
-        assert_eq!(t[1].id, "def");
-        assert_eq!(t[1].priority, "");
+        // Legacy 3-col: status defaults empty, title is the 3rd column.
+        assert_eq!(t[1].id, "leg");
+        assert_eq!(t[1].priority, "low");
+        assert_eq!(t[1].status, "");
+        assert_eq!(t[1].title, "Legacy 3-col");
+    }
+
+    #[test]
+    fn implied_status_maps_checkbox() {
+        assert_eq!(implied_status("- [x] done it"), Some("completed"));
+        assert_eq!(implied_status("  - [X] done it"), Some("completed"));
+        assert_eq!(implied_status("- [/] doing it"), Some("in progress"));
+        // A plain open todo is NOT pushed (ambiguous with the overnight carry reset).
+        assert_eq!(implied_status("- [ ] just a todo"), None);
+        assert_eq!(implied_status("- [ ]"), None);
+        assert_eq!(implied_status("prose"), None);
+    }
+
+    fn tk(id: &str, status: &str, title: &str) -> Ticket {
+        Ticket {
+            id: id.into(),
+            priority: "".into(),
+            status: status.into(),
+            title: title.into(),
+        }
+    }
+
+    #[test]
+    fn plan_pushes_only_on_delta_and_resolves_id_two_ways() {
+        let tickets = vec![
+            tk("abc", "in progress", "Wire pin-code flow"),
+            tk("def", "in progress", "Reboot pause"),
+            tk("ghi", "in progress", "Update slides"),
+        ];
+        // - abc: done via cu-marker -> completed (delta)
+        // - def: carried, markerless [x], id recovered by title_key -> completed (delta)
+        // - ghi: [/] but cache already "in progress" -> no delta, skipped
+        // - a non-mirrored user task -> skipped
+        let content = "## Focus\n\
+            - [x] Wire pin-code flow (0d) <!-- since:2026-07-22 --> <!-- cu:abc -->\n\
+            - [x] Reboot pause (1d) <!-- since:2026-07-22 -->\n\
+            - [/] Update slides (0d) <!-- since:2026-07-22 --> <!-- cu:ghi -->\n\
+            - [x] my own thing\n\
+            \n## Notes\n";
+        let plans = plan_pushes(content, &tickets);
+        assert_eq!(plans.len(), 2);
+        assert!(plans.contains(&(0, "completed"))); // abc by marker
+        assert!(plans.contains(&(1, "completed"))); // def by title_key
+        assert!(!plans.iter().any(|(i, _)| *i == 2)); // ghi: no delta
+    }
+
+    #[test]
+    fn plan_pushes_stops_at_rollup_sentinel() {
+        let tickets = vec![
+            tk("mine", "in progress", "mine"),
+            tk("theirs", "in progress", "theirs"),
+        ];
+        let content = format!(
+            "## Focus\n- [x] mine <!-- cu:mine -->\n\n{}\n- [x] theirs <!-- cu:theirs -->\n\n## Notes\n",
+            md::ROLLUP_START
+        );
+        let plans = plan_pushes(&content, &tickets);
+        // Only the authored (pre-sentinel) line is considered; the mirrored one past it is not.
+        assert_eq!(plans, vec![(0, "completed")]);
     }
 
     #[test]
@@ -241,6 +473,7 @@ mod tests {
         let t = Ticket {
             id: "abc123".into(),
             priority: "high".into(),
+            status: "in progress".into(),
             title: "Wire pin-code flow".into(),
         };
         let line = new_focus_line(&t, d("2026-07-22"));
@@ -265,6 +498,7 @@ mod tests {
         let t = Ticket {
             id: "z9".into(),
             priority: "".into(),
+            status: "in progress".into(),
             title: "loose task".into(),
         };
         let line = new_focus_line(&t, d("2026-07-22"));
