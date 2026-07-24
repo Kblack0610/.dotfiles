@@ -208,8 +208,11 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ClickupCmd {
-    /// Pull in-progress ClickUp tickets into today's `## Focus` (fetch + reconcile).
+    /// Fetch + reconcile: push status edits up, then pull in-progress tickets into `## Focus`.
     Sync,
+    /// Push status edits (`[/]`/`[x]`) on cu-linked `## Focus` items up to ClickUp (no fetch;
+    /// the fast on-save path).
+    Push,
 }
 
 #[derive(Subcommand)]
@@ -459,10 +462,18 @@ fn main() -> Result<()> {
         }
         Cmd::Ptask { name, sub } => match sub {
             None | Some(PtaskCmd::List) => project_tasks::list(&prof, &name)?,
-            Some(PtaskCmd::Add { text }) => project_tasks::add(&prof, &log, &name, &text.join(" "))?,
-            Some(PtaskCmd::Done { query }) => project_tasks::done(&prof, &log, &name, &query.join(" "))?,
-            Some(PtaskCmd::Start { query }) => project_tasks::start(&prof, &log, &name, &query.join(" "))?,
-            Some(PtaskCmd::Rm { query }) => project_tasks::rm(&prof, &log, &name, &query.join(" "))?,
+            Some(PtaskCmd::Add { text }) => {
+                project_tasks::add(&prof, &log, &name, &text.join(" "))?
+            }
+            Some(PtaskCmd::Done { query }) => {
+                project_tasks::done(&prof, &log, &name, &query.join(" "))?
+            }
+            Some(PtaskCmd::Start { query }) => {
+                project_tasks::start(&prof, &log, &name, &query.join(" "))?
+            }
+            Some(PtaskCmd::Rm { query }) => {
+                project_tasks::rm(&prof, &log, &name, &query.join(" "))?
+            }
         },
         Cmd::Inbox { sub } => {
             match sub {
@@ -500,7 +511,17 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Projects {
-            name, new, archive, restore, archived, roll, migrate, bump, minor, major, version_of,
+            name,
+            new,
+            archive,
+            restore,
+            archived,
+            roll,
+            migrate,
+            bump,
+            minor,
+            major,
+            version_of,
         } => {
             let level = if major {
                 projects::Bump::Major
@@ -510,7 +531,9 @@ fn main() -> Result<()> {
                 projects::Bump::Patch
             };
             // lifecycle/version flags take precedence over the read paths
-            match (new, archive, restore, roll, migrate, bump, version_of, archived, name) {
+            match (
+                new, archive, restore, roll, migrate, bump, version_of, archived, name,
+            ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
@@ -535,6 +558,7 @@ fn main() -> Result<()> {
         }
         Cmd::Clickup { sub } => match sub {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
+            ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
         Cmd::Doctor => doctor::run(&prof, &log)?,
         Cmd::Config { profiles } => {

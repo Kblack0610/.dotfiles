@@ -143,9 +143,13 @@ pub fn section_lines(content: &str, heading: &str) -> Option<Vec<String>> {
 /// Returns `None` if the result is empty or a bare `-`.
 pub fn section_text(content: &str, heading: &str) -> Option<String> {
     let lines = capture(content, heading)?;
-    let kept: Vec<&str> = lines
+    // Strip the ClickUp bridge's `<!-- cu:ID -->` marker: it rides on a task line (not a
+    // comment-ONLY line), so it survives the filter and would otherwise leak into the
+    // human-facing continuous-log summary.
+    let kept: Vec<String> = lines
         .into_iter()
         .filter(|l| !is_comment_only(l) && !is_empty_unchecked(l))
+        .map(strip_cu_marker)
         .collect();
     let text = kept.join("\n");
     let trimmed = text.trim();
@@ -196,6 +200,28 @@ pub fn cu_marker(line: &str) -> Option<String> {
         None
     } else {
         Some(id.to_string())
+    }
+}
+
+/// Remove a `<!-- cu:ID -->` bridge marker from a line, collapsing the space it leaves behind.
+/// No-op when absent. Keeps the ClickUp bridge's machine marker out of human-facing text
+/// (summaries) - it is not a comment-ONLY line, so the section-text filter alone would keep it.
+pub fn strip_cu_marker(line: &str) -> String {
+    let Some(i) = line.find("<!-- cu:") else {
+        return line.to_string();
+    };
+    let rest = &line[i..];
+    match rest.find("-->") {
+        Some(j) => {
+            let head = line[..i].trim_end();
+            let tail = rest[j + 3..].trim_start();
+            if tail.is_empty() {
+                head.to_string()
+            } else {
+                format!("{head} {tail}")
+            }
+        }
+        None => line.to_string(),
     }
 }
 
@@ -871,6 +897,21 @@ after
         // Absent / malformed markers are None.
         assert_eq!(cu_marker("- [ ] plain task"), None);
         assert_eq!(cu_marker("- [ ] x <!-- cu: -->"), None);
+    }
+
+    #[test]
+    fn strip_cu_marker_removes_trailing_marker() {
+        assert_eq!(
+            strip_cu_marker(
+                "- [/] wire flow (0d) <!-- since:2026-07-22 --> #high <!-- cu:abc123 -->"
+            ),
+            "- [/] wire flow (0d) <!-- since:2026-07-22 --> #high"
+        );
+        // No marker -> unchanged; the since-comment is left intact.
+        assert_eq!(
+            strip_cu_marker("- [ ] plain (1d) <!-- since:2026-07-20 -->"),
+            "- [ ] plain (1d) <!-- since:2026-07-20 -->"
+        );
     }
 
     #[test]
