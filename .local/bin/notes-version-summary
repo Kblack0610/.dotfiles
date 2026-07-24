@@ -408,60 +408,73 @@ backfill_all() {
   return $rc
 }
 
-# ── project overview (the "where we are / next up" index in summary.md) ──
-# latest_summary <root> -> the freshest release's Summary block text (or its body), for context.
-latest_summary() {
-  local root="$1" f
-  f="$(all_versions "$root" | head -1 | cut -f2)"
-  [ -n "$f" ] && [ -f "$f" ] || return 0
-  if grep -q '<!-- summary:auto -->' "$f"; then
-    awk '/<!-- summary:auto -->/{s=1;next} /<!-- \/summary:auto -->/{s=0} s' "$f"
-  else
-    note_body "$f"
-  fi
+# ── project overview (the "Now / Next" index in summary.md) ─────────
+# latest_summaries <root> [n=3] -> the ## Summary block from each of the last n releases, newest first,
+# version-labeled (compact - summaries, not full bodies). Feeds the "Now" narrative with the recent arc.
+latest_summaries() {
+  local root="$1" n="${2:-3}" ver path body out=""
+  while IFS=$'\t' read -r ver path; do
+    [ -n "$path" ] && [ -f "$path" ] || continue
+    if grep -q '<!-- summary:auto -->' "$path"; then
+      body="$(awk '/<!-- summary:auto -->/{s=1;next} /<!-- \/summary:auto -->/{s=0} s' "$path")"
+    else
+      body="$(note_body "$path")"
+    fi
+    out="$out== $ver =="$'\n'"$body"$'\n\n'
+  done < <(all_versions "$root" | head -n "$n")
+  printf '%s' "$out"
 }
 
-# ptask_open <profile> <project> -> the open sheet tasks (text column of `ptask list`), one per line.
-ptask_open() {
-  notes --profile "$1" ptask "$2" list 2>/dev/null | cut -f4
+# sheet_text <root> -> the working sheet (README.md) body — the current plan, all waves + tasks.
+sheet_text() {
+  local f="$1/README.md"
+  [ -f "$f" ] || return 0
+  note_body "$f"
 }
 
-# generate_overview <profile> <project> — write the <!-- nextup:auto --> block into summary.md from the
-# latest release summary + current sheet tasks + recent repo commits. deepseek+fallback, ASCII.
+# generate_overview <profile> <project> — write the <!-- nextup:auto --> block into summary.md as a
+# thorough "## Now" (where we are) + "## Next" (direction + [ ] tasks), from the last few release
+# summaries + a dated git log + the full working sheet. One deepseek pass (local fallback), ASCII.
 generate_overview() {
-  local profile="$1" project="$2" root summary_md latest tasks recent sys usr sum block
+  local profile="$1" project="$2" root summary_md releases sheet recent sys usr sum block
   root="$(root_of "$profile" "$project")" || return 1
   [ -n "$root" ] || { echo "no such project: $profile/$project" >&2; return 1; }
   summary_md="$root/summary.md"
   [ -f "$summary_md" ] || { echo "no summary.md for $profile/$project" >&2; return 1; }
-  latest="$(latest_summary "$root")"
-  tasks="$(ptask_open "$profile" "$project")"
+  releases="$(latest_summaries "$root" 3)"
+  sheet="$(sheet_text "$root")"
   repo_of "$project"; recent=""
   if [ -n "$REPO" ] && [ -d "$REPO/.git" ]; then
     if [ -n "$PATHFILTER" ]; then
-      recent="$(git -C "$REPO" log --no-merges --pretty=%s -n 25 -- "$PATHFILTER" 2>/dev/null)"
+      recent="$(git -C "$REPO" log --no-merges --date=short --pretty=format:'%ad %s' -n 40 -- "$PATHFILTER" 2>/dev/null)"
     else
-      recent="$(git -C "$REPO" log --no-merges --pretty=%s -n 25 2>/dev/null)"
+      recent="$(git -C "$REPO" log --no-merges --date=short --pretty=format:'%ad %s' -n 40 2>/dev/null)"
     fi
   fi
-  sys='You propose the NEXT tasks for a developer'\''s project - a tiny "where we are / what to do next"
-index. Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no marketing words.
-Propose NEW, concrete next steps that follow from the latest release: unfinished threads, verification,
-follow-ups, and known gaps. Do NOT repeat tasks already on the sheet (the user lists them) - suggest
-what should come next given them. Do not invent scope; reference ticket/PR refs (e.g. VK 563, #490)
-when the inputs mention them. Output EXACTLY this and nothing else:
-## Next up (suggested)
-State: <ONE line - current version and the single most important thing in flight or just shipped>
-- [ ] <concrete, imperative NEW next task>
-- [ ] <another>   (2 to 4 tasks total, most important first)'
-  usr="Project: $project"$'\n\n'"Latest release summary:"$'\n'"${latest:-(no releases yet)}"
-  [ -n "$recent" ] && usr="$usr"$'\n\n'"Recent commits:"$'\n'"$recent"
-  usr="$usr"$'\n\n'"Already on the sheet (do NOT repeat these):"$'\n'"${tasks:-(none)}"
+  sys='You write a concise but THOROUGH "where we are / where we are going" index for a developer'\''s
+project. Study ALL the inputs (recent releases, the dated commit history, the working sheet) before
+writing. Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no marketing words.
+Name real features and reference ticket/PR refs (e.g. Vikunja 563, #490) when the inputs mention them.
+Output EXACTLY these two sections and nothing else:
+
+## Now
+<2 to 4 sentences: the current version, what was recently shipped, the state and health of the app, and
+what is actively in flight>
+
+## Next
+<1 to 2 sentences of direction, then 2 to 4 concrete next tasks as a checklist. Propose NEW next steps
+(unfinished threads, verification, known gaps); do NOT repeat tasks already on the working sheet.>
+- [ ] <task>
+- [ ] <task>'
+  usr="Project: $project"
+  usr="$usr"$'\n\n'"Recent releases (newest first):"$'\n'"${releases:-(no releases yet)}"
+  [ -n "$recent" ] && usr="$usr"$'\n\n'"Commit history (newest first):"$'\n'"$recent"
+  usr="$usr"$'\n\n'"Working sheet (the current plan - do NOT repeat these as next tasks):"$'\n'"${sheet:-(empty)}"
 
   sum="$(call_llm "$sys" "$usr")" || { echo "overview failed: $profile/$project" >&2; return 1; }
   sum="$(printf '%s' "$sum" | strip_think | sanitize | sed -e 's/[[:space:]]*$//' -e '/./,$!d')"
   [ -n "$sum" ] || { echo "empty overview: $profile/$project" >&2; return 1; }
-  grep -q '^## Next up' <<<"$sum" || sum="## Next up (suggested)"$'\n'"$sum"
+  grep -q '^## Now' <<<"$sum" || sum="## Now"$'\n'"$sum"
   block="<!-- nextup:auto -->"$'\n'"$sum"$'\n'"<!-- /nextup:auto -->"
 
   if [ "$DRY_RUN" -eq 1 ]; then

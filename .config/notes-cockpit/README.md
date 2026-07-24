@@ -89,20 +89,24 @@ Model notes:
 
 ## Project overview / "Next up" index
 
-`notes-version-summary --overview <profile> <project>` (or `--overview --all`) writes a small
+`notes-version-summary --overview <profile> <project>` (or `--overview --all`) writes a
 `<!-- nextup:auto -->` block into the project's `summary.md`, just above `## → For the agents`:
 
 ```
-## Next up (suggested)
-State: <one line - current version + the main thing in flight>
+## Now
+<2-4 sentences: current version, what recently shipped, state/health, what is in flight>
+
+## Next
+<1-2 sentences of direction>
 - [ ] <suggested next task>
 - [ ] <...>   (2 to 4, most important first)
 ```
 
-It is generated from the latest release summary + recent repo commits, and deliberately does NOT repeat
-tasks already on the project sheet - these are additive SUGGESTIONS you can accept. It owns only its own
-marker block; STATUS (lab-status), the AUTO feed (lab-sync), and `## → For the agents` (yours) are left
-untouched.
+It is generated in one pass from the last few release summaries + a dated git log + the full working
+sheet, so `## Now` is a thorough read of where the project is and `## Next` proposes NEW steps (it does
+NOT repeat tasks already on the sheet - the `## Next` items are additive suggestions you can accept). It
+owns only its marker block; STATUS (lab-status), the AUTO feed (lab-sync), and `## → For the agents`
+(yours) are left untouched.
 
 Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
 browser (the whole `summary.md` in the preview) above the version list; `C-s` on that row regenerates
