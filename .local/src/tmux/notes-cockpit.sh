@@ -29,6 +29,7 @@
 
 set -uo pipefail
 SELF="$(realpath "$0")"
+BRIDGE="$(dirname "$SELF")/agent-bridge.sh"  # prefix-g agent bridge (jumped to with `a`)
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
 # Optional machine-local prefix->project alias file (keeps private project names OUT of
 # this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
@@ -213,19 +214,40 @@ list_section() {
   } | _apply_pfilter
 }
 
+# ── per-section attention badge: pending agent-ask count bucketed by profile ──
+# An ask carries a `profile` when the producer set one; otherwise bucket it by mapping
+# its `project` to the profile that owns that project. All in awk (FS='\t') so empty
+# fields don't collapse. Emits `<profile> <count>` lines. Total across all -> `all`.
+attention_counts() {
+  command -v agent-ask >/dev/null 2>&1 || return 0
+  local p proj map=""
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    for proj in $(projects_of "$p"); do map+="$proj=$p"$'\n'; done
+  done < <(profiles)
+  agent-ask list --all --pending 2>/dev/null | awk -F'\t' -v map="$map" '
+    BEGIN { n=split(map, L, "\n"); for(i=1;i<=n;i++) if(split(L[i],kv,"=")==2) prof_of[kv[1]]=kv[2] }
+    $1=="" { next }
+    { p = ($3!="") ? $3 : prof_of[$2]; if (p!="") { c[p]++; t++ } }
+    END { for (k in c) print k, c[k]; if (t) print "all", t }'
+}
+
 # ── the left sidebar rail: sections + counts, active marked ─────────
 rail() {
-  local cur ct s n
+  local cur ct at s n a badge
   cur="$(read_section)"
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
+  at="$(attention_counts)"
   printf '%s SECTIONS%s\n\n' "$C_HEAD" "$C_OFF"
   while IFS= read -r s; do
     [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
+    a="$(awk -v k="$s" '$1==k{print $2}' <<< "$at")"; a="${a:-0}"
+    badge=""; [ "$a" -gt 0 ] 2>/dev/null && badge="${C_INP}!${a}${C_OFF} "
     if [ "$s" = "$cur" ]; then
-      printf '%s> %-20s %s%s\n' "$C_SEL" "$s" "$n" "$C_OFF"
+      printf '%s> %-20s %s%s%s\n' "$C_SEL" "$s" "$badge" "$n" "$C_OFF"
     else
-      printf '  %-20s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
+      printf '  %-20s %s%s%s%s\n' "$s" "$badge" "$C_DIM" "$n" "$C_OFF"
     fi
   done < <(sections_list)
   local pf; pf="$(read_pfilter)"
@@ -534,6 +556,7 @@ help_view() {
     R              restore an archived project
 
   other
+    a              agent bridge  (!N badge = pending asks/gates from agents)
     T              create today's notes (all profiles)
     ?              this help
     q / esc        quit
@@ -581,7 +604,7 @@ echo personal > "$STATE" # every launch starts on personal
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
@@ -616,4 +639,5 @@ list_section personal | fzf \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "p:execute-silent($SELF --cycle-pfilter)+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
+  --bind "a:become([ -x $BRIDGE ] && $BRIDGE || $SELF --list)" \
   --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
