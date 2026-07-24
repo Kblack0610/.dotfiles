@@ -57,8 +57,10 @@ NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git \
 
 `notes-bootstrap` auto-detects Linux vs macOS and does the right thing:
 
-- **Linux** — installs the systemd user units (`git-sync-notes.timer` 5-min fallback, `notes-watch` for inotify push, `notes-mqtt` for the pull subscriber).
+- **Linux** — installs the systemd user units (`git-sync-notes.timer` 5-min fallback, `notes-watch` for inotify push, `notes-mqtt` + `notes-ntfy` for the pull subscribers).
 - **macOS** — installs the launchd plists (`com.kblack.git-sync-notes`, `com.kblack.notes-watch` using `WatchPaths`, `com.kblack.notes-mqtt`) into `~/Library/LaunchAgents/`.
+
+Two pull transports, one bridge fan-out: `notes-mqtt` subscribes to the LAN mosquitto broker (`notes/sync/needed`), `notes-ntfy` holds an HTTPS stream on the public ntfy topic (`notes-sync`). On-LAN devices get the lower-latency mosquitto path; off-LAN devices (e.g. a corp VDI that cannot resolve `mosquitto.example.internal`) fall through to `notes-ntfy` over the Cloudflare-fronted `ntfy.example.internal`, which is reachable anywhere. Both just trigger `notes-sync`, whose `flock` de-dupes overlapping runs, so running both is safe.
 
 Required system packages (`packages.conf` covers them on a fresh install):
 

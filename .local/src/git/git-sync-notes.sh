@@ -10,7 +10,7 @@ SSH_KEY="${NOTES_SYNC_SSH_KEY:-$HOME/.ssh/id_notes_sync}"
 PRIMARY_REMOTE="${NOTES_SYNC_PRIMARY_REMOTE:-origin}"
 BACKUP_REMOTE="${NOTES_SYNC_BACKUP_REMOTE:-backup}"
 MIRROR_REMOTE="${NOTES_SYNC_MIRROR_REMOTE:-}"
-HOST_TAG="${NOTES_SYNC_HOSTNAME:-$(hostname -s 2>/dev/null || hostname)}"
+HOST_TAG="${NOTES_SYNC_HOSTNAME:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || echo host)}"
 CONNECT_TIMEOUT="${NOTES_SYNC_CONNECT_TIMEOUT:-10}"
 # Consecutive backup-push failures before we alert. The timer runs every 5 min,
 # so 12 is roughly an hour of a genuinely dead backup rather than one bad Wi-Fi
