@@ -30,6 +30,13 @@
 set -uo pipefail
 SELF="$(realpath "$0")"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
+# View mode: `tasks` (default) | `agents`. `a` toggles. In agents mode the same sections
+# + projects render, but each project's body is the AGENTS working it (asks/gates you can
+# answer, live sessions, headless runner + sprint state) - joined to the project by its
+# `<!-- canonical: NAME -->` marker. A global section shows sentinel + the agentctl runners.
+MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.mode"
+read_mode() { cat "$MODEF" 2>/dev/null || echo tasks; }
+toggle_mode() { [ "$(read_mode)" = agents ] && printf tasks > "$MODEF" || printf agents > "$MODEF"; }
 # Optional machine-local prefix->project alias file (keeps private project names OUT of
 # this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
 # project name), so a `tag:` prefix classifies under that project.
@@ -199,8 +206,121 @@ _profile_view() { # $1=rows $2=profile
   done
 }
 
+# ══ AGENTS mode ═══════════════════════════════════════════════════════════════
+# Same sections/projects, but each project's body is the AGENTS working it. The join
+# from a vault project to its agent runtime state is the `<!-- canonical: NAME -->`
+# marker (sessions.jsonl, sprint blackboards, ~/.agent/asks are all keyed by it).
+
+# canonical_of <profile> <project-lc> -> canonical name, or the project name if unmarked.
+canonical_of() {
+  local prof="$1" proj="$2" path dir canon=""
+  path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
+  if [ -n "$path" ]; then
+    dir="$(dirname "$path")"
+    canon="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^ >]+' "$dir" 2>/dev/null \
+      | head -1 | sed -E 's/.*canonical:[[:space:]]*//')"
+  fi
+  printf '%s' "${canon:-$proj}"
+}
+
+# which canonical project a headless runner is on right now (delivery-loop status is
+# read-only + cheap). Prints "<canonical>\t<detail>" or nothing.
+_runner_line() {
+  command -v delivery-loop >/dev/null 2>&1 || return 0
+  delivery-loop status 2>/dev/null | awk '
+    /^project:/ { p=$2 }
+    /^sprint:/  { s=$2; for(i=3;i<=NF;i++) s=s" "$i }
+    END { if (p!="" && s!="" && s !~ /none|idle/) printf "%s\t%s\n", p, s }'
+}
+
+# agent rows for ONE project: asks/gates -> live/recent sessions -> sprint -> runner.
+# Wire (7 cols, DISPLAY=col7): <type> <profile> <c3> <c4> <c5=canon> <c6=sec> <DISPLAY>
+#   ask:    c3=id       c4=options   sess: c3=session_id
+#   sprint: c3=bb-path                runner: c3=service
+_project_agents() { # $1=profile $2=lc $3=canon $4=runnerCanon $5=runnerDetail
+  local prof="$1" lc="$2" canon="$3" rcanon="$4" rdetail="$5" sec="$1/$2"
+  # asks / gates
+  command -v agent-ask >/dev/null 2>&1 && \
+  agent-ask list "$canon" --pending 2>/dev/null | awk -F'\t' \
+    -v prof="$prof" -v canon="$canon" -v sec="$sec" \
+    -v cq="$C_BOX" -v cg="$C_INP" -v coff="$C_OFF" -v cd="$C_DIM" '
+    $1=="" {next}
+    { id=$1; kind=$5; q=$6; opt=$7
+      g=(kind=="gate"||kind=="approval")?"!":"?"; col=(kind=="gate"||kind=="approval")?cg:cq
+      o=(opt!="")?"  " cd "(" opt ")" coff:""
+      printf "ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s\n", prof, id, opt, canon, sec, col, g, coff, q, o }'
+  # live / recent sessions (registry, keyed by canonical)
+  local sf="$HOME/.agent/sessions/$canon/sessions.jsonl"
+  if command -v jq >/dev/null 2>&1 && [ -f "$sf" ]; then
+    jq -rc 'select(.session_id) | [.session_id,(.updated|tostring),(.edits|tostring)] | @tsv' "$sf" 2>/dev/null \
+      | sort -t"$(printf '\t')" -k2,2rn | head -3 \
+      | awk -F'\t' -v prof="$prof" -v canon="$canon" -v sec="$sec" -v cs="$C_SEL" -v coff="$C_OFF" -v cd="$C_DIM" '
+        { printf "sess\t%s\t%s\t\t%s\t%s\t  %s~%s session %s  %s%s edits%s\n",
+                 prof, $1, canon, sec, cs, coff, substr($1,1,8), cd, $3, coff }'
+  fi
+  # sprint blackboard state
+  local bb; bb="$(ls -1t "$HOME/.agent/plans/$canon"/sprint-*.md 2>/dev/null | head -1)"
+  if [ -n "$bb" ]; then
+    local nblock; nblock="$(awk '/^## Blocks/{f=1;next}/^## /{f=0}f&&/[^[:space:]]/{c++}END{print c+0}' "$bb")"
+    local extra=""; [ "${nblock:-0}" -gt 0 ] 2>/dev/null && extra=" ${C_INP}${nblock} blocked${C_OFF}"
+    printf 'sprint\t%s\t%s\t\t%s\t%s\t  %s* sprint%s %s%s%s%s\n' \
+      "$prof" "$bb" "$canon" "$sec" "$C_PROJ" "$C_OFF" "$C_DIM" "$(basename "$bb" .md)" "$C_OFF" "$extra"
+  fi
+  # headless runner working THIS project right now
+  if [ -n "$rdetail" ] && [ "$rcanon" = "$canon" ]; then
+    printf 'runner\tdelivery-loop\tdelivery-loop\t\t%s\t%s\t  %srunner%s working: %s%s%s\n' \
+      "$canon" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
+  fi
+}
+
+# One profile's AGENTS view: a group per project with its agent rows (or "- idle").
+_profile_agents_view() { # $1=profile
+  local prof="$1" name st ver lc canon body rline rcanon rdetail
+  rline="$(_runner_line)"
+  if printf '%s' "$rline" | grep -q "$(printf '\t')"; then
+    rcanon="${rline%%$'\t'*}"; rdetail="${rline#*$'\t'}"
+  else rcanon=""; rdetail=""; fi
+  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r name _sum st ver; do
+    [ -z "$name" ] && continue
+    lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    canon="$(canonical_of "$prof" "$lc")"
+    _subheader "$name" "$st" "$ver"
+    body="$(_project_agents "$prof" "$lc" "$canon" "$rcanon" "$rdetail")"
+    if [ -n "$body" ]; then printf '%s\n' "$body"
+    else printf 'hint\t\t\t\t\t\t%s  - idle%s\n' "$C_DIM" "$C_OFF"; fi
+  done
+}
+
+# The GLOBAL section (agents mode, once at the bottom): sentinel trips + agentctl runners.
+_global_agents() {
+  printf 'head\t\t\t\t\t\t%s── global · sentinel + runners ──%s\n' "$C_HEAD" "$C_OFF"
+  local f name status any=0
+  for f in "$HOME/.local/state/watch-companion"/*.state; do
+    [ -f "$f" ] || continue
+    status="$(cat "$f" 2>/dev/null)"; name="$(basename "$f" .state)"
+    case "$status" in
+      TRIP|ERROR) any=1
+        printf 'sentinel\t\t%s\t\t\t\t  %s* %s%s %s%s\n' \
+          "$HOME/.agent/watches/$name.yaml" "$C_INP" "$name" "$C_OFF" "$C_DIM$status$C_OFF" "" ;;
+    esac
+  done
+  [ "$any" -eq 0 ] && printf 'hint\t\t\t\t\t\t%s  sentinel: all watches OK%s\n' "$C_DIM" "$C_OFF"
+  local svc state glyph
+  for svc in sentinel delivery-loop comms dream lab-sync nightly-sync project-index; do
+    state="$(systemctl --user is-active "agentctl@$svc.service" 2>/dev/null)"; state="${state:-unknown}"
+    [ "$state" = active ] && glyph="${C_SEL}o${C_OFF}" || glyph="${C_DIM}.${C_OFF}"
+    printf 'runner\t\t%s\t\t\t\t  %s %srunner %s %s%s\n' \
+      "$svc" "$glyph" "$C_DIM" "$svc" "$state" "$C_OFF"
+  done
+}
+
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
+  if [ "$(read_mode)" = agents ]; then
+    _profile_agents_view "$want"
+    _global_agents
+    return
+  fi
   local rows; rows="$(emit_tasks)"
   # A fresh day has no daily note yet, so `focus --all` is empty and every section
   # reads 0 — which looks like data loss. Say so, and offer the one-key fix.
@@ -213,19 +333,74 @@ list_section() {
   } | _apply_pfilter
 }
 
+# answer an ask inline: fzf-pick from options, else read free text; then write back.
+answer_ask() { # $1=id $2=options(pipe)
+  local id="$1" options="${2:-}" ans
+  [ -n "$id" ] || return 0
+  if [ -n "$options" ]; then
+    ans="$(printf '%s\n' "${options//|/$'\n'}" | fzf --prompt="answer $id > " --height=40% --reverse)"
+  else
+    printf 'answer for %s: ' "$id" >&2; read -r ans
+  fi
+  [ -n "$ans" ] || return 0
+  agent-ask answer "$id" "$ans" >/dev/null 2>&1
+}
+
+# enter dispatch: print the fzf action for the highlighted row (task or any agent row).
+_enter_action() { # $1=type $2=profile $3=c3 $4=c4
+  case "$1" in
+    ask)      printf 'execute(%s --answer %q %q)+reload(%s --list)+refresh-preview' "$SELF" "$3" "$4" "$SELF" ;;
+    sess)     printf 'execute-silent(%s --resume-session %q)+abort' "$SELF" "$3" ;;
+    sprint|sentinel) printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
+    runner)   printf 'execute-silent(%s --journal %q)+abort' "$SELF" "$3" ;;
+    task)     printf 'execute-silent(%s --jump task %q %q)+abort' "$SELF" "$3" "$4" ;;
+    *) printf '' ;;
+  esac
+}
+
+# ── per-section attention badge: pending agent-ask count bucketed by profile ──
+# An ask carries a `profile` when the producer set one; otherwise bucket it by mapping
+# its `project` to the profile that owns that project. All in awk (FS='\t') so empty
+# fields don't collapse. Emits `<profile> <count>` lines. Total across all -> `all`.
+attention_counts() {
+  command -v agent-ask >/dev/null 2>&1 || return 0
+  local p proj canon map=""
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    for proj in $(projects_of "$p"); do
+      canon="$(canonical_of "$p" "$proj")"
+      map+="$proj=$p"$'\n'          # vault name -> profile
+      [ "$canon" != "$proj" ] && map+="$canon=$p"$'\n'  # canonical name -> profile
+    done
+  done < <(profiles)
+  agent-ask list --all --pending 2>/dev/null | awk -F'\t' -v map="$map" '
+    BEGIN { n=split(map, L, "\n"); for(i=1;i<=n;i++) if(split(L[i],kv,"=")==2) prof_of[kv[1]]=kv[2] }
+    $1=="" { next }
+    { p = ($3!="") ? $3 : prof_of[$2]; if (p!="") { c[p]++; t++ } }
+    END { for (k in c) print k, c[k]; if (t) print "all", t }'
+}
+
 # ── the left sidebar rail: sections + counts, active marked ─────────
 rail() {
-  local cur ct s n
+  local cur ct at s n a badge
   cur="$(read_section)"
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
-  printf '%s SECTIONS%s\n\n' "$C_HEAD" "$C_OFF"
+  at="$(attention_counts)"
+  local mode; mode="$(read_mode)"
+  if [ "$mode" = agents ]; then
+    printf '%s SECTIONS%s   %sAGENTS%s %s(a)%s\n\n' "$C_HEAD" "$C_OFF" "$C_SEL" "$C_OFF" "$C_DIM" "$C_OFF"
+  else
+    printf '%s SECTIONS%s   %stasks%s %s(a agents)%s\n\n' "$C_HEAD" "$C_OFF" "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+  fi
   while IFS= read -r s; do
     [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
+    a="$(awk -v k="$s" '$1==k{print $2}' <<< "$at")"; a="${a:-0}"
+    badge=""; [ "$a" -gt 0 ] 2>/dev/null && badge="${C_INP}!${a}${C_OFF} "
     if [ "$s" = "$cur" ]; then
-      printf '%s> %-20s %s%s\n' "$C_SEL" "$s" "$n" "$C_OFF"
+      printf '%s> %-20s %s%s%s\n' "$C_SEL" "$s" "$badge" "$n" "$C_OFF"
     else
-      printf '  %-20s %s%s%s\n' "$s" "$C_DIM" "$n" "$C_OFF"
+      printf '  %-20s %s%s%s%s\n' "$s" "$badge" "$C_DIM" "$n" "$C_OFF"
     fi
   done < <(sections_list)
   local pf; pf="$(read_pfilter)"
@@ -534,6 +709,9 @@ help_view() {
     R              restore an archived project
 
   other
+    a              toggle AGENTS view  (per project: asks/gates you answer, live
+                   sessions, sprint + runner state; !N badge = pending asks)
+                   in AGENTS view: enter answers an ask / jumps a session / opens sprint
     T              create today's notes (all profiles)
     ?              this help
     q / esc        quit
@@ -559,6 +737,12 @@ case "${1:-}" in
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --cycle-pfilter) cycle_pfilter; exit 0 ;;
+  --toggle-mode) toggle_mode; exit 0 ;;
+  --enter-action) shift; _enter_action "$@"; exit 0 ;;
+  --answer) shift; answer_ask "${1:-}" "${2:-}"; exit 0 ;;
+  --resume-session) [ -n "${2:-}" ] && tmux new-window "sessions resume '$2'" 2>/dev/null; exit 0 ;;
+  --open-file) [ -f "${2:-}" ] && tmux new-window "nvim '$2'" 2>/dev/null; exit 0 ;;
+  --journal) [ -n "${2:-}" ] && tmux new-window "journalctl --user -u 'agentctl@$2.service' -e -n 200 || journalctl --user -u 'agentctl@$2.service'" 2>/dev/null; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
@@ -578,16 +762,17 @@ notes today --all >/dev/null 2>&1 || true
 
 echo personal > "$STATE" # every launch starts on personal
 : > "$PFILTER"           # ...and unfiltered (priority filter cleared)
+printf tasks > "$MODEF"  # ...in the tasks view (a toggles to agents)
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T'
 
 list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header='?  keys' \
+  --header='a tasks/agents · enter open · ? keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
@@ -616,4 +801,5 @@ list_section personal | fzf \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "p:execute-silent($SELF --cycle-pfilter)+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
-  --bind "enter:execute-silent($SELF --jump {1} {3} {4})+abort"
+  --bind "a:execute-silent($SELF --toggle-mode)+reload($SELF --list)+refresh-preview" \
+  --bind "enter:transform($SELF --enter-action {1} {2} {3} {4})"
