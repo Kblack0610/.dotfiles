@@ -78,7 +78,8 @@ after the file, e.g. `vdi ~/vdi/x.rdp /multimon`.
 
 | Flag               | Effect                                                       |
 |--------------------|--------------------------------------------------------------|
-| `-k`, `--keepalive`| Auto-reconnect when the session drops. Relaunches you into your still-running Windows session. Each reconnect re-shows the login popup (no token cache) — best when you're at the desk. Ctrl+C to stop. Bails after 5 quick failures. |
+| `-k`, `--keepalive`| Auto-reconnect when the session drops. Relaunches you into your still-running Windows session. Each reconnect re-shows the login popup (no token cache) — best when you're at the desk. Ctrl+C to stop. Bails after 5 quick failures. With idle-lock defeat on (below) you rarely need this — keep it for network blips. |
+| `--no-awake`       | Disable the default `/prevent-session-lock` (let the session idle out server-side). See **Keeping the session awake** below. |
 | `-s`, `--soft`     | Software (progressive) decode instead of H.264/VAAPI. Use if you see video glitches / `avc420_decompress failure -38` (nvidia-vaapi-driver flakiness). A bit more CPU, no glitches. |
 
 ### Tuning flags worth knowing (passed through to FreeRDP)
@@ -131,6 +132,76 @@ walls off tabs/cookies but cannot lock system keys — Super/Alt+Tab stay with H
 firefox -P avd --no-remote --kiosk "$VDI_URL"   # creates the 'avd' profile first run
 ```
 
+## Keeping the session awake
+
+AVD disconnects/locks an **idle** session server-side (~10-15 min after your last
+*input*). The only thing that beats that is **injecting real input** to reset the
+idle timer. Power-request tools — **PowerToys Awake**, classic Caffeine "power"
+mode, `SetThreadExecutionState` — do **not** help: they only stop sleep/display-off
+and can't survive the lock screen. So we inject input, per client:
+
+### Native client (`vdi`) — `/prevent-session-lock` (default ON)
+
+`vdi` passes `/prevent-session-lock:60`, FreeRDP's built-in idle defeat: it injects
+fake mouse motion to the host whenever the connection is idle, so AVD's idle timer
+never fires. No guest-side tooling, no reconnect, no re-login.
+
+- Opt out for one run: `vdi --no-awake`.
+- Tune the interval: `VDI_AWAKE_SECS=45 vdi` (default 60s).
+- Trade-off: it holds your session open even when you step away — that's the intent;
+  use `--no-awake` when you *want* it to idle out.
+
+### Web client (`vdi-web`) — in-Windows F15 jiggler
+
+The browser can't pass `/prevent-session-lock`, so keep *that* session awake from
+**inside** the AVD with a tiny user-scope (no-admin) scheduled task that sends an
+invisible **F15** key every ~55s (F15 is a no-op that still updates the session's
+last-input time). Covers `vdi-web` *and* `vdi`, and survives a disconnected client.
+
+- Files: `.config/windows/scripts/vdi-keepawake.ps1` (the loop) +
+  `.local/src/installation_scripts/windows/setup_vdi_keepawake.ps1` (registers the
+  `vdi-keepawake` logon task). Deployed by `apply-windows-configs` (WSL) /
+  `apply_configs.ps1` (fresh Windows).
+- Pause/resume without killing the task: `vdi-awake-off` / `vdi-awake-on` (WSL
+  helpers in `.commonrc`), or create/delete `%LOCALAPPDATA%\vdi-keepawake.off`.
+- Manual kick / remove: `Start-ScheduledTask -TaskName vdi-keepawake` /
+  `Unregister-ScheduledTask -TaskName vdi-keepawake -Confirm:$false`.
+
+**Pure-Linux fallback (not installed):** if you can't deploy into the AVD, jiggle the
+focused web-client window from the host, e.g. a loop of
+`xdotool search --name '<VDI window title>' mousemove_relative -- 1 0; sleep 50`
+(Wayland: `ydotool`). Weaker — it only fires while the window is focused — so the
+in-Windows jiggler is preferred.
+
+## Timeout settings to request from IT
+
+The idle behavior is a **server-side policy** on the AVD host pool; you have no admin
+on the VDI, so these are *requests* to whoever administers your VDI host pool. The client-side
+defeats above work without them, but relaxing these is the clean, sanctioned fix.
+Prioritized:
+
+1. **RDS Session Time Limits** (Computer Config → Admin Templates → Windows
+   Components → Remote Desktop Services → RD Session Host → *Session Time Limits*):
+   - *Set time limit for active but idle RDS sessions* → **Never** (`MaxIdleTime=0`). ← **top ask**
+   - *Set time limit for disconnected sessions* → extend (`MaxDisconnectionTime`) so a
+     dropped client isn't logged off.
+   - *Set time limit for active RDS sessions* → **Never** (`MaxConnectionTime=0`) — hard cap.
+   - *End session when time limits are reached* → **Disabled** (disconnect, not logoff).
+2. **Interactive logon: Machine inactivity limit** → **0/disabled**
+   (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\InactivityTimeoutSecs=0`).
+   Don't also apply a screensaver-lock policy — the two conflict.
+3. **Screen saver / "Password protect the screen saver"** (User Config → Admin
+   Templates → Control Panel → Personalization) → disable, or extend `ScreenSaveTimeOut`.
+4. **AVD host-pool level:** confirm no host-pool max-session-length / drain, and no
+   Conditional Access *sign-in frequency* forcing periodic re-auth.
+
+Concise ask: *"Please set active-but-idle to **Never** and Machine inactivity limit to
+**0** for my session host — I keep losing state on short breaks."*
+
+> Not the same as the **AWS ~1h credential cap** (that's an IAM role
+> `MaxSessionDuration`, fixed by the devops-role escalation), which is unrelated to
+> VDI idle.
+
 ## Troubleshooting
 
 - **`loadBalanceInfo and RemoteApplicationProgram needed`** - the `.rdp` is
@@ -145,10 +216,11 @@ firefox -P avd --no-remote --kiosk "$VDI_URL"   # creates the 'avd' profile firs
 - **Session drops after a while with `ERRINFO_RPC_INITIATED_DISCONNECT`** - AVD's
   server-side **idle-session-disconnect** policy (fires ~10-15 min after your last
   input; total session length varies with how long you were active). Not a client
-  bug. Mitigations: `vdi --keepalive` to auto-reconnect (re-prompts login each time),
-  or keep the session busy from **inside** Windows (PowerToys Awake / a jiggler) so
-  it never goes idle - the only thing that actually stops it. Ask IT if the host
-  pool's idle timeout can be relaxed.
+  bug. **Fix: it's on by default now** - `vdi` passes `/prevent-session-lock`, which
+  injects fake mouse motion when idle so the timer never fires (see **Keeping the
+  session awake** below). `--keepalive` only reconnects *after* a drop; prefer the
+  awake default. Ask IT to relax the host-pool idle timeout (see **Timeout settings
+  to request from IT**).
 - **Video glitches / `avc420_decompress failure -38 (Function not implemented)`** -
   nvidia-vaapi-driver choking on some H.264 frames. Not fatal (frames are skipped),
   but if it's ugly use `vdi --soft` (software progressive decode, no VAAPI).

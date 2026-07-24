@@ -10,14 +10,25 @@
 #   vdi /path/to/file.rdp    # a specific RDP file
 #   vdi ... /extra:flag      # append extra FreeRDP flags (e.g. /multimon)
 #
+# Idle-lock defeat (default ON):
+#   By default we pass FreeRDP's /prevent-session-lock, which injects fake mouse
+#   motion to the host whenever the connection is idle - this resets AVD's
+#   server-side idle timer so the session never hits the ~10-15 min
+#   idle-disconnect (ERRINFO_RPC_INITIATED_DISCONNECT). This is the right fix and
+#   strictly better than --keepalive (which only reconnects AFTER a drop and
+#   re-prompts login). NB: it holds your session open even when you step away -
+#   that's the point; use --no-awake to opt out. Tune the interval with
+#   VDI_AWAKE_SECS (default 60). Note: power-request tools (PowerToys Awake) do
+#   NOT work for this - they only stop sleep, not the idle-lock. For the web
+#   client (vdi-web) use the in-Windows F15 jiggler instead - see the README.
+#
 # Flags:
-#   -k, --keepalive   Auto-reconnect when the session drops. AVD disconnects idle
-#                     sessions server-side (~10-15 min after your last input); this
-#                     relaunches you back into your still-running Windows session.
-#                     NOTE: each reconnect re-shows the login popup (no token cache),
-#                     so it's for when you're AT the desk. Ctrl+C to stop. To stop
-#                     the idle-disconnect entirely, keep the session busy from inside
-#                     Windows (PowerToys Awake) - see the README.
+#   -k, --keepalive   Auto-reconnect when the session drops. Relaunches you back
+#                     into your still-running Windows session. With awake on you
+#                     rarely need this; keep it for network blips. NOTE: each
+#                     reconnect re-shows the login popup (no token cache), so it's
+#                     for when you're AT the desk. Ctrl+C to stop.
+#       --no-awake    Disable /prevent-session-lock (let the session idle out).
 #   -s, --soft        Software (progressive) decode instead of H.264/VAAPI. Use if
 #                     you see video glitches / 'avc420_decompress failure -38' (a
 #                     known nvidia-vaapi-driver flakiness). Bit more CPU, no glitches.
@@ -28,12 +39,15 @@ set -euo pipefail
 
 rdp="${VDI_RDP:-$HOME/vdi/avd.rdp}"
 keepalive=0
+awake=1                                             # /prevent-session-lock on by default
+awake_secs="${VDI_AWAKE_SECS:-60}"
 gfx="/gfx:AVC444"                                   # default: HW-decoded H.264
 extra=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -k|--keepalive) keepalive=1 ;;
+        --no-awake)     awake=0 ;;
         -s|--soft)      gfx="/gfx:AVC444:off,AVC420:off,progressive:on" ;;
         *.rdp)          rdp="$1" ;;
         *)              extra+=("$1") ;;
@@ -56,8 +70,11 @@ fi
 # Two interactive logins on connect: gateway token, then session-host token.
 cmd=( sdl-freerdp3 "$rdp"
       /gateway:type:arm /sec:aad /cert:tofu
-      "$gfx" /sound:sys:pulse +clipboard
-      "${extra[@]}" )
+      "$gfx" /sound:sys:pulse +clipboard )
+# /prevent-session-lock: inject fake mouse motion when idle so AVD's server-side
+# idle timer never fires. Appended before user extras so they can still override.
+(( awake )) && cmd+=( "/prevent-session-lock:${awake_secs}" )
+cmd+=( "${extra[@]}" )
 
 if (( keepalive )); then
     fails=0
