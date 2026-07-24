@@ -158,6 +158,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "additionalDirectories": [
+    "/root/dev",
     "/root/.dotfiles",
     "/root/.agent",
     "/root/.claude",
