@@ -22,8 +22,8 @@ return {
       -- <leader>nt, greppable via `notes tags urgent`) and they never collide
       -- with markdown `# headings` (which are line-start only).
       --   Levels:  #low  #high  #urgent
-      --   Keymaps: <leader>tu urgent / th high / tl low / tn none
-      --            (direct set, siblings of <leader>ts / <leader>tt)
+      --   Keymaps: <leader>tP raise / <leader>tp lower (cycle, cursor follows the task)
+      --            ring: none -> low -> high -> urgent -> none
       local PRIORITIES = { "low", "high", "urgent" }
 
       -- Return (base_without_tag, current_level_or_nil): strip a trailing
@@ -39,8 +39,7 @@ return {
       end
 
       -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
-      -- when `level` is nil. Direct (not a cycle): one keystroke lands the exact priority,
-      -- so the task can move straight to its lane. Non-task lines are left alone.
+      -- when `level` is nil. Non-task lines are left alone.
       local function set_priority(line1, line2, level)
         for lnum = line1, line2 do
           local raw = vim.fn.getline(lnum)
@@ -54,6 +53,22 @@ return {
             end
           end
         end
+      end
+
+      -- Ring of priority levels, least -> most urgent; `false` stands in for "no tag".
+      -- `step_priority` walks one slot in `dir` (+1 raise toward urgent, -1 lower), wrapping
+      -- through the no-tag slot, and returns the next level (nil = clear the tag).
+      local PRIORITY_RING = { false, "low", "high", "urgent" }
+      local function step_priority(current, dir)
+        local idx = 1
+        for i, lvl in ipairs(PRIORITY_RING) do
+          if lvl == (current or false) then
+            idx = i
+            break
+          end
+        end
+        local nxt = PRIORITY_RING[((idx - 1 + dir) % #PRIORITY_RING) + 1]
+        return nxt or nil
       end
 
       -- Overlay colors for the priority tags (matchadd draws above treesitter).
@@ -123,10 +138,13 @@ return {
       -- `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane. Once the
       -- section is active, ALL lane headers + Done are emitted even when empty, so the
       -- columns stay put as stable drop targets. A task's #tag is the source of truth, but an
-      -- untagged task sitting under a lane header inherits that lane's tag (drop-to-tag). The
-      -- single empty `- [ ]` placeholder is kept after the untagged block. `nil` means
-      -- "nothing to organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
-      local function rebuild_focus_body(body)
+      -- untagged task sitting under a lane header inherits that lane's tag (drop-to-tag) when
+      -- `inherit` is set. Inherit is ON for the on-save sweep (you dragged a task into a
+      -- column) and OFF for the interactive cursor-follow cycle (so clearing a tag actually
+      -- clears it instead of the task re-inheriting the lane it still sits under). The single
+      -- empty `- [ ]` placeholder is kept after the untagged block. `nil` means "nothing to
+      -- organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
+      local function rebuild_focus_body(body, inherit)
         local open, done, placeholder, had_scaffold = {}, {}, nil, false
         for _ = 1, #LANES + 1 do
           open[#open + 1] = {}
@@ -144,11 +162,11 @@ return {
             local _, lvl = strip_priority(l)
             if lvl then
               table.insert(open[task_lane(l)], l) -- tag is the source of truth
-            elseif cur_lane then
+            elseif inherit and cur_lane then
               local base = strip_priority(l) -- untagged under a lane -> inherit its tag
               table.insert(open[cur_lane], base .. " #" .. LANES[cur_lane][1])
             else
-              table.insert(open[#LANES + 1], l) -- untagged, no lane -> top bucket
+              table.insert(open[#LANES + 1], l) -- untagged (or no inherit) -> top bucket
             end
           elseif l:match "%S" then
             table.insert(open[#LANES + 1], l)
@@ -185,8 +203,9 @@ return {
       end
 
       -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
-      -- section is rewritten; everything else is passed through untouched.
-      local function sweep_focus(lines)
+      -- section is rewritten; everything else is passed through untouched. `inherit` gates
+      -- drop-to-tag (see rebuild_focus_body): ON for the save sweep, OFF for the live cycle.
+      local function sweep_focus(lines, inherit)
         local s
         for i, l in ipairs(lines) do
           if l:match "^##%s+Focus%s*$" then
@@ -211,7 +230,7 @@ return {
         while #body > 0 and body[#body]:match "^%s*$" do
           table.remove(body)
         end
-        local rebuilt = rebuild_focus_body(body)
+        local rebuilt = rebuild_focus_body(body, inherit)
         if not rebuilt then
           return lines, false
         end
@@ -229,10 +248,11 @@ return {
         return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
       end
 
-      -- Apply sweep_focus to the current buffer, restoring the cursor row.
+      -- Apply the on-save sweep to the current buffer (inherit ON: a task dragged into a
+      -- column gets that column's tag), restoring the cursor row.
       local function file_focus_done()
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_focus(lines)
+        local out, changed = sweep_focus(lines, true)
         if not changed then
           return
         end
@@ -249,7 +269,7 @@ return {
       local function sweep_and_follow(track_lnum)
         local target = vim.fn.getline(track_lnum)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_focus(lines)
+        local out, changed = sweep_focus(lines, false) -- live cycle: tag-driven, no drop-to-tag
         if not changed then
           return
         end
@@ -264,6 +284,15 @@ return {
         end
         row = row or math.min(track_lnum, vim.api.nvim_buf_line_count(0))
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
+      end
+
+      -- Cycle the priority tag on a range by `dir` (+1 raise / -1 lower). The next level is
+      -- computed from the FIRST line so a selection converges, then the note re-sweeps and the
+      -- cursor follows the task to its new lane.
+      local function cycle_priority(line1, line2, dir)
+        local _, first = strip_priority(vim.fn.getline(line1))
+        set_priority(line1, line2, step_priority(first, dir))
+        sweep_and_follow(line1)
       end
 
       -- Cycle checkbox status on a range. The next state is computed from the FIRST
@@ -320,9 +349,10 @@ return {
             { desc = "Markdown disable", silent = true }
           )
           -- Task ops, all under the `<leader>t` (tasks) group:
-          --   ts  status cycle   [ ] -> [/] -> [x] -> [ ]
+          --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
           --   tt  new task below
-          --   tp  priority cycle #low -> #high -> #urgent -> (none)
+          --   tP  raise priority  none -> low -> high -> urgent -> none
+          --   tp  lower priority  (the same ring, the other way)
           -- Current line (normal) / selection (visual).
           vim.keymap.set("n", "<leader>ts", function()
             local lnum = vim.api.nvim_win_get_cursor(0)[1]
@@ -337,28 +367,18 @@ return {
           -- New task below the cursor.
           vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
 
-          -- Task priority: direct set-keys (not a cycle). Each lands the exact priority in
-          -- one press on the current line (normal) / selection (visual), then re-sweeps and
-          -- follows the task to its new lane so the cursor rides along:
-          --   tu urgent   th high   tl low   tn none (clear)
-          local prio_maps = {
-            { "u", "urgent", "Set task priority urgent" },
-            { "h", "high", "Set task priority high" },
-            { "l", "low", "Set task priority low" },
-            { "n", nil, "Clear task priority" },
-          }
-          for _, m in ipairs(prio_maps) do
-            local key, level, desc = m[1], m[2], m[3]
+          -- Task priority cycle: tP raises toward urgent, tp lowers, through the ring
+          -- none -> low -> high -> urgent -> none. Each press re-sweeps and follows the task
+          -- to its new lane so the cursor rides along. Current line (normal) / selection (visual).
+          for _, m in ipairs { { "P", 1, "Raise task priority" }, { "p", -1, "Lower task priority" } } do
+            local key, dir, desc = m[1], m[2], m[3]
             vim.keymap.set("n", "<leader>t" .. key, function()
               local lnum = vim.api.nvim_win_get_cursor(0)[1]
-              set_priority(lnum, lnum, level)
-              sweep_and_follow(lnum)
+              cycle_priority(lnum, lnum, dir)
             end, { buffer = buf, desc = desc, silent = true })
             vim.keymap.set("x", "<leader>t" .. key, function()
               vim.cmd "normal! \27"
-              local l1, l2 = vim.fn.line "'<", vim.fn.line "'>"
-              set_priority(l1, l2, level)
-              sweep_and_follow(l1)
+              cycle_priority(vim.fn.line "'<", vim.fn.line "'>", dir)
             end, { buffer = buf, desc = desc, silent = true })
           end
 
