@@ -19,6 +19,7 @@ use crate::md;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 /// Rendered comms bullet lines for `profile`, from the poller's surface file. Empty when
 /// comms is unconfigured, the surface file is absent, or it has no bullet lines. Read-only.
@@ -38,15 +39,33 @@ pub fn surface_lines(profile: &str) -> Vec<String> {
         .collect()
 }
 
+/// One-line cross-account stats summary (from the poller's `stats-summary.txt`), or None
+/// when comms is unconfigured / the snapshot is absent. Rendered as the `## Comms` lead line.
+pub fn summary_line() -> Option<String> {
+    let c = config::comms_config().ok()?;
+    if c.accounts.is_empty() {
+        return None;
+    }
+    let s = fs::read_to_string(config::comms_stats_summary_file(&c)).ok()?;
+    let line = s.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
 /// Build the `## Comms` section into `existing`, replacing any prior one in place. Pure
 /// (no I/O) so it is unit-testable and provably idempotent: a second pass over its own
-/// output is byte-stable. Empty `lines` strips the section entirely.
-pub(crate) fn render_comms(existing: &str, lines: &[String]) -> String {
+/// output is byte-stable. The section renders when EITHER a `summary` line or `lines`
+/// exist; empty summary + empty lines strips the section entirely.
+pub(crate) fn render_comms(existing: &str, summary: Option<&str>, lines: &[String]) -> String {
     let stripped = daily::remove_section(existing, "Comms");
-    if lines.is_empty() {
+    if summary.is_none() && lines.is_empty() {
         return stripped;
     }
     let mut block = String::from("\n\n## Comms\n");
+    if let Some(s) = summary {
+        block.push('_');
+        block.push_str(s);
+        block.push_str("_\n");
+    }
     for l in lines {
         block.push_str(l);
         block.push('\n');
@@ -68,7 +87,8 @@ pub fn refresh(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     }
     let content = fs::read_to_string(note)?;
     let lines = surface_lines(&p.name);
-    let new_content = render_comms(&content, &lines);
+    let summary = summary_line();
+    let new_content = render_comms(&content, summary.as_deref(), &lines);
     if new_content != content {
         md::write_atomic(note, &new_content)?;
         log.info(
@@ -82,10 +102,14 @@ pub fn refresh(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
 /// `notes comms` (default / `list`): print the currently-surfaced comms lines for the
 /// active profile. Read-only; the same lines `## Comms` would render.
 pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
+    let summary = summary_line();
     let lines = surface_lines(&p.name);
-    if lines.is_empty() {
+    if summary.is_none() && lines.is_empty() {
         println!("(no surfaced comms for profile '{}')", p.name);
     } else {
+        if let Some(s) = &summary {
+            println!("{s}");
+        }
         for l in &lines {
             println!("{l}");
         }
@@ -113,7 +137,7 @@ pub fn status(_log: &Logger) -> Result<()> {
         return Ok(());
     }
     println!("comms state: {}", c.state_dir.display());
-    println!("ollama:      {} ({})", c.ollama_url, c.ollama_model);
+    println!("llm:         {} ({})", c.llm_base_url, c.llm_model);
     for a in &c.accounts {
         let surface = config::comms_surface_file(&c, &a.surface_profile);
         let has = if surface.exists() {
@@ -129,6 +153,39 @@ pub fn status(_log: &Logger) -> Result<()> {
     Ok(())
 }
 
+/// `notes comms stats [--fresh]`: cross-account email dashboard. Cached mode reads the
+/// pre-rendered `stats.txt` the poller wrote (instant, offline, surface-file model);
+/// `--fresh` runs the machine-local `comms-stats.py` (config `stats_bin`) for live IMAP.
+pub fn stats(fresh: bool, _log: &Logger) -> Result<()> {
+    let c = config::comms_config()?;
+    if c.accounts.is_empty() {
+        println!("comms: not configured (no [[comms.account]] entries)");
+        return Ok(());
+    }
+    if fresh {
+        match &c.stats_bin {
+            Some(bin) if bin.exists() => {
+                // Inherits stdout: comms-stats.py's default mode prints the live dashboard.
+                Command::new(bin).status()?;
+                return Ok(());
+            }
+            _ => {
+                println!(
+                    "comms: stats_bin not set/found (set comms.stats_bin -> comms-stats.py in \
+                     config.toml for --fresh). Showing cached snapshot:\n"
+                );
+            }
+        }
+    }
+    match fs::read_to_string(config::comms_stats_file(&c)) {
+        Ok(s) => print!("{s}"),
+        Err(_) => println!(
+            "comms: no cached stats yet - run `notes comms stats --fresh` or wait for the poller"
+        ),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,7 +195,7 @@ mod tests {
     #[test]
     fn render_inserts_above_footer() {
         let lines = vec!["- CRITICAL [work] Re: contract - alice@acme".to_string()];
-        let out = render_comms(BASE, &lines);
+        let out = render_comms(BASE, None, &lines);
         assert!(out.contains("## Comms\n- CRITICAL [work] Re: contract"));
         // Section sits above the backlog footer, not after it.
         let comms_at = out.find("## Comms").unwrap();
@@ -152,8 +209,8 @@ mod tests {
             "- CRITICAL [work] Re: contract - alice@acme".to_string(),
             "- ACTION [personal] renew passport".to_string(),
         ];
-        let once = render_comms(BASE, &lines);
-        let twice = render_comms(&once, &lines);
+        let once = render_comms(BASE, Some("Inbox 9k - 2 crit"), &lines);
+        let twice = render_comms(&once, Some("Inbox 9k - 2 crit"), &lines);
         assert_eq!(
             once, twice,
             "re-rendering its own output must be byte-stable"
@@ -161,11 +218,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_lines_strip_section() {
+    fn summary_renders_as_italic_lead_line() {
+        let out = render_comms(BASE, Some("Inbox 9k - 2 crit, 5 action"), &[]);
+        // Section shows on summary alone (no bullets), summary italicized under the heading.
+        assert!(out.contains("## Comms\n_Inbox 9k - 2 crit, 5 action_\n"));
+    }
+
+    #[test]
+    fn empty_summary_and_lines_strip_section() {
         let lines = vec!["- CRITICAL [work] x".to_string()];
-        let with = render_comms(BASE, &lines);
+        let with = render_comms(BASE, Some("s"), &lines);
         assert!(with.contains("## Comms"));
-        let without = render_comms(&with, &[]);
+        let without = render_comms(&with, None, &[]);
         assert!(!without.contains("## Comms"));
         // Stripping restores the original (footer + focus intact).
         assert_eq!(without, BASE);

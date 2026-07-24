@@ -39,12 +39,18 @@ struct RawComms {
     /// files). Outside the vault. Defaults to `~/.local/state/notes-comms`.
     #[serde(default)]
     state_dir: Option<String>,
-    /// Local Ollama base URL for tier-2 classification. Defaults to the lab box.
+    /// LiteLLM gateway base URL for tier-2 classification (OpenAI-compatible). The
+    /// `ollama_url` alias is the legacy key name (the endpoint is the gateway, not Ollama).
+    #[serde(default, alias = "ollama_url")]
+    llm_base_url: Option<String>,
+    /// Model name the gateway routes tier-2 to. `ollama_model` is the legacy alias.
+    #[serde(default, alias = "ollama_model")]
+    llm_model: Option<String>,
+    /// Machine-local path to `comms-stats.py` (the private skill), used by
+    /// `notes comms stats --fresh` to regenerate the snapshot live. The public CLI never
+    /// hardcodes the private path - it lives in this machine-local config.
     #[serde(default)]
-    ollama_url: Option<String>,
-    /// Ollama model for tier-2 classification. Defaults to `qwen3-coder:30b`.
-    #[serde(default)]
-    ollama_model: Option<String>,
+    stats_bin: Option<String>,
     /// One entry per mailbox (`[[comms.account]]`).
     #[serde(default, rename = "account")]
     account: Vec<RawAccount>,
@@ -199,8 +205,10 @@ pub struct Account {
 /// Resolved global comms config. `accounts` empty == the feature is off on this machine.
 pub struct Comms {
     pub state_dir: PathBuf,
-    pub ollama_url: String,
-    pub ollama_model: String,
+    pub llm_base_url: String,
+    pub llm_model: String,
+    /// Machine-local path to `comms-stats.py`, for `notes comms stats --fresh`.
+    pub stats_bin: Option<PathBuf>,
     pub accounts: Vec<Account>,
 }
 
@@ -466,18 +474,23 @@ pub fn comms_config() -> Result<Comms> {
         .as_ref()
         .map(|s| expand(s))
         .unwrap_or_else(|| home().join(".local/state/notes-comms"));
-    let ollama_url = rc
-        .ollama_url
-        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-    let ollama_model = rc
-        .ollama_model
-        .unwrap_or_else(|| "qwen3-coder:30b".to_string());
+    // Fallbacks only: the real gateway URL/model come from machine-local config.toml
+    // (this is the PUBLIC repo - no private hostnames here). Generic LiteLLM localhost.
+    let llm_base_url = rc
+        .llm_base_url
+        .unwrap_or_else(|| "http://localhost:4000/v1".to_string());
+    let llm_model = rc
+        .llm_model
+        .unwrap_or_else(|| "local".to_string());
+    let stats_bin = rc.stats_bin.as_ref().map(|s| expand(s));
     let accounts = rc
         .account
         .into_iter()
         .map(|a| {
             let name = a.name;
-            let rbw_entry = a.rbw_entry.unwrap_or_else(|| format!("gmail_oauth_{name}"));
+            let rbw_entry = a
+                .rbw_entry
+                .unwrap_or_else(|| format!("gmail_app_{name}"));
             Account {
                 address: a.address.unwrap_or_default(),
                 rbw_entry,
@@ -488,8 +501,9 @@ pub fn comms_config() -> Result<Comms> {
         .collect();
     Ok(Comms {
         state_dir,
-        ollama_url,
-        ollama_model,
+        llm_base_url,
+        llm_model,
+        stats_bin,
         accounts,
     })
 }
@@ -499,11 +513,23 @@ pub fn comms_surface_file(c: &Comms, profile: &str) -> PathBuf {
     c.state_dir.join("surface").join(format!("{profile}.md"))
 }
 
+/// Pre-rendered stats dashboard the poller writes (`comms-stats.py --write`) and
+/// `notes comms stats` prints. Read-only, offline (surface-file model).
+pub fn comms_stats_file(c: &Comms) -> PathBuf {
+    c.state_dir.join("stats.txt")
+}
+
+/// One-line cross-account stats summary the poller writes; rendered as the lead line of
+/// the daily note's `## Comms` section.
+pub fn comms_stats_summary_file(c: &Comms) -> PathBuf {
+    c.state_dir.join("stats-summary.txt")
+}
+
 /// Print the resolved comms config (`notes config` appends this when comms is configured).
 pub fn print_comms(c: &Comms) {
     println!();
     println!("comms-state {}", c.state_dir.display());
-    println!("comms-ollama {} ({})", c.ollama_url, c.ollama_model);
+    println!("comms-llm   {} ({})", c.llm_base_url, c.llm_model);
     for a in &c.accounts {
         let addr = if a.address.is_empty() {
             String::new()

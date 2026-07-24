@@ -220,6 +220,12 @@ enum CommsCmd {
     Refresh,
     /// Show configured accounts + whether each has a surface file (read-only)
     Status,
+    /// Cross-account email stats dashboard (cached snapshot; --fresh for live IMAP)
+    Stats {
+        /// Regenerate live from IMAP (runs comms.stats_bin) instead of the cached snapshot
+        #[arg(long)]
+        fresh: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -523,6 +529,7 @@ fn main() -> Result<()> {
                 None | Some(CommsCmd::List) => comms::list(&prof, &log)?,
                 Some(CommsCmd::Refresh) => comms::refresh_cmd(&prof, &log)?,
                 Some(CommsCmd::Status) => comms::status(&log)?,
+                Some(CommsCmd::Stats { fresh }) => comms::stats(fresh, &log)?,
             }
             0
         }
