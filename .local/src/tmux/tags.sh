@@ -32,7 +32,9 @@
 #   gather --tag <t> --into <session>   move every tagged window into a session
 #   next --tag <t>                      cycle to the next window in the group
 #   kill --tag <t> [--force]            kill the group, honouring pinned/important
-#   pick                                fzf picker over tagged windows (Prefix+W)
+#   pick                                fzf picker over ALL windows (Prefix+W);
+#                                       C-i/C-p/C-a/C-x tag the row under the
+#                                       cursor, Enter jumps
 #
 # No registry file: tmux itself is the store, `show-options -w` the enumerator.
 
@@ -48,7 +50,10 @@ VALUED_TAGS=(group)
 # Tags that protect a window from automated kills (cleanup.sh, wind-down.sh).
 PROTECT_TAGS=(pinned important)
 
+# Absolute, because fzf --bind re-invokes this script from inside the picker and
+# a relative $0 would not resolve there.
 SELF="$0"
+case "$SELF" in /*) ;; *) SELF="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)/$(basename "$SELF")" ;; esac
 
 # Always stderr - scripts and agents call this CLI and need the reason, not just
 # the exit code. The tmux flash is additive, for keybinding use.
@@ -261,12 +266,16 @@ cmd_get() {
 }
 
 # Emit TSV rows: window_id \t session \t index \t name \t path \t tags
+# An empty filter means every window, tagged or not.
 rows() {  # rows [filter]
-    local filter="${1:-$(any_tag_filter)}"
+    local filter="${1-}"
     local fmt
     fmt="#{window_id}	#{session_name}	#{window_index}	#{window_name}	#{pane_current_path}	$(tags_format)"
-    tmux list-windows -a -f "$filter" -F "$fmt" 2>/dev/null \
-        | sed 's/[[:space:]]*$//'
+    if [ -n "$filter" ]; then
+        tmux list-windows -a -f "$filter" -F "$fmt" 2>/dev/null
+    else
+        tmux list-windows -a -F "$fmt" 2>/dev/null
+    fi | sed 's/[[:space:]]*$//'
 }
 
 cmd_ls() {
@@ -449,16 +458,32 @@ cmd_kill() {
     echo "killed $killed, skipped $skipped"
 }
 
-# fzf picker over tagged windows - type a tag to filter, Enter to jump.
+# Internal: one formatted line per window for the picker. Field 1 is the
+# window_id, which is what fzf hands back to the toggle binds as {1}.
+# Lists EVERY window, not just tagged ones - otherwise you could never tag a
+# fresh window from the picker.
+cmd_pickrows() {
+    rows | awk -F'\t' '{
+        printf "%-6s  %-18s  %-28s  %s\n", $1, $2":"$3, substr($4,1,28), $6
+    }'
+}
+
+# fzf picker over every window: tag the row UNDER THE CURSOR, or Enter to jump.
+# tmux has no user-bindable key table for choose-tree, so this popup - not
+# Prefix+w - is where cursor-directed tagging can live. Each toggle re-runs
+# `pickrows`, so the tag column updates in place without losing your position.
 # Bound to Prefix+W via display-popup.
 cmd_pick() {
     command -v fzf >/dev/null 2>&1 || die "pick needs fzf"
     local out
-    out=$(rows | awk -F'\t' '{ printf "%-6s  %-18s  %-26s  %s\n", $1, $2":"$3, substr($4,1,26), $6 }' \
-        | fzf --reverse --border \
-              --prompt="tag > " \
-              --header="Enter = jump to window" \
-              --no-multi)
+    out=$(cmd_pickrows | fzf --reverse --border \
+        --prompt="window > " \
+        --header=$'Enter jump  |  C-i important  C-p pinned  C-a agent  C-x clear  |  type to filter' \
+        --no-multi \
+        --bind "ctrl-i:execute-silent($SELF toggle important -t {1})+reload($SELF _pickrows)" \
+        --bind "ctrl-p:execute-silent($SELF toggle pinned -t {1})+reload($SELF _pickrows)" \
+        --bind "ctrl-a:execute-silent($SELF toggle agent -t {1})+reload($SELF _pickrows)" \
+        --bind "ctrl-x:execute-silent($SELF clear -t {1})+reload($SELF _pickrows)")
     [ -n "$out" ] || return 0
     focus_window "$(printf '%s' "$out" | awk '{print $1}')"
 }
@@ -489,6 +514,7 @@ case "$sub" in
     next)       cmd_next "$@" ;;
     kill)       cmd_kill "$@" ;;
     pick)       cmd_pick ;;
+    _pickrows)  cmd_pickrows ;;
     vocab)      cmd_vocab ;;
     -h|--help|help) usage ;;
     *)          die "unknown subcommand: $sub (try --help)" ;;

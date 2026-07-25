@@ -42,7 +42,12 @@ the git branch on every prompt, so a name-based marker never survives.
   are back to normal.
 - Status bar shows `*` for important and `+` for pinned.
 - `Prefix+w` is the window chooser with a tag column; `Prefix+C-w` filters to
-  tagged windows only; `Prefix+W` is an fzf picker (type a tag to filter).
+  tagged windows only.
+- `Prefix+W` is an fzf picker over **every** window where you tag the row **under
+  the cursor**: `C-i` important, `C-p` pinned, `C-a` agent, `C-x` clear, `Enter`
+  jumps. The list reloads in place so the tag column updates as you go.
+  This popup exists because tmux has no user-bindable key table for
+  `choose-tree` - cursor-directed tagging cannot live in `Prefix+w`.
 
 Scripts and agents query it:
 
