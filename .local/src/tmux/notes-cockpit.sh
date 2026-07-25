@@ -30,13 +30,22 @@
 set -uo pipefail
 SELF="$(realpath "$0")"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
-# View mode: `tasks` (default) | `agents`. `a` toggles. In agents mode the same sections
-# + projects render, but each project's body is the AGENTS working it (asks/gates you can
-# answer, live sessions, headless runner + sprint state) - joined to the project by its
-# `<!-- canonical: NAME -->` marker. A global section shows sentinel + the agentctl runners.
+# THREE views, cycled by `a`  (tasks -> agents -> bridge -> tasks):
+#   tasks   your task lists (the default; unchanged).
+#   agents  what agents are DOING per project: live sessions, headless runner, sprint
+#           state + a global sentinel/runners section. Joined by `<!-- canonical: NAME -->`.
+#   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
+#           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
+# Each is its own render; none overwrites another.
 MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.mode"
 read_mode() { cat "$MODEF" 2>/dev/null || echo tasks; }
-toggle_mode() { [ "$(read_mode)" = agents ] && printf tasks > "$MODEF" || printf agents > "$MODEF"; }
+toggle_mode() { # cycle tasks -> agents -> bridge -> tasks
+  case "$(read_mode)" in
+    tasks)  printf agents > "$MODEF" ;;
+    agents) printf bridge > "$MODEF" ;;
+    *)      printf tasks  > "$MODEF" ;;
+  esac
+}
 # Optional machine-local prefix->project alias file (keeps private project names OUT of
 # this public script). Format: `prefix=project` per line (e.g. a short tag -> its full
 # project name), so a `tag:` prefix classifies under that project.
@@ -121,7 +130,10 @@ classify() {
   if [[ "$lc" =~ ^([a-z0-9_-]+): ]]; then
     prefix="${BASH_REMATCH[1]}"
     local mapped; mapped="$(alias_of "$prefix")" # short tag -> full project name
-    [ -n "$mapped" ] && prefix="$mapped"
+    # lowercase it: the alias file holds the project's DISPLAY name (`cp=Cockpit`), but
+    # projects_lc is lowercased, so an unfolded value would never match and the task
+    # would silently fall back to the profile lane.
+    [ -n "$mapped" ] && prefix="$(printf '%s' "$mapped" | tr '[:upper:]' '[:lower:]')"
     for p in $projects_lc; do [ "$prefix" = "$p" ] && { echo "$profile/$p"; return; }; done
     echo "$profile"; return
   fi
@@ -314,13 +326,44 @@ _global_agents() {
   done
 }
 
+# ══ BRIDGE view (the 3rd view) ══════════════════════════════════════════════
+# The middle ground: open QUESTIONS agents raised, anchored to the task they concern.
+# Per project (joined by canonical): each open ask, its task shown as context. Enter
+# answers it (round-trips to resume the agent); ctrl-a adds work to that project.
+_bridge_view() { # $1=profile
+  local prof="$1" name st ver lc canon out body all=""
+  while IFS=$'\t' read -r name _sum st ver; do
+    [ -z "$name" ] && continue
+    lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    canon="$(canonical_of "$prof" "$lc")"
+    body="$(agent-ask list "$canon" --pending 2>/dev/null | awk -F'\t' \
+      -v prof="$prof" -v canon="$canon" -v sec="$prof/$lc" \
+      -v cq="$C_BOX" -v cg="$C_INP" -v coff="$C_OFF" -v cd="$C_DIM" '
+      $1=="" {next}
+      { id=$1; kind=$5; q=$6; opt=$7; task=$8
+        g=(kind=="gate"||kind=="approval")?"!":"?"; col=(kind=="gate"||kind=="approval")?cg:cq
+        o=(opt!="")?"  " cd "(" opt ")" coff:""
+        t=(task!="")?"  " cd "task: " task coff:""
+        # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
+        printf "ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s\n", prof, id, opt, canon, sec, col, g, coff, q, t, o }')"
+    if [ -n "$body" ]; then
+      all="${all}$(_subheader "$name" "$st" "$ver")"$'\n'"${body}"$'\n'
+    fi
+  done < <(notes --profile "$prof" projects 2>/dev/null)
+  if [ -n "$all" ]; then
+    printf '%s' "$all"
+  else
+    printf 'hint\t\t\t\t\t\t%s  no open questions here — agents post questions on your tasks;%s\n' "$C_DIM" "$C_OFF"
+    printf 'hint\t\t\t\t\t\t%s  answer with enter, add work with C-a  (a cycles views)%s\n' "$C_DIM" "$C_OFF"
+  fi
+}
+
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
-  if [ "$(read_mode)" = agents ]; then
-    _profile_agents_view "$want"
-    _global_agents
-    return
-  fi
+  case "$(read_mode)" in
+    bridge) _bridge_view "$want"; return ;;
+    agents) _profile_agents_view "$want"; _global_agents; return ;;
+  esac
   local rows; rows="$(emit_tasks)"
   # A fresh day has no daily note yet, so `focus --all` is empty and every section
   # reads 0 — which looks like data loss. Say so, and offer the one-key fix.
@@ -386,12 +429,13 @@ rail() {
   cur="$(read_section)"
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
   at="$(attention_counts)"
-  local mode; mode="$(read_mode)"
-  if [ "$mode" = agents ]; then
-    printf '%s SECTIONS%s   %sAGENTS%s %s(a)%s\n\n' "$C_HEAD" "$C_OFF" "$C_SEL" "$C_OFF" "$C_DIM" "$C_OFF"
-  else
-    printf '%s SECTIONS%s   %stasks%s %s(a agents)%s\n\n' "$C_HEAD" "$C_OFF" "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
-  fi
+  # view indicator: highlight the active of the three (a cycles them)
+  local mode t_c a_c b_c; mode="$(read_mode)"
+  t_c="$C_DIM"; a_c="$C_DIM"; b_c="$C_DIM"
+  case "$mode" in tasks) t_c="$C_SEL" ;; agents) a_c="$C_SEL" ;; bridge) b_c="$C_SEL" ;; esac
+  printf '%s SECTIONS%s   %stasks%s %s·%s %sagents%s %s·%s %sbridge%s %s(a)%s\n\n' \
+    "$C_HEAD" "$C_OFF" "$t_c" "$C_OFF" "$C_DIM" "$C_OFF" "$a_c" "$C_OFF" \
+    "$C_DIM" "$C_OFF" "$b_c" "$C_OFF" "$C_DIM" "$C_OFF"
   while IFS= read -r s; do
     [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
@@ -709,9 +753,11 @@ help_view() {
     R              restore an archived project
 
   other
-    a              toggle AGENTS view  (per project: asks/gates you answer, live
-                   sessions, sprint + runner state; !N badge = pending asks)
-                   in AGENTS view: enter answers an ask / jumps a session / opens sprint
+    a              cycle views: tasks -> agents -> bridge -> tasks
+                     tasks   your task lists
+                     agents  what agents are doing (sessions/sprint/runner + sentinel)
+                     bridge  open QUESTIONS agents raised on your tasks -
+                             enter = answer (resumes the agent), C-a = add work
     T              create today's notes (all profiles)
     ?              this help
     q / esc        quit
@@ -752,6 +798,11 @@ case "${1:-}" in
   --help-view) help_view; exit 0 ;;
 esac
 
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# the UI never launched. Must sit after the verb dispatch so `--verb` still works, and
+# before the fzf preflight so sourcing never needs fzf/notes on PATH.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }
 command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfiles/.local/src/notes-cli)"; exit 1; }
 
@@ -772,7 +823,7 @@ list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header='a tasks/agents · enter open · ? keys' \
+  --header='a tasks/agents/bridge · enter open/answer · C-a add · ? keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
