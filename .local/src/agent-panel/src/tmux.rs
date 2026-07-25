@@ -9,7 +9,7 @@ pub struct Pane {
     pub current_path: String,
     pub pid: u32,
     pub title: String,
-    /// Window tags set via Prefix+T (see .local/src/tmux/tags.sh), rendered by
+    /// Window tags set via Prefix+a (see .local/src/tmux/tags.sh), rendered by
     /// tmux itself from the `@tag_*` window options. Empty when untagged.
     pub tags: String,
 }

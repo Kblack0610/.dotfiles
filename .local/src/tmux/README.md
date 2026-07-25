@@ -12,7 +12,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
 | `spawn-project.sh` | `Prefix+p` | Create new tmux session with nvim |
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
-| `tags.sh` | `Prefix+T` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
 ## Usage
@@ -27,7 +27,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
-- **Tag a window**: `Prefix+T` then `i`/`p`/`a`/`g` → important / pinned / agent / group
+- **Tag a window**: `Prefix+a` then `i`/`p`/`a`/`g` → important / pinned / agent / group
 - **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
 
 ## Window Tags
@@ -37,7 +37,7 @@ agents can tell them apart. A tag is a tmux **window user-option** (`@tag_*`),
 not part of the window name: the `.zshrc` precmd hook rewrites window names to
 the git branch on every prompt, so a name-based marker never survives.
 
-- `Prefix+T` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
+- `Prefix+a` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
   `x` clear · `l` list. It is a native one-shot key table, so one key and you
   are back to normal.
 - Status bar shows `*` for important and `+` for pinned.

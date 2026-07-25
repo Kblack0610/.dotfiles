@@ -18,7 +18,7 @@ pub struct Agent {
     pub repo_full: String, // basename incl. worktree suffix, for preview header
     pub summary: String,
     pub jsonl: Option<PathBuf>,
-    /// Window tags (Prefix+T, see tags.sh). Empty when the window is untagged.
+    /// Window tags (Prefix+a, see tags.sh). Empty when the window is untagged.
     pub tags: String,
 }
 

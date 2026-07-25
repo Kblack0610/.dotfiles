@@ -19,9 +19,9 @@
 # window rather than the calling pane's window. Same rule as wind-down.sh.
 #
 # Subcommands:
-#   toggle <tag> [-t <win>]    flip a tag                        (Prefix+T i/p/a)
+#   toggle <tag> [-t <win>]    flip a tag                        (Prefix+a i/p/a)
 #   add|rm <tag> [-t <win>]    set / unset a tag
-#   clear [-t <win>]           drop every tag on a window        (Prefix+T x)
+#   clear [-t <win>]           drop every tag on a window        (Prefix+a x)
 #   get [-t <win>]             tags on one window, space-separated
 #   ls [--tag <tag>] [--json]  every tagged window
 #   targets [--tag <tag>]      bare window_ids, one per line (for xargs)

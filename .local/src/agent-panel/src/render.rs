@@ -106,7 +106,7 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 
         for a in group {
             let g = colorize(a.glyph);
-            // Window tags (Prefix+T) sit between the target and the summary so
+            // Window tags (Prefix+a) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
                 String::new()
