@@ -12,6 +12,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
 | `spawn-project.sh` | `Prefix+p` | Create new tmux session with nvim |
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
+| `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
 ## Usage
@@ -26,6 +27,38 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
+- **Tag a window**: `Prefix+a` then `i`/`p`/`a`/`g` → important / pinned / agent / group
+- **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
+
+## Window Tags
+
+`tags.sh` (on PATH as `tmux-tags`) marks windows so you, your scripts, and your
+agents can tell them apart. A tag is a tmux **window user-option** (`@tag_*`),
+not part of the window name: the `.zshrc` precmd hook rewrites window names to
+the git branch on every prompt, so a name-based marker never survives.
+
+- `Prefix+a` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
+  `x` clear · `l` list. It is a native one-shot key table, so one key and you
+  are back to normal.
+- Status bar shows `*` for important and `+` for pinned.
+- `Prefix+w` is the window chooser with a tag column; `Prefix+C-w` filters to
+  tagged windows only; `Prefix+W` is an fzf picker (type a tag to filter).
+
+Scripts and agents query it:
+
+```sh
+tmux-tags ls --json                    # every tagged window, structured
+tmux-tags targets --tag important      # bare @N ids, one per line
+tmux-tags protected -t @66             # exit 0 if pinned/important
+tmux-tags gather --tag group:work --into work   # a tag is a group
+```
+
+`cleanup.sh`, `stale-detector.sh` and `wind-down.sh` all refuse to kill a window
+tagged `pinned` or `important`.
+
+Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
+reboot. That is deliberate; for windows that should come back tagged, declare
+them in the session manager's config and have the window tag itself on startup.
 
 ## Session Favourites
 

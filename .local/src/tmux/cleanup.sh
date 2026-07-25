@@ -83,6 +83,25 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
     exit 0
 fi
 
+# Drop windows tagged pinned/important (Prefix+T, see tags.sh). Filtering here
+# rather than at the kill site keeps the confirmation count honest.
+TAGS_CLI="$HOME/.local/bin/tmux-tags"
+if [[ -x "$TAGS_CLI" ]]; then
+    KEPT=()
+    for target in "${TARGETS[@]}"; do
+        if reason=$("$TAGS_CLI" protected -t "$target" 2>/dev/null); then
+            echo -e "  ${YELLOW}Protected:${NC} $target (${reason}) - skipping"
+        else
+            KEPT+=("$target")
+        fi
+    done
+    TARGETS=("${KEPT[@]}")
+    if [[ ${#TARGETS[@]} -eq 0 ]]; then
+        echo "All selected windows are protected; nothing to clean."
+        exit 0
+    fi
+fi
+
 # Confirmation
 echo ""
 echo -e "${YELLOW}Selected ${#TARGETS[@]} window(s) for cleanup:${NC}"
