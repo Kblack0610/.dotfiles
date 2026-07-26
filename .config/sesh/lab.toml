@@ -1,0 +1,15 @@
+# sesh config for the `lab` SERVER only. See hub.toml for how it is selected and
+# why -z is deliberately omitted.
+#
+# Keep in sync with .config/tmux-servers/lab.conf.
+
+[default_session]
+preview_command = "eza --all --git --icons --color=always {}"
+
+[[session]]
+name = "projects"
+path = "~/.notes/lab"
+
+[[session]]
+name = "platform"
+path = "~/dev/bnb/platform"

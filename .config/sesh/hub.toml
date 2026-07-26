@@ -1,0 +1,30 @@
+# sesh config for the `hub` SERVER only. Selected by servers.sh `pick-session`,
+# which derives the server name from #{socket_path} and invokes:
+#
+#     sesh -C <this file> picker -i -d -c -t
+#
+# -C must come BEFORE the subcommand (`sesh -C f list` works, `sesh list -C f`
+# errors). -c -t means config sessions + THIS server's tmux sessions; omitting -z
+# keeps the global zoxide database — identical in every server — out of the list,
+# which is what makes hub and lab genuinely different lists. -d collapses the
+# config/live duplicate of a name that is both declared and running.
+#
+# Reaching outside this world is not lost, it just moves keys: Prefix+f
+# (sessionizer.sh) still fuzzy-finds every directory on the machine.
+#
+# Keep in sync with .config/tmux-servers/hub.conf.
+
+[default_session]
+preview_command = "eza --all --git --icons --color=always {}"
+
+[[session]]
+name = "daily"
+path = "~/.notes"
+
+[[session]]
+name = "dotfiles"
+path = "~/.dotfiles"
+
+[[session]]
+name = "home-config"
+path = "~/dev/home/home-config"

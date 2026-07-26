@@ -1,0 +1,25 @@
+# sesh - tmux session picker. Bound to `prefix S` in ~/.tmux.conf.
+#
+# Sources it merges into one list: live tmux sessions + zoxide frecency + the
+# [[session]] entries below. Read by sesh from $XDG_CONFIG_HOME/sesh/sesh.toml
+# (falls back to ~/.config/sesh/sesh.toml).
+#
+# Note: `smug` is NOT wired in here on purpose. A `startup_command = "smug start X"`
+# is a silent no-op inside a sesh session (smug exits 0 without building anything
+# because sesh has already created the session). smug has been unused since
+# 2026-01; its configs remain at ~/.config/smug/ but nothing launches them.
+
+[default_session]
+preview_command = "eza --all --git --icons --color=always {}"
+
+# Keep this list SHORT. zoxide already supplies ~/.dotfiles, ~/.notes, ~/.agent,
+# ~/dev/bnb/platform, ~/dev/home and every project repo - adding them here just
+# prints a duplicate row next to the zoxide (and sometimes the live-tmux) entry.
+# Only name a session here when zoxide has no frecency for it.
+#
+# `lab` qualifies: it is a leaf dir that rarely gets cd'd into directly, and it
+# had a dedicated keybind (prefix M) before this picker existed.
+
+[[session]]
+name = "lab"
+path = "~/.notes/lab"
