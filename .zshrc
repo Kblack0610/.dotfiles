@@ -101,6 +101,24 @@ _tmux_rename_window() {
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd _tmux_rename_window
 
+# --- Tmux Servers ---
+# hub and lab are separate tmux SERVERS (see `tmx`, .local/src/tmux/servers.sh).
+# A bare `tmux` typed at a prompt outside tmux should land in `hub` — today's daily
+# note — rather than the unnamed default socket, which is deliberately empty.
+#
+# This is a function and NOT an alias on purpose. `alias tmux='tmux -L hub'` would
+# append -L hub to EVERY tmux call, including ones made from inside the lab server,
+# where -L overrides $TMUX — `tmux ls` inside lab would then report hub's sessions.
+# Passing through untouched whenever there are args, or whenever $TMUX is set,
+# keeps every other invocation honest.
+tmux() {
+    if [[ -z "$TMUX" && $# -eq 0 ]]; then
+        tmx hop hub
+    else
+        command tmux "$@"
+    fi
+}
+
 # # Source FZF.
 # [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 #
