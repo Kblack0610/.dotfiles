@@ -14,8 +14,13 @@
 
 set -uo pipefail
 
+# Absolute path to this script - fzf's --preview re-invokes it, and $0 is not
+# reliable there (relative invocation, symlink on PATH, shell function wrapper).
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 SESS_ROOT="$HOME/.agent/sessions"
 LIVE_ROOT="$HOME/.claude/sessions"
+PROJECTS_ROOT="$HOME/.claude/projects"
 DEFAULT_LIMIT=25
 TAB="$(printf '\t')"
 
@@ -81,7 +86,11 @@ live_lines() {
             (if (.nameSource // "") == "derived" then "-" else (.name // "-") end),
             (.cwd // "-"),
             (((.startedAt // 0) / 1000) | floor | tostring) ]
-        | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null
+        | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null || true
+  # Never fail. These files are created and removed as sessions start and stop,
+  # so one can vanish between the find and the jq. Under `set -o pipefail` that
+  # surfaces as a spurious non-zero exit in whatever called us - including the
+  # fzf preview, which re-runs on every keystroke.
 }
 
 _unsentinel() { [ "${1:-}" = "-" ] && echo "" || echo "${1:-}"; }
@@ -113,11 +122,34 @@ live_marker() {
 }
 
 rows_tsv() {
-  # tsv: id \t updated_epoch \t edits \t project \t first_prompt   (newest first)
+  # tsv: id \t updated_epoch \t edits \t project \t transcript \t first_prompt
+  # (newest first). Empty fields become "-" - see live_lines for why.
   registry_lines "$1" \
     | jq -rc '[.session_id, (.updated|tostring), (.edits|tostring), .project,
-               (.first_prompt // "" | gsub("[\\n\\t\\r]+"; " ") | gsub("  +"; " "))] | @tsv' 2>/dev/null \
+               (.transcript // "-"),
+               (.first_prompt // "" | gsub("[\\n\\t\\r]+"; " ") | gsub("  +"; " "))]
+              | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null \
     | sort -t"$TAB" -k2,2nr
+}
+
+ai_title() {
+  # $1 = transcript path -> the session's own rolling AI title, or "".
+  # Claude Code writes an `ai-title` record into the transcript as a session
+  # goes, so every session already has a human-readable name - including closed
+  # ones, where the live <pid>.json is long gone. Read from the end and stop at
+  # the first hit: ~20ms even on an 8MB transcript.
+  local t="${1:-}"
+  [ -n "$t" ] && [ -f "$t" ] || return 0
+  tac "$t" 2>/dev/null | grep -m1 '"type":"ai-title"' 2>/dev/null \
+    | jq -rc '.aiTitle // empty' 2>/dev/null
+}
+
+transcript_path() {
+  # $1 = session id -> its transcript, registered or not.
+  local id="$1" t
+  t="$(lookup_field "$id" transcript)"
+  [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return; }
+  find "$PROJECTS_ROOT" -maxdepth 2 -name "${id}.jsonl" -print -quit 2>/dev/null
 }
 
 resolve_id() {
@@ -127,6 +159,13 @@ resolve_id() {
   # A live session may not be registered yet (registration happens on Stop).
   if [ -z "$matches" ]; then
     matches=$(live_lines | cut -f1 | sort -u | grep -i "^${want}")
+  fi
+  # Sessions that made no file edit are never registered at all - and a session
+  # killed before it got going is exactly the one you most need to pick back up.
+  # Fall back to the transcripts on disk.
+  if [ -z "$matches" ]; then
+    matches=$(find "$PROJECTS_ROOT" -maxdepth 2 -name "${want}*.jsonl" 2>/dev/null \
+      | while read -r f; do b="${f##*/}"; printf '%s\n' "${b%.jsonl}"; done | sort -u)
   fi
   n=$(printf '%s\n' "$matches" | grep -c .)
   if [ "$n" -eq 0 ]; then
@@ -153,7 +192,7 @@ session_cwd() {
   cwd="$(_unsentinel "$cwd")"
   [ -n "$cwd" ] && [ -d "$cwd" ] && { echo "$cwd"; return; }
   # 2. Otherwise the transcript records cwd on its first few entries.
-  t=$(lookup_field "$id" transcript)
+  t=$(transcript_path "$id")
   if [ -n "$t" ] && [ -f "$t" ]; then
     cwd=$(head -40 "$t" 2>/dev/null | jq -rc 'select(.cwd != null) | .cwd' 2>/dev/null | head -1)
     [ -n "$cwd" ] && [ -d "$cwd" ] && { echo "$cwd"; return; }
@@ -214,15 +253,15 @@ cmd_list() {
     local lid
     for lid in "${!LIVE_STATUS[@]}"; do
       grep -q "^${lid}${TAB}" <<< "$rows" && continue
-      rows+="$(printf '\n%s\t%s\t%s\t%s\t%s' \
+      rows+="$(printf '\n%s\t%s\t%s\t%s\t%s\t%s' \
         "$lid" "${LIVE_START[$lid]:-0}" "-" \
-        "$(resolve_project "${LIVE_CWD[$lid]:-$PWD}")" "(running, not registered yet)")"
+        "$(resolve_project "${LIVE_CWD[$lid]:-$PWD}")" "-" "(running, not registered yet)")"
     done
     rows=$(printf '%s\n' "$rows" | grep -v '^$' | sort -t"$TAB" -k2,2nr)
   fi
 
   local shown=0 total=0
-  while IFS="$TAB" read -r id updated edits project prompt; do
+  while IFS="$TAB" read -r id updated edits project transcript prompt; do
     [ -n "$id" ] || continue
     local mark; mark="$(live_marker "$id")"
     if [ "$liveonly" = true ] && [ -z "$mark" ]; then continue; fi
@@ -230,8 +269,10 @@ cmd_list() {
     [ "$shown" -ge "$limit" ] && continue
     shown=$(( shown + 1 ))
 
-    # Prefer the session's own name when it set one; else its opening prompt.
+    # What this session was about, best name first: the name it set for itself,
+    # then its own AI title, then the raw opening prompt.
     local what="${LIVE_NAME[$id]:-}"
+    [ -n "$what" ] || what="$(ai_title "$(_unsentinel "$transcript")")"
     [ -n "$what" ] || what="$prompt"
     [ -n "$what" ] || what="(no prompt recorded)"
     if [ "${#what}" -gt "$what_w" ]; then
@@ -254,21 +295,98 @@ cmd_list() {
   fi
 }
 
+# ---------------------------------------------------------------- preview ---
+
+cmd_preview() {
+  # Everything here is read straight out of the transcript and the registry -
+  # no model call, so it is safe to run on every keystroke in the picker.
+  # `sessions compact` remains the explicit, on-demand LLM escalation.
+  local want="${1:-}"; [ -n "$want" ] || return 0
+  local id; id="$(resolve_id "$want" 2>/dev/null)" || { echo "no such session: $want"; return 0; }
+
+  load_live
+  local t proj edits head title dir branch mark
+  t="$(transcript_path "$id")"
+  proj="$(lookup_field "$id" project)"
+  edits="$(lookup_field "$id" edits)"
+  head="$(lookup_field "$id" head_commit)"
+  title="${LIVE_NAME[$id]:-}"
+  [ -n "$title" ] || title="$(ai_title "$t")"
+  [ -n "$title" ] || title="$(lookup_field "$id" first_prompt)"
+
+  dir="$(session_cwd "$id")"
+  # Unregistered sessions carry no project or edit count; derive what we can.
+  [ -n "$proj" ] || proj="$([ -n "$dir" ] && resolve_project "$dir")"
+  [ -n "$edits" ] || edits="? (never registered - no file edits)"
+  mark="$(live_marker "$id")"
+
+  printf '%s\n' "${title:-(untitled)}"
+  printf '%s  %s  %s\n' "${id:0:8}" "${proj:-?}" "${mark:-closed}"
+
+  # Last recorded branch, not the first - a session that started on main and
+  # branched should show where it ended up.
+  [ -n "$t" ] && [ -f "$t" ] && branch="$(tac "$t" 2>/dev/null \
+    | grep -m1 -o '"gitBranch":"[^"]\+"' 2>/dev/null | sed 's/.*:"//;s/"$//')"
+  printf '%s' "${dir/#$HOME/\~}"
+  [ -n "${branch:-}" ] && printf '  [%s]' "$branch"
+  printf '\n'
+  [ -n "$head" ] && printf '%s\n' "$head"
+  printf '\n'
+
+  if [ -n "$t" ] && [ -f "$t" ]; then
+    local lastask
+    lastask="$(tac "$t" 2>/dev/null | grep -m1 '"type":"last-prompt"' \
+      | jq -rc '.lastPrompt // empty' 2>/dev/null | tr '\n' ' ' | cut -c1-400)"
+    [ -n "$lastask" ] && printf 'LAST ASK\n  %s\n\n' "$lastask"
+
+    local prs
+    prs="$(grep -o '"prUrl":"[^"]*"' "$t" 2>/dev/null | sed 's/.*:"//;s/"$//' | sort -u | head -6)"
+    if [ -n "$prs" ]; then
+      printf 'PRs OPENED\n'; printf '%s\n' "$prs" | sed 's/^/  /'; printf '\n'
+    fi
+
+    local files nfiles
+    files="$(grep -o '"trackingPath":"[^"]*"' "$t" 2>/dev/null | sed 's/.*:"//;s/"$//' | sort -u)"
+    nfiles="$(printf '%s' "$files" | grep -c . || true)"
+    if [ "${nfiles:-0}" -gt 0 ]; then
+      printf 'FILES TOUCHED (%s)\n' "$nfiles"
+      printf '%s\n' "$files" | head -10 | while read -r p; do printf '  %s\n' "${p/#$HOME/\~}"; done
+      [ "$nfiles" -gt 10 ] && printf '  ... %s more\n' "$(( nfiles - 10 ))"
+      printf '\n'
+    fi
+  fi
+
+  printf 'EDITS %s\n' "${edits:-0}"
+  local digest="$SESS_ROOT/${proj:-x}/${id}-digest.md"
+  if [ -f "$digest" ]; then
+    printf '\nDIGEST\n'; sed 's/^/  /' "$digest" | head -30
+  else
+    printf 'For a written summary: sessions compact %s\n' "${id:0:8}"
+  fi
+  return 0
+}
+
 # ------------------------------------------------------------------- pick ---
 
 pick_id() {
   # fzf-pick a session id from all registries; prints the full id.
   command -v fzf >/dev/null 2>&1 || { echo "sessions: fzf not installed" >&2; return 1; }
   load_live
-  local rows="" id updated edits project prompt what
-  while IFS="$TAB" read -r id updated edits project prompt; do
+  local rows="" id updated edits project transcript prompt what
+  while IFS="$TAB" read -r id updated edits project transcript prompt; do
     [ -n "$id" ] || continue
-    what="${LIVE_NAME[$id]:-}"; [ -n "$what" ] || what="$prompt"
+    what="${LIVE_NAME[$id]:-}"
+    [ -n "$what" ] || what="$(ai_title "$(_unsentinel "$transcript")")"
+    [ -n "$what" ] || what="$prompt"
     rows+="$(printf '%s\t%-8s  %-5s  %-6s  %-12s  %s' \
       "$id" "${id:0:8}" "$(_age "$updated")" "$(live_marker "$id")" "$project" "$what")"$'\n'
   done <<< "$(rows_tsv --all)"
   printf '%s' "$rows" | fzf --with-nth=2.. --delimiter="$TAB" \
-      --prompt="session> " --preview-window=hidden | cut -f1
+      --prompt="session> " \
+      --preview="'$SELF' _preview {1}" \
+      --preview-window='right,55%,border-left,wrap' \
+      --bind='?:toggle-preview' \
+    | cut -f1
 }
 
 # ----------------------------------------------------------------- resume ---
@@ -338,13 +456,21 @@ sessions - list / resume / compact important Claude sessions
 
   sessions list [project] [--all] [-n N]   registered sessions, newest first
   sessions live                            only what is running right now
+  sessions show <id|prefix>                where that session got to
   sessions resume <id|prefix|--pick>       reopen a session, cd'ing to its repo
   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 
 Ids are matched by prefix, so the 8-char ID column is enough:
   sessions resume d950ba9f
 
-LIVE column: '* busy' = mid-turn, 'o idle' = open and waiting, blank = closed.
+--pick opens an fzf picker with `show` rendered alongside it; '?' toggles it.
+
+LIVE column: '* busy' = mid-turn, 'o wait'/'o idle' = open, blank = closed.
+WHAT column: the session's own name or AI title, else its first prompt. Titles
+are read from the transcript, so closed sessions have them too.
+
+`show` is read straight from the transcript - no model call. For a written
+summary, `sessions compact <id>` is the explicit LLM escalation.
 
 Registry:    ~/.agent/sessions/{project}/sessions.jsonl
 Live state:  ~/.claude/sessions/<pid>.json
@@ -353,10 +479,11 @@ EOF
 
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
-  list)    cmd_list "$@" ;;
-  live)    cmd_list --all --live "$@" ;;
-  resume)  cmd_resume "$@" ;;
-  compact) cmd_compact "$@" ;;
+  list)          cmd_list "$@" ;;
+  live)          cmd_list --all --live "$@" ;;
+  show|_preview) cmd_preview "$@" ;;
+  resume)        cmd_resume "$@" ;;
+  compact)       cmd_compact "$@" ;;
   -h|--help|help) usage ;;
   *) echo "sessions: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac
