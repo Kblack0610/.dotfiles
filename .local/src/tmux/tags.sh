@@ -499,6 +499,12 @@ usage() {
     awk 'NR==1 {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$SELF"
 }
 
+# Sourced (by the test suite) rather than run: every function is defined, no subcommand
+# runs. The vocabulary helpers below the line are pure - they map tags to tmux options and
+# filters without touching a server - so they are unit-testable in isolation, which matters
+# because that mapping is the contract cleanup.sh and wind-down.sh trust before killing.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 sub="${1:-ls}"; shift || true
 case "$sub" in

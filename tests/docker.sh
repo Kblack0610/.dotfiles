@@ -52,6 +52,19 @@ run_args=(
   --volume "$REPO:/work"
   --workdir /work
 )
+
+# Git WORKTREE support. In a worktree, `.git` is a FILE containing
+# `gitdir: /path/to/main/.git/worktrees/<name>`, which lives OUTSIDE this bind mount - so
+# `git ls-files` inside the container fails and the lint gate would see zero files. Mount
+# the main repo's .git at the same absolute path the pointer names, so the indirection
+# resolves. Read-only: the tests never need to write to git.
+if [ -f "$REPO/.git" ]; then
+  main_gitdir="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -n "$main_gitdir" ] && [ -d "$main_gitdir" ]; then
+    run_args+=(--volume "$main_gitdir:$main_gitdir:ro")
+    echo "==> worktree detected; also mounting $main_gitdir (ro) so git resolves"
+  fi
+fi
 # Only forward BATS_FLAGS when the caller actually set it. Passing it through empty would
 # override the Makefile's `BATS_FLAGS ?=` default -- make treats a set-but-empty environment
 # variable as a definition -- silently dropping --print-output-on-failure.

@@ -67,7 +67,7 @@ while IFS=: read -r session window_idx window_name pane_cmd pane_path activity; 
     # This window is stale
     STALE_WINDOWS+=("$session:$window_idx:$window_name:$pane_path:$IDLE_SECONDS")
 
-# The -f filter drops windows tagged pinned/important (Prefix+T, see tags.sh) so
+# The -f filter drops windows tagged pinned/important (Prefix+a, see tags.sh) so
 # protected windows never reach cleanup.sh's prompt. Filtering in tmux rather
 # than per-window in the loop keeps this free.
 done < <(tmux list-windows -a \
