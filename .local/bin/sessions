@@ -73,7 +73,7 @@ registry_lines() {
 }
 
 live_lines() {
-  # tsv: session_id \t status \t name \t cwd   (one row per running Claude process)
+  # tsv: id \t status \t name \t cwd \t startedAt \t pid  (one per running Claude)
   #
   # Empty fields are emitted as "-" on purpose. TAB counts as IFS whitespace in
   # bash, so `read` collapses runs of it and an empty middle field would silently
@@ -85,7 +85,8 @@ live_lines() {
             (.status // "live"),
             (if (.nameSource // "") == "derived" then "-" else (.name // "-") end),
             (.cwd // "-"),
-            (((.startedAt // 0) / 1000) | floor | tostring) ]
+            (((.startedAt // 0) / 1000) | floor | tostring),
+            ((.pid // 0) | tostring) ]
         | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null || true
   # Never fail. These files are created and removed as sessions start and stop,
   # so one can vanish between the find and the jq. Under `set -o pipefail` that
@@ -468,9 +469,10 @@ cmd_search() {
   #   sessions search            -> the live fzf window (the point of the feature)
   #   sessions search <term>     -> a plain table, scriptable and testable
   #   sessions search -i <term>  -> the window, pre-seeded with <term>
-  local interactive=false q=""
+  local interactive=false q="" window=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      -w|--window)      window="--window" ;;
       -i|--interactive) interactive=true ;;
       *) q="${q:+$q }$1" ;;
     esac
@@ -505,7 +507,7 @@ cmd_search() {
         --preview-window='right,55%,border-left,wrap' \
       | cut -f1)
   [ -n "$id" ] || return 0
-  cmd_resume "$id"
+  cmd_resume ${window:+"$window"} "$id"
 }
 
 # ------------------------------------------------------------------- pick ---
@@ -533,26 +535,68 @@ pick_id() {
 
 # ----------------------------------------------------------------- resume ---
 
+_ppid_of() {
+  # /proc/PID/stat field 4 is unreliable: the comm field is parenthesised and may
+  # contain spaces, which shifts every later field. status(5) is unambiguous.
+  awk '/^PPid:/ {print $2; exit}' "/proc/${1:-0}/status" 2>/dev/null
+}
+
+session_window() {
+  # $1 = session id -> "tmux_session:window_index" if a live pane owns it.
+  # The Claude process is a child of the pane's shell, so walk up the ppid chain
+  # until we land on a known pane_pid.
+  local id="$1" pid p i panes
+  [ -n "${TMUX:-}" ] || return 0
+  pid=$(live_lines | awk -F"$TAB" -v i="$id" '$1==i {print $6; exit}')
+  [ -n "$pid" ] || return 0
+  panes="$(tmux list-panes -a -F '#{pane_pid} #{session_name}:#{window_index}' 2>/dev/null)" || return 0
+  p="$pid"
+  for i in 1 2 3 4 5 6 7 8; do
+    [ -n "$p" ] && [ "$p" != 0 ] && [ "$p" != 1 ] || return 0
+    local hit; hit="$(printf '%s\n' "$panes" | awk -v q="$p" '$1==q {print $2; exit}')"
+    [ -n "$hit" ] && { printf '%s\n' "$hit"; return 0; }
+    p="$(_ppid_of "$p")"
+  done
+}
+
 cmd_resume() {
-  local id=""
+  local id="" new_window=false
   for a in "$@"; do
     case "$a" in
-      --pick) id="$(pick_id)" || return 1 ;;
-      *)      id="$(resolve_id "$a")" || return 1 ;;
+      --window|-w) new_window=true ;;
+      --pick)      id="$(pick_id)" || return 1 ;;
+      *)           id="$(resolve_id "$a")" || return 1 ;;
     esac
   done
-  [ -n "$id" ] || { echo "usage: sessions resume <id|prefix|--pick>" >&2; return 1; }
+  [ -n "$id" ] || { echo "usage: sessions resume [--window] <id|prefix|--pick>" >&2; return 1; }
 
-  # Refuse to double-open a session that is already running - two panes appending
-  # to one transcript interleave badly.
   load_live
   if [ -n "${LIVE_STATUS[$id]:-}" ]; then
-    echo "sessions: $id is already open (${LIVE_STATUS[$id]}). Switch to that pane instead," >&2
-    echo "          or 'claude -r $id --fork-session' to branch a new session from it." >&2
+    # Already running. Two panes appending to one transcript interleave badly, so
+    # never open a second - but jumping to the pane that already has it is what
+    # you actually wanted.
+    local win; win="$(session_window "$id")"
+    if [ -n "$win" ]; then
+      tmux select-window -t "$win" 2>/dev/null
+      tmux switch-client -t "${win%%:*}" 2>/dev/null
+      echo "sessions: $id is already open - switched to $win" >&2
+      return 0
+    fi
+    echo "sessions: $id is already open (${LIVE_STATUS[$id]}) but I can't find its pane." >&2
+    echo "          'claude -r $id --fork-session' branches a new session from it." >&2
     return 1
   fi
 
   local dir; dir="$(session_cwd "$id")"
+
+  # From the tmux popup, exec'ing here would trap a full Claude session inside a
+  # transient popup - closing it would kill the session. Open a real window.
+  if [ "$new_window" = true ] && [ -n "${TMUX:-}" ]; then
+    tmux new-window ${dir:+-c "$dir"} "claude -r '$id'" 2>/dev/null \
+      && return 0
+    echo "sessions: could not open a tmux window, resuming here instead" >&2
+  fi
+
   if [ -n "$dir" ]; then
     cd "$dir" || echo "sessions: could not cd to $dir, resuming from $PWD" >&2
   fi
@@ -596,12 +640,12 @@ usage() {
   cat >&2 <<'EOF'
 sessions - list / resume / compact important Claude sessions
 
-  sessions search [-i] [term]              live fzf window over every session
+  sessions search [-i] [-w] [term]         live fzf window over every session
   sessions list [project] [--all] [-n N]   registered sessions, newest first
   sessions live                            only what is running right now
   sessions show <id|prefix>                where that session got to
   sessions index [--rebuild]               refresh the search index
-  sessions resume <id|prefix|--pick>       reopen a session, cd'ing to its repo
+  sessions resume [-w] <id|prefix|--pick>  reopen a session, cd'ing to its repo
   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 
 Ids are matched by prefix, so the 8-char ID column is enough:
@@ -613,6 +657,12 @@ it has carried, its first and last prompt, the files it touched, project and
 branch - which is why "email" finds the session that now goes by "aerc-nested-
 folders-config". In the window: enter resumes, ctrl-g escalates the query to a
 full-text sweep, '?' toggles the preview.
+
+-w/--window opens the chosen session in a NEW tmux window rather than in place.
+That is what `prefix R` uses: exec'ing inside a display-popup would trap a live
+Claude session in a transient popup, and closing it would kill the session.
+Picking a session that is ALREADY running never opens a second copy - it jumps
+to the window that has it.
 
 --pick opens an fzf picker with `show` rendered alongside it; '?' toggles it.
 
@@ -636,6 +686,7 @@ case "$sub" in
   search)        cmd_search "$@" ;;
   index)         cmd_index "$@" ;;
   _filter)       cmd_filter "$@" ;;
+  _window)       session_window "$(resolve_id "${1:-}" 2>/dev/null)" ;;
   show|_preview) cmd_preview "$@" ;;
   resume)        cmd_resume "$@" ;;
   compact)       cmd_compact "$@" ;;
