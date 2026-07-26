@@ -7,6 +7,7 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 . "$(dirname "$0")/project-name.sh"
+. "$(dirname "$0")/focus-lib.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
@@ -141,27 +142,15 @@ CONTEXT=$(
   # in progress. If none are set, nudge to capture them. Read-only + best-effort here; task
   # WRITES stay in the `notes` CLI (never hand-edit ~/.notes markdown). Keep items terse.
   if command -v notes >/dev/null 2>&1; then
-    DAILY_NOTE=$(notes path daily 2>/dev/null || true)
-    [ -n "$DAILY_NOTE" ] || DAILY_NOTE="$HOME/.notes/journal/daily/$(date +%F).md"
-    FOCUS_OPEN=""
-    FOCUS_WIP=""
-    if [ -f "$DAILY_NOTE" ]; then
-      # Unfinished items under `## Focus` (to the next H2). Drop the `<!-- since:… -->`
-      # comment + trailing #tags and the checkbox glyph; keep the `(Nd)` staleness age.
-      # `[/]` (in-progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
-      # actively being worked is surfaced first and never lost to the open-list truncation.
-      # Matching only `- [ ]` here is a silent drop: it hides exactly the task in flight.
-      FOCUS_BODY=$(awk '/^## Focus/{f=1;next} f&&/^## /{exit} f' "$DAILY_NOTE" 2>/dev/null || true)
-      FOCUS_WIP=$(printf '%s\n' "$FOCUS_BODY" \
-        | grep -E '^[[:space:]]*- \[/\] .' \
-        | sed -E 's/<!--[^>]*-->//g; s/- \[\/\] /- /; s/[[:space:]]+#[[:alnum:]_-]+//g; s/[[:space:]]+$//' || true)
-      FOCUS_OPEN=$(printf '%s\n' "$FOCUS_BODY" \
-        | grep -E '^[[:space:]]*- \[ \] .' \
-        | sed -E 's/<!--[^>]*-->//g; s/- \[ \] /- /; s/[[:space:]]+#[[:alnum:]_-]+//g; s/[[:space:]]+$//' || true)
-    fi
+    DAILY_NOTE=$(focus_daily_note)
+    # `[/]` (in progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
+    # actively being worked is surfaced first and never lost to the open-list truncation.
+    FOCUS_BODY=$(focus_body "$DAILY_NOTE")
+    FOCUS_WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
+    FOCUS_OPEN=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ')
     if [ -n "$FOCUS_WIP" ] || [ -n "$FOCUS_OPEN" ]; then
-      n=$(printf '%s\n' "$FOCUS_OPEN" | grep -c . || true)
-      w=$(printf '%s\n' "$FOCUS_WIP" | grep -c . || true)
+      n=$(printf '%s\n' "$FOCUS_OPEN" | focus_count)
+      w=$(printf '%s\n' "$FOCUS_WIP" | focus_count)
       echo "🎯 Focus (today — $(basename "$DAILY_NOTE"), ${w:-0} in progress, ${n:-0} open):"
       if [ -n "$FOCUS_WIP" ]; then
         echo "  in progress:"
