@@ -144,18 +144,37 @@ CONTEXT=$(
     DAILY_NOTE=$(notes path daily 2>/dev/null || true)
     [ -n "$DAILY_NOTE" ] || DAILY_NOTE="$HOME/.notes/journal/daily/$(date +%F).md"
     FOCUS_OPEN=""
+    FOCUS_WIP=""
     if [ -f "$DAILY_NOTE" ]; then
-      # Open `- [ ]` items under `## Focus` (to the next H2). Drop the `<!-- since:… -->`
+      # Unfinished items under `## Focus` (to the next H2). Drop the `<!-- since:… -->`
       # comment + trailing #tags and the checkbox glyph; keep the `(Nd)` staleness age.
-      FOCUS_OPEN=$(awk '/^## Focus/{f=1;next} f&&/^## /{exit} f' "$DAILY_NOTE" 2>/dev/null \
+      # `[/]` (in-progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
+      # actively being worked is surfaced first and never lost to the open-list truncation.
+      # Matching only `- [ ]` here is a silent drop: it hides exactly the task in flight.
+      FOCUS_BODY=$(awk '/^## Focus/{f=1;next} f&&/^## /{exit} f' "$DAILY_NOTE" 2>/dev/null || true)
+      FOCUS_WIP=$(printf '%s\n' "$FOCUS_BODY" \
+        | grep -E '^[[:space:]]*- \[/\] .' \
+        | sed -E 's/<!--[^>]*-->//g; s/- \[\/\] /- /; s/[[:space:]]+#[[:alnum:]_-]+//g; s/[[:space:]]+$//' || true)
+      FOCUS_OPEN=$(printf '%s\n' "$FOCUS_BODY" \
         | grep -E '^[[:space:]]*- \[ \] .' \
         | sed -E 's/<!--[^>]*-->//g; s/- \[ \] /- /; s/[[:space:]]+#[[:alnum:]_-]+//g; s/[[:space:]]+$//' || true)
     fi
-    if [ -n "$FOCUS_OPEN" ]; then
+    if [ -n "$FOCUS_WIP" ] || [ -n "$FOCUS_OPEN" ]; then
       n=$(printf '%s\n' "$FOCUS_OPEN" | grep -c . || true)
-      echo "🎯 Focus (today — $(basename "$DAILY_NOTE"), ${n:-0} open):"
-      printf '%s\n' "$FOCUS_OPEN" | head -8 | sed 's/^/  /'
-      [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
+      w=$(printf '%s\n' "$FOCUS_WIP" | grep -c . || true)
+      echo "🎯 Focus (today — $(basename "$DAILY_NOTE"), ${w:-0} in progress, ${n:-0} open):"
+      if [ -n "$FOCUS_WIP" ]; then
+        echo "  in progress:"
+        printf '%s\n' "$FOCUS_WIP" | head -4 | sed 's/^/    /'
+        [ "${w:-0}" -gt 4 ] && echo "    … +$((w-4)) more in progress"
+      fi
+      if [ -n "$FOCUS_OPEN" ]; then
+        FOCUS_INDENT="  "
+        if [ -n "$FOCUS_WIP" ]; then echo "  open:"; FOCUS_INDENT="    "; fi
+        printf '%s\n' "$FOCUS_OPEN" | head -8 | sed "s/^/$FOCUS_INDENT/"
+        [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
+      fi
+      echo "  → before you start: is this session's work one of these? If not, \`notes focus add\`; when it lands, \`notes focus done\`."
       echo
     else
       echo "🎯 Focus: none set — run \`notes today\`, then capture what we're on (terse, plain, a couple words)."
