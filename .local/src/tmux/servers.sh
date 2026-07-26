@@ -35,7 +35,7 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> · ls · pick · hop <name> · pick-session
+# Verbs: <name> · ensure <name> · ls · pick · hop <name> · root <name> · pick-session
 
 set -uo pipefail
 
@@ -157,32 +157,44 @@ cmd_pick_session() {
   fi
 }
 
-# hop <name> -- leave the current server and land in <name>. Only meaningful from
-# inside tmux; outside, attaching directly is the same thing.
-cmd_hop() {
-  local target="${1:?hop needs a server name}"
+# Two ways to arrive in a world, on purpose:
+#
+#   hop   resume where you left off  -> flip back and forth between two pieces of work
+#   root  the world's landing page   -> "take me to the top of hub"
+#
+# hop is the one you want bound to a key you hit all day; root is the deliberate
+# "start from the beginning" move.
+_enter() {
+  local target="${1:?needs a server name}" mode="${2:-last}"
 
   if [ -n "${TMUX:-}" ]; then
-    # -E runs after this client detaches, so the two halves read as one hop. The
+    # -E runs after this client detaches, so the two halves read as one motion. The
     # world is ensured on the far side, not here, so a half-built server cannot
     # leave you detached from everything.
-    tmux detach-client -E "$(printf '%q' "$0") hop $(printf '%q' "$target")"
+    tmux detach-client -E "$(printf '%q' "$0") $mode $(printf '%q' "$target")"
     return 0
   fi
 
   cmd_ensure "$target" >/dev/null
 
-  # Land on the manifest's FIRST session, not on whatever tmux last touched — that
-  # is what makes hopping to hub open today's daily rather than a random shell.
-  local landing
-  landing="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' \
-    "$MANIFEST_DIR/$target.conf" 2>/dev/null)"
-
-  if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
-    exec tmux -L "$target" attach -t "=$landing"
+  if [ "$mode" = "root" ]; then
+    # The manifest's FIRST entry is the world's root page.
+    local landing
+    landing="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' \
+      "$MANIFEST_DIR/$target.conf" 2>/dev/null)"
+    if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
+      exec tmux -L "$target" attach -t "=$landing"
+    fi
   fi
+
+  # No -t: tmux picks the most recently used (unattached) session, and a session
+  # remembers its own active window — so this restores the exact window you left,
+  # which is the whole point of flipping between worlds.
   exec tmux -L "$target" attach
 }
+
+cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
+cmd_root() { _enter "${1:?root needs a server name}" root; }
 
 # pick -- fzf over the servers. Enter hops.
 cmd_pick() {
@@ -203,6 +215,7 @@ main() {
     ls|list)      cmd_ls ;;
     pick)         cmd_pick ;;
     hop)          shift; cmd_hop "${1:-}" ;;
+    root)         shift; cmd_root "${1:-}" ;;
     ensure)       shift; cmd_ensure "${1:-}" ;;
     pick-session) cmd_pick_session ;;
     -h|--help)    sed -n '2,40p' "$0" ;;
