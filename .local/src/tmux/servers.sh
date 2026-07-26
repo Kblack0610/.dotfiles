@@ -194,12 +194,24 @@ _enter() {
   local target="${1:?needs a server name}" mode="${2:-last}"
 
   if [ -n "${TMUX:-}" ]; then
-    # -E runs after this client detaches, so the two halves read as one motion. The
-    # world is ensured on the far side, not here, so a half-built server cannot
-    # leave you detached from everything.
-    tmux detach-client -E "$(printf '%q' "$0") $mode $(printf '%q' "$target")"
+    # -E runs after this client detaches, so the two halves read as one motion.
+    #
+    # It MUST dispatch to `land`, not back to hop/root. tmux does NOT clear $TMUX
+    # for the -E command — it stays set, pointing at the server you just left. So a
+    # hop/root on the far side would see $TMUX, take this same branch, and recurse
+    # instead of attaching: you end up detached, and the next `ensure` leaves a
+    # stray session behind. `land` never looks at $TMUX.
+    tmux detach-client -E "$(printf '%q' "$0") land $(printf '%q' "$target") $mode"
     return 0
   fi
+
+  cmd_land "$target" "$mode"
+}
+
+# land <server> [last|root] -- the far side of a hop. Never consults $TMUX, because
+# it is reached from `detach-client -E`, where $TMUX is still set to the OLD server.
+cmd_land() {
+  local target="${1:?land needs a server name}" mode="${2:-last}"
 
   cmd_ensure "$target" >/dev/null
 
@@ -210,6 +222,9 @@ _enter() {
       "$MANIFEST_DIR/$target.conf" 2>/dev/null)"
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
       _refresh_landing "$target" "$landing"
+      # $TMUX is still set here (see _enter); attach refuses to nest while it is,
+      # so drop it. -L already selects the server, so nothing else needs it.
+      unset TMUX
       exec tmux -L "$target" attach -t "=$landing"
     fi
   fi
@@ -217,6 +232,7 @@ _enter() {
   # No -t: tmux picks the most recently used (unattached) session, and a session
   # remembers its own active window — so this restores the exact window you left,
   # which is the whole point of flipping between worlds.
+  unset TMUX
   exec tmux -L "$target" attach
 }
 
@@ -243,6 +259,7 @@ main() {
     pick)         cmd_pick ;;
     hop)          shift; cmd_hop "${1:-}" ;;
     root)         shift; cmd_root "${1:-}" ;;
+    land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     ensure)       shift; cmd_ensure "${1:-}" ;;
     pick-session) cmd_pick_session ;;
     -h|--help)    sed -n '2,40p' "$0" ;;
