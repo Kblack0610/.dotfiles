@@ -161,17 +161,37 @@ cmd_pick_session() {
 # open — which for a DATE-DERIVED page means `root` quietly hands you an old note.
 # That is exactly how a May-1st daily kept reappearing.
 #
-# So on `root`, if the landing pane is running an editor on a file under the daily
-# directory that is NOT today's, switch the buffer with `:e`. Escape first, because
-# the editor may be in insert mode. Only touches a pane already running nvim on a
-# stale daily; a shell, a different file, or today's note are all left alone.
+# `root` therefore restores the landing page in two cases:
+#
+#   1. The pane is back at a SHELL — you quit the editor. Re-run the manifest's
+#      startup command, so the root page is genuinely a page and not the shell you
+#      happen to have left behind.
+#   2. The pane is running nvim on a daily that is NOT today's — switch the buffer
+#      with `:e`. Escape first, in case the editor is in insert mode.
+#
+# Anything else (nvim on some other file, nvim already on today's note) is left
+# alone: `root` restores the page, it does not hijack an editor you are using.
 _refresh_landing() {
-  local srv="$1" sess="$2" pane cmd title today
+  local srv="$1" sess="$2" pane cmd title today startup
+
   pane="$(tmux -L "$srv" list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null | head -1)"
   [ -n "$pane" ] || return 0
   cmd="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null)"
-  [ "$cmd" = "nvim" ] || return 0
 
+  # Case 1: back at a shell -> re-run the manifest's startup command for this entry.
+  case "$cmd" in
+    sh|bash|zsh|fish)
+      startup="$(awk -v s="$sess" \
+        '!/^[[:space:]]*#/ && $1 == s { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' \
+        "$MANIFEST_DIR/$srv.conf" 2>/dev/null)"
+      [ -n "$startup" ] || return 0
+      tmux -L "$srv" send-keys -t "$sess:" "$startup" Enter
+      return 0
+      ;;
+  esac
+
+  # Case 2: an editor sitting on a stale daily.
+  [ "$cmd" = "nvim" ] || return 0
   title="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)"
   case "$title" in *"journal/daily"*) ;; *) return 0 ;; esac
 
