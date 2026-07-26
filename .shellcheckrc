@@ -1,0 +1,20 @@
+# Repo-wide shellcheck config. Read automatically by shellcheck AND by editor/LSP
+# integrations, so it holds the settings that should apply everywhere.
+#
+# NOTE: the severity ratchet is deliberately NOT here. `severity=` is not a valid
+# .shellcheckrc directive -- shellcheck (checked on 0.11.0) silently IGNORES the key, so a
+# `severity=error` line here reads like a working gate while every warning still fails the
+# run. Verified: the same file reports SC2034 with the key present and nothing with
+# `--severity=error` on the command line. The ratchet lives in tests/lint.sh instead, where
+# it is a real CLI flag.
+
+# Follow `source`/`.` into sibling files. Many scripts here source shared-hooks helpers,
+# and without this shellcheck reports SC1091 on every one of them.
+external-sources=true
+source-path=SCRIPTDIR
+
+# Warnings that are noise in this codebase specifically:
+#   SC1090  non-constant source path -- deliberate, the hooks source resolved paths
+#   SC2016  single quotes intentionally prevent expansion in fzf --bind action strings,
+#           which is the entire point of the cockpit's re-entrant dispatch
+disable=SC1090,SC2016

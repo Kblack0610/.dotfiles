@@ -250,3 +250,7 @@ test_notifications.sh
 
 # Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
 .agent/
+
+# Test suite: vendored bats + per-run failure artifacts (see tests/Makefile bootstrap)
+tests/vendor/
+tests/artifacts/

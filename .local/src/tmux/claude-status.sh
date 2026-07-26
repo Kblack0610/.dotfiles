@@ -98,6 +98,9 @@ get_short_name() {
     esac
 }
 
+# Sourced (by the test suite) rather than run: every function is defined, nothing executes.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 # Main
 case "$1" in
     --session)
