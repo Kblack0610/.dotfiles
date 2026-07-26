@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Stub for the `agent-panel` Rust binary.
+#
+# fleet.sh consumes exactly one subcommand -- `agent-panel list`, whose contract is
+# `target<TAB>glyph<TAB>project<TAB>summary`, one live Claude pane per line. Serving that
+# from a fixture lets the "agents in OTHER sessions" filter be tested deterministically:
+# the real binary's output depends on which panes happen to be running on the machine,
+# which is not something a test can pin.
+#
+# Fixture files, all optional:
+#   agent-panel.list    lines for `agent-panel list`
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'agent-panel %s\n' "$*" >> "$FIX/calls.log"
+
+case "${1:-}" in
+  list) [ -f "$FIX/agent-panel.list" ] && cat "$FIX/agent-panel.list" ;;
+  *) : ;;   # next / preview / interactive: recorded no-ops
+esac
+exit 0
