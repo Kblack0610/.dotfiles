@@ -124,7 +124,9 @@ get_location_meta() {
             continue
         fi
         [[ "$line" =~ ^\[ ]] && in_location=false
-        if [ "$in_location" = true ] && [[ "$line" =~ ^$field[[:space:]]*=[[:space:]]*\"?([^\"]*)\"? ]]; then
+        # ${field}, not $field: followed by `[`, the unbraced form reads as an array index
+        # (shellcheck SC1087). Same expansion, unambiguous to both the shell and the reader.
+        if [ "$in_location" = true ] && [[ "$line" =~ ^${field}[[:space:]]*=[[:space:]]*\"?([^\"]*)\"? ]]; then
             echo "${BASH_REMATCH[1]}"
             return
         fi
