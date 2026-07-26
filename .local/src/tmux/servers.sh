@@ -229,10 +229,26 @@ cmd_land() {
     fi
   fi
 
-  # No -t: tmux picks the most recently used (unattached) session, and a session
-  # remembers its own active window — so this restores the exact window you left,
-  # which is the whole point of flipping between worlds.
+  # Resume: attach to the session with the newest last_attached, chosen EXPLICITLY.
+  #
+  # A bare `attach` is not good enough. tmux's documented rule is that it "will
+  # prefer the most recently used UNATTACHED session" — so if the session you were
+  # working in still has a client on it (a second terminal, a split-off window), it
+  # gets skipped and you land somewhere else entirely. That is what made going back
+  # to hub dump you on the daily instead of where you left off.
+  #
+  # Sessions that have never been attached report an empty last_attached and sort to
+  # the bottom, so a brand-new world still falls through to the plain attach below.
+  # A session remembers its own active window, so this restores the exact window.
+  local last
+  last="$(tmux -L "$target" list-sessions \
+            -F '#{session_last_attached} #{session_name}' 2>/dev/null \
+          | sort -rn | head -1 | cut -d' ' -f2-)"
+
   unset TMUX
+  if [ -n "$last" ]; then
+    exec tmux -L "$target" attach -t "=$last"
+  fi
   exec tmux -L "$target" attach
 }
 
