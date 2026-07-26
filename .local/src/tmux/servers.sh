@@ -229,24 +229,35 @@ cmd_land() {
     fi
   fi
 
-  # Resume: attach to the session with the newest last_attached, chosen EXPLICITLY.
+  # Resume: the most recently used session that is NOT the landing page.
   #
-  # A bare `attach` is not good enough. tmux's documented rule is that it "will
-  # prefer the most recently used UNATTACHED session" — so if the session you were
-  # working in still has a client on it (a second terminal, a split-off window), it
-  # gets skipped and you land somewhere else entirely. That is what made going back
-  # to hub dump you on the daily instead of where you left off.
+  # Two things had to be got right here.
   #
-  # Sessions that have never been attached report an empty last_attached and sort to
-  # the bottom, so a brand-new world still falls through to the plain attach below.
-  # A session remembers its own active window, so this restores the exact window.
-  local last
+  # A bare `attach` is not good enough: tmux's documented rule is that it "will
+  # prefer the most recently used UNATTACHED session", so a session that still has a
+  # client on it — a second terminal, another window on the same world — gets
+  # skipped and you land somewhere else. Pick explicitly by last_attached instead.
+  #
+  # And the landing page must be EXCLUDED. Visiting the root with N/M updates its
+  # last_attached like any other visit, so a literal "most recent" reading sends you
+  # back to the daily rather than to the work you were doing — resume felt random
+  # because a quick N poisoned the next resume. Resume means "what I was working
+  # on"; the root page is never that. Falls back to the landing (then to a plain
+  # attach) when the world genuinely has nothing else.
+  local landing_name last
+  landing_name="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' \
+    "$MANIFEST_DIR/$target.conf" 2>/dev/null)"
+
   last="$(tmux -L "$target" list-sessions \
             -F '#{session_last_attached} #{session_name}' 2>/dev/null \
-          | sort -rn | head -1 | cut -d' ' -f2-)"
+          | sort -rn | cut -d' ' -f2- \
+          | grep -vxF "${landing_name:-}" | head -1)"
+
+  # Nothing but the root in this world — go there rather than nowhere.
+  [ -n "$last" ] || last="$landing_name"
 
   unset TMUX
-  if [ -n "$last" ]; then
+  if [ -n "$last" ] && tmux -L "$target" has-session -t "=$last" 2>/dev/null; then
     exec tmux -L "$target" attach -t "=$last"
   fi
   exec tmux -L "$target" attach
