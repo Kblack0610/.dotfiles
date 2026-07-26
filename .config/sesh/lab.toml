@@ -7,7 +7,7 @@
 preview_command = "eza --all --git --icons --color=always {}"
 
 [[session]]
-name = "projects"
+name = "lab"
 path = "~/.notes/lab"
 
 [[session]]
