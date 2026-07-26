@@ -90,6 +90,7 @@ Media/Music
 !.claude/skills/provision-capture/
 !.claude/skills/sentinel/
 !.claude/skills/session-snapshot/
+!.claude/skills/shell-test-harness/
 !.claude/skills/sprint-overseer/
 !.claude/skills/svg-diagram/
 !.claude/skills/update-rules/
