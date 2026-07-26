@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stub for `systemctl`, used by the unit and integ tiers.
+#
+# fleet.sh reads unit state exclusively through `systemctl --user show <unit> -p <prop>
+# --value`, so this only has to answer `show`. Values are served per-unit-per-property
+# from fixture files, which lets a test put a runner into any state (active, failed with a
+# non-zero exit, never-installed) without a real systemd user bus anywhere near it.
+#
+# Fixture files, all optional:
+#   systemctl.show.<unit>.<Property>     the value for one property of one unit
+# A missing file yields an empty value, which is exactly what real `show` does for a unit
+# that was never installed -- the branch fleet.sh renders as an idle runner.
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'systemctl %s\n' "$*" >> "$FIX/calls.log"
+
+unit=""
+prop=""
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user|--value) shift ;;
+    -p) prop="${2:-}"; shift 2 ;;
+    *)  args+=("$1"); shift ;;
+  esac
+done
+
+# args = (show <unit>) for the only form fleet.sh uses.
+[ "${args[0]:-}" = show ] || exit 0
+unit="${args[1]:-}"
+[ -n "$unit" ] && [ -n "$prop" ] || exit 0
+
+f="$FIX/systemctl.show.$unit.$prop"
+[ -f "$f" ] && cat "$f"
+exit 0

@@ -1,0 +1,109 @@
+name: shell tests
+
+# Three jobs, by what they can catch:
+#
+#   fast   the tmux-free tiers (unit + contract). Runs directly on the runner because it
+#          never starts a tmux server. This is the same target the local stop-hook gates on.
+#   ui     the tmux ui tier, inside the SAME container a developer uses locally
+#          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
+#          breaks, this job goes red rather than only the developer's laptop.
+#   drift  weekly sweep across tmux versions. What a local hook cannot catch is the
+#          environment moving underneath the repo -- a new tmux, a new fzf, a distro bump --
+#          which surfaces precisely when nothing in the repo changed.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'     # Mondays 04:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: shell-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: fast tier (unit + contract)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootstrap bats
+        run: make -C tests bootstrap
+      # No tmux or fzf installed on purpose. These tiers must not need either: the contract
+      # tier drives the subjects through the fake tmux stub, and if a test ever starts
+      # reaching for a real binary, this job is where that shows up.
+      - name: Fast tier
+        run: make -C tests test-fast
+
+  ui:
+    name: ui tier (tmux ${{ matrix.tmux }}, container)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # On push/PR only the version the author runs. The weekly `drift` job sweeps wider.
+        tmux: ['3.7b']
+    steps:
+      - uses: actions/checkout@v4
+      # docker.sh builds the image, vendors bats on the host first, then runs the tier
+      # inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
+      # and capture-pane all work headless. Only display-popup needs an attached client, and
+      # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
+      # the testable surface). If a future test ever needs a client, the idiom is bats-core's
+      # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
+      - name: UI tier in the disposable container
+        env:
+          TMUX_REF: ${{ matrix.tmux }}
+        run: tests/docker.sh test-ui-inner
+      - name: Upload failure screens
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens-tmux-${{ matrix.tmux }}
+          path: tests/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  drift:
+    name: drift sweep (tmux ${{ matrix.tmux }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.4 is what ubuntu-24.04's apt ships and what most machines have.
+        # 3.5a is Debian trixie's version. 3.7b is the author's, and the only one with
+        # floating panes. The image builds tmux from source, so all three are reachable.
+        tmux: ['3.4', '3.5a', '3.7b']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Whole suite in the container
+        env:
+          TMUX_REF: ${{ matrix.tmux }}
+        run: tests/docker.sh test-container
+      - name: Upload failure screens
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-screens-tmux-${{ matrix.tmux }}
+          path: tests/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  lint:
+    name: shellcheck + shfmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Runs in the SAME image as the ui tier, which pins shellcheck and shfmt. Installing
+      # them from apt here instead would mean CI lints with a different shellcheck than the
+      # developer does, and the first version bump would produce findings nobody can
+      # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
+      # the severity ratchet and the file list have exactly one definition.
+      - name: lint
+        run: tests/docker.sh lint

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Stub for `tmux`, used by the unit and integ tiers only.
+#
+# Two jobs:
+#   1. Record every invocation, so tests can assert intent. The cockpit's --jump /
+#      --open-file / --journal / --resume-session verbs all shell out to
+#      `tmux new-window "nvim +N file"`; a test must capture that, not spawn an editor.
+#   2. Serve canned pane data, so claude-status.sh can be driven through every branch
+#      of its classifier without a live tmux server full of real Claude sessions.
+#
+# The UI tier does NOT use this stub -- tmux_harness.bash calls `command tmux -L <socket>`,
+# which bypasses PATH lookup and reaches the real binary.
+#
+# `display-popup` is a recorded no-op on purpose: it is the one tmux command that cannot
+# run headless (`no current client`, rc=1, command never runs), so the only way to assert
+# on it is to shim it. Same trick junegunn uses in fzf's own suite (test/test_tmux.rb).
+#
+# Fixture files, all optional:
+#   tmux.panes                  lines for `list-panes -a -F ...`
+#   tmux.capture.<sess>_<idx>   content for `capture-pane -t <sess>:<idx>`
+#   tmux.activity.<sess>_<idx>  epoch seconds for `#{window_activity}`
+#   tmux.session                name returned for `#{session_name}`
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'tmux %s\n' "$*" >> "$FIX/calls.log"
+
+# target_key <sess:idx> -> <sess>_<idx>, the fixture filename suffix
+target_key() { printf '%s' "${1//:/_}"; }
+
+# Pull `-t <target>` out of the arg list wherever it sits.
+target=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "-t" ] && target="$a"
+  prev="$a"
+done
+
+case "${1:-}" in
+  list-panes)
+    [ -f "$FIX/tmux.panes" ] && cat "$FIX/tmux.panes"
+    ;;
+  capture-pane)
+    f="$FIX/tmux.capture.$(target_key "$target")"
+    [ -f "$f" ] && cat "$f"
+    ;;
+  display-message)
+    # `-p -t <target> "#{window_activity}"` and `-p '#{session_name}'`
+    if printf '%s ' "$@" | grep -q 'window_activity'; then
+      f="$FIX/tmux.activity.$(target_key "$target")"
+      [ -f "$f" ] && cat "$f"
+    elif printf '%s ' "$@" | grep -q 'session_name'; then
+      [ -f "$FIX/tmux.session" ] && cat "$FIX/tmux.session" || echo dotfiles
+    fi
+    ;;
+  *)
+    : ;;   # new-window, display-popup, set-option, ...: recorded no-ops
+esac
+exit 0

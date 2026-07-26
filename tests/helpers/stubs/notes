@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Stub for the `notes` Rust CLI.
+#
+# Reads canned output from $NOTES_FIXTURE and appends every invocation to calls.log, so
+# tests can assert BOTH what the cockpit rendered and which vault-mutating command it
+# would have issued -- without a real vault anywhere near the test.
+#
+# Fixture files (all TAB-delimited, all optional):
+#   profiles                    one profile name per line
+#   projects.<profile>          name  summary  status  version
+#   focus.all                   profile  file  line  key  text
+#   ptask.<profile>.<project>   path  line  key  text
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'notes %s\n' "$*" >> "$FIX/calls.log"
+
+emit() { [ -f "$FIX/$1" ] && cat "$FIX/$1" || true; }
+
+# Pull `--profile P` out of anywhere in the arg list.
+profile=""
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile) profile="${2:-}"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+case "${1:-}" in
+  config)
+    [ "${2:-}" = "--profiles" ] && emit profiles
+    ;;
+  projects)
+    # `notes --profile P projects` -> name TAB summary TAB status TAB version
+    emit "projects.${profile:-personal}"
+    ;;
+  focus)
+    case "${2:-}" in
+      --all) emit focus.all ;;
+      add|done|start|rm|mv) : ;;   # mutation: recorded in calls.log, no output
+      *) emit focus.all ;;
+    esac
+    ;;
+  ptask)
+    # `notes --profile P ptask <name> list`
+    proj="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
+    case "${3:-}" in
+      list|"") emit "ptask.${profile:-personal}.${proj}" ;;
+      *) : ;;                      # add/done/rm: recorded only
+    esac
+    ;;
+  today)
+    : ;;                           # bootstrap no-op
+  *)
+    : ;;
+esac
+exit 0

@@ -213,6 +213,9 @@ usage() {
   sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+# Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   post)   cmd_post "$@" ;;

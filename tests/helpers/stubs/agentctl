@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stub for `agentctl` -- the MUTATION side of the fleet.
+#
+# fleet.sh only ever calls `agentctl start|stop|restart <name>`. Recording the invocation
+# is the entire point: a test must be able to assert that pressing `s` on a runner row
+# issued a start for THAT runner, without a systemd user bus and without the ability to
+# actually start anything. Nothing here changes state, so a test that fires a mutation
+# verb cannot leak into the next one.
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'agentctl %s\n' "$*" >> "$FIX/calls.log"
+exit 0
