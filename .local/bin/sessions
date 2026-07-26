@@ -2,18 +2,26 @@
 # sessions - list / resume / compact important Claude sessions from the
 # agent-facing registry written by stop-post.d/80-session-register.sh.
 #
-#   sessions list [project] [--all]   show registered sessions (newest first)
-#   sessions resume [id] [--pick]     reopen a session transcript (claude -r)
-#   sessions compact <id> [--pick]    distill a transcript into a digest .md
+#   sessions list [project] [--all] [-n N]   show registered sessions (newest first)
+#   sessions live                            only the sessions running right now
+#   sessions resume <id|prefix|--pick>       reopen a session (claude -r), cd'ing to its repo
+#   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 #
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
+# Live state: ~/.claude/sessions/<pid>.json, written by the Claude CLI itself -
+# gives sessionId, cwd, name and busy/idle without any hook of ours.
 # Agent axis only - nothing here touches ~/.notes/inbox.
 
 set -uo pipefail
 
 SESS_ROOT="$HOME/.agent/sessions"
+LIVE_ROOT="$HOME/.claude/sessions"
+DEFAULT_LIMIT=25
+TAB="$(printf '\t')"
 
 command -v jq >/dev/null 2>&1 || { echo "sessions: jq is required" >&2; exit 1; }
+
+# ---------------------------------------------------------------- helpers ---
 
 resolve_project() {
   # Resolve the current project name the same way the hooks do.
@@ -26,6 +34,29 @@ resolve_project() {
   fi
 }
 
+_age() {
+  # epoch -> compact relative age ("now", "9m", "3h", "2d", "5w")
+  local then="${1:-0}" now diff
+  now=$(date +%s)
+  case "$then" in ''|*[!0-9]*) then=0 ;; esac
+  diff=$(( now - then ))
+  [ "$diff" -lt 0 ] && diff=0
+  if   [ "$diff" -lt 60 ];     then echo "now"
+  elif [ "$diff" -lt 3600 ];   then echo "$(( diff / 60 ))m"
+  elif [ "$diff" -lt 86400 ];  then echo "$(( diff / 3600 ))h"
+  elif [ "$diff" -lt 604800 ]; then echo "$(( diff / 86400 ))d"
+  else                              echo "$(( diff / 604800 ))w"
+  fi
+}
+
+term_width() {
+  local w="${COLUMNS:-}"
+  [ -n "$w" ] || w="$(tput cols 2>/dev/null)"
+  case "$w" in ''|*[!0-9]*) w=100 ;; esac
+  [ "$w" -lt 60 ] && w=60
+  echo "$w"
+}
+
 # Emit registry lines. $1 = project name, or "--all".
 registry_lines() {
   if [ "${1:-}" = "--all" ]; then
@@ -36,73 +67,250 @@ registry_lines() {
   fi
 }
 
-fmt_row() {
-  # tsv: id \t date \t edits \t project \t first_prompt  (newest first)
-  jq -rc '[.session_id, (.updated|todate), (.edits|tostring), .project, .first_prompt] | @tsv' 2>/dev/null \
-    | sort -t"$(printf '\t')" -k2,2r
+live_lines() {
+  # tsv: session_id \t status \t name \t cwd   (one row per running Claude process)
+  #
+  # Empty fields are emitted as "-" on purpose. TAB counts as IFS whitespace in
+  # bash, so `read` collapses runs of it and an empty middle field would silently
+  # shift every later field left (cwd landing in name, etc).
+  find "$LIVE_ROOT" -maxdepth 1 -name '*.json' -print0 2>/dev/null \
+    | xargs -0 -r jq -rc '
+        select(.sessionId != null)
+        | [ .sessionId,
+            (.status // "live"),
+            (if (.nameSource // "") == "derived" then "-" else (.name // "-") end),
+            (.cwd // "-"),
+            (((.startedAt // 0) / 1000) | floor | tostring) ]
+        | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null
 }
 
+_unsentinel() { [ "${1:-}" = "-" ] && echo "" || echo "${1:-}"; }
+
+# Populate LIVE_STATUS / LIVE_NAME keyed by session id.
+declare -A LIVE_STATUS=() LIVE_NAME=() LIVE_START=() LIVE_CWD=()
+load_live() {
+  local id st nm cwd started
+  while IFS="$TAB" read -r id st nm cwd started; do
+    [ -n "$id" ] || continue
+    LIVE_STATUS["$id"]="$st"
+    LIVE_NAME["$id"]="$(_unsentinel "$nm")"
+    LIVE_START["$id"]="$started"
+    LIVE_CWD["$id"]="$(_unsentinel "$cwd")"
+  done < <(live_lines)
+}
+
+live_marker() {
+  # $1 = session id -> a short, aligned live indicator.
+  # Statuses come from the Claude CLI: busy = mid-turn, waiting = sitting at the
+  # prompt wanting input from you, idle = open but not waiting on anything.
+  case "${LIVE_STATUS[${1:-}]:-}" in
+    busy)    printf '* busy' ;;
+    waiting) printf 'o wait' ;;
+    idle)    printf 'o idle' ;;
+    '')      printf '' ;;
+    *)       printf 'o live' ;;
+  esac
+}
+
+rows_tsv() {
+  # tsv: id \t updated_epoch \t edits \t project \t first_prompt   (newest first)
+  registry_lines "$1" \
+    | jq -rc '[.session_id, (.updated|tostring), (.edits|tostring), .project,
+               (.first_prompt // "" | gsub("[\\n\\t\\r]+"; " ") | gsub("  +"; " "))] | @tsv' 2>/dev/null \
+    | sort -t"$TAB" -k2,2nr
+}
+
+resolve_id() {
+  # $1 = full id or unique prefix -> prints the full id, or fails with a message.
+  local want="$1" matches n
+  matches=$(registry_lines --all | jq -rc '.session_id' 2>/dev/null | sort -u | grep -i "^${want}")
+  # A live session may not be registered yet (registration happens on Stop).
+  if [ -z "$matches" ]; then
+    matches=$(live_lines | cut -f1 | sort -u | grep -i "^${want}")
+  fi
+  n=$(printf '%s\n' "$matches" | grep -c .)
+  if [ "$n" -eq 0 ]; then
+    echo "sessions: no session matching '$want'" >&2; return 1
+  elif [ "$n" -gt 1 ]; then
+    echo "sessions: '$want' is ambiguous - matches $n sessions:" >&2
+    printf '%s\n' "$matches" | sed 's/^/  /' >&2
+    return 1
+  fi
+  printf '%s\n' "$matches"
+}
+
+lookup_field() {
+  # $1 = session id, $2 = jq field -> first match across registries
+  registry_lines --all \
+    | jq -rc --arg id "$1" --arg f "$2" 'select(.session_id==$id) | .[$f]' 2>/dev/null | head -1
+}
+
+session_cwd() {
+  # $1 = session id -> best-effort working directory for that session.
+  local id="$1" cwd t
+  # 1. A live session tells us directly.
+  cwd=$(live_lines | awk -F"$TAB" -v i="$id" '$1==i {print $4; exit}')
+  cwd="$(_unsentinel "$cwd")"
+  [ -n "$cwd" ] && [ -d "$cwd" ] && { echo "$cwd"; return; }
+  # 2. Otherwise the transcript records cwd on its first few entries.
+  t=$(lookup_field "$id" transcript)
+  if [ -n "$t" ] && [ -f "$t" ]; then
+    cwd=$(head -40 "$t" 2>/dev/null | jq -rc 'select(.cwd != null) | .cwd' 2>/dev/null | head -1)
+    [ -n "$cwd" ] && [ -d "$cwd" ] && { echo "$cwd"; return; }
+  fi
+  echo ""
+}
+
+# ------------------------------------------------------------------- list ---
+
 cmd_list() {
-  local scope="" showall=false
-  for a in "$@"; do
-    case "$a" in
-      --all) showall=true ;;
-      *) scope="$a" ;;
+  local scope="" showall=false limit="$DEFAULT_LIMIT" liveonly=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all)     showall=true ;;
+      --live)    liveonly=true ;;
+      -n)        shift; limit="${1:-$DEFAULT_LIMIT}" ;;
+      -n*)       limit="${1#-n}" ;;
+      --limit=*) limit="${1#--limit=}" ;;
+      *)         scope="$1" ;;
     esac
+    shift
   done
+  case "$limit" in ''|*[!0-9]*) limit="$DEFAULT_LIMIT" ;; esac
+
   local key
   if [ "$showall" = true ]; then key="--all"
   elif [ -n "$scope" ]; then key="$scope"
   else key="$(resolve_project)"; fi
 
+  load_live
+
   local rows
-  rows=$(registry_lines "$key" | fmt_row)
+  rows=$(rows_tsv "$key")
   if [ -z "$rows" ]; then
     echo "No registered sessions for '${key}'." >&2
     return 0
   fi
-  printf '%-38s  %-20s  %5s  %-14s  %s\n' "SESSION" "UPDATED" "EDITS" "PROJECT" "PROMPT"
-  printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r id date edits project prompt; do
-    printf '%-38s  %-20s  %5s  %-14s  %s\n' "$id" "$date" "$edits" "$project" "$prompt"
-  done
+
+  # Column widths. WHAT gets whatever is left over.
+  local width proj_w what_w
+  width=$(term_width)
+  if [ "$showall" = true ]; then proj_w=14; else proj_w=0; fi
+  # 8 id + 2 + 6 age + 2 + 5 edits + 2 + 6 live + 2 (+ proj + 2)
+  what_w=$(( width - 8 - 2 - 6 - 2 - 5 - 2 - 6 - 2 - 1 ))
+  [ "$proj_w" -gt 0 ] && what_w=$(( what_w - proj_w - 2 ))
+  [ "$what_w" -lt 20 ] && what_w=20
+
+  if [ "$proj_w" -gt 0 ]; then
+    printf '%-8s  %-6s  %5s  %-6s  %-*s  %s\n' "ID" "AGE" "EDITS" "LIVE" "$proj_w" "PROJECT" "WHAT"
+  else
+    printf '%-8s  %-6s  %5s  %-6s  %s\n' "ID" "AGE" "EDITS" "LIVE" "WHAT"
+  fi
+
+  # A session is only written to the registry when it Stops, so one that started
+  # this minute is running but unregistered. For the live view that is exactly the
+  # row you care about, so synthesise it from the live state instead of dropping it.
+  if [ "$liveonly" = true ]; then
+    local lid
+    for lid in "${!LIVE_STATUS[@]}"; do
+      grep -q "^${lid}${TAB}" <<< "$rows" && continue
+      rows+="$(printf '\n%s\t%s\t%s\t%s\t%s' \
+        "$lid" "${LIVE_START[$lid]:-0}" "-" \
+        "$(resolve_project "${LIVE_CWD[$lid]:-$PWD}")" "(running, not registered yet)")"
+    done
+    rows=$(printf '%s\n' "$rows" | grep -v '^$' | sort -t"$TAB" -k2,2nr)
+  fi
+
+  local shown=0 total=0
+  while IFS="$TAB" read -r id updated edits project prompt; do
+    [ -n "$id" ] || continue
+    local mark; mark="$(live_marker "$id")"
+    if [ "$liveonly" = true ] && [ -z "$mark" ]; then continue; fi
+    total=$(( total + 1 ))
+    [ "$shown" -ge "$limit" ] && continue
+    shown=$(( shown + 1 ))
+
+    # Prefer the session's own name when it set one; else its opening prompt.
+    local what="${LIVE_NAME[$id]:-}"
+    [ -n "$what" ] || what="$prompt"
+    [ -n "$what" ] || what="(no prompt recorded)"
+    if [ "${#what}" -gt "$what_w" ]; then
+      what="${what:0:$(( what_w - 3 ))}..."
+    fi
+
+    if [ "$proj_w" -gt 0 ]; then
+      printf '%-8s  %-6s  %5s  %-6s  %-*s  %s\n' \
+        "${id:0:8}" "$(_age "$updated")" "$edits" "$mark" "$proj_w" "$project" "$what"
+    else
+      printf '%-8s  %-6s  %5s  %-6s  %s\n' \
+        "${id:0:8}" "$(_age "$updated")" "$edits" "$mark" "$what"
+    fi
+  done <<< "$rows"
+
+  if [ "$liveonly" != true ] && [ "$total" -gt "$shown" ]; then
+    local hint=''
+    [ "$showall" = true ] || hint=' or --all for every project'
+    printf '\n  %d more - `sessions list -n %d`%s\n' "$(( total - shown ))" "$total" "$hint" >&2
+  fi
 }
+
+# ------------------------------------------------------------------- pick ---
 
 pick_id() {
-  # fzf-pick a session id from all registries; prints the id.
+  # fzf-pick a session id from all registries; prints the full id.
   command -v fzf >/dev/null 2>&1 || { echo "sessions: fzf not installed" >&2; return 1; }
-  registry_lines --all | fmt_row \
-    | fzf --with-nth=2.. --delimiter="$(printf '\t')" \
-          --prompt="session> " --preview-window=hidden \
-    | cut -f1
+  load_live
+  local rows="" id updated edits project prompt what
+  while IFS="$TAB" read -r id updated edits project prompt; do
+    [ -n "$id" ] || continue
+    what="${LIVE_NAME[$id]:-}"; [ -n "$what" ] || what="$prompt"
+    rows+="$(printf '%s\t%-8s  %-5s  %-6s  %-12s  %s' \
+      "$id" "${id:0:8}" "$(_age "$updated")" "$(live_marker "$id")" "$project" "$what")"$'\n'
+  done <<< "$(rows_tsv --all)"
+  printf '%s' "$rows" | fzf --with-nth=2.. --delimiter="$TAB" \
+      --prompt="session> " --preview-window=hidden | cut -f1
 }
 
-lookup_transcript() {
-  # $1 = session id -> prints "transcript_path" (first match across registries)
-  registry_lines --all | jq -rc --arg id "$1" 'select(.session_id==$id) | .transcript' 2>/dev/null | head -1
-}
-lookup_project() {
-  registry_lines --all | jq -rc --arg id "$1" 'select(.session_id==$id) | .project' 2>/dev/null | head -1
-}
+# ----------------------------------------------------------------- resume ---
 
 cmd_resume() {
   local id=""
-  for a in "$@"; do case "$a" in --pick) id="$(pick_id)" || return 1 ;; *) id="$a" ;; esac; done
-  [ -n "$id" ] || { echo "usage: sessions resume <id|--pick>" >&2; return 1; }
-  # cd into the transcript's project dir if we can derive it, else stay put.
-  local t; t="$(lookup_transcript "$id")"
-  if [ -n "$t" ]; then
-    # transcript lives under ~/.claude/projects/<encoded>/... - resume works from anywhere,
-    # but cd to a sane repo dir helps tool context. Fall back to $PWD.
-    :
+  for a in "$@"; do
+    case "$a" in
+      --pick) id="$(pick_id)" || return 1 ;;
+      *)      id="$(resolve_id "$a")" || return 1 ;;
+    esac
+  done
+  [ -n "$id" ] || { echo "usage: sessions resume <id|prefix|--pick>" >&2; return 1; }
+
+  # Refuse to double-open a session that is already running - two panes appending
+  # to one transcript interleave badly.
+  load_live
+  if [ -n "${LIVE_STATUS[$id]:-}" ]; then
+    echo "sessions: $id is already open (${LIVE_STATUS[$id]}). Switch to that pane instead," >&2
+    echo "          or 'claude -r $id --fork-session' to branch a new session from it." >&2
+    return 1
+  fi
+
+  local dir; dir="$(session_cwd "$id")"
+  if [ -n "$dir" ]; then
+    cd "$dir" || echo "sessions: could not cd to $dir, resuming from $PWD" >&2
   fi
   exec claude -r "$id"
 }
 
+# ---------------------------------------------------------------- compact ---
+
 cmd_compact() {
   local id=""
-  for a in "$@"; do case "$a" in --pick) id="$(pick_id)" || return 1 ;; *) id="$a" ;; esac; done
-  [ -n "$id" ] || { echo "usage: sessions compact <id|--pick>" >&2; return 1; }
-  local t proj; t="$(lookup_transcript "$id")"; proj="$(lookup_project "$id")"
+  for a in "$@"; do
+    case "$a" in
+      --pick) id="$(pick_id)" || return 1 ;;
+      *)      id="$(resolve_id "$a")" || return 1 ;;
+    esac
+  done
+  [ -n "$id" ] || { echo "usage: sessions compact <id|prefix|--pick>" >&2; return 1; }
+  local t proj; t="$(lookup_field "$id" transcript)"; proj="$(lookup_field "$id" project)"
   [ -n "$t" ] && [ -f "$t" ] || { echo "sessions: no transcript for $id" >&2; return 1; }
   [ -n "$proj" ] || proj="$(resolve_project)"
   command -v claude >/dev/null 2>&1 || { echo "sessions: claude CLI not found" >&2; return 1; }
@@ -117,27 +325,36 @@ cmd_compact() {
 Write a concise digest to $out with these markdown sections: \
 '# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
 Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
-  # Headless, non-interactive; let claude do the read + write.
   claude -p "$prompt" >/dev/null 2>&1 \
     && echo "Digest written: $out" >&2 \
     || echo "sessions: compact run failed (see claude output)" >&2
 }
 
+# ------------------------------------------------------------------ usage ---
+
 usage() {
   cat >&2 <<'EOF'
 sessions - list / resume / compact important Claude sessions
 
-  sessions list [project] [--all]   registered sessions, newest first
-  sessions resume <id|--pick>       reopen a session (claude -r)
-  sessions compact <id|--pick>      distill a transcript into a digest .md
+  sessions list [project] [--all] [-n N]   registered sessions, newest first
+  sessions live                            only what is running right now
+  sessions resume <id|prefix|--pick>       reopen a session, cd'ing to its repo
+  sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 
-Registry: ~/.agent/sessions/{project}/sessions.jsonl
+Ids are matched by prefix, so the 8-char ID column is enough:
+  sessions resume d950ba9f
+
+LIVE column: '* busy' = mid-turn, 'o idle' = open and waiting, blank = closed.
+
+Registry:    ~/.agent/sessions/{project}/sessions.jsonl
+Live state:  ~/.claude/sessions/<pid>.json
 EOF
 }
 
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   list)    cmd_list "$@" ;;
+  live)    cmd_list --all --live "$@" ;;
   resume)  cmd_resume "$@" ;;
   compact) cmd_compact "$@" ;;
   -h|--help|help) usage ;;
