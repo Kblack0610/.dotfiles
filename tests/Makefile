@@ -28,6 +28,10 @@ ASSERT_REF  := v2.1.0
 
 BATS_FLAGS ?= --print-output-on-failure --timing
 
+# Wall-clock cap for the ui tier (seconds). Generous enough for a cold container on a slow
+# runner, short enough that a blocked test fails the job instead of hanging it.
+UI_TIMEOUT  ?= 420
+
 .PHONY: test test-fast test-unit test-integ test-ui test-ui-inner test-container \
         test-docker lint fmt bootstrap clean clean-vendor help
 
@@ -86,7 +90,12 @@ test-ui-inner: $(BATS)
 	  exit 1; \
 	fi
 	@mkdir -p $(ARTIFACTS)
-	@$(BATS) $(BATS_FLAGS) $(HERE)ui
+	@# Hard wall-clock cap. bats has no per-test timeout, and a ui test that reaches an
+	@# attaching code path (`tmux attach` with no terminal) blocks FOREVER rather than
+	@# failing - one such test wedged a run for 10 minutes before it was caught. Without
+	@# this a hung test burns the whole CI job and reports nothing useful.
+	@timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(HERE)ui \
+	  || { rc=$$?; [ $$rc -eq 124 ] && echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; exit $$rc; }
 
 # What the container's default CMD runs: everything, in one pass.
 test-container: test-fast test-ui-inner

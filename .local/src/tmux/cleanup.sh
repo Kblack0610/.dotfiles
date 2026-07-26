@@ -83,7 +83,7 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Drop windows tagged pinned/important (Prefix+T, see tags.sh). Filtering here
+# Drop windows tagged pinned/important (Prefix+a, see tags.sh). Filtering here
 # rather than at the kill site keeps the confirmation count honest.
 TAGS_CLI="$HOME/.local/bin/tmux-tags"
 if [[ -x "$TAGS_CLI" ]]; then

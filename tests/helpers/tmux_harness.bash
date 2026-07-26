@@ -52,6 +52,37 @@ SHIM
   chmod +x "$SANDBOX/bin/tmux"
 }
 
+# tmux_passthrough_shim -- a `tmux` on PATH that is the REAL binary with nothing added.
+#
+# For servers.sh only. That script's entire purpose is managing SEVERAL servers on several
+# sockets, so it calls `tmux -L <name>` itself; pinning `-S` over the top would collapse
+# every world onto one socket and make the thing under test untestable.
+#
+# Isolation therefore comes from $TMUX_TMPDIR (which servers.sh reads directly, for
+# SOCKET_DIR) plus the container. That is the mechanism documented elsewhere here as unsafe,
+# and it IS unsafe on a real machine - $TMUX overrides it and a missing dir falls back to
+# /tmp. Inside the container both holes are closed: sandbox_init unsets TMUX and creates the
+# directory, and there is no other tmux server in the image to reach. require_disposable_host
+# has already refused to let this run anywhere else.
+tmux_passthrough_shim() {
+  : "${SANDBOX:?sandbox_init must run first}"
+  : "${REAL_TMUX:?no real tmux found on PATH}"
+  [ -d "${TMUX_TMPDIR:?}" ] || mkdir -p "$TMUX_TMPDIR"
+  [ -z "${TMUX:-}" ] || { echo "refusing: \$TMUX is set" >&2; return 1; }
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$REAL_TMUX" > "$SANDBOX/bin/tmux"
+  chmod +x "$SANDBOX/bin/tmux"
+}
+
+# tmux_kill_named <name...> -- tear down servers created by name under $TMUX_TMPDIR.
+# Paired with tmux_passthrough_shim, where there is no single TM_SOCKET to kill.
+tmux_kill_named() {
+  local n
+  for n in "$@"; do
+    [ -n "$n" ] || continue
+    TMUX_TMPDIR="${TMUX_TMPDIR:?}" "${REAL_TMUX:?}" -L "$n" kill-server 2>/dev/null || true
+  done
+}
+
 # tmux_start <command...> -- boot an isolated server running the command in window 0
 tmux_start() {
   [ -n "$TM_SOCKET" ] || tmux_shim

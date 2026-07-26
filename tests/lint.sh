@@ -35,7 +35,13 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 mapfile -t FILES < <(tests/lint-files.sh)
-[ "${#FILES[@]}" -gt 0 ] || { echo "lint: no shell files found"; exit 0; }
+# An empty list is a BROKEN GATE, not a clean tree - this repo has ~140 shell scripts, so
+# zero can only mean lint-files.sh could not enumerate them. Exiting 0 here would report
+# "clean" having checked nothing.
+[ "${#FILES[@]}" -gt 0 ] || {
+  echo "lint: refusing to pass - the file list came back EMPTY (see lint-files.sh)" >&2
+  exit 1
+}
 
 rc=0
 
