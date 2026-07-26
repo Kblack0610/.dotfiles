@@ -25,7 +25,8 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
-- **Switch world**: `Prefix+C-h` hub · `Prefix+C-l` lab · `Prefix+C-s` picker
+- **Resume a world**: `Prefix+C-h` hub · `Prefix+C-l` lab (back where you left off)
+- **Root of a world**: `Prefix+N` hub · `Prefix+M` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
 - **Launch menu**: `Prefix+l` → unified launcher
@@ -90,11 +91,17 @@ own a socket, and the blast radius of a kill is exactly one server.
 | Keys / command | What |
 |---|---|
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
+| `Prefix+C-h` / `C-l` | **resume** hub / lab — back on the exact window you left |
+| `Prefix+N` / `M` | **root page** of hub / lab — today's daily, projects overview |
 | `Prefix+C-s` | server picker (fzf popup, with session preview) |
-| `Prefix+C-h` / `C-l` | hop straight to hub / lab |
 | `tmx ls` | every server + session counts |
-| `tmx hub` | ensure the world, then land on its first session |
 | `tmx ensure hub` | build/repair the set without attaching |
+
+**Resume vs root** is the whole point of having two pairs of keys. `C-h`/`C-l`
+attach with no `-t`, so tmux picks the most recently used session and the session
+restores its own active window - you land back exactly where you were, which makes
+flipping between two pieces of work cheap. `N`/`M` attach to the manifest's first
+entry instead, for when you want to start from the top of a world.
 
 ### Worlds
 
