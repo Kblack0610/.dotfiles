@@ -350,31 +350,125 @@ _global_agents() {
 # The middle ground: open QUESTIONS agents raised, anchored to the task they concern.
 # Per project (joined by canonical): each open ask, its task shown as context. Enter
 # answers it (round-trips to resume the agent); ctrl-a adds work to that project.
+# ══ BRIDGE work items ═══════════════════════════════════════════════════════
+# Parse the newest sprint blackboard's Rows/Queue table into work items. Schema-
+# tolerant: map columns by header name, derive a lifecycle stage from the Status
+# keyword, pull a PR number. TSV out: ticket \t stage \t title \t pr \t sentinel.
+_sprint_items() { # $1=canon
+  local bb; bb="$(ls -1t "$HOME/.agent/plans/$1"/sprint-*.md 2>/dev/null | head -1)"
+  [ -n "$bb" ] || return 0
+  awk -F'|' '
+    function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+    !cols && /\|/ && (tolower($0) ~ /ticket/ && tolower($0) ~ /status/) {
+      for(i=2;i<=NF;i++){ h=tolower(trim($i)); if(h!="") col[h]=i }
+      cols=1; next
+    }
+    /^\|[ ]*:?-+/ { next }
+    cols && /^\|/ {
+      tk=trim($(col["ticket"])); st=trim($(col["status"])); ti=trim($(col["title"]))
+      sen=(col["sentinel"])?trim($(col["sentinel"])):""
+      if(tk=="" || tolower(tk)=="ticket") next
+      low=tolower(st" "sen)
+      if(low ~ /merged|status: *done|\bdone\b/) stage="merged"
+      else if(low ~ /blocked/) stage="blocked"
+      else if(low ~ /error|failed/) stage="error"
+      else if(low ~ /pr[- ]?open|pr *#|pull\/[0-9]|merge it|ready/) stage="review"
+      else if(low ~ /queued|filed|not dispatched|n\/a|returns/) stage="queued"
+      else stage="working"
+      pr=""; if(match(st,/pull\/[0-9]+/)) pr=substr(st,RSTART+5,RLENGTH-5)
+      else if(match(st,/#[0-9]+/)) pr=substr(st,RSTART+1,RLENGTH-1)
+      # US-delimited (\037) so a `read` on empty pr/sen does not collapse fields
+      printf "%s\037%s\037%s\037%s\037%s\n", tk, stage, ti, pr, sen
+    }
+  ' "$bb"
+}
+
+# terminal sentinel of a checkpoint (DONE|FAILED|PARTIAL), or empty
+_ckpt_sentinel() { # $1=file
+  [ -f "$1" ] || return 0
+  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}'
+}
+
+# resolve a ticket's checkpoint file: sentinel hint -> ticket.md -> first-token.md
+_ckpt_file() { # $1=canon $2=ticket $3=sentinel -> path or empty
+  local d="$HOME/.agent/plans/$1/checkpoints" base
+  case "$3" in
+    *checkpoints/*) base="$(printf '%s' "$3" | sed -E 's#.*checkpoints/##; s/\.md.*//; s/[ `]//g')"
+      [ -f "$d/$base.md" ] && { printf '%s' "$d/$base.md"; return; } ;;
+  esac
+  [ -f "$d/$2.md" ] && { printf '%s' "$d/$2.md"; return; }
+  local first="${2%% *}"; [ -f "$d/$first.md" ] && printf '%s' "$d/$first.md"
+}
+
+# latest progress leg + age from a checkpoint file (the "where we're at")
+_ckpt_progress() { # $1=file -> "leg  age"
+  [ -f "$1" ] || return 0
+  local last now mt d age
+  last="$(grep -vE '^[[:space:]]*$|^#' "$1" | tail -1 \
+    | sed -E 's/^- *//; s/^[0-9]{4}-[0-9T:.+Z-]+ *\|? *//; s/^(LEG[^:]*:|STATUS:) *//' | cut -c1-56)"
+  now="$(date +%s)"; mt="$(stat -c %Y "$1" 2>/dev/null || echo "$now")"
+  d=$(( (now - mt) / 60 ))
+  if [ "$d" -lt 60 ]; then age="${d}m"; elif [ "$d" -lt 1440 ]; then age="$((d/60))h"; else age="$((d/1440))d"; fi
+  printf '%s  %s' "$last" "$age"
+}
+
+# stage -> "glyph<TAB>colour" (ASCII glyphs only)
+_stage_gc() { # $1=stage
+  case "$1" in
+    working) printf '~\t%s' "$C_INP" ;;   review)  printf '>\t%s' "$C_SEL" ;;
+    merged)  printf '*\t%s' "$C_DIM" ;;    blocked) printf 'x\t%s' "$C_INP" ;;
+    error)   printf 'x\t%s' "$C_INP" ;;    queued)  printf '.\t%s' "$C_DIM" ;;
+    *)       printf '~\t%s' "$C_BOX" ;;
+  esac
+}
+
+# The bridge: per project, the WORK ITEMS agents are moving (sprint rows + checkpoint
+# progress) followed by open QUESTIONS. Top line = the status header (where we are).
 _bridge_view() { # $1=profile
-  local prof="$1" name st ver lc canon out body all=""
+  local prof="$1" name st ver lc canon
+  local body="" cw=0 cn=0 cr=0 cb=0 cm=0
   while IFS=$'\t' read -r name _sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
-    body="$(agent-ask list "$canon" --pending 2>/dev/null | awk -F'\t' \
-      -v prof="$prof" -v canon="$canon" -v sec="$prof/$lc" \
-      -v cq="$C_BOX" -v cg="$C_INP" -v coff="$C_OFF" -v cd="$C_DIM" '
-      $1=="" {next}
-      { id=$1; kind=$5; q=$6; opt=$7; task=$8
-        g=(kind=="gate"||kind=="approval")?"!":"?"; col=(kind=="gate"||kind=="approval")?cg:cq
-        o=(opt!="")?"  " cd "(" opt ")" coff:""
-        t=(task!="")?"  " cd "task: " task coff:""
-        # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
-        printf "ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s\n", prof, id, opt, canon, sec, col, g, coff, q, t, o }')"
-    if [ -n "$body" ]; then
-      all="${all}$(_subheader "$name" "$st" "$ver")"$'\n'"${body}"$'\n'
-    fi
+    local pbody="" sec="$prof/$lc"
+    # --- sprint work items ---
+    local tk stage title pr sen cf prog glyph col prbadge progd ssent
+    while IFS=$'\037' read -r tk stage title pr sen; do
+      [ -z "$tk" ] && continue
+      cf="$(_ckpt_file "$canon" "$tk" "$sen")"; prog="$(_ckpt_progress "$cf")"
+      # the checkpoint's terminal sentinel is ground truth - it overrides the Status cell
+      ssent="$(_ckpt_sentinel "$cf")"
+      case "$ssent" in DONE) stage=merged ;; FAILED) stage=error ;; PARTIAL) stage=blocked ;; esac
+      case "$stage" in working) cw=$((cw+1));; review) cr=$((cr+1));; blocked|error) cb=$((cb+1));; merged) cm=$((cm+1));; esac
+      IFS=$'\t' read -r glyph col < <(_stage_gc "$stage")
+      prbadge=""; [ -n "$pr" ] && prbadge="  ${C_SEL}PR#${pr}${C_OFF}"
+      progd=""; [ -n "$prog" ] && progd="  ${C_DIM}${prog}${C_OFF}"
+      # wire: item <profile> <ckptfile> <pr> <canon> <sec> <DISPLAY>
+      pbody="${pbody}$(printf 'item\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s  %s[%s]%s%s' \
+        "$prof" "$cf" "$pr" "$canon" "$sec" "$col" "$glyph" "$C_OFF" "$title" "$prbadge" "$C_DIM" "$tk" "$C_OFF" "$progd")"$'\n'
+    done < <(_sprint_items "$canon")
+    # --- open questions (needs-you) ---
+    local id p2 pr2 status2 kind q opt task ag col2 o tctx
+    while IFS=$'\t' read -r id p2 pr2 status2 kind q opt task; do
+      [ -z "$id" ] && continue
+      cn=$((cn+1))
+      if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
+      o=""; [ -n "$opt" ] && o="  ${C_DIM}(${opt})${C_OFF}"
+      tctx=""; [ -n "$task" ] && tctx="  ${C_DIM}task: ${task}${C_OFF}"
+      # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
+      pbody="${pbody}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
+        "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$q" "$tctx" "$o")"$'\n'
+    done < <(agent-ask list "$canon" --pending 2>/dev/null)
+    [ -n "$pbody" ] && body="${body}$(_subheader "$name" "$st" "$ver")"$'\n'"${pbody}"
   done < <(notes --profile "$prof" projects 2>/dev/null)
-  if [ -n "$all" ]; then
-    printf '%s' "$all"
+  # status header — always-on "where we are"
+  printf 'head\t\t\t\t\t\t%s  where we are:%s  %s~%d working%s  %s?%d need-you%s  %s>%d review%s  %sx%d blocked%s  %s*%d done%s\n' \
+    "$C_HEAD" "$C_OFF" "$C_INP" "$cw" "$C_OFF" "$C_BOX" "$cn" "$C_OFF" "$C_SEL" "$cr" "$C_OFF" "$C_INP" "$cb" "$C_OFF" "$C_DIM" "$cm" "$C_OFF"
+  if [ -n "$body" ]; then printf '%s' "$body"
   else
-    printf 'hint\t\t\t\t\t\t%s  no open questions here — agents post questions on your tasks;%s\n' "$C_DIM" "$C_OFF"
-    printf 'hint\t\t\t\t\t\t%s  answer with enter, add work with C-a  (a cycles views)%s\n' "$C_DIM" "$C_OFF"
+    printf 'hint\t\t\t\t\t\t%s  nothing in flight — agents post work items + questions here as they run.%s\n' "$C_DIM" "$C_OFF"
+    printf 'hint\t\t\t\t\t\t%s  enter opens/answers · C-a add work · a cycles views%s\n' "$C_DIM" "$C_OFF"
   fi
 }
 
@@ -413,6 +507,7 @@ answer_ask() { # $1=id $2=options(pipe)
 _enter_action() { # $1=type $2=profile $3=c3 $4=c4
   case "$1" in
     ask)      printf 'execute(%s --answer %q %q)+reload(%s --list)+refresh-preview' "$SELF" "$3" "$4" "$SELF" ;;
+    item)     printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
     sess)     printf 'execute-silent(%s --resume-session %q)+abort' "$SELF" "$3" ;;
     sprint|sentinel) printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
     runner)   printf 'execute-silent(%s --journal %q)+abort' "$SELF" "$3" ;;
