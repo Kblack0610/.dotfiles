@@ -31,6 +31,8 @@ struct Cli {
 enum Cmd {
     /// Cycle to the next attention-needed agent (else next in list).
     Next,
+    /// Print one plain TSV row per live agent, for other surfaces to consume.
+    List,
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
         #[arg(long)]
@@ -45,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(),
         Some(Cmd::Next) => chooser::run_next(),
+        Some(Cmd::List) => chooser::run_list(),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

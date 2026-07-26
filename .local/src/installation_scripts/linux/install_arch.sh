@@ -163,7 +163,8 @@ install_nvim() {
 install_tmux() {
     log_section "Installing tmux"
     install_pacman_package "tmux"
-    install_aur_package "smug"  # tmux session manager (Go binary, no deps)
+    install_aur_package "smug"      # tmux session manager (Go binary, no deps)
+    install_aur_package "sesh-bin"  # session picker (Go binary); config at .config/sesh/sesh.toml
 }
 
 # Override: Install Kitty

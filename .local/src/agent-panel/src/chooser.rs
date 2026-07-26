@@ -130,6 +130,19 @@ pub fn run_interactive() -> Result<()> {
     Ok(())
 }
 
+/// Plain TSV of every live agent: `target \t glyph \t project \t summary`.
+///
+/// Exists so other surfaces (fleet.sh in the cockpit) can reuse the pane x
+/// `~/.claude/sessions` join instead of reimplementing it in bash and drifting.
+/// Deliberately raw fields, not the chooser's display text: that carries box-drawing
+/// header rows and alignment padding meant only for fzf.
+pub fn run_list() -> Result<()> {
+    for a in collect() {
+        println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+    }
+    Ok(())
+}
+
 /// Jump to the next agent needing attention (`!`), else the next in the list.
 pub fn run_next() -> Result<()> {
     let agents = collect();

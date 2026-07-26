@@ -8,6 +8,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 |--------|------------|-------------|
 | `launcher.sh` | `Prefix+l` | Master menu for all tmux operations |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
+| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session organizer: one fuzzy list over live sessions + zoxide + named entries, with preview. Config: `../../.config/sesh/sesh.toml` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
 | `spawn-project.sh` | `Prefix+p` | Create new tmux session with nvim |
@@ -21,6 +22,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
+- **Switch sessions**: `Prefix+S` → fuzzy find live sessions, frecent dirs, named projects
 - **Switch projects**: `Prefix+f` → fuzzy find directories
 - **Launch menu**: `Prefix+l` → unified launcher
 - **Start agent**: `Prefix+e` → spawn Claude in directory
@@ -64,6 +66,107 @@ tagged `pinned` or `important`.
 Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare
 them in the session manager's config and have the window tag itself on startup.
+
+## Servers (`Prefix+C-s`, `tmx`)
+
+The layer **above** sessions. tmux has four:
+
+```
+server   one per SOCKET   <- servers.sh / tmx
+  session   hub, lab, ...
+    window
+      pane
+```
+
+Everything used to live in one server on the default socket, which made the
+sessions siblings in a single process rather than separate systems - so one
+`tmux kill-server` took out all of them at once. `hub`, `lab` and `work` now each
+own a socket, and the blast radius of a kill is exactly one server.
+
+| Keys / command | What |
+|---|---|
+| `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
+| `Prefix+C-s` | server picker (fzf popup, with session preview) |
+| `Prefix+C-h` / `C-l` | hop straight to hub / lab |
+| `tmx ls` | every server + session counts |
+| `tmx hub` | ensure the world, then land on its first session |
+| `tmx ensure hub` | build/repair the set without attaching |
+
+### Worlds
+
+Two, deliberately. A third `work` server was tried and dropped as noise.
+
+| Server | Sessions | Lands on |
+|---|---|---|
+| `hub` - personal | **daily**, dotfiles, home-config | today's daily note |
+| `lab` - building | **projects**, platform | `~/.notes/lab/projects/index.md` |
+
+Declared in `../../.config/tmux-servers/<name>.conf`, one
+`<name> <dir> [startup command...]` per line. **The first entry is the landing
+session**: `tmx hop hub` attaches straight to it, so you arrive in today's note
+rather than a bare shell.
+
+The startup command is delivered with `send-keys` rather than as a
+`new-session <cmd>` argument, so quitting the editor drops you into a normal shell
+instead of destroying the session. Its target must be `"$name:"` - the `=` exact-
+match prefix is valid only for SESSION targets, and against a pane target tmux
+fails with "can't find pane", which silently no-ops every startup command.
+
+`tmx ensure` creates only what is **missing**, keyed on session name - never
+renames, moves or kills - so it is both the boot path and the repair path, the
+same contract `cockpit.sh ensure` uses.
+
+`Prefix+w` needs no configuration to respect this: `choose-tree` is server-scoped
+by construction and can only ever list the sessions of the server its client is
+attached to. That is the entire mechanism behind "completely different lists".
+
+`Prefix+S` needs help, though, because two of sesh's three sources are global: the
+`[[session]]` entries come from one config and **zoxide is one shared database**.
+So `tmx pick-session` derives the server from `#{socket_path}` and runs
+`sesh -C .config/sesh/<server>.toml picker -i -d -c -t` - that world's own config,
+plus its live sessions, and **no `-z`**. Dropping zoxide is what stops every
+server's list looking identical; `-d` collapses the config/live duplicate of the
+same name. Note `-C` must precede the subcommand (`sesh -C f list` works,
+`sesh list -C f` errors).
+
+Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
+(`sessionizer.sh`) still fuzzy-finds every directory on the machine.
+
+Two things verified, both load-bearing:
+
+- Inside a `-L foo` session `$TMUX` is set, so a bare `tmux ls` reports **foo's**
+  sessions. `sesh` shells out to plain `tmux`, so it follows the enclosing server
+  automatically - one `sesh.toml` is correct inside every server, no
+  `tmux_command` needed.
+- tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
+  `detach-client -E`, which runs a command after the client detaches so the
+  detach+attach reads as one motion. `new-session -A` makes each binding double as
+  the boot path.
+
+**tmux cannot move a live session between servers** - there is no `move-session -L`.
+Putting an existing session on another server means recreating it there.
+
+The bare `tmux` command is a zsh **function** (not an alias) that redirects to the
+`work` server only when called with no args from outside tmux - see `.zshrc`. An
+alias would append `-L work` to every call, including from inside `hub`, where
+`-L` overrides `$TMUX`.
+
+## Sessions (`Prefix+S`)
+
+`sesh` merges three sources into one picker: **live tmux sessions**, **zoxide**
+frecency, and the named `[[session]]` entries in `../../.config/sesh/sesh.toml`.
+Picking a live session switches to it; picking a directory creates a session
+there. This is what `Prefix+w`/`Prefix+C-w` are for windows.
+
+Additive to `Prefix+f` (`sessionizer.sh`), which only ever saw *directories* and
+had no preview. Keep that list short - zoxide already covers every project repo,
+so a `[[session]]` entry for one just prints a duplicate row.
+
+**Do not** try to drive a layout tool from `startup_command`: `smug start X` is a
+silent no-op there (exit 0, builds nothing) because sesh creates the session
+first. sesh's own `[[window]]` has no panes; its native layout hooks are the
+`tmuxinator` / `tmuxp` session fields. `smug` itself has been unused since
+2026-01 and is no longer installed by the Arch provisioner.
 
 ## Session Favourites
 

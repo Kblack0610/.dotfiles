@@ -29,7 +29,13 @@
 
 set -uo pipefail
 SELF="$(realpath "$0")"
-STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
+# Per-instance state suffix. The section/mode/filter files are keyed on UID alone, which is
+# right for a popup (only one can be open) but wrong the moment two copies run at once —
+# the persistent cockpit session keeps a `bridge` window and a `notes` window both running
+# this script, and without a suffix they would stomp each other's view on every keypress.
+# Empty by default, so the popup's paths are byte-identical to what they always were.
+INSTANCE="${NOTES_COCKPIT_INSTANCE:-}"
+STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.section"
 # THREE views, cycled by `a`  (tasks -> agents -> bridge -> tasks):
 #   tasks   your task lists (the default; unchanged).
 #   agents  what agents are DOING per project: live sessions, headless runner, sprint
@@ -37,7 +43,7 @@ STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.section"
 #   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
 #           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
 # Each is its own render; none overwrites another.
-MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.mode"
+MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.mode"
 read_mode() { cat "$MODEF" 2>/dev/null || echo tasks; }
 toggle_mode() { # cycle tasks -> agents -> bridge -> tasks
   case "$(read_mode)" in
@@ -72,7 +78,7 @@ read_section() { cat "$STATE" 2>/dev/null || echo personal; }
 
 # Priority filter: `p` cycles the view through #urgent -> #high -> #low -> (all).
 # Same levels as md::PRIORITIES / the nvim <leader>tp cycle (the shared source of truth).
-PFILTER="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}.pfilter"
+PFILTER="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.pfilter"
 read_pfilter() { cat "$PFILTER" 2>/dev/null || true; }
 cycle_pfilter() {
   # read the current value BEFORE opening the file for write (a `case … > "$PFILTER"`
@@ -304,26 +310,40 @@ _profile_agents_view() { # $1=profile
 }
 
 # The GLOBAL section (agents mode, once at the bottom): sentinel trips + agentctl runners.
+#
+# The rows come from fleet.sh, which is the single owner of "what is running headless".
+# This used to enumerate a SEVEN-NAME HARDCODED LIST of units, which is precisely how it
+# went stale — a runner added to ~/.config/agentctl/agents/ never appeared here. fleet.sh
+# derives the roster from that conf dir, so delegating fixes the staleness at the source
+# rather than re-listing the names in a second place that can drift again.
+#
+# fleet emits `type<TAB>id<TAB>target<TAB>state<TAB>DISPLAY`; this view's wire format is
+# 7 fields (see the header). Only the reshape lives here.
+#
+# Watches are still filtered to TRIP/ERROR: this is the compact global footer of a
+# task-shaped view, and an all-OK wall of green is noise here. The cockpit's `fleet`
+# window is where the full roster belongs.
 _global_agents() {
   printf 'head\t\t\t\t\t\t%s── global · sentinel + runners ──%s\n' "$C_HEAD" "$C_OFF"
-  local f name status any=0
-  for f in "$HOME/.local/state/watch-companion"/*.state; do
-    [ -f "$f" ] || continue
-    status="$(cat "$f" 2>/dev/null)"; name="$(basename "$f" .state)"
-    case "$status" in
-      TRIP|ERROR) any=1
-        printf 'sentinel\t\t%s\t\t\t\t  %s* %s%s %s%s\n' \
-          "$HOME/.agent/watches/$name.yaml" "$C_INP" "$name" "$C_OFF" "$C_DIM$status$C_OFF" "" ;;
+  local fleet="${FLEET_SH:-$(dirname "$SELF")/fleet.sh}"
+  [ -x "$fleet" ] || { printf 'hint\t\t\t\t\t\t%s  fleet.sh not found%s\n' "$C_DIM" "$C_OFF"; return 0; }
+
+  local type id target state disp any=0
+  while IFS=$'\t' read -r type id target state disp; do
+    case "$type" in
+      watch)
+        case "$state" in
+          TRIP|ERROR) any=1; printf 'sentinel\t\t%s\t\t\t\t%s\n' "$target" "$disp" ;;
+        esac ;;
     esac
-  done
+  done < <("$fleet" --watches 2>/dev/null)
   [ "$any" -eq 0 ] && printf 'hint\t\t\t\t\t\t%s  sentinel: all watches OK%s\n' "$C_DIM" "$C_OFF"
-  local svc state glyph
-  for svc in sentinel delivery-loop comms dream lab-sync nightly-sync project-index; do
-    state="$(systemctl --user is-active "agentctl@$svc.service" 2>/dev/null)"; state="${state:-unknown}"
-    [ "$state" = active ] && glyph="${C_SEL}o${C_OFF}" || glyph="${C_DIM}.${C_OFF}"
-    printf 'runner\t\t%s\t\t\t\t  %s %srunner %s %s%s\n' \
-      "$svc" "$glyph" "$C_DIM" "$svc" "$state" "$C_OFF"
-  done
+
+  while IFS=$'\t' read -r type id target state disp; do
+    [ "$type" = runner ] || continue
+    printf 'runner\t\t%s\t\t\t\t%s\n' "$id" "$disp"
+  done < <("$fleet" --runners 2>/dev/null)
+  return 0
 }
 
 # ══ BRIDGE view (the 3rd view) ══════════════════════════════════════════════
@@ -813,7 +833,10 @@ notes today --all >/dev/null 2>&1 || true
 
 echo personal > "$STATE" # every launch starts on personal
 : > "$PFILTER"           # ...and unfiltered (priority filter cleared)
-printf tasks > "$MODEF"  # ...in the tasks view (a toggles to agents)
+# ...in the tasks view (a cycles tasks -> agents -> bridge). NOTES_COCKPIT_MODE lets a
+# caller pin the opening view, which is how the cockpit session's `bridge` window opens
+# on the ask queue instead of making you press `a` twice every time it restarts.
+printf '%s' "${NOTES_COCKPIT_MODE:-tasks}" > "$MODEF"
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
