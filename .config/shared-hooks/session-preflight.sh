@@ -7,7 +7,16 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 . "$(dirname "$0")/project-name.sh"
-. "$(dirname "$0")/focus-lib.sh"
+# Guarded on purpose. These hooks are deployed by `stow --no-folding .`, one symlink per
+# file, so a checkout can reach a commit that adds focus-lib.sh before stow has linked it.
+# Under `set -e` an unguarded source of a missing file kills the whole preflight — you lose
+# the anchor, plans, lessons and git context at turn 1, and the only symptom is silence.
+# Losing the Focus block alone is a far smaller failure, so degrade to that instead.
+FOCUS_LIB="$(dirname "$0")/focus-lib.sh"
+if [ -r "$FOCUS_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$FOCUS_LIB"
+fi
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
@@ -141,7 +150,7 @@ CONTEXT=$(
   # thing you actually work from) at turn 1, so every session opens knowing what's actively
   # in progress. If none are set, nudge to capture them. Read-only + best-effort here; task
   # WRITES stay in the `notes` CLI (never hand-edit ~/.notes markdown). Keep items terse.
-  if command -v notes >/dev/null 2>&1; then
+  if command -v notes >/dev/null 2>&1 && declare -F focus_daily_note >/dev/null 2>&1; then
     DAILY_NOTE=$(focus_daily_note)
     # `[/]` (in progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
     # actively being worked is surfaced first and never lost to the open-list truncation.
