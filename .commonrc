@@ -175,7 +175,17 @@ function dashboard() {
 
 # General purpose aliases
 alias nvr="nvr . -s"
-alias t="smug start hub"
+# `t` = go to the hub world's root page (today's daily note).
+#
+# Was `smug start hub`, which was broken in two ways: it targeted whatever server
+# it happened to run from rather than the hub server, and `smug start` SILENTLY
+# NO-OPS when the session already exists (exits 0, builds nothing) — so instead of
+# opening today's note it dropped you into whatever that stale session still had
+# open, which is how a May-1st daily kept coming back.
+#
+# `tmx root hub` ensures the hub world, then attaches to its landing session, whose
+# startup command is `ensure_daily_note && nvim "$(notes path)"` — always today.
+alias t="tmx root hub"
 # alias z="zellij --layout hub"
 alias n="nvim ."
 alias g="git"

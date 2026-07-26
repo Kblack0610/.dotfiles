@@ -157,6 +157,32 @@ cmd_pick_session() {
   fi
 }
 
+# A landing session is long-lived, so whatever its editor opened on creation stays
+# open — which for a DATE-DERIVED page means `root` quietly hands you an old note.
+# That is exactly how a May-1st daily kept reappearing.
+#
+# So on `root`, if the landing pane is running an editor on a file under the daily
+# directory that is NOT today's, switch the buffer with `:e`. Escape first, because
+# the editor may be in insert mode. Only touches a pane already running nvim on a
+# stale daily; a shell, a different file, or today's note are all left alone.
+_refresh_landing() {
+  local srv="$1" sess="$2" pane cmd title today
+  pane="$(tmux -L "$srv" list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  [ -n "$pane" ] || return 0
+  cmd="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null)"
+  [ "$cmd" = "nvim" ] || return 0
+
+  title="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)"
+  case "$title" in *"journal/daily"*) ;; *) return 0 ;; esac
+
+  today="$(notes path daily 2>/dev/null)"
+  [ -n "$today" ] && [ -f "$today" ] || return 0
+  case "$title" in *"$(basename "$today")"*) return 0 ;; esac   # already today
+
+  tmux -L "$srv" send-keys -t "$sess:" Escape
+  tmux -L "$srv" send-keys -t "$sess:" ":e $today" Enter
+}
+
 # Two ways to arrive in a world, on purpose:
 #
 #   hop   resume where you left off  -> flip back and forth between two pieces of work
@@ -183,6 +209,7 @@ _enter() {
     landing="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' \
       "$MANIFEST_DIR/$target.conf" 2>/dev/null)"
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
+      _refresh_landing "$target" "$landing"
       exec tmux -L "$target" attach -t "=$landing"
     fi
   fi
