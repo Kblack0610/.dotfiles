@@ -18,7 +18,7 @@
 preview_command = "eza --all --git --icons --color=always {}"
 
 [[session]]
-name = "daily"
+name = "hub"
 path = "~/.notes"
 
 [[session]]
