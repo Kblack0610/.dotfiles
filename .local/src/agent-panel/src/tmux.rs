@@ -9,11 +9,15 @@ pub struct Pane {
     pub current_path: String,
     pub pid: u32,
     pub title: String,
+    /// Window tags set via Prefix+a (see .local/src/tmux/tags.sh), rendered by
+    /// tmux itself from the `@tag_*` window options. Empty when untagged.
+    pub tags: String,
 }
 
 /// All panes across all sessions. Empty (not an error) when tmux isn't running.
 pub fn list_panes() -> Vec<Pane> {
-    let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}";
+    let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}\t\
+               #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}";
     let Ok(out) = Command::new("tmux").args(["list-panes", "-a", "-F", fmt]).output() else {
         return Vec::new();
     };
@@ -33,6 +37,7 @@ pub fn list_panes() -> Vec<Pane> {
             current_path: f[2].to_string(),
             pid,
             title: f.get(4).copied().unwrap_or("").to_string(),
+            tags: f.get(5).copied().unwrap_or("").trim().to_string(),
         });
     }
     panes

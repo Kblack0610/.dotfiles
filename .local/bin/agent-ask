@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# agent-ask - the human<->agent ask queue: the two-way bridge a headless agent uses
+# to ASK the human a question and later READ the answer.
+#
+#   agent-ask post [opts] "question"    create a pending ask; print its id
+#   agent-ask list [project|--all] [--pending]   TSV rows for the bridge/cockpit
+#   agent-ask show <id>                 print the ask file
+#   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify
+#   agent-ask cancel <id>               flip to cancelled
+#   agent-ask count [project|--all]     number of pending asks (for cockpit badges)
+#
+# One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
+# checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
+# so an ask lines up with sessions.jsonl and the sprint blackboards.
+#
+# ASYNC IS THE PRIMARY PATH. The main producers (delivery-loop, /kb:sprint BLOCK) are
+# headless and CANNOT block: they post and exit, and a later fire / `/captain resume`
+# consumes the answer. `post --wait` is a secondary convenience for an attended agent.
+#
+# A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
+# "PR #1036 is green, merge it?" - the loop's common ask under AUTONOMY=pr.
+
+set -uo pipefail
+
+ASKS_ROOT="$HOME/.agent/asks"
+SHARED_HOOKS="$HOME/.config/shared-hooks"
+
+# --- helpers ---------------------------------------------------------------
+
+resolve_project() {
+  # Canonical project name, the same way the hooks + sessions CLI do it.
+  local dir="${1:-$PWD}"
+  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SHARED_HOOKS/project-name.sh"
+    resolve_project_name "$dir"
+  else
+    local base="${dir##*/}"; echo "${base#.}"
+  fi
+}
+
+now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+
+# collapse a value to a single physical line (files are one key:value per line)
+oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
+
+# field <file> <key> -> first value (text after "key: ")
+field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
+
+# path of an ask id, searching every project dir; prints nothing if not found
+find_ask() {
+  local id="$1" f
+  f="$(find "$ASKS_ROOT" -mindepth 2 -maxdepth 2 -name "${id}.md" 2>/dev/null | head -1)"
+  [ -n "$f" ] && printf '%s\n' "$f"
+}
+
+# set_field <file> <key> <value> - update an existing key in place (in-place rewrite)
+set_field() {
+  local f="$1" k="$2" v="$3" tmp
+  tmp="$(mktemp)"
+  awk -v k="$k" -v v="$v" '
+    $0 ~ "^" k ": " { print k ": " v; done=1; next }
+    { print }
+    END { if (!done) print k ": " v }
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# --- post ------------------------------------------------------------------
+
+cmd_post() {
+  local project="" profile="" session="" agent="" task="" kind="question" \
+        options="" resume="" wait=0 question=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --profile) profile="$2"; shift 2 ;;
+      --session) session="$2"; shift 2 ;;
+      --agent)   agent="$2"; shift 2 ;;
+      --task)    task="$2"; shift 2 ;;
+      --kind)    kind="$2"; shift 2 ;;
+      --options) options="$2"; shift 2 ;;
+      --resume)  resume="$2"; shift 2 ;;
+      --wait)    wait=1; shift ;;
+      --) shift; question="$*"; break ;;
+      -*) echo "agent-ask post: unknown flag $1" >&2; return 2 ;;
+      *)  question="$*"; break ;;
+    esac
+  done
+  [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
+  [ -n "$project" ] || project="$(resolve_project)"
+  case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
+  # a gate with no explicit options defaults to a yes/hold decision
+  [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
+
+  local dir="$ASKS_ROOT/$project"
+  mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
+
+  # mktemp gives an atomic, collision-free id; strip dir + .md for the bare id.
+  local file id
+  file="$(mktemp "$dir/XXXXXX.md")" || { echo "agent-ask: mktemp failed" >&2; return 1; }
+  id="$(basename "$file" .md)"
+
+  {
+    printf 'id: %s\n'         "$id"
+    printf 'project: %s\n'    "$project"
+    printf 'profile: %s\n'    "$(oneline "$profile")"
+    printf 'session: %s\n'    "$(oneline "$session")"
+    printf 'agent: %s\n'      "$(oneline "$agent")"
+    printf 'task: %s\n'       "$(oneline "$task")"
+    printf 'kind: %s\n'       "$kind"
+    printf 'created: %s\n'    "$(now_iso)"
+    printf 'status: pending\n'
+    printf 'question: %s\n'   "$(oneline "$question")"
+    printf 'options: %s\n'    "$(oneline "$options")"
+    printf 'answer: \n'
+    printf 'answered_at: \n'
+    printf 'resume: %s\n'     "$(oneline "$resume")"
+  } > "$file"
+
+  if [ "$wait" -eq 1 ]; then
+    # SECONDARY path: block until answered, then print the answer to stdout.
+    # Producers that are headless must NOT use this.
+    local st
+    while :; do
+      st="$(field "$file" status)"
+      [ "$st" = answered ] && { field "$file" answer; return 0; }
+      [ "$st" = cancelled ] && { echo "agent-ask: $id cancelled" >&2; return 1; }
+      sleep 5
+    done
+  fi
+
+  # async default: just print the id (the producer records it, then exits)
+  printf '%s\n' "$id"
+}
+
+# --- list / count ----------------------------------------------------------
+
+ask_files() {
+  # $1 = project | --all  -> newline list of ask file paths
+  if [ "${1:-}" = "--all" ]; then
+    find "$ASKS_ROOT" -mindepth 2 -maxdepth 2 -name '*.md' 2>/dev/null
+  else
+    find "$ASKS_ROOT/$1" -mindepth 1 -maxdepth 1 -name '*.md' 2>/dev/null
+  fi
+}
+
+cmd_list() {
+  local key="" pending=0
+  for a in "$@"; do
+    case "$a" in
+      --pending) pending=1 ;;
+      --all) key="--all" ;;
+      *) key="$a" ;;
+    esac
+  done
+  [ -n "$key" ] || key="$(resolve_project)"
+
+  # tsv: id, project, profile, status, kind, question, options, task
+  local f st
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    st="$(field "$f" status)"
+    [ "$pending" -eq 1 ] && [ "$st" != pending ] && continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
+      "$st" "$(field "$f" kind)" "$(field "$f" question)" \
+      "$(field "$f" options)" "$(field "$f" task)"
+  done < <(ask_files "$key")
+}
+
+cmd_count() {
+  local key="${1:-}"; [ -n "$key" ] || key="$(resolve_project)"
+  cmd_list "$key" --pending | grep -c . || true
+}
+
+# --- show / answer / cancel ------------------------------------------------
+
+cmd_show() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask show <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  cat "$f"
+}
+
+cmd_answer() {
+  local id="${1:-}"; shift 2>/dev/null || true
+  local answer; answer="$(oneline "$*")"
+  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer <id> <answer...>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+
+  set_field "$f" status answered
+  set_field "$f" answer "$answer"
+  set_field "$f" answered_at "$(now_iso)"
+
+  # let a watching resume / the producer's next fire know the answer landed
+  local project; project="$(field "$f" project)"
+  agent-notify -t "ask answered" "${project}: ${answer}" >/dev/null 2>&1 || true
+  echo "answered $id: $answer" >&2
+}
+
+cmd_cancel() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask cancel <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  set_field "$f" status cancelled
+  echo "cancelled $id" >&2
+}
+
+# --- dispatch --------------------------------------------------------------
+
+usage() {
+  sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+sub="${1:-list}"; shift 2>/dev/null || true
+case "$sub" in
+  post)   cmd_post "$@" ;;
+  list)   cmd_list "$@" ;;
+  count)  cmd_count "$@" ;;
+  show)   cmd_show "$@" ;;
+  answer) cmd_answer "$@" ;;
+  cancel) cmd_cancel "$@" ;;
+  -h|--help|help) usage ;;
+  *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;
+esac

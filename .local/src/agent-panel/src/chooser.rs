@@ -18,6 +18,8 @@ pub struct Agent {
     pub repo_full: String, // basename incl. worktree suffix, for preview header
     pub summary: String,
     pub jsonl: Option<PathBuf>,
+    /// Window tags (Prefix+a, see tags.sh). Empty when the window is untagged.
+    pub tags: String,
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
@@ -76,6 +78,7 @@ fn collect() -> Vec<Agent> {
             repo_full,
             summary,
             jsonl: jsonl_path.exists().then_some(jsonl_path),
+            tags: pane.tags.clone(),
         });
     }
     agents
@@ -123,6 +126,19 @@ pub fn run_interactive() -> Result<()> {
         if !target.is_empty() {
             tmux::jump(target);
         }
+    }
+    Ok(())
+}
+
+/// Plain TSV of every live agent: `target \t glyph \t project \t summary`.
+///
+/// Exists so other surfaces (fleet.sh in the cockpit) can reuse the pane x
+/// `~/.claude/sessions` join instead of reimplementing it in bash and drifting.
+/// Deliberately raw fields, not the chooser's display text: that carries box-drawing
+/// header rows and alignment padding meant only for fzf.
+pub fn run_list() -> Result<()> {
+    for a in collect() {
+        println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
     }
     Ok(())
 }

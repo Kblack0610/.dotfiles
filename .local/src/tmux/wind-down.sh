@@ -167,6 +167,18 @@ cmd_fire() {
     fi
   fi
 
+  # Honour window tags (Prefix+T, see tags.sh): a pinned/important window keeps
+  # its wrap-up note but is never auto-closed. Window scope only — an explicit
+  # `--session` teardown is a deliberate, wider ask.
+  if [ "$scope" != "session" ] && [ -x "$HOME/.local/bin/tmux-tags" ]; then
+    if reason=$("$HOME/.local/bin/tmux-tags" protected -t "$target" 2>/dev/null); then
+      printf '[%s] fire: skipped, window %s is %s\n' \
+        "$(date '+%F %T' 2>/dev/null)" "$target" "$reason" >> "$logf" 2>/dev/null || true
+      echo "wind-down: '$target' is tagged ${reason} — note written, window left open."
+      return 0
+    fi
+  fi
+
   # Resolve the window's CURRENT session:index from its stable id, only for the
   # scrollback capture (history-capture.sh takes session:index, not @N).
   label=$(tmux list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
