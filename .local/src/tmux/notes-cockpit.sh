@@ -450,7 +450,8 @@ _bridge_view() { # $1=profile
     done < <(_sprint_items "$canon")
     # --- open questions (needs-you) ---
     local id p2 pr2 status2 kind q opt task ag col2 o tctx
-    while IFS=$'\t' read -r id p2 pr2 status2 kind q opt task; do
+    # US-delimited (tr) so an empty profile/task column does not collapse under `read`
+    while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task; do
       [ -z "$id" ] && continue
       cn=$((cn+1))
       if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
@@ -459,7 +460,7 @@ _bridge_view() { # $1=profile
       # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
       pbody="${pbody}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
         "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$q" "$tctx" "$o")"$'\n'
-    done < <(agent-ask list "$canon" --pending 2>/dev/null)
+    done < <(agent-ask list "$canon" --pending 2>/dev/null | tr '\t' '\037')
     [ -n "$pbody" ] && body="${body}$(_subheader "$name" "$st" "$ver")"$'\n'"${pbody}"
   done < <(notes --profile "$prof" projects 2>/dev/null)
   # status header — always-on "where we are"
