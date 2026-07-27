@@ -1,3 +1,7 @@
+# shellcheck shell=bash
+# This file is SOURCED, never executed, so it carries a shell directive rather
+# than a shebang (SC2148).
+#
 # agent-proof.sh — did the headless agent actually DO anything?
 #
 # Source this from an agentctl wrapper. It answers the one question systemd
