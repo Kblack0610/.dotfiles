@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# wave-start — kick off a wave for an app WITHOUT opening a Claude session.
+#
+# The cockpit is where you keep your task list, so that is where handing work over should
+# begin and end. Before this, capture was in the cockpit (`C-a`, `C-t`) but STARTING the
+# wave meant leaving it, opening Claude and typing a slash command — the one manual step
+# in an otherwise hands-off pipeline.
+#
+# Same headless shape `delivery-loop` already uses: `claude -p` under agentctl-style
+# env, no TTY, bounded turns. The difference is this fires ONCE, on your keypress,
+# rather than on a timer — starting a wave creates real tickets on a real tracker, so it
+# stays an explicit act. What it does NOT do is run the work: it scopes, cuts the branch,
+# opens the draft PR and writes the blackboard with `Approval: PENDING`, then posts the
+# approval as an ASK so you answer it in the bridge with Enter. `delivery-loop` picks up
+# from there once the board is approved.
+#
+# Backgrounded by default (`--now` to run in the foreground): the cockpit binding must
+# return instantly, and a wave scope-out takes minutes. Progress lands in the log and the
+# finish lands as a notification + a bridge ask.
+#
+# Usage: wave-start <app> [--now] [--verb start|status|ship]
+
+set -uo pipefail
+
+APP="${1:-}"
+[ -n "$APP" ] || { echo "usage: wave-start <app> [--now] [--verb start|status|ship]" >&2; exit 2; }
+shift
+
+FG=0
+VERB="start"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --now) FG=1 ;;
+    --verb) shift; VERB="${1:-start}" ;;
+    *) echo "wave-start: unknown flag '$1'" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/wave"
+LOG="$STATE_DIR/${APP}.log"
+mkdir -p "$STATE_DIR"
+
+command -v claude >/dev/null 2>&1 || { echo "wave-start: claude not on PATH" >&2; exit 1; }
+
+SHARED_HOOKS="$HOME/.config/shared-hooks"
+MAP="${PROJECT_MAP_FILE:-$SHARED_HOOKS/project-map.json}"
+
+# The app's repo, so the run starts where its code is (the tracker, the branch and the
+# worktrees are all resolved relative to it).
+repo_of() {
+  local repo
+  [ -f "$MAP" ] && command -v jq >/dev/null 2>&1 || return 0
+  repo=$(jq -r --arg a "$APP" '.trackers[$a].repo // $a' "$MAP" 2>/dev/null || true)
+  jq -r --arg r "$repo" '.paths | to_entries[] | select(.value == $r) | .key' "$MAP" 2>/dev/null | head -1
+}
+REPO="$(repo_of)"
+[ -n "$REPO" ] && [ -d "$REPO" ] || REPO="$PWD"
+
+run_pass() {
+  cd "$REPO" 2>/dev/null || { echo "wave-start: repo $REPO missing" >&2; return 1; }
+  {
+    echo "=== wave-start $APP $VERB — $(date -Is) — repo $REPO"
+    # --dangerously-skip-permissions: a headless run must not hang on a permission
+    # prompt with no TTY to answer it. The real gate is downstream and unaffected —
+    # `/wave` writes `Approval: PENDING` and delivery-loop refuses to drain a board
+    # without the human's marker, so nothing this starts can deliver itself.
+    claude -p "/wave $APP $VERB" \
+      --dangerously-skip-permissions \
+      --max-turns "${WAVE_MAX_TURNS:-60}" \
+      2>&1 || true
+    echo "=== done — $(date -Is)"
+  } >>"$LOG" 2>&1
+
+  local last
+  last="$(sed '/^[[:space:]]*$/d' "$LOG" | tail -1)"
+  command -v agent-notify >/dev/null 2>&1 && \
+    agent-notify -t "wave:$APP" "$VERB finished — $last" >/dev/null 2>&1 || true
+}
+
+if [ "$FG" = 1 ]; then
+  run_pass
+  tail -20 "$LOG"
+  exit 0
+fi
+
+# Detach so the run outlives the popup that launched it. A display-popup binding's whole
+# process group dies when the popup closes, which would silently truncate the pass
+# mid-scope — the failure would look like "the wave just didn't start".
+# Re-exec THIS script with --now rather than exporting a function: one code path, and
+# nothing depends on `declare -f` surviving the hop.
+SELF="$(realpath "$0")"
+if command -v setsid >/dev/null 2>&1; then
+  setsid -f "$SELF" "$APP" --now --verb "$VERB" >/dev/null 2>&1 </dev/null
+else
+  nohup "$SELF" "$APP" --now --verb "$VERB" >/dev/null 2>&1 </dev/null &
+fi
+
+echo "wave-start: $APP $VERB running in the background"
+echo "  log:    $LOG"
+echo "  watch:  prefix t -> a a  (bridge)   ·   tail -f $LOG"

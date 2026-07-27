@@ -68,6 +68,7 @@ Media/Music
 !.claude/commands/
 .claude/commands/kb/
 .claude/commands/remember.md
+.claude/commands/wave.md
 !.claude/hooks/
 !.claude/settings.json
 # .mcp.json (personal MCP endpoints) lives in the private overlay.
