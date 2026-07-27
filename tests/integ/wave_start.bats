@@ -249,3 +249,98 @@ teardown() {
   assert_failure
   refute [ -f "$(LOCK_FILE)" ]
 }
+
+# --- the runner status contract -----------------------------------------------------
+#
+# Wave used to write a log and a pid lock and nothing else, so the verdict it computes -
+# including "FAILED (no blackboard written)" - existed only as a fire-and-forget
+# notification. Nobody could go back and look at it, and fleet.sh could not see wave at
+# all because it had no conf.
+#
+# `blocked` is the interesting state: a pass that stopped ON PURPOSE to ask the human is
+# not `ok` (it did not finish) and not `error` (nothing went wrong). That distinction is
+# the whole reason the contract has five states rather than three.
+
+STATUS_LOG() { printf '%s' "$SANDBOX/agentctl.calls"; }
+
+stub_agentctl() {
+  cat > "$SANDBOX/bin/agentctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AGENTCTL_CALLS"
+SH
+  chmod +x "$SANDBOX/bin/agentctl"
+  export AGENTCTL_CALLS="$(STATUS_LOG)"
+  : > "$AGENTCTL_CALLS"
+}
+
+# reported <state> - the last report line carrying that state, or empty
+reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
+
+@test "a pass reports working while it runs" {
+  stub_agentctl
+  stub_claude 0 'scoped' board
+  run "$WAVE_START" demoapp --now
+  assert [ -n "$(reported working)" ]
+  assert_equal "$(reported working | grep -c 'project=demoapp')" '1'
+}
+
+@test "a finished pass reports ok" {
+  stub_agentctl
+  stub_claude 0 'scoped 3 tickets' board
+  run "$WAVE_START" demoapp --now
+  assert [ -n "$(reported ok)" ]
+  assert_output --partial ''
+}
+
+@test "a failed pass reports error, not ok" {
+  stub_agentctl
+  stub_claude 1 'Unknown command: /wave'
+  run "$WAVE_START" demoapp --now
+  assert [ -n "$(reported error)" ]
+  refute [ -n "$(reported ok)" ]
+}
+
+@test "the error report carries the real diagnostic" {
+  stub_agentctl
+  stub_claude 1 'Unknown command: /wave'
+  run "$WAVE_START" demoapp --now
+  assert_equal "$(reported error | grep -c 'Unknown command')" '1'
+}
+
+@test "a pass that stopped to ask the human reports blocked, not ok" {
+  stub_agentctl
+  # a board that still says PENDING, plus a pending ask -> a deliberate pause
+  cat > "$SANDBOX/bin/agent-ask" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = list ] && printf 'ASK123\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
+SH
+  chmod +x "$SANDBOX/bin/agent-ask"
+  cat > "$SANDBOX/bin/claude" <<SH
+#!/usr/bin/env bash
+echo "proposed 2 tickets, waiting"
+mkdir -p "$HOME/.agent/plans/demoapp"
+printf '# board\n- Approval: PENDING\n' > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
+SH
+  chmod +x "$SANDBOX/bin/claude"
+
+  run "$WAVE_START" demoapp --now
+  assert [ -n "$(reported blocked)" ]
+  refute [ -n "$(reported ok)" ]
+  assert_equal "$(reported blocked | grep -c 'ASK123')" '1'
+}
+
+@test "an approved board is ok, not blocked" {
+  # the same board WITHOUT a pending ask must not read as waiting on anyone
+  stub_agentctl
+  stub_claude 0 'done' board
+  run "$WAVE_START" demoapp --now
+  refute [ -n "$(reported blocked)" ]
+  assert [ -n "$(reported ok)" ]
+}
+
+@test "no agentctl on PATH is a silent no-op, not a failure" {
+  stub_claude 0 'scoped' board
+  rm -f "$SANDBOX/bin/agentctl"
+  run "$WAVE_START" demoapp --now
+  assert_success
+}
