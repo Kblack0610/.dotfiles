@@ -246,6 +246,69 @@ nfields() { awk -F'\t' '{print NF; exit}'; }
   assert_output '7'
 }
 
+# ── toggle_ai (C-i) ─────────────────────────────────────────────────────────
+
+# Handing a task to the agents is a LINE EDIT, not a CLI call: the notes CLI has no
+# ptask tag/untag (focus has `mv --tag`, ptask never got one), and rm+add would lose the
+# item's position and its `<!-- vk:ID -->` stamp. So these pin the edit itself.
+
+setup_sheet() {
+  SHEET="$BATS_TEST_TMPDIR/sheet.md"
+  cat > "$SHEET" <<'SHEET'
+- [ ] plain task
+- [ ] tagged already #ai
+- [ ] with priority #high
+- [ ] a false friend #aid
+SHEET
+}
+
+@test "toggle_ai hands an untagged task to the agents" {
+  setup_sheet; toggle_ai "$SHEET" 1
+  run sed -n '1p' "$SHEET"
+  assert_output '- [ ] plain task #ai'
+}
+
+@test "toggle_ai takes a tagged task back" {
+  setup_sheet; toggle_ai "$SHEET" 2
+  run sed -n '2p' "$SHEET"
+  assert_output '- [ ] tagged already'
+}
+
+@test "toggle_ai round-trips to the original line" {
+  setup_sheet; toggle_ai "$SHEET" 1; toggle_ai "$SHEET" 1
+  run sed -n '1p' "$SHEET"
+  assert_output '- [ ] plain task'
+}
+
+@test "toggle_ai keeps a priority tag" {
+  setup_sheet; toggle_ai "$SHEET" 3
+  run sed -n '3p' "$SHEET"
+  assert_output '- [ ] with priority #high #ai'
+}
+
+@test "toggle_ai does not treat #aid as the lane tag" {
+  # A bare /#ai/ match would strip the tag off `#aid` and silently corrupt the line.
+  setup_sheet; toggle_ai "$SHEET" 4
+  run sed -n '4p' "$SHEET"
+  assert_output '- [ ] a false friend #aid #ai'
+}
+
+@test "toggle_ai leaves every other line untouched" {
+  setup_sheet; toggle_ai "$SHEET" 1
+  run sed -n '2,4p' "$SHEET"
+  assert_line --index 0 '- [ ] tagged already #ai'
+  assert_line --index 2 '- [ ] a false friend #aid'
+}
+
+@test "toggle_ai is a no-op on a missing file or a non-numeric line" {
+  setup_sheet
+  run toggle_ai "$BATS_TEST_TMPDIR/nope.md" 1
+  assert_success
+  toggle_ai "$SHEET" ""
+  run sed -n '1p' "$SHEET"
+  assert_output '- [ ] plain task'
+}
+
 # ── view mode ────────────────────────────────────────────────────────────────
 
 @test "read_mode defaults to tasks and toggle_mode cycles all three views" {
