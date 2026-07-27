@@ -105,6 +105,74 @@ cmd_kill() {
   tmux kill-session -t "$SESSION" && echo "cockpit: killed '$SESSION'"
 }
 
+# stale — agent windows whose process already exited.
+#
+# fleet.sh answers "what is running": agentctl units, sentinel watches, live Claude panes.
+# The gap it cannot see is the opposite -- a window that LOOKS like an agent but whose
+# process returned to a bare shell some time ago. Those accumulate silently: the window
+# name still says `claude`, so it reads as work in flight when it is a corpse.
+#
+# Three conditions, all required:
+#   1. the window name matches an agent pattern
+#   2. the pane's current command is a plain shell -- i.e. the agent exited
+#   3. it has been idle longer than the threshold
+#
+# REPORTS ONLY. It never kills. Deciding a window is dead is cheap and reversible;
+# killing one that merely looked dead loses a scrollback nobody can get back, and this
+# repo already learned that lesson the hard way in the ui-tier tests.
+#
+# The -f filter drops windows tagged pinned/important (Prefix+a, see tags.sh) so a
+# protected window is never even listed. Filtering in tmux rather than per-window in the
+# loop keeps it free, and it fails OPEN: if the tag lookup breaks, a window is treated as
+# protected rather than as garbage.
+STALE_THRESHOLD_DEFAULT=900   # 15 minutes
+AGENT_WINDOW_PATTERNS="${AGENT_WINDOW_PATTERNS:-agent|claude|aider|codex|opencode}"
+
+# _fmt_idle <seconds> -> "2h 5m" / "45m"
+_fmt_idle() {
+  local s="$1" m=$(( $1 / 60 ))
+  if [ "$m" -ge 60 ]; then printf '%dh %dm' "$((m / 60))" "$((m % 60))"; else printf '%dm' "$m"; fi
+}
+
+cmd_stale() {
+  have_tmux || { echo "cockpit: tmux not found on PATH" >&2; return 1; }
+
+  local threshold="${STALE_THRESHOLD:-$STALE_THRESHOLD_DEFAULT}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --threshold|-t) threshold="${2:-$threshold}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local now count=0
+  now="$(date +%s)"
+
+  while IFS=: read -r sess idx name cmd _path activity; do
+    [ -n "${name:-}" ] || continue
+    printf '%s' "$name" | grep -qiE "$AGENT_WINDOW_PATTERNS" || continue
+    # Still running -> not stale, whatever the idle time says.
+    case "$cmd" in zsh|bash|sh|fish) ;; *) continue ;; esac
+    # A window with no parseable activity stamp is left alone rather than guessed at.
+    case "${activity:-}" in ''|*[!0-9]*) continue ;; esac
+    local idle=$(( now - activity ))
+    [ "$idle" -ge "$threshold" ] || continue
+    printf '  %-14s %-5s %-22s %s idle\n' "$sess" ":$idx" "$name" "$(_fmt_idle "$idle")"
+    count=$((count + 1))
+  done < <(tmux list-windows -a \
+      -f '#{&&:#{!=:#{@tag_pinned},1},#{!=:#{@tag_important},1}}' \
+      -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_current_path}:#{window_activity}" \
+      2>/dev/null)
+
+  if [ "$count" -eq 0 ]; then
+    echo "cockpit: no stale agent windows (threshold $((threshold / 60))m)"
+  else
+    echo
+    echo "cockpit: $count stale window(s) over $((threshold / 60))m. Close with: tmux kill-window -t <session>:<index>"
+  fi
+  return 0
+}
+
 usage() {
   cat <<EOF
 usage: cockpit.sh <verb>
@@ -113,6 +181,8 @@ usage: cockpit.sh <verb>
   attach   ensure, then switch-client (or attach from outside tmux)
   sync     ensure, without stealing focus — for hooks and timers
   kill     tear the session down
+  stale    list agent windows whose process already exited (reports only, never kills)
+             --threshold SECONDS   idle cutoff, default ${STALE_THRESHOLD_DEFAULT}s
 
 Windows: fleet · bridge · watch · prs · notes
 EOF
@@ -123,6 +193,7 @@ case "${1:-attach}" in
   attach) cmd_attach ;;
   sync)   cmd_sync ;;
   kill)   cmd_kill ;;
+  stale)  shift; cmd_stale "$@" ;;
   -h|--help|help) usage ;;
   *) echo "cockpit: unknown verb: $1" >&2; usage >&2; exit 1 ;;
 esac

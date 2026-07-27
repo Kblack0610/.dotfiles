@@ -40,6 +40,18 @@ case "${1:-}" in
   list-panes)
     [ -f "$FIX/tmux.panes" ] && cat "$FIX/tmux.panes"
     ;;
+  list-windows)
+    # Canned rows for `cockpit.sh stale`, which reads
+    #   session:index:name:pane_current_command:pane_current_path:window_activity
+    #
+    # The real call also passes `-f '#{&&:...@tag_pinned...}'` so tmux drops protected
+    # windows server-side. A stub cannot evaluate a tmux format expression, so the
+    # fixture stands in for the POST-filter result: a window that must be treated as
+    # protected simply does not belong in tmux.windows. Tests that care about the
+    # protection contract assert on the filter argument via calls.log instead, which is
+    # the only part this stub can honestly speak to.
+    [ -f "$FIX/tmux.windows" ] && cat "$FIX/tmux.windows"
+    ;;
   capture-pane)
     f="$FIX/tmux.capture.$(target_key "$target")"
     [ -f "$f" ] && cat "$f"
