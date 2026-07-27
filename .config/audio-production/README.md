@@ -86,6 +86,21 @@ Fallback if krfoss survives the re-rank: comment out the `krfoss` Server lines i
 
 Note that `paru` installs repo packages before building AUR packages, so an aborted repo transaction means the AUR package was never attempted, even though it was queued.
 
+## Gotcha: latency is set by PipeWire, not REAPER
+
+Under JACK, REAPER does not own the buffer size - PipeWire does. REAPER's block-size preference appears stuck (it reported `2048spls ~53/53ms JACK` regardless), because the real value comes from `clock.quantum`, which defaulted to 1024.
+
+```bash
+pw-metadata -n settings | grep -E "quantum|rate"   # inspect
+pw-metadata -n settings 0 clock.force-quantum 256  # ~5.3ms at 48kHz
+```
+
+Restart REAPER to pick it up; the toolbar should then read `256spls ~5/5ms`. 53ms is unplayable for guitar and feels like a broken signal chain, so fix this before judging whether anything else works. `force-quantum` is runtime-only and resets on reboot - make it permanent in the PipeWire config if you want it to stick.
+
+## Gotcha: Direct Monitor bypasses every plugin
+
+The Scarlett Solo has a **DIRECT MONITOR** switch that routes the input to the outputs in analog, inside the interface, never touching the computer. With it engaged you hear yourself perfectly and completely dry - no plugin can ever affect the sound. Turn it off and monitor through REAPER (track record-armed, monitoring toggled on) so the signal actually passes through the FX chain.
+
 ## Installers (not redistributable, download per machine)
 
 | File | Source |
