@@ -35,7 +35,7 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · preview · hop <name>
+# Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · hop <name>
 #        · root <name> · land <name> <last|root|session[:window]> · pick-session
 
 set -uo pipefail
@@ -333,20 +333,37 @@ cmd_pick() {
 # $TMUX into whichever single server you are already in. Seeing hub and lab at once
 # has to be assembled from outside both, which is what this does.
 #
+# There is no preview pane. Everything worth knowing is ON the row, because a preview
+# only describes whatever the cursor happens to be sitting on -- you have to arrow
+# through the list to learn what is in it. The list itself has to answer "what is this".
+#
+# Three levels, all selectable: server -> session -> window.
+#
 # Emits TAB-separated: <server> <session> <window-or-empty> <display>. fzf renders
 # only field 4 (--with-nth=4) and the first three are the machine target. Kept
 # separate from the fzf call so it can be tested without a terminal.
 _all_rows() {
-  local s sess wins att idx wname wact pcmd ptitle disp mark
+  local s sess wins att spath idx wname wact pcmd ptitle disp mark n what
 
   while IFS= read -r s; do
     [ -n "$s" ] || continue
 
-    while IFS=$'\t' read -r sess wins att; do
+    # The server itself, so one list replaces both this and the old server picker.
+    n="$(session_count "$s")"
+    printf '%s\t\t\t%s\n' "$s" "$(printf '%-4s %s session(s)' "$s" "$n")"
+
+    while IFS=$'\t' read -r sess wins att spath; do
       [ -n "$sess" ] || continue
 
-      # The session header. Selecting it lands on the session's current window.
-      disp="$(printf '%-4s %-14s %2s win' "$s" "$sess" "$wins")"
+      # The simple explanation of a session: WHERE it is and WHAT is running in it.
+      # Both are derived, so an ad-hoc session gets described as well as a declared
+      # one and no manifest has to be kept in sync with this.
+      spath="${spath/#$HOME/\~}"
+      what="$(tmux -L "$s" list-panes -s -t "=$sess" -F '#{pane_current_command}' 2>/dev/null \
+        | sort | uniq -c | sort -rn \
+        | awk '{ printf "%s%s, ", $2, ($1 > 1 ? " x" $1 : "") }' | sed 's/, $//')"
+
+      disp="$(printf '  %-13s %-22s %2s win  %s' "$sess" "$spath" "$wins" "$what")"
       [ "$att" = "1" ] && disp="$disp  (attached)"
       printf '%s\t%s\t\t%s\n' "$s" "$sess" "$disp"
 
@@ -361,30 +378,16 @@ _all_rows() {
         # every later column off screen. Truncate rather than let the row wrap.
         [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
         ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
-        disp="$(printf '%-4s %-14s %2s%s %-16s %-8s %s' \
-          "$s" "$sess" "$idx" "$mark" "$wname" "$pcmd" "$ptitle")"
+        disp="$(printf '      %2s%s %-16s %-8s %s' \
+          "$idx" "$mark" "$wname" "$pcmd" "$ptitle")"
         printf '%s\t%s\t%s\t%s\n' "$s" "$sess" "$idx" "$disp"
       done < <(tmux -L "$s" list-windows -t "=$sess" -F \
         "#{window_index}"$'\t'"#{window_name}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
         2>/dev/null)
 
     done < <(tmux -L "$s" list-sessions -F \
-      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}" 2>/dev/null)
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}" 2>/dev/null)
   done < <(live_servers)
-}
-
-# preview <server> <session> [window] -- what pick-all shows on the right. A window
-# gets its live pane content; a session gets its window list.
-cmd_preview() {
-  local s="${1:-}" sess="${2:-}" win="${3:-}"
-  [ -n "$s" ] && [ -n "$sess" ] || return 0
-
-  if [ -n "$win" ]; then
-    tmux -L "$s" capture-pane -p -t "$sess:$win" 2>/dev/null | head -80
-  else
-    tmux -L "$s" list-windows -t "=$sess" \
-      -F '#{window_index}: #{window_name}  [#{pane_current_command}]  #{pane_title}' 2>/dev/null
-  fi
 }
 
 # pick-all -- fzf over every session and window everywhere. Enter goes there.
@@ -394,20 +397,22 @@ cmd_pick_all() {
   rows="$(_all_rows)"
   [ -n "$rows" ] || die "no tmux servers are running"
 
+  # No --preview on purpose: the rows already say where each session is and what is
+  # running in it, and a preview only describes the one row under the cursor.
   choice="$(printf '%s\n' "$rows" | fzf --reverse --border \
     --delimiter=$'\t' --with-nth=4 \
     --prompt='everywhere > ' \
-    --header='Enter: go there · Esc: cancel' \
-    --preview="$(printf '%q' "$0") preview {1} {2} {3}" \
-    --preview-window=right,55%)" || return 0
+    --header='Enter: go there · Esc: cancel')" || return 0
   [ -n "$choice" ] || return 0
 
   srv="$(printf '%s' "$choice" | cut -f1)"
   sess="$(printf '%s' "$choice" | cut -f2)"
   win="$(printf '%s' "$choice" | cut -f3)"
 
-  [ -n "$srv" ] && [ -n "$sess" ] || return 0
-  if [ -n "$win" ]; then
+  [ -n "$srv" ] || return 0
+  if [ -z "$sess" ]; then
+    cmd_hop "$srv"                 # a server row: resume that world
+  elif [ -n "$win" ]; then
     _enter "$srv" "$sess:$win"
   else
     _enter "$srv" "$sess"
@@ -426,7 +431,6 @@ main() {
     pick-session) cmd_pick_session ;;
     pick-all)     cmd_pick_all ;;
     rows)         _all_rows ;;
-    preview)      shift; cmd_preview "${1:-}" "${2:-}" "${3:-}" ;;
     -h|--help)    sed -n '2,40p' "$0" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac
