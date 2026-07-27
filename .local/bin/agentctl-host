@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# agentctl-host — run an agentctl runner's COMMAND, headless or inside tmux.
+#
+# Every agentctl runner used to be headless: systemd exec'd COMMAND with no
+# terminal, so nothing could be attached to and the only observation was tailing
+# an append-only log. That is right for a chore (nobody wants to watch a 30-minute
+# mem0 sync) and wrong for a WORK agent -- delivery-loop dispatches sprint tickets
+# through `claude -p`, writes real code, and is exactly the thing you want to look
+# in on and sometimes interrupt.
+#
+# So hosting is a per-agent choice, set with HOST in the agent's .conf:
+#
+#   HOST=headless   (default) exec COMMAND directly. Byte-identical to the old
+#                   behaviour; absent HOST means absent behaviour change.
+#   HOST=tmux       run COMMAND in a window on TMUX_SERVER (default: lab, the
+#                   build world). Attachable mid-run via prefix A / prefix w, and
+#                   visible to agent-panel because it now owns a pane.
+#
+# THE CONTRACT: systemd must see the same thing either way. A tmux-hosted run is
+# still synchronous from systemd's point of view and still exits with COMMAND's
+# real status, so Restart=, Result=, and the proof-of-work gate all behave
+# identically. That is what `tmux wait-for` buys: the window runs detached, this
+# process blocks on a signal the window raises when it finishes, and the exit code
+# comes back through a file.
+#
+# Usage:
+#   agentctl-host <name>              run the agent
+#   agentctl-host --cleanup <name>    kill a leftover window (ExecStopPost)
+set -uo pipefail
+
+CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
+STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
+
+die() { echo "agentctl-host: $*" >&2; exit 2; }
+
+CLEANUP=0
+if [ "${1:-}" = "--cleanup" ]; then CLEANUP=1; shift; fi
+NAME="${1:-}"; [ -n "$NAME" ] || die "usage: agentctl-host [--cleanup] <name>"
+
+CONF="$CONF_DIR/$NAME.conf"
+[ -r "$CONF" ] || die "no conf at $CONF"
+# shellcheck source=/dev/null
+. "$CONF"
+
+HOST="${HOST:-headless}"
+TMUX_SERVER="${TMUX_SERVER:-lab}"
+WINDOW="agent:$NAME"
+
+# ONE place decides how the tmux server is addressed. Everything below calls tmux_
+# through this, never bare `tmux -L ...`, so a test can pin an isolated socket with
+# AGENTCTL_TMUX="tmux -S <sock>". That matters because the ui harness isolates by
+# PATH-shimming `-S` onto every call, and a `-L` appended after it would override the
+# shim and escape the sandbox onto the developer's real server.
+AGENTCTL_TMUX="${AGENTCTL_TMUX:-tmux -L $TMUX_SERVER}"
+tmux_() { $AGENTCTL_TMUX "$@"; }
+
+# --cleanup: ExecStopPost. Kill a window the run may have left behind. Never fails
+# the unit -- it is prefixed with `-` in the unit file too, belt and braces.
+if [ "$CLEANUP" = 1 ]; then
+  [ "$HOST" = tmux ] && tmux_ kill-window -t "$WINDOW" 2>/dev/null
+  exit 0
+fi
+
+[ -n "${COMMAND:-}" ] || die "$NAME.conf defines no COMMAND"
+
+# --- headless: the original path, unchanged --------------------------------
+if [ "$HOST" != tmux ]; then
+  exec /bin/bash -c "$COMMAND"
+fi
+
+# --- tmux-hosted -----------------------------------------------------------
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "agentctl-host: HOST=tmux but tmux is not installed; running headless" >&2
+  exec /bin/bash -c "$COMMAND"
+fi
+
+# The server must exist before new-window. `tmx ensure` is the repo's own idempotent
+# creator and knows each world's root; fall back to a bare detached session so this
+# still works on a box without the tmux cockpit installed.
+if ! tmux_ has-session 2>/dev/null; then
+  if command -v tmx >/dev/null 2>&1; then
+    tmx ensure "$TMUX_SERVER" >/dev/null 2>&1 || true
+  fi
+  tmux_ has-session 2>/dev/null || \
+    tmux_ new-session -d -s "$TMUX_SERVER" -c "$HOME" 2>/dev/null || true
+fi
+if ! tmux_ has-session 2>/dev/null; then
+  echo "agentctl-host: could not reach tmux server '$TMUX_SERVER'; running headless" >&2
+  exec /bin/bash -c "$COMMAND"
+fi
+
+RC_FILE="$(mktemp "${TMPDIR:-/tmp}/agentctl-host.$NAME.XXXXXX")"
+# The signal name must be unique per run: a stale wait-for channel from a previous
+# run would otherwise release this one immediately with the wrong status.
+SIG="agentctl-$NAME-$$"
+cleanup() { rm -f "$RC_FILE"; }
+trap cleanup EXIT
+
+# Replace any window left by an earlier run before starting a new one.
+tmux_ kill-window -t "$WINDOW" 2>/dev/null
+
+# `; ` not `&& `: the rc must be recorded and the signal raised even when COMMAND
+# fails, otherwise a failing run hangs this process forever instead of reporting.
+tmux_ new-window -d -n "$WINDOW" \
+  "bash -c '$(printf '%s' "$COMMAND" | sed "s/'/'\\\\''/g")'; printf %s \$? > $RC_FILE; $AGENTCTL_TMUX wait-for -S $SIG" \
+  2>/dev/null || { echo "agentctl-host: new-window failed; running headless" >&2; exec /bin/bash -c "$COMMAND"; }
+
+# Block until the window signals. From systemd's side this is an ordinary
+# foreground process that exits with the command's status.
+tmux_ wait-for "$SIG"
+
+rc="$(cat "$RC_FILE" 2>/dev/null || echo 1)"
+case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+printf '[%s] agentctl-host: %s finished in tmux://%s/%s rc=%s\n' \
+  "$(date -Is)" "$NAME" "$TMUX_SERVER" "$WINDOW" "$rc" >> "$STATE_DIR/$NAME/activity.log" 2>/dev/null || true
+exit "$rc"
