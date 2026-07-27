@@ -113,11 +113,12 @@ Editing rules: change `.config/rulesync-global/.rulesync/rules/overview.md` (can
 This dir is loaded by Claude Code as the project's harness layer:
 
 - **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing, eval format).
-- **`.claude/agents/`** — 25 specialized subagents (`kb-product-owner`, `kb-architect`, `kb-developer`, `kb-qa`, `kb-coordinator`, plus security/python/frontend/backend/devops/perf/refactoring/quality/learning/research/etc.).
-- **`.claude/skills/`** — domain skills auto-invoked by name. Currently:
-  `notes-system`, `gh-workflows`, `k8s-ops`, `cloudflare-ops`, `forgejo-ops`, `mem0-ops`, `adb-ops`, `app-quality-gates`, `bug-bash`, `bug-bash-wrapup`, `one-pager`, `myapp-release`.
-- **`.claude/commands/`** — 51 slash commands across four namespaces:
-  `/sc:*` (analyze, build, design, implement, improve, troubleshoot, …), `/my:*` (claude-edit, fix-ci, fresh, judge, monitor-pr, pr-merge-flow, worktree-recycle, …), `/kb:*` (workflow, implement, ci, ci-analyze), `/daily:*` (analysis, standup, summary, slack), plus `binks`, `feature`, `remember`.
+- **`.claude/agents/`** — 19 subagents: the `kb-*` delivery pipeline (`kb-product-owner`, `kb-architect`, `kb-developer`, `kb-reviewer`, `kb-qa`, `kb-coordinator`, `kb-sprint-owner`), the observe-only personas (`sprint-overseer`, `release-coordinator`, `compliance-counsel`), and a handful of domain specialists (`security-engineer`, `system-architect`, `quality-engineer`, `devops-architect`, `requirements-analyst`, `technical-writer`, `refactoring-expert`, `root-cause-analyst`, `deep-research-agent`).
+- **`.claude/skills/`** — 53 domain skills invoked by name; the canonical index is the list in `.claude/CLAUDE.md`, which spans both this repo and the private overlay.
+- **`.claude/commands/`** — 24 slash commands across four namespaces:
+  `/sc:*` (analyze, git, manual-test, research, test), `/my:*` (autopilot, fix-ci, go, judge, pr-merge-flow, worktree-recycle), `/kb:*` (workflow, implement, sprint, ci, ci-analyze), `/daily:*` (analysis, standup, summary, slack), plus `binks`, `dream`, `feature`, `remember`.
+
+  These counts are load-bearing only as a rough orientation — treat `ls ~/.claude/{agents,skills,commands}` as the truth, since the live registry merges this repo with the private overlay.
 - **`.claude/hooks/`** — Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go health), then `stop-post.d/85-sync-plans.sh` (mirror plans → `~/.agent/plans/{project}/`) and `stop-post.d/90-eval-gate.sh` (eval block + lessons capture). Plus `block-pip.sh`, `large-file-warning.sh`, `llm-judge.sh`.
 - **`.claude/settings.json` / `settings.local.json`** — permissions, env, hook wiring.
 
