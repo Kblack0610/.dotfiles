@@ -243,24 +243,25 @@ setup() {
 
 @test "panels have the strict-mode preamble" {
   # Without `set -u`, a typo'd variable expands to empty and the script carries on with a
-  # wrong value instead of stopping. RATCHET: 3 -- sessionizer.sh, pr-viewer.sh, and
-  # sessions (which has it but under #!/bin/bash; see the shebang test).
-  panel_ratchet 2 "strict-mode preamble" panel_assert_strict_mode
+  # wrong value instead of stopping.
+  #
+  # RATCHET: 1 -- pr-viewer.sh. (sessionizer.sh migrated onto panel-lib.sh.)
+  panel_ratchet 1 "strict-mode preamble" panel_assert_strict_mode
 }
 
 @test "panels resolve \$SELF absolutely" {
   # fzf --bind re-invokes the script from inside the picker, where a relative $0 does not
   # resolve.
   #
-  # RATCHET: 4.
+  # RATCHET: 3.
   #   favourites.sh:26   bare SELF="$0", and it re-invokes $SELF from five fzf actions --
   #                      this one genuinely breaks on a relative launch today
   #   pr-viewer.sh       no SELF at all; :371 interpolates $0 directly into a reload()
-  #   sessionizer.sh     no SELF (it has no fzf re-entrancy yet, so latent rather than live)
   #   servers.sh:228     no SELF; embeds printf '%q' "$0" into the detach-client hop string,
   #                      which survives only because `tmx` happens to be on PATH
   # tags.sh:56 already conforms, via the explicit absolutize branch this assertion accepts.
-  panel_ratchet 4 "absolute \$SELF" panel_assert_self_absolute
+  # sessionizer.sh migrated onto panel-lib.sh.
+  panel_ratchet 3 "absolute \$SELF" panel_assert_self_absolute
 }
 
 @test "no fzf action interpolates a bare \$0" {
