@@ -8,7 +8,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 |--------|------------|-------------|
 | `launcher.sh` | `Prefix+l` | Master menu for all tmux operations |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
-| `servers.sh` (`tmx`) | `Prefix+A` / `C-n` / `C-h` | Server layer: every session everywhere, or hop to hub / lab |
+| `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
@@ -25,6 +25,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
+- **Which world**: `Prefix+C-s` (or bare `tmx`) → the two worlds, sessions in the preview
 - **Everything, everywhere**: `Prefix+A` → every session and window on every server
 - **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
@@ -95,7 +96,7 @@ socket, and the blast radius of a kill is exactly one server.
 | `Prefix+A` | **everything, everywhere** - every session AND window across every server |
 | `Prefix+C-n` / `C-h` | **resume** hub / lab - back on the exact window you left |
 | `Prefix+N` / `H` | **root page** of hub / lab - today's daily, projects overview |
-| `Prefix+C-s` | same list as `Prefix+A` (was a servers-only picker) |
+| `Prefix+C-s` | **compact**: just the worlds, sessions in the preview (also bare `tmx`) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 
@@ -109,7 +110,7 @@ session restores its own active window - you land back exactly where you were,
 which makes flipping between two pieces of work cheap. `N`/`H` attach to the
 manifest's first entry instead, for when you want to start from the top of a world.
 
-**`Prefix+A` (and `Prefix+C-s`) is the only view that crosses the server boundary.**
+**`Prefix+A` is the only view that crosses the server boundary.**
 `Prefix+w` is server-scoped by construction, and `Prefix+S` (sesh) shells out to
 plain `tmux` so it follows `$TMUX` into whichever single world you are in. Seeing hub
 and lab *together* has to be assembled from outside both, which is what
@@ -132,11 +133,18 @@ derived, so an ad-hoc session is described as well as a declared one and no mani
 has to be kept in sync. A **window** row carries the branch, the command, and the
 pane title, which is where a program puts its context: claude windows read as their
 task, nvim windows as their file. A **server** row hops the whole world, which is why
-this list also replaced the old servers-only `Prefix+C-s` picker.
+this list can also stand in for the compact picker when you want everything at once.
 
-**There is deliberately no preview pane.** A preview only describes the row under the
-cursor, so you have to arrow through the list to find out what is in it. The list has
-to answer "what is this" itself.
+**Two views on purpose.** `Prefix+C-s` (and a bare `tmx`) is the COMPACT one - just the
+worlds, two rows, with that world's sessions in the preview; use it when the question is
+"which world". `Prefix+A` is the FULL one; use it when the question is "where is that
+window". Neither replaces the other, so both are kept.
+
+**The full view has no preview pane, deliberately.** A preview only describes the row
+under the cursor, so with hundreds of windows you would arrow through the list to find
+out what is in it - the list has to answer "what is this" itself. The compact view
+keeps its preview precisely because it is the opposite case: two rows, and the preview
+is the drill-down.
 
 `tmx rows` is the data behind it, split out from the fzf call so it is assertable
 without a terminal; `tests/ui/servers_isolation.bats` covers it.
