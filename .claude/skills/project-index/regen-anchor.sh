@@ -9,7 +9,9 @@
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
-MAP_FILE="$HOOKS_DIR/project-map.json"
+# project-map.json lives in the PRIVATE overlay and is stowed to ~/.config/shared-hooks;
+# it is NOT under ~/.dotfiles. Reading it from HOOKS_DIR silently yields an empty map.
+MAP_FILE="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 
 # --- resolve project name ---
 if [ "${1:-}" != "" ]; then
