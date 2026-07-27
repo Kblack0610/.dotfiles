@@ -99,10 +99,20 @@ trap cleanup EXIT
 # Replace any window left by an earlier run before starting a new one.
 tmux_ kill-window -t "$WINDOW" 2>/dev/null
 
-# `; ` not `&& `: the rc must be recorded and the signal raised even when COMMAND
-# fails, otherwise a failing run hangs this process forever instead of reporting.
-tmux_ new-window -d -n "$WINDOW" \
-  "bash -c '$(printf '%s' "$COMMAND" | sed "s/'/'\\\\''/g")'; printf %s \$? > $RC_FILE; $AGENTCTL_TMUX wait-for -S $SIG" \
+# Build the window's command with printf %q rather than hand-rolled quoting. Both
+# interpolations are hostile:
+#   * COMMAND is arbitrary shell and may contain quotes.
+#   * RC_FILE is a path that may contain SPACES. Unquoted, `> /a b/rc` redirects to
+#     `/a` and leaves `b/rc` as a stray word, so the rc file is never written, `cat`
+#     returns empty, and EVERY run reports 1 no matter what it did. The ui harness
+#     sandboxes under a directory with a space in its name precisely to catch this
+#     class of bug, and caught this one.
+#
+# `;` not `&&`: the rc must be recorded and the signal raised even when COMMAND fails,
+# otherwise a failing run hangs this process forever instead of reporting.
+WIN_CMD="$(printf 'bash -c %q; printf %%s $? > %q; %s wait-for -S %q' \
+             "$COMMAND" "$RC_FILE" "$AGENTCTL_TMUX" "$SIG")"
+tmux_ new-window -d -n "$WINDOW" "$WIN_CMD" \
   2>/dev/null || { echo "agentctl-host: new-window failed; running headless" >&2; exec /bin/bash -c "$COMMAND"; }
 
 # Block until the window signals. From systemd's side this is an ordinary

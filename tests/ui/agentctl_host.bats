@@ -47,6 +47,12 @@ mkconf() { # NAME HOST COMMAND
   mkdir -p "$AGENTCTL_STATE_DIR/$1"
 }
 
+
+
+
+
+
+
 @test "tmux-hosted run returns the command's exit code, not tmux's" {
   mkconf ok tmux 'exit 0'
   run "$HOST_BIN" ok
@@ -108,7 +114,9 @@ mkconf() { # NAME HOST COMMAND
 
 @test "an unreachable tmux server falls back to headless rather than failing the unit" {
   mkconf orphan tmux 'exit 9'
-  AGENTCTL_TMUX="tmux -S $BATS_TEST_TMPDIR/nonexistent.sock" run "$HOST_BIN" orphan
+  # NOT a nonexistent socket path - tmux would simply CREATE a server there and the
+  # fallback would never trigger. /bin/false is a tmux that genuinely cannot answer.
+  AGENTCTL_TMUX="/bin/false" run "$HOST_BIN" orphan
   # Degrades to a normal run: a monitoring or dispatch runner must not stop working
   # just because the cockpit server is down.
   [ "$status" -eq 9 ]
