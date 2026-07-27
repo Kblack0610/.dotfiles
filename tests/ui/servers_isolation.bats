@@ -227,17 +227,30 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   assert_output --regexp '(bash|sh|zsh)'
 }
 
-@test "preview of a window returns that pane's live content, not its metadata" {
+@test "a session row explains itself: where it is and what is running in it" {
+  # There is no preview pane, so the row IS the explanation. If it stops carrying the
+  # path and the running command, the list goes back to being a wall of bare names.
+  # Created directly rather than through the manifest: the manifest is whitespace
+  # delimited, and this sandbox's $HOME deliberately contains a space, so a path under
+  # it cannot be expressed there. Real manifests name space-free paths.
+  mkdir -p "$HOME/where-i-am"
   manifest "$SRV_A" "one $HOME"
   "$TMX" ensure "$SRV_A"
-  "${REAL_TMUX}" -L "$SRV_A" send-keys -t 'one:' 'echo bats-preview-marker' Enter
-  sleep 1
-  # base-index is not 1 everywhere - ask for the index rather than assuming one.
-  local idx
-  idx="$("${REAL_TMUX}" -L "$SRV_A" list-windows -t '=one' -F '#{window_index}' | head -1)"
-  run "$TMX" preview "$SRV_A" one "$idx"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s explained -c "$HOME/where-i-am"
+
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"explained\" && \$3==\"\" {print \$4}'"
   assert_success
-  assert_output --partial 'bats-preview-marker'
+  assert_output --partial '~/where-i-am'       # where, with $HOME collapsed to ~
+  assert_output --regexp '(bash|sh|zsh)'       # what is running
+}
+
+@test "rows offers the server itself, so one list also replaces the server picker" {
+  # A server row is the only row with BOTH the session and window fields empty; that is
+  # what tells pick-all to hop the whole world rather than land on a session.
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\"' | wc -l"
+  assert_output '1'
 }
 
 # ── land with an explicit target ─────────────────────────────────────────────

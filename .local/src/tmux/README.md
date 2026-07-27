@@ -8,7 +8,7 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 |--------|------------|-------------|
 | `launcher.sh` | `Prefix+l` | Master menu for all tmux operations |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
-| `servers.sh` (`tmx`) | `Prefix+C-s` / `C-h` / `C-l` | Server layer: pick a world, or hop to hub / lab |
+| `servers.sh` (`tmx`) | `Prefix+A` / `C-n` / `C-h` | Server layer: every session everywhere, or hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
@@ -25,8 +25,9 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
-- **Resume a world**: `Prefix+C-h` hub · `Prefix+C-l` lab (back where you left off)
-- **Root of a world**: `Prefix+N` hub · `Prefix+M` lab (daily / projects overview)
+- **Everything, everywhere**: `Prefix+A` → every session and window on every server
+- **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)
+- **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
 - **Launch menu**: `Prefix+l` → unified launcher
@@ -72,7 +73,7 @@ Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare
 them in the session manager's config and have the window tag itself on startup.
 
-## Servers (`Prefix+C-s`, `tmx`)
+## Servers (`Prefix+A`, `tmx`)
 
 The layer **above** sessions. tmux has four:
 
@@ -94,7 +95,7 @@ socket, and the blast radius of a kill is exactly one server.
 | `Prefix+A` | **everything, everywhere** - every session AND window across every server |
 | `Prefix+C-n` / `C-h` | **resume** hub / lab - back on the exact window you left |
 | `Prefix+N` / `H` | **root page** of hub / lab - today's daily, projects overview |
-| `Prefix+C-s` | server picker (fzf popup, with session preview) |
+| `Prefix+C-s` | same list as `Prefix+A` (was a servers-only picker) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 
@@ -108,25 +109,40 @@ session restores its own active window - you land back exactly where you were,
 which makes flipping between two pieces of work cheap. `N`/`H` attach to the
 manifest's first entry instead, for when you want to start from the top of a world.
 
-**`Prefix+A` is the only view that crosses the server boundary.** `Prefix+w` is
-server-scoped by construction; `Prefix+S` (sesh) shells out to plain `tmux` and so
-follows `$TMUX` into whichever single world you are in; `Prefix+C-s` lists servers
-with their sessions only in the preview. Seeing hub and lab *together* has to be
-assembled from outside both, which is what `tmx pick-all` does. Every window gets
-its own row carrying the branch, what is running in it, and the pane title - which
-is where a program puts its context, so claude windows read as their task and nvim
-windows as their file. Enter goes straight to that window; the preview pane is the
-window's live content.
+**`Prefix+A` (and `Prefix+C-s`) is the only view that crosses the server boundary.**
+`Prefix+w` is server-scoped by construction, and `Prefix+S` (sesh) shells out to
+plain `tmux` so it follows `$TMUX` into whichever single world you are in. Seeing hub
+and lab *together* has to be assembled from outside both, which is what
+`tmx pick-all` does. Three selectable levels in one list:
 
 ```
-hub  dotfiles        7 win  (attached)
-hub  dotfiles        3  feat/tmux-cockp~ claude   searchable-session-index
-hub  hub             1* master           nvim     2026-07-26.md (~/.notes/journal/daily)
-lab  platform        1* fix/placemypare~ nvim     neo-tree filesystem (~/dev/bnb/platform)
+hub  3 session(s)
+  dotfiles      ~/.dotfiles             8 win  claude x6, zsh, chromium  (attached)
+       2  feat/tmux-cockp~ claude   kill-orphan-sessions-rebuild-views
+       5* main             claude   Research best image viewing library options
+  hub           ~/.notes                1 win  nvim
+       1* master           nvim     2026-07-26.md (~/.notes/journal/daily)
+lab  2 session(s)
+  platform      ~/dev/bnb/platform      1 win  nvim
+       1* fix/placemypare~ nvim     neo-tree filesystem
 ```
 
-Split into `tmx rows` (the data) and `tmx preview` (the right-hand pane) so both are
-testable without a terminal; `tests/ui/servers_isolation.bats` covers them.
+A **session** row explains itself - where it is and what is running in it, both
+derived, so an ad-hoc session is described as well as a declared one and no manifest
+has to be kept in sync. A **window** row carries the branch, the command, and the
+pane title, which is where a program puts its context: claude windows read as their
+task, nvim windows as their file. A **server** row hops the whole world, which is why
+this list also replaced the old servers-only `Prefix+C-s` picker.
+
+**There is deliberately no preview pane.** A preview only describes the row under the
+cursor, so you have to arrow through the list to find out what is in it. The list has
+to answer "what is this" itself.
+
+`tmx rows` is the data behind it, split out from the fzf call so it is assertable
+without a terminal; `tests/ui/servers_isolation.bats` covers it.
+
+One limit worth knowing: the manifest is whitespace-delimited, so a session directory
+containing a space cannot be expressed there (it falls back to `$HOME`).
 
 ### Worlds
 
@@ -204,7 +220,7 @@ first. sesh's own `[[window]]` has no panes; its native layout hooks are the
 `tmuxinator` / `tmuxp` session fields. `smug` itself has been unused since
 2026-01 and is no longer installed by the Arch provisioner.
 
-## Servers (`Prefix+C-s`, `tmx`)
+## Servers (`Prefix+A`, `tmx`)
 
 The layer **above** sessions. tmux has four:
 
