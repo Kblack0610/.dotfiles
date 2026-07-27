@@ -1,0 +1,40 @@
+# The panel registry. THIS FILE IS THE ENUMERATION.
+#
+# One row per display-popup binding in .tmux.conf. tests/integ/panel_conformance.bats
+# asserts CLOSURE in both directions: every popup bind has a row here, and every row here
+# has a popup bind. That is what makes panel coverage structural -- a panel added without a
+# row FAILS the fast tier, rather than being silently uncovered.
+#
+# Why a manifest at all, when .tmux.conf already lists the binds? Because .tmux.conf cannot
+# say what a panel IS. `kind` is the case in point: bind g points at $HOME/.local/bin/
+# agent-panel, a cargo-installed Rust binary that is not a tracked file, so a naive
+# "$HOME/ -> repo root, then stat it" check fails on it and on nothing else.
+#
+# COLUMNS -- read by name, never by position (panel_field), so inserting one mid-row cannot
+# silently shift an assertion. Keep the header comment's names in sync with the rows.
+#
+#   table     the tmux key table: root, or whatever -T names
+#   key       the bound key, as .tmux.conf spells it
+#   kind      script      a tracked, executable file in this repo
+#             bin-symlink a .local/bin symlink into .local/src (dispatch alias)
+#             rust-bin    a cargo-installed binary; only its crate is in the repo
+#   geometry  the TARGET class: FULL | WIDE | SMALL (panel_geometry_class)
+#             Several panels do not sit at their target yet; the geometry ratchet counts
+#             them down. .tmux.conf is normalised to %hidden constants in one late pass,
+#             deliberately AFTER every script draws its own --border, so adding -B can
+#             never leave a surface frameless.
+#   path      repo-relative path to the file the tests read
+#   argv      arguments the bind passes, or - for none
+#
+# table key   kind         geometry path                                  argv
+root    f     script       WIDE     .local/src/tmux/sessionizer.sh        -
+root    S     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-session
+root    R     script       WIDE     .local/bin/sessions                   search --window
+root    C-s   bin-symlink  SMALL    .local/src/tmux/servers.sh            pick
+root    A     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-all
+root    g     rust-bin     FULL     .local/src/agent-panel                -
+root    p     script       WIDE     .local/src/tmux/pr-viewer.sh          -
+root    t     script       FULL     .local/src/tmux/notes-cockpit.sh      -
+root    o     script       WIDE     .local/src/tmux/favourites.sh         open
+tags    l     bin-symlink  SMALL    .local/src/tmux/tags.sh               ls
+root    W     bin-symlink  SMALL    .local/src/tmux/tags.sh               pick
