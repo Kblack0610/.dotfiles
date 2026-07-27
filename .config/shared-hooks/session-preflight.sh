@@ -150,9 +150,28 @@ CONTEXT=$(
   # so open comments/suggestions/tasks reach the agent at turn 1. Keyed on canonical name;
   # resolves the lab dir via an authoritative `<!-- canonical: NAME -->` marker, else fuzzy.
   # Fully best-effort — every step guarded so it can never break the hook.
-  LAB_CURRENT="$HOME/.notes/lab/projects/current"
+  # There is more than one bus root: the personal lab, the BNB lab (lab/bnb — BNB is
+  # ours, so it roots under lab/ rather than employment/), and the Gigantic work tree.
+  # lab-roots.sh owns that list; hard-coding the personal root here silently dropped the
+  # readback for every project that lives under another one.
+  # lab-roots.sh ships in the PRIVATE overlay, so it is colocated with this script only
+  # at the stowed path — not inside ~/.dotfiles. Check both, or a run from the repo
+  # checkout silently falls back to the personal root and drops the readback.
   LAB_SUMMARY=""
-  if [ -d "$LAB_CURRENT" ]; then
+  for LAB_ROOTS_LIB in "$(dirname "$0")/lab-roots.sh" "$HOME/.config/shared-hooks/lab-roots.sh"; do
+    if [ -r "$LAB_ROOTS_LIB" ]; then
+      # shellcheck source=/dev/null
+      . "$LAB_ROOTS_LIB"
+      break
+    fi
+  done
+  if declare -F lab_roots >/dev/null 2>&1; then
+    LAB_ROOT_LIST=$(lab_roots 2>/dev/null || true)
+  else
+    LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
+  fi
+  while IFS= read -r LAB_CURRENT; do
+    [ -n "$LAB_CURRENT" ] && [ -d "$LAB_CURRENT" ] || continue
     LAB_SUMMARY=$(grep -rlsF "canonical: $PROJECT_NAME " "$LAB_CURRENT"/*/summary.md 2>/dev/null | head -1 || true)
     if [ -z "$LAB_SUMMARY" ]; then
       for cand in "$PROJECT_NAME" "${PROJECT_NAME%-agent}" "${PROJECT_NAME%-platform}"; do
@@ -161,7 +180,10 @@ CONTEXT=$(
         fi
       done
     fi
-  fi
+    [ -n "$LAB_SUMMARY" ] && break
+  done <<EOF
+$LAB_ROOT_LIST
+EOF
   if [ -n "$LAB_SUMMARY" ] && [ -f "$LAB_SUMMARY" ]; then
     # extract the "## → For the agents" section (up to the next "## " heading), drop the
     # italic descriptor line, and only inject if it holds real content (not the placeholder).
