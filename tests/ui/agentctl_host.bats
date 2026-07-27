@@ -6,11 +6,12 @@
 # see COMMAND's real exit status. That contract is only provable against a real
 # server, because it rests on `tmux wait-for` actually blocking and releasing.
 #
-# Isolation: agentctl-host routes every tmux call through $AGENTCTL_TMUX, so these
-# tests pin it at the sandbox socket directly rather than relying on the PATH shim.
-# That is deliberate - the shim pins `-S`, and agentctl-host's own default appends
-# `-L`, which tmux resolves LAST and would silently escape onto the developer's real
-# server. Injecting the whole command string removes the ambiguity.
+# ISOLATION: set AGENTCTL_TMUX to a bare `tmux` and let the harness's PATH shim pin
+# the socket. That is the ONLY mechanism in play, which matters twice over:
+#   * agentctl-host's own default appends `-L <server>`, which tmux resolves AFTER
+#     the shim's `-S` and would silently escape onto the developer's real server.
+#   * passing our own `-S`/`-f` on top of the shim duplicates both flags. The first
+#     run of this suite did exactly that and every tmux-path case failed.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -24,23 +25,25 @@ setup() {
   export AGENTCTL_STATE_DIR="$BATS_TEST_TMPDIR/state"
   mkdir -p "$AGENTCTL_CONF_DIR" "$AGENTCTL_STATE_DIR"
 
-  HOST_SOCK="$BATS_TEST_TMPDIR/host.sock"
-  export AGENTCTL_TMUX="tmux -S $HOST_SOCK -f /dev/null"
-  $AGENTCTL_TMUX new-session -d -s host -c "$BATS_TEST_TMPDIR"
+  # Bare `tmux`: the shim on PATH supplies -S <sandbox socket> -f /dev/null.
+  export AGENTCTL_TMUX="tmux"
+  tmux new-session -d -s host -c "$BATS_TEST_TMPDIR"
 }
 
 teardown() {
-  [ -n "${AGENTCTL_TMUX:-}" ] && $AGENTCTL_TMUX kill-server 2>/dev/null
+  tmux kill-server 2>/dev/null
   ui_teardown
 }
 
+# printf %q, not a hand-rolled '...': the conf is SOURCED, so a COMMAND containing
+# quotes has to survive as a single shell word. Wrapping it in literal single quotes
+# turned the quote-round-trip case into COMMAND='test 'a b' = 'a b'', which sourced
+# as a stray command and left COMMAND unset.
 mkconf() { # NAME HOST COMMAND
-  cat > "$AGENTCTL_CONF_DIR/$1.conf" <<EOF
-NAME=$1
-KIND=oneshot
-HOST=$2
-COMMAND='$3'
-EOF
+  {
+    printf 'NAME=%s\nKIND=oneshot\nHOST=%s\n' "$1" "$2"
+    printf 'COMMAND=%q\n' "$3"
+  } > "$AGENTCTL_CONF_DIR/$1.conf"
   mkdir -p "$AGENTCTL_STATE_DIR/$1"
 }
 
@@ -51,9 +54,9 @@ EOF
 }
 
 @test "a FAILING tmux-hosted run still propagates its exit code" {
-  # The regression this guards: if the window's trailer used `&&` instead of `;`,
-  # a non-zero command would never write the rc file nor raise the signal, and the
-  # caller would block forever instead of reporting failure.
+  # The regression this guards: if the window's trailer used `&&` instead of `;`, a
+  # non-zero command would never write the rc file nor raise the signal, and the
+  # caller would block forever rather than report failure.
   mkconf bad tmux 'exit 42'
   run "$HOST_BIN" bad
   [ "$status" -eq 42 ]
@@ -73,7 +76,7 @@ EOF
   "$HOST_BIN" named &
   local pid=$!
   # The window must exist WHILE the command runs; that is the entire feature.
-  wait_until '$AGENTCTL_TMUX list-windows -a -F "#W" 2>/dev/null | grep -q "^agent:named$"'
+  wait_until 'tmux list-windows -a -F "#W" 2>/dev/null | grep -q "^agent:named$"'
   wait "$pid" || true
 }
 
@@ -81,7 +84,7 @@ EOF
   mkconf tidy tmux 'exit 0'
   run "$HOST_BIN" tidy
   [ "$status" -eq 0 ]
-  run bash -c '$AGENTCTL_TMUX list-windows -a -F "#W" 2>/dev/null | grep -c "^agent:tidy$" || true'
+  run bash -c 'tmux list-windows -a -F "#W" 2>/dev/null | grep -c "^agent:tidy$" || true'
   [ "${output:-0}" = "0" ]
 }
 
@@ -96,27 +99,26 @@ EOF
 @test "HOST=headless never touches tmux" {
   mkconf plain headless 'exit 5'
   local before after
-  before=$($AGENTCTL_TMUX list-windows -a 2>/dev/null | wc -l)
+  before=$(tmux list-windows -a 2>/dev/null | wc -l)
   run "$HOST_BIN" plain
-  after=$($AGENTCTL_TMUX list-windows -a 2>/dev/null | wc -l)
+  after=$(tmux list-windows -a 2>/dev/null | wc -l)
   [ "$status" -eq 5 ]
   [ "$before" = "$after" ]
 }
 
 @test "an unreachable tmux server falls back to headless rather than failing the unit" {
   mkconf orphan tmux 'exit 9'
-  AGENTCTL_TMUX="tmux -S $BATS_TEST_TMPDIR/nonexistent.sock -f /dev/null" \
-    run "$HOST_BIN" orphan
-  # Degrades to a normal run: a monitoring/dispatch runner must not stop working
+  AGENTCTL_TMUX="tmux -S $BATS_TEST_TMPDIR/nonexistent.sock" run "$HOST_BIN" orphan
+  # Degrades to a normal run: a monitoring or dispatch runner must not stop working
   # just because the cockpit server is down.
   [ "$status" -eq 9 ]
 }
 
 @test "--cleanup removes a leftover window and never fails" {
   mkconf leftover tmux 'sleep 30'
-  $AGENTCTL_TMUX new-window -d -n "agent:leftover" 'sleep 30'
+  tmux new-window -d -n "agent:leftover" 'sleep 30'
   run "$HOST_BIN" --cleanup leftover
   [ "$status" -eq 0 ]
-  run bash -c '$AGENTCTL_TMUX list-windows -a -F "#W" 2>/dev/null | grep -c "^agent:leftover$" || true'
+  run bash -c 'tmux list-windows -a -F "#W" 2>/dev/null | grep -c "^agent:leftover$" || true'
   [ "${output:-0}" = "0" ]
 }
