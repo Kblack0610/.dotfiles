@@ -888,7 +888,7 @@ help_view() {
     s              toggle in-progress  ( [ ] <-> [/] )
     C-x            mark done
     C-a            add a task to the section
-    C-i            hand the task to the AI  (toggles the @ai lane)
+    C-t            hand the task to the AI  (toggles the @ai lane)
     C-d            delete the task
     m              move to another section / project
 
@@ -901,7 +901,7 @@ help_view() {
     R              restore an archived project
 
   waves  (hand a batch of work to the agents)
-    1. C-i on each task you want the agents to do  ->  it shows @ai
+    1. C-t on each task you want the agents to do  ->  it shows @ai
     2. in a CLAUDE session (not here) run:   /wave <project>
          it turns every @ai task into a ticket, fixes them all on ONE
          branch, and stops for your approval before anything runs
@@ -985,7 +985,7 @@ list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header='a tasks/agents/bridge · enter open/answer · C-a add · C-i hand to ai · ? keys' \
+  --header='a views · enter open/answer · C-a add · C-t ai · ? keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
@@ -1005,7 +1005,7 @@ list_section personal | fzf \
   --bind "s:execute-silent($SELF --task-op start {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent($SELF --task-op rm {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
-  --bind "ctrl-i:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-t:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
