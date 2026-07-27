@@ -152,10 +152,17 @@ classify() {
 # arrive as `path<TAB>line<TAB>key<TAB>rawtext`). `section` places the row: `<profile>` for
 # an untagged/main task, `<profile>/<project>` for a project task.
 _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
-  local clean glyph
-  clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
+  local clean glyph lane="" tid=""
+  # `#ai` is the LANE marker: this item belongs to the agents (a `/wave` picks these up),
+  # everything untagged is the human's. Show it, so one list reads as two lanes.
+  case "$6" in *'#ai'*) lane="${C_PROJ}@ai${C_OFF} " ;; esac
+  # A stamped ticket id means the wave has already scoped this one — surface it dimly so
+  # the burn-down is visible without opening the sheet.
+  tid="$(printf '%s' "$6" | grep -oE '<!--[[:space:]]*(vk|cu):[0-9]+' | grep -oE '[0-9]+' | head -1)"
+  [ -n "$tid" ] && tid=" ${C_DIM}#${tid}${C_OFF}"
+  clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //; s/[[:space:]]*#ai\b//')"
   if [[ "$6" =~ ^[[:space:]]*-\ \[/\] ]]; then glyph="${C_INP}[/]${C_OFF}"; else glyph="${C_BOX}[ ]${C_OFF}"; fi
-  printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$clean"
+  printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s%s%s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$lane" "$clean" "$tid"
 }
 
 # ── the profile's UNTAGGED/main lane: its daily `## Focus` tasks (project tasks live in the
