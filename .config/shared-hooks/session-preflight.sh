@@ -25,6 +25,18 @@ ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 # Read on a `source == compact` SessionStart to surface a "just compacted" banner.
 COMPACT_MARKER="$HOME/.agent/compact/${PROJECT_NAME}.pending"
 
+# An APP inside a monorepo inherits its repo's tracker config (see project-map.json
+# `inherits`). Two things follow: repo-wide lessons/plans still apply to it, and its
+# git/PR rows must be scoped to the app's own subtree or they show all 12 apps.
+PROJECT_MAP="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+PARENT_NAME=""; PROJECT_PATHFILTER=""; PROJECT_PRFILTER=""
+if [ -f "$PROJECT_MAP" ] && command -v jq >/dev/null 2>&1; then
+  PARENT_NAME=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].inherits // empty' "$PROJECT_MAP" 2>/dev/null || true)
+  PROJECT_PATHFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].path // empty' "$PROJECT_MAP" 2>/dev/null || true)
+  PROJECT_PRFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].prFilter // empty' "$PROJECT_MAP" 2>/dev/null || true)
+  [ -n "$PROJECT_PATHFILTER" ] && [ -z "$PROJECT_PRFILTER" ] && PROJECT_PRFILTER="$PROJECT_NAME"
+fi
+
 # Read the hook payload's `source` from stdin (JSON) — only when piped, so manual
 # TTY runs of this script don't block on a read. Valid sources: startup|resume|compact.
 HOOK_SOURCE=""
@@ -100,6 +112,20 @@ CONTEXT=$(
     echo "Lessons: none ($LESSONS_FILE does not exist)"
   fi
 
+  # An app in a monorepo also inherits its repo's corpus. Without this an app session
+  # loses sight of every repo-wide lesson (CI, release plumbing, k8s) that still binds it.
+  if [ -n "$PARENT_NAME" ]; then
+    PARENT_LESSONS="$HOME/.agent/lessons/${PARENT_NAME}.md"
+    if [ -f "$PARENT_LESSONS" ]; then
+      echo "Parent (repo-wide) lessons — last 10 lines of $PARENT_LESSONS:"
+      tail -10 "$PARENT_LESSONS" | sed 's/^/  /'
+    fi
+    PARENT_PLANS="$HOME/.agent/plans/$PARENT_NAME"
+    if [ -d "$PARENT_PLANS" ]; then
+      echo "Parent plans: $(find "$PARENT_PLANS" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l) file(s) in $PARENT_PLANS (repo-wide; not listed)"
+    fi
+  fi
+
   # Dream digest — if Dreaming consolidated recently (DREAMS.md touched in the last
   # ~18h), surface the newest entry's Deep-sleep summary + any pending mem0 proposals.
   DREAMS_FILE="$HOME/.agent/dreams/${PROJECT_NAME}/DREAMS.md"
@@ -111,7 +137,10 @@ CONTEXT=$(
       | awk '/^## Deep Sleep/{f=1; next} f&&/^## /{exit} f' \
       | head -12 | sed 's/^/  /'
     if [ -f "$MEM0_QUEUE" ]; then
-      pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null || echo 0)
+      # `grep -c` PRINTS 0 and exits 1 on no match, so `|| echo 0` appended a second 0
+      # and the `-gt` below died with "integer expected" on every empty queue.
+      pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null | head -1)
+      pending=${pending:-0}
       [ "${pending:-0}" -gt 0 ] && echo "  → $pending mem0 proposal(s) awaiting review in $MEM0_QUEUE (run their curls to approve)."
     fi
   fi
@@ -182,11 +211,26 @@ CONTEXT=$(
 
   cd "$PROJECT_DIR" 2>/dev/null || true
   if git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "Recent commits (last 5):"
-    git log --oneline -5 2>/dev/null | sed 's/^/  /' || true
+    # Scoped to the app's subtree when this project is one app of a monorepo; otherwise
+    # the rows show whatever landed last across every app in the repo.
+    if [ -n "$PROJECT_PATHFILTER" ]; then
+      echo "Recent commits (last 5, $PROJECT_PATHFILTER):"
+      # `:(top)` anchors the pathspec at the repo root. A bare path is resolved relative
+      # to the CWD, so running from inside the app dir matched nothing at all.
+      git log --oneline -5 -- ":(top)$PROJECT_PATHFILTER" 2>/dev/null | sed 's/^/  /' || true
+    else
+      echo "Recent commits (last 5):"
+      git log --oneline -5 2>/dev/null | sed 's/^/  /' || true
+    fi
     if command -v gh >/dev/null 2>&1; then
-      PR_OUT=$(timeout 5 gh pr list --state=all --limit=5 2>/dev/null || true)
-      if [ -n "$PR_OUT" ]; then
+      PR_OUT=$(timeout 5 gh pr list --state=all --limit=20 2>/dev/null || true)
+      # CONTRIBUTING mandates fix|feat/<app>/... branches and fix(<app>): commit scopes,
+      # so the app name in the PR title is a reliable filter inside the monorepo.
+      if [ -n "$PROJECT_PRFILTER" ] && [ -n "$PR_OUT" ]; then
+        PR_OUT=$(printf '%s\n' "$PR_OUT" | grep -F "$PROJECT_PRFILTER" || true)
+      fi
+      PR_OUT=$(printf '%s\n' "$PR_OUT" | head -5)
+      if [ -n "${PR_OUT// /}" ]; then
         echo "Recent PRs (last 5, any state):"
         echo "$PR_OUT" | sed 's/^/  /'
       fi
