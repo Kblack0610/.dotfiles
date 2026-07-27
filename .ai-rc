@@ -58,6 +58,47 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     export OTEL_RESOURCE_ATTRIBUTES="service.name=claude-code,host.name=$(hostname)"
 fi
 
+# --- mem0 API key ------------------------------------------------------------
+# The self-hosted mem0 server authenticates on an X-API-Key header carrying a
+# m0sk_ CLIENT key. Nothing exported this, so every ready-to-run curl staged in
+# ~/.agent/dreams/*/mem0-queue.md expanded $MEM0_API_KEY to empty and 401'd on the
+# first copy-paste. 17 approved facts sat unposted across 6 projects for ~4 weeks,
+# and two dream-diary entries misread it as a server/credential fault. It is not:
+# the server answers 200 with the right key.
+#
+# Two sources, tried in order, because they fail on different machines:
+#   1. SOPS in home-config — deterministic and non-interactive, but needs the repo
+#      cloned AND the age key present. ~11ms.
+#   2. rbw — covers machines with the vault but no age key. Guarded on `rbw
+#      unlocked` because a bare `rbw get` PROMPTS when locked, and a prompt in an
+#      rc file hangs every new shell.
+#
+# Unset is a valid outcome, not a failure: on a corporate machine neither source
+# resolves and personal memory should not be reachable from there anyway.
+#
+# NOTE: the rbw fallback needs an entry holding the m0sk_ key. The existing
+# `mem0_login_api_key` entry is the LOGIN PASSWORD, not the API key -- it returns
+# 401 against the API. Add the client key as `mem0_api_key` if you want the
+# fallback live; until then source 1 is doing the work.
+if [ -z "${MEM0_API_KEY:-}" ]; then
+    _mem0_secret="$HOME/dev/home/home-config/apps/mem0/client-credentials.secret.yaml"
+    if [ -r "$_mem0_secret" ] && command -v sops >/dev/null 2>&1; then
+        MEM0_API_KEY="$(sops -d "$_mem0_secret" 2>/dev/null \
+            | awk '/MEM0_API_KEY:/ {print $2}' | tr -d '"')"
+    fi
+    if [ -z "${MEM0_API_KEY:-}" ] && command -v rbw >/dev/null 2>&1 \
+       && rbw unlocked >/dev/null 2>&1; then
+        MEM0_API_KEY="$(rbw get mem0_api_key 2>/dev/null)"
+    fi
+    # Only export a key that actually looks like one, so a partial read cannot
+    # masquerade as a working credential and reintroduce the silent 401.
+    case "${MEM0_API_KEY:-}" in
+        m0sk_*) export MEM0_API_KEY ;;
+        *) unset MEM0_API_KEY ;;
+    esac
+    unset _mem0_secret
+fi
+
 # Claude Code entry point — two-case permission cycle (pairs with settings.json
 # "defaultMode": "plan", which boots every session into plan mode):
 #   Default (corporate-safe): bypass is NOT offered. Boots in plan; one
