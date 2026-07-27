@@ -1250,7 +1250,24 @@ command -v notes >/dev/null 2>&1 || { echo "notes CLI not found (build ~/.dotfil
 # Idempotent — a no-op once today's notes are present.
 notes today --all >/dev/null 2>&1 || true
 
-echo personal > "$STATE" # every launch starts on personal
+# Keep the section you were last on. This used to hard-reset to `personal` on every
+# launch, and several actions relaunch the cockpit (`roll_project`, `browse_versions`,
+# `start_wave` all `exec "$SELF"` or return through it). So pressing W on the `bnb`
+# section and coming back landed you on `personal` - where that project does not exist
+# and therefore neither do its agent rows. A wave would be running perfectly well and
+# the cockpit would be showing you a section that structurally could not display it.
+#
+# Still validated, not merely trusted: a section naming a profile that no longer exists
+# (renamed, removed from the notes config) would render an empty cockpit with no
+# explanation, so anything unrecognised falls back to `personal`.
+_last="$(cat "$STATE" 2>/dev/null)"
+case "$_last" in
+  all) : ;;                                            # the cross-profile lane is valid
+  */*) sections_list | grep -qxF "${_last%%/*}" || _last="" ;;   # <profile>/<project>
+  ?*)  sections_list | grep -qxF "$_last" || _last="" ;;
+  *)   _last="" ;;
+esac
+echo "${_last:-personal}" > "$STATE"
 : > "$PFILTER"           # ...and unfiltered (priority filter cleared)
 # ...in the tasks view (a cycles tasks -> agents -> bridge). NOTES_COCKPIT_MODE lets a
 # caller pin the opening view, which is how the cockpit session's `bridge` window opens
