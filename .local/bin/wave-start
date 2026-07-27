@@ -78,6 +78,25 @@ repo_of() {
 REPO="$(repo_of)"
 [ -n "$REPO" ] && [ -d "$REPO" ] || REPO="$PWD"
 
+# The runner status contract (see `agentctl`, the `report` subcommand): five keys,
+# atomically replaced, read by fleet.sh and the cockpit's global footer.
+#
+# Wave writes a log and a pid lock, and until now nothing else - so the verdict computed
+# below, INCLUDING "FAILED (no blackboard written)", existed only as a fire-and-forget
+# notification. Nobody could go back and look at it, and `fleet.sh` could not see wave at
+# all. This is the durable half.
+#
+# `--name wave` is explicit: AGENTCTL_NAME is only set by the systemd unit, and wave-start
+# detaches with setsid rather than running as one. Guarded and `|| true` so a hand-run
+# outside the cockpit, or a machine with no agentctl, is a silent no-op - the same shape
+# watch-companion-loop:397-403 uses.
+_report() { # <state> <item> [detail]
+  command -v agentctl >/dev/null 2>&1 || return 0
+  local -a kv=("state=$1" "project=$APP" "item=$2")
+  [ $# -ge 3 ] && kv+=("detail=$3")
+  agentctl report --name "${AGENTCTL_NAME:-wave}" "${kv[@]}" >/dev/null 2>&1 || true
+}
+
 run_pass() {
   cd "$REPO" 2>/dev/null || { echo "wave-start: repo $REPO missing" >&2; return 1; }
 
@@ -87,6 +106,7 @@ run_pass() {
   echo "$$" > "$LOCK"
   # shellcheck disable=SC2064
   trap "rm -f '$LOCK'" EXIT INT TERM
+  _report working "/wave $APP $VERB"
 
   echo "=== wave-start $APP $VERB — $(date -Is) — repo $REPO" >>"$LOG"
   # --dangerously-skip-permissions: a headless run must not hang on a permission
@@ -125,6 +145,29 @@ run_pass() {
 
   if [ "$WAVE_VERDICT" != ok ]; then
     printf 'wave-start: %s %s %s — %s\n' "$APP" "$VERB" "$WAVE_VERDICT" "$WAVE_DIAG" >&2
+  fi
+
+  # Report the outcome durably.
+  #
+  # A pass that stopped ON PURPOSE to ask the human is `blocked`, not `ok` and not
+  # `error` - that is the state the contract invented for a healthy process waiting on a
+  # person, and it is what makes the row show `!` instead of a dim tick. Detected
+  # mechanically: a board that still says `Approval: PENDING` plus a pending ask for this
+  # app. Checked BEFORE ok, because a paused wave has not finished.
+  local waiting=0 askid=""
+  if [ -n "$board" ] && grep -q '^- Approval: PENDING' "$board" 2>/dev/null; then
+    if command -v agent-ask >/dev/null 2>&1; then
+      askid="$(agent-ask list "$APP" --pending 2>/dev/null | awk -F'\t' 'NR==1{print $1}')"
+      [ -n "$askid" ] && waiting=1
+    fi
+  fi
+
+  if [ "$WAVE_VERDICT" != ok ]; then
+    _report error "$VERB $WAVE_VERDICT" "$WAVE_DIAG"
+  elif [ "$waiting" -eq 1 ]; then
+    _report blocked "$VERB waiting on ask $askid" "$WAVE_DIAG"
+  else
+    _report ok "$VERB ok" "$WAVE_DIAG"
   fi
 
   # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on

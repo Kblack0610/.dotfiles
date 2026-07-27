@@ -155,6 +155,13 @@ runners() {
     if [ "$r_state" = blocked ] || [ "$r_state" = error ]; then
       glyph="$G_ATTN"; col="$C_INP"
       [ "$r_state" = error ] && col="$C_ERR"
+    elif [ "$r_state" = working ]; then
+      # `working` outranks the systemd view for the same reason blocked/error do: not
+      # every runner IS a unit. wave-start detaches with setsid, so its unit is inactive
+      # while a pass is genuinely running - the contract says working, ActiveState says
+      # nothing, and without this the row rendered dim-idle during a live wave. The
+      # runner knows more about itself than systemd does; let it say so.
+      glyph="$G_BUSY"; col="$C_SEL"
     elif [ "$state" = active ]; then
       glyph="$G_BUSY"; col="$C_SEL"
     elif [ -n "$rc" ] && [ "$rc" != 0 ]; then
