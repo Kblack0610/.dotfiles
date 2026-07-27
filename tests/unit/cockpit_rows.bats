@@ -204,6 +204,48 @@ nfields() { awk -F'\t' '{print NF; exit}'; }
   assert_equal "$out" 'k1 k2 '
 }
 
+# ── the #ai lane ───────────────────────────────────────────────────────────
+
+# One list, two lanes: `#ai` marks an item a `/wave` may pick up, everything untagged is
+# the human's and no agent touches it. If the marker stops rendering, the two lanes become
+# indistinguishable in the cockpit and the human cannot see what they handed over.
+
+@test "_task_row marks an #ai item with the lane badge" {
+  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai'
+  assert_output --partial '@ai'
+}
+
+@test "_task_row leaves an untagged (human-lane) item unmarked" {
+  run _task_row bnb /f.md 6 k3 bnb/pmp '- [ ] call the attorney re the BAA'
+  refute_output --partial '@ai'
+}
+
+@test "_task_row does not leave the raw #ai tag in the display" {
+  # The badge replaces it; showing both is noise on every agent-lane row.
+  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai'
+  refute_output --partial '#ai '
+}
+
+@test "_task_row surfaces a stamped ticket id so the wave burns down visibly" {
+  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai <!-- vk:601 -->'
+  assert_output --partial '#601'
+}
+
+@test "_task_row shows no ticket id when the item has not been scoped yet" {
+  run _task_row bnb /f.md 5 k2 bnb/pmp '- [ ] provider cannot remove a resident #ai'
+  refute_output --partial '#'
+}
+
+@test "an #ai item still renders its in-progress glyph" {
+  run _task_row bnb /f.md 5 k2 bnb/pmp '- [/] provider cannot remove a resident #ai'
+  assert_output --partial '[/]'
+}
+
+@test "the lane badge does not disturb the 7-field wire format" {
+  run bash -c 'source "$COCKPIT"; _task_row bnb /f.md 4 k1 bnb/pmp "- [ ] x #ai <!-- vk:601 -->" | awk -F"\t" "{print NF}"'
+  assert_output '7'
+}
+
 # ── view mode ────────────────────────────────────────────────────────────────
 
 @test "read_mode defaults to tasks and toggle_mode cycles all three views" {
