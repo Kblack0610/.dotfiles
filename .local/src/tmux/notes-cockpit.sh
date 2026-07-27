@@ -38,8 +38,12 @@ INSTANCE="${NOTES_COCKPIT_INSTANCE:-}"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.section"
 # THREE views, cycled by `a`  (tasks -> agents -> bridge -> tasks):
 #   tasks   your task lists (the default; unchanged).
-#   agents  what agents are DOING per project: live sessions, headless runner, sprint
-#           state + a global sentinel/runners section. Joined by `<!-- canonical: NAME -->`.
+#   agents  WHO is working each project and what the finished ones cost: live Claude
+#           sessions (status/branch/what), then the sessions that shipped the CURRENT
+#           version with their tokens and USD, then a version total. Plus a headless
+#           runner row and a global sentinel/runners section. Joined by
+#           `<!-- canonical: NAME -->`, which may list several runtime names.
+#           It shows SESSIONS - asks and sprint rows belong to the bridge.
 #   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
 #           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
 # Each is its own render; none overwrites another.
@@ -236,17 +240,29 @@ _profile_view() { # $1=rows $2=profile
 # from a vault project to its agent runtime state is the `<!-- canonical: NAME -->`
 # marker (sessions.jsonl, sprint blackboards, ~/.agent/asks are all keyed by it).
 
-# canonical_of <profile> <project-lc> -> canonical name, or the project name if unmarked.
+# canonical_of <profile> <project-lc> -> canonical name(s), or the project name if
+# unmarked. A marker may name SEVERAL runtime projects, comma-separated:
+#
+#   <!-- canonical: notes-cockpit, dotfiles -->
+#
+# because a vault project and a repo are not the same axis. `notes-cockpit` is a product
+# the user tracks; the sessions that build it register under `dotfiles`, the repo they
+# ran in. Keying on one name made the agents view render "- idle" for the very project
+# being actively worked on. Callers treat the result as a LIST (see _canon_list).
 canonical_of() {
   local prof="$1" proj="$2" path dir canon=""
   path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
   if [ -n "$path" ]; then
     dir="$(dirname "$path")"
-    canon="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^ >]+' "$dir" 2>/dev/null \
-      | head -1 | sed -E 's/.*canonical:[[:space:]]*//')"
+    canon="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
+      | head -1 | sed -E 's/.*canonical:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//; s/[[:space:]]+$//')"
   fi
   printf '%s' "${canon:-$proj}"
 }
+
+# "a, b" -> one name per line. The primary (first) name is what new state is keyed by;
+# the rest are additional places to LOOK for existing state.
+_canon_list() { printf '%s' "${1:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'; }
 
 # which canonical project a headless runner is on right now (delivery-loop status is
 # read-only + cheap). Prints "<canonical>\t<detail>" or nothing.
@@ -258,59 +274,139 @@ _runner_line() {
     END { if (p!="" && s!="" && s !~ /none|idle/) printf "%s\t%s\n", p, s }'
 }
 
-# agent rows for ONE project: asks/gates -> live/recent sessions -> sprint -> runner.
-# Wire (7 cols, DISPLAY=col7): <type> <profile> <c3> <c4> <c5=canon> <c6=sec> <DISPLAY>
-#   ask:    c3=id       c4=options   sess: c3=session_id
-#   sprint: c3=bb-path                runner: c3=service
-_project_agents() { # $1=profile $2=lc $3=canon $4=runnerCanon $5=runnerDetail
-  local prof="$1" lc="$2" canon="$3" rcanon="$4" rdetail="$5" sec="$1/$2"
-  # asks / gates
-  command -v agent-ask >/dev/null 2>&1 && \
-  agent-ask list "$canon" --pending 2>/dev/null | awk -F'\t' \
-    -v prof="$prof" -v canon="$canon" -v sec="$sec" \
-    -v cq="$C_BOX" -v cg="$C_INP" -v coff="$C_OFF" -v cd="$C_DIM" '
-    $1=="" {next}
-    { id=$1; kind=$5; q=$6; opt=$7
-      g=(kind=="gate"||kind=="approval")?"!":"?"; col=(kind=="gate"||kind=="approval")?cg:cq
-      o=(opt!="")?"  " cd "(" opt ")" coff:""
-      printf "ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s\n", prof, id, opt, canon, sec, col, g, coff, q, o }'
-  # live / recent sessions (registry, keyed by canonical)
-  local sf="$HOME/.agent/sessions/$canon/sessions.jsonl"
-  if command -v jq >/dev/null 2>&1 && [ -f "$sf" ]; then
-    jq -rc 'select(.session_id) | [.session_id,(.updated|tostring),(.edits|tostring)] | @tsv' "$sf" 2>/dev/null \
-      | sort -t"$(printf '\t')" -k2,2rn | head -3 \
-      | awk -F'\t' -v prof="$prof" -v canon="$canon" -v sec="$sec" -v cs="$C_SEL" -v coff="$C_OFF" -v cd="$C_DIM" '
-        { printf "sess\t%s\t%s\t\t%s\t%s\t  %s~%s session %s  %s%s edits%s\n",
-                 prof, $1, canon, sec, cs, coff, substr($1,1,8), cd, $3, coff }'
-  fi
-  # sprint blackboard state
-  local bb; bb="$(ls -1t "$HOME/.agent/plans/$canon"/sprint-*.md 2>/dev/null | head -1)"
-  if [ -n "$bb" ]; then
-    local nblock; nblock="$(awk '/^## Blocks/{f=1;next}/^## /{f=0}f&&/[^[:space:]]/{c++}END{print c+0}' "$bb")"
-    local extra=""; [ "${nblock:-0}" -gt 0 ] 2>/dev/null && extra=" ${C_INP}${nblock} blocked${C_OFF}"
-    printf 'sprint\t%s\t%s\t\t%s\t%s\t  %s* sprint%s %s%s%s%s\n' \
-      "$prof" "$bb" "$canon" "$sec" "$C_PROJ" "$C_OFF" "$C_DIM" "$(basename "$bb" .md)" "$C_OFF" "$extra"
-  fi
-  # headless runner working THIS project right now
-  if [ -n "$rdetail" ] && [ "$rcanon" = "$canon" ]; then
-    printf 'runner\tdelivery-loop\tdelivery-loop\t\t%s\t%s\t  %srunner%s working: %s%s%s\n' \
-      "$canon" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
+# _elapsed <epoch> -> compact age ("12m", "3h", "2d"). Same vocabulary as `sessions`.
+_elapsed() {
+  local t="${1:-0}" now d
+  case "$t" in ''|*[!0-9]*) t=0 ;; esac
+  [ "$t" -eq 0 ] && { printf '-'; return; }
+  now=$(date +%s); d=$(( now - t )); [ "$d" -lt 0 ] && d=0
+  if   [ "$d" -lt 3600 ];  then printf '%dm' $(( d / 60 ))
+  elif [ "$d" -lt 86400 ]; then printf '%dh' $(( d / 3600 ))
+  else                          printf '%dd' $(( d / 86400 ))
   fi
 }
 
+# When the CURRENT version started = when the PREVIOUS one was frozen.
+#
+# `notes projects --roll` stamps `<!-- rolled: <epoch> -->` into the note it freezes,
+# and that stamp is the boundary. The mtime fallback is only for notes frozen before
+# the stamp existed: `C-s` in the version browser regenerates a summary and rewrites an
+# old frozen note, which would silently drag the boundary forward by months.
+#
+# 0 means "no released version yet" - show everything.
+_version_start() { # $1=summary path -> epoch
+  local path="${1:-}" dir newest ts
+  [ -n "$path" ] || { printf 0; return; }
+  dir="$(dirname "$path")"
+  newest="$(ls -1 "$dir"/versions/*.md 2>/dev/null | sort -rV | head -1)"
+  [ -n "$newest" ] || { printf 0; return; }
+  ts="$(sed -n 's/.*<!-- *rolled: *\([0-9]\{1,\}\).*/\1/p' "$newest" 2>/dev/null | head -1)"
+  [ -n "$ts" ] || ts="$(stat -c %Y "$newest" 2>/dev/null)"
+  printf '%s' "${ts:-0}"
+}
+
+# agent rows for ONE project: who is working now, then what shipped this version.
+# Wire (7 cols, DISPLAY=col7): <type> <profile> <c3> <c4> <c5=canon> <c6=sec> <DISPLAY>
+#   sess: c3=session_id  (enter -> --resume-session, unchanged)
+#
+# NO ask rows and NO sprint row, on purpose. Both were duplicated verbatim from the
+# BRIDGE view - same `agent-ask list --pending` call, same newest sprint-*.md - so on a
+# project whose only state was a pending ask, this view and the bridge rendered the same
+# bytes. The bridge owns questions and work items (cockpit.sh pins a window to it); this
+# view owns sessions. Re-adding either here re-creates the duplication.
+_project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $6=runnerDetail
+  local prof="$1" lc="$2" canon="$3" summary="${4:-}" rcanon="${5:-}" rdetail="${6:-}" sec="$1/$2"
+  local vstart; vstart="$(_version_start "$summary")"
+
+  # A headless delivery-loop runner on THIS project is an agent working it, and is not
+  # shown by the bridge - so unlike asks and sprint rows it belongs here. The global
+  # footer lists every runner, but not which project each is on.
+  if [ -n "$rdetail" ] && printf '%s' "$canon" | tr ',' '\n' | sed 's/ //g' | grep -qxF "$rcanon"; then
+    printf 'runner\tdelivery-loop\tdelivery-loop\t\t%s\t%s\t  %s~ runner%s %s%s%s\n' \
+      "$canon" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
+  fi
+
+  # A project may claim several runtime names (see canonical_of); gather from each.
+  local names; names="$(_canon_list "$canon")"
+  local primary; primary="$(printf '%s' "$names" | head -1)"
+
+  # --- running right now (live <pid>.json, project-resolved by `sessions rows`) ---
+  # No tokens/cost here: a running session's usage is incomplete by definition.
+  local id st proj branch started what glyph col n
+  if command -v sessions >/dev/null 2>&1; then
+    while IFS=$'\t' read -r id st proj branch started what; do
+      [ -n "$id" ] || continue
+      case "$st" in
+        busy)    glyph='~'; col="$C_INP" ;;
+        waiting) glyph='!'; col="$C_SEL" ;;
+        *)       glyph='o'; col="$C_DIM" ;;
+      esac
+      [ "$branch" = "-" ] && branch=""
+      # A session that just started has no ai-title yet.
+      [ "$what" = "-" ] && what="(just started)"
+      printf 'sess\t%s\t%s\t\t%s\t%s\t  %s%s %s%s %s%s%s  %s%s%s\n' \
+        "$prof" "$id" "$primary" "$sec" \
+        "$col" "$glyph" "$st" "$C_OFF" \
+        "$C_DIM" "${branch:+$branch }$(_elapsed "$started")" "$C_OFF" \
+        "$C_OFF" "$what" "$C_OFF"
+    done < <(while IFS= read -r n; do sessions rows "$n" 2>/dev/null; done <<< "$names")
+  fi
+
+  # --- finished, this version only (registry + its telemetry) ---
+  command -v agent-usage >/dev/null 2>&1 || return 0
+  local rows
+  rows="$(while IFS= read -r n; do
+            agent-usage rows "$n" --since "$vstart" 2>/dev/null
+          done <<< "$names" | sort -t"$(printf '\t')" -k2,2rn | head -6)"
+  [ -n "$rows" ] || return 0
+
+  printf 'head\t\t\t\t\t\t%s    --- shipped this version ---%s\n' "$C_DIM" "$C_OFF"
+
+  local _u ed cost nocost tok models dur label
+  while IFS=$'\t' read -r id _u ed cost nocost tok models dur label; do
+    [ -n "$id" ] || continue
+    [ "$models" = "-" ] && models=""
+    [ "$label" = "-" ] && label="(no commit recorded)"
+    printf 'sess\t%s\t%s\t\t%s\t%s\t  %s*%s %s  %s%s ed  %s tok  %s%s\n' \
+      "$prof" "$id" "$primary" "$sec" \
+      "$C_PROJ" "$C_OFF" "$(printf '%.48s' "$label")" \
+      "$C_DIM" "$ed" "$(_human_tok "$tok")" \
+      "$([ "$nocost" = 1 ] && printf -- '-' || printf '$%.2f' "$cost")" "$C_OFF"
+  done <<< "$rows"
+
+  # --- the version total ---
+  local n te tt tc anyunk
+  read -r n te tt tc anyunk <<< "$(printf '%s\n' "$rows" \
+    | awk -F'\t' '{n++; e+=$3; c+=$4; t+=$6; if($5=="1") u++}
+                  END{printf "%d %d %d %.2f %d\n", n, e, t, c, u+0}')"
+  printf 'hint\t\t\t\t\t\t%s    -- %s session%s - %s edits - %s tok - $%.2f%s --%s\n' \
+    "$C_DIM" "$n" "$([ "$n" = 1 ] || printf s)" "$te" "$(_human_tok "$tt")" "$tc" \
+    "$([ "${anyunk:-0}" -gt 0 ] 2>/dev/null && printf ' (+%s untracked)' "$anyunk")" "$C_OFF"
+}
+
+# 1234567 -> 1.2M / 340k / 512
+_human_tok() {
+  awk -v n="${1:-0}" 'BEGIN{
+    if (n >= 1000000) printf "%.1fM", n/1000000;
+    else if (n >= 1000) printf "%.0fk", n/1000;
+    else printf "%d", n }'
+}
+
 # One profile's AGENTS view: a group per project with its agent rows (or "- idle").
+# The summary path comes straight out of the `notes projects` row we are already
+# reading, so neither canonical_of nor _version_start needs to shell out again.
 _profile_agents_view() { # $1=profile
-  local prof="$1" name st ver lc canon body rline rcanon rdetail
+  local prof="$1" name sum st ver lc canon body rline rcanon rdetail
   rline="$(_runner_line)"
   if printf '%s' "$rline" | grep -q "$(printf '\t')"; then
     rcanon="${rline%%$'\t'*}"; rdetail="${rline#*$'\t'}"
   else rcanon=""; rdetail=""; fi
-  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r name _sum st ver; do
+  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
     _subheader "$name" "$st" "$ver"
-    body="$(_project_agents "$prof" "$lc" "$canon" "$rcanon" "$rdetail")"
+    body="$(_project_agents "$prof" "$lc" "$canon" "$sum" "$rcanon" "$rdetail")"
     if [ -n "$body" ]; then printf '%s\n' "$body"
     else printf 'hint\t\t\t\t\t\t%s  - idle%s\n' "$C_DIM" "$C_OFF"; fi
   done
@@ -745,6 +841,33 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
   echo "$out"
   # summarize the note that was just frozen (path is in the `(froze <path>)` line)
   frozen="$(sed -n 's/.*(froze \(.*\))$/\1/p' <<<"$out")"
+
+  # The AGENT CHANGELOG: what the agents did for the version we just froze, appended to
+  # the frozen note so it ships with the release rather than living only in the cockpit.
+  #
+  # The window runs from the PREVIOUS version's `rolled:` stamp up to now. `_version_start`
+  # reads the newest versions/*.md, which at this point is the note just written - so the
+  # window has to be taken from the note BEFORE it.
+  if [ -n "$frozen" ] && command -v agent-usage >/dev/null 2>&1; then
+    local canon prev since block
+    canon="$(canonical_of "$profile" "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')")"
+    prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | sort -rV | sed -n 2p)"
+    since=0
+    if [ -n "$prev" ]; then
+      since="$(sed -n 's/.*<!-- *rolled: *\([0-9]\{1,\}\).*/\1/p' "$prev" | head -1)"
+      [ -n "$since" ] || since="$(stat -c %Y "$prev" 2>/dev/null || echo 0)"
+    fi
+    block="$(while IFS= read -r cn; do
+               [ -n "$cn" ] && agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
+             done < <(_canon_list "$canon"))"
+    if [ -n "$block" ]; then
+      printf '\n%s\n' "$block" >> "$frozen"
+      echo "wrote the agent changelog into $(basename "$frozen")"
+    else
+      echo "(no agent sessions recorded for this version — skipping the agent changelog)"
+    fi
+  fi
+
   if [ -n "$frozen" ] && command -v notes-version-summary >/dev/null 2>&1; then
     echo "summarizing $(basename "$frozen") ..."
     notes-version-summary "$profile" "$name" "$frozen" \
@@ -938,7 +1061,9 @@ help_view() {
   other
     a              cycle views: tasks -> agents -> bridge -> tasks
                      tasks   your task lists
-                     agents  what agents are doing (sessions/sprint/runner + sentinel)
+                     agents  who is working this project + what shipped this
+                             version cost (tokens/$); V freezes it into the
+                             version note as the agent changelog
                      bridge  open QUESTIONS agents raised on your tasks -
                              enter = answer (resumes the agent), C-a = add work
     T              create today's notes (all profiles)
