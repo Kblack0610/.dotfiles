@@ -172,7 +172,13 @@ panel_assert_strict_mode() {
   [ -n "$first_fn" ] || first_fn=9999
   awk -v stop="$first_fn" '
     NR >= stop { exit }
+    # Either its own set line, or -- now the convention -- sourcing panel-lib.sh, which sets
+    # it. A migrated panel has no `set -` line of its own, and demanding one would have
+    # counted every migration as a regression. That the library really does apply it is
+    # proved by tests/unit/panel_lib.bats ("the strict-mode preamble is actually in effect"),
+    # so this may lean on the source line without taking it on trust.
     /^set -/ && /u/ && /pipefail/ { found = 1; exit }
+    /panel-lib\.sh/ && /^[[:space:]]*(\.|source)[[:space:]]/ { found = 1; exit }
     END { exit(found ? 0 : 1) }
   ' "$f"
 }
