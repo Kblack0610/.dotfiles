@@ -109,6 +109,68 @@ setup() {
   assert_output --partial 'quiet'
 }
 
+# ── the runner status contract ───────────────────────────────────────────────
+# A runner publishes key=value at <state>/<name>/status (agentctl `report`). systemd can
+# only say whether the unit is running; this is the half that says on WHAT, and these tests
+# are the reader's end of that contract. Adoption is per-runner, so the fallback to the
+# activity tail matters as much as the happy path -- it is what keeps the runners that never
+# adopted it rendering exactly as before.
+
+@test "a reported item wins over the activity log tail" {
+  seed_runner busy 'stale line from the log'
+  seed_status busy working bnb-platform 'draining the sprint queue'
+  run bash -c '"$FLEET" --runners | cut -f5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'draining the sprint queue'
+  refute_output --partial 'stale line from the log'
+}
+
+@test "the reported project renders, which is the join a reader could not make before" {
+  seed_runner busy
+  seed_status busy working bnb-platform 'some item'
+  run bash -c '"$FLEET" --runners | cut -f5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_output --partial 'bnb-platform'
+}
+
+@test "a runner that never reported still falls back to its activity tail" {
+  seed_runner legacy 'what the old renderer showed'
+  run bash -c '"$FLEET" --runners | cut -f5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_output --partial 'what the old renderer showed'
+}
+
+@test "a reported blocked state raises the attention glyph on an inactive unit" {
+  # The case systemd structurally cannot show: the process exited cleanly and is waiting on
+  # a human, so ActiveState=inactive and ExecMainStatus=0 -- indistinguishable from idle.
+  seed_runner waiting
+  seed_status waiting blocked dotfiles 'needs an answer'
+  run bash -c '"$FLEET" --runners | cut -f5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_output --partial '!'
+}
+
+@test "an idle reported runner does NOT raise the attention glyph" {
+  # Negative control for the test above: without it, a renderer that marked every reporting
+  # runner as needing attention would pass just as happily.
+  seed_runner calm
+  seed_status calm idle dotfiles 'nothing to do'
+  run bash -c '"$FLEET" --runners | cut -f5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  refute_output --partial '!'
+}
+
+@test "field 4 stays the systemd state even when the runner reports its own" {
+  # Two vocabularies, one field, would make $4 mean different things on different rows.
+  seed_runner busy
+  seed_status busy blocked dotfiles 'waiting'
+  run fleet_field runner 4
+  refute_output --partial 'blocked'
+}
+
+@test "a status file never costs a row its 5-field shape" {
+  seed_runner busy
+  seed_status busy working bnb-platform 'an item long enough to be clipped by the renderer'
+  run bash -c '"$FLEET" --runners | awk -F"\t" "NF != 5 { bad=1 } END { exit bad+0 }"'
+  assert_success
+}
+
 # ── watches ──────────────────────────────────────────────────────────────────
 
 @test "--watches reports each watch's state verbatim in field 4" {

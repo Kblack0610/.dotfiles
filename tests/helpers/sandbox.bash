@@ -21,7 +21,10 @@ STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
 # NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
 # its former $BRIDGE export is gone with it. fleet.sh is the headless-side surface now.
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK
+# The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
+# asserted through it), so a test of agentctl's own contract must not go through PATH.
+AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK AGENTCTL_BIN
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -108,6 +111,21 @@ seed_runner() {
     mkdir -p "$AGENTCTL_STATE_DIR/$name"
     printf '[2026-07-24T12:00:00-07:00] %s\n' "$activity" >> "$AGENTCTL_STATE_DIR/$name/activity.log"
   fi
+}
+
+# seed_status <name> <state> [project] [item] [updated-epoch]
+# The runner status contract (agentctl `report`): key=value at <state>/<name>/status.
+# Written here by hand rather than by shelling out to `agentctl report` on purpose -- a
+# reader test must pin the FILE FORMAT, so it still fails if the writer stops honouring it.
+seed_status() {
+  local name="$1" state="$2" project="${3:-}" item="${4:-}" updated="${5:-}"
+  mkdir -p "$AGENTCTL_STATE_DIR/$name"
+  { printf 'state=%s\n' "$state"
+    printf 'project=%s\n' "$project"
+    printf 'item=%s\n' "$item"
+    printf 'detail=\n'
+    printf 'updated=%s\n' "${updated:-$(date +%s)}"
+  } > "$AGENTCTL_STATE_DIR/$name/status"
 }
 
 # seed_watch <name> <state> [description] [lastrun-epoch]

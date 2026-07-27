@@ -19,6 +19,8 @@
 # Data (all under $HOME, so the test sandbox's HOME redirect relocates it for free):
 #   ~/.config/agentctl/agents/*.conf          the roster
 #   ~/.local/state/agentctl/<n>/activity.log  last thing that runner actually did
+#   ~/.local/state/agentctl/<n>/status        the runner status contract (state/project/
+#                                             item/detail/updated) — see agentctl
 #   ~/.agent/watches/*.yaml                   sentinel watch definitions
 #   ~/.local/state/watch-companion/<n>.state  OK | TRIP | ERROR
 #   ~/.local/state/watch-companion/<n>.lastrun  epoch of last poll (staleness)
@@ -109,10 +111,24 @@ _show() {
   systemctl --user show "$1" -p "$2" --value 2>/dev/null
 }
 
+# _status_get <name> <key> -> the runner's own reported value for one key, or empty.
+#
+# The status contract (agentctl:~120): a runner publishes key=value at
+# ~/.local/state/agentctl/<n>/status — state, project, item, detail, updated. systemd can
+# only say whether a unit is running; this is the half that says on WHAT. Read as a file
+# rather than via `agentctl report`, deliberately: the file IS the contract, so a runner
+# that never adopted it just yields empty and the row falls back to the activity tail.
+_status_get() {
+  local f="$AGENTCTL_STATE_DIR/$1/status"
+  [ -f "$f" ] || return 0
+  awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f" 2>/dev/null
+}
+
 # ── runners: the agentctl units, enumerated from their conf dir ──────────────
 runners() {
   head_row 'runners · agentctl'
   local conf name svc state pid rc started next glyph col detail act
+  local r_state r_project r_item r_updated
   local any=0
   for conf in "$AGENTCTL_CONF_DIR"/*.conf; do
     [ -f "$conf" ] || continue
@@ -126,9 +142,20 @@ runners() {
     started="$(_show "$svc" ActiveEnterTimestamp)"
     next="$(_show "agentctl-$name.timer" NextElapseUSecRealtime)"
 
+    r_state="$(_status_get "$name" state)"
+    r_project="$(_status_get "$name" project)"
+    r_item="$(_status_get "$name" item)"
+    r_updated="$(_status_get "$name" updated)"
+
     # A oneshot spends nearly all its life inactive, so "inactive" is NOT a fault here;
     # only a non-zero last exit is. That distinction is the whole point of the glyph.
-    if [ "$state" = active ]; then
+    #
+    # `blocked` and `error` outrank the systemd view: a runner waiting on a human is a
+    # perfectly healthy process, and that is precisely the case a unit state cannot show.
+    if [ "$r_state" = blocked ] || [ "$r_state" = error ]; then
+      glyph="$G_ATTN"; col="$C_INP"
+      [ "$r_state" = error ] && col="$C_ERR"
+    elif [ "$state" = active ]; then
       glyph="$G_BUSY"; col="$C_SEL"
     elif [ -n "$rc" ] && [ "$rc" != 0 ]; then
       glyph="$G_ATTN"; col="$C_ERR"
@@ -147,16 +174,28 @@ runners() {
     fi
     [ -n "$rc" ] && [ "$rc" != 0 ] && detail="${detail:+$detail · }exit $rc"
 
-    # The last thing it actually DID. A runner can be green and still be doing nothing
-    # useful, which a state field alone will never tell you.
-    act="$(tail -n 1 "$AGENTCTL_STATE_DIR/$name/activity.log" 2>/dev/null)"
-    act="${act#\[*\] }"
+    # A reported `item` is the runner saying what it is on, in a shape this script agreed
+    # to. Falling back to the last activity.log line keeps every runner that never adopted
+    # the contract rendering exactly as before — adoption is per-runner, not a flag day.
+    # Clip BEFORE appending the age, never after: _clip counts bytes, so clipping a string
+    # that already carries SGR escapes can cut one in half and bleed colour down the list.
+    if [ -n "$r_item" ]; then
+      act="$(_clip "$r_item" 42)"
+      [ -n "$r_updated" ] && act="$act $(_age "$r_updated") ago"
+    else
+      act="$(tail -n 1 "$AGENTCTL_STATE_DIR/$name/activity.log" 2>/dev/null)"
+      act="$(_clip "${act#\[*\] }" 42)"
+    fi
 
+    # Field 4 stays the SYSTEMD state, as documented in the wire format at the top. The
+    # reported state is shown through the glyph; folding two vocabularies into one field
+    # would make `$4` mean different things on different rows.
     row runner "$name" "$svc" "$state" \
-      "$(printf '  %s%s %-16s%s %s%-18s%s %s%s%s' \
+      "$(printf '  %s%s %-16s%s %s%-18s%s %s%-14s%s %s%s%s' \
         "$col" "$glyph" "$name" "$C_OFF" \
         "$C_DIM" "${detail:--}" "$C_OFF" \
-        "$C_DIM" "$(_clip "$act" 56)" "$C_OFF")"
+        "$C_DIM" "${r_project:--}" "$C_OFF" \
+        "$C_DIM" "$act" "$C_OFF")"
   done
   [ "$any" -eq 0 ] && hint_row "no agentctl confs in $AGENTCTL_CONF_DIR"
   return 0
