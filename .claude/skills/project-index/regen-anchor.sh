@@ -45,13 +45,34 @@ if command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
 fi
 # latest eval
 LATEST_EVAL=$(ls -t "$EVAL_DIR" 2>/dev/null | head -1 || true)
-# lab ideation dir (best-effort: same name under lab/projects/current)
-LAB_DIR=""
-for cand in "$PROJECT" "${PROJECT%-agent}" "${PROJECT%-platform}"; do
-  if [ -d "$HOME/.notes/lab/projects/current/$cand" ]; then
-    LAB_DIR="~/.notes/lab/projects/current/$cand/"; break
+# lab ideation dir (best-effort: same name under ANY bus root). There is more than one:
+# the personal lab, the BNB lab (lab/bnb — BNB is ours, so it roots under lab/ rather than
+# employment/), and a root per client job. lab-roots.sh owns that list; hard-coding the
+# personal root here reported "(no dedicated entry)" for every project under another one.
+# lab-roots.sh ships in the PRIVATE overlay, so it is colocated with the hooks only at the
+# stowed path — not inside ~/.dotfiles. Check both, same as session-preflight.sh.
+for LAB_ROOTS_LIB in "$HOOKS_DIR/lab-roots.sh" "$HOME/.config/shared-hooks/lab-roots.sh"; do
+  if [ -r "$LAB_ROOTS_LIB" ]; then
+    # shellcheck source=/dev/null
+    . "$LAB_ROOTS_LIB"
+    break
   fi
 done
+if declare -F lab_roots >/dev/null 2>&1; then
+  LAB_ROOT_LIST=$(lab_roots 2>/dev/null || true)
+else
+  LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
+fi
+LAB_DIR=""
+while IFS= read -r lab_root; do
+  [ -n "$lab_root" ] || continue
+  [ -n "$LAB_DIR" ] && break
+  for cand in "$PROJECT" "${PROJECT%-agent}" "${PROJECT%-platform}"; do
+    if [ -d "$lab_root/$cand" ]; then
+      LAB_DIR="${lab_root/#$HOME/\~}/$cand/"; break
+    fi
+  done
+done <<< "$LAB_ROOT_LIST"
 [ -z "$LAB_DIR" ] && LAB_DIR="~/.notes/lab/ (no dedicated projects/current entry)"
 # repo docs
 REPO_DOCS="_(none)_"
