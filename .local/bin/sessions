@@ -145,6 +145,48 @@ ai_title() {
     | jq -rc '.aiTitle // empty' 2>/dev/null
 }
 
+last_branch() {
+  # $1 = transcript -> the LAST branch recorded, not the first: a session that
+  # started on main and branched should report where it ended up.
+  local t="${1:-}"
+  [ -n "$t" ] && [ -f "$t" ] || return 0
+  tac "$t" 2>/dev/null | grep -m1 -o '"gitBranch":"[^"]*"' 2>/dev/null \
+    | sed 's/.*:"//;s/"$//'
+}
+
+cmd_rows() {
+  # Machine-readable rows for the cockpit's agents panel. LIVE sessions only -
+  # finished ones come from the registry via `agent-usage rows`, which already
+  # carries their telemetry.
+  #
+  #   id \t status \t project \t branch \t started_epoch \t what
+  #
+  # Deliberately NO token/cost columns: a running session's usage is incomplete
+  # by definition, and computing it would mean a full transcript scan on a path
+  # that re-renders as the user types.
+  local want="" ; [ "${1:-}" = "--live" ] && shift
+  want="${1:-}" ; [ "$want" = "--live" ] && want=""
+
+  load_live
+  local id st nm cwd started pid proj t what branch
+  while IFS="$TAB" read -r id st nm cwd started pid; do
+    [ -n "$id" ] || continue
+    cwd="$(_unsentinel "$cwd")"
+    proj="$([ -n "$cwd" ] && resolve_project "$cwd")"
+    [ -n "$want" ] && [ "$proj" != "$want" ] && continue
+
+    t="$(transcript_path "$id")"
+    what="$(_unsentinel "$nm")"
+    [ -n "$what" ] || what="$(ai_title "$t")"
+    [ -n "$what" ] || what="$(lookup_field "$id" first_prompt)"
+    branch="$(last_branch "$t")"
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$id" "${st:-live}" "${proj:--}" "${branch:--}" "${started:-0}" \
+      "$(printf '%s' "${what:--}" | tr '\n\t' '  ' | cut -c1-72)"
+  done < <(live_lines)
+}
+
 transcript_path() {
   # $1 = session id -> its transcript, registered or not.
   local id="$1" t
@@ -683,6 +725,7 @@ sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   list)          cmd_list "$@" ;;
   live)          cmd_list --all --live "$@" ;;
+  rows)          cmd_rows "$@" ;;
   search)        cmd_search "$@" ;;
   index)         cmd_index "$@" ;;
   _filter)       cmd_filter "$@" ;;
