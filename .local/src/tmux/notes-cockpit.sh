@@ -641,6 +641,30 @@ toggle_ai() { # $1=file $2=line
   ' "$file" > "$file.tmp$$" && mv "$file.tmp$$" "$file"
 }
 
+# Start a wave for the project the highlighted row belongs to, WITHOUT leaving the
+# cockpit. Capture already lived here (C-a, C-t); starting was the one step that made you
+# open a Claude session. `wave-start` backgrounds a headless pass that scopes the `#ai`
+# lane into tickets, cuts the branch and writes the board as `Approval: PENDING` — then
+# posts the approval as an ask you answer in the bridge (a a). It never delivers anything
+# on its own; delivery-loop refuses to drain an unapproved board.
+start_wave() { # $1=section (<profile>/<project>)
+  local section="${1:-}" proj
+  case "$section" in
+    */*) proj="${section#*/}" ;;
+    *)   echo "wave: highlight a PROJECT row (this is the '$section' lane)"; sleep 2; return 0 ;;
+  esac
+  command -v wave-start >/dev/null 2>&1 || { echo "wave: wave-start not on PATH"; sleep 2; return 0; }
+  local n
+  n="$(notes --profile "${section%%/*}" ptask "$proj" list 2>/dev/null | grep -cF '#ai' || true)"
+  if [ "${n:-0}" -eq 0 ]; then
+    echo "wave: no @ai tasks on ${proj}'s wave — press C-t on the ones you want the agents to do."
+    sleep 3; return 0
+  fi
+  echo "starting a wave for ${proj} (${n} @ai task(s))…"
+  wave-start "$proj"
+  sleep 3
+}
+
 task_op() { # $1=verb(done|start|rm)  $2=section  $3=key
   local verb="${1:-}" section="${2:-}" key="${3:-}" profile proj
   [ -n "$key" ] || return 0
@@ -889,6 +913,7 @@ help_view() {
     C-x            mark done
     C-a            add a task to the section
     C-t            hand the task to the AI  (toggles the @ai lane)
+    W              start a wave on this project's @ai tasks  (no session needed)
     C-d            delete the task
     m              move to another section / project
 
@@ -902,9 +927,9 @@ help_view() {
 
   waves  (hand a batch of work to the agents)
     1. C-t on each task you want the agents to do  ->  it shows @ai
-    2. in a CLAUDE session (not here) run:   /wave <project>
-         it turns every @ai task into a ticket, fixes them all on ONE
-         branch, and stops for your approval before anything runs
+    2. press  W  on the project row — that is the whole trigger.
+         a headless agent turns every @ai task into a ticket, cuts ONE
+         branch, and stops; the approval arrives as a question below
     3. come back here and press  a a  for the bridge view to watch it,
          and to answer questions it raises  (enter on a "?" row)
     4. it asks you once more before merging
@@ -939,6 +964,7 @@ case "${1:-}" in
   --add) add_task "${2:-}"; exit 0 ;;
   --task-op) shift; task_op "$@"; exit 0 ;;
   --toggle-ai) shift; toggle_ai "$@"; exit 0 ;;
+  --start-wave) shift; start_wave "${1:-}"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --cycle-pfilter) cycle_pfilter; exit 0 ;;
@@ -1006,6 +1032,7 @@ list_section personal | fzf \
   --bind "ctrl-d:execute-silent($SELF --task-op rm {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-t:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
+  --bind "W:execute($SELF --start-wave {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
