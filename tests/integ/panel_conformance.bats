@@ -253,15 +253,13 @@ setup() {
   # fzf --bind re-invokes the script from inside the picker, where a relative $0 does not
   # resolve.
   #
-  # RATCHET: 3.
-  #   favourites.sh:26   bare SELF="$0", and it re-invokes $SELF from five fzf actions --
-  #                      this one genuinely breaks on a relative launch today
+  # RATCHET: 2.
   #   pr-viewer.sh       no SELF at all; :371 interpolates $0 directly into a reload()
   #   servers.sh:228     no SELF; embeds printf '%q' "$0" into the detach-client hop string,
   #                      which survives only because `tmx` happens to be on PATH
   # tags.sh:56 already conforms, via the explicit absolutize branch this assertion accepts.
-  # sessionizer.sh migrated onto panel-lib.sh.
-  panel_ratchet 3 "absolute \$SELF" panel_assert_self_absolute
+  # sessionizer.sh and favourites.sh migrated onto panel-lib.sh.
+  panel_ratchet 2 "absolute \$SELF" panel_assert_self_absolute
 }
 
 @test "no fzf action interpolates a bare \$0" {

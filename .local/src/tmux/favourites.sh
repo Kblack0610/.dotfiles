@@ -16,23 +16,25 @@
 # Registry: ~/.local/state/tmux-favourites/favourites.tsv  (runtime axis, not in repo)
 #   tab-separated: tool \t session_id \t cwd \t label \t added_at
 
-set -uo pipefail
+# Absolute, and from BASH_SOURCE rather than $0: fzf --bind re-invokes this script from
+# INSIDE the picker (five actions do), where a relative $0 does not resolve. It used to be a
+# bare SELF="$0", which broke on any relative launch.
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+. "${SELF%/*}/panel-lib.sh" || exit 1
 
-export PATH="$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/bin"
-
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-favourites"
+STATE_DIR="${FAVOURITES_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-favourites}"
 REG="$STATE_DIR/favourites.tsv"
-OPENCODE_DB="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
-SELF="$0"
+OPENCODE_DB="${OPENCODE_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}"
+CLAUDE_SESSIONS_DIR="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}"
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 [ -f "$REG" ] || : >"$REG"
 
-# ── colors ──────────────────────────────────────────────────────────────────
-BOLD=$'\033[1m'; DIM=$'\033[2m'; CYAN=$'\033[36m'; GREEN=$'\033[32m'
-YELLOW=$'\033[33m'; RESET=$'\033[0m'
-
-die() { tmux display-message "favourites: $*" 2>/dev/null || printf 'favourites: %s\n' "$*" >&2; exit 1; }
+# Palette and diagnostics come from panel-lib.sh. The old local set was a third naming
+# scheme (BOLD/DIM/CYAN/...), and the old die() REPLACED stderr with the tmux flash -- but
+# this script is also a CLI that other scripts call, and they need the reason, not just an
+# exit code. panel_warn does both.
+die() { panel_die "$@"; }
 
 # ── claude pane → session resolver (mirrors agent-chooser.sh) ────────────────
 # Claude maintains ~/.claude/sessions/<pid>.json mapping pid -> sessionId+cwd.
@@ -40,7 +42,7 @@ die() { tmux display-message "favourites: $*" 2>/dev/null || printf 'favourites:
 declare -A PANE_TO_CLAUDE
 __build_claude_pid_map() {
     local sf cpid cur ppid depth
-    for sf in "$HOME/.claude/sessions/"*.json; do
+    for sf in "$CLAUDE_SESSIONS_DIR/"*.json; do
         [ -f "$sf" ] || continue
         cpid=$(basename "$sf" .json)
         [ -d "/proc/$cpid" ] || continue
@@ -57,7 +59,7 @@ __build_claude_pid_map() {
 
 # pid -> "sessionId\tcwd" from the per-pid metadata file
 claude_record() {
-    local f="$HOME/.claude/sessions/${1}.json"
+    local f="$CLAUDE_SESSIONS_DIR/${1}.json"
     [ -f "$f" ] || return 1
     jq -r '"\(.sessionId)\t\(.cwd)"' "$f" 2>/dev/null
 }
@@ -114,6 +116,7 @@ reg_add() {  # tool id cwd label
 
 # ── subcommands ──────────────────────────────────────────────────────────────
 cmd_add() {
+    panel_need jq   # unchecked before this migration, two lines from a sqlite3 check
     local override="${1:-}"
     [ -n "${TMUX:-}" ] || die "not in tmux"
 
@@ -162,24 +165,25 @@ cmd_list() {
     while IFS=$'\t' read -r tool id cwd label added; do
         [ -n "$tool" ] || continue
         case "$tool" in
-            claude)   badge="${CYAN}claude  ${RESET}" ;;
-            opencode) badge="${GREEN}opencode${RESET}" ;;
+            claude)   badge="${C_BOX}claude  ${C_OFF}" ;;
+            opencode) badge="${C_SEL}opencode${C_OFF}" ;;
             *)        badge="$tool" ;;
         esac
         dir=$(basename "$cwd")
-        disp="${badge} ${BOLD}${label}${RESET} ${DIM}${dir} · ${added}${RESET}"
+        disp="${badge} ${C_HEAD}${label}${C_OFF} ${C_DIM}${dir} · ${added}${C_OFF}"
         printf '%s\t%s\t%s\t%s\n' "$tool" "$id" "$cwd" "$disp"
     done <"$REG"
 }
 
 cmd_preview() {  # tool id cwd
+    panel_need jq   # unchecked before this migration, two lines from a sqlite3 check
     local tool="$1" id="$2" cwd="$3"
-    printf '%s\n' "${CYAN}${BOLD}── ${tool}: ${cwd} ──${RESET}"
-    printf '%s\n\n' "${DIM}session ${id}${RESET}"
+    printf '%s\n' "${C_BOX}${C_HEAD}── ${tool}: ${cwd} ──${C_OFF}"
+    printf '%s\n\n' "${C_DIM}session ${id}${C_OFF}"
     if [ "$tool" = "claude" ]; then
         local jsonl; jsonl=$(claude_jsonl "$id" "$cwd")
         if [ -f "$jsonl" ]; then
-            printf '%s\n' "${CYAN}${BOLD}── recent events ──${RESET}"
+            printf '%s\n' "${C_BOX}${C_HEAD}── recent events ──${C_OFF}"
             tail -n 200 "$jsonl" 2>/dev/null | jq -rR --slurp '
                 split("\n") | map(fromjson? // empty)
                 | map(select(.type=="assistant" or .type=="user"))
@@ -191,16 +195,16 @@ cmd_preview() {  # tool id cwd
                       else "  ? \($c.type // "?")" end
                   else "  [36m◂[0m \(((.message.content // "") | tostring) | gsub("\\s+";" ") | .[0:400])" end' 2>/dev/null
         else
-            printf '%s\n' "${DIM}(transcript not found — may have been deleted)${RESET}"
+            printf '%s\n' "${C_DIM}(transcript not found — may have been deleted)${C_OFF}"
         fi
     else
         local row title tu
         row=$(oc_sql "SELECT title, datetime(time_updated/1000,'unixepoch','localtime') FROM session WHERE id='${id//\'/\'\'}' LIMIT 1;")
         if [ -n "$row" ]; then
             IFS=$'\t' read -r title tu <<<"$row"
-            printf '  %s\n  %s\n' "${BOLD}${title}${RESET}" "${DIM}updated ${tu}${RESET}"
+            printf '  %s\n  %s\n' "${C_HEAD}${title}${C_OFF}" "${C_DIM}updated ${tu}${C_OFF}"
         else
-            printf '%s\n' "${DIM}(session not found in opencode db)${RESET}"
+            printf '%s\n' "${C_DIM}(session not found in opencode db)${C_OFF}"
         fi
     fi
 }
@@ -214,15 +218,17 @@ cmd_open() {
         return
     fi
     local sel
-    sel=$("$SELF" _list | fzf --ansi --reverse --border --cycle \
+    panel_fzf_opts
+    local q; q="$(printf '%q' "$SELF")"
+    sel=$("$SELF" _list | fzf "${PANEL_FZF_OPTS[@]}" --cycle \
         --delimiter=$'\t' --with-nth=4 \
         --prompt='Restore favourite > ' \
         --header=$'Enter=restore  ctrl-x=remove  ctrl-a=browse-recent  ctrl-r=reload' \
-        --preview "$SELF _preview {1} {2} {3}" \
-        --preview-window 'right:60%:wrap' \
-        --bind "ctrl-x:execute-silent($SELF remove {1} {2})+reload($SELF _list)" \
-        --bind "ctrl-r:reload($SELF _list)" \
-        --bind "ctrl-a:become($SELF add-pick)")
+        --preview "$q _preview {1} {2} {3}" \
+        "$(panel_fzf_preview right 60)" \
+        --bind "ctrl-x:execute-silent($q remove {1} {2})+reload($q _list)" \
+        --bind "ctrl-r:reload($q _list)" \
+        --bind "ctrl-a:become($q add-pick)")
     [ -n "$sel" ] || exit 0
     local tool id cwd
     tool=$(printf '%s' "$sel" | cut -f1)
@@ -233,35 +239,38 @@ cmd_open() {
 
 # Browse recent claude + opencode sessions and star the selected one.
 cmd_add_pick() {
+    panel_need jq   # unchecked before this migration, two lines from a sqlite3 check
     local rows=""
     # claude: one row per session metadata file
     local sf cpid sid cwd label
-    for sf in "$HOME/.claude/sessions/"*.json; do
+    for sf in "$CLAUDE_SESSIONS_DIR/"*.json; do
         [ -f "$sf" ] || continue
         IFS=$'\t' read -r sid cwd < <(jq -r '"\(.sessionId)\t\(.cwd)"' "$sf" 2>/dev/null)
         [ -n "${sid:-}" ] && [ -n "${cwd:-}" ] || continue
         label=$(claude_label "$(claude_jsonl "$sid" "$cwd")")
         [ -n "$label" ] || label=$(basename "$cwd")
-        rows+="claude"$'\t'"$sid"$'\t'"$cwd"$'\t'"${CYAN}claude  ${RESET} ${BOLD}${label}${RESET} ${DIM}$(basename "$cwd")${RESET}"$'\n'
+        rows+="claude"$'\t'"$sid"$'\t'"$cwd"$'\t'"${C_BOX}claude  ${C_OFF} ${C_HEAD}${label}${C_OFF} ${C_DIM}$(basename "$cwd")${C_OFF}"$'\n'
     done
     # opencode: recent sessions from the db
     if [ -f "$OPENCODE_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
         while IFS=$'\t' read -r sid cwd label; do
             [ -n "${sid:-}" ] || continue
             [ -n "$label" ] || label=$(basename "$cwd")
-            rows+="opencode"$'\t'"$sid"$'\t'"$cwd"$'\t'"${GREEN}opencode${RESET} ${BOLD}${label}${RESET} ${DIM}$(basename "$cwd")${RESET}"$'\n'
+            rows+="opencode"$'\t'"$sid"$'\t'"$cwd"$'\t'"${C_SEL}opencode${C_OFF} ${C_HEAD}${label}${C_OFF} ${C_DIM}$(basename "$cwd")${C_OFF}"$'\n'
         done < <(oc_sql "SELECT id, directory, title FROM session ORDER BY time_updated DESC LIMIT 50;")
     fi
 
     [ -n "$rows" ] || die "no recent sessions found"
 
     local sel
-    sel=$(printf '%b' "$rows" | fzf --ansi --reverse --border --cycle \
+    panel_fzf_opts
+    local q; q="$(printf '%q' "$SELF")"
+    sel=$(printf '%b' "$rows" | fzf "${PANEL_FZF_OPTS[@]}" --cycle \
         --delimiter=$'\t' --with-nth=4 \
         --prompt='Star recent session > ' \
         --header=$'Enter=favourite this session' \
-        --preview "$SELF _preview {1} {2} {3}" \
-        --preview-window 'right:60%:wrap')
+        --preview "$q _preview {1} {2} {3}" \
+        "$(panel_fzf_preview right 60)")
     [ -n "$sel" ] || exit 0
     local tool id cwd
     tool=$(printf '%s' "$sel" | cut -f1)
@@ -289,22 +298,18 @@ cmd_restore() {  # tool id cwd
     # fresh agent in the same dir.
     local runcmd="exec ${SHELL:-/bin/zsh} -ic '$inner'"
 
-    local running; running=$(pgrep -x tmux)
-    if [ -z "${TMUX:-}" ] && [ -z "$running" ]; then
-        tmux new-session -s "$name" -c "$cwd" "$runcmd"
-        return
-    fi
-    if ! tmux has-session -t="$name" 2>/dev/null; then
-        tmux new-session -ds "$name" -c "$cwd"
-    fi
-    # New window in the (now-existing) session running the resume command.
-    tmux new-window -t "$name" -c "$cwd" -n "$tool" "$runcmd"
-    if [ -n "${TMUX:-}" ]; then
-        tmux switch-client -t "$name"
-    else
-        tmux attach -t "$name"
-    fi
+    # panel_ensure_session + panel_focus_session replace a `pgrep -x tmux` probe: whether a
+    # server happens to be running was never the question, $TMUX is. The old code could also
+    # take the attached-new-session path and skip the new-window entirely, so the SAME verb
+    # produced a session-with-one-window or a session-plus-window depending on an unrelated
+    # process check.
+    panel_ensure_session "$name" "$cwd"
+    tmux new-window -t "=$name" -c "$cwd" -n "$tool" "$runcmd"
+    panel_focus_session "$name"
 }
+
+# Sourced by the unit tier rather than run: every function is defined, no subcommand runs.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # ── dispatch ─────────────────────────────────────────────────────────────────
 sub="${1:-open}"; shift || true
@@ -316,5 +321,6 @@ case "$sub" in
     remove)   reg_remove "$@" ;;
     _list)    cmd_list ;;
     _preview) cmd_preview "$@" ;;
+    -h|--help) panel_usage ;;
     *)        die "unknown subcommand: $sub" ;;
 esac
