@@ -5,10 +5,16 @@
 # nothing to assert against a stub: `set-option -w` and `show-options -w` are the storage
 # layer, and faking them would only test the fake.
 #
-# The `protected` verb is the reason this file matters most. cleanup.sh:92,
-# wind-down.sh:174 and stale-detector.sh:70 all ask it what NOT to kill, and it fails OPEN:
-# has_tag on a missing option is simply false, so any drift between the tag a user sets and
-# the option `protected` reads means a pinned window is reaped anyway, on a timer, silently.
+# The `protected` verb is the reason this file matters most. wind-down.sh:174 asks it what
+# NOT to kill, and `cockpit.sh stale` builds the same guarantee into its tmux -f filter. It
+# fails OPEN: has_tag on a missing option is simply false, so any drift between the tag a
+# user sets and the option `protected` reads means a pinned window is reaped anyway, on a
+# timer, silently.
+#
+# (cleanup.sh and stale-detector.sh were the other two consumers. Both were deleted once it
+# turned out they were reachable only from launcher.sh and dashboard.sh, which were
+# themselves bound only by commented-out lines in .tmux.conf. The kill path that survives
+# is wind-down.sh; cockpit.sh stale deliberately only REPORTS.)
 
 setup() {
   load '../vendor/bats-support/load'

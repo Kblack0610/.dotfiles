@@ -6,16 +6,13 @@ Scripts for tmux session management, agent orchestration, and productivity workf
 
 | Script | Keybinding | Description |
 |--------|------------|-------------|
-| `launcher.sh` | `Prefix+l` | Master menu for all tmux operations |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
-| `agent-starter.sh` | `Prefix+e` | Spawn new Claude agent in a directory |
-| `spawn-project.sh` | `Prefix+p` | Create new tmux session with nvim |
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
 | `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
-| `cockpit.sh` | `Prefix+C` | The one PERSISTENT surface: a session you attach to and leave up (windows: fleet, bridge, watch, prs, notes). Everything else here is a popup that vanishes on selection. `ensure` is also the repair path, so it is safe to call on every attach. |
+| `cockpit.sh` | `Prefix+C` | The one PERSISTENT surface: a session you attach to and leave up (windows: fleet, bridge, watch, prs, notes). Everything else here is a popup that vanishes on selection. `ensure` is also the repair path, so it is safe to call on every attach. Also `cockpit.sh stale` — see below. |
 | `fleet.sh` | inside the cockpit | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
@@ -31,8 +28,6 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
-- **Launch menu**: `Prefix+l` → unified launcher
-- **Start agent**: `Prefix+e` → spawn Claude in directory
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
@@ -67,8 +62,31 @@ tmux-tags protected -t @66             # exit 0 if pinned/important
 tmux-tags gather --tag group:work --into work   # a tag is a group
 ```
 
-`cleanup.sh`, `stale-detector.sh` and `wind-down.sh` all refuse to kill a window
+`wind-down.sh` refuses to kill a window, and `cockpit.sh stale` refuses to even list one,
 tagged `pinned` or `important`.
+
+### Finding dead agent windows (`cockpit.sh stale`)
+
+`fleet.sh` answers "what is running". The opposite question — which windows only
+*look* like agents — has its own verb:
+
+```sh
+cockpit.sh stale                     # idle > 15m, the default
+cockpit.sh stale --threshold 3600    # idle > 1h
+```
+
+A window is stale only when all three hold: the name matches an agent pattern, the
+pane's command has fallen back to a plain shell (so the agent exited), and it has been
+idle past the threshold. A long-running `claude` sitting at a prompt is never stale,
+however long it has been quiet — its process is still there.
+
+It **reports and never kills**, printing the `kill-window` command instead. Deciding a
+window is dead is cheap and reversible; killing one that merely looked dead loses a
+scrollback nobody can get back.
+
+This replaced `stale-detector.sh` and `cleanup.sh`, which were unreachable — their only
+callers were `launcher.sh` and `dashboard.sh`, both of which were themselves bound only
+by commented-out lines in `.tmux.conf`.
 
 Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare

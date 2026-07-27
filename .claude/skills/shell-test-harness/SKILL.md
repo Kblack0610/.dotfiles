@@ -132,7 +132,7 @@ Then update the durable layer, which is not optional either: a lesson in `~/.age
 
 Coverage that ignores blast radius is theatre. Rank by what a bug *does*:
 
-1. Scripts that **delete** things (`cleanup.sh`, `wind-down.sh`, `stale-detector.sh`) and whatever they consult to decide what to spare.
+1. Scripts that **delete** things (`wind-down.sh`, and any future reaper) and whatever they consult to decide what to spare. `cockpit.sh stale` is the counter-example worth copying: it finds dead windows and deliberately only REPORTS, printing the `kill-window` command instead of running it, because a false positive there costs a scrollback nobody can recover.
 2. Scripts whose purpose **is** a safety property (`servers.sh` - the socket split bounds a kill's blast radius; assert it, do not leave it as a comment).
 3. Everything the user touches daily.
 4. The rest.
