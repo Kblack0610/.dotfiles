@@ -617,6 +617,30 @@ add_task() {
 # Route a task op (done|start|rm) to the right store based on the row's SECTION: a project
 # row edits the project sheet's `## Wave` (`ptask`); an untagged/profile row edits the daily
 # `## Focus` (`focus`, then a sweep to re-lane it). Called from the fzf key binds.
+# Toggle the `#ai` LANE on the highlighted task: hand it to the agents, or take it back.
+# One list, two lanes — `/wave <app>` picks up exactly the `#ai` items and never touches
+# the rest. Done in place with a line edit rather than a CLI verb because the notes CLI has
+# no ptask tag/untag (focus has `mv --tag`, ptask never got one), and rm+add would lose the
+# item's position and its `<!-- vk:ID -->` stamp.
+toggle_ai() { # $1=file $2=line
+  local file="${1:-}" line="${2:-}"
+  [ -f "$file" ] || return 0
+  [[ "$line" =~ ^[0-9]+$ ]] || return 0
+  # The delimiters matter: a bare /#ai/ would also match `#aid`, and `\>` is a GNU-awk
+  # extension this must not depend on.
+  awk -v n="$line" '
+    NR==n {
+      if ($0 ~ /(^|[[:space:]])#ai([[:space:]]|$)/) {
+        sub(/[[:space:]]*#ai([[:space:]]|$)/, " ")
+      } else {
+        $0 = $0 " #ai"
+      }
+      sub(/[[:space:]]+$/, "")
+    }
+    { print }
+  ' "$file" > "$file.tmp$$" && mv "$file.tmp$$" "$file"
+}
+
 task_op() { # $1=verb(done|start|rm)  $2=section  $3=key
   local verb="${1:-}" section="${2:-}" key="${3:-}" profile proj
   [ -n "$key" ] || return 0
@@ -864,6 +888,7 @@ help_view() {
     s              toggle in-progress  ( [ ] <-> [/] )
     C-x            mark done
     C-a            add a task to the section
+    C-t            hand the task to the AI  (toggles the @ai lane)
     C-d            delete the task
     m              move to another section / project
 
@@ -874,6 +899,16 @@ help_view() {
     g              accept "next up" suggestions -> sheet (+ optional ticket)
     A              archive the highlighted project
     R              restore an archived project
+
+  waves  (hand a batch of work to the agents)
+    1. C-t on each task you want the agents to do  ->  it shows @ai
+    2. in a CLAUDE session (not here) run:   /wave <project>
+         it turns every @ai task into a ticket, fixes them all on ONE
+         branch, and stops for your approval before anything runs
+    3. come back here and press  a a  for the bridge view to watch it,
+         and to answer questions it raises  (enter on a "?" row)
+    4. it asks you once more before merging
+    full runbook:  ~/.config/shared-hooks/WAVES.md
 
   other
     a              cycle views: tasks -> agents -> bridge -> tasks
@@ -903,6 +938,7 @@ case "${1:-}" in
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
   --task-op) shift; task_op "$@"; exit 0 ;;
+  --toggle-ai) shift; toggle_ai "$@"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --cycle-pfilter) cycle_pfilter; exit 0 ;;
@@ -949,7 +985,7 @@ list_section personal | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header='a tasks/agents/bridge · enter open/answer · C-a add · ? keys' \
+  --header='a views · enter open/answer · C-a add · C-t ai · ? keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
@@ -969,6 +1005,7 @@ list_section personal | fzf \
   --bind "s:execute-silent($SELF --task-op start {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-d:execute-silent($SELF --task-op rm {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
+  --bind "ctrl-t:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "V:execute($SELF --roll-project {6})+reload($SELF --list)+refresh-preview" \
