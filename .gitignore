@@ -99,27 +99,16 @@ Media/Music
 # Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
 !.claude/agents/
 .claude/agents/*
-!.claude/agents/backend-architect.md
-!.claude/agents/benchmarker.md
-!.claude/agents/business-panel-experts.md
 !.claude/agents/compliance-counsel.md
 !.claude/agents/deep-research-agent.md
 !.claude/agents/devops-architect.md
-!.claude/agents/frontend-architect.md
-!.claude/agents/learning-guide.md
-!.claude/agents/monitor.md
-!.claude/agents/performance-engineer.md
-!.claude/agents/planner.md
-!.claude/agents/python-expert.md
 !.claude/agents/quality-engineer.md
 !.claude/agents/refactoring-expert.md
 !.claude/agents/requirements-analyst.md
 !.claude/agents/root-cause-analyst.md
 !.claude/agents/security-engineer.md
-!.claude/agents/socratic-mentor.md
 !.claude/agents/system-architect.md
 !.claude/agents/technical-writer.md
-!.claude/agents/zc-architect.md
 
 # Explicitly never track Claude session/cache data
 .claude/.credentials.json
