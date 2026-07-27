@@ -2,6 +2,11 @@
 
 Scripts for tmux session management, agent orchestration, and productivity workflows.
 
+**Writing a new panel?** Copy `_skeleton.sh` (it runs as-is) and read `CONVENTIONS.md` for why
+each rule is the way it is. The shared floor is `panel-lib.sh`; `tests/integ/panel_conformance.bats`
+and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the conventions fails
+`make -C tests test-fast`. This README stays user-facing - which key opens what.
+
 ## Scripts
 
 | Script | Keybinding | Description |
