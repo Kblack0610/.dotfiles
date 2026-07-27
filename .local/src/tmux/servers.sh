@@ -35,7 +35,7 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · hop <name>
+# Verbs: <name> · ensure <name> · ls · pick-all · rows · hop <name>
 #        · root <name> · land <name> <last|root|session[:window]> · pick-session
 
 set -uo pipefail
@@ -313,19 +313,6 @@ cmd_land() {
 cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
 cmd_root() { _enter "${1:?root needs a server name}" root; }
 
-# pick -- fzf over the servers. Enter hops.
-cmd_pick() {
-  command -v fzf >/dev/null 2>&1 || die "fzf not installed"
-  local choice
-  choice="$(cmd_ls | fzf --reverse --border \
-    --prompt='server > ' \
-    --header='Enter: hop to server · Esc: cancel' \
-    --preview='tmux -L {1} list-sessions 2>/dev/null || echo "(not running - Enter starts it)"' \
-    --preview-window=right,55%)" || return 0
-  [ -n "$choice" ] || return 0
-  cmd_hop "${choice%% *}"
-}
-
 # _all_rows -- every session, and every window inside it, across every LIVE server.
 #
 # This is the one view no other tool here can give you. choose-tree (Prefix+w) is
@@ -420,10 +407,9 @@ cmd_pick_all() {
 }
 
 main() {
-  local verb="${1:-pick}"
+  local verb="${1:-pick-all}"
   case "$verb" in
     ls|list)      cmd_ls ;;
-    pick)         cmd_pick ;;
     hop)          shift; cmd_hop "${1:-}" ;;
     root)         shift; cmd_root "${1:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
