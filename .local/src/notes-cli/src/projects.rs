@@ -580,7 +580,21 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
             frozen.display()
         );
     }
-    fs::write(&frozen, &content)?;
+    // Stamp WHEN this version was frozen. That epoch is the boundary between one
+    // version's work and the next, and consumers (the cockpit's agents panel, the
+    // release agent-changelog) need it to scope "what happened this version".
+    //
+    // It has to be written here rather than inferred from the file's mtime: regenerating
+    // an old frozen note's summary (`C-s` in the version browser) rewrites the file and
+    // would silently drag the boundary forward by however long ago the release was.
+    let stamped = format!(
+        "{content}\n<!-- rolled: {} -->\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    fs::write(&frozen, &stamped)?;
 
     // reset the sheet to the next version, keeping its title line
     let next = fmt_version(next_version(Some(cur), level));

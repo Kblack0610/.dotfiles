@@ -43,6 +43,27 @@ mkdir -p "$STATE_DIR"
 
 command -v claude >/dev/null 2>&1 || { echo "wave-start: claude not on PATH" >&2; exit 1; }
 
+# One wave per app at a time. Pressing W twice because the first press looked like it
+# did nothing starts a second scope-out over the SAME `#ai` items, and both then file
+# tickets, cut branches and open PRs for the same work. That happened: three concurrent# waves on one app from three presses.
+#
+# The pid is checked, not merely recorded - a stale file from a killed run must not lock
+# the app out forever.
+LOCK="$STATE_DIR/${APP}.pid"
+if [ "${WAVE_FORCE:-0}" != 1 ] && [ -f "$LOCK" ]; then
+  _held="$(cat "$LOCK" 2>/dev/null)"
+  case "$_held" in
+    ''|*[!0-9]*) rm -f "$LOCK" ;;
+    *) if kill -0 "$_held" 2>/dev/null; then
+         echo "wave-start: $APP already has a wave running (pid $_held)." >&2
+         echo "  log:   $LOG" >&2
+         echo "  force: WAVE_FORCE=1 wave-start $APP" >&2
+         exit 3
+       fi
+       rm -f "$LOCK" ;;
+  esac
+fi
+
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 MAP="${PROJECT_MAP_FILE:-$SHARED_HOOKS/project-map.json}"
 
@@ -59,38 +80,85 @@ REPO="$(repo_of)"
 
 run_pass() {
   cd "$REPO" 2>/dev/null || { echo "wave-start: repo $REPO missing" >&2; return 1; }
-  {
-    echo "=== wave-start $APP $VERB — $(date -Is) — repo $REPO"
-    # --dangerously-skip-permissions: a headless run must not hang on a permission
-    # prompt with no TTY to answer it. The real gate is downstream and unaffected —
-    # `/wave` writes `Approval: PENDING` and delivery-loop refuses to drain a board
-    # without the human's marker, so nothing this starts can deliver itself.
-    claude -p "/wave $APP $VERB" \
-      --dangerously-skip-permissions \
-      --max-turns "${WAVE_MAX_TURNS:-60}" \
-      2>&1 || true
-    echo "=== done — $(date -Is)"
-  } >>"$LOG" 2>&1
+
+  local t0 rc=0
+  t0="$(date +%s)"
+
+  echo "$$" > "$LOCK"
+  # shellcheck disable=SC2064
+  trap "rm -f '$LOCK'" EXIT INT TERM
+
+  echo "=== wave-start $APP $VERB — $(date -Is) — repo $REPO" >>"$LOG"
+  # --dangerously-skip-permissions: a headless run must not hang on a permission
+  # prompt with no TTY to answer it. The real gate is downstream and unaffected —
+  # `/wave` writes `Approval: PENDING` and delivery-loop refuses to drain a board
+  # without the human's marker, so nothing this starts can deliver itself.
+  #
+  # The exit status is CAPTURED, not discarded. It used to end in `|| true` inside a
+  # brace group, so a pass that died on its first line looked exactly like one that
+  # worked: `claude` exited non-zero, the status went nowhere, and the only report
+  # the human got was the boilerplate `=== done` line. A `/wave` that failed in one
+  # second announced itself as "finished".
+  claude -p "/wave $APP $VERB" \
+    --dangerously-skip-permissions \
+    --max-turns "${WAVE_MAX_TURNS:-60}" \
+    >>"$LOG" 2>&1 || rc=$?
+  echo "=== done (rc=$rc) — $(date -Is)" >>"$LOG"
+
+  # Did this pass actually produce a board? A `start` whose whole job is to write one
+  # has not succeeded without it, whatever it exited with. Compare against the pass
+  # start time so a stale board from last week cannot vouch for this run.
+  local board board_ts=0
+  board="$(ls -1t "$HOME/.agent/plans/$APP"/sprint-*.md 2>/dev/null | head -1)"
+  [ -n "$board" ] && board_ts="$(stat -c %Y "$board" 2>/dev/null || echo 0)"
+
+  WAVE_VERDICT=ok
+  if [ "$rc" -ne 0 ]; then
+    WAVE_VERDICT="FAILED (exit $rc)"
+  elif [ "$VERB" = start ] && [ "$board_ts" -lt "$t0" ]; then
+    WAVE_VERDICT="FAILED (no blackboard written)"
+  fi
+
+  # The real diagnostic is the last line that is not our own boilerplate.
+  WAVE_DIAG="$(grep -vE '^===|^[[:space:]]*$' "$LOG" 2>/dev/null | tail -1)"
+  [ -n "$WAVE_DIAG" ] || WAVE_DIAG="(no output)"
+
+  if [ "$WAVE_VERDICT" != ok ]; then
+    printf 'wave-start: %s %s %s — %s\n' "$APP" "$VERB" "$WAVE_VERDICT" "$WAVE_DIAG" >&2
+  fi
 
   # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on
   # any pass that finds no active sprint (cmd_run -> cmd_disarm removes its own units), so
   # arming it before this point is a no-op that looks like it worked: it fires once,
   # sees nothing, and deletes itself. Nothing armed it at wave start, which is the real
   # reason no stall or false-completion detection has ever fired.
-  if [ -n "$(ls -1t "$HOME/.agent/plans/$APP"/sprint-*.md 2>/dev/null | head -1)" ]; then
+  if [ -n "$board" ] && [ "$board_ts" -ge "$t0" ]; then
     command -v captain-watchdog >/dev/null 2>&1 && captain-watchdog arm >>"$LOG" 2>&1 || true
   fi
 
-  local last
-  last="$(sed '/^[[:space:]]*$/d' "$LOG" | tail -1)"
+  # Say what actually happened. This used to report the last non-empty line of the
+  # log, which is always our own `=== done` marker - so every pass, including a
+  # crash, notified "finished <timestamp>" and nothing else.
+  local msg
+  if [ "$WAVE_VERDICT" = ok ]; then
+    msg="$VERB ok — $WAVE_DIAG"
+  else
+    msg="$VERB $WAVE_VERDICT — $WAVE_DIAG"
+  fi
   command -v agent-notify >/dev/null 2>&1 && \
-    agent-notify -t "wave:$APP" "$VERB finished — $last" >/dev/null 2>&1 || true
+    agent-notify -t "wave:$APP" "$msg" >/dev/null 2>&1 || true
+
+  [ "$WAVE_VERDICT" = ok ]
 }
 
 if [ "$FG" = 1 ]; then
-  run_pass
+  # Propagate the verdict. A bare `exit 0` here meant a foreground pass reported
+  # success no matter what happened - including the one that printed
+  # "Unknown command: /wave" and stopped after a second.
+  rc=0
+  run_pass || rc=$?
   tail -20 "$LOG"
-  exit 0
+  exit "$rc"
 fi
 
 # Detach so the run outlives the popup that launched it. A display-popup binding's whole

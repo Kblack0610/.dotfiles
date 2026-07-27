@@ -260,3 +260,55 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
   # Still offers the add-placeholder so the user has a row to act on.
   assert_output --partial 'add'
 }
+
+# ── the section survives a relaunch ───────────────────────────────────────────
+#
+# The cockpit used to hard-reset to `personal` on every launch, and several actions
+# relaunch it (roll_project, browse_versions and start_wave all go back through
+# `exec "$SELF"`). So pressing W on the `teamx` section and coming back landed you on
+# `personal` - where that project does not exist, and neither do its agent rows. A wave
+# would be running perfectly well while the cockpit showed a section that structurally
+# could not display it.
+#
+# The stored value is still VALIDATED: a section naming a profile that has since been
+# renamed or removed would render an empty cockpit with no explanation.
+
+_boot_section() { # <stored value> -> what the launch block settles on
+  local stored="$1" f="$BATS_TEST_TMPDIR/section"
+  printf '%s' "$stored" > "$f"
+  bash -c '
+    sections_list() { printf "personal\nteamx\nworkprofile\n"; }
+    STATE="$1"
+    _last="$(cat "$STATE" 2>/dev/null)"
+    case "$_last" in
+      all) : ;;
+      */*) sections_list | grep -qxF "${_last%%/*}" || _last="" ;;
+      ?*)  sections_list | grep -qxF "$_last" || _last="" ;;
+      *)   _last="" ;;
+    esac
+    echo "${_last:-personal}" > "$STATE"
+  ' _ "$f"
+  cat "$f"
+}
+
+@test "a section you were on is still there after a relaunch" {
+  assert_equal "$(_boot_section teamx)" 'teamx'
+  assert_equal "$(_boot_section workprofile)" 'workprofile'
+}
+
+@test "a project row's section survives too" {
+  assert_equal "$(_boot_section 'teamx/someapp')" 'teamx/someapp'
+}
+
+@test "the cross-profile lane is a valid section" {
+  assert_equal "$(_boot_section all)" 'all'
+}
+
+@test "a profile that no longer exists falls back instead of rendering empty" {
+  assert_equal "$(_boot_section deleted-profile)" 'personal'
+  assert_equal "$(_boot_section 'gone/project')" 'personal'
+}
+
+@test "no stored section at all opens on personal" {
+  assert_equal "$(_boot_section '')" 'personal'
+}

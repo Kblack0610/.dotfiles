@@ -10,6 +10,17 @@ EVAL_DIR="$HOME/.agent/evals"
 PROJECT_FILTER=""
 DAYS_FILTER=""
 
+# The dimensions to render, in order, and their column headings. These MUST track the
+# sections in ~/.config/llm-judge/prompt-template-eval.md - they are what the judge is
+# told to emit, and a name here that the judge never writes renders as `·` forever.
+#
+# Defined once because the list used to be pasted into four places, which is exactly how
+# it drifted: the columns still asked for "Verification Honesty" and "Security
+# Spot-Check" (retired) while "Compact Handoff" (current, and scored on every session)
+# was parsed out of the file and then never displayed.
+DIMS=("Workflow" "Verification" "Code Hygiene" "Scope Alignment" "Compact Handoff" "Lessons" "Infrastructure" "Overall")
+HEADS=("Wkflw" "Verif" "Hygie" "Scope" "Handoff" "Lessn" "Infra" "Overall")
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT_FILTER="$2"; shift 2 ;;
@@ -80,9 +91,27 @@ fi
 echo "=== Session Scores ==="
 echo ""
 printf "%-16s %-12s %-4s " "PROJECT" "DATE" "S#"
-printf "%-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-8s\n" \
-  "Wkflw" "Scope" "Verif" "VHon" "Hygie" "Secur" "Lessn" "Infra" "Overall"
+for h in "${HEADS[@]}"; do
+  if [ "$h" = "Overall" ]; then printf "%-8s\n" "$h"; else printf "%-7s " "$h"; fi
+done
 echo "--------------------------------------------------------------------------------------------"
+
+# print_row <project> <date> <session#> - renders the `dims` assoc array as one line.
+print_row() {
+  printf "%-16s %-12s %-4s " "$1" "$2" "$3"
+  local col val
+  for col in "${DIMS[@]}"; do
+    val="${dims[$col]:-·}"
+    if [ "$val" != "·" ] && [ "$val" -lt 7 ] 2>/dev/null; then
+      printf "\033[31m%-7s\033[0m " "$val"
+    elif [ "$col" = "Overall" ]; then
+      printf "%-8s" "$val"
+    else
+      printf "%-7s " "$val"
+    fi
+  done
+  echo ""
+}
 
 # Group by project|date|session and output one row per session
 prev_key=""
@@ -92,18 +121,7 @@ while IFS='|' read -r project date sess dim score; do
   if [ "$key" != "$prev_key" ] && [ -n "$prev_key" ]; then
     # Print previous row
     IFS='|' read -r p d s <<< "$prev_key"
-    printf "%-16s %-12s %-4s " "$p" "$d" "$s"
-    for col in "Workflow" "Scope Alignment" "Verification" "Verification Honesty" "Code Hygiene" "Security Spot-Check" "Lessons" "Infrastructure" "Overall"; do
-      val="${dims[$col]:-·}"
-      if [ "$val" != "·" ] && [ "$val" -lt 7 ] 2>/dev/null; then
-        printf "\033[31m%-6s\033[0m " "$val"
-      elif [ "$col" = "Overall" ]; then
-        printf "%-8s" "$val"
-      else
-        printf "%-6s " "$val"
-      fi
-    done
-    echo ""
+    print_row "$p" "$d" "$s"
     declare -A dims
   fi
   dims["$dim"]="$score"
@@ -113,18 +131,7 @@ done < "$SCORES_FILE"
 # Print last row
 if [ -n "$prev_key" ]; then
   IFS='|' read -r p d s <<< "$prev_key"
-  printf "%-16s %-12s %-4s " "$p" "$d" "$s"
-  for col in "Workflow" "Scope Alignment" "Verification" "Verification Honesty" "Code Hygiene" "Security Spot-Check" "Lessons" "Infrastructure" "Overall"; do
-    val="${dims[$col]:-·}"
-    if [ "$val" != "·" ] && [ "$val" -lt 7 ] 2>/dev/null; then
-      printf "\033[31m%-6s\033[0m " "$val"
-    elif [ "$col" = "Overall" ]; then
-      printf "%-8s" "$val"
-    else
-      printf "%-6s " "$val"
-    fi
-  done
-  echo ""
+  print_row "$p" "$d" "$s"
 fi
 
 echo ""
@@ -132,7 +139,7 @@ echo ""
 # --- Per-dimension averages ---
 echo "=== Dimension Averages ==="
 echo ""
-for dim in "Workflow" "Scope Alignment" "Verification" "Verification Honesty" "Code Hygiene" "Security Spot-Check" "Lessons" "Infrastructure" "Overall"; do
+for dim in "${DIMS[@]}"; do
   scores=$(grep "|${dim}|" "$SCORES_FILE" 2>/dev/null | cut -d'|' -f5)
   if [ -n "$scores" ]; then
     count=$(echo "$scores" | wc -l)

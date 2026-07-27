@@ -59,7 +59,31 @@ HEAD_COMMIT=""
 if git rev-parse --git-dir >/dev/null 2>&1; then
   HEAD_COMMIT=$(git log -1 --format='%h %s' 2>/dev/null | cut -c1-100 || true)
 fi
+
+# The session's own rolling title, which Claude Code maintains as an `ai-title` record.
+# Better than head_commit as a label: HEAD is the repo's state at Stop, so several
+# sessions that ended between two commits all describe themselves with the same subject.
+# Read from the end and stop at the first hit - ~20ms even on a large transcript.
+TITLE=$(tac "$TRANSCRIPT" 2>/dev/null | grep -m1 '"type":"ai-title"' 2>/dev/null \
+        | jq -rc '.aiTitle // empty' 2>/dev/null \
+        | tr '\n' ' ' | cut -c1-100 | sed 's/[[:space:]]*$//')
 NOW=$(date +%s)
+
+# --- telemetry: what this session cost ---
+# Resolved ONCE, here, so every consumer (the cockpit agents panel, the release agent
+# changelog) reads a flat file and never queries Prometheus on a render path.
+#
+# Best-effort by contract: this hook must never block or fail a Stop, so an unreachable
+# Prometheus, a missing agent-usage, or malformed output all fall through to a record
+# without telemetry fields. Consumers already tolerate their absence.
+#
+# Claude Code's OTel metric export interval is 60s, so the last few seconds of cost may
+# not have landed yet. That is accepted - do NOT add a sleep to the Stop path for it.
+USAGE=""
+if command -v agent-usage >/dev/null 2>&1; then
+  USAGE=$(agent-usage session "$SID" --json 2>/dev/null || true)
+  printf '%s' "$USAGE" | jq -e . >/dev/null 2>&1 || USAGE=""
+fi
 
 REG_DIR="$HOME/.agent/sessions/$PROJECT_NAME"
 REG="$REG_DIR/sessions.jsonl"
@@ -86,8 +110,18 @@ jq -nc \
   --arg first_prompt "$FIRST_PROMPT" \
   --argjson edits "${EDITS:-0}" \
   --arg head_commit "$HEAD_COMMIT" \
+  --arg title "$TITLE" \
   --argjson updated "$NOW" \
-  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, updated:$updated}' \
+  --argjson usage "${USAGE:-null}" \
+  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated}
+   + (if $usage == null then {} else {
+        cost_usd:      $usage.cost_usd,
+        usage_source:  $usage.usage_source,
+        usage_partial: $usage.usage_partial,
+        tokens:        $usage.tokens,
+        models:        $usage.models,
+        duration_s:    $usage.duration_s
+      } end)' \
   >> "$TMP" 2>/dev/null || { rm -f "$TMP"; exit 0; }
 
 mv "$TMP" "$REG" 2>/dev/null || rm -f "$TMP"

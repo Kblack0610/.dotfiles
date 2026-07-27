@@ -38,6 +38,7 @@ session_num=""
 ci_status=""
 section_overrides=""
 transcript_path=""
+session_id=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --eval-file)         eval_file="$2"; shift 2 ;;
     --project)           project="$2"; shift 2 ;;
     --session-num)       session_num="$2"; shift 2 ;;
+    --session-id)        session_id="$2"; shift 2 ;;
     --ci-status)         ci_status="$2"; shift 2 ;;
     --section-overrides) section_overrides="$2"; shift 2 ;;
     --) shift; break ;;
@@ -54,6 +56,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- helpers ----------------------------------------------------------------
+
+# Stamp the session id onto the entry's `## Session N (label)` header as an HTML
+# comment, so an eval can be joined to its transcript, its registry line, and its
+# Prometheus/Langfuse telemetry (all keyed by the same uuid).
+#
+# Done HERE in bash rather than asked of the model on purpose: the eval template
+# forbids any text outside the specified shape, so a model-emitted marker would be
+# fighting its own instructions - and a marker that silently goes missing is worse
+# than no marker, because the join would look present and be incomplete.
+stamp_session_id() {
+  local entry="$1"
+  [[ -n "$session_id" ]] || { printf '%s' "$entry"; return; }
+  [[ "$entry" == *"<!-- sid:"* ]] && { printf '%s' "$entry"; return; }
+  # First line only. Any later `## Session` text is the model quoting itself.
+  printf '%s' "$entry" | awk -v sid="$session_id" '
+    NR==1 && /^## Session / { printf "%s <!-- sid: %s -->\n", $0, sid; next }
+    { print }'
+}
 
 count_sessions() {
   local file="$1"
@@ -283,6 +303,8 @@ eval_main() {
     exit 0
   fi
 
+  entry=$(stamp_session_id "$entry")
+
   {
     printf '\n'
     printf '%s\n' "$entry"
@@ -293,8 +315,9 @@ append_stub() {
   local reason="$1"
   mkdir -p "$(dirname "$eval_file")" 2>/dev/null || true
   {
-    printf '\n## Session %s (EVAL PENDING — judge unavailable: %s)\n\n' \
-      "$session_num" "$reason"
+    printf '\n## Session %s (EVAL PENDING — judge unavailable: %s)%s\n\n' \
+      "$session_num" "$reason" \
+      "$([[ -n "$session_id" ]] && printf ' <!-- sid: %s -->' "$session_id")"
     printf -- '- **Workflow**: n/a — async judge failed to render entry.\n'
     printf '\n**Summary:** Entry slot reserved; judge error: %s. Overall: n/a.\n' \
       "$reason"

@@ -68,6 +68,17 @@ fi
 [ -z "$TRANSCRIPT_PATH" ] && exit 0
 [ ! -f "$TRANSCRIPT_PATH" ] && exit 0
 
+# --- the join key ---
+# Eval entries are headed `## Session N`, where N is a per-DAY ordinal (judge counts the
+# existing headers). That ordinal is not a session identity: this hook and its sibling
+# 80-session-register.sh apply different "meaningful" gates, so their counts drift and an
+# entry cannot be resolved back to a session after the fact.
+#
+# Claude Code names transcripts <session_id>.jsonl, so the id is already in our hands.
+# Passing it through makes ONE key line up across four layers: this eval markdown, the
+# session registry, the Prometheus `session_id` metric label, and the Langfuse trace.
+SESSION_ID=$(basename "$TRANSCRIPT_PATH" .jsonl)
+
 # --- section overrides (e.g., "+Infrastructure") ---
 SECTION_OVERRIDES=""
 [ "$HAS_INFRA_CHANGES" = true ] && SECTION_OVERRIDES="+Infrastructure"
@@ -81,6 +92,7 @@ setsid nohup bash "$HOME/.claude/hooks/llm-judge.sh" \
   --project "$PROJECT_NAME" \
   --ci-status "${CI_STATUS_VAL:-(none)}" \
   --section-overrides "${SECTION_OVERRIDES:-(none)}" \
+  --session-id "$SESSION_ID" \
   "$TRANSCRIPT_PATH" \
   </dev/null >>"$JUDGE_LOG" 2>&1 &
 disown 2>/dev/null || true
