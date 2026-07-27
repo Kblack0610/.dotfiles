@@ -105,9 +105,10 @@ return {
             "Art", "*.shader", "*.wav", "*.fbx", "*.FBX", "*.obj", "*.anim", --3D
             "*.exr", "*.ttf", "*.otf", "*.mat", "*.asmdef", "*.asmref", "*.overrideController", "*.prefab", --Unity
             "*.tsm", "*.tmx", "*.meta", "*.cs.meta", "*.asset", "*.controller", "*.csproj", --Unity
-            "*.png", "*.gif", "*.PNG", --Pictures
+            -- NOTE: images are deliberately NOT excluded here (they are in the grep
+            -- pickers below) so <leader>pf can find them and snacks.image renders inline.
             -- PROJECT
-            -- "*.unity", 
+            -- "*.unity",
             "Library", "Builds", "Logs", "RewiredBackup", "SceneBackups", "Temp", "UserSettings", "obj",
           }
         })

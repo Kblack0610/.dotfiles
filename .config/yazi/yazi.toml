@@ -1,0 +1,38 @@
+# yazi - image browser for ~/Media/Pictures (prefix i in tmux).
+#
+# Deliberately minimal. yazi's DEFAULT keymap is already vim-style (hjkl, gg/G,
+# C-u/C-d, v/V, /, n/N), so there is no keymap.toml here on purpose - overriding it
+# would only create drift from upstream defaults.
+#
+# Image previews in tmux need `update-environment TERM` + `TERM_PROGRAM` and
+# `allow-passthrough on` in ~/.tmux.conf (all set), and a full `tmux kill-server`
+# to take effect. Verify detection with: yazi --debug | grep -A4 Emulator
+# Want: kgp:true. If it shows `Adapter.matches: Wayland`, detection failed and yazi
+# is drawing a Wayland overlay surface instead of using the kitty protocol.
+
+[mgr]
+show_hidden = true
+show_symlink = true
+sort_by = "mtime"
+sort_reverse = true   # newest screenshot first - the common case for a grimblast sink
+linemode = "mtime"
+
+[preview]
+# Cap the decoded preview so a 4K screenshot does not stall navigation. These are
+# upper bounds in pixels; yazi still fits to the pane.
+max_width = 1920
+max_height = 1080
+image_filter = "lanczos3"
+image_quality = 90
+
+[opener]
+# `o` on an image hands off to oculante (nearest-neighbour at 100% by default) for
+# real pixel-accurate viewing. Enter still opens in $EDITOR for text.
+image = [
+  { run = 'oculante "$@"', orphan = true, desc = "oculante", for = "unix" },
+]
+
+[open]
+prepend_rules = [
+  { mime = "image/*", use = "image" },
+]

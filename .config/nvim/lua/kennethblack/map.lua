@@ -35,6 +35,35 @@ vim.keymap.set("i", "<C-c>", "<Esc>", { desc = "Escape (insert)" })
 
 vim.keymap.set("n", "Q", "<nop>", { desc = "Disabled (ex mode)" })
 vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww tmux-sessionizer<CR>", { desc = "tmux sessionizer" })
+
+-- ── Image browsing (yazi in a REAL tmux window) ──────────────────────────────
+-- Deliberately NOT the yazi.nvim plugin. yazi.nvim runs yazi inside an nvim
+-- :terminal buffer, and nvim's terminal DROPS kitty graphics escapes, so image
+-- previews there fall back to yazi's Wayland overlay adapter (a separate surface
+-- that does not clip to the window and leaves artifacts). `vim.ui.image` does not
+-- exist in 0.12.x and neovim#38612, which would have added passthrough, was closed
+-- unmerged. Shelling out to a tmux window is the only place previews render properly
+-- - same pattern as <C-f> above. Mirrors tmux `prefix i`.
+--
+-- Add locations here as they come up; each gets its own <leader>p… binding.
+local image_locations = {
+  { key = "<leader>pi", path = "~/Media/Pictures", label = "pictures" },
+}
+
+for _, loc in ipairs(image_locations) do
+  vim.keymap.set("n", loc.key, function()
+    if vim.env.TMUX == nil then
+      vim.notify("not inside tmux - use Super+I for oculante instead", vim.log.levels.WARN)
+      return
+    end
+    local path = vim.fn.expand(loc.path)
+    if vim.fn.isdirectory(path) == 0 then
+      vim.notify("no such directory: " .. path, vim.log.levels.ERROR)
+      return
+    end
+    vim.fn.system({ "tmux", "neww", "-n", loc.label, "yazi " .. vim.fn.shellescape(path) })
+  end, { desc = "yazi: " .. loc.label })
+end
 -- <leader>f is defined in plugins/conform.lua (conform format with LSP fallback) so it
 -- doesn't error on filetypes the LSP can't format (e.g. brightscript -> bsfmt).
 
