@@ -9,7 +9,9 @@ set -euo pipefail
 
 CONFIG_DIR="${HOME}/.config/agentctl/agents"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
-STATE_DIR="${HOME}/.local/state/agentctl"
+# AGENTCTL_STATE is already exported into every unit by agentctl@.service, so honouring it
+# here means a runner's `agentctl report` writes where the engine said state lives.
+STATE_DIR="${AGENTCTL_STATE:-${HOME}/.local/state/agentctl}"
 
 mkdir -p "$STATE_DIR"
 
@@ -113,6 +115,120 @@ fmt_dur() {
 }
 
 # ----------------------------------------------------------------------
+# Runner status contract
+# ----------------------------------------------------------------------
+# systemd tells a reader whether a unit is running. It cannot tell it what the runner is
+# WORKING ON — which project, which item, whether it is blocked on a human. Before this,
+# every runner answered that differently (sentinel wrote watch-companion/*.state,
+# delivery-loop had its own `status` text, most reported nothing), so the cockpit could
+# only show active/inactive plus a tail of a freeform log. This is the one shape they all
+# publish instead:
+#
+#   $STATE_DIR/<name>/status     key=value, one per line, atomically replaced
+#     state=working|idle|ok|blocked|error
+#     project=<canonical project name; empty for a global runner like sentinel>
+#     item=<one line: what it is doing now, or last did>
+#     detail=<optional extra>
+#     updated=<epoch of the last report>
+#
+# It sits beside that runner's activity.log in the same INBOX dir. Readers (fleet.sh)
+# parse the FILE, not this command — the file is the contract, `report` is just the
+# blessed writer, so a reader keeps working if this script is rewritten.
+#
+# Writes MERGE: `report item=...` must never wipe `project`. Unknown keys are rejected
+# rather than stored, so a typo fails loudly instead of vanishing into a file nobody reads.
+
+STATUS_KEYS=' state project item detail updated '
+STATUS_STATES=' working idle ok blocked error '
+
+status_file() { printf '%s/%s/status' "$STATE_DIR" "$1"; }
+
+# status_get <name> <key> -> value, or empty. First match wins.
+status_get() {
+    local f; f="$(status_file "$1")"
+    [ -f "$f" ] || return 0
+    awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f"
+}
+
+# status_write <name> <k=v>... — merge into the existing file and replace it atomically.
+# Atomic because a reader polling this file must never catch it half-written; the tmp
+# file is created in the same directory so the mv is a rename, not a copy.
+status_write() {
+    local name="$1"; shift
+    local dir="$STATE_DIR/$name" f tmp kv k v
+    f="$(status_file "$name")"
+    mkdir -p "$dir" || die "cannot create $dir"
+
+    declare -A merged=()
+    if [ -f "$f" ]; then
+        while IFS= read -r kv; do
+            [ -n "$kv" ] || continue
+            k="${kv%%=*}"; v="${kv#*=}"
+            [[ "$STATUS_KEYS" == *" $k "* ]] && merged["$k"]="$v"
+        done < "$f"
+    fi
+
+    for kv in "$@"; do
+        [[ "$kv" == *=* ]] || die "report: expected key=value, got '$kv'"
+        k="${kv%%=*}"; v="${kv#*=}"
+        [[ "$STATUS_KEYS" == *" $k "* ]] || die "report: unknown key '$k' (allowed:${STATUS_KEYS% })"
+        # One physical line per key, or the next read splits one value into two records.
+        v="${v//$'\n'/ }"; v="${v//$'\r'/}"
+        if [ "$k" = state ] && [ -n "$v" ] && [[ "$STATUS_STATES" != *" $v "* ]]; then
+            die "report: unknown state '$v' (allowed:${STATUS_STATES% })"
+        fi
+        merged["$k"]="$v"
+    done
+    merged[updated]="$(date +%s)"
+
+    tmp="$dir/.status.$$"
+    : > "$tmp" || die "cannot write $tmp"
+    for k in state project item detail updated; do
+        printf '%s=%s\n' "$k" "${merged[$k]-}" >> "$tmp"
+    done
+    mv -f "$tmp" "$f"
+}
+
+cmd_report() {
+    local name="${AGENTCTL_NAME:-}" lifecycle=""
+    local -a kvs=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name)      shift; name="${1:-}" ;;
+            --lifecycle) shift; lifecycle="${1:-}" ;;
+            --) shift; while [ $# -gt 0 ]; do kvs+=("$1"); shift; done; break ;;
+            -*) die "report: unknown flag: $1" ;;
+            *)  kvs+=("$1") ;;
+        esac
+        shift
+    done
+    [ -n "$name" ] || die "report: no agent name (pass --name, or run under systemd where AGENTCTL_NAME is set)"
+
+    # The engine-side envelope, wired into agentctl@.service so EVERY runner gets a
+    # baseline started/finished/failed for free — a runner only calls `report` by hand to
+    # add the semantics systemd cannot know (project, item).
+    case "$lifecycle" in
+        start)
+            # `project` is deliberately kept: a runner that reports one keeps it across
+            # fires, and a fresh run overwrites it anyway. item/detail are last run's.
+            kvs+=(state=working item= detail=) ;;
+        stop)
+            # systemd sets these for ExecStopPost only. Anything but `success` is a fault
+            # worth a glyph, which is the distinction `inactive` alone can never make.
+            if [ -n "${SERVICE_RESULT:-}" ] && [ "${SERVICE_RESULT}" != success ]; then
+                kvs+=(state=error "detail=result=${SERVICE_RESULT} exit=${EXIT_STATUS:-?}")
+            else
+                kvs+=(state=idle detail=)
+            fi ;;
+        "") ;;
+        *) die "report: unknown lifecycle '$lifecycle' (start|stop)" ;;
+    esac
+
+    [ "${#kvs[@]}" -gt 0 ] || die "report: nothing to report (pass key=value or --lifecycle)"
+    status_write "$name" "${kvs[@]}"
+}
+
+# ----------------------------------------------------------------------
 # Subcommands
 # ----------------------------------------------------------------------
 
@@ -169,6 +285,23 @@ cmd_status() {
     fi
     [ -n "$nextrun" ]  && printf '  next_run: %s\n' "$nextrun"
     printf '  inbox:    %s\n' "$inbox"
+
+    # What the runner itself said it was doing. systemd's view above is the envelope;
+    # this is the payload, and it is the half that answers "on what".
+    local r_state r_project r_item r_detail r_updated
+    r_state="$(status_get "$name" state)"
+    if [ -n "$r_state" ]; then
+        r_project="$(status_get "$name" project)"
+        r_item="$(status_get "$name" item)"
+        r_detail="$(status_get "$name" detail)"
+        r_updated="$(status_get "$name" updated)"
+        printf '  reported: %s' "$r_state"
+        [ -n "$r_updated" ] && printf ' (%s ago)' "$(fmt_dur $(( $(date +%s) - r_updated )))"
+        printf '\n'
+        [ -n "$r_project" ] && printf '  project:  %s\n' "$r_project"
+        [ -n "$r_item" ]    && printf '  item:     %s\n' "$r_item"
+        [ -n "$r_detail" ]  && printf '  detail:   %s\n' "$r_detail"
+    fi
 
     local stdout="$STATE_DIR/${name}.stdout.log"
     local stderr="$STATE_DIR/${name}.stderr.log"
@@ -371,6 +504,7 @@ agentctl — manage named long-running Claude agents via systemd
 Usage:
   agentctl list                  List all configured agents and their state
   agentctl status <name>         Detailed status for one agent
+  agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
   agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
@@ -382,6 +516,14 @@ Usage:
 
 Configs live at ~/.config/agentctl/agents/<name>.conf.
 See ~/.config/agentctl/README.md for the schema.
+
+The status contract (what a headless runner publishes, and readers consume):
+  agentctl report state=working project=bnb-platform item='/kb:sprint resume'
+  keys: state(working|idle|ok|blocked|error) project item detail
+  Writes MERGE into ~/.local/state/agentctl/<name>/status; the name comes from
+  --name or $AGENTCTL_NAME (exported into every unit). start/finish/failure are
+  already reported for you by agentctl@.service — a runner only adds the
+  semantics systemd cannot know.
 EOF
 }
 
@@ -392,6 +534,7 @@ EOF
 case "${1:-}" in
     list)              cmd_list ;;
     status)            shift; cmd_status "$@" ;;
+    report)            shift; cmd_report "$@" ;;
     start)             shift; cmd_start "$@" ;;
     stop)              shift; cmd_stop "$@" ;;
     restart)           shift; cmd_restart "$@" ;;
