@@ -186,6 +186,92 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   refute_output --partial "$SRV_A               1 session(s)"
 }
 
+# ── rows / preview: the cross-server view (prefix A) ─────────────────────────
+#
+# `rows` is the data behind `pick-all`, split out from the fzf call precisely so it can be
+# asserted without a terminal. Field layout is <server> <session> <window> <display>, and
+# the window field is what distinguishes a session header row from a window row.
+
+@test "rows reaches ACROSS servers - the one thing choose-tree and sesh cannot do" {
+  # The whole point of the view. prefix w is server-scoped by construction and sesh follows
+  # $TMUX into one server, so a list containing BOTH worlds is the only new capability here.
+  manifest "$SRV_A" "alpha-only $HOME"
+  manifest "$SRV_B" "beta-only $HOME"
+  "$TMX" ensure "$SRV_A"
+  "$TMX" ensure "$SRV_B"
+  run "$TMX" rows
+  assert_success
+  assert_output --partial 'alpha-only'
+  assert_output --partial 'beta-only'
+}
+
+@test "rows emits a session header with an empty window field, and a row per window" {
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
+
+  # Header: third field empty. Window rows: third field is the index.
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"one\" && \$3==\"\"' | wc -l"
+  assert_output '1'
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"one\" && \$3!=\"\"' | wc -l"
+  assert_output '2'
+}
+
+@test "a window row carries what is actually running in it" {
+  # The reason per-window rows are worth having: the row has to say something useful about
+  # the window, not just repeat its number.
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
+  assert_success
+  assert_output --regexp '(bash|sh|zsh)'
+}
+
+@test "preview of a window returns that pane's live content, not its metadata" {
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" send-keys -t 'one:' 'echo bats-preview-marker' Enter
+  sleep 1
+  # base-index is not 1 everywhere - ask for the index rather than assuming one.
+  local idx
+  idx="$("${REAL_TMUX}" -L "$SRV_A" list-windows -t '=one' -F '#{window_index}' | head -1)"
+  run "$TMX" preview "$SRV_A" one "$idx"
+  assert_success
+  assert_output --partial 'bats-preview-marker'
+}
+
+# ── land with an explicit target ─────────────────────────────────────────────
+#
+# `land` ends in `exec tmux attach`, which cannot succeed without a terminal - so these
+# assert the side effect that happens BEFORE the attach. That is the whole of the new code
+# path: resolve the picked row to a session, and select the picked window on the way in.
+
+@test "land <session>:<window> selects that window before attaching" {
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
+
+  # Read the real indices back: base-index differs between configs.
+  local first last
+  first="$("${REAL_TMUX}" -L "$SRV_A" list-windows -t '=one' -F '#{window_index}' | head -1)"
+  last="$("${REAL_TMUX}" -L "$SRV_A" list-windows -t '=one' -F '#{window_index}' | tail -1)"
+  [ "$first" != "$last" ]                       # the fixture must actually have two
+  "${REAL_TMUX}" -L "$SRV_A" select-window -t "one:$first" 2>/dev/null
+
+  run "$TMX" land "$SRV_A" "one:$last"   # attach fails (no tty); select-window already ran
+  run bash -c "'${REAL_TMUX}' -L '$SRV_A' display-message -p -t one '#{window_index}'"
+  assert_output "$last"
+}
+
+@test "land falls back to resume when the picked session died since it was listed" {
+  # A picker row is a snapshot. Landing on a session that has gone must not error out.
+  manifest "$SRV_A" "one $HOME"
+  "$TMX" ensure "$SRV_A"
+  run "$TMX" land "$SRV_A" 'vanished-session'
+  refute_output --partial 'no server running'
+  run server_alive "$SRV_A"; assert_success
+}
+
 # ── refusals ─────────────────────────────────────────────────────────────────
 #
 # NOTE: there is deliberately no "unknown verb" test here. In tmx a bare word IS a server

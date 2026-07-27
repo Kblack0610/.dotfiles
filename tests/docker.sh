@@ -7,10 +7,15 @@
 #
 # Usage:
 #   ./docker.sh                     # the full suite (unit + integ + ui)
-#   ./docker.sh test-ui             # just the tmux UI tier
+#   ./docker.sh test-ui-inner       # just the tmux UI tier
 #   ./docker.sh test-fast           # unit + integ, inside the container
 #   ./docker.sh --shell             # interactive shell in the image, for debugging
 #   TMUX_REF=3.4 ./docker.sh        # sweep a different tmux
+#
+# The argument is a make target run INSIDE the container, so it must be an -inner
+# target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
+# HOST entry point and re-invokes this script, which then fails with "docker not found"
+# from inside the container. Use test-ui-inner, or `make test-ui` from the host.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
