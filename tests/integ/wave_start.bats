@@ -117,3 +117,135 @@ stub_claude() {
   run "$WAVE_START" demoapp --now
   assert [ -f "$NOTIFY_LOG.watchdog" ]
 }
+
+# --- the lock: one wave per app at a time -------------------------------------------
+#
+# A wave scope-out takes minutes and the keypress that starts it returns instantly, so
+# it looks like nothing happened. Pressing W again re-scopes the SAME `#ai` items, and
+# both passes then file their own tickets, cut their own branches and open their own
+# PRs. That is not hypothetical: three concurrent waves on one app came from# three presses.
+#
+# The lock has to fail in both directions to be worth having. It must hold while a pass
+# is genuinely running, AND it must get out of the way when the holder is gone - a stale
+# file from a killed run that locks an app out forever is the same outage inverted, and
+# it is the failure mode nobody notices until they need the wave.
+
+LOCK_FILE() { printf '%s' "$AGENTCTL_STATE_DIR/wave/demoapp.pid"; }
+PASS_LOG()  { printf '%s' "$AGENTCTL_STATE_DIR/wave/demoapp.log"; }
+
+# plant_lock <pid> — a lock file for demoapp holding <pid>, as run_pass would write it
+plant_lock() {
+  mkdir -p "$AGENTCTL_STATE_DIR/wave"
+  printf '%s\n' "$1" > "$(LOCK_FILE)"
+}
+
+# live_holder — a real, running process, recorded so teardown always reaps it
+live_holder() {
+  sleep 60 >/dev/null 2>&1 &
+  HOLDER=$!
+  printf '%s' "$HOLDER"
+}
+
+# dead_pid — a pid number that is certainly not running: spawn one, reap it, reuse it
+dead_pid() {
+  local p
+  sleep 0 >/dev/null 2>&1 &
+  p=$!
+  wait "$p" 2>/dev/null || true
+  printf '%s' "$p"
+}
+
+teardown() {
+  [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null
+  return 0
+}
+
+@test "a second pass is refused while a live one holds the lock" {
+  local holder
+  holder="$(live_holder)"
+  plant_lock "$holder"
+  stub_claude 0 'this pass must never run' board
+
+  run "$WAVE_START" demoapp --now
+  assert_equal "$status" 3
+  assert_output --partial 'already has a wave running'
+  assert_output --partial "pid $holder"
+}
+
+@test "the refused pass never reaches claude" {
+  # Exit 3 alone is not the guarantee - what must not happen is a second scope-out
+  # starting. run_pass is the only thing that writes the pass log, so its absence is
+  # direct evidence that claude was never invoked.
+  plant_lock "$(live_holder)"
+  stub_claude 0 'this pass must never run' board
+
+  run "$WAVE_START" demoapp --now
+  assert_equal "$status" 3
+  refute [ -f "$(PASS_LOG)" ]
+}
+
+@test "the refusal hands over the log and the way out" {
+  # A bare "already running" leaves the human with no next move, which is what makes
+  # them press W a third time.
+  plant_lock "$(live_holder)"
+  stub_claude 0 'nope' board
+
+  run "$WAVE_START" demoapp --now
+  assert_output --partial "$(PASS_LOG)"
+  assert_output --partial 'WAVE_FORCE=1'
+}
+
+@test "a stale lock from a killed run does not lock the app out forever" {
+  plant_lock "$(dead_pid)"
+  stub_claude 0 'ran despite the stale lock' board
+
+  run "$WAVE_START" demoapp --now
+  assert_success
+  refute_output --partial 'already has a wave running'
+}
+
+@test "a lock file that is not a pid is cleared rather than believed" {
+  plant_lock 'not-a-pid'
+  stub_claude 0 'ran anyway' board
+
+  run "$WAVE_START" demoapp --now
+  assert_success
+  refute_output --partial 'already has a wave running'
+}
+
+@test "an empty lock file is cleared rather than believed" {
+  # `kill -0 ''` is a syntax error, not a liveness answer, so an empty file has to be
+  # handled before it ever reaches the check.
+  mkdir -p "$AGENTCTL_STATE_DIR/wave"
+  : > "$(LOCK_FILE)"
+  stub_claude 0 'ran anyway' board
+
+  run "$WAVE_START" demoapp --now
+  assert_success
+  refute_output --partial 'already has a wave running'
+}
+
+@test "WAVE_FORCE=1 overrides a live holder" {
+  plant_lock "$(live_holder)"
+  stub_claude 0 'forced through' board
+
+  WAVE_FORCE=1 run "$WAVE_START" demoapp --now
+  assert_success
+  refute_output --partial 'already has a wave running'
+}
+
+@test "the lock is released when the pass finishes" {
+  stub_claude 0 'clean pass' board
+  run "$WAVE_START" demoapp --now
+  assert_success
+  refute [ -f "$(LOCK_FILE)" ]
+}
+
+@test "the lock is released even when the pass fails" {
+  # The trap, not the happy path, is what keeps a crashed wave from wedging the app.
+  # The sandbox path contains a space, so this also pins the quoting in the trap.
+  stub_claude 1 'boom'
+  run "$WAVE_START" demoapp --now
+  assert_failure
+  refute [ -f "$(LOCK_FILE)" ]
+}

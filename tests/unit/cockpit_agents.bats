@@ -45,7 +45,13 @@ EOF
   C_DIM=''; C_OFF=''; C_PROJ=''; C_INP=''; C_SEL=''; C_BOX=''; C_HEAD=''
 }
 
+# $3 of _project_agents is the PRIMARY canonical name; the full set of runtime names a
+# project claims is looked up from its marker by canonicals_of. Tests that care about
+# the multi-name case override that lookup rather than smuggling a list through the
+# primary argument - passing "a, b" there is exactly the bug this split fixed, because
+# every other consumer (agent-ask, sprint items, checkpoints) uses the primary verbatim.
 render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}" "${3:-}"; }
+
 
 # ── the version boundary ─────────────────────────────────────────────────────
 
@@ -146,19 +152,29 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
 }
 
 @test "a project claiming two canonical names gathers from both" {
-  run render 'demo, alias-repo'
+  canonicals_of() { printf 'demo\nalias-repo\n'; }
+  run render demo
   assert_output --partial 'writing the thing'
   assert_output --partial 'second canonical'
+}
+
+@test "canonical_of hands back ONE usable name, never the joined marker text" {
+  # The bridge does `agent-ask list <canon>`, so a returned "a, b" matches no project
+  # and the view renders empty while a gate ask sits pending. That regression shipped.
+  local out; out="$(canonical_of personal notes-cockpit 2>/dev/null || true)"
+  refute [ -n "$(printf '%s' "$out" | grep ',')" ]
 }
 
 # ── the headless runner ──────────────────────────────────────────────────────
 
 @test "a delivery-loop runner on THIS project is shown" {
+  canonicals_of() { printf 'demo\n'; }
   run render demo demo 'draining the queue'
   assert_output --partial 'draining the queue'
 }
 
 @test "a delivery-loop runner on another project is not" {
+  canonicals_of() { printf 'demo\n'; }
   run render demo other 'draining the queue'
   refute_output --partial 'draining the queue'
 }

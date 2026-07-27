@@ -257,7 +257,26 @@ canonical_of() {
     canon="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
       | head -1 | sed -E 's/.*canonical:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//; s/[[:space:]]+$//')"
   fi
-  printf '%s' "${canon:-$proj}"
+  # PRIMARY name only. Every other consumer - the bridge's `agent-ask list <canon>`,
+  # _sprint_items, _ckpt_file - passes this straight to a tool as a project name, so
+  # returning the raw "a, b" string here silently broke all of them: `agent-ask list
+  # 'notes-cockpit, dotfiles'` matches nothing, so the bridge rendered empty while a
+  # gate ask sat pending. Callers that want every name ask for it explicitly.
+  printf '%s' "${canon%%,*}" | sed 's/[[:space:]]*$//'
+}
+
+# Every runtime name a vault project claims, one per line. Only the agents view uses
+# this: it LOOKS in several places for existing state. Anything that WRITES, or that
+# passes a name to another tool, wants canonical_of (the primary) instead.
+canonicals_of() { # $1=profile $2=project-lc
+  local prof="$1" proj="$2" path dir raw=""
+  path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
+  if [ -n "$path" ]; then
+    dir="$(dirname "$path")"
+    raw="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
+      | head -1 | sed -E 's/.*canonical:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//')"
+  fi
+  _canon_list "${raw:-$proj}"
 }
 
 # "a, b" -> one name per line. The primary (first) name is what new state is keyed by;
@@ -318,17 +337,22 @@ _project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $
   local prof="$1" lc="$2" canon="$3" summary="${4:-}" rcanon="${5:-}" rdetail="${6:-}" sec="$1/$2"
   local vstart; vstart="$(_version_start "$summary")"
 
+  # A project may claim several runtime names (see canonicals_of); gather from each.
+  # $canon arrives as the PRIMARY name; the full list is looked up here so the rest of
+  # the cockpit keeps receiving a single usable project name.
+  #
+  # Resolved FIRST: everything below matches against it, including the runner check.
+  local names; names="$(canonicals_of "$prof" "$lc")"
+  [ -n "$names" ] || names="$canon"
+  local primary="$canon"
+
   # A headless delivery-loop runner on THIS project is an agent working it, and is not
   # shown by the bridge - so unlike asks and sprint rows it belongs here. The global
   # footer lists every runner, but not which project each is on.
-  if [ -n "$rdetail" ] && printf '%s' "$canon" | tr ',' '\n' | sed 's/ //g' | grep -qxF "$rcanon"; then
+  if [ -n "$rdetail" ] && printf '%s\n' "$names" | grep -qxF "$rcanon"; then
     printf 'runner\tdelivery-loop\tdelivery-loop\t\t%s\t%s\t  %s~ runner%s %s%s%s\n' \
-      "$canon" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
+      "$primary" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
   fi
-
-  # A project may claim several runtime names (see canonical_of); gather from each.
-  local names; names="$(_canon_list "$canon")"
-  local primary; primary="$(printf '%s' "$names" | head -1)"
 
   # --- running right now (live <pid>.json, project-resolved by `sessions rows`) ---
   # No tokens/cost here: a running session's usage is incomplete by definition.
@@ -761,6 +785,74 @@ start_wave() { # $1=section (<profile>/<project>)
   sleep 3
 }
 
+# ── delete, undo ─────────────────────────────────────────────────────────────
+# Deleting used to be C-d, one keystroke from ctrl-u/ctrl-d scrolling and with no
+# confirmation, which is exactly how a task got destroyed by accident. Delete is
+# now `d` + a yes/no, and the last one is recoverable.
+
+UNDOF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.undo"
+
+# Stash what is about to be deleted so `u` can put it back.
+_capture_undo() { # $1=section $2=key
+  local section="${1:-}" key="${2:-}" profile proj text
+  profile="${section%%/*}"
+  case "$section" in
+    */*) proj="${section#*/}"
+         text="$(notes --profile "$profile" ptask "$proj" list 2>/dev/null \
+                 | awk -F'\t' -v k="$key" '$3==k{print $4; exit}')" ;;
+    *)   text="$(notes --profile "$profile" focus list 2>/dev/null \
+                 | grep -F -- "$key" | head -1)" ;;
+  esac
+  [ -n "$text" ] || return 0
+  printf '%s\t%s\n' "$section" "$text" > "$UNDOF"
+}
+
+# Strip what the vault RENDERS onto a line (checkbox, age, since-marker) so the text
+# can go back through `add` rather than being spliced into the file by hand.
+_undo_text() { # $1=raw line -> the bare task text
+  printf '%s' "${1:-}" \
+    | sed -E 's/^[[:space:]]*- \[[^]]*\][[:space:]]*//; s/ *\([0-9]+d\) */ /g; s/<!--[^>]*-->//g; s/  +/ /g; s/^ +//; s/ +$//'
+}
+
+confirm_delete() { # $1=section $2=key
+  local section="${1:-}" key="${2:-}" ans
+  [ -n "$key" ] || { echo "not on a task row"; sleep 1; return 0; }
+  printf 'delete: %s\n' "$key"
+  read -r -p "are you sure? [y/N] " ans || return 0
+  case "$ans" in
+    y | Y)
+      _capture_undo "$section" "$key"
+      task_op rm "$section" "$key"
+      echo "deleted — press u to undo"; sleep 1 ;;
+    *) echo "cancelled"; sleep 1 ;;
+  esac
+}
+
+# Put the last deleted task back. It returns via `add`, so it lands at the end of its
+# list rather than its old position - the text is what matters, and re-inserting at a
+# line number would mean hand-editing the vault instead of going through the CLI.
+undo_delete() {
+  local line section text profile proj
+  [ -f "$UNDOF" ] || { echo "nothing to undo"; sleep 1; return 0; }
+  line="$(cat "$UNDOF" 2>/dev/null)"
+  section="${line%%$'\t'*}"; text="$(_undo_text "${line#*$'\t'}")"
+  if [ -z "$text" ] || [ -z "$section" ]; then
+    echo "nothing to undo"; sleep 1; return 0
+  fi
+  profile="${section%%/*}"
+  case "$section" in
+    */*) proj="${section#*/}"; notes --profile "$profile" ptask "$proj" add "$text" >/dev/null 2>&1 ;;
+    *)   notes --profile "$profile" focus add "$text" >/dev/null 2>&1 ;;
+  esac
+  if [ $? -eq 0 ]; then
+    rm -f "$UNDOF"
+    echo "restored: $text"
+  else
+    echo "could not restore: $text"
+  fi
+  sleep 1.5
+}
+
 task_op() { # $1=verb(done|start|rm)  $2=section  $3=key
   local verb="${1:-}" section="${2:-}" key="${3:-}" profile proj
   [ -n "$key" ] || return 0
@@ -1026,7 +1118,8 @@ help_view() {
 
   navigate
     j / k          move down / up
-    h / l          previous / next section
+    K / J          previous / next section   (h / l also work)
+    C-u / C-d      scroll the preview
     p              cycle priority filter  (urgent -> high -> low -> all)
     i              search  (esc leaves search)
     enter          edit the task in nvim
@@ -1037,7 +1130,8 @@ help_view() {
     C-a            add a task to the section
     C-t            hand the task to the AI  (toggles the @ai lane)
     W              start a wave on this project's @ai tasks  (no session needed)
-    C-d            delete the task
+    d              delete the task  (asks first)
+    u              undo the last delete
     m              move to another section / project
 
   project
@@ -1088,6 +1182,8 @@ case "${1:-}" in
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
   --task-op) shift; task_op "$@"; exit 0 ;;
+  --delete-task) shift; confirm_delete "$@"; exit 0 ;;
+  --undo-delete) shift; undo_delete; exit 0 ;;
   --toggle-ai) shift; toggle_ai "$@"; exit 0 ;;
   --start-wave) shift; start_wave "${1:-}"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
@@ -1148,13 +1244,18 @@ list_section personal | fzf \
   --bind 'load:transform:[ {1} = head ] && echo down' \
   --bind "h:execute-silent($SELF --prev-section)+reload($SELF --list)+refresh-preview" \
   --bind "l:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
+  --bind "K:execute-silent($SELF --prev-section)+reload($SELF --list)+refresh-preview" \
+  --bind "J:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
   --bind "tab:execute-silent($SELF --next-section)+reload($SELF --list)+refresh-preview" \
   --bind "i:show-input+unbind($MODAL)" \
   --bind "esc:transform:[ \"\$FZF_INPUT_STATE\" = hidden ] && echo abort || echo \"clear-query+hide-input+rebind($MODAL)\"" \
   --bind 'q:abort' \
   --bind "ctrl-x:execute-silent($SELF --task-op done {6} {5})+reload($SELF --list)+refresh-preview" \
   --bind "s:execute-silent($SELF --task-op start {6} {5})+reload($SELF --list)+refresh-preview" \
-  --bind "ctrl-d:execute-silent($SELF --task-op rm {6} {5})+reload($SELF --list)+refresh-preview" \
+  --bind "d:execute($SELF --delete-task {6} {5})+reload($SELF --list)+refresh-preview" \
+  --bind "u:execute($SELF --undo-delete)+reload($SELF --list)+refresh-preview" \
+  --bind 'ctrl-d:preview-half-page-down' \
+  --bind 'ctrl-u:preview-half-page-up' \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
   --bind "ctrl-t:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
   --bind "W:execute($SELF --start-wave {6})+reload($SELF --list)+refresh-preview" \

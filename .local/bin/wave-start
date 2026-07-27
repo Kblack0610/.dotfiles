@@ -43,6 +43,27 @@ mkdir -p "$STATE_DIR"
 
 command -v claude >/dev/null 2>&1 || { echo "wave-start: claude not on PATH" >&2; exit 1; }
 
+# One wave per app at a time. Pressing W twice because the first press looked like it
+# did nothing starts a second scope-out over the SAME `#ai` items, and both then file
+# tickets, cut branches and open PRs for the same work. That happened: three concurrent# waves on one app from three presses.
+#
+# The pid is checked, not merely recorded - a stale file from a killed run must not lock
+# the app out forever.
+LOCK="$STATE_DIR/${APP}.pid"
+if [ "${WAVE_FORCE:-0}" != 1 ] && [ -f "$LOCK" ]; then
+  _held="$(cat "$LOCK" 2>/dev/null)"
+  case "$_held" in
+    ''|*[!0-9]*) rm -f "$LOCK" ;;
+    *) if kill -0 "$_held" 2>/dev/null; then
+         echo "wave-start: $APP already has a wave running (pid $_held)." >&2
+         echo "  log:   $LOG" >&2
+         echo "  force: WAVE_FORCE=1 wave-start $APP" >&2
+         exit 3
+       fi
+       rm -f "$LOCK" ;;
+  esac
+fi
+
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 MAP="${PROJECT_MAP_FILE:-$SHARED_HOOKS/project-map.json}"
 
@@ -62,6 +83,10 @@ run_pass() {
 
   local t0 rc=0
   t0="$(date +%s)"
+
+  echo "$$" > "$LOCK"
+  # shellcheck disable=SC2064
+  trap "rm -f '$LOCK'" EXIT INT TERM
 
   echo "=== wave-start $APP $VERB — $(date -Is) — repo $REPO" >>"$LOG"
   # --dangerously-skip-permissions: a headless run must not hang on a permission
