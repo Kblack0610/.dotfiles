@@ -35,7 +35,8 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> · ls · pick · hop <name> · root <name> · pick-session
+# Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · preview · hop <name>
+#        · root <name> · land <name> <last|root|session[:window]> · pick-session
 
 set -uo pipefail
 
@@ -221,19 +222,45 @@ _enter() {
     # hop/root on the far side would see $TMUX, take this same branch, and recurse
     # instead of attaching: you end up detached, and the next `ensure` leaves a
     # stray session behind. `land` never looks at $TMUX.
-    tmux detach-client -E "$(printf '%q' "$0") land $(printf '%q' "$target") $mode"
+    # $mode is quoted too: pick-all passes "<session>" or "<session>:<window>",
+    # and a session name is free to contain spaces.
+    tmux detach-client -E \
+      "$(printf '%q' "$0") land $(printf '%q' "$target") $(printf '%q' "$mode")"
     return 0
   fi
 
   cmd_land "$target" "$mode"
 }
 
-# land <server> [last|root] -- the far side of a hop. Never consults $TMUX, because
-# it is reached from `detach-client -E`, where $TMUX is still set to the OLD server.
+# land <server> [last|root|<session>|<session>:<window>] -- the far side of a hop.
+# Never consults $TMUX, because it is reached from `detach-client -E`, where $TMUX is
+# still set to the OLD server.
 cmd_land() {
   local target="${1:?land needs a server name}" mode="${2:-last}"
 
   cmd_ensure "$target" >/dev/null
+
+  # An explicit target from pick-all. Anything that is not one of the two keywords
+  # is a session name, optionally with a window after a colon.
+  case "$mode" in
+    last|root) ;;
+    *)
+      local want_sess="${mode%%:*}" want_win=""
+      case "$mode" in *:*) want_win="${mode#*:}" ;; esac
+      if tmux -L "$target" has-session -t "=$want_sess" 2>/dev/null; then
+        # select-window before attaching: it sets the session's current window, so
+        # the client opens on the row that was picked rather than wherever the
+        # session was left.
+        [ -n "$want_win" ] &&
+          tmux -L "$target" select-window -t "$want_sess:$want_win" 2>/dev/null
+        unset TMUX
+        exec tmux -L "$target" attach -t "=$want_sess"
+      fi
+      # Picked a session that died between listing and landing — fall through to
+      # resume rather than dumping the user on an error.
+      mode=last
+      ;;
+  esac
 
   if [ "$mode" = "root" ]; then
     # The manifest's FIRST entry is the world's root page.
@@ -299,6 +326,94 @@ cmd_pick() {
   cmd_hop "${choice%% *}"
 }
 
+# _all_rows -- every session, and every window inside it, across every LIVE server.
+#
+# This is the one view no other tool here can give you. choose-tree (Prefix+w) is
+# server-scoped by construction, and sesh shells out to plain `tmux` so it follows
+# $TMUX into whichever single server you are already in. Seeing hub and lab at once
+# has to be assembled from outside both, which is what this does.
+#
+# Emits TAB-separated: <server> <session> <window-or-empty> <display>. fzf renders
+# only field 4 (--with-nth=4) and the first three are the machine target. Kept
+# separate from the fzf call so it can be tested without a terminal.
+_all_rows() {
+  local s sess wins att idx wname wact pcmd ptitle disp mark
+
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+
+    while IFS=$'\t' read -r sess wins att; do
+      [ -n "$sess" ] || continue
+
+      # The session header. Selecting it lands on the session's current window.
+      disp="$(printf '%-4s %-14s %2s win' "$s" "$sess" "$wins")"
+      [ "$att" = "1" ] && disp="$disp  (attached)"
+      printf '%s\t%s\t\t%s\n' "$s" "$sess" "$disp"
+
+      # One row per window. pane_current_command and pane_title resolve against the
+      # window's ACTIVE pane, which is what makes these rows worth reading: the
+      # command says what is running, the title is where a program puts its context
+      # (claude puts the task there, nvim the filename).
+      while IFS=$'\t' read -r idx wname wact pcmd ptitle; do
+        [ -n "$idx" ] || continue
+        mark=' '; [ "$wact" = "1" ] && mark='*'
+        # Window names here are usually git branches, which run long enough to shove
+        # every later column off screen. Truncate rather than let the row wrap.
+        [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
+        ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
+        disp="$(printf '%-4s %-14s %2s%s %-16s %-8s %s' \
+          "$s" "$sess" "$idx" "$mark" "$wname" "$pcmd" "$ptitle")"
+        printf '%s\t%s\t%s\t%s\n' "$s" "$sess" "$idx" "$disp"
+      done < <(tmux -L "$s" list-windows -t "=$sess" -F \
+        "#{window_index}"$'\t'"#{window_name}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
+        2>/dev/null)
+
+    done < <(tmux -L "$s" list-sessions -F \
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}" 2>/dev/null)
+  done < <(live_servers)
+}
+
+# preview <server> <session> [window] -- what pick-all shows on the right. A window
+# gets its live pane content; a session gets its window list.
+cmd_preview() {
+  local s="${1:-}" sess="${2:-}" win="${3:-}"
+  [ -n "$s" ] && [ -n "$sess" ] || return 0
+
+  if [ -n "$win" ]; then
+    tmux -L "$s" capture-pane -p -t "$sess:$win" 2>/dev/null | head -80
+  else
+    tmux -L "$s" list-windows -t "=$sess" \
+      -F '#{window_index}: #{window_name}  [#{pane_current_command}]  #{pane_title}' 2>/dev/null
+  fi
+}
+
+# pick-all -- fzf over every session and window everywhere. Enter goes there.
+cmd_pick_all() {
+  command -v fzf >/dev/null 2>&1 || die "fzf not installed"
+  local rows choice srv sess win
+  rows="$(_all_rows)"
+  [ -n "$rows" ] || die "no tmux servers are running"
+
+  choice="$(printf '%s\n' "$rows" | fzf --reverse --border \
+    --delimiter=$'\t' --with-nth=4 \
+    --prompt='everywhere > ' \
+    --header='Enter: go there · Esc: cancel' \
+    --preview="$(printf '%q' "$0") preview {1} {2} {3}" \
+    --preview-window=right,55%)" || return 0
+  [ -n "$choice" ] || return 0
+
+  srv="$(printf '%s' "$choice" | cut -f1)"
+  sess="$(printf '%s' "$choice" | cut -f2)"
+  win="$(printf '%s' "$choice" | cut -f3)"
+
+  [ -n "$srv" ] && [ -n "$sess" ] || return 0
+  if [ -n "$win" ]; then
+    _enter "$srv" "$sess:$win"
+  else
+    _enter "$srv" "$sess"
+  fi
+}
+
 main() {
   local verb="${1:-pick}"
   case "$verb" in
@@ -309,6 +424,9 @@ main() {
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     ensure)       shift; cmd_ensure "${1:-}" ;;
     pick-session) cmd_pick_session ;;
+    pick-all)     cmd_pick_all ;;
+    rows)         _all_rows ;;
+    preview)      shift; cmd_preview "${1:-}" "${2:-}" "${3:-}" ;;
     -h|--help)    sed -n '2,40p' "$0" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac

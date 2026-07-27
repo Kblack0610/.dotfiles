@@ -85,23 +85,48 @@ server   one per SOCKET   <- servers.sh / tmx
 
 Everything used to live in one server on the default socket, which made the
 sessions siblings in a single process rather than separate systems - so one
-`tmux kill-server` took out all of them at once. `hub`, `lab` and `work` now each
-own a socket, and the blast radius of a kill is exactly one server.
+`tmux kill-server` took out all of them at once. `hub` and `lab` now each own a
+socket, and the blast radius of a kill is exactly one server.
 
 | Keys / command | What |
 |---|---|
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
-| `Prefix+C-h` / `C-l` | **resume** hub / lab — back on the exact window you left |
-| `Prefix+N` / `M` | **root page** of hub / lab — today's daily, projects overview |
+| `Prefix+A` | **everything, everywhere** - every session AND window across every server |
+| `Prefix+C-n` / `C-h` | **resume** hub / lab - back on the exact window you left |
+| `Prefix+N` / `H` | **root page** of hub / lab - today's daily, projects overview |
 | `Prefix+C-s` | server picker (fzf popup, with session preview) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 
-**Resume vs root** is the whole point of having two pairs of keys. `C-h`/`C-l`
-attach with no `-t`, so tmux picks the most recently used session and the session
-restores its own active window - you land back exactly where you were, which makes
-flipping between two pieces of work cheap. `N`/`M` attach to the manifest's first
-entry instead, for when you want to start from the top of a world.
+One letter per world, so the only thing the Ctrl changes is resume-vs-root:
+`n` = hub, `h` = lab. (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
+return at the *terminal*, so a `bind C-m` can never fire.)
+
+**Resume vs root** is the whole point of having two pairs of keys. `C-n`/`C-h`
+attach to the most recently used session that is *not* the landing page, and a
+session restores its own active window - you land back exactly where you were,
+which makes flipping between two pieces of work cheap. `N`/`H` attach to the
+manifest's first entry instead, for when you want to start from the top of a world.
+
+**`Prefix+A` is the only view that crosses the server boundary.** `Prefix+w` is
+server-scoped by construction; `Prefix+S` (sesh) shells out to plain `tmux` and so
+follows `$TMUX` into whichever single world you are in; `Prefix+C-s` lists servers
+with their sessions only in the preview. Seeing hub and lab *together* has to be
+assembled from outside both, which is what `tmx pick-all` does. Every window gets
+its own row carrying the branch, what is running in it, and the pane title - which
+is where a program puts its context, so claude windows read as their task and nvim
+windows as their file. Enter goes straight to that window; the preview pane is the
+window's live content.
+
+```
+hub  dotfiles        7 win  (attached)
+hub  dotfiles        3  feat/tmux-cockp~ claude   searchable-session-index
+hub  hub             1* master           nvim     2026-07-26.md (~/.notes/journal/daily)
+lab  platform        1* fix/placemypare~ nvim     neo-tree filesystem (~/dev/bnb/platform)
+```
+
+Split into `tmx rows` (the data) and `tmx preview` (the right-hand pane) so both are
+testable without a terminal; `tests/ui/servers_isolation.bats` covers them.
 
 ### Worlds
 
@@ -109,8 +134,8 @@ Two, deliberately. A third `work` server was tried and dropped as noise.
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **daily**, dotfiles, home-config | today's daily note |
-| `lab` - building | **projects**, platform | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
+| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
@@ -158,8 +183,8 @@ Two things verified, both load-bearing:
 Putting an existing session on another server means recreating it there.
 
 The bare `tmux` command is a zsh **function** (not an alias) that redirects to the
-`work` server only when called with no args from outside tmux - see `.zshrc`. An
-alias would append `-L work` to every call, including from inside `hub`, where
+`hub` server only when called with no args from outside tmux - see `.zshrc`. An
+alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
 
 ## Sessions (`Prefix+S`)
@@ -199,8 +224,8 @@ Two worlds, deliberately:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **daily**, dotfiles, home-config | today's daily note |
-| `lab` - building | **projects**, platform | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
+| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
