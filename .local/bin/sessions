@@ -78,6 +78,11 @@ live_lines() {
   # Empty fields are emitted as "-" on purpose. TAB counts as IFS whitespace in
   # bash, so `read` collapses runs of it and an empty middle field would silently
   # shift every later field left (cwd landing in name, etc).
+  # `entrypoint` is the only field that separates a HEADLESS run (`claude -p`, which
+  # reports "sdk-cli") from one a human is sitting in front of ("cli"). `kind` says
+  # "interactive" for both, so a wave scoping in the background used to render as the
+  # same dim idle row an abandoned session gets - which is how a running wave looked
+  # like nothing happening.
   find "$LIVE_ROOT" -maxdepth 1 -name '*.json' -print0 2>/dev/null \
     | xargs -0 -r jq -rc '
         select(.sessionId != null)
@@ -86,7 +91,8 @@ live_lines() {
             (if (.nameSource // "") == "derived" then "-" else (.name // "-") end),
             (.cwd // "-"),
             (((.startedAt // 0) / 1000) | floor | tostring),
-            ((.pid // 0) | tostring) ]
+            ((.pid // 0) | tostring),
+            (.entrypoint // "-") ]
         | map(if . == "" then "-" else . end) | @tsv' 2>/dev/null || true
   # Never fail. These files are created and removed as sessions start and stop,
   # so one can vanish between the find and the jq. Under `set -o pipefail` that
@@ -97,15 +103,16 @@ live_lines() {
 _unsentinel() { [ "${1:-}" = "-" ] && echo "" || echo "${1:-}"; }
 
 # Populate LIVE_STATUS / LIVE_NAME keyed by session id.
-declare -A LIVE_STATUS=() LIVE_NAME=() LIVE_START=() LIVE_CWD=()
+declare -A LIVE_STATUS=() LIVE_NAME=() LIVE_START=() LIVE_CWD=() LIVE_ENTRY=()
 load_live() {
-  local id st nm cwd started
-  while IFS="$TAB" read -r id st nm cwd started; do
+  local id st nm cwd started pid entry
+  while IFS="$TAB" read -r id st nm cwd started pid entry; do
     [ -n "$id" ] || continue
     LIVE_STATUS["$id"]="$st"
     LIVE_NAME["$id"]="$(_unsentinel "$nm")"
     LIVE_START["$id"]="$started"
     LIVE_CWD["$id"]="$(_unsentinel "$cwd")"
+    LIVE_ENTRY["$id"]="$(_unsentinel "$entry")"
   done < <(live_lines)
 }
 
@@ -159,7 +166,11 @@ cmd_rows() {
   # finished ones come from the registry via `agent-usage rows`, which already
   # carries their telemetry.
   #
-  #   id \t status \t project \t branch \t started_epoch \t what
+  #   id \t status \t project \t branch \t started_epoch \t what \t kind
+  #
+  # `kind` is headless|interactive. A headless run is `claude -p` - a wave, a
+  # delivery-loop pass, a cron agent - and nobody is watching it, so the cockpit
+  # renders it differently from a session someone is sitting in.
   #
   # Deliberately NO token/cost columns: a running session's usage is incomplete
   # by definition, and computing it would mean a full transcript scan on a path
@@ -168,8 +179,8 @@ cmd_rows() {
   want="${1:-}" ; [ "$want" = "--live" ] && want=""
 
   load_live
-  local id st nm cwd started pid proj t what branch
-  while IFS="$TAB" read -r id st nm cwd started pid; do
+  local id st nm cwd started pid entry proj t what branch kind
+  while IFS="$TAB" read -r id st nm cwd started pid entry; do
     [ -n "$id" ] || continue
     cwd="$(_unsentinel "$cwd")"
     proj="$([ -n "$cwd" ] && resolve_project "$cwd")"
@@ -181,9 +192,14 @@ cmd_rows() {
     [ -n "$what" ] || what="$(lookup_field "$id" first_prompt)"
     branch="$(last_branch "$t")"
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    case "$(_unsentinel "$entry")" in
+      cli | '') kind=interactive ;;
+      *)        kind=headless ;;
+    esac
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$id" "${st:-live}" "${proj:--}" "${branch:--}" "${started:-0}" \
-      "$(printf '%s' "${what:--}" | tr '\n\t' '  ' | cut -c1-72)"
+      "$(printf '%s' "${what:--}" | tr '\n\t' '  ' | cut -c1-72)" "$kind"
   done < <(live_lines)
 }
 

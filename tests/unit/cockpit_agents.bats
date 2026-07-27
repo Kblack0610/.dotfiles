@@ -22,9 +22,10 @@ setup() {
 #!/usr/bin/env bash
 [ "\${1:-}" = "rows" ] || exit 0
 case "\${2:-}" in
-  demo) printf 'live0001\tbusy\tdemo\tfeat/x\t%s\twriting the thing\n' "\$(( \$(date +%s) - 600 ))"
-        printf 'live0002\twaiting\tdemo\tmain\t%s\tneeds a decision\n' "\$(( \$(date +%s) - 120 ))" ;;
-  alias-repo) printf 'live0003\tidle\talias-repo\tmain\t%s\tsecond canonical\n' "\$(( \$(date +%s) - 60 ))" ;;
+  demo) printf 'live0001\tbusy\tdemo\tfeat/x\t%s\twriting the thing\tinteractive\n' "\$(( \$(date +%s) - 600 ))"
+        printf 'live0002\twaiting\tdemo\tmain\t%s\tneeds a decision\tinteractive\n' "\$(( \$(date +%s) - 120 ))"
+        printf 'live0004\tidle\tdemo\tmain\t%s\t-\theadless\n' "\$(( \$(date +%s) - 60 ))" ;;
+  alias-repo) printf 'live0003\tidle\talias-repo\tmain\t%s\tsecond canonical\tinteractive\n' "\$(( \$(date +%s) - 60 ))" ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/sessions"
@@ -140,7 +141,7 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
 @test "every row type is one _enter_action can dispatch" {
   local t
   for t in $(render | cut -f1 | sort -u); do
-    case "$t" in sess|head|hint|runner) ;; *) fail "unknown row type '$t'" ;; esac
+    case "$t" in sess|head|hint|runner|wave) ;; *) fail "unknown row type '$t'" ;; esac
   done
 }
 
@@ -177,4 +178,52 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
   canonicals_of() { printf 'demo\n'; }
   run render demo other 'draining the queue'
   refute_output --partial 'draining the queue'
+}
+
+# ── a wave you started, before it has filed anything ─────────────────────────
+#
+# A scope-out runs for minutes before it writes a board, posts an ask or touches a
+# ticket. With no row for that window, pressing W looked like nothing happened - which
+# is what made the same wave get started three times.
+
+wave_lock() { # <app> <pid>
+  mkdir -p "$HOME/.local/state/agentctl/wave"
+  printf '%s\n' "$2" > "$HOME/.local/state/agentctl/wave/$1.pid"
+}
+
+teardown() { [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null; return 0; }
+
+@test "a headless run is not rendered as an idle session" {
+  run render
+  assert_output --partial '~ headless'
+  # the giveaway of the old behaviour: a dim `o idle` with no other signal
+  refute_output --regexp 'o idle.*\(just started\)'
+}
+
+@test "a live wave lock puts a scoping row on the project" {
+  sleep 60 & HOLDER=$!
+  wave_lock demo "$HOLDER"
+  run render
+  assert_output --partial '~ wave'
+  assert_output --partial 'nothing filed yet'
+}
+
+@test "the scoping row disappears once the wave is gone" {
+  sleep 0 & local dead=$!; wait "$dead" 2>/dev/null || true
+  wave_lock demo "$dead"
+  run render
+  refute_output --partial '~ wave'
+}
+
+@test "a junk lock file does not fake a running wave" {
+  wave_lock demo 'not-a-pid'
+  run render
+  refute_output --partial '~ wave'
+}
+
+@test "the wave row keeps the 7-field wire format" {
+  sleep 60 & HOLDER=$!
+  wave_lock demo "$HOLDER"
+  local bad; bad="$(render | awk -F'\t' 'NF != 7 {print NF": "$0}')"
+  assert_equal "$bad" ''
 }

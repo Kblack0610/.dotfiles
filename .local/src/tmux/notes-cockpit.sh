@@ -346,6 +346,28 @@ _project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $
   [ -n "$names" ] || names="$canon"
   local primary="$canon"
 
+  # A WAVE that is still scoping. This is the row whose absence made pressing W feel
+  # like nothing happened: a scope-out runs for minutes before it writes a board, posts
+  # an ask, or touches a ticket, so until it finishes there is no other evidence of it
+  # anywhere in the cockpit.
+  #
+  # Driven by wave-start's own lock file rather than inferred from a session: the lock
+  # is written before the pass starts and removed when it ends, and the pid is checked
+  # so a crashed run does not leave a wave that appears to run forever.
+  local wname wlock wpid
+  while IFS= read -r wname; do
+    [ -n "$wname" ] || continue
+    wlock="$HOME/.local/state/agentctl/wave/${wname}.pid"
+    [ -f "$wlock" ] || continue
+    wpid="$(cat "$wlock" 2>/dev/null)"
+    case "$wpid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$wpid" 2>/dev/null || continue
+    printf 'wave\t%s\t%s\t\t%s\t%s\t  %s~ wave%s %sscoping %s - nothing filed yet%s\n' \
+      "$prof" "$wname" "$primary" "$sec" \
+      "$C_INP" "$C_OFF" "$C_DIM" \
+      "$(_elapsed "$(stat -c %Y "$wlock" 2>/dev/null || echo 0)")" "$C_OFF"
+  done <<< "$names"
+
   # A headless delivery-loop runner on THIS project is an agent working it, and is not
   # shown by the bridge - so unlike asks and sprint rows it belongs here. The global
   # footer lists every runner, but not which project each is on.
@@ -356,21 +378,28 @@ _project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $
 
   # --- running right now (live <pid>.json, project-resolved by `sessions rows`) ---
   # No tokens/cost here: a running session's usage is incomplete by definition.
-  local id st proj branch started what glyph col n
+  local id st proj branch started what kind glyph col label n
   if command -v sessions >/dev/null 2>&1; then
-    while IFS=$'\t' read -r id st proj branch started what; do
+    while IFS=$'\t' read -r id st proj branch started what kind; do
       [ -n "$id" ] || continue
       case "$st" in
         busy)    glyph='~'; col="$C_INP" ;;
         waiting) glyph='!'; col="$C_SEL" ;;
         *)       glyph='o'; col="$C_DIM" ;;
       esac
+      # A headless run (`claude -p`) has nobody watching it, and its status sits at
+      # the CLI's default - so it used to render as the same dim `o idle` an
+      # abandoned session gets. Say what it is instead.
+      label="$st"
+      if [ "$kind" = headless ]; then
+        glyph='~'; col="$C_INP"; label="headless"
+      fi
       [ "$branch" = "-" ] && branch=""
       # A session that just started has no ai-title yet.
       [ "$what" = "-" ] && what="(just started)"
       printf 'sess\t%s\t%s\t\t%s\t%s\t  %s%s %s%s %s%s%s  %s%s%s\n' \
         "$prof" "$id" "$primary" "$sec" \
-        "$col" "$glyph" "$st" "$C_OFF" \
+        "$col" "$glyph" "$label" "$C_OFF" \
         "$C_DIM" "${branch:+$branch }$(_elapsed "$started")" "$C_OFF" \
         "$C_OFF" "$what" "$C_OFF"
     done < <(while IFS= read -r n; do sessions rows "$n" 2>/dev/null; done <<< "$names")
@@ -639,6 +668,9 @@ _enter_action() { # $1=type $2=profile $3=c3 $4=c4
     sess)     printf 'execute-silent(%s --resume-session %q)+abort' "$SELF" "$3" ;;
     sprint|sentinel) printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
     runner)   printf 'execute-silent(%s --journal %q)+abort' "$SELF" "$3" ;;
+    # A scoping wave has no board or ask to open yet - its log is the only thing
+    # to look at, and "what is it doing right now" is the whole reason for the row.
+    wave)     printf 'execute-silent(%s --wave-log %q)+abort' "$SELF" "$3" ;;
     task)     printf 'execute-silent(%s --jump task %q %q)+abort' "$SELF" "$3" "$4" ;;
     *) printf '' ;;
   esac
@@ -1195,6 +1227,7 @@ case "${1:-}" in
   --resume-session) [ -n "${2:-}" ] && tmux new-window "sessions resume '$2'" 2>/dev/null; exit 0 ;;
   --open-file) [ -f "${2:-}" ] && tmux new-window "nvim '$2'" 2>/dev/null; exit 0 ;;
   --journal) [ -n "${2:-}" ] && tmux new-window "journalctl --user -u 'agentctl@$2.service' -e -n 200 || journalctl --user -u 'agentctl@$2.service'" 2>/dev/null; exit 0 ;;
+  --wave-log) [ -n "${2:-}" ] && tmux new-window "tail -f '$HOME/.local/state/agentctl/wave/$2.log'" 2>/dev/null; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
