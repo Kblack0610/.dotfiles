@@ -268,15 +268,24 @@ canonical_of() {
 # Every runtime name a vault project claims, one per line. Only the agents view uses
 # this: it LOOKS in several places for existing state. Anything that WRITES, or that
 # passes a name to another tool, wants canonical_of (the primary) instead.
+#
+# The extra names live in their OWN marker, `<!-- canonical-also: a, b -->`, and NOT as a
+# comma list inside `canonical:`. That was tried and broke a third consumer: lab-sync's
+# regen-lab-feed.sh matches `canonical:[[:space:]]*[A-Za-z0-9_.-]+` - a comma kills the
+# match, so the project's whole release feed silently rendered the literal `NAME`
+# placeholder instead of its name. `canonical:` is a single token to everything that
+# reads it; widening its grammar is a breaking change to files this script does not own.
 canonicals_of() { # $1=profile $2=project-lc
-  local prof="$1" proj="$2" path dir raw=""
+  local prof="$1" proj="$2" path dir primary="" also=""
   path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
   if [ -n "$path" ]; then
     dir="$(dirname "$path")"
-    raw="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
-      | head -1 | sed -E 's/.*canonical:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//')"
+    primary="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[A-Za-z0-9_.-]+' "$dir" 2>/dev/null \
+      | head -1 | sed -E 's/.*canonical:[[:space:]]*//')"
+    also="$(grep -rhoE '<!--[[:space:]]*canonical-also:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
+      | head -1 | sed -E 's/.*canonical-also:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//')"
   fi
-  _canon_list "${raw:-$proj}"
+  _canon_list "${primary:-$proj}${also:+, $also}"
 }
 
 # "a, b" -> one name per line. The primary (first) name is what new state is keyed by;
