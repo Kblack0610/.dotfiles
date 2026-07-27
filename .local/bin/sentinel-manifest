@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""sentinel-manifest — parse and validate a Sentinel watch manifest.
+
+Sentinel watches (~/.agent/watches/*.yaml) used to be parsed by a hand-rolled
+`grep -m1 | sed` in watch-companion-loop. That parser could not read YAML block
+scalars, and it stripped one trailing quote character unconditionally. Both
+failures were silent and both were load-bearing:
+
+  * `expect_cmd: >-` returned the literal string ">-". probe_command then ran
+    `bash -c ">-"` — a bare redirection into a file named "-" — which exits 0.
+    Four watches (the PHI/PostHog guard, the prod user_type invariant, the macOS
+    CI runner check, and the dream-liveness canary) reported OK for weeks while
+    executing none of their probe. The artifact left behind was a 0-byte file at
+    $HOME/- whose mtime tracked the poll interval.
+
+  * `expect_cmd: "! kubectl ... | grep -q '=True'"` lost its final single quote,
+    so bash exited 2 on a syntax error and the watch read as a permanent TRIP.
+    home-k3s-node-disk was red from 2026-07-09 and prod-mercury-payouts from
+    2026-06-19 while both underlying systems were healthy.
+
+So: parse YAML with a YAML parser. This uses PyYAML (already installed) rather
+than `yq` (not installed on this box, and ~/.agent/lessons/dotfiles.md records
+the decision not to add it). A monitor that lies is worse than no monitor, and
+hand-rolled YAML is how this one came to lie.
+
+Verbs
+  env FILE       emit shell-quoted `W_<key>=...` assignments for the whole
+                 manifest in ONE call, for `eval`/`source` by the bash caller.
+                 List values become W_<key>_count plus W_<key>_0..N.
+  validate FILE  exit non-zero with a reason if the manifest is unparseable,
+                 is missing fields its probe type requires, or (for command
+                 watches) carries an expect_cmd that is not valid bash.
+
+Timestamps are deliberately kept as strings: PyYAML would otherwise resolve
+`created: 2026-07-26T10:50:00-07:00` into a datetime and reformat it, and the
+caller feeds that value straight to `date -d`.
+"""
+
+import re
+import shlex
+import subprocess
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("sentinel-manifest: PyYAML is required (pacman -S python-yaml)")
+
+
+# Keep ISO timestamps as plain strings — the caller passes them to `date -d`,
+# and a round-trip through datetime would silently rewrite the format.
+class Loader(yaml.SafeLoader):
+    pass
+
+
+Loader.yaml_implicit_resolvers = {
+    ch: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for ch, resolvers in Loader.yaml_implicit_resolvers.items()
+}
+
+SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DURATION = re.compile(r"^[0-9]+[smhd]?$")
+
+# A probe command must begin with a COMMAND. If it begins with a redirection or a
+# pipe it cannot run anything, and — critically — `bash -n` still calls it valid:
+# `>-` is a well-formed redirection into a file named "-" that exits 0. That is
+# exactly what a mis-read `expect_cmd: >-` degrades into, and why four watches
+# reported OK for weeks. Syntax-checking alone does NOT catch it; this does.
+LEADING_REDIRECT = re.compile(r"^\s*[|<>]")
+
+PROBES = ("http", "metric", "kubectl", "command", "agent")
+METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
+
+
+def scalar(value):
+    """Render a YAML scalar the way the bash caller expects to compare it."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def load(path):
+    """Parse FILE -> dict. Raises ValueError with a human reason on any problem."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = yaml.load(fh, Loader=Loader)
+    except FileNotFoundError:
+        raise ValueError("file not found")
+    except yaml.YAMLError as exc:
+        detail = str(exc).replace("\n", " ")
+        raise ValueError(f"not valid YAML: {detail}")
+    if doc is None:
+        raise ValueError("manifest is empty")
+    if not isinstance(doc, dict):
+        raise ValueError(f"top level must be a mapping, got {type(doc).__name__}")
+    return doc
+
+
+# Keys the caller always reads as a list, whatever the manifest wrote. `signal:`
+# accepts either a YAML list or a lone scalar; normalizing here means the bash
+# side only ever walks W_signal_0..N and never has to probe for a bare W_signal.
+LIST_KEYS = ("signal",)
+
+
+def cmd_env(path):
+    doc = load(path)
+    out = []
+    for key, value in doc.items():
+        key = str(key)
+        if not SHELL_IDENT.match(key):
+            # Cannot become a shell variable; validate reports it as an error.
+            continue
+        if isinstance(value, dict):
+            continue  # schema is flat; validate reports nested mappings
+        if key in LIST_KEYS and not isinstance(value, (list, tuple)):
+            value = [] if value is None else [value]
+        if isinstance(value, (list, tuple)):
+            out.append(f"W_{key}_count={len(value)}")
+            out.extend(
+                f"W_{key}_{i}={shlex.quote(scalar(item))}" for i, item in enumerate(value)
+            )
+        else:
+            out.append(f"W_{key}={shlex.quote(scalar(value))}")
+    # The caller reads these counts unconditionally under `set -u`, so every
+    # list key must be defined even when the manifest omits it entirely.
+    for key in LIST_KEYS:
+        if f"W_{key}_count" not in [line.split("=", 1)[0] for line in out]:
+            out.append(f"W_{key}_count=0")
+    print("\n".join(out))
+    return 0
+
+
+def bash_syntax_error(cmd):
+    """Return a reason string if CMD is not valid bash, else None."""
+    proc = subprocess.run(
+        ["bash", "-n"], input=cmd, capture_output=True, text=True
+    )
+    if proc.returncode == 0:
+        return None
+    return proc.stderr.strip().replace("\n", " ") or "bash -n rejected it"
+
+
+def cmd_validate(path):
+    try:
+        doc = load(path)
+    except ValueError as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
+
+    errors = []
+
+    for key, value in doc.items():
+        if not SHELL_IDENT.match(str(key)):
+            errors.append(f"key {key!r} is not a valid shell identifier")
+        if isinstance(value, dict):
+            errors.append(f"key {key!r} is a nested mapping; the schema is flat")
+
+    probe = scalar(doc.get("probe"))
+    if not probe:
+        errors.append("missing required field 'probe'")
+    elif probe not in PROBES:
+        errors.append(f"unknown probe {probe!r} (expected one of {', '.join(PROBES)})")
+
+    target = scalar(doc.get("target"))
+    if probe in ("http", "metric", "kubectl") and not target:
+        errors.append(f"probe '{probe}' requires 'target'")
+
+    if probe == "metric":
+        for field in ("expect_metric", "expect_op", "expect_threshold"):
+            if not scalar(doc.get(field)):
+                errors.append(f"probe 'metric' requires '{field}'")
+        op = scalar(doc.get("expect_op"))
+        if op and op not in METRIC_OPS:
+            errors.append(f"expect_op {op!r} is not one of {' '.join(METRIC_OPS)}")
+
+    if probe == "kubectl" and not (
+        scalar(doc.get("expect_rollout")) or scalar(doc.get("expect_restarts_max"))
+    ):
+        errors.append("probe 'kubectl' requires expect_rollout or expect_restarts_max")
+
+    if probe == "command":
+        cmd = scalar(doc.get("expect_cmd"))
+        if not cmd:
+            errors.append("probe 'command' requires 'expect_cmd'")
+        elif LEADING_REDIRECT.match(cmd):
+            # The false-GREEN guard. Catches a mis-parsed block scalar (">-",
+            # "|-", ">", "|"), which bash_syntax_error below would happily wave
+            # through as valid.
+            errors.append(
+                f"expect_cmd starts with a redirection or pipe ({cmd.strip()[:4]!r}); "
+                "it runs no command and would exit 0, reporting a false OK"
+            )
+        else:
+            # The false-RED guard. Catches the truncated trailing quote that
+            # left home-k3s-node-disk tripped for weeks on a bash syntax error.
+            reason = bash_syntax_error(cmd)
+            if reason:
+                errors.append(f"expect_cmd is not valid bash: {reason}")
+
+    interval = scalar(doc.get("interval"))
+    if interval and not DURATION.match(interval):
+        errors.append(f"interval {interval!r} is not a duration (e.g. 30s 5m 6h 2d)")
+
+    expiry = scalar(doc.get("expiry"))
+    if expiry and expiry not in ("null", "~") and not DURATION.match(expiry):
+        probe_date = subprocess.run(
+            ["date", "-d", expiry], capture_output=True, text=True
+        )
+        if probe_date.returncode != 0:
+            errors.append(f"expiry {expiry!r} is neither a duration nor a date")
+
+    if errors:
+        for err in errors:
+            print(f"invalid: {err}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv):
+    if len(argv) != 3 or argv[1] not in ("env", "validate"):
+        print("usage: sentinel-manifest {env|validate} FILE", file=sys.stderr)
+        return 2
+    verb, path = argv[1], argv[2]
+    if verb == "env":
+        try:
+            return cmd_env(path)
+        except ValueError as exc:
+            print(f"sentinel-manifest: {path}: {exc}", file=sys.stderr)
+            return 1
+    return cmd_validate(path)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
