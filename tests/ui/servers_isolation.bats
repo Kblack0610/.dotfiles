@@ -253,6 +253,24 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   assert_output '1'
 }
 
+@test "both views exist: ls feeds the compact picker, rows feeds the full one" {
+  # They answer different questions - "which world" vs "where is that window" - so
+  # neither may quietly absorb the other. `pick` was deleted once as superseded and
+  # had to come back; this is the assertion that stops that happening silently.
+  manifest "$SRV_A" "one $HOME" "two $HOME"
+  "$TMX" ensure "$SRV_A"
+
+  run "$TMX" ls                       # the compact view's data: one row per SERVER
+  assert_success
+  assert_output --partial "$SRV_A"
+  refute_output --partial 'one'       # sessions are the preview, not the list
+
+  run "$TMX" rows                     # the full view's data: sessions AND windows
+  assert_success
+  assert_output --partial 'one'
+  assert_output --partial 'two'
+}
+
 # ── land with an explicit target ─────────────────────────────────────────────
 #
 # `land` ends in `exec tmux attach`, which cannot succeed without a terminal - so these
