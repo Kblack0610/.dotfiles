@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# dotfiles-drift — is what is MERGED actually what is RUNNING?
+#
+# `stow` links ~/ at a repo working tree, so a file only goes live when the tree
+# is on a commit containing it AND stow has run. Nothing reports the gap. The
+# repo already documents this ("the hook layer, and why merged is not deployed",
+# .dotfiles#134) after a preflight hook silently produced no output for a whole
+# session. This script is the detector that doc could not point at.
+#
+# It found a worse instance on 2026-07-27: the private overlay's
+# watch-companion-loop had been merged since June but the DEPLOYED copy was a
+# stale gitignored physical file left behind by the public/private split. The
+# sentinel daemon had been executing June code for six weeks. Because
+# dotfiles-overlay-link refuses to touch "a link that already resolves", the
+# newer version could never attach on its own.
+#
+# Three checks, each a distinct failure mode:
+#
+#   BEHIND  the repo is checked out below origin/main, so merged work is not in
+#           the working tree that ~/ points at.
+#   MIRROR  a private-overlay file also exists as a real file in the public tree
+#           (the deployed mirror) and its content differs from the tracked
+#           source. This is the one that hid for six weeks.
+#   LINK    a tracked file under a stow root has no ~/ counterpart, or has one
+#           that dangles. That is "stow has not run".
+#
+# Symlinks are skipped throughout. git stores them as mode 120000 blobs holding
+# the link TARGET, so diffing that against a resolved file always reports a
+# difference — during the 07-27 investigation that produced 15 false positives
+# from systemd .wants/ entries alone, which is exactly the kind of noise that
+# makes a drift report get ignored.
+#
+# Usage:
+#   dotfiles-drift            human-readable report
+#   dotfiles-drift --quiet    print nothing; exit 1 if ANY drift (for a watch)
+#   dotfiles-drift --json     machine-readable
+set -uo pipefail
+
+PUB="${DOTFILES:-$HOME/.dotfiles}"
+PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+MODE=report
+case "${1:-}" in
+  --quiet) MODE=quiet ;;
+  --json)  MODE=json ;;
+  -h|--help) sed -n '2,30p' "$0" | sed 's/^# \?//'; exit 0 ;;
+esac
+
+FINDINGS=()   # "TYPE|repo|path|detail"
+add() { FINDINGS+=("$1|$2|$3|$4"); }
+
+# --- BEHIND -----------------------------------------------------------------
+# No fetch here: this runs from a monitoring probe every few hours and must stay
+# cheap and offline-safe. It compares against the last-known origin/main, so it
+# reports "merged and fetched but not checked out". A stale remote ref makes it
+# quieter, never noisier — it cannot produce a false alarm.
+check_behind() {
+  local repo="$1" name="$2" n head
+  [ -d "$repo/.git" ] || return 0
+  head="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
+  n="$(git -C "$repo" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] && add BEHIND "$name" "$head" "$n commit(s) on origin/main not in the checked-out tree"
+  return 0
+}
+
+# --- MIRROR -----------------------------------------------------------------
+# Every file tracked in the private overlay that ALSO exists as a real file in
+# the public tree is a deployed mirror. If the two differ, the running copy is
+# not the tracked one.
+check_mirror() {
+  local p pub_file
+  [ -d "$PRIV/.git" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    pub_file="$PUB/$p"
+    [ -f "$pub_file" ] || continue          # not mirrored here
+    [ -L "$pub_file" ] && continue          # a correct overlay symlink, not a mirror
+    # skip symlinks on the git side too (mode 120000)
+    [ "$(git -C "$PRIV" ls-tree "origin/main" -- "$p" 2>/dev/null | awk '{print $1}')" = "120000" ] && continue
+    if ! git -C "$PRIV" show "origin/main:$p" 2>/dev/null | diff -q - "$pub_file" >/dev/null 2>&1; then
+      add MIRROR private "$p" "deployed copy differs from tracked source"
+    fi
+  done < <(git -C "$PRIV" ls-tree -r --name-only origin/main 2>/dev/null \
+             | grep -E '^\.(local/bin|local/lib|config/systemd/user)/[^/]+$')
+  return 0
+}
+
+# --- LINK -------------------------------------------------------------------
+# A tracked file under a stow root should have a ~/ counterpart that resolves.
+check_links() {
+  local repo="$1" name="$2" p target
+  [ -d "$repo/.git" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -L "$repo/$p" ] && continue
+    target="$HOME/$p"
+    if [ ! -e "$target" ]; then
+      if [ -L "$target" ]; then add LINK "$name" "$p" "symlink dangles (target missing)"
+      else                      add LINK "$name" "$p" "not linked into \$HOME (stow has not run)"
+      fi
+    fi
+  done < <(git -C "$repo" ls-tree -r --name-only origin/main 2>/dev/null \
+             | grep -E '^\.local/(bin|lib)/[^/]+$')
+  return 0
+}
+
+check_behind "$PUB"  public
+check_behind "$PRIV" private
+check_mirror
+check_links "$PUB"  public
+check_links "$PRIV" private
+
+n=${#FINDINGS[@]}
+
+case "$MODE" in
+  quiet) [ "$n" -eq 0 ] && exit 0 || exit 1 ;;
+  json)
+    printf '{"drift":%s,"findings":[' "$n"
+    for i in "${!FINDINGS[@]}"; do
+      IFS='|' read -r t r p d <<< "${FINDINGS[$i]}"
+      [ "$i" -gt 0 ] && printf ','
+      printf '{"type":"%s","repo":"%s","path":"%s","detail":"%s"}' "$t" "$r" "$p" "$d"
+    done
+    printf ']}\n'
+    [ "$n" -eq 0 ] && exit 0 || exit 1 ;;
+esac
+
+if [ "$n" -eq 0 ]; then
+  echo "dotfiles-drift: clean — merged == deployed"
+  exit 0
+fi
+printf 'dotfiles-drift: %s finding(s) — merged is NOT deployed\n\n' "$n"
+for f in "${FINDINGS[@]}"; do
+  IFS='|' read -r t r p d <<< "$f"
+  printf '  %-7s %-8s %-46s %s\n' "$t" "$r" "$p" "$d"
+done
+cat <<'EOF'
+
+  BEHIND -> check the tree out on origin/main (or merge it into your branch)
+  MIRROR -> refresh the deployed copy from the tracked source:
+              git -C ~/.dotfiles-private show origin/main:<path> > ~/.dotfiles/<path>
+  LINK   -> run `stow --no-folding .` in the repo, then re-check
+EOF
+exit 1
