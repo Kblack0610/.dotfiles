@@ -72,6 +72,15 @@ run_pass() {
     echo "=== done — $(date -Is)"
   } >>"$LOG" 2>&1
 
+  # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on
+  # any pass that finds no active sprint (cmd_run -> cmd_disarm removes its own units), so
+  # arming it before this point is a no-op that looks like it worked: it fires once,
+  # sees nothing, and deletes itself. Nothing armed it at wave start, which is the real
+  # reason no stall or false-completion detection has ever fired.
+  if [ -n "$(ls -1t "$HOME/.agent/plans/$APP"/sprint-*.md 2>/dev/null | head -1)" ]; then
+    command -v captain-watchdog >/dev/null 2>&1 && captain-watchdog arm >>"$LOG" 2>&1 || true
+  fi
+
   local last
   last="$(sed '/^[[:space:]]*$/d' "$LOG" | tail -1)"
   command -v agent-notify >/dev/null 2>&1 && \
