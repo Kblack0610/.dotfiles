@@ -851,6 +851,43 @@ _bridge_view() { # $1=active profile
   fi
 }
 
+# The oldest pending question, anywhere. `answer_next` is what the `!` key runs, and
+# _ask_banner is the line that tells you it exists.
+#
+# Both are deliberately CROSS-PROFILE, like the bridge and unlike every other tasks-view
+# behaviour: a question is a person being blocked, and which section you happen to be
+# standing on has nothing to do with whether you should answer it.
+_oldest_pending() { # -> "id<TAB>options<TAB>project" or empty
+  command -v agent-ask >/dev/null 2>&1 || return 0
+  agent-ask list --all --pending 2>/dev/null \
+    | sort -t"$(printf '\t')" -k9,9 \
+    | awk -F'\t' 'NR==1 { printf "%s\t%s\t%s", $1, $7, $2 }'
+}
+
+# One unmissable line at the top of the tasks view whenever something is waiting on you.
+#
+# The rows already say `[!] needs you`, but you have to be looking at the right project in
+# the right section to see one - and a question posted against a project you are not
+# standing on was invisible from here entirely. This says the count and the key, always.
+_ask_banner() {
+  local n
+  command -v agent-ask >/dev/null 2>&1 || return 0
+  n="$(agent-ask count --all 2>/dev/null)"
+  [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
+  printf 'hint\t\t\t\t\t\t%s  ! %s question%s waiting on you%s %s- press ! to answer%s\n' \
+    "$C_INP" "$n" "$([ "$n" -gt 1 ] && printf s)" "$C_OFF" "$C_DIM" "$C_OFF"
+}
+
+# Answer the oldest pending question without having to go and find its row.
+answer_next() {
+  local id opt proj
+  IFS=$'\t' read -r id opt proj < <(_oldest_pending)
+  if [ -z "$id" ]; then
+    printf '  nothing is waiting on you.\n' >&2; sleep 1; return 0
+  fi
+  answer_ask "$id" "$opt"
+}
+
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
   case "$(read_mode)" in
@@ -858,6 +895,7 @@ list_section() {
     agents) _profile_agents_view "$want"; _global_agents; return ;;
   esac
   local rows; rows="$(emit_tasks)"
+  _ask_banner
   # A fresh day has no daily note yet, so `focus --all` is empty and every section
   # reads 0 — which looks like data loss. Say so, and offer the one-key fix.
   {
@@ -1408,8 +1446,10 @@ accept_next() { # $1 = section of the highlighted row (<profile>/<project>)
     echo "no suggestions for $name yet — press o, then C-s on the overview to generate them"; sleep 2; exec "$SELF"
   fi
   selected="$(printf '%s\n' "$tasks" | fzf --multi --ansi --reverse \
-    --prompt "accept for $name > " \
-    --header 'TAB mark · enter accept selected · esc cancel')"
+    --prompt "add to $name's sheet > " \
+    --header "SUGGESTIONS from the overview - picking these ADDS them to your task sheet.
+Not questions: to answer one, esc then press !
+TAB mark · enter add selected · esc cancel")"
   [ -z "$selected" ] && exec "$SELF"
   repo="$(repo_path_of "$name")"
   epic="$(epic_of "$summary_md")"
@@ -1486,7 +1526,9 @@ help_view() {
     n              new project in this section
     V              roll to next version  (freezes + writes an LLM summary)
     o              overview + frozen versions  (top = where we are / next up · C-d/C-u scroll · C-s regen)
-    g              accept "next up" suggestions -> sheet (+ optional ticket)
+    g              accept "next up" suggestions from the overview -> your sheet
+                     (these are IDEAS to add, not questions to answer - that is !)
+    !              answer the oldest question waiting on you (any project)
     A              archive the highlighted project
     R              restore an archived project
 
@@ -1540,6 +1582,7 @@ case "${1:-}" in
   --toggle-mode) toggle_mode; exit 0 ;;
   --enter-action) shift; _enter_action "$@"; exit 0 ;;
   --answer) shift; answer_ask "${1:-}" "${2:-}"; exit 0 ;;
+  --answer-next) answer_next; exit 0 ;;
   --show-ask) [ -n "${2:-}" ] && tmux new-window "agent-ask show '$2' | ${PAGER:-less}" 2>/dev/null; exit 0 ;;
   --resume-session) [ -n "${2:-}" ] && tmux new-window "sessions resume '$2'" 2>/dev/null; exit 0 ;;
   --open-file) [ -f "${2:-}" ] && tmux new-window "nvim '$2'" 2>/dev/null; exit 0 ;;
@@ -1594,7 +1637,7 @@ printf '%s' "${NOTES_COCKPIT_MODE:-tasks}" > "$MODEF"
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T,!'
 
 # No argument: the FIRST render reads the section that was just validated above, the same
 # one every `reload($SELF --list)` reads. This was pinned to `personal` while the rail
@@ -1605,11 +1648,12 @@ list_section | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
-  --header='a views · enter open/answer · C-a add · C-t ai · ? keys' \
+  --header='! answer · a views · enter open/answer · C-a add · C-t ai · ? keys' \
   --preview "$SELF --rail" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
   --bind "?:execute($SELF --help-view | less -R)" \
+  --bind "!:execute($SELF --answer-next)+reload($SELF --list)+refresh-preview" \
   --bind 'j:down+transform:[ {1} = head ] && echo down' \
   --bind 'k:up+transform:[ {1} = head ] && echo up' \
   --bind 'up:up+transform:[ {1} = head ] && echo up' \
