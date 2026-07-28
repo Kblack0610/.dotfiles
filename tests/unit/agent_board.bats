@@ -101,6 +101,34 @@ EOF
   assert_equal "$(nrows)" '0'
 }
 
+@test "a board with NO Title column does not emit the whole raw row as the title" {
+  # In awk an unset col[k] is "", and $("") is $0 - so this shape emitted the ENTIRE
+  # RAW ROW as every title. sprint-2026-07-12-time-tangle.md is headed exactly like
+  # this and did precisely that.
+  write_bb <<'EOF'
+## Queue
+| # | Wave | Ticket | Branch | Agent | Status | Sentinel |
+|---|------|--------|--------|-------|--------|----------|
+| 1 | Playable mobile UX | none | feat/x | kb-dev | MERGED (PR #1004) | STATUS: DONE |
+EOF
+  # The whole-row bug is caught by asserting the title contains no pipe, which no
+  # legitimate title does.
+  run field 1 3
+  assert_output 'Playable mobile UX'
+  refute_output --partial '|'
+}
+
+@test "a Title column still wins over the fallback" {
+  # Negative control for the test above: the fallback must not shadow a real Title.
+  write_bb <<'EOF'
+## Queue
+| # | Wave | Ticket | Title | Status |
+|---|------|--------|-------|--------|
+| 1 | some wave | 601 | the real title | queued |
+EOF
+  assert_equal "$(field 1 3)" 'the real title'
+}
+
 # ── stage vocabulary ─────────────────────────────────────────────────────────
 
 @test "in-wave is TERMINAL, not working" {
