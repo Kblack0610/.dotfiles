@@ -524,6 +524,11 @@ _sprint_items() { # $1=canon
   [ -n "$bb" ] || return 0
   awk -F'|' '
     function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+    # A new H2 ends the previous table. Without this, `cols` latched on the FIRST
+    # ticket+status header and every later pipe table in the file was parsed with the
+    # queue`s column indices - so the wave schema`s `## Wave gate` table (Step|Gate|
+    # Status|Evidence) rendered as six phantom "working" items.
+    /^## / { cols=0; next }
     !cols && /\|/ && (tolower($0) ~ /ticket/ && tolower($0) ~ /status/) {
       for(i=2;i<=NF;i++){ h=tolower(trim($i)); if(h!="") col[h]=i }
       cols=1; next
@@ -532,6 +537,11 @@ _sprint_items() { # $1=canon
     cols && /^\|/ {
       tk=trim($(col["ticket"])); st=trim($(col["status"])); ti=trim($(col["title"]))
       sen=(col["sentinel"])?trim($(col["sentinel"])):""
+      # A PROPOSED row has no ticket yet - the wave writes its stub board before the
+      # approval gate, deliberately, so a gate stop leaves an artifact. Fall back to the
+      # row number so those rows still render; skipping them hid the actual proposal and
+      # left the panel showing nothing while a wave waited on an answer.
+      if(tk=="" && ti!="" && col["#"]) tk="~" trim($(col["#"]))
       if(tk=="" || tolower(tk)=="ticket") next
       low=tolower(st" "sen)
       if(low ~ /merged|status: *done|\bdone\b/) stage="merged"
