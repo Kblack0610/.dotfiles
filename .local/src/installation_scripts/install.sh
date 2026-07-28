@@ -39,8 +39,24 @@ detect_os() {
                     os_type="arch"
                     ;;
                 *)
-                    echo -e "${YELLOW}Unknown Linux distribution: $ID${NC}"
-                    os_type="unknown"
+                    # Derivatives (cachyos, garuda, zorin, ...) declare their
+                    # upstream in ID_LIKE. It's a space-separated list ordered
+                    # closest-first, so walk it rather than string-matching.
+                    for like in $ID_LIKE; do
+                        case "$like" in
+                            arch)          os_type="arch";   break ;;
+                            debian|ubuntu) os_type="debian"; break ;;
+                        esac
+                    done
+                    # Diagnostics go to stderr: detect_os is consumed as
+                    # os_type=$(detect_os), so anything on stdout becomes part
+                    # of the return value and breaks the caller's case match.
+                    if [ -n "$os_type" ]; then
+                        echo -e "${YELLOW}Distribution '$ID' resolved via ID_LIKE to: $os_type${NC}" >&2
+                    else
+                        echo -e "${YELLOW}Unknown Linux distribution: $ID${NC}" >&2
+                        os_type="unknown"
+                    fi
                     ;;
             esac
         elif [ -f /etc/debian_version ]; then

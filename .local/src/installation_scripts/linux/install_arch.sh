@@ -28,6 +28,16 @@ install_pacman_package() {
     else
         log_warning "✗ Failed to install $package"
     fi
+    # CONTRACT: best-effort — ALWAYS returns 0, even on failure. install.sh runs
+    # under `set -e` and ~30 call sites here invoke this bare, so propagating a
+    # non-zero status would abort the entire install because one optional package
+    # (dbeaver, a GPU driver, ...) was unavailable.
+    #
+    # Therefore do NOT write `if ! install_pacman_package foo; then <fallback>`
+    # — that branch is unreachable. To act on a failure, verify the result:
+    #     install_pacman_package foo
+    #     command -v foo &>/dev/null || <fallback>
+    return 0
 }
 
 # Helper: Install from AUR
@@ -177,9 +187,12 @@ install_kitty() {
 install_lazygit() {
     log_section "Installing Lazygit"
 
-    # Try official repo first
-    if ! install_pacman_package "lazygit"; then
-        # Fall back to AUR
+    # Try official repo first, then verify — install_pacman_package is
+    # best-effort and never reports failure (see its contract note above).
+    install_pacman_package "lazygit"
+
+    if ! command -v lazygit &>/dev/null; then
+        log_info "lazygit not in official repos — falling back to AUR"
         install_aur_package "lazygit"
     fi
 }
@@ -490,6 +503,21 @@ install_aur_packages() {
     local aur_packages=(
         "spotify"
         "discord"
+        # Remote desktop between machines. Not in the official repos, so it can
+        # only live here. Needs xdg-desktop-portal-hyprland (PACKAGES_GUI_ARCH)
+        # for Wayland screen capture, or it connects to a black screen.
+        "rustdesk-bin"
+        # CLI floor that has no official-repo package. zen-browser-bin is in the
+        # `cachyos` repo on CachyOS but AUR-only on vanilla Arch — paru resolves
+        # either, so listing it here keeps both distros working.
+        "google-cloud-cli"
+        "sesh-bin"
+        "claude-devtools"
+        "zen-browser-bin"
+        # Android tooling
+        "android-sdk-platform-tools"
+        "payload-dumper-go-bin"
+        "universal-android-debloater"
     )
 
     for pkg in "${aur_packages[@]}"; do
@@ -501,7 +529,12 @@ install_aur_packages() {
 setup_profile() {
     log_section "Setting up startup profile"
 
-    local profile_switch="$HOME/.local/scripts/profile-switch"
+    # Resolve profile-switch. It ships in .local/bin, which apply_dotfiles stows
+    # onto PATH — but this function runs in the same shell as that stow, so PATH
+    # may predate it. Fall back to the stowed path before giving up.
+    local profile_switch
+    profile_switch="$(command -v profile-switch 2>/dev/null)" \
+        || profile_switch="$HOME/.local/bin/profile-switch"
     local profiles_dir="$HOME/.config/profile/profiles"
 
     # Check if profile-switch exists
