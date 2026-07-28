@@ -391,6 +391,46 @@ B
   refute_output --partial 'Title'
 }
 
+@test "a VERSION-named board is found, not just a date-named one" {
+  # A wave IS a patch version, so its board is `sprint-v1.10.1.md`. Every consumer finds a
+  # board by globbing `sprint-*.md` and taking the newest by MTIME -- five of them
+  # (_sprint_items, wave-session's blackboard_of, captain-watchdog, delivery-loop,
+  # wave-start). Sorting by NAME anywhere in that set would have made the rename silently
+  # pick the wrong board, and `sprint-2026-07-27.md` sorts after `sprint-v...` in some
+  # collations but before it in others.
+  BOARD_DIR="$HOME/.agent/plans/probe"; mkdir -p "$BOARD_DIR"
+  cat > "$BOARD_DIR/sprint-v1.10.1.md" <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 601 | a versioned wave item | in-progress |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  assert_output --partial 'a versioned wave item'
+}
+
+@test "the NEWEST board wins regardless of how the two are named" {
+  # Mixed old/new naming during the transition: an old date board and a new version board
+  # in the same dir. The one written last is the live one.
+  BOARD_DIR="$HOME/.agent/plans/probe"; mkdir -p "$BOARD_DIR"
+  cat > "$BOARD_DIR/sprint-2026-07-27.md" <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 601 | the old dated wave | in-progress |
+B
+  sleep 1.1   # mtime granularity: ls -1t must be able to tell them apart
+  cat > "$BOARD_DIR/sprint-v1.10.1.md" <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 602 | the current wave | in-progress |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  assert_output --partial 'the current wave'
+  refute_output --partial 'the old dated wave'
+}
+
 # ── view mode ────────────────────────────────────────────────────────────────
 
 @test "read_mode defaults to tasks and toggle_mode cycles all three views" {

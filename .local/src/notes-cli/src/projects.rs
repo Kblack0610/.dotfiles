@@ -545,10 +545,63 @@ pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
 }
 
 /// The reset body of a freshly-rolled (or newly-created) sheet: title, the version line,
-/// and an empty current wave. Kept lean for fast iteration — the convention (waves =
-/// sprints within a version, completed versions in versions/) is documented in the hub.
+/// and an empty current wave, NAMED for the version it will ship as.
+///
+/// A wave IS the patch version: a batch of fixes ships as `x.x.+1`, a release is `x.+1.x`,
+/// a breaking change `+1.x.x`. Seeding the heading with the literal string `new` broke
+/// that at the only point it could have been established — the wave had no id of its own,
+/// so its branch, its blackboard and the note it freezes into all reached for a date
+/// instead, and a frozen `versions/vX.Y.Z.md` could not say which wave it had been. The
+/// version is already on the line above; this makes the wave carry it too, so one id runs
+/// from the sheet through the branch and PR to the frozen note.
 fn sheet_body(title: &str, ver: &str) -> String {
-    format!("{title}\nVersion: {ver}\n\n## Wave: new (current)\n- [ ] \n")
+    format!("{title}\nVersion: {ver}\n\n## Wave: {ver} (current)\n- [ ] \n")
+}
+
+/// Does this sheet already carry a `## Wave` section? (The task-sheet test, mirroring
+/// `project_tasks::current_wave` — kept local so `projects` does not depend on it.)
+fn has_wave(content: &str) -> bool {
+    content.lines().any(|l| {
+        l.strip_prefix("## ")
+            .is_some_and(|r| r.trim_start().starts_with("Wave"))
+    })
+}
+
+/// The sheet to roll, ADOPTING a wave sheet that never got a `Version:` line.
+///
+/// `sheet_path` accepts `README.md` only when it declares a version, so a project whose
+/// sheet grew organically — a `## Wave` the human has been adding tasks to, with no
+/// version line above it — fell through to the legacy branch of `roll`, which writes a
+/// changelog note and leaves the wave in place. That is the worst possible outcome: the
+/// roll reports success, freezes nothing, and the task list silently keeps growing.
+///
+/// So adopt it. The version is not invented: `current_version` finds the highest version
+/// the project has already recorded in its `changelog/`, and the sheet opens at the NEXT
+/// PATCH after it. The distinction matters — a sheet's `Version:` line names the version
+/// currently OPEN, not the last one shipped (`roll` freezes the sheet UNDER that name and
+/// then advances it), so seeding at the changelog's max would re-open a version that has
+/// already gone out. Nothing is adopted that is not already being used as a wave sheet.
+fn sheet_to_roll(dir: &Path, log: &Logger) -> Result<Option<PathBuf>> {
+    if let Some(s) = sheet_path(dir) {
+        return Ok(Some(s));
+    }
+    let readme = dir.join("README.md");
+    let Ok(content) = fs::read_to_string(&readme) else {
+        return Ok(None);
+    };
+    if !has_wave(&content) || sheet_version(&content).is_some() {
+        return Ok(None);
+    }
+    let ver = fmt_version(next_version(current_version(dir), Bump::Patch));
+    // Under the title line, so the sheet matches what `sheet_body` writes.
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let at = usize::from(!lines.is_empty());
+    lines.insert(at, format!("Version: {ver}"));
+    md::write_atomic(&readme, &format!("{}\n", lines.join("\n")))?;
+    let msg = format!("adopted {} at {ver}", readme.display());
+    log.info("projects", &msg);
+    println!("adopted {} onto the sheet model at {ver}", readme.display());
+    Ok(Some(readme))
 }
 
 /// `notes projects --roll <name> [--minor|--major]` — close the current version and open
@@ -557,7 +610,7 @@ fn sheet_body(title: &str, ver: &str) -> String {
 /// `## Wave: new`. The sheet's `Version:` line stays the single source of truth.
 pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     let dir = project_dir(p, name)?;
-    let Some(sheet) = sheet_path(&dir) else {
+    let Some(sheet) = sheet_to_roll(&dir, log)? else {
         // No sheet (a legacy / changelog-only project): advance by writing the next version
         // note, so the cockpit's roll shortcut still does something sensible everywhere.
         let ver = fmt_version(next_version(current_version(&dir), level));
@@ -938,9 +991,97 @@ _(nothing yet)_
     fn sheet_body_seeds_a_versioned_wave_list() {
         let b = sheet_body("# My App", "v0.0.1");
         assert!(b.starts_with("# My App\nVersion: v0.0.1"));
-        assert!(b.contains("## Wave: new (current)"));
         assert!(b.contains("- [ ]"));
         // round-trips: the version we seed is the version the sheet reports
         assert_eq!(sheet_version(&b), Some((0, 0, 1)));
+    }
+
+    #[test]
+    fn the_wave_is_named_for_the_version_it_ships_as() {
+        // A wave IS the patch version. Seeding the heading with the literal `new` left the
+        // batch with no id of its own, so its branch, blackboard and frozen note all fell
+        // back to a date and nothing could say which wave a `versions/vX.Y.Z.md` had been.
+        let b = sheet_body("# My App", "v1.10.1");
+        assert!(b.contains("## Wave: v1.10.1 (current)"));
+        assert!(!b.contains("## Wave: new"));
+    }
+
+    #[test]
+    fn a_wave_sheet_with_no_version_line_is_adopted_at_the_next_open_version() {
+        // The organically-grown sheet: a `## Wave` the human has been adding to, no `Version:`
+        // line, releases recorded in `changelog/`. Before adopting, `roll` fell through to
+        // the legacy branch — it reported success, froze nothing, and left the wave in
+        // place while the sheet kept growing.
+        let tmp = std::env::temp_dir().join(format!("notes-adopt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("changelog")).unwrap();
+        fs::write(tmp.join("changelog/v1.9.0.md"), "").unwrap();
+        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+        let sheet = "# alpha\n\n## Wave: new (current)\n- [ ] a bug\n";
+        fs::write(tmp.join("README.md"), sheet).unwrap();
+
+        assert!(sheet_path(&tmp).is_none(), "no Version: line yet");
+        let log = Logger::new(tmp.join("log"), false);
+        let got = sheet_to_roll(&tmp, &log).unwrap();
+        assert_eq!(got, Some(tmp.join("README.md")));
+
+        let after = fs::read_to_string(tmp.join("README.md")).unwrap();
+        // The NEXT patch after the highest shipped release, not that release itself: a
+        // sheet's `Version:` names the version still open. Seeding at v1.10.0 would
+        // re-open a version already sitting in changelog/, and the next roll would freeze
+        // a second, different v1.10.0.
+        assert_eq!(sheet_version(&after), Some((1, 10, 1)));
+        assert!(after.starts_with("# alpha\nVersion: v1.10.1\n"));
+        // the human's task survives adoption
+        assert!(after.contains("- [ ] a bug"));
+        // and it is now a real sheet, so the next roll freezes it
+        assert!(sheet_path(&tmp).is_some());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn adoption_leaves_alone_anything_that_is_not_a_wave_sheet() {
+        // NEGATIVE CONTROL. A prose brief with no `## Wave` must keep falling through to
+        // the legacy version-note path; adopting it would put a version line on a document
+        // that has no task list to freeze.
+        let tmp = std::env::temp_dir().join(format!("notes-adopt-neg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let brief = "# a brief\n\nsome prose, no task list.\n";
+        fs::write(tmp.join("README.md"), brief).unwrap();
+
+        let log = Logger::new(tmp.join("log"), false);
+        assert_eq!(sheet_to_roll(&tmp, &log).unwrap(), None);
+        let after = fs::read_to_string(tmp.join("README.md")).unwrap();
+        assert!(!after.contains("Version:"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn adoption_never_overwrites_a_version_the_sheet_already_declares() {
+        let tmp = std::env::temp_dir().join(format!("notes-adopt-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let sheet = "# app\nVersion: v0.4.2\n\n## Wave: v0.4.2\n- [ ] x\n";
+        fs::write(tmp.join("README.md"), sheet).unwrap();
+
+        let log = Logger::new(tmp.join("log"), false);
+        let readme = tmp.join("README.md");
+        assert_eq!(sheet_to_roll(&tmp, &log).unwrap(), Some(readme));
+        let after = fs::read_to_string(tmp.join("README.md")).unwrap();
+        assert_eq!(sheet_version(&after), Some((0, 4, 2)));
+        assert_eq!(after.matches("Version:").count(), 1);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn has_wave_matches_the_heading_the_task_cli_resolves() {
+        assert!(has_wave("# a\n\n## Wave: v1.0.1 (current)\n"));
+        assert!(has_wave("# a\n\n## Wave\n"));
+        // A PREFIX match, deliberately: `project_tasks::current_wave` resolves the heading
+        // the same way, so anything it would treat as the wave section must be adoptable.
+        assert!(has_wave("# a\n\n## Waves\n"));
+        assert!(!has_wave("# a\n\n### Wave: nested\n")); // H3 is not the wave section
+        assert!(!has_wave("# a\n\nno headings here\n"));
     }
 }

@@ -31,11 +31,30 @@ dispatched_verbs() {
     | grep -oE '^  --[a-z-]+\)' | tr -d ' )' | sort -u
 }
 
+# Dispatch arms carrying a `# headless` marker: entry points for callers outside the UI.
+headless_verbs() {
+  sed -n '/^case "\${1:-}" in$/,/^esac$/p' "$COCKPIT" \
+    | grep -E '^  --[a-z-]+\).*# *headless' | grep -oE '^  --[a-z-]+\)' | tr -d ' )' | sort -u
+}
+
 @test "the lint can actually see both lists" {
   # Guards the lint itself: if the greps stop matching (someone reformats the case block),
   # the two tests below would pass vacuously.
   [ "$(invoked_verbs | wc -l)" -ge 10 ]
   [ "$(dispatched_verbs | wc -l)" -ge 10 ]
+}
+
+@test "the headless exemption is narrow, and cannot swallow the whole dispatch table" {
+  # NEGATIVE CONTROL on the escape hatch itself. If `# headless` ever matched loosely --
+  # or someone pasted it onto every arm -- the orphan lint above would go permanently
+  # green and stop catching dropped binds, which is the only thing it exists to catch.
+  local h d
+  h="$(headless_verbs | wc -l)"; d="$(dispatched_verbs | wc -l)"
+  [ "$h" -ge 1 ] || fail "the headless marker matches nothing -- the lint is now vacuous"
+  [ "$h" -lt "$d" ] || fail "every dispatch arm claims to be headless ($h of $d)"
+  # and it must name a real arm
+  comm -12 <(headless_verbs) <(dispatched_verbs) | grep -q . \
+    || fail "headless_verbs names something that is not dispatched"
 }
 
 @test "every verb invoked from a bind has a dispatch arm" {
@@ -51,9 +70,13 @@ dispatched_verbs() {
   fi
 }
 
-@test "every dispatch arm is reachable from some bind" {
+@test "every dispatch arm is reachable from some bind, or is declared headless" {
+  # A few verbs exist for callers OUTSIDE the UI -- a merged wave rolling its own patch
+  # version, for instance -- so they have no key. They are marked `# headless` on the
+  # dispatch line itself rather than listed here, so the exemption is taken at the call
+  # site and this list cannot drift out of date behind someone's back.
   local orphan
-  orphan="$(comm -13 <(invoked_verbs) <(dispatched_verbs))"
+  orphan="$(comm -13 <(invoked_verbs) <(dispatched_verbs) | comm -23 - <(headless_verbs))"
   if [ -n "$orphan" ]; then
     {
       echo "These dispatch arms are never invoked -- dead code, or a bind that was dropped:"
