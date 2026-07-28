@@ -64,6 +64,26 @@ sandbox_init() {
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"
   chmod +x "$SANDBOX/bin/"*
 
+  # The REPO's own bins, on PATH. Not stubs -- the real scripts, which is the point: the
+  # cockpit shells out to `agent-ask` by name, and its whole state lives under $HOME
+  # (`ASKS_ROOT="$HOME/.agent/asks"`), which is already sandboxed. There is nothing to fake.
+  #
+# This existed as a FALSE PASS for as long as no test needed it. A developer's own
+  # `~/.local/bin` is on PATH, so `agent-ask` resolved on a laptop and resolved NOWHERE on
+  # a clean runner -- the bridge's question rows simply vanished in CI while every local
+  # run stayed green. cockpit_bridge.bats opens with a guard against that coming back.
+  #
+  # COPIED, never symlinked. A symlink here points back into the working tree, and a test
+  # that overrides one of these with `cat > "$SANDBOX/bin/<x>"` (wave_start.bats does,
+  # legitimately) writes straight THROUGH the link and truncates the real script in the
+  # repo. That is a test suite silently editing its own subject.
+  local b
+  for b in agent-ask; do
+    [ -f "$REPO_ROOT/.local/bin/$b" ] || continue
+    cp "$REPO_ROOT/.local/bin/$b" "$SANDBOX/bin/$b"
+    chmod +x "$SANDBOX/bin/$b"
+  done
+
   # Fixture data the `notes` stub reads. Seeded by copy, never by running the real tool.
   export NOTES_FIXTURE="$SANDBOX/fixture"
   if [ -d "$TESTS_DIR/fixtures/$fixture" ]; then

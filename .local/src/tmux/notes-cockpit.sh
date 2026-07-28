@@ -26,6 +26,7 @@
 #
 # Modes: (no args)=UI · --list [section] · --rail · --next/prev-section · --add
 #        --move · --jump · --new-project · --archive-project · --restore-project
+#        --roll-now <profile> <project> [patch|minor|major]  (headless; no key binding)
 
 set -uo pipefail
 SELF="$(realpath "$0")"
@@ -194,14 +195,19 @@ _header() { printf 'head\t\t\t\t\t\t%s── %s ──%s\n' "$C_HEAD" "$1" "$C_O
 # A project sub-header: name, its version (dim cyan), then its `notes projects` status
 # trailing dim (like the `## Current Projects` status in the vault). Status can be
 # long/multi-line — collapse and truncate so it fits one row.
-_subheader() { # $1=name $2=status $3=version
-  local name="$1" status="${2:-}" version="${3:-}" short ver=""
+#
+# `badge` is an optional pre-coloured tally (the bridge's per-project counts). It sits
+# between the version and the status rather than at the end, because the status is
+# truncated to fit one row and anything after it can be the part that falls off.
+_subheader() { # $1=name $2=status $3=version [$4=badge]
+  local name="$1" status="${2:-}" version="${3:-}" badge="${4:-}" short ver=""
   [ -n "$version" ] && ver=" ${C_BOX}${version}${C_OFF}"
+  [ -n "$badge" ] && badge="   ${badge}"
   if [ -n "$status" ]; then
     short="$(printf '%s' "$status" | tr '\n\t' '  ' | sed -E 's/^_[0-9-]+_ *(—|-) *//; s/  +/ /g' | cut -c1-64)"
-    printf 'head\t\t\t\t\t\t%s  %s%s%s   %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver" "$C_DIM" "$short" "$C_OFF"
+    printf 'head\t\t\t\t\t\t%s  %s%s%s%s   %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver" "$badge" "$C_DIM" "$short" "$C_OFF"
   else
-    printf 'head\t\t\t\t\t\t%s  %s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver"
+    printf 'head\t\t\t\t\t\t%s  %s%s%s%s\n' "$C_PROJ" "$name" "$C_OFF" "$ver" "$badge"
   fi
 }
 
@@ -597,16 +603,43 @@ _stage_gc() { # $1=stage
   esac
 }
 
-# The bridge: per project, the WORK ITEMS agents are moving (sprint rows + checkpoint
-# progress) followed by open QUESTIONS. Top line = the status header (where we are).
-_bridge_view() { # $1=profile
-  local prof="$1" name st ver lc canon
-  local body="" cw=0 cn=0 cr=0 cb=0 cm=0
+# The profile order the bridge renders in: the one you are standing on first, then the
+# rest. An `$active` that is not a profile at all (the `all` pseudo-section) falls through
+# to "every profile, declared order" rather than to nothing.
+_bridge_profiles() { # $1=active
+  local active="${1:-}"
+  [ -n "$active" ] || { profiles; return; }
+  profiles | grep -xF -- "$active"
+  profiles | grep -vxF -- "$active"
+}
+
+# The bridge: per project, the open QUESTIONS agents are waiting on, then the WORK ITEMS
+# they are moving (sprint rows + checkpoint progress). Top line = the status header.
+#
+# CROSS-PROFILE, and the only view that is. Sections are profiles, so a per-section bridge
+# showed `personal`'s three questions while a wave running on a project in another
+# section sat blocked on a gate - invisible, with nothing on screen to say it existed.
+# The sidebar badge below has always counted `agent-ask list --all`, so the two surfaces
+# openly disagreed about how many questions were outstanding. A bridge is only worth having
+# if it is ONE place: if an agent is waiting on you anywhere, you see it without first
+# guessing which section to go stand in.
+#
+# Ordering carries the same intent. A project with a pending question sorts above one
+# without, and inside a project the questions come before the work items — so whatever is
+# waiting on you is the first row under the first header, never something you scroll to.
+_bridge_view() { # $1=active profile
+  local active="$1" prof name st ver lc canon label
+  local hot="" cold="" cw=0 cn=0 cr=0 cb=0 cm=0
+  while IFS= read -r prof; do
+  [ -z "$prof" ] && continue
   while IFS=$'\t' read -r name _sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
-    local pbody="" sec="$prof/$lc"
+    # A project from another section carries its profile, so once everything shares one
+    # list a row's origin is still unambiguous.
+    label="$name"; [ "$prof" = "$active" ] || label="$prof/$name"
+    local items="" asks="" sec="$prof/$lc" pw=0 pn=0
     # --- sprint work items ---
     local tk stage title pr sen cf prog glyph col prbadge progd ssent
     while IFS=$'\037' read -r tk stage title pr sen; do
@@ -615,12 +648,17 @@ _bridge_view() { # $1=profile
       # the checkpoint's terminal sentinel is ground truth - it overrides the Status cell
       ssent="$(_ckpt_sentinel "$cf")"
       case "$ssent" in DONE) stage=merged ;; FAILED) stage=error ;; PARTIAL) stage=blocked ;; esac
-      case "$stage" in working) cw=$((cw+1));; review) cr=$((cr+1));; blocked|error) cb=$((cb+1));; merged) cm=$((cm+1));; esac
+      case "$stage" in
+        working) cw=$((cw+1)); pw=$((pw+1)) ;;
+        review) cr=$((cr+1)) ;;
+        blocked|error) cb=$((cb+1)) ;;
+        merged) cm=$((cm+1)) ;;
+      esac
       IFS=$'\t' read -r glyph col < <(_stage_gc "$stage")
       prbadge=""; [ -n "$pr" ] && prbadge="  ${C_SEL}PR#${pr}${C_OFF}"
       progd=""; [ -n "$prog" ] && progd="  ${C_DIM}${prog}${C_OFF}"
       # wire: item <profile> <ckptfile> <pr> <canon> <sec> <DISPLAY>
-      pbody="${pbody}$(printf 'item\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s  %s[%s]%s%s' \
+      items="${items}$(printf 'item\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s  %s[%s]%s%s' \
         "$prof" "$cf" "$pr" "$canon" "$sec" "$col" "$glyph" "$C_OFF" "$title" "$prbadge" "$C_DIM" "$tk" "$C_OFF" "$progd")"$'\n'
     done < <(_sprint_items "$canon")
     # --- open questions (needs-you) ---
@@ -628,16 +666,27 @@ _bridge_view() { # $1=profile
     # US-delimited (tr) so an empty profile/task column does not collapse under `read`
     while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task; do
       [ -z "$id" ] && continue
-      cn=$((cn+1))
+      cn=$((cn+1)); pn=$((pn+1))
       if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
       o=""; [ -n "$opt" ] && o="  ${C_DIM}(${opt})${C_OFF}"
       tctx=""; [ -n "$task" ] && tctx="  ${C_DIM}task: ${task}${C_OFF}"
       # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
-      pbody="${pbody}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
+      asks="${asks}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
         "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$q" "$tctx" "$o")"$'\n'
     done < <(agent-ask list "$canon" --pending 2>/dev/null | tr '\t' '\037')
-    [ -n "$pbody" ] && body="${body}$(_subheader "$name" "$st" "$ver")"$'\n'"${pbody}"
+    if [ -n "$asks" ] || [ -n "$items" ]; then
+      # Per-project tally, same vocabulary as the global header so the two read as one
+      # scale. The version beside it IS the wave's version: a wave ships as the sheet's
+      # patch, so `notes projects`' version column names the batch in flight.
+      local badge=""
+      [ "$pw" -gt 0 ] && badge="${C_INP}~${pw} working${C_OFF}"
+      [ "$pn" -gt 0 ] && badge="${badge:+$badge  }${C_BOX}?${pn} need-you${C_OFF}"
+      local group; group="$(_subheader "$label" "$st" "$ver" "$badge")"$'\n'"${asks}${items}"
+      if [ "$pn" -gt 0 ]; then hot="${hot}${group}"; else cold="${cold}${group}"; fi
+    fi
   done < <(notes --profile "$prof" projects 2>/dev/null)
+  done < <(_bridge_profiles "$active")
+  local body="${hot}${cold}"
   # status header — always-on "where we are"
   printf 'head\t\t\t\t\t\t%s  where we are:%s  %s~%d working%s  %s?%d need-you%s  %s>%d review%s  %sx%d blocked%s  %s*%d done%s\n' \
     "$C_HEAD" "$C_OFF" "$C_INP" "$cw" "$C_OFF" "$C_BOX" "$cn" "$C_OFF" "$C_SEL" "$cr" "$C_OFF" "$C_INP" "$cb" "$C_OFF" "$C_DIM" "$cm" "$C_OFF"
@@ -966,7 +1015,7 @@ archive_project() { # $1 = section of the highlighted row (<profile>/<project>)
 # freeze, generate an LLM summary block on the just-frozen note (best-effort — a gateway
 # outage or missing config never fails the roll).
 roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
-  local section="${1:-}" profile name cur lvl flag out frozen
+  local section="${1:-}" profile name cur lvl flag
   case "$section" in
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) echo "not on a project row"; sleep 1; return 0 ;;
@@ -979,10 +1028,26 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
     M) flag='--major' ;;
     *) return 0 ;;
   esac
+  # The pause is the interactive half: this runs in a popup that closes on return, so a
+  # failure the human never gets to read is a failure they never learn about.
+  roll_do "$profile" "$name" "$flag" || sleep 2
+}
+
+# The roll itself plus everything that has to happen after it: the agent changelog, then
+# the LLM summaries. NO PROMPT — the bump level arrives as an argument.
+#
+# Extracted out of roll_project so a headless caller writes the same artifacts a human
+# pressing `V` does. A wave IS a patch version, so a merged wave rolls itself; but the only
+# way into this code used to be through roll_project's `read -p`, which a headless run
+# cannot answer. The wave would have frozen a version note with no agent changelog and no
+# summary inside it — a release record that recorded nothing.
+roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
+  local profile="$1" name="$2" flag="${3:-}" out frozen
+  # shellcheck disable=SC2086  # $flag is one optional word, deliberately unquoted
   out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
-    || { echo "$out"; echo "roll failed"; sleep 2; return 0; }
+    || { echo "$out"; echo "roll failed"; return 1; }
   echo "$out"
-  # summarize the note that was just frozen (path is in the `(froze <path>)` line)
+  # the note that was just frozen (path is in the `(froze <path>)` line)
   frozen="$(sed -n 's/.*(froze \(.*\))$/\1/p' <<<"$out")"
 
   # The AGENT CHANGELOG: what the agents did for the version we just froze, appended to
@@ -1019,6 +1084,21 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
     echo "refreshing overview ..."
     notes-version-summary --overview "$profile" "$name" || true
   fi
+}
+
+# `--roll-now <profile> <project> [patch|minor|major]` — the headless entry a merged wave
+# calls. Defaults to PATCH, because that is what a wave is; a minor (a release) or a major
+# stays a human act through `V`, and passing anything else is rejected rather than guessed.
+roll_now() { # $1=profile $2=project [$3=level]
+  local profile="${1:-}" name="${2:-}" level="${3:-patch}" flag
+  [ -n "$profile" ] && [ -n "$name" ] || { echo "usage: --roll-now <profile> <project> [patch|minor|major]" >&2; return 2; }
+  case "$level" in
+    patch) flag='' ;;
+    minor) flag='--minor' ;;
+    major) flag='--major' ;;
+    *) echo "roll-now: unknown level '$level' (patch|minor|major)" >&2; return 2 ;;
+  esac
+  roll_do "$profile" "$name" "$flag"
 }
 
 # Browse a project's release notes — per-version `.md` from BOTH `versions/` (sheet-model
@@ -1249,6 +1329,7 @@ case "${1:-}" in
   --wave-log) [ -n "${2:-}" ] && tmux new-window "tail -f '$HOME/.local/state/agentctl/wave/$2.log'" 2>/dev/null; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
+  --roll-now) roll_now "${2:-}" "${3:-}" "${4:-patch}"; exit $? ;;  # headless: a merged wave rolls its own patch
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
   --accept-next) accept_next "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
