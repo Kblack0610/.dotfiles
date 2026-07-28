@@ -312,3 +312,42 @@ _boot_section() { # <stored value> -> what the launch block settles on
 @test "no stored section at all opens on personal" {
   assert_equal "$(_boot_section '')" 'personal'
 }
+
+# ── the project header's status ──────────────────────────────────────────────
+
+@test "--list puts the LIVE feed on a project header, not the stale STATUS prose" {
+  # The tasks view passed the STATUS column straight through: prose an LLM writes and
+  # nothing refreshes. The bridge was fixed to count the AUTO block instead; this is the
+  # same fix on the view you actually spend the day in.
+  local dir="$NOTES_FIXTURE/cockpit-proj"; mkdir -p "$dir"
+  cat > "$dir/summary.md" <<'S'
+<!-- AUTO:START -->
+**shipped `cockpit-v1.10.0`** (2026-07-18)
+
+**In flight** (open PRs)
+- #1093 docs: a doc
+<!-- AUTO:END -->
+S
+  printf 'Cockpit\t%s\t_2026-06-30_ - v1.8.15 live\tv0.3\n' "$dir/summary.md" \
+    > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'shipped v1.10.0, 1 PR'
+  refute_output --partial 'v1.8.15 live'
+}
+
+@test "--list keeps the STATUS prose on a project that was never lab-synced" {
+  # No AUTO block anywhere -> the old line, not a blank row.
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'shipping the rail'
+}
+
+@test "--list with no section renders the one you are standing on" {
+  # This is the path the launch render now takes; it used to be pinned to `personal`.
+  "$COCKPIT" --next-section          # personal -> work
+  run bash -c '"$COCKPIT" --list | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'Playground'
+  refute_output --partial 'Cockpit'
+}

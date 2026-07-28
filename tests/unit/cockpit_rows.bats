@@ -573,3 +573,73 @@ S
   run bash -c "$(declare -f _ask_gist); _ask_gist 'Some findings here. Given all of the above and the fact that nothing else was reachable, should we now go ahead and create every one of the proposed tickets and cut the branch?' | wc -c"
   assert_output '88'   # 85 chars + the ellipsis, no trailing newline
 }
+
+# ── _status_gist: the ONE thing a project header says, in every view ──────────
+#
+# The feed-over-prose fix landed in the bridge only, inlined there. The tasks list — the
+# view you are looking at most of the time — kept passing the raw STATUS column straight
+# to _subheader, so it showed the stale prose, or nothing at all for the many projects
+# that have no STATUS line. These pin the precedence to one helper all three views call.
+
+@test "_status_gist prefers the live feed over the STATUS prose" {
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**shipped `alpha-v1.10.0`** (2026-07-18)
+
+**In flight** (open PRs)
+- #1093 docs: a doc
+<!-- AUTO:END -->
+S
+  run _status_gist "$SUMMARY" "_2026-06-30_ - v1.8.15 live"
+  assert_output 'shipped v1.10.0, 1 PR'
+}
+
+@test "_status_gist falls back to STATUS when a project was never lab-synced" {
+  mk_summary <<'S'
+# a project
+just prose.
+S
+  run _status_gist "$SUMMARY" "steady"
+  assert_output 'steady'
+}
+
+@test "_status_gist is empty when there is neither a feed nor a status" {
+  run _status_gist "$BATS_TEST_TMPDIR/nope.md" ""
+  assert_success
+  assert_output ''
+}
+
+@test "_feed_gist reads the sibling summary.md when handed a project SHEET" {
+  # `notes projects` hands back README.md (the sheet, where the tasks live) for a
+  # sheet-model project, while lab-sync writes the feed into summary.md beside it. Reading
+  # only the path we were given blanked the status of every such project — the feed was
+  # one file away in the same directory the whole time.
+  local dir="$BATS_TEST_TMPDIR/proj"; mkdir -p "$dir"
+  printf '# a project\nVersion: v0.0.2\n' > "$dir/README.md"
+  cat > "$dir/summary.md" <<'S'
+<!-- AUTO:START -->
+**shipped `cockpit-v0.0.1`** (2026-07-18)
+
+**In progress** (tracker):
+- Area: a ticket
+<!-- AUTO:END -->
+S
+  run _feed_gist "$dir/README.md"
+  assert_output 'shipped v0.0.1, 1 open'
+}
+
+@test "a sheet with its OWN feed does not get overwritten by a sibling summary.md" {
+  local dir="$BATS_TEST_TMPDIR/proj2"; mkdir -p "$dir"
+  cat > "$dir/README.md" <<'S'
+<!-- AUTO:START -->
+**shipped `cockpit-v9.9.9`** (2026-07-18)
+<!-- AUTO:END -->
+S
+  cat > "$dir/summary.md" <<'S'
+<!-- AUTO:START -->
+**shipped `cockpit-v0.0.1`** (2026-07-18)
+<!-- AUTO:END -->
+S
+  run _feed_gist "$dir/README.md"
+  assert_output 'shipped v9.9.9'
+}

@@ -215,7 +215,7 @@ _subheader() { # $1=name $2=status $3=version [$4=badge]
 # (non-project) lane AND each empty project get a selectable "(no tasks — C-a to add)"
 # placeholder, so an empty profile (e.g. a fresh job) still has a row to add/move onto.
 _profile_view() { # $1=rows $2=profile
-  local rows="$1" prof="$2" n st lc body untagged
+  local rows="$1" prof="$2" n sum st ver lc body untagged
   untagged="$(_flat "$rows" "$prof")"
   if [ -n "$untagged" ]; then
     printf '%s\n' "$untagged"
@@ -223,10 +223,10 @@ _profile_view() { # $1=rows $2=profile
     printf 'add\t%s\t\t\t\t%s\t%s  (no tasks — C-a to add)%s\n' \
       "$prof" "$prof" "$C_DIM" "$C_OFF"
   fi
-  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n _summary st ver; do
+  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n sum st ver; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
-    _subheader "$n" "$st" "$ver"
+    _subheader "$n" "$(_status_gist "$sum" "$st")" "$ver"
     # project tasks come from the SHEET's `## Wave` (ptask), keyed for done/start/rm on it
     body="$(notes --profile "$prof" ptask "$n" list 2>/dev/null \
       | while IFS=$'\t' read -r path line key text; do
@@ -473,7 +473,7 @@ _profile_agents_view() { # $1=profile
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
-    _subheader "$name" "$st" "$ver"
+    _subheader "$name" "$(_status_gist "$sum" "$st")" "$ver"
     body="$(_project_agents "$prof" "$lc" "$canon" "$sum" "$rcanon" "$rdetail")"
     if [ -n "$body" ]; then printf '%s\n' "$body"
     else printf 'hint\t\t\t\t\t\t%s  - idle%s\n' "$C_DIM" "$C_OFF"; fi
@@ -624,9 +624,17 @@ _stage_gc() { # $1=stage
 # Counted, not quoted, because this is one row: how many commits are waiting to ship, how
 # many tickets are in development, how many PRs are open. The detail is one `enter` away.
 _feed_gist() { # $1=summary path -> "shipped v1.10.0, 6 to ship, 18 open, 1 PR"
-  local sum="${1:-}" auto tag ship tick prs out=""
+  local sum="${1:-}" auto tag ship tick prs sib out=""
   [ -f "$sum" ] || return 0
   auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$sum" 2>/dev/null)"
+  # The sheet model splits the two files: `notes projects` hands back the project's SHEET
+  # (`README.md`, where the tasks live), while lab-sync writes the feed into `summary.md`
+  # beside it. Without this every sheet-model project renders a blank status while its own
+  # feed sits one file away in the same directory.
+  if [ -z "$auto" ] && [ "${sum##*/}" != summary.md ]; then
+    sib="${sum%/*}/summary.md"
+    [ -f "$sib" ] && auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$sib" 2>/dev/null)"
+  fi
   [ -n "$auto" ] || return 0
 
   tag="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `\([^`]*\)`\*\*.*/\1/p' | head -1)"
@@ -648,6 +656,18 @@ _feed_gist() { # $1=summary path -> "shipped v1.10.0, 6 to ship, 18 open, 1 PR"
   [ "${tick:-0}" -gt 0 ] && out="${out:+$out, }${tick} open"
   [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR$([ "$prs" -gt 1 ] && printf s)"
   printf '%s' "$out"
+}
+
+# The trailing status on a project header, in EVERY view. The live feed beats the prose,
+# and the fallback is what keeps a never-lab-synced project from going blank.
+#
+# This lived inline in the bridge, so the fix landed on exactly one of the three views: the
+# tasks list — the one you are looking at most of the time — still carried the stale STATUS
+# block, or nothing at all for the many projects that have no STATUS line. One helper, so
+# a project row says the same thing wherever you are standing.
+_status_gist() { # $1=sheet/summary path $2=STATUS prose
+  local g; g="$(_feed_gist "${1:-}")"
+  printf '%s' "${g:-${2:-}}"
 }
 
 _ask_gist() { # $1=question -> one short line
@@ -740,10 +760,7 @@ _bridge_view() { # $1=active profile
       local badge=""
       [ "$pw" -gt 0 ] && badge="${C_INP}~${pw} working${C_OFF}"
       [ "$pn" -gt 0 ] && badge="${badge:+$badge  }${C_BOX}?${pn} need-you${C_OFF}"
-      # The live feed beats the prose. Fall back to the STATUS line only when a project has
-      # no AUTO block at all (never lab-synced), so nothing regresses to a blank row.
-      local trail; trail="$(_feed_gist "$sum")"; [ -n "$trail" ] || trail="$st"
-      local group; group="$(_subheader "$label" "$trail" "$ver" "$badge")"$'\n'"${asks}${items}"
+      local group; group="$(_subheader "$label" "$(_status_gist "$sum" "$st")" "$ver" "$badge")"$'\n'"${asks}${items}"
       if [ "$pn" -gt 0 ]; then hot="${hot}${group}"; else cold="${cold}${group}"; fi
     fi
   done < <(notes --profile "$prof" projects 2>/dev/null)
@@ -1440,7 +1457,12 @@ printf '%s' "${NOTES_COCKPIT_MODE:-tasks}" > "$MODEF"
 # `?` is intentionally NOT modal — it opens the help pager.
 MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T'
 
-list_section personal | fzf \
+# No argument: the FIRST render reads the section that was just validated above, the same
+# one every `reload($SELF --list)` reads. This was pinned to `personal` while the rail
+# preview (and every reload after the first keypress) followed $STATE — so relaunching on
+# any other section opened with the sidebar pointing at `bnb` and the body listing
+# `personal`. The two surfaces openly disagreed about where you were standing.
+list_section | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
