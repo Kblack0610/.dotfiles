@@ -93,10 +93,16 @@ pub fn list(p: &Profile) -> Result<()> {
     Ok(())
 }
 
-/// The project's current version as a display string (`"v0.0.1"`), or "" when it has none.
+/// The project's OPEN version as a display string (`"v0.0.1"`), or "" when it has none.
 /// `dir` is the project directory (the summary's parent).
+///
+/// Open, not shipped — the cockpit puts this beside the project name, and what belongs
+/// there is the batch in flight. A sheet-model project has always shown that (its
+/// `Version:` line names the open version while `versions/` holds the frozen ones); a
+/// legacy changelog-only project used to show its last RELEASE in the same slot, so one
+/// column meant two different things depending on which model a project happened to be on.
 fn version_str(dir: &Path) -> String {
-    current_version(dir).map(fmt_version).unwrap_or_default()
+    open_version(dir).map(fmt_version).unwrap_or_default()
 }
 
 /// First real line of the summary's `<!-- STATUS:START --> … <!-- STATUS:END -->`
@@ -479,6 +485,28 @@ fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
     best
 }
 
+/// The version currently OPEN — the one being worked on, which is what a wave ships as.
+/// Distinct from `current_version`, which is the highest version RECORDED.
+///
+/// For a sheet-model project those coincide: the `Version:` line names the open version,
+/// and `roll` freezes the sheet under that name before advancing it. For a legacy project
+/// that records releases as `changelog/vX.Y.Z.md` notes and carries no `Version:` line they
+/// do NOT: the highest note is the last version SHIPPED, so the open one is the next patch.
+///
+/// Conflating them is not cosmetic. A wave takes its entire identity from this number —
+/// branch, PR, blackboard, and the note it freezes on merge. Reading back a shipped version
+/// means a wave names itself after a release that is already tagged and in the CHANGELOG,
+/// then freezes a second, different note under that same name.
+fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
+    if let Some(sheet) = sheet_path(dir) {
+        if let Some(v) = fs::read_to_string(&sheet).ok().and_then(|c| sheet_version(&c)) {
+            return Some(v);
+        }
+    }
+    // No `Version:` line: everything findable has already gone out, so open the next patch.
+    Some(next_version(current_version(dir), Bump::Patch))
+}
+
 /// The next version after `cur` (or the v0.0.1 seed when the project has none).
 fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
     match cur {
@@ -592,7 +620,9 @@ fn sheet_to_roll(dir: &Path, log: &Logger) -> Result<Option<PathBuf>> {
     if !has_wave(&content) || sheet_version(&content).is_some() {
         return Ok(None);
     }
-    let ver = fmt_version(next_version(current_version(dir), Bump::Patch));
+    // The SAME number `--version-of` reports, so what the wave read at scope-out is what
+    // lands on the sheet when it rolls. Deriving it twice is how the two drift apart.
+    let ver = fmt_version(open_version(dir).unwrap_or((0, 0, 1)));
     // Under the title line, so the sheet matches what `sheet_body` writes.
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let at = usize::from(!lines.is_empty());
@@ -791,11 +821,12 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `notes projects --version-of <name>` — print the project's current version (empty
-/// when it has none yet), for pickers/status lines.
+/// `notes projects --version-of <name>` — print the version currently OPEN: what the
+/// project is working towards, and what a wave started now will ship as. NOT the last
+/// version shipped.
 pub fn show_version(p: &Profile, name: &str) -> Result<()> {
     let dir = project_dir(p, name)?;
-    if let Some(v) = current_version(&dir) {
+    if let Some(v) = open_version(&dir) {
         println!("{}", fmt_version(v));
     }
     Ok(())
@@ -1071,6 +1102,72 @@ _(nothing yet)_
         let after = fs::read_to_string(tmp.join("README.md")).unwrap();
         assert_eq!(sheet_version(&after), Some((0, 4, 2)));
         assert_eq!(after.matches("Version:").count(), 1);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn open_version_is_the_next_patch_when_every_recorded_version_has_shipped() {
+        // The live shape this was found in: releases recorded as `changelog/vX.Y.Z.md`, no
+        // `Version:` line, and v1.10.0 already TAGGED and in the app's CHANGELOG. A wave
+        // reading that back would name its branch, board and frozen note after a release
+        // that has already gone out, then freeze a second, different v1.10.0.
+        let tmp = std::env::temp_dir().join(format!("notes-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("changelog")).unwrap();
+        fs::write(tmp.join("changelog/v1.9.0.md"), "").unwrap();
+        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+
+        // the highest RECORDED version is still the shipped one - that gap is the point
+        assert_eq!(current_version(&tmp), Some((1, 10, 0)));
+        // the OPEN one, which is what a wave ships as, is the next patch
+        assert_eq!(open_version(&tmp), Some((1, 10, 1)));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn open_version_trusts_a_sheet_that_declares_one() {
+        // NEGATIVE CONTROL. A sheet-model project's `Version:` line ALREADY names the open
+        // version - `roll` freezes the sheet under it, then advances. Bumping here as well
+        // would skip a version on every project not on the legacy model.
+        let tmp = std::env::temp_dir().join(format!("notes-open-sheet-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("versions")).unwrap();
+        fs::write(tmp.join("versions/v0.0.1.md"), "").unwrap();
+        let sheet = "# app\nVersion: v0.0.2\n\n## Wave: v0.0.2 (current)\n- [ ] x\n";
+        fs::write(tmp.join("README.md"), sheet).unwrap();
+
+        assert_eq!(open_version(&tmp), Some((0, 0, 2)));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_project_with_no_version_at_all_opens_at_the_seed() {
+        let tmp = std::env::temp_dir().join(format!("notes-open-new-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(current_version(&tmp), None);
+        assert_eq!(open_version(&tmp), Some((0, 0, 1)));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn adoption_writes_the_same_version_that_version_of_reported() {
+        // The wave reads `--version-of` at scope-out; the roll writes the sheet on merge.
+        // Derive that number in two places and they can disagree, and the wave freezes
+        // under a name no other artifact used.
+        let tmp = std::env::temp_dir().join(format!("notes-open-agree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("changelog")).unwrap();
+        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+        let sheet = "# alpha\n\n## Wave: new (current)\n- [ ] a bug\n";
+        fs::write(tmp.join("README.md"), sheet).unwrap();
+
+        let reported = fmt_version(open_version(&tmp).unwrap());
+        let log = Logger::new(tmp.join("log"), false);
+        sheet_to_roll(&tmp, &log).unwrap();
+        let after = fs::read_to_string(tmp.join("README.md")).unwrap();
+        assert_eq!(fmt_version(sheet_version(&after).unwrap()), reported);
+        assert_eq!(reported, "v1.10.1");
         let _ = fs::remove_dir_all(&tmp);
     }
 
