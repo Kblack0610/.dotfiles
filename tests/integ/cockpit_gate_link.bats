@@ -21,8 +21,37 @@ setup() {
 exit 0
 EOF
   chmod +x "$SANDBOX/bin/agent-notify"
+
+  # Answering BACKGROUNDS the resume (`ask-resume ... &`) so the picker returns instantly.
+  # That orphaned process outlives the test body, so every binary it can reach must be
+  # stubbed HERE, in setup - not inside the one test that happens to assert on it.
+  #
+  # Stubbing per-test was the original bug: the test below that only checks the answer was
+  # recorded left `wave-start` unstubbed, so its background resume reached the REAL one on
+  # this account and raced bats' teardown (`rm: cannot remove .../sb space/home/.cache:
+  # Directory not empty`). A test suite that can start a real wave is not a test suite.
+  local b
+  for b in wave-start claude; do
+    cat > "$SANDBOX/bin/$b" <<EOF
+#!/usr/bin/env bash
+printf '$b %s\n' "\$*" >> "\$NOTES_FIXTURE/calls.log"
+EOF
+    chmod +x "$SANDBOX/bin/$b"
+  done
+
   SHEET="$SANDBOX/sheet.md"
   export SHEET
+}
+
+# Let the backgrounded resume finish before bats removes the sandbox out from under it.
+# Bounded, and never fails the test - this is cleanup, not an assertion.
+teardown() {
+  # Scoped to THIS test's sandbox, never a bare `pgrep -f ask-resume`: the suite shares a
+  # machine with real runs, and a global match would both wait on someone else's process
+  # and report a leak this test did not cause.
+  local i=0
+  while [ $i -lt 50 ] && pgrep -f "$SANDBOX" >/dev/null 2>&1; do sleep 0.1; i=$((i + 1)); done
+  return 0
 }
 
 gate() {
@@ -151,11 +180,6 @@ row() { # $1=rawtext -> the rendered row
 # The whole point. Before this, `answer_ask` set a field on disk and stopped: the cockpit
 # was a write-only surface for decisions.
 @test "answering from the cockpit runs the ask's resume command" {
-  cat > "$SANDBOX/bin/wave-start" <<'EOF'
-#!/usr/bin/env bash
-printf 'wave-start %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
-EOF
-  chmod +x "$SANDBOX/bin/wave-start"
   local id; id="$(gate)"
   # answer_ask shells out to fzf when it has options; drive the no-options path via stdin
   bash -c 'source "$COCKPIT"; answer_ask "$1" ""' _ "$id" <<<'approve'
