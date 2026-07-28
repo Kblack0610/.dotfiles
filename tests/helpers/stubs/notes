@@ -33,8 +33,21 @@ case "${1:-}" in
     [ "${2:-}" = "--profiles" ] && emit profiles
     ;;
   projects)
-    # `notes --profile P projects` -> name TAB summary TAB status TAB version
-    emit "projects.${profile:-personal}"
+    case "${2:-}" in
+      # `notes projects --roll <name> [--minor|--major]`. The real verb prints
+      # `rolled <name>: <cur> -> <next> (froze <path>)`, and the cockpit parses the
+      # `(froze …)` tail to find the note it must append the agent changelog to -- so the
+      # stub has to reproduce that exact shape or the test proves nothing.
+      # `roll.frozen` names the path to claim was frozen; `roll.fail` makes it fail.
+      --roll)
+        [ -f "$FIX/roll.fail" ] && { echo "roll failed: no Version: line" >&2; exit 1; }
+        froze="$(cat "$FIX/roll.frozen" 2>/dev/null)"
+        printf 'rolled %s: v1.0.0 -> v1.0.1%s\n' "${3:-x}" "${froze:+ (froze $froze)}"
+        ;;
+      --version-of) emit "version-of.${3:-}" ;;
+      # `notes --profile P projects` -> name TAB summary TAB status TAB version
+      *) emit "projects.${profile:-personal}" ;;
+    esac
     ;;
   focus)
     case "${2:-}" in

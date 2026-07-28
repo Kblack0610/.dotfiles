@@ -17,7 +17,7 @@ setup() {
   sandbox_init basic
   WS="$REPO_ROOT/.local/src/tmux/wave-session.sh"
   # Source only the pure helpers — the file's dispatch block would otherwise run.
-  eval "$(sed -n '/^rows_of()/,/^}/p; /^_is_live()/,/^}/p; /^slugify()/,/^}/p; /^session_of()/,/^}/p' "$WS")"
+  eval "$(sed -n '/^rows_of()/,/^}/p; /^_is_live()/,/^}/p; /^slugify()/,/^}/p; /^session_of()/,/^}/p; /^blackboard_of()/,/^}/p' "$WS")"
   BB="$BATS_TEST_TMPDIR/sprint.md"
 }
 
@@ -140,4 +140,38 @@ EOF
 @test "the work session is named after the app, matching the dotfiles/hub convention" {
   run session_of alpha
   assert_output 'alpha'
+}
+
+# ── blackboard_of: the board a wave's windows are built from ─────────────────
+
+@test "blackboard_of finds a VERSION-named board" {
+  # A wave IS a patch version, so its board is `sprint-v1.10.1.md`. `sync` reads whatever
+  # this returns and KILLS windows for rows it does not find -- so picking the wrong file
+  # here closes windows an agent is working in.
+  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  mkdir -p "$PLANS_DIR/alpha"
+  : > "$PLANS_DIR/alpha/sprint-v1.10.1.md"
+  run blackboard_of alpha
+  assert_output "$PLANS_DIR/alpha/sprint-v1.10.1.md"
+}
+
+@test "blackboard_of picks the newest board, not the alphabetically last one" {
+  # NEGATIVE CONTROL for the date -> version rename: `sprint-2026-07-27.md` and
+  # `sprint-v1.10.1.md` sort differently by name than by age, so a name sort would return
+  # a stale board here without erroring.
+  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  mkdir -p "$PLANS_DIR/alpha"
+  : > "$PLANS_DIR/alpha/sprint-v1.10.1.md"
+  sleep 1.1
+  : > "$PLANS_DIR/alpha/sprint-2026-07-27.md"
+  run blackboard_of alpha
+  assert_output "$PLANS_DIR/alpha/sprint-2026-07-27.md"
+}
+
+@test "blackboard_of is silent when the project has no board at all" {
+  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  mkdir -p "$PLANS_DIR/alpha"
+  run blackboard_of alpha
+  assert_success
+  assert_output ''
 }
