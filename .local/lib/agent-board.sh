@@ -127,7 +127,25 @@ board_rows() { # $1=board file
     }
     /^\|[ ]*:?-+/ { next }
     cols && /^\|/ {
-      tk=trim($(col["ticket"])); st=trim($(col["status"])); ti=trim($(col["title"]))
+      # Every lookup MUST be guarded. In awk an unset col[k] is "", and $("") is
+      # $0 - so a board with no Title column emitted the ENTIRE RAW ROW as the
+      # title rather than an empty string. `sprint-2026-07-12-time-tangle.md` is
+      # headed `| # | Wave | Ticket | Branch | Agent | Status | Sentinel |` and did
+      # exactly that. ticket/status are safe by construction (the header is only
+      # accepted when both are present) but are guarded anyway so the next column
+      # added here cannot reintroduce this.
+      tk=(col["ticket"])?trim($(col["ticket"])):""
+      st=(col["status"])?trim($(col["status"])):""
+      ti=(col["title"])?trim($(col["title"])):""
+      # No Title column at all (the `| # | Wave | Ticket | ... |` shape). Fall back to
+      # the first non-empty cell that is not one of the structural columns, so the row
+      # still says what it is about instead of rendering blank in the cockpit.
+      if (ti=="") {
+        for (j=2; j<=NF; j++) {
+          if (j==col["ticket"] || j==col["status"] || j==col["sentinel"] || j==col["#"]) continue
+          if (trim($j) != "" && trim($j) != "-") { ti=trim($j); break }
+        }
+      }
       sen=(col["sentinel"])?trim($(col["sentinel"])):""
       # A PROPOSED row has no ticket yet - the wave writes its stub board before the
       # approval gate so a gate stop leaves an artifact. Key it by row number so it
