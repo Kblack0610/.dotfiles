@@ -603,6 +603,65 @@ _stage_gc() { # $1=stage
   esac
 }
 
+# The ONE line of an ask that goes on the row. An agent writes a gate question as a full
+# briefing - a live wave posted 900 characters of findings, options and reasoning, and
+# pasting that verbatim into a picker row turns the whole bridge into an
+# unreadable wall. Nothing is lost: `enter` opens the ask, which holds the full text.
+#
+# The QUESTION is the last sentence, not the first. An agent leads with what it found and
+# closes with what it needs ("... Create the 3 tickets and cut the branch?"), so a naive
+# head-of-string truncation reliably cuts off the only part you have to answer. Prefer the
+# trailing interrogative; fall back to the head when there is no question mark.
+# What is actually going on with a project, from its summary's AUTO block — the
+# `## <- Release & status feed` that lab-sync mirrors out of git + GitHub + the tracker.
+#
+# The bridge used to put the STATUS block on this row instead: prose an LLM writes and
+# nothing refreshes. On the live board that read `v1.8.15 live (2026-06-30)` for three
+# weeks while the project shipped v1.10.0 and opened v1.10.1 — a row that was not merely
+# unhelpful but actively wrong. The AUTO block sits four lines below it in the same file,
+# is regenerated weekly, and is where every number here comes from.
+#
+# Counted, not quoted, because this is one row: how many commits are waiting to ship, how
+# many tickets are in development, how many PRs are open. The detail is one `enter` away.
+_feed_gist() { # $1=summary path -> "shipped v1.10.0, 6 to ship, 18 open, 1 PR"
+  local sum="${1:-}" auto tag ship tick prs out=""
+  [ -f "$sum" ] || return 0
+  auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$sum" 2>/dev/null)"
+  [ -n "$auto" ] || return 0
+
+  tag="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `\([^`]*\)`\*\*.*/\1/p' | head -1)"
+  # strip the product prefix a monorepo tag carries; the project name is already on the row
+  tag="${tag##*-}"
+  # bullets between "Shipping next" and the next blank-line-terminated block
+  ship="$(printf '%s' "$auto" | awk '/\*\*Shipping next\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
+  # The elision marker is ITSELF a bullet (`- …(+10 more)`), so it must not be counted as a
+  # ticket before its number is added back — that is an off-by-one in the only direction
+  # nobody would notice, since the total still looks plausible.
+  tick="$(printf '%s' "$auto" | awk '/\*\*In progress\*\*/{f=1;next} f&&/more\)/{next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
+  # `(+10 more)` means the list was elided; add the remainder so the count is the real one
+  local more; more="$(printf '%s' "$auto" | sed -n 's/.*(+\([0-9]\{1,\}\) more).*/\1/p' | head -1)"
+  [ -n "$more" ] && tick=$((tick + more))
+  prs="$(printf '%s' "$auto" | awk '/\*\*In flight\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
+
+  [ -n "$tag" ] && out="shipped ${tag}"
+  [ "${ship:-0}" -gt 0 ] && out="${out:+$out, }${ship} to ship"
+  [ "${tick:-0}" -gt 0 ] && out="${out:+$out, }${tick} open"
+  [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR$([ "$prs" -gt 1 ] && printf s)"
+  printf '%s' "$out"
+}
+
+_ask_gist() { # $1=question -> one short line
+  local q="$1" tail
+  q="$(printf '%s' "$q" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +| +$//g')"
+  # the last `?`-terminated clause, when it is short enough to be a real question
+  tail="$(printf '%s' "$q" | grep -oE '[^.?!]*\?[[:space:]]*$' | sed -E 's/^ +//' || true)"
+  if [ -n "$tail" ] && [ "${#tail}" -le 72 ] && [ "${#tail}" -ge 8 ]; then
+    printf '%s' "$tail"
+    return
+  fi
+  if [ "${#q}" -le 88 ]; then printf '%s' "$q"; else printf '%.85s...' "$q"; fi
+}
+
 # The profile order the bridge renders in: the one you are standing on first, then the
 # rest. An `$active` that is not a profile at all (the `all` pseudo-section) falls through
 # to "every profile, declared order" rather than to nothing.
@@ -632,7 +691,7 @@ _bridge_view() { # $1=active profile
   local hot="" cold="" cw=0 cn=0 cr=0 cb=0 cm=0
   while IFS= read -r prof; do
   [ -z "$prof" ] && continue
-  while IFS=$'\t' read -r name _sum st ver; do
+  while IFS=$'\t' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
@@ -672,7 +731,7 @@ _bridge_view() { # $1=active profile
       tctx=""; [ -n "$task" ] && tctx="  ${C_DIM}task: ${task}${C_OFF}"
       # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
       asks="${asks}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
-        "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$q" "$tctx" "$o")"$'\n'
+        "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$(_ask_gist "$q")" "$tctx" "$o")"$'\n'
     done < <(agent-ask list "$canon" --pending 2>/dev/null | tr '\t' '\037')
     if [ -n "$asks" ] || [ -n "$items" ]; then
       # Per-project tally, same vocabulary as the global header so the two read as one
@@ -681,7 +740,10 @@ _bridge_view() { # $1=active profile
       local badge=""
       [ "$pw" -gt 0 ] && badge="${C_INP}~${pw} working${C_OFF}"
       [ "$pn" -gt 0 ] && badge="${badge:+$badge  }${C_BOX}?${pn} need-you${C_OFF}"
-      local group; group="$(_subheader "$label" "$st" "$ver" "$badge")"$'\n'"${asks}${items}"
+      # The live feed beats the prose. Fall back to the STATUS line only when a project has
+      # no AUTO block at all (never lab-synced), so nothing regresses to a blank row.
+      local trail; trail="$(_feed_gist "$sum")"; [ -n "$trail" ] || trail="$st"
+      local group; group="$(_subheader "$label" "$trail" "$ver" "$badge")"$'\n'"${asks}${items}"
       if [ "$pn" -gt 0 ]; then hot="${hot}${group}"; else cold="${cold}${group}"; fi
     fi
   done < <(notes --profile "$prof" projects 2>/dev/null)
