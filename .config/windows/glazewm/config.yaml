@@ -20,6 +20,19 @@
 # Meta from Chromium's keyboard.lock() set and only maps Alt+F3 -> a one-shot
 # Win tap, useless as a held mod) — revert this file's mod key to `alt`.
 # See .agent/lessons/dotfiles.md ("GlazeWM under Azure AVD web client...").
+#
+# `lwin` parity is LOAD-BEARING ON TWO OTHER FILES. Do not assume this config
+# stands alone:
+#   ../ahk/glazewm-winkey.ahk        masks the Win chord so Explorer stops
+#                                    popping the Start menu over every binding
+#                                    (glzr-io/glazewm#1215, still open)
+#   ../scripts/win-key-ownership.ps1 HKCU values that stop the shell claiming
+#                                    Win+<key>, and stop `lwin+l` below from
+#                                    LOCKING THE SESSION -- Win+L is a Secure
+#                                    Attention Sequence that winlogon handles
+#                                    before any hook, so GlazeWM cannot ever
+#                                    intercept it on its own.
+# Full story + verification steps: ../ahk/README.md
 
 workspaces:
   - name: "1"

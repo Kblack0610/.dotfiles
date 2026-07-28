@@ -10,6 +10,9 @@
 # Skipped vs. the PS script (intentional):
 #   - Firefox/Floorp policies.json under Program Files (needs admin; PS script
 #     handles that path when run elevated).
+#   - Registering the Win-key mask scheduled task (needs admin for RunLevel
+#     Highest). The .ahk is still copied and the registry half still applied;
+#     run `win-key-task` to get a UAC prompt for the task itself.
 #   - setup_notes_sync.ps1 invocation (Windows scheduled task setup).
 #   - WSL Arch first-run bootstrap (we are already inside WSL).
 #
@@ -144,6 +147,44 @@ copy_file "$WIN_CFG/zebar/settings.json" "$USERPROFILE/.glzr/zebar/settings.json
 
 cyan 'Zebar minimal pack'
 copy_dir  "$WIN_CFG/zebar/kblack-minimal" "$USERPROFILE/.glzr/zebar/kblack-minimal"
+
+cyan 'Win-key ownership (registry)'
+# GlazeWM's mod key is lwin, and Explorer/winlogon fight it. Three HKCU values
+# stop the shell claiming Win+<key> and stop lwin+l locking the session.
+# Idempotent. Two apply unelevated; DisableLockWorkstation lives in the Policies
+# subtree that managed images ACL read-only, so the script skips it here and
+# `win-key-task` picks it up. See .config/windows/ahk/README.md.
+if (( DRY )); then
+    dim 'would run win-key-ownership.ps1'
+elif command -v powershell.exe >/dev/null 2>&1; then
+    if out="$(powershell.exe -NoProfile -ExecutionPolicy Bypass \
+                -File "$(wslpath -w "$WIN_CFG/scripts/win-key-ownership.ps1")" 2>/dev/null | tr -d '\r')"; then
+        [[ -n "$out" ]] && dim "$out"
+    else
+        warn "could not apply win-key registry values"
+    fi
+fi
+
+cyan 'Win-key mask script (AutoHotkey)'
+# The registry above does NOT stop a bare Win tap opening the Start menu -- that
+# is glzr-io/glazewm#1215, still open. This AHK script masks the chord so the
+# keyup never reads as a bare tap. Must run ELEVATED to work over elevated
+# windows, so the scheduled task is registered separately (needs admin).
+copy_dir "$WIN_CFG/ahk" "$USERPROFILE/.dotfiles-win/ahk"
+if (( DRY )); then
+    dim 'would register scheduled task dotfiles-glazewm-winkey'
+elif command -v powershell.exe >/dev/null 2>&1; then
+    if out="$(powershell.exe -NoProfile -ExecutionPolicy Bypass \
+                -File "$(wslpath -w "$WIN_CFG/scripts/register-winkey-task.ps1")" 2>&1 | tr -d '\r')"; then
+        [[ -n "$out" ]] && dim "$out"
+    else
+        # Expected when running unelevated, which is the normal WSL case.
+        # Same carve-out as the Firefox policies.json copy: tell the user, do
+        # not try to auto-elevate.
+        warn "scheduled task not registered (needs admin). Run from WSL to get a UAC prompt:"
+        warn "  win-key-task-elevate"
+    fi
+fi
 
 cyan 'Flow Launcher settings (Hotkey disabled; opened via GlazeWM lwin+d)'
 # Flow rewrites this file with all defaults on first save, so shipping the

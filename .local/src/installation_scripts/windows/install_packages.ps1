@@ -60,7 +60,8 @@ $MinimalPackages = @(
     'Microsoft.WindowsTerminal',      # the terminal you launch WSL from
     'glzr-io.glazewm',                # Windows desktop WM
     'glzr-io.zebar',                  # status bar paired with GlazeWM
-    'Flow-Launcher.Flow-Launcher',    # dmenu-equivalent launcher (Alt+D, see flow-launcher/Settings.json)
+    'Flow-Launcher.Flow-Launcher',    # dmenu-equivalent launcher (lwin+d via GlazeWM; own hotkey blanked in flow-launcher/Settings.json)
+    'AutoHotkey.AutoHotkey',          # v2; runs ahk/glazewm-winkey.ahk so Explorer stops stealing lwin (see .config/windows/ahk/README.md)
     'Microsoft.PowerToys',            # FancyZones / Keyboard Manager / etc. (NOT used as launcher anymore)
     # --- ClientApp K9S/Freelens cheatsheet (Confluence 1689387031) ----------
     # Auth + Kubernetes access must live on the Windows side because

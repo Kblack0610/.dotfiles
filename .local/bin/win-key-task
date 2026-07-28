@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# win-key-task - finish Win-key ownership with a single UAC prompt.
+#
+# Two things need admin and one prompt covers both:
+#
+#   1. DisableLockWorkstation. It lives under HKCU\...\Policies, a subtree that
+#      managed Windows images ACL read-only for the user, so it needs elevation
+#      despite being under HKCU. Without it, lwin+l LOCKS THE SESSION -- Win+L is
+#      a Secure Attention Sequence handled by winlogon before any user-mode hook,
+#      so GlazeWM can never intercept it on its own.
+#   2. The scheduled task that runs glazewm-winkey.ahk elevated at logon.
+#      Registering with RunLevel Highest is itself an elevated operation.
+#      The mask must run elevated because an unelevated process cannot send
+#      keystrokes to an elevated window (GlazeWM itself runs elevated), so the
+#      Start-menu mask would silently die whenever one had focus.
+#
+# apply-windows-configs does everything else unelevated and points you here.
+# Same carve-out as the Firefox/Floorp policies.json copy: we ask for the
+# prompt, we never auto-elevate silently.
+#
+# Background, verification and rollback: .config/windows/ahk/README.md
+#
+# Usage: win-key-task [--unregister]
+
+set -euo pipefail
+
+DOTFILES="${DOTFILES:-$HOME/.dotfiles}"
+WIN_CFG="$DOTFILES/.config/windows"
+REG_PS1="$WIN_CFG/scripts/win-key-ownership.ps1"
+TASK_PS1="$WIN_CFG/scripts/register-winkey-task.ps1"
+
+UNDO=0
+case "${1:-}" in
+    --unregister) UNDO=1 ;;
+    -h|--help)    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    "")           ;;
+    *)            echo "unknown arg: $1" >&2; exit 2 ;;
+esac
+
+for f in "$REG_PS1" "$TASK_PS1"; do
+    [[ -f "$f" ]] || { echo "missing $f" >&2; exit 1; }
+done
+command -v powershell.exe >/dev/null 2>&1 || { echo "powershell.exe not found - are you in WSL?" >&2; exit 1; }
+
+WIN_REG="$(wslpath -w "$REG_PS1")"
+WIN_TASK="$(wslpath -w "$TASK_PS1")"
+
+if (( UNDO )); then
+    INNER="& '$WIN_REG' -Revert; & '$WIN_TASK' -Unregister"
+    echo "Raising a UAC prompt to revert Win-key ownership..."
+else
+    INNER="& '$WIN_REG'; & '$WIN_TASK'"
+    echo "Raising a UAC prompt to finish Win-key ownership (registry + logon task)..."
+fi
+
+# -Wait so this script's exit status reflects the elevated run. `pause` keeps
+# the elevated window open long enough to read any error, since it is a separate
+# console we cannot capture output from.
+powershell.exe -NoProfile -Command \
+    "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',\"$INNER; pause\""
+
+echo
+echo "Verify:"
+echo "  powershell.exe -NoProfile -Command \"Get-ScheduledTask -TaskName dotfiles-glazewm-winkey | Select-Object TaskName,State\""
+echo "  powershell.exe -NoProfile -Command \"Get-Process AutoHotkey* | Select-Object Name,Id\""
