@@ -211,6 +211,16 @@ def cmd_validate(path):
         if probe_date.returncode != 0:
             errors.append(f"expiry {expiry!r} is neither a duration nor a date")
 
+    # How long a still-unresolved TRIP/ERROR stays quiet before nagging again.
+    # `null` opts out entirely. A typo here fails silently in the worst possible
+    # way -- to_secs returns 0 for an unparseable duration and the loop then skips
+    # the re-notify, so a watch you thought was nagging would be permanently mute.
+    renotify = scalar(doc.get("renotify_after"))
+    if renotify and renotify not in ("null", "~") and not DURATION.match(renotify):
+        errors.append(
+            f"renotify_after {renotify!r} is not a duration (e.g. 12h 2d) or null"
+        )
+
     if errors:
         for err in errors:
             print(f"invalid: {err}", file=sys.stderr)
