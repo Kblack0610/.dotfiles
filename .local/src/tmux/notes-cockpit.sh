@@ -942,20 +942,31 @@ answer_ask() { # $1=id $2=options(pipe)
       rec="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^recommend: //p' | head -1)"
       question="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^question: //p' | head -1)"
     fi
+    # The header carries the question AND the fact that a note comes next. Announcing the
+    # note only after the option was chosen made it undiscoverable: you cannot decide
+    # "approve, but only T1 and T2" if you believe the three words are the whole answer.
+    local hdr=""
+    [ -n "$question" ] && hdr="$(printf '%s' "$question" | fold -s -w "${COLUMNS:-100}" | head -8)"$'\n'
+    hdr="${hdr}enter picks - then say WHY, or what to change (optional)"
     ans="$(_ask_choices "$options" "$rec" | fzf \
       --prompt="answer $id > " --height=80% --reverse --no-sort --wrap \
-      ${question:+--header="$(printf '%s' "$question" | fold -s -w "${COLUMNS:-100}" | head -8)"} \
+      --header="$hdr" \
       --preview="agent-ask show $id" --preview-window='right,55%,wrap,border-left')"
     # strip the marker back off — the ask's vocabulary is fixed, and `approve  (recommended)`
     # is not a word any consumer knows
     ans="${ans%%  (recommended)}"
     [ -n "$ans" ] || return 0
-    # Optional free text, carried alongside the option. Enter alone skips it, so the fast
-    # path is unchanged for anyone who just wants to approve.
-    printf '\n  %s%s%s selected. Notes to send with it? (enter to skip)\n  > ' \
-      "$C_SEL" "$ans" "$C_OFF" >&2
+    # The free text is the point, not a footnote. An option on its own says WHAT you decided
+    # and never why, and `wave.md` acts on the reasoning - "approve, drop the mobile one",
+    # "hold, wait for the 1.11.0 release". Enter alone still skips, so approving stays two
+    # keys for anyone who has nothing to add.
+    printf '\n  %s%s%s - why, or what to change? %s(enter to skip)%s\n  > ' \
+      "$C_SEL" "$ans" "$C_OFF" "$C_DIM" "$C_OFF" >&2
     IFS= read -r notes
-    [ -n "$notes" ] && ans="$ans - $notes"
+    if [ -n "$notes" ]; then
+      ans="$ans - $notes"
+      printf '  %ssending:%s %s\n' "$C_DIM" "$C_OFF" "$ans" >&2
+    fi
   else
     printf 'answer for %s: ' "$id" >&2; read -r ans
   fi
