@@ -3,6 +3,8 @@
 # to ASK the human a question and later READ the answer.
 #
 #   agent-ask post [opts] "question"    create a pending ask; print its id
+#     --options a|b|c   the fixed answer vocabulary
+#     --recommend b     which of them YOU recommend; shown marked in the picker
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for the bridge/cockpit
 #   agent-ask show <id>                 print the ask file
@@ -11,6 +13,7 @@
 #   agent-ask count [project|--all]     number of pending asks (for cockpit badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
+#   agent-ask recommend <id> <option>   set/replace the recommended option
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
@@ -79,7 +82,7 @@ set_field() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" resume="" wait=0 question=""
+        options="" recommend="" resume="" wait=0 question=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -89,6 +92,7 @@ cmd_post() {
       --task)    task="$2"; shift 2 ;;
       --kind)    kind="$2"; shift 2 ;;
       --options) options="$2"; shift 2 ;;
+      --recommend) recommend="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
@@ -101,6 +105,15 @@ cmd_post() {
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
+  # A recommendation that is not one of the offered options is a bug in the caller, and a
+  # silent one: the picker would mark nothing and the human would never know it was meant to
+  # advise. Refuse rather than drop it.
+  if [ -n "$recommend" ]; then
+    case "|$options|" in
+      *"|$recommend|"*) ;;
+      *) echo "agent-ask post: --recommend '$recommend' is not one of '$options'" >&2; return 2 ;;
+    esac
+  fi
 
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
@@ -122,6 +135,11 @@ cmd_post() {
     printf 'status: pending\n'
     printf 'question: %s\n'   "$(oneline "$question")"
     printf 'options: %s\n'    "$(oneline "$options")"
+    # Which option the ASKING agent would pick, and why it is a separate field rather than a
+    # sentence in the question: a recommendation buried in 900 characters of prose is a
+    # recommendation the human reads only if they open the ask. As a field the picker can
+    # mark it, the way any decent approval UI does.
+    printf 'recommend: %s\n'  "$(oneline "$recommend")"
     printf 'answer: \n'
     printf 'answered_at: \n'
     printf 'resume: %s\n'     "$(oneline "$resume")"
@@ -177,7 +195,8 @@ cmd_list() {
     cutoff="$(date -d "-${since%d} days" +%Y-%m-%d 2>/dev/null || true)"
   fi
 
-  # tsv: id, project, profile, status, kind, question, options, task, answered_at, resumed_at
+  # tsv: id, project, profile, status, kind, question, options, task, answered_at,
+  #      resumed_at, recommend
   local f st at
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -186,11 +205,11 @@ cmd_list() {
     at="$(field "$f" answered_at)"
     # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
     [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
       "$(field "$f" options)" "$(field "$f" task)" \
-      "$at" "$(field "$f" resumed_at)"
+      "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)"
   done < <(ask_files "$key")
 }
 
@@ -231,6 +250,20 @@ cmd_cancel() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   set_field "$f" status cancelled
   echo "cancelled $id" >&2
+}
+
+cmd_recommend() {
+  local id="${1:-}" opt="${2:-}"
+  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  local options; options="$(field "$f" options)"
+  case "|$options|" in
+    *"|$opt|"*) ;;
+    *) echo "agent-ask recommend: '$opt' is not one of '$options'" >&2; return 2 ;;
+  esac
+  set_field "$f" recommend "$opt"
+  echo "recommend $id: $opt" >&2
 }
 
 # --- the producer half of the loop -----------------------------------------
@@ -296,6 +329,7 @@ case "$sub" in
   show)   cmd_show "$@" ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
+  recommend)    cmd_recommend "$@" ;;
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;
   -h|--help|help) usage ;;

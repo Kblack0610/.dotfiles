@@ -64,10 +64,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit and bridge consume ─────────────────────────────
 
-@test "list emits 10 tab-separated fields per ask" {
+@test "list emits 11 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '10'
+  assert_output '11'
 }
 
 # The count is a contract, not trivia. `_bridge_view` reads these with a positional

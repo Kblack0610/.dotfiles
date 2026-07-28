@@ -175,7 +175,24 @@ classify() {
 #
 # `--pending` is re-checked rather than trusted: a wave that dies between answering and
 # unstamping would otherwise leave a line that offers to answer a settled question.
-_line_ask() { # $1=rawtext -> "id<TAB>options" or empty
+# `(approve|hold|cancel)` with the RECOMMENDED option lit and the rest dim.
+#
+# Colour rather than a marker character: the row is already tight, and every punctuation
+# glyph this cockpit uses (~ ? > x *) already means a state in the header vocabulary.
+# Reusing one here would read as a status. No recommendation renders exactly as before.
+_opts_render() { # $1=options(pipe) $2=recommended
+  local options="${1:-}" rec="${2:-}" o out=""
+  [ -n "$options" ] || return 0
+  if [ -z "$rec" ]; then printf '%s(%s)%s' "$C_DIM" "$options" "$C_OFF"; return; fi
+  while IFS= read -r o; do
+    [ -z "$o" ] && continue
+    if [ "$o" = "$rec" ]; then out="${out:+$out${C_DIM}|${C_OFF}}${C_SEL}${o}${C_OFF}"
+    else out="${out:+$out${C_DIM}|${C_OFF}}${C_DIM}${o}${C_OFF}"; fi
+  done < <(printf '%s\n' "${options//|/$'\n'}")
+  printf '%s(%s%s)%s' "$C_DIM" "$out" "$C_DIM" "$C_OFF"
+}
+
+_line_ask() { # $1=rawtext -> "id<TAB>options<TAB>recommended" or empty
   case "$1" in *'<!--'*ask:*) ;; *) return 0 ;; esac
   local id; id="$(printf '%s' "$1" | sed -nE 's/.*<!--[[:space:]]*ask:([A-Za-z0-9_-]+).*/\1/p' | head -1)"
   [ -n "$id" ] || return 0
@@ -183,12 +200,13 @@ _line_ask() { # $1=rawtext -> "id<TAB>options" or empty
   agent-ask show "$id" 2>/dev/null | awk -F': ' '
     $1=="status"  { st=$2 }
     $1=="options" { o=substr($0, index($0,": ")+2) }
-    END { if (st=="pending") printf "%s\t%s", id, o }' id="$id"
+    $1=="recommend" { r=substr($0, index($0,": ")+2) }
+    END { if (st=="pending") printf "%s\t%s\t%s", id, o, r }' id="$id"
 }
 
 # The same, for a row that only carries file+line (the enter binding). One file read on a
 # keypress, versus _line_ask's zero — the render path already has the raw text.
-_line_ask_at() { # $1=file $2=line -> "id<TAB>options" or empty
+_line_ask_at() { # $1=file $2=line -> "id<TAB>options<TAB>recommended" or empty
   [ -f "$1" ] && [ -n "${2:-}" ] || return 0
   _line_ask "$(sed -n "${2}p" "$1" 2>/dev/null)"
 }
@@ -198,7 +216,7 @@ _line_ask_at() { # $1=file $2=line -> "id<TAB>options" or empty
 # arrive as `path<TAB>line<TAB>key<TAB>rawtext`). `section` places the row: `<profile>` for
 # an untagged/main task, `<profile>/<project>` for a project task.
 _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
-  local clean glyph lane="" tid="" gate="" aid="" aopt=""
+  local clean glyph lane="" tid="" gate="" aid="" aopt="" arec=""
   # `#ai` is the LANE marker: this item belongs to the agents (a `/wave` picks these up),
   # everything untagged is the human's. Show it, so one list reads as two lanes.
   case "$6" in *'#ai'*) lane="${C_PROJ}@ai${C_OFF} " ;; esac
@@ -208,11 +226,11 @@ _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
   [ -n "$tid" ] && tid=" ${C_DIM}#${tid}${C_OFF}"
   # A pending gate on this line outranks the checkbox: the item is not "not started", it
   # is stopped ON you. Enter answers it here rather than opening the file (_enter_action).
-  IFS=$'\t' read -r aid aopt < <(_line_ask "$6")
+  IFS=$'\t' read -r aid aopt arec < <(_line_ask "$6")
   clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //; s/[[:space:]]*#ai\b//')"
   if [ -n "$aid" ]; then
     glyph="${C_INP}[!]${C_OFF}"
-    gate=" ${C_INP}needs you${C_OFF}${aopt:+ ${C_DIM}(${aopt})${C_OFF}}"
+    gate=" ${C_INP}needs you${C_OFF}${aopt:+ $(_opts_render "$aopt" "$arec")}"
   elif [[ "$6" =~ ^[[:space:]]*-\ \[/\] ]]; then glyph="${C_INP}[/]${C_OFF}"
   else glyph="${C_BOX}[ ]${C_OFF}"; fi
   printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s%s%s%s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$lane" "$clean" "$tid" "$gate"
@@ -743,11 +761,11 @@ _bridge_profiles() { # $1=active
 # answered ten minutes ago is a broken producer, and it says so on the row instead of
 # leaving you to guess. Enter opens the ask file.
 _answered_lane() {
-  local rows id p2 pr2 st kind q opt task aat rat mark
+  local rows id p2 pr2 st kind q opt task aat rat rec mark
   rows="$(agent-ask list --all --answered --since 3d 2>/dev/null | tr '\t' '\037')"
   [ -n "$rows" ] || return 0
   printf 'head\t\t\t\t\t\t%s  answered (3d)%s\n' "$C_DIM" "$C_OFF"
-  while IFS=$'\037' read -r id p2 pr2 st kind q opt task aat rat; do
+  while IFS=$'\037' read -r id p2 pr2 st kind q opt task aat rat rec; do
     [ -z "$id" ] && continue
     if [ -n "$rat" ]; then mark="${C_DIM}running${C_OFF}"
     elif [ -n "$(printf '%s' "$opt")" ] || [ "$kind" = gate ]; then mark="${C_INP}waiting to run${C_OFF}"
@@ -796,15 +814,15 @@ _bridge_view() { # $1=active profile
         "$prof" "$cf" "$pr" "$canon" "$sec" "$col" "$glyph" "$C_OFF" "$title" "$prbadge" "$C_DIM" "$tk" "$C_OFF" "$progd")"$'\n'
     done < <(_sprint_items "$canon")
     # --- open questions (needs-you) ---
-    local id p2 pr2 status2 kind q opt task aat rat ag col2 o tctx
+    local id p2 pr2 status2 kind q opt task aat rat rec ag col2 o tctx
     # US-delimited (tr) so an empty profile/task column does not collapse under `read`.
     # Read ALL ten columns: `read` puts every leftover field in the LAST variable, so
     # naming only eight would silently append the two timestamps onto `task`.
-    while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task aat rat; do
+    while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task aat rat rec; do
       [ -z "$id" ] && continue
       cn=$((cn+1)); pn=$((pn+1))
       if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
-      o=""; [ -n "$opt" ] && o="  ${C_DIM}(${opt})${C_OFF}"
+      o=""; [ -n "$opt" ] && o="  $(_opts_render "$opt" "$rec")"
       tctx=""; [ -n "$task" ] && tctx="  ${C_DIM}task: ${task}${C_OFF}"
       # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
       asks="${asks}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
@@ -852,11 +870,54 @@ list_section() {
 }
 
 # answer an ask inline: fzf-pick from options, else read free text; then write back.
+# The option list an ask offers, one per line, RECOMMENDED FIRST and marked.
+#
+# Split out so the picker's ordering is testable without driving fzf. The recommendation
+# leads because that is where the eye lands and where fzf parks the cursor: the common case
+# becomes enter-enter, and the human still sees every alternative.
+_ask_choices() { # $1=options(pipe) $2=recommended -> one per line
+  local options="${1:-}" rec="${2:-}" o
+  [ -n "$options" ] || return 0
+  if [ -n "$rec" ]; then
+    printf '%s  (recommended)\n' "$rec"
+    while IFS= read -r o; do [ "$o" = "$rec" ] || printf '%s\n' "$o"; done < <(printf '%s\n' "${options//|/$'\n'}")
+  else
+    printf '%s\n' "${options//|/$'\n'}"
+  fi
+}
+
+# Answer an ask: pick an option, then optionally say more about it.
+#
+# This used to be a bare fzf list of `approve|hold|cancel` — no question text, no indication
+# of what the agent that asked would do, and no way to say "approve, but drop the mobile
+# one". That last part was not a missing nicety: `wave.md` has always specified that
+# per-item choices belong in the human's FREE TEXT alongside the option, and there was no
+# surface anywhere that could produce one. The contract existed; the UI did not.
+#
+# So: the question on the header, the full ask one keypress away in the preview, the
+# recommended option marked and first, and a notes line that is genuinely optional.
 answer_ask() { # $1=id $2=options(pipe)
-  local id="$1" options="${2:-}" ans
+  local id="$1" options="${2:-}" ans notes rec="" question=""
   [ -n "$id" ] || return 0
   if [ -n "$options" ]; then
-    ans="$(printf '%s\n' "${options//|/$'\n'}" | fzf --prompt="answer $id > " --height=40% --reverse)"
+    if command -v agent-ask >/dev/null 2>&1; then
+      rec="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^recommend: //p' | head -1)"
+      question="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^question: //p' | head -1)"
+    fi
+    ans="$(_ask_choices "$options" "$rec" | fzf \
+      --prompt="answer $id > " --height=80% --reverse --no-sort --wrap \
+      ${question:+--header="$(printf '%s' "$question" | fold -s -w "${COLUMNS:-100}" | head -8)"} \
+      --preview="agent-ask show $id" --preview-window='right,55%,wrap,border-left')"
+    # strip the marker back off — the ask's vocabulary is fixed, and `approve  (recommended)`
+    # is not a word any consumer knows
+    ans="${ans%%  (recommended)}"
+    [ -n "$ans" ] || return 0
+    # Optional free text, carried alongside the option. Enter alone skips it, so the fast
+    # path is unchanged for anyone who just wants to approve.
+    printf '\n  %s%s%s selected. Notes to send with it? (enter to skip)\n  > ' \
+      "$C_SEL" "$ans" "$C_OFF" >&2
+    IFS= read -r notes
+    [ -n "$notes" ] && ans="$ans - $notes"
   else
     printf 'answer for %s: ' "$id" >&2; read -r ans
   fi
@@ -890,7 +951,7 @@ _enter_action() { # $1=type $2=profile $3=c3 $4=c4
     # lines a wave has actually stopped on. Everything else still opens the file.
     task)
       local _aid _aopt
-      IFS=$'\t' read -r _aid _aopt < <(_line_ask_at "$3" "$4")
+      IFS=$'\t' read -r _aid _aopt _arec < <(_line_ask_at "$3" "$4")
       if [ -n "$_aid" ]; then
         printf 'execute(%s --answer %q %q)+reload(%s --list)+refresh-preview' "$SELF" "$_aid" "$_aopt" "$SELF"
       else
