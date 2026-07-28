@@ -52,6 +52,20 @@ _project() {
 # post <project> <question> [kind]
 post() { "$AGENT_ASK" post --project "$1" ${3:+--kind "$3"} "$2"; }
 
+@test "GUARD: agent-ask resolves from PATH inside the sandbox" {
+  # Everything below asserts on rows the cockpit builds by shelling out to `agent-ask` BY
+  # NAME. A developer's own ~/.local/bin is on PATH, so that resolved on a laptop and
+  # resolved nowhere on a clean runner -- the question rows silently vanished and every
+  # local run stayed green. Without this guard, ten tests below go quietly vacuous again.
+  run command -v agent-ask
+  assert_success
+  assert_output "$SANDBOX/bin/agent-ask"
+  # and it must be a COPY, not a link back into the tree. A symlink here lets any test that
+  # overrides the stub (`cat > "$SANDBOX/bin/agent-ask"`, which wave_start.bats does) write
+  # through it and truncate the real script in the repo -- the suite editing its subject.
+  assert [ ! -L "$SANDBOX/bin/agent-ask" ]
+}
+
 # board <canonical> — a wave blackboard, fed on stdin
 board() {
   mkdir -p "$HOME/.agent/plans/$1"
