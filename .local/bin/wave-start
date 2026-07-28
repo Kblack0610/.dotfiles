@@ -180,6 +180,25 @@ run_pass() {
     _report ok "$VERB ok" "$WAVE_DIAG"
   fi
 
+  # Publish the proof-contract outcome too. `_report` writes the agentctl STATUS
+  # (state/project/item, last-value-only); last-outcome is the separate did-it-work
+  # axis that fleet-liveness asserts across the whole roster, and `wave` was one of
+  # the runners that had never written it -- so its absence read as "never wired".
+  #
+  # Derived from WAVE_VERDICT rather than from claude's exit code, because this
+  # script already knows better: a pass can exit 0 having written no blackboard,
+  # which is why WAVE_VERDICT exists at all. A wave HELD at its approval gate is
+  # NOOP, not STALLED -- stopping for a human is the gate working, not a failure.
+  if . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null; then
+    if [ "$WAVE_VERDICT" != ok ]; then
+      proof_report "${AGENTCTL_NAME:-wave}" STALLED "$APP $VERB $WAVE_VERDICT"
+    elif [ "$waiting" -eq 1 ]; then
+      proof_report "${AGENTCTL_NAME:-wave}" NOOP "$APP $VERB held at gate (ask $askid)"
+    else
+      proof_report "${AGENTCTL_NAME:-wave}" WORKED "$APP $VERB ok"
+    fi
+  fi
+
   # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on
   # any pass that finds no active sprint (cmd_run -> cmd_disarm removes its own units), so
   # arming it before this point is a no-op that looks like it worked: it fires once,

@@ -344,3 +344,25 @@ SH
   run "$WAVE_START" demoapp --now
   assert_success
 }
+
+# ── the proof-contract outcome (separate axis from the status report) ────────
+# _report writes the agentctl STATUS (state/project/item, last-value-only).
+# last-outcome is the did-it-actually-WORK axis fleet-liveness asserts across the
+# whole roster, and `wave` had never written it - so its absence read as "never wired".
+
+@test "a good pass reports WORKED on the proof contract" {
+  stub_agentctl
+  stub_claude 0 'done' board
+  run "$WAVE_START" demoapp --now
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'WORKED'
+}
+
+@test "a pass that wrote NO board reports STALLED, not WORKED" {
+  # The exact case WAVE_VERDICT exists for: claude exits 0 having done nothing.
+  # This is the negative control for the test above - without it, a proof_report
+  # hardcoded to WORKED would pass that one.
+  stub_agentctl
+  stub_claude 0 'I have prepared a plan for your approval'
+  run "$WAVE_START" demoapp --now
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'STALLED'
+}
