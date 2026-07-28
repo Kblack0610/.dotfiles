@@ -64,10 +64,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit and bridge consume ─────────────────────────────
 
-@test "list emits 8 tab-separated fields per ask" {
+@test "list emits 10 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '8'
+  assert_output '10'
+}
+
+# The count is a contract, not trivia. `_bridge_view` reads these with a positional
+# `read -r a b c ...`, and bash puts every UNNAMED trailing field into the LAST variable —
+# so adding a column without widening the reader does not error, it silently glues the new
+# data onto whatever the last named field was (here: the ask's task context).
+@test "the two trailing fields are answered_at and resumed_at, in that order" {
+  local id; id="$(post demo 'ship it?')"
+  run bash -c '"$AGENT_ASK" list demo | cut -f9,10'
+  assert_output "$(printf '\t')"          # both empty while pending
+
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  run bash -c '"$AGENT_ASK" list demo | cut -f9 | grep -c .'
+  assert_output '1'                        # answered_at is stamped
+  run bash -c '"$AGENT_ASK" list demo | cut -f10'
+  assert_output ''                         # resumed_at is NOT — nobody has acted yet
+
+  "$AGENT_ASK" mark-resumed "$id" >/dev/null 2>&1
+  run bash -c '"$AGENT_ASK" list demo | cut -f10 | grep -c .'
+  assert_output '1'
 }
 
 @test "list puts the id first and the status fourth" {
