@@ -351,3 +351,26 @@ S
   assert_output --partial 'Playground'
   refute_output --partial 'Cockpit'
 }
+
+@test "--list keeps the VERSION on a project whose STATUS column is empty" {
+  # `notes projects` emits `name<TAB>path<TAB>status<TAB>version` and most projects have an
+  # empty status. Tab is an IFS *whitespace* character, so `IFS=$'\t' read` folded the two
+  # adjacent tabs into one delimiter and every field after the gap shifted left: the version
+  # landed in `st` and `ver` came back empty. The row looked right - it was rendering the
+  # version AS the status - until a real status arrived and the version vanished.
+  #
+  # Asserted as an EXACT line: under the bug the text `v0.3` is still present, just in the
+  # wrong slot with the status separator's three spaces in front of it.
+  printf 'Cockpit\t/does/not/exist.md\t\tv0.3\n' > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line '  Cockpit v0.3'
+  refute_line '  Cockpit   v0.3'
+}
+
+@test "--list keeps version AND status in their own slots when both are present" {
+  printf 'Cockpit\t/does/not/exist.md\tsteady\tv0.3\n' > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line '  Cockpit v0.3   steady'
+}

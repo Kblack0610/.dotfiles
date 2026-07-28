@@ -223,7 +223,16 @@ _profile_view() { # $1=rows $2=profile
     printf 'add\t%s\t\t\t\t%s\t%s  (no tasks — C-a to add)%s\n' \
       "$prof" "$prof" "$C_DIM" "$C_OFF"
   fi
-  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r n sum st ver; do
+  # US-delimited (\037), NOT tab. A `notes projects` row is `name<TAB>path<TAB>status<TAB>ver`
+  # and MOST projects have an empty status — but tab is an IFS *whitespace* character, so
+  # `IFS=$'\t' read` folds the two adjacent tabs into one delimiter and every field after the
+  # gap shifts left. The version landed in `st` and `ver` came back empty, which is why a
+  # status-less project appeared to be "showing its version" when it was really rendering the
+  # version AS its status, and why adding a real status made the version vanish. \037 is not
+  # IFS whitespace, so an empty column stays an empty column. Same idiom as the bridge's ask
+  # and sprint reads, for the same reason.
+  notes --profile "$prof" projects 2>/dev/null | tr '\t' '\037' \
+    | while IFS=$'\037' read -r n sum st ver; do
     [ -z "$n" ] && continue
     lc="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')"
     _subheader "$n" "$(_status_gist "$sum" "$st")" "$ver"
@@ -469,7 +478,10 @@ _profile_agents_view() { # $1=profile
   if printf '%s' "$rline" | grep -q "$(printf '\t')"; then
     rcanon="${rline%%$'\t'*}"; rdetail="${rline#*$'\t'}"
   else rcanon=""; rdetail=""; fi
-  notes --profile "$prof" projects 2>/dev/null | while IFS=$'\t' read -r name sum st ver; do
+  # \037, not tab — an empty status column would otherwise collapse and shift the version
+  # into it (see _profile_view).
+  notes --profile "$prof" projects 2>/dev/null | tr '\t' '\037' \
+    | while IFS=$'\037' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
@@ -638,6 +650,12 @@ _feed_gist() { # $1=summary path -> "shipped v1.10.0, 6 to ship, 18 open, 1 PR"
   [ -n "$auto" ] || return 0
 
   tag="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `\([^`]*\)`\*\*.*/\1/p' | head -1)"
+  # The REPO-LESS shape. A lab project with frozen versions but no git tag behind it gets
+  # `**`name` · v0.0.1** — _(no git tag resolved)_` instead of a `shipped` line: the same
+  # fact, written as a different sentence. Reading only the tagged shape is why every
+  # personal project rendered a blank status while its own feed named a version.
+  [ -n "$tag" ] || tag="$(printf '%s' "$auto" \
+    | sed -n 's/.*\*\*`[^`]*` . \(v[0-9][^*]*\)\*\*.*/\1/p' | head -1 | sed 's/[[:space:]]*$//')"
   # strip the product prefix a monorepo tag carries; the project name is already on the row
   tag="${tag##*-}"
   # bullets between "Shipping next" and the next blank-line-terminated block
@@ -711,7 +729,9 @@ _bridge_view() { # $1=active profile
   local hot="" cold="" cw=0 cn=0 cr=0 cb=0 cm=0
   while IFS= read -r prof; do
   [ -z "$prof" ] && continue
-  while IFS=$'\t' read -r name sum st ver; do
+  # \037, not tab — an empty status column would otherwise collapse and shift the version
+  # into it (see _profile_view).
+  while IFS=$'\037' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$(canonical_of "$prof" "$lc")"
@@ -763,7 +783,7 @@ _bridge_view() { # $1=active profile
       local group; group="$(_subheader "$label" "$(_status_gist "$sum" "$st")" "$ver" "$badge")"$'\n'"${asks}${items}"
       if [ "$pn" -gt 0 ]; then hot="${hot}${group}"; else cold="${cold}${group}"; fi
     fi
-  done < <(notes --profile "$prof" projects 2>/dev/null)
+  done < <(notes --profile "$prof" projects 2>/dev/null | tr '\t' '\037')
   done < <(_bridge_profiles "$active")
   local body="${hot}${cold}"
   # status header — always-on "where we are"

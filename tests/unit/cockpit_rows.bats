@@ -643,3 +643,33 @@ S
   run _feed_gist "$dir/README.md"
   assert_output 'shipped v9.9.9'
 }
+
+@test "_feed_gist reads the REPO-LESS version line, not just a git tag" {
+  # A lab project with frozen versions but no git tag behind it gets a different sentence
+  # from lab-sync: `**`name` · v0.0.1** — _(no git tag resolved)_`. Reading only the
+  # `shipped` shape is why every personal project rendered a blank status while its own
+  # feed named a version two lines up.
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**`notes-cockpit` · v0.0.1** — _(no git tag resolved)_
+
+**In flight** (open PRs)
+- #166 fix: a fix
+<!-- AUTO:END -->
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output 'shipped v0.0.1, 1 PR'
+}
+
+@test "a real git tag still wins over the repo-less line" {
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**shipped `alpha-v1.10.0`** (2026-07-18)
+**`alpha` · v0.0.1** — _(no git tag resolved)_
+<!-- AUTO:END -->
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output 'shipped v1.10.0'
+}
