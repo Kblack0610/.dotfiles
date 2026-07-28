@@ -104,6 +104,14 @@ sandbox_init() {
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect
   # above relocates them for free; they are exported explicitly anyway so a test can point
   # one at an empty dir to exercise the "nothing here" branch without touching the others.
+  # Mirror the DEPLOYED lib path. Several subjects source ~/.local/lib/*.sh directly
+  # (agent-proof.sh has no env override and is sourced by five runners), and
+  # sandbox_init rewrites $HOME -- so without this the source silently no-ops and a
+  # test asserting on proof output sees an empty file rather than a failure.
+  mkdir -p "$HOME/.local/lib"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
+
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   export WATCH_DIR="$HOME/.agent/watches"
