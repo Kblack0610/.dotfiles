@@ -218,3 +218,20 @@ start_cockpit() {
   # Still painting the rail: the process did not crash out of fzf.
   wait_until 'screen_has "SECTIONS"'
 }
+
+# ── the launch render ────────────────────────────────────────────────────────
+
+@test "the cockpit opens on the section it was left on, rail and body agreeing" {
+  # The launch was pinned to `list_section personal` while the rail preview -- and every
+  # `reload($SELF --list)` after the first keypress -- followed $STATE. So relaunching on
+  # any other section opened with the sidebar pointing at one section and the body listing
+  # another, and the two surfaces openly disagreed about where you were standing. Every
+  # action that re-execs the cockpit (V, o, g, W) comes back through this render.
+  #
+  # Asserted on the BODY, which is the half that was wrong: `Playground` is a project of
+  # `work` and appears only inside `work`'s listing.
+  printf 'work' > "$TMPDIR/notes-cockpit-${UID:-$(id -u)}.section"
+  start_cockpit
+  wait_until 'screen_has "Playground"'
+  wait_until 'screen_lacks "Cockpit"'   # personal's project — what the body used to show
+}
