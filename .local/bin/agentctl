@@ -189,6 +189,25 @@ status_write() {
     mv -f "$tmp" "$f"
 }
 
+# The proof contract's engine half. The file itself is written by
+# ~/.local/lib/agent-proof.sh's proof_report(); these two only handle the states a
+# runner cannot report for itself: "started, has not said anything yet" and "exited
+# without ever saying anything".
+_outcome_file() { printf '%s/%s/last-outcome' "$STATE_DIR" "$1"; }
+
+_outcome_seed() {
+    local f; f="$(_outcome_file "$1")"
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+    printf 'PENDING' > "$f" 2>/dev/null || true
+}
+
+_outcome_promote() {
+    local f; f="$(_outcome_file "$1")"
+    [ -r "$f" ] || return 0
+    [ "$(cat "$f" 2>/dev/null)" = PENDING ] || return 0
+    printf 'STALLED' > "$f" 2>/dev/null || true
+}
+
 cmd_report() {
     local name="${AGENTCTL_NAME:-}" lifecycle=""
     local -a kvs=()
@@ -211,7 +230,12 @@ cmd_report() {
         start)
             # `project` is deliberately kept: a runner that reports one keeps it across
             # fires, and a fresh run overwrites it anyway. item/detail are last run's.
-            kvs+=(state=working item= detail=) ;;
+            kvs+=(state=working item= detail=)
+            # Seed the proof contract. The absence of a last-outcome must mean "this
+            # runner was never wired", NOT "it ran and said nothing" - those need
+            # different fixes and looked identical before. A run that STARTS declares
+            # PENDING and is expected to overwrite it.
+            _outcome_seed "$name" ;;
         stop)
             # systemd sets these for ExecStopPost only. Anything but `success` is a fault
             # worth a glyph, which is the distinction `inactive` alone can never make.
@@ -219,7 +243,12 @@ cmd_report() {
                 kvs+=(state=error "detail=result=${SERVICE_RESULT} exit=${EXIT_STATUS:-?}")
             else
                 kvs+=(state=idle detail=)
-            fi ;;
+            fi
+            # A runner that exited without ever declaring an outcome is STALLED. Doing
+            # this engine-side means every runner inherits the guard instead of adopting
+            # it one at a time - which is exactly how nightly-sync missed the guard dream
+            # already had, and went six nights writing nothing.
+            _outcome_promote "$name" ;;
         "") ;;
         *) die "report: unknown lifecycle '$lifecycle' (start|stop)" ;;
     esac
