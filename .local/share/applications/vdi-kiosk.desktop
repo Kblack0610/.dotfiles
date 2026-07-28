@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=VDI Kiosk (Chromium)
+GenericName=VDI Kiosk
+Comment=Chromium --app launcher for browser-based VDI; supports navigator.keyboard.lock() in fullscreen
+Exec=chromium --user-data-dir=/home/kblack0610/.local/share/vdi-chromium-profile --app=%u --start-fullscreen
+Icon=chromium
+Terminal=false
+Categories=Network;RemoteAccess;
+MimeType=x-scheme-handler/https;x-scheme-handler/http;
+NoDisplay=false
+StartupWMClass=Chromium
