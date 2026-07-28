@@ -100,6 +100,16 @@ _report() { # <state> <item> [detail]
 run_pass() {
   cd "$REPO" 2>/dev/null || { echo "wave-start: repo $REPO missing" >&2; return 1; }
 
+  # Backstop for the answer loop. The cockpit resumes an ask on the keypress that answers
+  # it, which covers the normal path; this catches an answer given anywhere else (a
+  # terminal `agent-ask answer`, a phone notification action) so a `W` press never scopes
+  # a fresh wave on top of an approval that was already given and never acted on.
+  # ASK_RESUME_DRAINING guards the recursion: ask-resume runs a `/wave` resume BY calling
+  # this script, which would otherwise drain again from inside its own drain.
+  if [ -z "${ASK_RESUME_DRAINING:-}" ] && command -v ask-resume >/dev/null 2>&1; then
+    ASK_RESUME_DRAINING=1 ask-resume --all >>"$LOG" 2>&1 || true
+  fi
+
   local t0 rc=0
   t0="$(date +%s)"
 

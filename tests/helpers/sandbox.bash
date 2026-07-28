@@ -19,12 +19,13 @@ FLEET="$REPO_ROOT/.local/src/tmux/fleet.sh"
 COCKPIT_SESSION_SH="$REPO_ROOT/.local/src/tmux/cockpit.sh"
 STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
+ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
 # NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
 # its former $BRIDGE export is gone with it. fleet.sh is the headless-side surface now.
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK AGENTCTL_BIN
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -78,7 +79,7 @@ sandbox_init() {
   # legitimately) writes straight THROUGH the link and truncates the real script in the
   # repo. That is a test suite silently editing its own subject.
   local b
-  for b in agent-ask; do
+  for b in agent-ask ask-resume; do
     [ -f "$REPO_ROOT/.local/bin/$b" ] || continue
     cp "$REPO_ROOT/.local/bin/$b" "$SANDBOX/bin/$b"
     chmod +x "$SANDBOX/bin/$b"

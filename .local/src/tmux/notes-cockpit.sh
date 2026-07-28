@@ -152,12 +152,44 @@ classify() {
   echo "$profile"
 }
 
+# The pending gate a sheet line is stamped with, if any: `<id><TAB><options>`, else nothing.
+#
+# This is the JOIN between the two views. `tasks` is your task sheet and `bridge` is the
+# agent queue; they are deliberately separate surfaces, but a wave that stops to ask you
+# something is BOTH — an item on your list and a question in the queue. A `/wave` stamps
+# `<!-- ask:<id> -->` on the source line when it posts the gate, the same way it stamps
+# `<!-- vk:<id> -->` once a ticket exists, and that stamp is the whole link.
+#
+# Before this, the link ran one way only: the board named the sheet, the ask named the
+# board, and the sheet named nothing. So a wave could be scoped, blocked, and waiting on
+# you while your own list showed three ordinary unchecked boxes.
+#
+# `--pending` is re-checked rather than trusted: a wave that dies between answering and
+# unstamping would otherwise leave a line that offers to answer a settled question.
+_line_ask() { # $1=rawtext -> "id<TAB>options" or empty
+  case "$1" in *'<!--'*ask:*) ;; *) return 0 ;; esac
+  local id; id="$(printf '%s' "$1" | sed -nE 's/.*<!--[[:space:]]*ask:([A-Za-z0-9_-]+).*/\1/p' | head -1)"
+  [ -n "$id" ] || return 0
+  command -v agent-ask >/dev/null 2>&1 || return 0
+  agent-ask show "$id" 2>/dev/null | awk -F': ' '
+    $1=="status"  { st=$2 }
+    $1=="options" { o=substr($0, index($0,": ")+2) }
+    END { if (st=="pending") printf "%s\t%s", id, o }' id="$id"
+}
+
+# The same, for a row that only carries file+line (the enter binding). One file read on a
+# keypress, versus _line_ask's zero — the render path already has the raw text.
+_line_ask_at() { # $1=file $2=line -> "id<TAB>options" or empty
+  [ -f "$1" ] && [ -n "${2:-}" ] || return 0
+  _line_ask "$(sed -n "${2}p" "$1" 2>/dev/null)"
+}
+
 # ── one task row: type profile file line key section cleantext ──
 # Shared formatter for both daily `## Focus` tasks and project-sheet `## Wave` tasks (both
 # arrive as `path<TAB>line<TAB>key<TAB>rawtext`). `section` places the row: `<profile>` for
 # an untagged/main task, `<profile>/<project>` for a project task.
 _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
-  local clean glyph lane="" tid=""
+  local clean glyph lane="" tid="" gate="" aid="" aopt=""
   # `#ai` is the LANE marker: this item belongs to the agents (a `/wave` picks these up),
   # everything untagged is the human's. Show it, so one list reads as two lanes.
   case "$6" in *'#ai'*) lane="${C_PROJ}@ai${C_OFF} " ;; esac
@@ -165,9 +197,16 @@ _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
   # the burn-down is visible without opening the sheet.
   tid="$(printf '%s' "$6" | grep -oE '<!--[[:space:]]*(vk|cu):[0-9]+' | grep -oE '[0-9]+' | head -1)"
   [ -n "$tid" ] && tid=" ${C_DIM}#${tid}${C_OFF}"
+  # A pending gate on this line outranks the checkbox: the item is not "not started", it
+  # is stopped ON you. Enter answers it here rather than opening the file (_enter_action).
+  IFS=$'\t' read -r aid aopt < <(_line_ask "$6")
   clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //; s/[[:space:]]*#ai\b//')"
-  if [[ "$6" =~ ^[[:space:]]*-\ \[/\] ]]; then glyph="${C_INP}[/]${C_OFF}"; else glyph="${C_BOX}[ ]${C_OFF}"; fi
-  printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s%s%s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$lane" "$clean" "$tid"
+  if [ -n "$aid" ]; then
+    glyph="${C_INP}[!]${C_OFF}"
+    gate=" ${C_INP}needs you${C_OFF}${aopt:+ ${C_DIM}(${aopt})${C_OFF}}"
+  elif [[ "$6" =~ ^[[:space:]]*-\ \[/\] ]]; then glyph="${C_INP}[/]${C_OFF}"
+  else glyph="${C_BOX}[ ]${C_OFF}"; fi
+  printf 'task\t%s\t%s\t%s\t%s\t%s\t%s %s%s%s%s\n' "$1" "$2" "$3" "$4" "$5" "$glyph" "$lane" "$clean" "$tid" "$gate"
 }
 
 # ── the profile's UNTAGGED/main lane: its daily `## Focus` tasks (project tasks live in the
@@ -686,6 +725,32 @@ _bridge_profiles() { # $1=active
 # Ordering carries the same intent. A project with a pending question sorts above one
 # without, and inside a project the questions come before the work items — so whatever is
 # waiting on you is the first row under the first header, never something you scroll to.
+# What you already decided, and whether the system did anything about it.
+#
+# An answered ask drops straight out of `--pending`, so the moment you answered a gate it
+# vanished from this view — which is precisely how "I approved that wave, why is nothing
+# happening?" stayed invisible for weeks. The answer went nowhere and showed nowhere.
+#
+# `resumed_at` is the load-bearing column, not the answer. `waiting to run` on a row you
+# answered ten minutes ago is a broken producer, and it says so on the row instead of
+# leaving you to guess. Enter opens the ask file.
+_answered_lane() {
+  local rows id p2 pr2 st kind q opt task aat rat mark
+  rows="$(agent-ask list --all --answered --since 3d 2>/dev/null | tr '\t' '\037')"
+  [ -n "$rows" ] || return 0
+  printf 'head\t\t\t\t\t\t%s  answered (3d)%s\n' "$C_DIM" "$C_OFF"
+  while IFS=$'\037' read -r id p2 pr2 st kind q opt task aat rat; do
+    [ -z "$id" ] && continue
+    if [ -n "$rat" ]; then mark="${C_DIM}running${C_OFF}"
+    elif [ -n "$(printf '%s' "$opt")" ] || [ "$kind" = gate ]; then mark="${C_INP}waiting to run${C_OFF}"
+    else mark="${C_DIM}noted${C_OFF}"; fi
+    # wire: aans <profile> <id> <options> <project> <sec> <DISPLAY>
+    printf 'aans\t%s\t%s\t%s\t%s\t%s\t  %s.%s %s%s%s  %s\n' \
+      "$pr2" "$id" "$opt" "$p2" "$pr2" "$C_DIM" "$C_OFF" \
+      "$C_DIM" "$(_ask_gist "$q")" "$C_OFF" "$mark"
+  done <<<"$rows"
+}
+
 _bridge_view() { # $1=active profile
   local active="$1" prof name st ver lc canon label
   local hot="" cold="" cw=0 cn=0 cr=0 cb=0 cm=0
@@ -721,9 +786,11 @@ _bridge_view() { # $1=active profile
         "$prof" "$cf" "$pr" "$canon" "$sec" "$col" "$glyph" "$C_OFF" "$title" "$prbadge" "$C_DIM" "$tk" "$C_OFF" "$progd")"$'\n'
     done < <(_sprint_items "$canon")
     # --- open questions (needs-you) ---
-    local id p2 pr2 status2 kind q opt task ag col2 o tctx
-    # US-delimited (tr) so an empty profile/task column does not collapse under `read`
-    while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task; do
+    local id p2 pr2 status2 kind q opt task aat rat ag col2 o tctx
+    # US-delimited (tr) so an empty profile/task column does not collapse under `read`.
+    # Read ALL ten columns: `read` puts every leftover field in the LAST variable, so
+    # naming only eight would silently append the two timestamps onto `task`.
+    while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task aat rat; do
       [ -z "$id" ] && continue
       cn=$((cn+1)); pn=$((pn+1))
       if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
@@ -748,7 +815,7 @@ _bridge_view() { # $1=active profile
     fi
   done < <(notes --profile "$prof" projects 2>/dev/null)
   done < <(_bridge_profiles "$active")
-  local body="${hot}${cold}"
+  local body="${hot}${cold}$(_answered_lane)"
   # status header — always-on "where we are"
   printf 'head\t\t\t\t\t\t%s  where we are:%s  %s~%d working%s  %s?%d need-you%s  %s>%d review%s  %sx%d blocked%s  %s*%d done%s\n' \
     "$C_HEAD" "$C_OFF" "$C_INP" "$cw" "$C_OFF" "$C_BOX" "$cn" "$C_OFF" "$C_SEL" "$cr" "$C_OFF" "$C_INP" "$cb" "$C_OFF" "$C_DIM" "$cm" "$C_OFF"
@@ -788,12 +855,22 @@ answer_ask() { # $1=id $2=options(pipe)
   fi
   [ -n "$ans" ] || return 0
   agent-ask answer "$id" "$ans" >/dev/null 2>&1
+  # Answering IS starting. `agent-ask answer` only records the decision and notifies —
+  # for a whole release cycle nothing consumed those answers, so approving a wave gate in
+  # this picker changed a field on disk and did literally nothing else. ask-resume runs
+  # the ask's `resume` command; it exits silently for an ask that has none, which is most
+  # of them, so this is safe on every answer.
+  command -v ask-resume >/dev/null 2>&1 && ask-resume "$id" >/dev/null 2>&1 &
 }
 
 # enter dispatch: print the fzf action for the highlighted row (task or any agent row).
 _enter_action() { # $1=type $2=profile $3=c3 $4=c4
   case "$1" in
     ask)      printf 'execute(%s --answer %q %q)+reload(%s --list)+refresh-preview' "$SELF" "$3" "$4" "$SELF" ;;
+    # An already-answered ask is read-only here: opening it shows the full question, your
+    # answer, and whether the resume ever ran. Re-answering is deliberately not offered —
+    # the producer has consumed it, and a second answer would be a no-op that looks real.
+    aans)     printf 'execute-silent(%s --show-ask %q)+abort' "$SELF" "$3" ;;
     item)     printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
     sess)     printf 'execute-silent(%s --resume-session %q)+abort' "$SELF" "$3" ;;
     sprint|sentinel) printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
@@ -801,7 +878,17 @@ _enter_action() { # $1=type $2=profile $3=c3 $4=c4
     # A scoping wave has no board or ask to open yet - its log is the only thing
     # to look at, and "what is it doing right now" is the whole reason for the row.
     wave)     printf 'execute-silent(%s --wave-log %q)+abort' "$SELF" "$3" ;;
-    task)     printf 'execute-silent(%s --jump task %q %q)+abort' "$SELF" "$3" "$4" ;;
+    # A sheet line stamped with a PENDING gate answers it in place. The tasks view stays a
+    # task sheet — this is the one affordance it borrows from the bridge, and only on the
+    # lines a wave has actually stopped on. Everything else still opens the file.
+    task)
+      local _aid _aopt
+      IFS=$'\t' read -r _aid _aopt < <(_line_ask_at "$3" "$4")
+      if [ -n "$_aid" ]; then
+        printf 'execute(%s --answer %q %q)+reload(%s --list)+refresh-preview' "$SELF" "$_aid" "$_aopt" "$SELF"
+      else
+        printf 'execute-silent(%s --jump task %q %q)+abort' "$SELF" "$3" "$4"
+      fi ;;
     *) printf '' ;;
   esac
 }
@@ -1385,6 +1472,7 @@ case "${1:-}" in
   --toggle-mode) toggle_mode; exit 0 ;;
   --enter-action) shift; _enter_action "$@"; exit 0 ;;
   --answer) shift; answer_ask "${1:-}" "${2:-}"; exit 0 ;;
+  --show-ask) [ -n "${2:-}" ] && tmux new-window "agent-ask show '$2' | ${PAGER:-less}" 2>/dev/null; exit 0 ;;
   --resume-session) [ -n "${2:-}" ] && tmux new-window "sessions resume '$2'" 2>/dev/null; exit 0 ;;
   --open-file) [ -f "${2:-}" ] && tmux new-window "nvim '$2'" 2>/dev/null; exit 0 ;;
   --journal) [ -n "${2:-}" ] && tmux new-window "journalctl --user -u 'agentctl@$2.service' -e -n 200 || journalctl --user -u 'agentctl@$2.service'" 2>/dev/null; exit 0 ;;
