@@ -42,7 +42,13 @@ DRY_RUN=false
 HERE=false
 RESET=false
 ONLY_TOOLS=()
+# Wallpapers are searched in BOTH locations, in order. Media/Wallpapers is the
+# repo's main image tree (and what hyprpaper.conf points at); the theme-local
+# dir holds theme-specific art shipped next to the engine. Previously only the
+# latter was searched, so the 9 images in Media/Wallpapers were invisible to
+# theme-switch and every switch warned "no images found" and left the wallpaper.
 WALLPAPER_DIR="$SCRIPT_DIR/wallpapers"
+WALLPAPER_DIRS=("$DOTFILES/Media/Wallpapers" "$SCRIPT_DIR/wallpapers")
 ALL_TOOLS=(kitty nvim lualine neo-tree starship lazygit waybar sketchybar hyprland wallpaper)
 
 # OS-gated tools — only applied on their native platform. Anything NOT listed
@@ -426,14 +432,18 @@ apply_wallpaper() {
     # (e.g. theme "tokyonight" can match wallpapers named "tokyo-night-*")
     local prefix="${THEME_WALLPAPER_PREFIX:-$THEME_NAME}"
     local candidates=()
-    for ext in jpg jpeg png webp; do
-        for f in "$WALLPAPER_DIR/${prefix}"-*."$ext"; do
-            [[ -f "$f" ]] && candidates+=("$f")
+    local dir
+    for dir in "${WALLPAPER_DIRS[@]}"; do
+        [[ -d "$dir" ]] || continue
+        for ext in jpg jpeg png webp; do
+            for f in "$dir/${prefix}"-*."$ext"; do
+                [[ -f "$f" ]] && candidates+=("$f")
+            done
         done
     done
 
     if [[ ${#candidates[@]} -eq 0 ]]; then
-        warn "wallpaper: no images found matching '${prefix}-*' in $WALLPAPER_DIR"
+        warn "wallpaper: no images found matching '${prefix}-*' in ${WALLPAPER_DIRS[*]}"
         return
     fi
 
