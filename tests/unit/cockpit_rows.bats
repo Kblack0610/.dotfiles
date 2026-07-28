@@ -309,6 +309,88 @@ SHEET
   assert_output '- [ ] plain task'
 }
 
+# ── _sprint_items: the blackboard parser ────────────────────────────────────
+
+# `sync`/the bridge decide what to SHOW from this. Two bugs here rendered a live wave as
+# six phantom rows and zero real ones, while it sat waiting on a human.
+
+mk_board() {
+  BOARD_DIR="$HOME/.agent/plans/probe"; mkdir -p "$BOARD_DIR"
+  cat > "$BOARD_DIR/sprint-2026-07-27.md"
+}
+
+@test "_sprint_items stops at the next H2 instead of eating later tables" {
+  # NEGATIVE CONTROL: `cols` used to latch on the first ticket+status header, so the wave
+  # schema's `## Wave gate` table (Step|Gate|Status|Evidence) was parsed with the queue's
+  # column indices and rendered as phantom work items.
+  mk_board <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 601 | a real bug | queued |
+
+## Wave gate
+| Step | Gate | Status | Evidence |
+|------|------|--------|----------|
+| 1 | freshness | — | |
+| 2 | full e2e | — | |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  assert_output '1'
+}
+
+@test "_sprint_items does not emit the wave-gate steps as work items" {
+  mk_board <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 601 | a real bug | queued |
+
+## Wave gate
+| Step | Gate | Status | Evidence |
+|------|------|--------|----------|
+| 1 | freshness | — | |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  refute_output --partial 'freshness'
+}
+
+@test "_sprint_items renders a PROPOSED row whose ticket cell is still empty" {
+  # NEGATIVE CONTROL: a wave writes its stub board BEFORE the approval gate, so every row
+  # has an empty Ticket cell. Skipping those hid the entire proposal while the wave waited.
+  mk_board <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 |  | ALW is not searchable | queued |
+| 2 |  | accepts filters are a no-op | queued |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  assert_output '2'
+}
+
+@test "a proposed row is keyed by its row number so it stays addressable" {
+  mk_board <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 |  | ALW is not searchable | queued |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  assert_output --partial '~1'
+}
+
+@test "_sprint_items still drops the header row itself" {
+  mk_board <<'B'
+## Queue
+| # | Ticket | Title | Status |
+|---|--------|-------|--------|
+| 1 | 601 | a real bug | queued |
+B
+  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  refute_output --partial 'Title'
+}
+
 # ── view mode ────────────────────────────────────────────────────────────────
 
 @test "read_mode defaults to tasks and toggle_mode cycles all three views" {
