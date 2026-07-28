@@ -335,7 +335,7 @@ mk_board() {
 | 1 | freshness | — | |
 | 2 | full e2e | — | |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
   assert_output '1'
 }
 
@@ -351,7 +351,7 @@ B
 |------|------|--------|----------|
 | 1 | freshness | — | |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
   refute_output --partial 'freshness'
 }
 
@@ -365,7 +365,7 @@ B
 | 1 |  | ALW is not searchable | queued |
 | 2 |  | accepts filters are a no-op | queued |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
   assert_output '2'
 }
 
@@ -376,7 +376,7 @@ B
 |---|--------|-------|--------|
 | 1 |  | ALW is not searchable | queued |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
   assert_output --partial '~1'
 }
 
@@ -387,7 +387,7 @@ B
 |---|--------|-------|--------|
 | 1 | 601 | a real bug | queued |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
   refute_output --partial 'Title'
 }
 
@@ -405,7 +405,7 @@ B
 |---|--------|-------|--------|
 | 1 | 601 | a versioned wave item | in-progress |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
   assert_output --partial 'a versioned wave item'
 }
 
@@ -426,7 +426,7 @@ B
 |---|--------|-------|--------|
 | 1 | 602 | the current wave | in-progress |
 B
-  run bash -c 'eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
   assert_output --partial 'the current wave'
   refute_output --partial 'the old dated wave'
 }

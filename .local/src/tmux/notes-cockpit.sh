@@ -30,6 +30,15 @@
 
 set -uo pipefail
 SELF="$(realpath "$0")"
+
+# The one board parser, shared with wave-session and the headless daemons. Lookup order:
+# explicit override (tests), deployed path, then the in-repo sibling so a checkout
+# works before stow has run.
+# shellcheck source=/dev/null
+. "${AGENT_BOARD_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/agent-board.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../lib/agent-board.sh" 2>/dev/null \
+  || { echo "notes-cockpit: agent-board.sh not found" >&2; exit 1; }
 # Per-instance state suffix. The section/mode/filter files are keyed on UID alone, which is
 # right for a popup (only one can be open) but wrong the moment two copies run at once —
 # the persistent cockpit session keeps a `bridge` window and a `notes` window both running
@@ -576,60 +585,21 @@ _global_agents() {
 # Parse the newest sprint blackboard's Rows/Queue table into work items. Schema-
 # tolerant: map columns by header name, derive a lifecycle stage from the Status
 # keyword, pull a PR number. TSV out: ticket \t stage \t title \t pr \t sentinel.
+# All three of these delegate to ~/.local/lib/agent-board.sh, the ONE board parser.
+# The awk that used to live here was the only correct one of five readers; extracting
+# it is what lets wave-session, delivery-loop and captain-watchdog stop guessing.
 _sprint_items() { # $1=canon
-  local bb; bb="$(ls -1t "$HOME/.agent/plans/$1"/sprint-*.md 2>/dev/null | head -1)"
-  [ -n "$bb" ] || return 0
-  awk -F'|' '
-    function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
-    # A new H2 ends the previous table. Without this, `cols` latched on the FIRST
-    # ticket+status header and every later pipe table in the file was parsed with the
-    # queue`s column indices - so the wave schema`s `## Wave gate` table (Step|Gate|
-    # Status|Evidence) rendered as six phantom "working" items.
-    /^## / { cols=0; next }
-    !cols && /\|/ && (tolower($0) ~ /ticket/ && tolower($0) ~ /status/) {
-      for(i=2;i<=NF;i++){ h=tolower(trim($i)); if(h!="") col[h]=i }
-      cols=1; next
-    }
-    /^\|[ ]*:?-+/ { next }
-    cols && /^\|/ {
-      tk=trim($(col["ticket"])); st=trim($(col["status"])); ti=trim($(col["title"]))
-      sen=(col["sentinel"])?trim($(col["sentinel"])):""
-      # A PROPOSED row has no ticket yet - the wave writes its stub board before the
-      # approval gate, deliberately, so a gate stop leaves an artifact. Fall back to the
-      # row number so those rows still render; skipping them hid the actual proposal and
-      # left the panel showing nothing while a wave waited on an answer.
-      if(tk=="" && ti!="" && col["#"]) tk="~" trim($(col["#"]))
-      if(tk=="" || tolower(tk)=="ticket") next
-      low=tolower(st" "sen)
-      if(low ~ /merged|status: *done|\bdone\b/) stage="merged"
-      else if(low ~ /blocked/) stage="blocked"
-      else if(low ~ /error|failed/) stage="error"
-      else if(low ~ /pr[- ]?open|pr *#|pull\/[0-9]|merge it|ready/) stage="review"
-      else if(low ~ /queued|filed|not dispatched|n\/a|returns/) stage="queued"
-      else stage="working"
-      pr=""; if(match(st,/pull\/[0-9]+/)) pr=substr(st,RSTART+5,RLENGTH-5)
-      else if(match(st,/#[0-9]+/)) pr=substr(st,RSTART+1,RLENGTH-1)
-      # US-delimited (\037) so a `read` on empty pr/sen does not collapse fields
-      printf "%s\037%s\037%s\037%s\037%s\n", tk, stage, ti, pr, sen
-    }
-  ' "$bb"
+  board_rows "$(board_newest "$1")"
 }
 
 # terminal sentinel of a checkpoint (DONE|FAILED|PARTIAL), or empty
 _ckpt_sentinel() { # $1=file
-  [ -f "$1" ] || return 0
-  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}'
+  board_sentinel_of "$1"
 }
 
 # resolve a ticket's checkpoint file: sentinel hint -> ticket.md -> first-token.md
 _ckpt_file() { # $1=canon $2=ticket $3=sentinel -> path or empty
-  local d="$HOME/.agent/plans/$1/checkpoints" base
-  case "$3" in
-    *checkpoints/*) base="$(printf '%s' "$3" | sed -E 's#.*checkpoints/##; s/\.md.*//; s/[ `]//g')"
-      [ -f "$d/$base.md" ] && { printf '%s' "$d/$base.md"; return; } ;;
-  esac
-  [ -f "$d/$2.md" ] && { printf '%s' "$d/$2.md"; return; }
-  local first="${2%% *}"; [ -f "$d/$first.md" ] && printf '%s' "$d/$first.md"
+  board_checkpoint_of "$1" "$2" "$3"
 }
 
 # latest progress leg + age from a checkpoint file (the "where we're at")

@@ -30,6 +30,15 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 PLANS_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}"
 
+# The one board parser, shared with notes-cockpit and the headless daemons. Lookup order:
+# explicit override (tests), deployed path, then the in-repo sibling so a checkout
+# works before stow has run.
+# shellcheck source=/dev/null
+. "${AGENT_BOARD_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/agent-board.sh" 2>/dev/null \
+  || . "$HERE/../../lib/agent-board.sh" 2>/dev/null \
+  || { echo "wave-session: agent-board.sh not found" >&2; exit 1; }
+
 have_tmux() { command -v tmux >/dev/null 2>&1; }
 
 # session_of <app> -> the work session's name. Deliberately the bare app name, matching
@@ -53,31 +62,33 @@ blackboard_of() {
   ls -1t "$PLANS_DIR/$1"/sprint-*.md 2>/dev/null | head -1
 }
 
-# rows_of <bb> -> `ticket<TAB>status<TAB>title` for every queue row.
-# Parses the pipe table by HEADER NAME rather than column index, so adding a column to
-# the schema (the wave rows carry Sub-branch/Wave commit/Gate) cannot silently shift what
-# this reads — the same approach notes-cockpit's _sprint_items uses.
+# rows_of <bb> -> `ticket<TAB>stage<TAB>title` for every queue row.
+#
+# Now a thin shim over the shared parser in ~/.local/lib/agent-board.sh. The awk that
+# used to live here keyed the header on a literal `#` first column, so a real board
+# headed `| Ticket | P | Title | Lane | Agent | Status | Sentinel |` matched nothing and
+# this returned ZERO rows; it also latched the column map once per FILE, so the wave
+# schema's `## Wave gate` table came back as phantom queue rows.
+#
+# Column 2 is now the normalised STAGE, not the raw Status text. `_is_live` reads the
+# stage, so a prose status like `**DONE - PR #1036 merged**` classifies correctly
+# instead of falling through to "not a status I recognise".
 rows_of() {
   [ -f "${1:-}" ] || return 0
-  awk -F'|' '
-    /^\|/ {
-      n=split($0, c, "|")
-      for (i=1;i<=n;i++) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", c[i]) }
-      if (!hdr && tolower(c[2]) ~ /^#$/) {
-        for (i=2;i<=n;i++) { k=tolower(c[i]); if (k=="ticket") t=i; else if (k=="status") s=i; else if (k=="title") ti=i }
-        hdr=1; next
-      }
-      if (hdr && c[2] !~ /^-+$/ && c[2] != "" && t && s) {
-        if (c[t] != "" && c[t] !~ /^-+$/) print c[t] "\t" c[s] "\t" c[ti]
-      }
-    }' "$1"
+  local tk stage ti
+  while IFS=$'\037' read -r tk stage ti _; do
+    [ -n "$tk" ] && printf '%s\t%s\t%s\n' "$tk" "$stage" "$ti"
+  done < <(board_rows "$1")
 }
 
 # A row worth a window: the agent is on it or it needs a human. Terminal rows do not get
 # one — a merged ticket's window is noise, and reconciling it away is what `sync` does.
+#
+# Takes a STAGE (see agent-board.sh). Accepts the raw status words too, so a caller
+# passing `in-progress` straight from a board still works: those map onto themselves.
 _is_live() {
-  case "$1" in
-    in-progress|blocked|error) return 0 ;;
+  case "$(board_stage_of "${1:-}")" in
+    working|blocked|error) return 0 ;;
     *) return 1 ;;
   esac
 }
