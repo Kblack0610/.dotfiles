@@ -25,7 +25,10 @@ ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN
+# The shared board parser. Exported so a subject can find it even though sandbox_init
+# rewrites $HOME, which is where the deployed copy would otherwise live.
+AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds

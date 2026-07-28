@@ -17,6 +17,10 @@ setup() {
   sandbox_init basic
   WS="$REPO_ROOT/.local/src/tmux/wave-session.sh"
   # Source only the pure helpers — the file's dispatch block would otherwise run.
+  # rows_of and _is_live now delegate to the shared parser, so it has to be loaded
+  # before the extracted helpers can run.
+  # shellcheck source=/dev/null
+  . "$AGENT_BOARD_LIB"
   eval "$(sed -n '/^rows_of()/,/^}/p; /^_is_live()/,/^}/p; /^slugify()/,/^}/p; /^session_of()/,/^}/p; /^blackboard_of()/,/^}/p' "$WS")"
   BB="$BATS_TEST_TMPDIR/sprint.md"
 }
@@ -25,15 +29,17 @@ write_bb() { cat > "$BB"; }
 
 # ── rows_of ──────────────────────────────────────────────────────────────────
 
-@test "rows_of reads ticket, status and title from the queue table" {
+@test "rows_of reads ticket, STAGE and title from the queue table" {
   write_bb <<'EOF'
 ## Queue
 | # | Ticket | Title | Pri | Conflicts | Status | Sub-branch | Wave commit | Gate | Result |
 |---|--------|-------|-----|-----------|--------|------------|-------------|------|--------|
 | 1 | 601 | Thumbnail squished | P1 | - | in-progress | fix/x | - | rev:PASS | - |
 EOF
+  # Column 2 is the normalised STAGE now, not the raw cell: `in-progress` is the
+  # `working` stage. That is what lets a prose status classify at all.
   run rows_of "$BB"
-  assert_output $'601\tin-progress\tThumbnail squished'
+  assert_output $'601\tworking\tThumbnail squished'
 }
 
 @test "rows_of keys on HEADER NAME, so an added column cannot shift what it reads" {
@@ -56,7 +62,7 @@ EOF
 |---|--------|-------|--------|
 | 1 | 601 | a | in-progress |
 EOF
-  run bash -c "$(declare -f rows_of); rows_of '$BB' | wc -l"
+  run bash -c "$(declare -f board_rows); $(declare -f rows_of); rows_of '$BB' | wc -l"
   assert_output '1'
 }
 
