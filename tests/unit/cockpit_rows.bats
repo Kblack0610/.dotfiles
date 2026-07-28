@@ -443,3 +443,133 @@ B
 @test "read_section defaults to personal" {
   assert_equal "$(read_section)" 'personal'
 }
+
+# ── _feed_gist / _ask_gist: what a project row actually says ─────────────────
+#
+# The bridge row used to carry the summary's STATUS block: prose an LLM writes and nothing
+# refreshes. On the live board it read `v1.8.15 live (2026-06-30)` for three weeks while
+# the project shipped v1.10.0 and opened v1.10.1. These two helpers replace it with counts
+# taken from the AUTO block, which lab-sync regenerates, and with the one sentence of an
+# ask you actually have to answer.
+
+load_gists() {
+  eval "$(sed -n '/^_feed_gist()/,/^}/p; /^_ask_gist()/,/^}/p' "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"
+}
+
+mk_summary() { SUMMARY="$BATS_TEST_TMPDIR/summary.md"; cat > "$SUMMARY"; }
+
+@test "_feed_gist counts what is shipping, open and in flight" {
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**shipped `alpha-v1.10.0`** (2026-07-18)
+
+**Shipping next** — merged to `develop` since `alpha-v1.10.0`:
+- fix: one
+- fix: two
+
+**In progress** (tracker):
+- Area: a ticket
+- Area: another ticket
+
+**In flight** (open PRs)
+- #1093 docs: a doc
+<!-- AUTO:END -->
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output 'shipped v1.10.0, 2 to ship, 2 open, 1 PR'
+}
+
+@test "the product prefix is stripped from a monorepo tag" {
+  # `alpha-v1.10.0` on a row already labelled `alpha` is just noise.
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**shipped `alpha-v1.10.0`** (2026-07-18)
+<!-- AUTO:END -->
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output 'shipped v1.10.0'
+}
+
+@test "an elided ticket list reports the REAL total, not the visible rows" {
+  # `- …(+10 more)` is itself a bullet. Counting it as a ticket AND adding its number is an
+  # off-by-one in the only direction nobody would catch: the total still looks plausible.
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**In progress** (tracker):
+- Area: one
+- Area: two
+- …(+10 more)
+<!-- AUTO:END -->
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output '12 open'
+}
+
+@test "_feed_gist is silent for a project with no AUTO block" {
+  # It must fall back to the old STATUS line rather than blanking the row.
+  mk_summary <<'S'
+# a project
+just prose, never lab-synced.
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output ''
+}
+
+@test "_feed_gist is silent on a missing file" {
+  load_gists
+  run _feed_gist "$BATS_TEST_TMPDIR/nope.md"
+  assert_success
+  assert_output ''
+}
+
+@test "_feed_gist omits a section that has nothing in it" {
+  mk_summary <<'S'
+<!-- AUTO:START -->
+**shipped `alpha-v2.0.0`** (2026-07-18)
+
+**Shipping next** — merged since:
+
+**In flight** (open PRs)
+S
+  load_gists
+  run _feed_gist "$SUMMARY"
+  assert_output 'shipped v2.0.0'
+}
+
+@test "_ask_gist keeps the QUESTION, which an agent writes LAST" {
+  # The live wave posted ~900 characters of findings and closed with the one thing needing
+  # an answer. Head-truncation would have cut off exactly that part.
+  load_gists
+  run _ask_gist "Wave 2026-07-27: 3 items -> 3 tickets, but NOT the ones on the sheet. (a) already shipped. (b) the real gap is search. (c) a prod ops action, recommend trimming. Create the 3 tickets and cut the branch?"
+  assert_output 'Create the 3 tickets and cut the branch?'
+}
+
+@test "_ask_gist leaves a short question alone" {
+  load_gists
+  run _ask_gist "PR #1036 is green, merge it?"
+  assert_output 'PR #1036 is green, merge it?'
+}
+
+@test "_ask_gist truncates when there is no trailing question" {
+  load_gists
+  run bash -c "$(declare -f _ask_gist); _ask_gist 'Wave stopped before creating anything: 1 item, 0 tickets. Two hard blocks. The tracker is missing and the pass is headless.' | wc -c"
+  assert_output '88'   # 85 chars + the ellipsis, no trailing newline
+}
+
+@test "_ask_gist collapses newlines and tabs so a row cannot break the wire" {
+  # Field 7 is the DISPLAY column of a tab-separated row: a stray tab shifts every column.
+  load_gists
+  run _ask_gist "$(printf 'one\ttwo\nthree?')"
+  assert_output 'one two three?'
+}
+
+@test "_ask_gist ignores a trailing question that is really a whole paragraph" {
+  # A long final clause is not a summary; fall back to truncation rather than emit a wall.
+  load_gists
+  run bash -c "$(declare -f _ask_gist); _ask_gist 'Some findings here. Given all of the above and the fact that nothing else was reachable, should we now go ahead and create every one of the proposed tickets and cut the branch?' | wc -c"
+  assert_output '88'   # 85 chars + the ellipsis, no trailing newline
+}
