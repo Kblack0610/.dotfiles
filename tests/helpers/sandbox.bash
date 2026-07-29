@@ -36,7 +36,12 @@ export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_
 sandbox_init() {
   local fixture="${1:-basic}"
 
-  SANDBOX="${BATS_TEST_TMPDIR}/sb space"   # the space is intentional
+  # Resolved to its PHYSICAL path. On macOS $BATS_TEST_TMPDIR sits under /var/folders,
+  # and /var is a symlink to /private/var — so the logical path a test registers in
+  # project-map.json ("/var/...") never equals what `git rev-parse --git-common-dir`
+  # hands the subject back ("/private/var/..."), and 8 project-name tests failed on the
+  # exact-path lookup. `pwd -P` is a no-op on Linux, where /tmp is a real directory.
+  SANDBOX="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)/sb space"   # the space is intentional
   mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
 
   export HOME="$SANDBOX/home"

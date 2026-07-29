@@ -137,10 +137,13 @@ install_basics() {
         install_from_brewfile
     else
         log_warning "Brewfile not found — falling back to catalog PACKAGES_BASIC"
-        # Mac-specific augmentation: GNU coreutils for shell-script portability
+        # Mac-specific augmentation: a modern bash (the system one is 3.2, with no
+        # associative arrays) plus the GNU userland, for shell-script portability.
+        # Keep this list in sync with the "GNU userland" block in the Brewfile, which
+        # is what the primary path above actually installs.
         install_package_list install_brew_package mac \
             $PACKAGES_BASIC $PACKAGES_BASIC_MAC \
-            coreutils findutils gnu-sed
+            bash coreutils findutils gnu-sed
     fi
 }
 

@@ -44,7 +44,12 @@ import sys
 try:
     import yaml
 except ImportError:
-    sys.exit("sentinel-manifest: PyYAML is required (pacman -S python-yaml)")
+    sys.exit(
+        "sentinel-manifest: PyYAML is required.\n"
+        "  Arch:   pacman -S python-yaml\n"
+        "  Debian: apt install python3-yaml\n"
+        "  macOS:  uv pip install --python \"$(command -v python3)\" pyyaml"
+    )
 
 
 # Keep ISO timestamps as plain strings — the caller passes them to `date -d`,

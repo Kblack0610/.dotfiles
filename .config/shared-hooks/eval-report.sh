@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Eval trend report — aggregates session eval scores across all projects.
 # Usage: eval-report.sh [--project NAME] [--days N]
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Infrastructure Dashboard - Main Collector
 # Reads config.toml, runs collectors, outputs JSON to cache
 

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Stub for `fzf`.
+#
+# Without this, any test that reaches the cockpit's UI launch (`list_section | fzf ...`)
+# HANGS instead of failing: fzf drains stdin and then opens /dev/tty for interaction, so
+# it blocks forever on any machine that has a terminal. It only appeared to pass in CI,
+# where there is no tty and fzf exits on its own. That made the fast tier unrunnable from
+# the stop-checks hook on a developer box -- the hook hung rather than reporting.
+#
+# Same reasoning as the tmux stub: the fast tier must never start a real UI.
+#
+# Exits 130, fzf's "aborted by the user" status, which is the one outcome every caller
+# already has to handle -- so a test reaching the picker sees "nothing was selected"
+# rather than a hang or a fabricated selection.
+set -uo pipefail
+
+cat >/dev/null 2>&1 || true      # drain the row list so the producer never gets SIGPIPE
+
+if [ -n "${NOTES_FIXTURE:-}" ]; then
+  printf 'fzf %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+fi
+
+exit 130

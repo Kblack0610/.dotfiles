@@ -4,7 +4,17 @@
 # Only add paths that exist and aren't already in PATH
 path_prepend() {
     for dir in "$@"; do
-        [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]] && PATH="$dir:$PATH"
+        [ -d "$dir" ] || continue
+        # Drop any existing occurrence first, THEN prepend. The old version skipped
+        # entirely when the dir was already in PATH, which quietly broke macOS:
+        # /etc/paths.d/homebrew makes path_helper insert /opt/homebrew/bin *after*
+        # /usr/bin and /bin, so the prepend became a no-op and the system bash 3.2
+        # and BSD coreutils won over Homebrew for every shell and hook.
+        PATH=":$PATH:"
+        PATH="${PATH//:$dir:/:}"
+        PATH="${PATH#:}"
+        PATH="${PATH%:}"
+        PATH="$dir:$PATH"
     done
 }
 
@@ -79,6 +89,14 @@ path_append "$ANDROID_HOME/cmdline-tools/latest/bin"
 case "$(uname -s)" in
     Darwin)
         path_prepend "/opt/homebrew/bin"
+        # GNU userland ahead of the BSD one. The shell scripts and the bats suite in
+        # this repo are written against GNU semantics (`sed -i` with no arg, `touch -d`,
+        # unpadded `wc`), so on macOS they need these to win. Each is a no-op until the
+        # matching brew formula is installed, so this is safe on a bare Mac.
+        path_prepend "/opt/homebrew/opt/coreutils/libexec/gnubin" \
+                     "/opt/homebrew/opt/findutils/libexec/gnubin" \
+                     "/opt/homebrew/opt/gnu-sed/libexec/gnubin" \
+                     "/opt/homebrew/opt/grep/libexec/gnubin"
         path_prepend "$HOME/.codeium/windsurf/bin"
         ;;
 esac

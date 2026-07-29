@@ -5,6 +5,21 @@ tap "jesseduffield/lazygit"
 tap "lizardbyte/homebrew"
 tap "felixkratz/formulae"
 
+# --- GNU userland ---
+# The shell scripts and the bats suite in this repo are written against GNU semantics
+# (`sed -i` with no arg, `touch -d`, unpadded `wc`) and several scripts need associative
+# arrays, which the system bash 3.2 does not have. Without these, 51 of the shell tests
+# fail on macOS and claude-status.sh errors into the tmux status bar. .commonrc puts the
+# gnubin dirs ahead of /usr/bin on Darwin.
+brew "bash"
+brew "coreutils"
+brew "findutils"
+brew "gnu-sed"
+brew "grep"        # BSD grep has no -P; the integ suite matches literal tabs with it
+# python3 for sentinel-manifest. Its PyYAML dependency is NOT a brew formula — after a
+# fresh install run: uv pip install --python "$(command -v python3)" pyyaml
+brew "python"
+
 # --- Core CLI Tools ---
 brew "asdf"
 brew "fzf"
