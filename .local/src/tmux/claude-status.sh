@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Tmux Claude status - two modes:
 # 1. No args: returns status for current session (for status-left)
@@ -11,17 +11,23 @@ get_session_status() {
     local done=0
     local total=0
 
-    declare -A seen_windows
+    # A newline-delimited set, NOT an associative array. tmux runs status-left through
+    # its own environment, which does not source the shell rc - so on macOS this script
+    # gets /bin/bash 3.2 (no `declare -A`) no matter where Homebrew sits in an
+    # interactive PATH, and the whole status bar rendered as a `declare: -A: invalid
+    # option` error instead of the glyphs. Newline-delimited so a session name
+    # containing spaces still matches exactly.
+    local seen_windows=$'\n'
 
     while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
         # Filter to target session if specified
         [[ -n "$target_session" && "$session" != "$target_session" ]] && continue
 
         window_key="${session}:${window_idx}"
-        [[ -n "${seen_windows[$window_key]}" ]] && continue
+        case "$seen_windows" in *$'\n'"$window_key"$'\n'*) continue ;; esac
 
         if [[ "$pane_cmd" == "claude" ]]; then
-            seen_windows[$window_key]=1
+            seen_windows="${seen_windows}${window_key}"$'\n'
             ((total++))
 
             # Capture last lines to detect state

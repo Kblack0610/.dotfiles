@@ -1,1 +1,1 @@
-/home/kblack0610/.dotfiles/.claude/plugins/marketplaces/claude-plugins-official/plugins/feature-dev/commands/feature-dev.md
+../plugins/marketplaces/claude-plugins-official/plugins/feature-dev/commands/feature-dev.md
