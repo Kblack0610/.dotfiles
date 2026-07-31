@@ -71,6 +71,14 @@ Every tunable is `${VAR:-default}` at the top of the script.
 
 `$PANEL_DIR` is the realpath'd directory of the running script, so it is right under stow.
 
+**A data file that names machine-specific paths must be machine-independent.** The
+`.config/tmux-servers/*.conf` manifests are the case in point: they are identical on every
+host, and `cmd_ensure` skips (and counts) any entry whose directory does not exist, so each
+machine materialises only its own subset. Do not fork such a file per host, and do not
+fall back to a default path when the declared one is missing - a fallback silently
+produces a wrong-but-plausible result, which is exactly how a `home-config` session ended
+up rooted at `$HOME` on a machine that never had the repo.
+
 ## Colour: ANSI indices only
 
 Use the `C_*` names from the library. Never emit `38;2;R;G;B` or `38;5;N`.
