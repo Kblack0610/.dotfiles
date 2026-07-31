@@ -27,7 +27,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
-- **Which world**: `Prefix+C-s` (or bare `tmx`) → the two worlds, sessions in the preview
+- **Which world**: `Prefix+C-s` (or bare `tmx`) → the worlds, sessions in the preview
 - **Everything, everywhere**: `Prefix+A` → every session and window on every server
 - **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
@@ -173,21 +173,38 @@ is the drill-down.
 without a terminal; `tests/ui/servers_isolation.bats` covers it.
 
 One limit worth knowing: the manifest is whitespace-delimited, so a session directory
-containing a space cannot be expressed there (it falls back to `$HOME`).
+containing a space cannot be expressed there (such a line is skipped).
 
 ### Worlds
-
-Two, deliberately. A third `work` server was tried and dropped as noise.
 
 | Server | Sessions | Lands on |
 |---|---|---|
 | `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
 session**: `tmx hop hub` attaches straight to it, so you arrive in today's note
 rather than a bare shell.
+
+Worlds are **discovered** from that directory rather than hardcoded, so dropping in a
+`<name>.conf` creates a world with no code change - which is what makes a per-client
+world a config edit. `hub` and `lab` are seeded first so the picker order stays stable,
+and are offered even when their manifest is absent. `work.conf` lives in
+`.dotfiles-private`, because client names and repo layouts do not belong on public
+GitHub; `stow --no-folding` links files individually, so it lands in the same
+`~/.config/tmux-servers/` directory.
+
+**A manifest is identical on every machine.** An entry whose directory does not exist
+is **skipped**, and the count is reported (`3 created, 0 already up, 1 skipped (no
+dir)`), so each host materialises only the sessions it actually has: `home-config` and
+`platform` are Linux-only, a client repo only exists on that client's machine. This
+replaced a `$HOME`
+fallback that created a junk session rooted at home on every machine lacking the repo
+- which is why a `home-config` window used to open on the Mac. Skipping still never
+costs you the rest of the manifest, and the reported count is what keeps a mistyped
+path from vanishing silently.
 
 The startup command is delivered with `send-keys` rather than as a
 `new-session <cmd>` argument, so quitting the editor drops you into a normal shell
@@ -267,19 +284,21 @@ sessions siblings in a single process rather than separate systems - so one
 `tmux kill-server` took out all of them at once. Each world now owns a socket, and
 the blast radius of a kill is exactly one server.
 
-Two worlds, deliberately:
+The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
 | `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `work` - client work | declared in the private overlay | that client's project index |
 
-Declared in `../../.config/tmux-servers/<name>.conf`, one
-`<name> <dir> [startup command...]` per line. **The first entry is the landing
-session**, so hopping to hub puts you in today's note rather than a bare shell.
+Declared one `<name> <dir> [startup command...]` per line. **The first entry is the
+landing session**, so hopping to hub puts you in today's note rather than a bare shell.
 
 `tmx ensure` creates only what is **missing**, keyed on session name - never
-renames, moves or kills - so it is both the boot path and the repair path.
+renames, moves or kills - so it is both the boot path and the repair path. An entry
+whose directory does not exist is skipped and counted, so one manifest serves every
+machine: see [Worlds](#worlds) above.
 `tmx ls` shows every server. An idempotent rebuild is the whole persistence
 story here: tmux-resurrect/continuum would need TPM, and `.tmux.conf` runs zero
 plugins by design.

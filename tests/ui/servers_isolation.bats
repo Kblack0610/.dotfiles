@@ -25,6 +25,20 @@ setup() {
   TMX="$REPO_ROOT/.local/src/tmux/servers.sh"
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"
+
+  # $MDIR is the directory manifest entries point at, and it is deliberately NOT under
+  # $HOME. The manifest is whitespace-delimited and this sandbox's $HOME contains a space
+  # on purpose ("sb space"), so `read -r name dir cmd` would split a path under it into
+  # dir=".../sb" + cmd="space/home" -- a directory that does not exist. Real manifests name
+  # space-free paths (see the same note at the `rows` test below).
+  #
+  # This only surfaced once the $HOME fallback was removed: every entry silently resolved
+  # to $HOME instead, so the whole file was asserting sessions rooted somewhere it had not
+  # asked for. An entry whose dir does not exist is now skipped, which is what makes one
+  # manifest serve every machine.
+  MDIR="$BATS_TEST_TMPDIR/manifest-dirs"
+  mkdir -p "$MDIR"
+
   tmux_passthrough_shim
   # Names that cannot collide with the real hub/lab even if isolation ever regressed.
   SRV_A="batsalpha$$"
@@ -51,8 +65,8 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   # This is the entire reason the server layer exists. If it ever regresses, a stray
   # kill-server reaches every session again - which is precisely how this repo's own test
   # suite destroyed live work before it was containerised.
-  manifest "$SRV_A" "one $HOME" "two $HOME"
-  manifest "$SRV_B" "three $HOME" "four $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
+  manifest "$SRV_B" "three $MDIR" "four $MDIR"
   "$TMX" ensure "$SRV_A"
   "$TMX" ensure "$SRV_B"
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'one two '
@@ -68,8 +82,8 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 @test "a session in one server is invisible from the other" {
   # The corollary the cockpit relies on: choose-tree is server-scoped by construction, so
   # Prefix+w in hub can never list lab's sessions.
-  manifest "$SRV_A" "alpha-only $HOME"
-  manifest "$SRV_B" "beta-only $HOME"
+  manifest "$SRV_A" "alpha-only $MDIR"
+  manifest "$SRV_B" "beta-only $MDIR"
   "$TMX" ensure "$SRV_A"
   "$TMX" ensure "$SRV_B"
   run bash -c "'${REAL_TMUX}' -L '$SRV_A' list-sessions -F '#{session_name}'"
@@ -80,14 +94,14 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 # ── ensure: boot path and repair path are the same command ───────────────────
 
 @test "ensure creates every session named in the manifest" {
-  manifest "$SRV_A" "daily $HOME" "dotfiles $HOME" "config $HOME"
+  manifest "$SRV_A" "daily $MDIR" "dotfiles $MDIR" "config $MDIR"
   run "$TMX" ensure "$SRV_A"
   assert_success
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'config daily dotfiles '
 }
 
 @test "ensure is idempotent: a second run creates nothing new" {
-  manifest "$SRV_A" "one $HOME" "two $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
   local first; first="$(sessions_of "$SRV_A" | sort)"
   run "$TMX" ensure "$SRV_A"
@@ -98,7 +112,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 
 @test "ensure rebuilds only the session that went missing" {
   # The repair path. It must never rename, move or kill the survivors.
-  manifest "$SRV_A" "one $HOME" "two $HOME" "three $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR" "three $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" kill-session -t '=two'
   refute [ "$(sessions_of "$SRV_A" | grep -cx two)" = 1 ]
@@ -109,7 +123,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 }
 
 @test "ensure reports counts so the repair path is observable" {
-  manifest "$SRV_A" "one $HOME" "two $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
   run "$TMX" ensure "$SRV_A"
   assert_output --partial '2 created'
   assert_output --partial '0 already up'
@@ -126,7 +140,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 }
 
 @test "manifest comments and blank lines are skipped, not turned into sessions" {
-  manifest "$SRV_A" "# a comment" "" "real $HOME" "# another"
+  manifest "$SRV_A" "# a comment" "" "real $MDIR" "# another"
   "$TMX" ensure "$SRV_A"
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'real '
 }
@@ -144,23 +158,51 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   assert_output "$HOME"
 }
 
-@test "a missing directory falls back to HOME instead of aborting the world" {
-  # One bad line must not cost you every other session in the manifest.
-  manifest "$SRV_A" "good $HOME" "bad /no/such/dir/anywhere" "alsogood $HOME"
+@test "a missing directory is SKIPPED, and does not cost the rest of the manifest" {
+  # Two properties in one, and the second is why this test predates the first:
+  #   1. A dir that does not exist means "this session is not for this machine" -- a
+  #      manifest is identical everywhere and each host materialises its own subset.
+  #      This used to fall back to $HOME, which created a junk session rooted at home
+  #      on every machine lacking the repo (a `home-config` window on the Mac).
+  #   2. One bad line still must not cost you every other session in the manifest.
+  manifest "$SRV_A" "good $MDIR" "bad /no/such/dir/anywhere" "alsogood $MDIR"
   "$TMX" ensure "$SRV_A"
-  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'alsogood bad good '
+  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'alsogood good '
+}
+
+@test "a skipped entry is COUNTED, so a typo'd path cannot vanish silently" {
+  # The whole risk of skipping over falling back is that a mistyped directory looks
+  # identical to "not on this machine". The count is what keeps it visible.
+  manifest "$SRV_A" "good $MDIR" "typo /no/such/dir/anywhere"
+  run "$TMX" ensure "$SRV_A"
+  assert_success
+  assert_output --partial '1 created'
+  assert_output --partial '1 skipped (no dir)'
 }
 
 @test "a manifest line with a name but no directory is skipped" {
-  manifest "$SRV_A" "nodir" "withdir $HOME"
+  manifest "$SRV_A" "nodir" "withdir $MDIR"
   "$TMX" ensure "$SRV_A"
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'withdir '
+}
+
+@test "a directory containing a space cannot be expressed, and is skipped not guessed" {
+  # The format is whitespace-delimited, so `spaced /a b/c` parses as dir=/a + cmd=b/c.
+  # That is a real limit and the README says so; what matters is that it now SKIPS rather
+  # than silently rooting the session at $HOME, which is the behaviour that let a
+  # not-for-this-machine entry look like it had worked.
+  mkdir -p "$MDIR/has space"
+  manifest "$SRV_A" "spaced $MDIR/has space" "fine $MDIR"
+  run "$TMX" ensure "$SRV_A"
+  assert_success
+  assert_output --partial '1 skipped (no dir)'
+  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'fine '
 }
 
 # ── ls ───────────────────────────────────────────────────────────────────────
 
 @test "ls reports a session count for a running server" {
-  manifest "$SRV_A" "one $HOME" "two $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
   run "$TMX" ls
   assert_success
@@ -169,6 +211,8 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 }
 
 @test "ls always offers the known servers, even when nothing is running" {
+  # hub and lab are seeded unconditionally - offered even with no manifest present,
+  # which is why known_servers() does not gate the seed on the .conf being readable.
   run "$TMX" ls
   assert_success
   assert_output --partial 'hub'
@@ -176,9 +220,23 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   assert_output --partial '(not running)'
 }
 
+@test "a world is DISCOVERED from its manifest, with no code change" {
+  # This is what makes a per-client world a config edit rather than a code change.
+  # KNOWN_SERVERS used to be a hardcoded (hub lab), so every new world meant editing
+  # servers.sh; dropping in a .conf has to be enough. Neither server here is running,
+  # so this also pins that a discovered world is offered BEFORE it is ever started.
+  manifest "$SRV_A" "one $MDIR"
+  manifest "$SRV_B" "two $MDIR"
+  run "$TMX" ls
+  assert_success
+  assert_output --partial "$SRV_A"
+  assert_output --partial "$SRV_B"
+  assert_output --partial '(not running)'
+}
+
 @test "ls reports a killed server as not running rather than keeping a stale count" {
   # A socket FILE can outlive its server, so ls must probe rather than trust the directory.
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run "$TMX" ls; assert_output --partial '1 session(s)'
   "${REAL_TMUX}" -L "$SRV_A" kill-server 2>/dev/null || true
@@ -195,8 +253,8 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 @test "rows reaches ACROSS servers - the one thing choose-tree and sesh cannot do" {
   # The whole point of the view. prefix w is server-scoped by construction and sesh follows
   # $TMUX into one server, so a list containing BOTH worlds is the only new capability here.
-  manifest "$SRV_A" "alpha-only $HOME"
-  manifest "$SRV_B" "beta-only $HOME"
+  manifest "$SRV_A" "alpha-only $MDIR"
+  manifest "$SRV_B" "beta-only $MDIR"
   "$TMX" ensure "$SRV_A"
   "$TMX" ensure "$SRV_B"
   run "$TMX" rows
@@ -206,7 +264,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 }
 
 @test "rows emits a session header with an empty window field, and a row per window" {
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
 
@@ -220,7 +278,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 @test "a window row carries what is actually running in it" {
   # The reason per-window rows are worth having: the row has to say something useful about
   # the window, not just repeat its number.
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
   assert_success
@@ -234,7 +292,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   # delimited, and this sandbox's $HOME deliberately contains a space, so a path under
   # it cannot be expressed there. Real manifests name space-free paths.
   mkdir -p "$HOME/where-i-am"
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" new-session -d -s explained -c "$HOME/where-i-am"
 
@@ -247,7 +305,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 @test "rows offers the server itself, so one list also replaces the server picker" {
   # A server row is the only row with BOTH the session and window fields empty; that is
   # what tells pick-all to hop the whole world rather than land on a session.
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\"' | wc -l"
   assert_output '1'
@@ -257,7 +315,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   # They answer different questions - "which world" vs "where is that window" - so
   # neither may quietly absorb the other. `pick` was deleted once as superseded and
   # had to come back; this is the assertion that stops that happening silently.
-  manifest "$SRV_A" "one $HOME" "two $HOME"
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
 
   run "$TMX" ls                       # the compact view's data: one row per SERVER
@@ -278,7 +336,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 # path: resolve the picked row to a session, and select the picked window on the way in.
 
 @test "land <session>:<window> selects that window before attaching" {
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
 
@@ -296,7 +354,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 
 @test "land falls back to resume when the picked session died since it was listed" {
   # A picker row is a snapshot. Landing on a session that has gone must not error out.
-  manifest "$SRV_A" "one $HOME"
+  manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run "$TMX" land "$SRV_A" 'vanished-session'
   refute_output --partial 'no server running'

@@ -50,14 +50,35 @@ server_root() {
   esac
 }
 
-# The servers we always offer, even when not yet running. Deliberately just two:
-# hub (personal — notes + machine config) and lab (what I am building + the
-# codebase I build it in). A third "work" server was tried and dropped as noise.
-KNOWN_SERVERS=(hub lab)
-
 SOCKET_DIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
 MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 SESH_CONFIG_DIR="${SESH_CONFIG_DIR:-$HOME/.config/sesh}"
+
+# The servers we always offer, even when not yet running. DISCOVERED from
+# $MANIFEST_DIR/*.conf rather than hardcoded, so dropping in a manifest creates a
+# world with no code change — that is what makes a per-client world a one-line
+# config edit, in a manifest that can live in the private overlay. hub and lab are
+# seeded first so the picker order stays stable no matter what else appears; the
+# rest follow in glob (alphabetical) order.
+#
+# This replaced a hardcoded KNOWN_SERVERS=(hub lab), whose comment claimed a third
+# "work" server was "tried and dropped as noise" — the noise was one shared socket,
+# which is exactly what per-world sockets fixed.
+known_servers() {
+  local seed=(hub lab) out=() f n
+  # Seeded UNCONDITIONALLY, not gated on the manifest existing: hub and lab are the
+  # two fundamental worlds and `ls` must offer them even when nothing is running and
+  # even if a manifest is missing (cmd_ensure has its own no-manifest fallback).
+  for n in "${seed[@]}"; do out+=("$n"); done
+  for f in "$MANIFEST_DIR"/*.conf; do
+    [ -r "$f" ] || continue          # unmatched glob stays literal; -r rejects it
+    n="${f##*/}"; n="${n%.conf}"
+    case " ${out[*]} " in *" $n "*) continue ;; esac
+    out+=("$n")
+  done
+  [ ${#out[@]} -gt 0 ] && printf '%s\n' "${out[@]}"
+  return 0
+}
 
 die() { printf 'tmx: %s\n' "$*" >&2; exit 1; }
 
@@ -81,7 +102,10 @@ session_count() { tmux -L "$1" list-sessions 2>/dev/null | wc -l | tr -d ' '; }
 cmd_ls() {
   local -a all=()
   local s
-  for s in "${KNOWN_SERVERS[@]}"; do all+=("$s"); done
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    all+=("$s")
+  done < <(known_servers)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     case " ${all[*]} " in *" $s "*) ;; *) all+=("$s") ;; esac
@@ -103,7 +127,7 @@ cmd_ls() {
 cmd_ensure() {
   local srv="${1:?ensure needs a server name}"
   local manifest="$MANIFEST_DIR/$srv.conf"
-  local made=0 kept=0
+  local made=0 kept=0 skipped=0
 
   if [ ! -r "$manifest" ]; then
     # No manifest is not an error: an ad-hoc server just gets its default session.
@@ -122,9 +146,18 @@ cmd_ensure() {
       kept=$((kept + 1))
       continue
     fi
-    # -d so ensure never steals the terminal; missing dirs fall back to $HOME
-    # rather than aborting the whole world.
-    [ -d "$dir" ] || dir="$HOME"
+    # A declared dir that does not exist means "this session does not belong on this
+    # machine": hub.conf names ~/dev/home/home-config and lab.conf ~/dev/bnb/platform,
+    # both Linux-only, so a manifest can stay identical on every machine.
+    #
+    # This used to be `[ -d "$dir" ] || dir="$HOME"`, which created a junk session
+    # rooted at $HOME on every machine that lacked the repo — that is why a
+    # home-config window opened on the Mac. Skipping keeps the original intent (one
+    # bad line must not cost you the rest of the manifest — `continue` drops one line
+    # and keeps looping) while COUNTING it, so a typo'd path still surfaces in the
+    # summary instead of vanishing silently.
+    [ -d "$dir" ] || { skipped=$((skipped + 1)); continue; }
+    # -d so ensure never steals the terminal.
     tmux -L "$srv" new-session -d -s "$name" -c "$dir" 2>/dev/null || continue
     made=$((made + 1))
     # send-keys rather than `new-session <cmd>`: as a session command, quitting the
@@ -136,7 +169,8 @@ cmd_ensure() {
     [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$name:" "$cmd" Enter
   done < "$manifest"
 
-  printf 'tmx: %s — %d created, %d already up\n' "$srv" "$made" "$kept"
+  printf 'tmx: %s — %d created, %d already up, %d skipped (no dir)\n' \
+    "$srv" "$made" "$kept" "$skipped"
 }
 
 # pick-session -- the Prefix+S dispatch. Inside a NAMED server, scope the picker to
@@ -239,6 +273,14 @@ cmd_land() {
   local target="${1:?land needs a server name}" mode="${2:-last}"
 
   cmd_ensure "$target" >/dev/null
+
+  # Every session in the manifest was skipped as not-on-this-machine, so there is
+  # nothing to attach to. Say so, rather than falling through to `exec tmux attach`
+  # and dying on tmux's "no sessions" — a client world reached from a machine that
+  # does not hold any of that client's repos is the case that gets here.
+  if [ "$(session_count "$target")" -eq 0 ]; then
+    die "$target has no sessions on this machine (every manifest entry's directory is missing)"
+  fi
 
   # An explicit target from pick-all. Anything that is not one of the two keywords
   # is a session name, optionally with a window after a colon.
