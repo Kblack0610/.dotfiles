@@ -1,172 +1,153 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Eval trend report — aggregates session eval scores across all projects.
-# Usage: eval-report.sh [--project NAME] [--days N]
+# Usage: eval-report.sh [--project NAME] [--days N] [--tsv]
 #
-# Highlights dimensions below 7 and shows per-dimension averages.
+# Highlights dimensions below the attention floor and shows per-dimension averages.
+#
+# THIS FILE IS A RENDERER. All parsing lives in ~/.local/lib/agent-evals.sh, which is
+# also what notes-cockpit's usage view reads — one grammar, one parser, same rule as
+# agent-board.sh (#170). It used to parse inline with a `while read` loop forking four
+# grep/sed subshells per line, which took 15.7s over the real corpus and is a large part
+# of why nothing ever called this script. The lib does the same work in ~260ms.
+#
+# The dimension list moved into the lib too. Its old home here carried a comment noting
+# the list had been "pasted into four places", which is how the columns ended up asking
+# for retired dimensions while Compact Handoff — scored on every session — was parsed
+# out of the file and then never displayed.
 
 set -uo pipefail
 
-EVAL_DIR="$HOME/.agent/evals"
+# shellcheck source=/dev/null
+. "${AGENT_EVALS_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/agent-evals.sh" 2>/dev/null \
+  || . "$(dirname "$(realpath "$0")")/../../.local/lib/agent-evals.sh" 2>/dev/null \
+  || { echo "eval-report: agent-evals.sh not found" >&2; exit 1; }
+
 PROJECT_FILTER=""
 DAYS_FILTER=""
-
-# The dimensions to render, in order, and their column headings. These MUST track the
-# sections in ~/.config/llm-judge/prompt-template-eval.md - they are what the judge is
-# told to emit, and a name here that the judge never writes renders as `·` forever.
-#
-# Defined once because the list used to be pasted into four places, which is exactly how
-# it drifted: the columns still asked for "Verification Honesty" and "Security
-# Spot-Check" (retired) while "Compact Handoff" (current, and scored on every session)
-# was parsed out of the file and then never displayed.
-DIMS=("Workflow" "Verification" "Code Hygiene" "Scope Alignment" "Compact Handoff" "Lessons" "Infrastructure" "Overall")
-HEADS=("Wkflw" "Verif" "Hygie" "Scope" "Handoff" "Lessn" "Infra" "Overall")
+TSV=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --project) PROJECT_FILTER="$2"; shift 2 ;;
-    --days) DAYS_FILTER="$2"; shift 2 ;;
-    *) echo "Usage: eval-report.sh [--project NAME] [--days N]" >&2; exit 1 ;;
+    --project) PROJECT_FILTER="${2:-}"; shift 2 ;;
+    --days) DAYS_FILTER="${2:-}"; shift 2 ;;
+    --tsv) TSV=1; shift ;;
+    *) echo "Usage: eval-report.sh [--project NAME] [--days N] [--tsv]" >&2; exit 1 ;;
   esac
 done
 
-if [ ! -d "$EVAL_DIR" ]; then
-  echo "No evals directory at $EVAL_DIR" >&2
-  exit 1
-fi
+[ -d "$EVAL_ROOT" ] || { echo "No evals directory at $EVAL_ROOT" >&2; exit 1; }
 
-# Calculate cutoff date if --days specified
-CUTOFF=""
+SINCE=""
 if [ -n "$DAYS_FILTER" ]; then
-  CUTOFF=$(date -d "-${DAYS_FILTER} days" +%Y-%m-%d 2>/dev/null || date -v-${DAYS_FILTER}d +%Y-%m-%d 2>/dev/null || true)
+  SINCE=$(date -d "-${DAYS_FILTER} days" +%F 2>/dev/null \
+          || date -v-"${DAYS_FILTER}"d +%F 2>/dev/null || true)
 fi
 
-# --- Collect scores ---
-# Format: project|date|session|dimension|score
-SCORES_FILE=$(mktemp)
-trap 'rm -f "$SCORES_FILE"' EXIT
+mapfile -t FILES < <(eval_files "$SINCE" "$PROJECT_FILTER")
+[ "${#FILES[@]}" -gt 0 ] || { echo "No scored sessions found."; exit 0; }
 
-find "$EVAL_DIR" -name "*.md" -type f | sort | while read -r f; do
-  project=$(basename "$(dirname "$f")")
-  date_stamp=$(basename "$f" .md)
+ROWS="$(eval_rows "${FILES[@]}")"
+[ -n "$ROWS" ] || { echo "No scored sessions found."; exit 0; }
 
-  # Apply filters
-  if [ -n "$PROJECT_FILTER" ] && [ "$project" != "$PROJECT_FILTER" ]; then
-    continue
-  fi
-  if [ -n "$CUTOFF" ] && [[ "$date_stamp" < "$CUTOFF" ]]; then
-    continue
-  fi
+# The raw contract, for anything that wants to aggregate differently.
+if [ "$TSV" -eq 1 ]; then printf '%s\n' "$ROWS"; exit 0; fi
 
-  # Track session number within file
-  session=1
+RED=$'\033[31m'; OFF=$'\033[0m'
+NDIM=${#EVAL_DIMS[@]}
 
-  while IFS= read -r line; do
-    # Detect new session headers
-    if echo "$line" | grep -qE '^## Session [0-9]'; then
-      session=$(echo "$line" | grep -oE '[0-9]+' | head -1)
-      continue
-    fi
-
-    # Extract "- **Dimension**: N/10" pattern
-    if echo "$line" | grep -q '^- \*\*[A-Za-z ].*\*\*: [0-9]*/10'; then
-      dim=$(echo "$line" | sed -E 's/^- \*\*([A-Za-z ]+)\*\*:.*/\1/')
-      score=$(echo "$line" | grep -o '[0-9]*/10' | head -1 | cut -d/ -f1)
-      echo "${project}|${date_stamp}|S${session}|${dim}|${score}" >> "$SCORES_FILE"
-    fi
-
-    # Extract Overall from Summary line
-    if echo "$line" | grep -qE 'Overall: [0-9]+/10'; then
-      overall=$(echo "$line" | grep -oE 'Overall: [0-9]+/10' | tail -1 | grep -oE '[0-9]+' | head -1)
-      echo "${project}|${date_stamp}|S${session}|Overall|${overall}" >> "$SCORES_FILE"
-    fi
-  done < "$f"
-done
-
-if [ ! -s "$SCORES_FILE" ]; then
-  echo "No scored sessions found."
-  exit 0
-fi
-
-# --- Summary table ---
+# ── per-session table ────────────────────────────────────────────────────────
 echo "=== Session Scores ==="
 echo ""
 printf "%-16s %-12s %-4s " "PROJECT" "DATE" "S#"
-for h in "${HEADS[@]}"; do
-  if [ "$h" = "Overall" ]; then printf "%-8s\n" "$h"; else printf "%-7s " "$h"; fi
-done
-echo "--------------------------------------------------------------------------------------------"
+for h in "${EVAL_HEADS[@]}"; do printf "%-7s " "$h"; done
+printf "%-8s\n" "Overall"
+printf '%s\n' "--------------------------------------------------------------------------------------------"
 
-# print_row <project> <date> <session#> - renders the `dims` assoc array as one line.
-print_row() {
-  printf "%-16s %-12s %-4s " "$1" "$2" "$3"
-  local col val
-  for col in "${DIMS[@]}"; do
-    val="${dims[$col]:-·}"
-    if [ "$val" != "·" ] && [ "$val" -lt 7 ] 2>/dev/null; then
-      printf "\033[31m%-7s\033[0m " "$val"
-    elif [ "$col" = "Overall" ]; then
-      printf "%-8s" "$val"
-    else
-      printf "%-7s " "$val"
+# Colour a cell red below the floor. eval_is_na guards the comparison: `[ "$v" -lt 7 ]`
+# errors on both `-` and on a decimal like 9.5, and swallowing that error is what used to
+# strip the colour off exactly the rows that most needed it.
+# The integer part is enough to decide, because the floor is an integer: for v >= 0,
+# v < 7 exactly when int(v) < 7 (6.9 -> 6 flags, 7.5 -> 7 does not). That keeps the
+# comparison in bash — an awk fork here runs once per CELL, which on the full corpus is
+# ~21k forks and was, after the parser moved to the lib, the slowest thing in the script.
+cell() { # $1=value $2=width
+  local v="$1" w="$2" int
+  if ! eval_is_na "$v"; then
+    int="${v%%.*}"
+    if [ "${int:-0}" -lt "$EVAL_ATTENTION_FLOOR" ] 2>/dev/null; then
+      printf '%s%-*s%s ' "$RED" "$w" "$v" "$OFF"; return
     fi
-  done
-  echo ""
+  fi
+  printf '%-*s ' "$w" "$v"
 }
 
-# Group by project|date|session and output one row per session
-prev_key=""
-declare -A dims
-while IFS='|' read -r project date sess dim score; do
-  key="${project}|${date}|${sess}"
-  if [ "$key" != "$prev_key" ] && [ -n "$prev_key" ]; then
-    # Print previous row
-    IFS='|' read -r p d s <<< "$prev_key"
-    print_row "$p" "$d" "$s"
-    declare -A dims
-  fi
-  dims["$dim"]="$score"
-  prev_key="$key"
-done < "$SCORES_FILE"
-
-# Print last row
-if [ -n "$prev_key" ]; then
-  IFS='|' read -r p d s <<< "$prev_key"
-  print_row "$p" "$d" "$s"
-fi
+while IFS=$'\t' read -r project date sess _sid _label overall rest; do
+  printf "%-16s %-12s %-4s " "$project" "$date" "$sess"
+  IFS=$'\t' read -r -a dims <<< "$rest"
+  for ((i = 0; i < NDIM; i++)); do cell "${dims[$i]:--}" 7; done
+  cell "$overall" 8
+  echo ""
+done <<< "$ROWS"
 
 echo ""
 
-# --- Per-dimension averages ---
+# ── per-dimension averages ───────────────────────────────────────────────────
+# awk, not a python3 fork per dimension. The corrections counter is reported alongside:
+# with the 364 no-correction sentinels held out of the Lessons column (see the lib), the
+# interesting fact about Lessons is how OFTEN a correction happened, not its mean.
 echo "=== Dimension Averages ==="
 echo ""
-for dim in "${DIMS[@]}"; do
-  scores=$(grep "|${dim}|" "$SCORES_FILE" 2>/dev/null | cut -d'|' -f5)
-  if [ -n "$scores" ]; then
-    count=$(echo "$scores" | wc -l)
-    sum=0
-    while read -r s; do
-      sum=$((sum + s))
-    done <<< "$scores"
-    avg=$(python3 -c "print(f'{$sum/$count:.1f}')" 2>/dev/null || echo "?")
-    min=$(echo "$scores" | sort -n | head -1)
-    max=$(echo "$scores" | sort -n | tail -1)
-    if [ "$min" -lt 7 ] 2>/dev/null; then
-      printf "  %-22s avg: %s  min: \033[31m%s\033[0m  max: %s  (%s sessions)\n" "$dim" "$avg" "$min" "$max" "$count"
-    else
-      printf "  %-22s avg: %s  min: %s  max: %s  (%s sessions)\n" "$dim" "$avg" "$min" "$max" "$count"
-    fi
-  fi
-done
+printf '%s\n' "$ROWS" | awk -F'\t' \
+  -v dims="$(printf '%s|' "${EVAL_DIMS[@]}")" -v floor="$EVAL_ATTENTION_FLOOR" \
+  -v red="$RED" -v off="$OFF" '
+  BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
+  {
+    for (i = 1; i <= nd; i++) {
+      v = $(6 + i)
+      if (v != "-") {
+        sum[i] += v; n[i]++
+        if (mn[i] == "" || v < mn[i]) mn[i] = v
+        if (mx[i] == "" || v > mx[i]) mx[i] = v
+      }
+    }
+    if ($6 != "-") {
+      osum += $6; on++
+      if (omn == "" || $6 < omn) omn = $6
+      if (omx == "" || $6 > omx) omx = $6
+    }
+    if ($NF == 1) nocorr++
+    total++
+  }
+  END {
+    for (i = 1; i <= nd; i++) {
+      if (!n[i]) continue
+      c = (mn[i] < floor) ? red mn[i] off : mn[i]
+      printf "  %-22s avg: %.1f  min: %s  max: %s  (%d sessions)\n", D[i], sum[i]/n[i], c, mx[i], n[i]
+    }
+    if (on) {
+      c = (omn < floor) ? red omn off : omn
+      printf "  %-22s avg: %.1f  min: %s  max: %s  (%d sessions)\n", "Overall", osum/on, c, omx, on
+    }
+    printf "\n  corrections: %d of %d sessions had one (%d clean)\n", total - nocorr, total, nocorr
+  }'
 
 echo ""
 
-# --- Alerts: dimensions below 7 ---
-alerts=$(grep -E '\|[0-6]\|?$' "$SCORES_FILE" 2>/dev/null | grep -v "Overall" || true)
-if [ -n "$alerts" ]; then
-  echo "=== Attention: Scores Below 7 ==="
+# ── attention lane ───────────────────────────────────────────────────────────
+# Overall is excluded (it is a summary of the rest, not an independent finding), and so
+# is the Lessons sentinel — which the parser already keeps out of the score columns.
+ALERTS="$(printf '%s\n' "$ROWS" | awk -F'\t' \
+  -v dims="$(printf '%s|' "${EVAL_DIMS[@]}")" -v floor="$EVAL_ATTENTION_FLOOR" '
+  BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
+  { for (i = 1; i <= nd; i++) { v = $(6 + i)
+      if (v != "-" && v < floor) printf "%s|%s|S%s|%s|%s\n", $1, $2, $3, D[i], v } }')"
+
+if [ -n "$ALERTS" ]; then
+  echo "=== Attention: Scores Below $EVAL_ATTENTION_FLOOR ==="
   echo ""
   while IFS='|' read -r project date sess dim score; do
-    printf "  \033[31m%s/%s %s — %s: %s/10\033[0m\n" "$project" "$date" "$sess" "$dim" "$score"
-  done <<< "$alerts"
+    printf '  %s%s/%s %s — %s: %s/10%s\n' "$RED" "$project" "$date" "$sess" "$dim" "$score" "$OFF"
+  done <<< "$ALERTS"
   echo ""
 fi

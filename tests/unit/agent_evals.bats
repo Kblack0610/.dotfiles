@@ -71,6 +71,21 @@ EOF
   assert_equal "$(field 1 "$(rows | awk -F'\t' '{print NF}')")" '1'
 }
 
+@test "a bare Lessons 1 is a correction COUNT, not a 1/10 score" {
+  # The corpus has 8 of these and they all read "1 captured" / "1 user correction this
+  # turn" — i.e. the agent did the right thing. Scoring them put 8 of the BEST sessions
+  # in the attention lane. Caught only by diffing this parser's findings against the old
+  # one and asking why 8 had appeared from nowhere.
+  write_eval 2026-07-01 <<'EOF'
+## Session 1 (captured a lesson)
+
+- **Workflow**: 9/10 — fine
+- **Lessons**: 1 captured — `~/.agent/lessons/proj.md` now has the pattern
+EOF
+  assert_equal "$(field 1 "$(dim_col Lessons)")" '-'
+  assert_equal "$(field 1 "$(rows | awk -F'\t' '{print NF}')")" '0'
+}
+
 @test "an explicit Lessons 0/10 IS a real floor score, unlike the bare sentinel" {
   # The pair that makes the test above meaningful: if the parser simply blanked every
   # Lessons 0 it would pass that test and fail this one.

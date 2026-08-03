@@ -100,14 +100,28 @@ eval_files() { # $1=since (YYYY-MM-DD, empty = all) $2=project (empty = all)
 # collapses runs of it and one empty middle field shifts every later field left. Same
 # reason agent-usage:cmd_rows and sessions:live_lines sentinel their columns.
 #
-# THE LESSONS SENTINEL. The judge template (prompt-template-eval.md) says: "if no user
-# correction occurred this turn, write `- **Lessons**: 0 — no correction`." So a BARE
-# `0` with no `/10` is a flag meaning "nothing to correct" — the best possible outcome —
-# while `0/10` would be a genuine floor score. The corpus is 1404 `10/10`, 364 bare `0`,
-# 257 `N/A`, 105 `9/10`. Conflating them would (a) drag the Lessons mean toward zero and
-# (b) put 364 clean sessions in the below-7 attention lane. They are distinguishable at
-# parse time and are kept apart here: the bare sentinel leaves the Lessons cell `-` and
-# raises the trailing `nocorrection` flag instead.
+# THE LESSONS LINE CARRIES TWO DIFFERENT QUANTITIES, and telling them apart is the whole
+# reason this dimension gets special handling.
+#
+#   `- **Lessons**: 8/10 — note`     a SCORE, like every other dimension
+#   `- **Lessons**: 0 — no correction`   a COUNT: the template (prompt-template-eval.md
+#                                        line 30) mandates this exact form for "no user
+#                                        correction occurred this turn"
+#   `- **Lessons**: 1 captured — ...`    also a COUNT, and the corpus has 8 of these:
+#                                        "1 user correction this turn", "1 lesson worth
+#                                        capturing", "1 captured".
+#
+# So the rule is: WITH `/10` it is a score, WITHOUT it is a count of corrections. Every
+# bare number in the corpus (373 zeros + 8 ones) is a count, and none is a score.
+#
+# Getting this wrong is not symmetrical. Reading the bare 0 as a score drags the Lessons
+# mean toward zero and dumps 373 clean sessions into the below-7 attention lane; reading
+# the bare 1 as a score flags 8 sessions that had done exactly the right thing (captured
+# the lesson) as near-worst-possible. Both were observed before this rule was written.
+#
+# A count therefore never enters the Lessons score column — it sets the trailing
+# `nocorrection` flag (1 when the count was zero) and nothing else. `0/10`, with the
+# slash, remains a genuine floor score and is kept.
 eval_rows() { # $1..=files
   [ $# -gt 0 ] || return 0
   local dims; dims="$(printf '%s|' "${EVAL_DIMS[@]}")"; dims="${dims%|}"
@@ -160,7 +174,10 @@ eval_rows() { # $1..=files
         sub(/\/10.*/, "", v); sc[k] = v + 0
       } else if (v ~ /^[0-9]+(\.[0-9]+)?([^0-9\/.]|$)/) {   # bare number, no /10
         sub(/[^0-9.].*/, "", v)
-        if (k == "Lessons" && v + 0 == 0) { nocorr = 1 }    # the sentinel, not a score
+        # On Lessons a bare number is a CORRECTION COUNT, never a score - see the header.
+        # Every bare number in the corpus is one, and treating them as scores put 373
+        # clean sessions and 8 correctly-captured lessons in the attention lane.
+        if (k == "Lessons") { nocorr = (v + 0 == 0) ? 1 : 0 }
         else { sc[k] = v + 0 }
       }
       # anything else (n/a, N/A, PASS, prose) leaves the cell unset -> `-`
