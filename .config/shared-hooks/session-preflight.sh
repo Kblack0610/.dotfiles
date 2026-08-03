@@ -17,6 +17,17 @@ if [ -r "$FOCUS_LIB" ]; then
   # shellcheck source=/dev/null
   . "$FOCUS_LIB"
 fi
+# The one board parser (see .local/lib/agent-board.sh). Guarded for the same stow reason
+# as focus-lib above: losing the stranded-sprint banner is survivable, losing the whole
+# preflight is not.
+for AGENT_BOARD_LIB_CANDIDATE in "${AGENT_BOARD_LIB:-}" "$HOME/.local/lib/agent-board.sh" \
+                                 "$(dirname "$0")/../../.local/lib/agent-board.sh"; do
+  if [ -n "$AGENT_BOARD_LIB_CANDIDATE" ] && [ -r "$AGENT_BOARD_LIB_CANDIDATE" ]; then
+    # shellcheck source=/dev/null
+    . "$AGENT_BOARD_LIB_CANDIDATE"
+    break
+  fi
+done
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
@@ -77,18 +88,30 @@ CONTEXT=$(
   fi
 
   # Stranded-sprint detection — surface an in-flight sprint at turn 1 so the user
-  # never has to remember to resume after a crash/outage/process-exit. A row is
-  # non-terminal if its Status is queued|in-progress|pr-open. Best-effort only.
-  if [ -d "$PLAN_DIR" ]; then
+  # never has to remember to resume after a crash/outage/process-exit.
+  #
+  # This used to grep for the literal words queued|in-progress|pr-open. Those are three
+  # of the many strings a Status cell actually holds, and NOT the ones a wave writes
+  # (`in-wave`, `reverted-from-wave`) or that a human writes by hand (`**DONE - PR #1036
+  # merged**`, `blocked on access`). Measured against the real boards on this machine the
+  # regex matched NOTHING while two rows sat `working` — so the banner whose entire job is
+  # to stop work being forgotten was itself silently forgotten. Ask the shared parser,
+  # which normalizes every one of those spellings to a stage.
+  #
+  # board_needs_eyes, not board_drainable: an unapproved board still needs the human's
+  # eyes at turn 1 — that is exactly the state an approval gate leaves it in.
+  if [ -d "$PLAN_DIR" ] && declare -F board_needs_eyes >/dev/null 2>&1; then
     ACTIVE_SPRINT=""
     while IFS= read -r sf; do
       [ -n "$sf" ] || continue
-      if grep -Eq '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$sf" 2>/dev/null; then
+      if board_needs_eyes "$sf"; then
         ACTIVE_SPRINT="$sf"; break
       fi
     done < <(ls -1t "$PLAN_DIR"/sprint-*.md 2>/dev/null)
     if [ -n "$ACTIVE_SPRINT" ]; then
-      n=$(grep -Ec '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$ACTIVE_SPRINT" 2>/dev/null || true)
+      n=$(board_rows "$ACTIVE_SPRINT" 2>/dev/null | awk -F'\037' '
+        $2=="queued"||$2=="working"||$2=="review"||$2=="blocked"||$2=="error" {c++}
+        END{print c+0}')
       mtime=$(stat -c %Y "$ACTIVE_SPRINT" 2>/dev/null || echo 0)
       age=$(( ( $(date +%s) - mtime ) / 60 ))
       echo "⚠ ACTIVE SPRINT: $(basename "$ACTIVE_SPRINT") — ${n:-1} in-flight row(s), last touched ${age}m ago."

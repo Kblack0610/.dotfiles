@@ -16,12 +16,24 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   WS="$REPO_ROOT/.local/src/tmux/wave-session.sh"
-  # Source only the pure helpers — the file's dispatch block would otherwise run.
-  # rows_of and _is_live now delegate to the shared parser, so it has to be loaded
-  # before the extracted helpers can run.
+  # Source the REAL file. wave-session.sh has a source guard (see its dispatch block), so
+  # this loads every helper with its wiring intact and runs no dispatch.
+  #
+  # This used to sed-extract five functions by regex and eval them in a bare shell. That
+  # is not a test of this program - a transplanted function loses everything around it -
+  # and it broke twice in one change: `declare -f board_rows` copies the function but not
+  # the _BOARD_STAGE_AWK variable it reads, and the extracted blackboard_of could not see
+  # AGENT_PLANS_DIR. Both failures were in the harness. A rename would also have silently
+  # dropped a function from the eval and left the tests exercising nothing.
+  #
+  # AGENT_PLANS_DIR is the real knob for where boards live (wave-session.sh reads it into
+  # PLANS_DIR, board_newest reads it directly); set it BEFORE sourcing so both agree.
+  export AGENT_PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  mkdir -p "$AGENT_PLANS_DIR"
   # shellcheck source=/dev/null
   . "$AGENT_BOARD_LIB"
-  eval "$(sed -n '/^rows_of()/,/^}/p; /^_is_live()/,/^}/p; /^slugify()/,/^}/p; /^session_of()/,/^}/p; /^blackboard_of()/,/^}/p' "$WS")"
+  # shellcheck source=/dev/null
+  . "$WS"
   BB="$BATS_TEST_TMPDIR/sprint.md"
 }
 
@@ -62,8 +74,9 @@ EOF
 |---|--------|-------|--------|
 | 1 | 601 | a | in-progress |
 EOF
-  run bash -c "$(declare -f board_rows); $(declare -f rows_of); rows_of '$BB' | wc -l"
-  assert_output '1'
+  run rows_of "$BB"
+  assert_success
+  assert_equal "${#lines[@]}" 1
 }
 
 @test "rows_of returns nothing for a blackboard with no queue rows" {
@@ -131,9 +144,12 @@ EOF
 }
 
 @test "slugify caps the length so window names stay readable" {
-  run bash -c "$(declare -f slugify); slugify 'a very long ticket title that would otherwise run off the window list entirely' | wc -c"
-  # 24 chars + newline
-  assert_output '25'
+  run slugify 'a very long ticket title that would otherwise run off the window list entirely'
+  # Assert the LENGTH, and also that the cap did not eat the whole string. The old form
+  # piped through `wc -c` and asserted '25', which passes just as happily on a function
+  # that returns 24 spaces.
+  assert_equal "${#output}" 24
+  assert_output --partial 'very'
 }
 
 @test "slugify survives a title that is entirely punctuation" {
@@ -154,7 +170,7 @@ EOF
   # A wave IS a patch version, so its board is `sprint-v1.10.1.md`. `sync` reads whatever
   # this returns and KILLS windows for rows it does not find -- so picking the wrong file
   # here closes windows an agent is working in.
-  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  PLANS_DIR="$AGENT_PLANS_DIR"
   mkdir -p "$PLANS_DIR/alpha"
   : > "$PLANS_DIR/alpha/sprint-v1.10.1.md"
   run blackboard_of alpha
@@ -165,7 +181,7 @@ EOF
   # NEGATIVE CONTROL for the date -> version rename: `sprint-2026-07-27.md` and
   # `sprint-v1.10.1.md` sort differently by name than by age, so a name sort would return
   # a stale board here without erroring.
-  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  PLANS_DIR="$AGENT_PLANS_DIR"
   mkdir -p "$PLANS_DIR/alpha"
   : > "$PLANS_DIR/alpha/sprint-v1.10.1.md"
   sleep 1.1
@@ -175,7 +191,7 @@ EOF
 }
 
 @test "blackboard_of is silent when the project has no board at all" {
-  PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  PLANS_DIR="$AGENT_PLANS_DIR"
   mkdir -p "$PLANS_DIR/alpha"
   run blackboard_of alpha
   assert_success

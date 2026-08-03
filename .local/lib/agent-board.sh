@@ -57,7 +57,13 @@ BOARD_APPROVAL_RE='^- *Approval: *APPROVED-FOR-AUTONOMOUS-DELIVERY *$'
 # a different board depending on locale.
 board_newest() { # $1=project
   [ -n "${1:-}" ] || return 0
-  ls -1t "${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$1"/sprint-*.md 2>/dev/null | head -1
+  # `|| true` because EVERY consumer of this library sets `pipefail` (wave-session.sh,
+  # wave-start and notes-cockpit all open with `set -uo pipefail`). With pipefail a
+  # project that simply has no board yet made `ls` exit 2 and took the whole pipeline's
+  # status with it, so board_newest reported FAILURE for the ordinary, expected case of
+  # "nothing scheduled here". Empty output is the answer; a non-zero status is a lie that
+  # any caller writing `board_newest x || die` would act on.
+  ls -1t "${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$1"/sprint-*.md 2>/dev/null | head -1 || true
 }
 
 # ── stage vocabulary ─────────────────────────────────────────────────────────
@@ -70,26 +76,44 @@ board_stage_of() { # $1=status text [$2=sentinel text] -> stage
   _board_stage "$(printf '%s %s' "${1:-}" "${2:-}")"
 }
 
-# The single source of the mapping, shared by board_stage_of and the awk in
-# board_rows. Kept as one ordered case so the two can never disagree.
+# THE mapping. One implementation, as awk source, used verbatim by both board_stage_of
+# and board_rows.
+#
+# It used to be two: a shell `case` here and an awk `stage()` in board_rows, with a
+# comment claiming they were "kept as one ordered case so the two can never disagree."
+# They disagreed. The shell arm `*done*` is a SUBSTRING match, so the status "abandoned"
+# classified as `merged` through board_stage_of and as `working` through board_rows --
+# the same word, two readers, opposite answers, which is the exact failure this library
+# was extracted to end. A rule written down twice is a rule that will diverge twice, and
+# no amount of comment prevents it.
+#
+# awk (not the shell case) is the survivor because only it can express a word boundary:
+# \<done\> matches "done" and not "abandoned". board_stage_of pays one subprocess per
+# call for this; it has exactly one caller (wave-session's _is_live, once per row), so
+# the cost is a rounding error against a class of silent misclassification.
+_BOARD_STAGE_AWK='
+function board_stage(s,  low) {
+  low=tolower(s)
+  # `in-wave` is TERMINAL: the fix is squashed onto the wave branch and the work is done,
+  # pending delivery. Tested before the generic fallthrough or it reads as `working` and
+  # a finished row gets a tmux window it does not need.
+  if (low ~ /in-wave/)                              return "merged"
+  if (low ~ /reverted-from-wave/)                   return "queued"
+  # ATTENTION is tested BEFORE terminal, deliberately. "blocked - PR #1036 merged, CI
+  # red" is BLOCKED; the reverse order (which every earlier parser used) reads it as done
+  # and the row stops asking for the human it needs.
+  if (low ~ /blocked/)                              return "blocked"
+  if (low ~ /error|failed/)                         return "error"
+  if (low ~ /merged|status:? *done|\<done\>/)       return "merged"
+  if (low ~ /skipped/)                              return "skipped"
+  if (low ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
+  if (low ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
+  return "working"
+}
+'
+
 _board_stage() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    # `in-wave` is TERMINAL: the fix is squashed onto the wave branch and the work is
-    # done, pending delivery. It must be tested before the generic fallthrough or it
-    # reads as `working` and a finished row gets a tmux window it does not need.
-    *in-wave*)                                       printf 'merged' ;;
-    *reverted-from-wave*)                            printf 'queued' ;;
-    # ATTENTION is tested BEFORE terminal, deliberately. "blocked - PR #1036 merged,
-    # CI red" is BLOCKED; the reverse order (which every earlier parser used) reads it
-    # as done and the row stops asking for the human it needs.
-    *blocked*)                                       printf 'blocked' ;;
-    *error*|*failed*)                                printf 'error' ;;
-    *merged*|*"status: done"*|*done*)                printf 'merged' ;;
-    *skipped*)                                       printf 'skipped' ;;
-    *pr-open*|*"pr open"*|*"pr #"*|*pull/*|*"merge it"*|*ready*) printf 'review' ;;
-    *queued*|*filed*|*"not dispatched"*|*n/a*|*returns*) printf 'queued' ;;
-    *)                                               printf 'working' ;;
-  esac
+  awk -v s="$1" "$_BOARD_STAGE_AWK"'BEGIN { printf "%s", board_stage(s) }' </dev/null
 }
 
 board_is_open()      { case "${1:-}" in queued|working|review) return 0 ;; *) return 1 ;; esac; }
@@ -102,21 +126,8 @@ board_is_attention() { case "${1:-}" in blocked|error)         return 0 ;; *) re
 # when the delimiter is whitespace.
 board_rows() { # $1=board file
   [ -f "${1:-}" ] || return 0
-  awk -F'|' '
+  awk -F'|' "$_BOARD_STAGE_AWK"'
     function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
-    function stage(s,  low) {
-      low=tolower(s)
-      if (low ~ /in-wave/)                              return "merged"
-      if (low ~ /reverted-from-wave/)                   return "queued"
-      # ATTENTION before terminal - see the note in _board_stage.
-      if (low ~ /blocked/)                              return "blocked"
-      if (low ~ /error|failed/)                         return "error"
-      if (low ~ /merged|status:? *done|\<done\>/)       return "merged"
-      if (low ~ /skipped/)                              return "skipped"
-      if (low ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
-      if (low ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
-      return "working"
-    }
     # A new H2 ends the table. See the header note: without this the column map
     # latches on the first ticket+status header and every later pipe table in the
     # file is parsed with the queue`s indices.
@@ -154,7 +165,7 @@ board_rows() { # $1=board file
       if(tk=="" || tolower(tk)=="ticket") next
       pr=""; if(match(st,/pull\/[0-9]+/)) pr=substr(st,RSTART+5,RLENGTH-5)
       else if(match(st,/#[0-9]+/)) pr=substr(st,RSTART+1,RLENGTH-1)
-      printf "%s\037%s\037%s\037%s\037%s\n", tk, stage(st" "sen), ti, pr, sen
+      printf "%s\037%s\037%s\037%s\037%s\n", tk, board_stage(st" "sen), ti, pr, sen
     }
   ' "$1"
 }
@@ -188,7 +199,9 @@ board_needs_eyes() { board_has_stage "${1:-}" open || board_has_stage "${1:-}" a
 # "completed" with no STATUS: DONE is a false-completion (the agent died mid-run).
 board_sentinel_of() { # $1=checkpoint file -> DONE|FAILED|PARTIAL, or empty
   [ -f "${1:-}" ] || return 0
-  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}'
+  # `|| true` for the same pipefail reason as board_newest: a checkpoint with no sentinel
+  # yet is the normal in-progress case, and grep exiting 1 must not read as an error.
+  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}' || true
 }
 
 # board_checkpoint_of PROJECT TICKET [SENTINEL_HINT] -> path or empty
