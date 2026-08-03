@@ -29,8 +29,13 @@
 # records, 272 distinct requestIds, identical usage within a requestId). Summing rows
 # instead of requests roughly doubles the total.
 #
-# Nothing here is on a render path: the cockpit reads the registry, which stop-post.d/
-# 80-session-register.sh fills by calling this once when a session ends.
+# WHICH VERBS ARE ON A RENDER PATH. `rows` and `rollup` ARE: the cockpit calls them from
+# _project_agents / _usage_view, which run on every fzf reload and keypress. They read the
+# registry and nothing else - no network, no recompute - and must stay that way.
+# `session` and `backfill` are NOT, and may query Prometheus.
+#
+# (This block used to say "nothing here is on a render path", which was already false when
+# written - _project_agents has called `rows` since the agents view shipped.)
 
 set -uo pipefail
 
@@ -329,9 +334,35 @@ cmd_changelog() {
 
 # Fill telemetry into registry lines that predate it. Rewrites each sessions.jsonl in
 # place via a temp file - never edits a line by hand.
+#
+#   backfill <project|--all> [--since EPOCH]
+#
+# WHAT IS ACTUALLY REPAIRABLE, which is what --since exists to encode. Two cases:
+#
+#   1. A row with no token data at all (predates the feature). The TRANSCRIPT fills it,
+#      and a transcript never expires - so age is irrelevant and these are always tried.
+#   2. A row whose cost is null because the register hook lost the race against OTel's
+#      60s export. Only PROMETHEUS can fill that, and Prometheus here retains `1w or
+#      5GiB` - so past the window there is nothing to fetch, ever.
+#
+# Case 2 is why this runs on a schedule rather than once: the repair window is a week
+# wide and closes silently. It is also why an old, already-tokenised row is skipped -
+# re-deriving it from the transcript rewrites the identical partial numbers, and there
+# are ~950 of them, each a scan of a file that can reach hundreds of MB.
 cmd_backfill() {
-  local target="${1:-}"
-  [ -n "$target" ] || { echo "usage: agent-usage backfill <project|--all>" >&2; return 2; }
+  local target="" since=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:-}"; shift ;;
+      -*) [ "$1" = "--all" ] && target="--all" || { echo "agent-usage: unknown flag '$1'" >&2; return 2; } ;;
+      *) target="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$target" ] || { echo "usage: agent-usage backfill <project|--all> [--since EPOCH]" >&2; return 2; }
+  # A day of slack over the 1w retention: a session right on the boundary is still worth
+  # one attempt, and the cost of a wasted try is one instant query.
+  case "$since" in ''|*[!0-9]*) since="$(( $(date +%s) - 8*86400 ))" ;; esac
 
   local files
   if [ "$target" = "--all" ]; then
@@ -346,10 +377,18 @@ cmd_backfill() {
     local tmp; tmp="$(mktemp)"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      local id has
+      local id skip
       id="$(printf '%s' "$line" | jq -r '.session_id // empty' 2>/dev/null)"
-      has="$(printf '%s' "$line" | jq -r 'has("cost_usd") and has("title")' 2>/dev/null)"
-      if [ -z "$id" ] || [ "$has" = "true" ]; then
+      # `.cost_usd != null`, NOT `has("cost_usd")`. The register hook always WRITES the
+      # key, null when it lost the race - so `has("cost_usd")` was true for precisely the
+      # rows backfill exists to repair, and every one of them was skipped. Measured when
+      # this was found: 14 of 1068 rows carried a cost, and no amount of re-running
+      # backfill could ever raise it.
+      skip="$(printf '%s' "$line" | jq -r --argjson since "$since" '
+        if (.cost_usd != null) and has("title") then "1"
+        elif ((.tokens.total // 0) > 0) and has("title") and ((.updated // 0) < $since) then "1"
+        else "0" end' 2>/dev/null)"
+      if [ -z "$id" ] || [ "$skip" = "1" ]; then
         printf '%s\n' "$line" >> "$tmp"; continue
       fi
       local u; u="$(cmd_session "$id" --json 2>/dev/null)"
