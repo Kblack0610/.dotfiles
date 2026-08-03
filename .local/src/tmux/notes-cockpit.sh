@@ -39,6 +39,16 @@ SELF="$(realpath "$0")"
   || . "$HOME/.local/lib/agent-board.sh" 2>/dev/null \
   || . "$(dirname "$SELF")/../../lib/agent-board.sh" 2>/dev/null \
   || { echo "notes-cockpit: agent-board.sh not found" >&2; exit 1; }
+# The one eval-corpus parser, shared with eval-report.sh. Same lookup order as the board
+# lib, but SOFT-FAIL: tasks, agents and bridge do not need it, so a machine with no eval
+# corpus should still get three working views rather than a cockpit that refuses to start.
+# The usage view checks HAVE_EVALS and says so instead of rendering an empty panel.
+HAVE_EVALS=1
+# shellcheck source=/dev/null
+. "${AGENT_EVALS_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/agent-evals.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../lib/agent-evals.sh" 2>/dev/null \
+  || HAVE_EVALS=0
 # Per-instance state suffix. The section/mode/filter files are keyed on UID alone, which is
 # right for a popup (only one can be open) but wrong the moment two copies run at once —
 # the persistent cockpit session keeps a `bridge` window and a `notes` window both running
@@ -46,7 +56,7 @@ SELF="$(realpath "$0")"
 # Empty by default, so the popup's paths are byte-identical to what they always were.
 INSTANCE="${NOTES_COCKPIT_INSTANCE:-}"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.section"
-# THREE views, cycled by `a`  (tasks -> agents -> bridge -> tasks):
+# FOUR views, cycled by `a`  (tasks -> agents -> bridge -> usage -> tasks):
 #   tasks   your task lists (the default; unchanged).
 #   agents  WHO is working each project and what the finished ones cost: live Claude
 #           sessions (status/branch/what), then the sessions that shipped the CURRENT
@@ -56,13 +66,22 @@ STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.sec
 #           It shows SESSIONS - asks and sprint rows belong to the bridge.
 #   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
 #           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
+#   usage   HOW WELL and HOW EXPENSIVELY the agents are working, over a window that `w`
+#           cycles (today / 7d / 30d). Joins two corpora that nothing joined before: the
+#           eval markdown (~/.agent/evals, quality) and the session registry (tokens and
+#           USD), on the session uuid they both carry. Cross-profile like the bridge,
+#           because "what did this week cost" is not a per-profile question.
+#           It shows TRENDS; the agents view shows who is working right now.
 # Each is its own render; none overwrites another.
 MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.mode"
 read_mode() { cat "$MODEF" 2>/dev/null || echo tasks; }
-toggle_mode() { # cycle tasks -> agents -> bridge -> tasks
+toggle_mode() { # cycle tasks -> agents -> bridge -> usage -> tasks
   case "$(read_mode)" in
     tasks)  printf agents > "$MODEF" ;;
     agents) printf bridge > "$MODEF" ;;
+    bridge) printf usage  > "$MODEF" ;;
+    # `*)`, not `usage)`, so an unreadable or garbage mode file lands somewhere valid
+    # rather than wedging the cycle on a name no renderer answers to.
     *)      printf tasks  > "$MODEF" ;;
   esac
 }
@@ -105,6 +124,42 @@ cycle_pfilter() {
     *)      next="" ;; # low (or anything) -> back to all
   esac
   printf '%s' "$next" > "$PFILTER"
+}
+
+# Usage-view time window: `w` cycles 7d -> 30d -> today -> 7d. Same shape as the priority
+# filter above, and for the same reason — it is view state, so it belongs in a file keyed
+# per instance, not in a variable that dies with each `$SELF --list` subprocess.
+#
+# 7d leads because it is the only window that is usefully populated on a normal day:
+# `today` is often two or three sessions, and `30d` reaches past Prometheus's one-week
+# retention so its dollar column is mostly `-`.
+WINF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.window"
+read_window() { cat "$WINF" 2>/dev/null || echo 7d; }
+cycle_window() {
+  # Read BEFORE opening for write — a `case … > "$WINF"` redirect truncates first, so
+  # read_window would always see empty. Exactly the bug cycle_pfilter documents.
+  local cur next; cur="$(read_window)"
+  case "$cur" in
+    7d)  next=30d ;;
+    30d) next=today ;;
+    *)   next=7d ;;
+  esac
+  printf '%s' "$next" > "$WINF"
+}
+
+# The active window as `<epoch>\t<YYYY-MM-DD>` — epoch feeds agent-usage --since, the
+# date feeds eval_files. One function so the two corpora can never be asked about
+# different spans, which would silently pair this week's cost with last month's scores.
+_window_since() {
+  local w; w="$(read_window)"
+  local days=7
+  case "$w" in today) days=0 ;; 30d) days=30 ;; *) days=7 ;; esac
+  if [ "$days" -eq 0 ]; then
+    printf '%s\t%s\n' "$(date -d 'today 00:00' +%s 2>/dev/null || echo 0)" "$(date +%F)"
+  else
+    printf '%s\t%s\n' "$(date -d "-$days days" +%s 2>/dev/null || echo 0)" \
+                      "$(date -d "-$days days" +%F 2>/dev/null || echo 1970-01-01)"
+  fi
 }
 
 # Filter emitted rows to the active priority. A task row survives only if its display
@@ -595,6 +650,191 @@ _global_agents() {
   return 0
 }
 
+# ══ USAGE view (the 4th view) ═══════════════════════════════════════════════
+# How well and how expensively the agents are working, over the window `w` cycles.
+#
+# KEYED ON THE RUNTIME PROJECT NAME, not on a vault profile, and therefore NOT scoped by
+# the active section. Both corpora this view reads — ~/.agent/sessions/<project>/ and
+# ~/.agent/evals/<project>/ — are keyed by the canonical runtime name, which is a
+# different namespace from the vault's per-profile project lists. Routing them through
+# canonical_of would be a lossy round trip to reach names we already hold. And the
+# question the view answers ("what did this week cost, and did it go well") is a
+# portfolio question: splitting it per profile would just hide half the spend.
+#
+# TOKEN-FIRST, DOLLAR-SECOND, and that is not a style choice. Cost coverage is ~2%:
+# Prometheus retains a week, the register hook races its 60s export interval, and 848 of
+# the last 865 sessions carry no cost at all. Tokens are on 100% of rows. So tokens lead,
+# the dollar column renders `-` rather than `$0.00` where it is unknown, and every total
+# states how many sessions it could not see. A cost panel that quietly reports 2% of the
+# truth as if it were all of it is worse than one that reports nothing.
+_usage_evals=""   # eval TSV for the window, computed once per render
+_usage_rollup=""  # agent-usage rollup for the window, likewise
+
+_usage_load() { # $1=since-epoch $2=since-date
+  # SHAPE-CHECK the rollup rather than trusting the exit code. `agent-usage` predating the
+  # rollup verb prints its help to STDOUT and exits 0, so an unguarded read renders four
+  # lines of usage text as four projects with 0 tokens each — which looks like data, not
+  # like a missing feature. Keep only lines that are 6 fields with a numeric session
+  # count; help text cannot satisfy that.
+  _usage_rollup=""
+  if command -v agent-usage >/dev/null 2>&1; then
+    _usage_rollup="$(agent-usage rollup --since "$1" 2>/dev/null \
+      | awk -F'\t' 'NF==6 && $2 ~ /^[0-9]+$/')"
+  fi
+  _usage_evals=""
+  if [ "${HAVE_EVALS:-0}" = 1 ]; then
+    # An ARRAY, not a word-split string. $HOME can contain a space (the test sandbox
+    # uses `sb space/` precisely to catch this), and `eval_rows $files` then hands awk
+    # two halves of one path, neither of which exists — so the quality half of the view
+    # silently empties while the spend half still renders.
+    local -a files=()
+    mapfile -t files < <(eval_files "$2" 2>/dev/null)
+    [ "${#files[@]}" -gt 0 ] && _usage_evals="$(eval_rows "${files[@]}" 2>/dev/null)"
+  fi
+}
+
+# `overall` per session id, for the quality x cost join. Only ~12% of eval sessions carry
+# a sid (the judge only started writing the marker recently), so this map is deliberately
+# sparse and every consumer must tolerate a miss.
+_usage_score_of() { # $1=sid
+  [ -n "${1:-}" ] && [ "$1" != "-" ] || return 0
+  printf '%s\n' "$_usage_evals" | awk -F'\t' -v s="$1" '$5==s && $7!="-" {print $7; exit}'
+}
+
+# The one-line quality summary for a project (or all of them when $1 is empty):
+# "avg N.N over M scored - weakest <dim> N.N". Averages exclude `-`, and Lessons is
+# excluded from the weakest-dimension search because its column holds only the minority
+# of sessions that carried a real score (see agent-evals.sh on the correction count).
+_usage_quality() { # $1=project (empty = all)
+  [ -n "$_usage_evals" ] || return 0
+  printf '%s\n' "$_usage_evals" | awk -F'\t' \
+    -v want="${1:-}" -v dims="$(printf '%s|' "${EVAL_DIMS[@]}")" '
+    BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
+    want != "" && $1 != want { next }
+    { if ($7 != "-") { osum += $7; on++ }
+      for (i = 1; i <= nd; i++) { v = $(7 + i)
+        if (v != "-" && D[i] != "Lessons") { s[i] += v; n[i]++ } }
+      if ($NF == 1) clean++; else corr++ }
+    END {
+      if (!on && !corr && !clean) exit
+      wi = 0; wv = 99
+      for (i = 1; i <= nd; i++) if (n[i] >= 3 && s[i]/n[i] < wv) { wv = s[i]/n[i]; wi = i }
+      out = (on ? sprintf("avg %.1f over %d scored", osum/on, on) : "no scores")
+      if (wi) out = out sprintf(" - weakest %s %.1f", D[wi], wv)
+      if (corr) out = out sprintf(" - %d correction%s", corr, corr == 1 ? "" : "s")
+      print out }'
+}
+
+_usage_view() {
+  local since date
+  IFS=$'\t' read -r since date < <(_window_since)
+  _usage_load "$since" "$date"
+
+  local w; w="$(read_window)"
+  printf 'head\t\t\t\t\t\t%s── usage · %s ──%s %s(w cycles today/7d/30d)%s\n' \
+    "$C_HEAD" "$w" "$C_OFF" "$C_DIM" "$C_OFF"
+
+  # ── the global rollup ──
+  if [ -n "$_usage_rollup" ]; then
+    printf '%s\n' "$_usage_rollup" | awk -F'\t' '$1=="TOTAL"{print}' \
+      | while IFS=$'\t' read -r _t n ed tok cost nocost; do
+          printf 'roll\t\t\t\t\t\t%s  %s sessions · %s ed · %s tok · %s%s\n' \
+            "$C_DIM" "$n" "$ed" "$(_human_tok "$tok")" \
+            "$(_usage_money "$cost" "$n" "$nocost")" "$C_OFF"
+        done
+  else
+    # Names both causes, because they are indistinguishable from here and the second one
+    # is the likely one on a machine mid-upgrade: an agent-usage without `rollup` prints
+    # help and exits 0, which the shape-check in _usage_load discards.
+    printf 'hint\t\t\t\t\t\t%s  no spend data — empty session registry, or an agent-usage without `rollup`%s\n' \
+      "$C_DIM" "$C_OFF"
+  fi
+  local q; q="$(_usage_quality)"
+  [ -n "$q" ] && printf 'roll\t\t\t\t\t\t%s  quality: %s%s\n' "$C_DIM" "$q" "$C_OFF"
+  [ "${HAVE_EVALS:-0}" = 1 ] || \
+    printf 'hint\t\t\t\t\t\t%s  agent-evals.sh not found — quality columns unavailable%s\n' \
+      "$C_DIM" "$C_OFF"
+
+  _usage_attention
+  _usage_projects "$since"
+}
+
+# Everything below the floor in the window, newest first. Enter opens the eval AT the
+# session. Omitted entirely when empty — an always-present "0 alerts" header is noise in
+# a view whose whole job is to surface the exceptions.
+_usage_attention() {
+  [ -n "$_usage_evals" ] || return 0
+  local rows
+  rows="$(printf '%s\n' "$_usage_evals" | awk -F'\t' \
+    -v dims="$(printf '%s|' "${EVAL_DIMS[@]}")" -v floor="${EVAL_ATTENTION_FLOOR:-7}" '
+    BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
+    { for (i = 1; i <= nd; i++) { v = $(7 + i)
+        if (v != "-" && v + 0 < floor)
+          printf "%s\t%s\t%s\t%s\t%s\t%s\n", $2, $1, $3, $4, D[i], v } }' \
+    | sort -r | head -12)"
+  [ -n "$rows" ] || return 0
+
+  printf 'head\t\t\t\t\t\t%s── attention · below %s ──%s\n' \
+    "$C_HEAD" "${EVAL_ATTENTION_FLOOR:-7}" "$C_OFF"
+  local d p ln sn dim v
+  while IFS=$'\t' read -r d p ln sn dim v; do
+    [ -n "$p" ] || continue
+    printf 'eval\t\t%s\t%s\t%s\t\t  %s!%s %s%s S%s%s  %s %s/10%s\n' \
+      "$EVAL_ROOT/$p/$d.md" "$ln" "$p" \
+      "$C_INP" "$C_OFF" "$C_DIM" "$p $d" "$sn" "$C_OFF" "$dim" "$v" "$C_OFF"
+  done <<< "$rows"
+}
+
+# One group per project, ordered by spend (the rollup already sorts that way), each with
+# a quality+spend summary and its most expensive sessions.
+_usage_projects() { # $1=since-epoch
+  [ -n "$_usage_rollup" ] || return 0
+  local p n ed tok cost nocost
+  while IFS=$'\t' read -r p n ed tok cost nocost; do
+    [ -n "$p" ] && [ "$p" != TOTAL ] || continue
+    _subheader "$p" "" ""
+    printf 'hint\t\t\t\t%s\t\t%s    %s sess · %s tok · %s%s\n' \
+      "$p" "$C_DIM" "$n" "$(_human_tok "$tok")" \
+      "$(_usage_money "$cost" "$n" "$nocost")" "$C_OFF"
+    local q; q="$(_usage_quality "$p")"
+    [ -n "$q" ] && printf 'hint\t\t\t\t%s\t\t%s    %s%s\n' "$p" "$C_DIM" "$q" "$C_OFF"
+    _usage_sessions "$p" "$1"
+  done <<< "$_usage_rollup"
+}
+
+# The quality x cost join: a project's priciest sessions in the window, each carrying its
+# eval score when the two corpora share a session id. Enter resumes the session.
+_usage_sessions() { # $1=project $2=since-epoch
+  command -v agent-usage >/dev/null 2>&1 || return 0
+  local rows; rows="$(agent-usage rows "$1" --since "$2" 2>/dev/null \
+                      | sort -t"$(printf '\t')" -k4,4rn | head -5)"
+  [ -n "$rows" ] || return 0
+  local id upd ed cost nocost tok models dur label score
+  while IFS=$'\t' read -r id upd ed cost nocost tok models dur label; do
+    [ -n "$id" ] || continue
+    score="$(_usage_score_of "$id")"
+    printf 'sess\t\t%s\t\t%s\t\t  %s*%s %s%s%s ed · %s tok · %s%s  %s\n' \
+      "$id" "$1" \
+      "$C_PROJ" "$C_OFF" \
+      "$([ -n "$score" ] && printf '%s[%s]%s ' "$C_SEL" "$score" "$C_OFF")" \
+      "$C_DIM" "$ed" "$(_human_tok "$tok")" \
+      "$([ "$nocost" = 1 ] && printf -- '-' || printf '$%.2f' "$cost")" "$C_OFF" \
+      "$(printf '%.44s' "$label")"
+  done <<< "$rows"
+}
+
+# A money total that never lies by omission: the sum, plus how many of the sessions in it
+# had no telemetry at all. `-` when NONE of them did, because `$0.00` reads as "free".
+_usage_money() { # $1=cost $2=sessions $3=nocost-count
+  local cost="$1" n="${2:-0}" nc="${3:-0}"
+  if [ "$nc" = "$n" ]; then printf -- '- (%s untracked)' "$nc"; return; fi
+  if [ "${nc:-0}" -gt 0 ] 2>/dev/null; then
+    printf '$%.2f (+%s untracked)' "$cost" "$nc"
+  else
+    printf '$%.2f' "$cost"
+  fi
+}
+
 # ══ BRIDGE view (the 3rd view) ══════════════════════════════════════════════
 # The middle ground: open QUESTIONS agents raised, anchored to the task they concern.
 # Per project (joined by canonical): each open ask, its task shown as context. Enter
@@ -893,6 +1133,7 @@ list_section() {
   case "$(read_mode)" in
     bridge) _bridge_view "$want"; return ;;
     agents) _profile_agents_view "$want"; _global_agents; return ;;
+    usage)  _usage_view; return ;;
   esac
   local rows; rows="$(emit_tasks)"
   _ask_banner
@@ -991,6 +1232,9 @@ _enter_action() { # $1=type $2=profile $3=c3 $4=c4
     item)     printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
     sess)     printf 'execute-silent(%s --resume-session %q)+abort' "$SELF" "$3" ;;
     sprint|sentinel) printf 'execute-silent(%s --open-file %q)+abort' "$SELF" "$3" ;;
+    # --jump, not --open-file: an eval file reaches 36KB and the finding is one line in
+    # it, so losing the line number means landing at the top and hunting.
+    eval)     printf 'execute-silent(%s --jump eval %q %q)+abort' "$SELF" "$3" "$4" ;;
     runner)   printf 'execute-silent(%s --journal %q)+abort' "$SELF" "$3" ;;
     # A scoping wave has no board or ask to open yet - its log is the only thing
     # to look at, and "what is it doing right now" is the whole reason for the row.
@@ -1045,13 +1289,20 @@ rail() {
   cur="$(read_section)"
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
   at="$(attention_counts)"
-  # view indicator: highlight the active of the three (a cycles them)
-  local mode t_c a_c b_c; mode="$(read_mode)"
-  t_c="$C_DIM"; a_c="$C_DIM"; b_c="$C_DIM"
-  case "$mode" in tasks) t_c="$C_SEL" ;; agents) a_c="$C_SEL" ;; bridge) b_c="$C_SEL" ;; esac
-  printf '%s SECTIONS%s   %stasks%s %s·%s %sagents%s %s·%s %sbridge%s %s(a)%s\n\n' \
-    "$C_HEAD" "$C_OFF" "$t_c" "$C_OFF" "$C_DIM" "$C_OFF" "$a_c" "$C_OFF" \
-    "$C_DIM" "$C_OFF" "$b_c" "$C_OFF" "$C_DIM" "$C_OFF"
+  # view indicator: highlight the active of the four (a cycles them).
+  # TWO LINES on purpose. One line of four names plus the `(a)` hint is 35 columns, and
+  # this is a preview pane sized at a fraction of the terminal — at three names it already
+  # sat at 27 and a fourth wrapped mid-word on a normal split.
+  local mode t_c a_c b_c u_c; mode="$(read_mode)"
+  t_c="$C_DIM"; a_c="$C_DIM"; b_c="$C_DIM"; u_c="$C_DIM"
+  case "$mode" in
+    tasks)  t_c="$C_SEL" ;; agents) a_c="$C_SEL" ;;
+    bridge) b_c="$C_SEL" ;; usage)  u_c="$C_SEL" ;;
+  esac
+  printf '%s SECTIONS%s %s(a)%s\n %stasks%s %s·%s %sagents%s %s·%s %sbridge%s %s·%s %susage%s\n\n' \
+    "$C_HEAD" "$C_OFF" "$C_DIM" "$C_OFF" \
+    "$t_c" "$C_OFF" "$C_DIM" "$C_OFF" "$a_c" "$C_OFF" \
+    "$C_DIM" "$C_OFF" "$b_c" "$C_OFF" "$C_DIM" "$C_OFF" "$u_c" "$C_OFF"
   while IFS= read -r s; do
     [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
@@ -1065,6 +1316,12 @@ rail() {
   done < <(sections_list)
   local pf; pf="$(read_pfilter)"
   [ -n "$pf" ] && printf '\n  %sfilter #%s%s %s(p)%s\n' "$C_INP" "$pf" "$C_OFF" "$C_DIM" "$C_OFF"
+  # Shown only in the usage view, where it is the one piece of state that changes what
+  # the body means. In the other three `w` does nothing, and a window readout beside
+  # task counts would just invite the question of what it filters.
+  [ "$(read_mode)" = usage ] && \
+    printf '\n  %swindow %s%s %s(w)%s\n' "$C_INP" "$(read_window)" "$C_OFF" "$C_DIM" "$C_OFF"
+  return 0
 }
 
 _cycle_section() { # $1 = +1 (next) or -1 (prev)
@@ -1527,6 +1784,7 @@ help_view() {
     K / J          previous / next section   (h / l also work)
     C-u / C-d      scroll the preview
     p              cycle priority filter  (urgent -> high -> low -> all)
+    w              cycle the usage window (7d -> 30d -> today), usage view only
     i              search  (esc leaves search)
     enter          edit the task in nvim
 
@@ -1561,7 +1819,15 @@ help_view() {
     full runbook:  ~/.config/shared-hooks/WAVES.md
 
   other
-    a              cycle views: tasks -> agents -> bridge -> tasks
+    a              cycle views: tasks -> agents -> bridge -> usage -> tasks
+
+  usage  how well and how expensively the agents are working, over the window
+         `w` cycles. Joins eval scores to session cost on the session id, so a
+         row reads [9] $2.11 3 ed <what it did>. Enter resumes that session;
+         enter on an attention row opens the eval AT the finding.
+         Tokens lead and dollars trail on purpose: cost telemetry covers ~2% of
+         sessions (Prometheus keeps a week), so `-` means unknown, never free,
+         and every total says how many sessions it could not see.
                      tasks   your task lists
                      agents  who is working this project + what shipped this
                              version cost (tokens/$); V freezes it into the
@@ -1577,7 +1843,9 @@ EOF
 
 jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
   local type="$1" file="$2" line="$3"
-  [ "$type" = "task" ] || return 0
+  # Still a WHITELIST. Relaxed to admit eval rows, not opened up: a `*)` here would spawn
+  # nvim on whatever c3 happens to hold for every row type in every view.
+  case "$type" in task|eval) ;; *) return 0 ;; esac
   [ -f "$file" ] || return 0
   local ln="${line:-1}"; [[ "$ln" =~ ^[0-9]+$ ]] || ln=1
   tmux new-window "nvim +${ln} '$file'"
@@ -1597,6 +1865,7 @@ case "${1:-}" in
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
   --cycle-pfilter) cycle_pfilter; exit 0 ;;
+  --cycle-window) cycle_window; exit 0 ;;
   --toggle-mode) toggle_mode; exit 0 ;;
   --enter-action) shift; _enter_action "$@"; exit 0 ;;
   --answer) shift; answer_ask "${1:-}" "${2:-}"; exit 0 ;;
@@ -1648,6 +1917,7 @@ case "$_last" in
 esac
 echo "${_last:-personal}" > "$STATE"
 : > "$PFILTER"           # ...and unfiltered (priority filter cleared)
+: > "$WINF"              # ...and the usage window back to its 7d default
 # ...in the tasks view (a cycles tasks -> agents -> bridge). NOTES_COCKPIT_MODE lets a
 # caller pin the opening view, which is how the cockpit session's `bridge` window opens
 # on the ask queue instead of making you press `a` twice every time it restarts.
@@ -1655,7 +1925,7 @@ printf '%s' "${NOTES_COCKPIT_MODE:-tasks}" > "$MODEF"
 # modal nav: printable keys that mean "command" in normal mode but must TYPE while
 # searching. `i` shows the input and unbinds them; leaving search (esc) rebinds them.
 # `?` is intentionally NOT modal — it opens the help pager.
-MODAL='j,k,h,l,i,q,s,m,n,V,o,p,g,a,A,R,T,!'
+MODAL='j,k,h,l,i,q,s,m,n,V,o,p,w,g,a,A,R,T,!'
 
 # No argument: the FIRST render reads the section that was just validated above, the same
 # one every `reload($SELF --list)` reads. This was pinned to `personal` while the rail
@@ -1702,6 +1972,7 @@ list_section | fzf \
   --bind "A:execute($SELF --archive-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "R:execute($SELF --restore-project {6})+reload($SELF --list)+refresh-preview" \
   --bind "p:execute-silent($SELF --cycle-pfilter)+reload($SELF --list)+refresh-preview" \
+  --bind "w:execute-silent($SELF --cycle-window)+reload($SELF --list)+refresh-preview" \
   --bind "T:execute-silent(notes today --all)+reload($SELF --list)+refresh-preview" \
   --bind "a:execute-silent($SELF --toggle-mode)+reload($SELF --list)+refresh-preview" \
   --bind "enter:transform($SELF --enter-action {1} {2} {3} {4})"

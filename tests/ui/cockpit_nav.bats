@@ -141,14 +141,20 @@ start_cockpit() {
   wait_until 'screen_lacks "fix the rail badge"'
 }
 
-@test "a cycles all three views and returns to tasks" {
-  # tasks -> agents -> bridge -> tasks (notes-cockpit.sh toggle_mode).
+@test "a cycles all four views and returns to tasks" {
+  # tasks -> agents -> bridge -> usage -> tasks (notes-cockpit.sh toggle_mode).
   start_cockpit
   wait_until 'screen_has "fix the rail badge"'
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'   # agents
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'   # bridge
+  tmux_keys a
+  wait_until 'screen_lacks "fix the rail badge"'   # usage
+  wait_until 'screen_has "usage ·"'                # ...and it is REALLY the usage view:
+                                                   # three `screen_lacks` in a row would
+                                                   # pass on any view that merely lacks
+                                                   # the task, including a broken render.
   tmux_keys a
   wait_until 'screen_has "fix the rail badge"'     # back to tasks
 }
