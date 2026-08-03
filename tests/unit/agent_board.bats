@@ -255,11 +255,17 @@ EOF
 @test "board_newest picks by MTIME, not by name" {
   # A wave IS a patch version, so boards are named both sprint-2026-07-27.md and
   # sprint-v1.10.1.md. Those two sort differently under different collations.
+  #
+  # THE NEWEST BOARD MUST BE THE ONE THAT SORTS LAST BY NAME, or this test cannot
+  # fail. It could not, for its whole life: it used to make sprint-2026-07-27.md the
+  # newest, and '2' precedes 'v', so plain `ls -1` returned the same answer as `ls
+  # -1t` and dropping the `t` broke nothing. Found by breaking the subject on purpose.
   local d="$HOME/.agent/plans/probe"; mkdir -p "$d"
-  echo old > "$d/sprint-v1.10.1.md"
-  sleep 1.1
-  echo new > "$d/sprint-2026-07-27.md"
-  assert_equal "$(basename "$(board_newest probe)")" 'sprint-2026-07-27.md'
+  echo old > "$d/sprint-2026-07-27.md"
+  echo new > "$d/sprint-v1.10.1.md"
+  touch -d '2026-07-27 10:00' "$d/sprint-2026-07-27.md"
+  touch -d '2026-08-02 10:00' "$d/sprint-v1.10.1.md"
+  assert_equal "$(basename "$(board_newest probe)")" 'sprint-v1.10.1.md'
 }
 
 @test "board_newest is silent for a project with no board" {
@@ -358,4 +364,166 @@ stage_via_rows() {
   ' _ "$AGENT_BOARD_LIB" "$BATS_TEST_TMPDIR/ckpt.md"
   assert_success
   assert_output ''
+}
+
+# ── discovery: board_list / board_newest / board_find ────────────────────────
+# Six files used to write out `ls -1t "$dir"/sprint-*.md` themselves. The glob is
+# the easy part; what each copy also re-decided, silently, was WHAT COUNTS as a
+# board and IN WHAT ORDER. These tests pin both facts to one implementation.
+
+# Boards named so that NAME order and MTIME order DISAGREE. That is the only
+# arrangement under which these tests can fail: '2' precedes 'v', so if the newest
+# board were the dated one, `ls -1` and `ls -1t` would return the same order and
+# dropping the `t` would break nothing. The newest here must sort LAST by name.
+#
+# The shape is realistic, not contrived: a wave cuts `sprint-v1.10.1.md` for a patch
+# release after a dated `/kb:sprint` board is already sitting in the directory.
+seed_boards() { # $1=project — leaves `sprint-v1.10.1.md` newest, `sprint-2026-08-01.md` older
+  local d="$AGENT_PLANS_DIR/$1"
+  mkdir -p "$d"
+  printf '## Queue\n' > "$d/sprint-v1.10.1.md"
+  printf '## Queue\n' > "$d/sprint-2026-08-01.md"
+  touch -d '2026-08-01 10:00' "$d/sprint-2026-08-01.md"
+  touch -d '2026-08-02 10:00' "$d/sprint-v1.10.1.md"
+}
+
+setup_discovery() {
+  export AGENT_PLANS_DIR="$BATS_TEST_TMPDIR/plans"
+  seed_boards alpha
+}
+
+@test "board_list orders by mtime, not by name" {
+  setup_discovery
+  # If this ever sorts by name the two lines swap under a C locale. Named boards and
+  # dated boards coexist because a wave is a patch version, so this is not theoretical.
+  assert_equal "$(board_list alpha | xargs -n1 basename | tr '\n' ' ')" \
+    'sprint-v1.10.1.md sprint-2026-08-01.md '
+}
+
+@test "board_list lists every board, board_newest only the first" {
+  setup_discovery
+  assert_equal "$(board_list alpha | grep -c .)" '2'
+  assert_equal "$(basename "$(board_newest alpha)")" 'sprint-v1.10.1.md'
+}
+
+@test "board_list is silent AND successful for an unknown project, under pipefail" {
+  # Same class of bug as board_newest's: a timer-driven daemon asking about a quiet
+  # project must not see a failure status.
+  # Each case reports ITSELF. Chaining them as `board_list nosuch; board_list` and
+  # asserting on the final status cannot work: the no-arg case returns 0 early, so it
+  # overwrites the status of the case being tested and the whole test goes vacuous.
+  run bash -c '
+    set -uo pipefail
+    . "$1"; export AGENT_PLANS_DIR="$2"
+    board_list nosuchproject || echo "NONZERO: unknown project"
+    board_list               || echo "NONZERO: no argument"
+    mkdir -p "$AGENT_PLANS_DIR/empty"
+    board_list empty         || echo "NONZERO: registered project with no board"
+  ' _ "$AGENT_BOARD_LIB" "$BATS_TEST_TMPDIR/plans"
+  assert_output ''
+}
+
+@test "board_find returns the newest board its predicate accepts, skipping newer ones" {
+  # THE behaviour every scheduled reader wants and each had reimplemented: a newer
+  # board that is entirely terminal must not mask an older one that still has work.
+  # Getting this backwards is silent — the daemon reports 'nothing to drain'.
+  setup_discovery
+  # newest board: nothing left to do. Older board: still working. The daemon must
+  # look past the first one rather than stopping at it.
+  cat > "$AGENT_PLANS_DIR/alpha/sprint-v1.10.1.md" <<'EOF'
+## Queue
+| Ticket | Title | Status |
+|---|---|---|
+| 1 | done thing | merged |
+EOF
+  cat > "$AGENT_PLANS_DIR/alpha/sprint-2026-08-01.md" <<'EOF'
+## Queue
+| Ticket | Title | Status |
+|---|---|---|
+| 2 | live thing | working |
+EOF
+  touch -d '2026-08-01 10:00' "$AGENT_PLANS_DIR/alpha/sprint-2026-08-01.md"
+  touch -d '2026-08-02 10:00' "$AGENT_PLANS_DIR/alpha/sprint-v1.10.1.md"
+  assert_equal "$(basename "$(board_find alpha board_needs_eyes)")" 'sprint-2026-08-01.md'
+}
+
+@test "board_find is silent AND successful when no board matches, or with no predicate" {
+  setup_discovery
+  rm "$AGENT_PLANS_DIR/alpha/sprint-v1.10.1.md"
+  cat > "$AGENT_PLANS_DIR/alpha/sprint-2026-08-01.md" <<'EOF'
+## Queue
+| Ticket | Title | Status |
+|---|---|---|
+| 1 | done thing | merged |
+EOF
+  run bash -c '
+    set -uo pipefail
+    . "$1"; export AGENT_PLANS_DIR="$2"
+    board_find alpha board_needs_eyes; board_find alpha
+  ' _ "$AGENT_BOARD_LIB" "$BATS_TEST_TMPDIR/plans"
+  assert_success
+  assert_output ''
+}
+
+# ── the class vocabulary: board_in_class / board_count ───────────────────────
+
+@test "eyes is open OR attention, and an unknown class matches nothing" {
+  # `eyes` is a class rather than an `||` at each call site because every consumer
+  # that open-coded it got it slightly different. An unknown class must return
+  # no-match rather than error: a typo must not take down a timer-driven daemon.
+  for s in queued working review; do
+    board_in_class "$s" open      || fail "$s should be open"
+    board_in_class "$s" eyes      || fail "$s should be eyes"
+    board_in_class "$s" attention && fail "$s should not be attention"
+  done
+  for s in blocked error; do
+    board_in_class "$s" attention || fail "$s should be attention"
+    board_in_class "$s" eyes      || fail "$s should be eyes"
+    board_in_class "$s" open      && fail "$s should not be open"
+  done
+  for s in merged skipped; do
+    board_in_class "$s" eyes && fail "$s is terminal, not eyes"
+  done
+  board_in_class working nosuchclass && fail "an unknown class must match nothing"
+  return 0
+}
+
+@test "board_count counts per class and prints 0 rather than nothing" {
+  # Printing empty for zero is the bug this pins: session-preflight interpolates the
+  # count into a message and the caller before it used `${n:-1}`, so an empty count
+  # silently rendered as the plausible-looking '1 in-flight row(s)'.
+  write_bb <<'EOF'
+## Queue
+| Ticket | Title | Status |
+|---|---|---|
+| 1 | a | working |
+| 2 | b | blocked on access |
+| 3 | c | merged |
+| 4 | d | queued |
+EOF
+  assert_equal "$(board_count "$BB" open)"      '2'
+  assert_equal "$(board_count "$BB" attention)" '1'
+  assert_equal "$(board_count "$BB" eyes)"      '3'
+
+  write_bb <<'EOF'
+## Queue
+| Ticket | Title | Status |
+|---|---|---|
+| 1 | a | merged |
+EOF
+  assert_equal "$(board_count "$BB" eyes)" '0'
+  assert_equal "$(( $(board_count "$BB" eyes) + 1 ))" '1'
+}
+
+@test "board_needs_eyes agrees with board_count eyes on every board" {
+  # The invariant the refactor rests on: board_needs_eyes is now board_has_stage eyes,
+  # so a board the daemons act on and a count the human reads can never disagree.
+  for status in working blocked merged skipped queued 'in-wave' 'PR #12 open'; do
+    printf '## Queue\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | %s |\n' "$status" > "$BB"
+    if board_needs_eyes "$BB"; then
+      [ "$(board_count "$BB" eyes)" -gt 0 ] || fail "needs_eyes yes but count 0 for '$status'"
+    else
+      assert_equal "$(board_count "$BB" eyes)" '0'
+    fi
+  done
 }
