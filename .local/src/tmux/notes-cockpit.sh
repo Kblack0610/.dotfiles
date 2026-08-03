@@ -1028,7 +1028,14 @@ attention_counts() {
   agent-ask list --all --pending 2>/dev/null | awk -F'\t' -v map="$map" '
     BEGIN { n=split(map, L, "\n"); for(i=1;i<=n;i++) if(split(L[i],kv,"=")==2) prof_of[kv[1]]=kv[2] }
     $1=="" { next }
-    { p = ($3!="") ? $3 : prof_of[$2]; if (p!="") { c[p]++; t++ } }
+    # t++ is OUTSIDE the p!="" guard on purpose. It used to be inside, so an ask whose
+    # profile column is empty AND whose project is in no profile map counted toward NO
+    # section and was missing from the `all` total too - the one number whose whole job
+    # is "how many things want you". A question nobody can bucket is still a question.
+    # Live example of the shape: every ask under ~/.agent/asks/bnb-platform/ carries an
+    # empty profile column, and bnb-platform is a repo, not a vault project, so it is in
+    # no map. Bucketing stays guarded; counting does not.
+    { t++; p = ($3!="") ? $3 : prof_of[$2]; if (p!="") c[p]++ }
     END { for (k in c) print k, c[k]; if (t) print "all", t }'
 }
 

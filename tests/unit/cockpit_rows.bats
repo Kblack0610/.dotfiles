@@ -673,3 +673,56 @@ S
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v1.10.0'
 }
+
+# ── attention_counts: the sidebar's "how many things want you" badge ─────────
+# `t++` used to sit INSIDE the `p!=""` guard, so an ask that could not be bucketed into a
+# profile was counted in no section AND missing from the `all` total. Bucketing is
+# genuinely best-effort - the map is built from vault projects and an ask can name a repo
+# instead - but the TOTAL is not: a question nobody can file is still a question, and the
+# one number whose job is "how many things want you" was quietly short.
+
+# stub_asks <rows...> -- each row: id<TAB>project<TAB>profile<TAB>...
+stub_asks() {
+  local body="" r
+  for r in "$@"; do body+="$r"$'\n'; done
+  printf '#!/usr/bin/env bash\n[ "$1" = list ] && printf %s "%s"\nexit 0\n' "'%s'" "$body" \
+    > "$SANDBOX/bin/agent-ask"
+  chmod +x "$SANDBOX/bin/agent-ask"
+}
+
+@test "an ask that maps to no profile still counts toward the all total" {
+  # The regression, in the exact live shape: every ask under ~/.agent/asks/bnb-platform
+  # carries an empty profile column, and bnb-platform is a REPO, not a vault project, so
+  # it appears in no profile map.
+  stub_asks $'A1\tbnb-platform\t\tpending\tgate\tq?\tapprove\t-'
+  run attention_counts
+  assert_success
+  assert_output --partial 'all 1'
+}
+
+@test "an unbucketable ask is counted but not attributed to a section" {
+  # Counting is unconditional; bucketing stays guarded. Asserting both directions so a
+  # future fix cannot "fix" the total by inventing a bogus section for it.
+  stub_asks $'A1\tbnb-platform\t\tpending\tgate\tq?\tapprove\t-'
+  run attention_counts
+  assert_output --partial 'all 1'
+  refute_output --partial 'bnb-platform 1'
+}
+
+@test "bucketable and unbucketable asks both land in the total" {
+  # Rule of three: a mix must sum, or the badge lies whenever the two kinds coexist.
+  stub_asks $'A1\tbnb-platform\t\tpending\tgate\tq?\tapprove\t-' \
+            $'A2\tcockpit\tpersonal\tpending\tgate\tq?\tapprove\t-' \
+            $'A3\tnotes\tpersonal\tpending\tgate\tq?\tapprove\t-'
+  run attention_counts
+  assert_output --partial 'all 3'
+  assert_output --partial 'personal 2'
+}
+
+@test "no pending asks yields no total line at all" {
+  # `all 0` would render a badge for nothing.
+  stub_asks
+  run attention_counts
+  assert_success
+  refute_output --partial 'all'
+}

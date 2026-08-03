@@ -288,3 +288,74 @@ EOF
   run board_sentinel_of "$BATS_TEST_TMPDIR/nope.md"; assert_success; assert_output ''
   run board_rows        "$BATS_TEST_TMPDIR/nope.md"; assert_success; assert_output ''
 }
+
+# ── the mapping is ONE implementation ────────────────────────────────────────
+# board_stage_of and board_rows used to hold separate copies of the stage mapping, under
+# a comment asserting they "can never disagree". They did: the shell arm `*done*` is a
+# substring match, so "abandoned" was `merged` via board_stage_of and `working` via
+# board_rows. These tests exist to make that class of drift impossible to reintroduce.
+
+# stage_via_rows <status> -- what the ROW PARSER makes of a status cell.
+stage_via_rows() {
+  local f="$BATS_TEST_TMPDIR/agree.md"
+  printf '| Ticket | Status |\n|---|---|\n| T1 | %s |\n' "$1" > "$f"
+  board_rows "$f" | cut -d$'\037' -f2
+}
+
+@test "\"abandoned\" is not merged - substring matching was the drift" {
+  # The regression itself. A row a human marked abandoned read as DONE to one consumer.
+  assert_equal "$(board_stage_of abandoned)" 'working'
+  assert_equal "$(stage_via_rows abandoned)" 'working'
+}
+
+@test "board_stage_of and board_rows agree on every status shape we have seen" {
+  # Rule of three and then some: real cells from the boards on disk, plus the words that
+  # broke earlier parsers. Any future edit that touches one path and not the other fails
+  # here rather than in the cockpit.
+  local s
+  for s in 'abandoned' 'done' 'PR done' 'work abandoned mid-flight' \
+           'merged' 'STATUS: DONE' 'in-wave' 'reverted-from-wave' \
+           'blocked' 'blocked - PR #1036 merged, CI red' 'error' 'failed' \
+           'skipped' 'pr-open' 'pr open' 'PR #1036' 'pull/1036' 'merge it' 'ready' \
+           'queued' 'filed' 'not dispatched' 'n/a' 'returns assessment' \
+           'in-progress' '**DONE - PR #1036 merged**' 'something nobody wrote yet'; do
+    assert_equal "$(board_stage_of "$s")|$s" "$(stage_via_rows "$s")|$s"
+  done
+}
+
+@test "attention still beats terminal after the consolidation" {
+  # The ordering that every earlier parser got wrong: a blocked row that MENTIONS a merged
+  # PR is blocked, and must keep asking for the human.
+  assert_equal "$(board_stage_of 'blocked - PR #1036 merged, CI red')" 'blocked'
+  assert_equal "$(stage_via_rows 'blocked - PR #1036 merged, CI red')" 'blocked'
+}
+
+# ── pipefail safety ──────────────────────────────────────────────────────────
+# Every consumer of this library opens with `set -uo pipefail`. Under pipefail the
+# `ls ... | head -1` in board_newest took its status from a failing `ls`, so a project
+# that simply had no board yet reported FAILURE for the ordinary case. It was invisible
+# because the only test that could have caught it sed-extracted functions into a bare
+# shell, where pipefail was never set.
+
+@test "board_newest is silent AND successful for a project with no board, under pipefail" {
+  run bash -c '
+    set -uo pipefail
+    . "$1"
+    export AGENT_PLANS_DIR="$2"
+    mkdir -p "$AGENT_PLANS_DIR/alpha"
+    board_newest alpha
+  ' _ "$AGENT_BOARD_LIB" "$BATS_TEST_TMPDIR/plans"
+  assert_success
+  assert_output ''
+}
+
+@test "board_sentinel_of is successful for a checkpoint with no sentinel, under pipefail" {
+  printf 'just a note\n' > "$BATS_TEST_TMPDIR/ckpt.md"
+  run bash -c '
+    set -uo pipefail
+    . "$1"
+    board_sentinel_of "$2"
+  ' _ "$AGENT_BOARD_LIB" "$BATS_TEST_TMPDIR/ckpt.md"
+  assert_success
+  assert_output ''
+}
