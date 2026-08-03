@@ -29,7 +29,10 @@ for AGENT_BOARD_LIB_CANDIDATE in "${AGENT_BOARD_LIB:-}" "$HOME/.local/lib/agent-
   fi
 done
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
-PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
+# Honour AGENT_PLANS_DIR, the override agent-board.sh reads. Without it this hook and
+# the library it calls disagree about where boards live the moment anything sets it —
+# the banner would test one directory for existence and read boards out of another.
+PLAN_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 # Compaction marker — canonical path is defined in compact-prep.sh (kept in sync here).
@@ -100,18 +103,14 @@ CONTEXT=$(
   #
   # board_needs_eyes, not board_drainable: an unapproved board still needs the human's
   # eyes at turn 1 — that is exactly the state an approval gate leaves it in.
-  if [ -d "$PLAN_DIR" ] && declare -F board_needs_eyes >/dev/null 2>&1; then
-    ACTIVE_SPRINT=""
-    while IFS= read -r sf; do
-      [ -n "$sf" ] || continue
-      if board_needs_eyes "$sf"; then
-        ACTIVE_SPRINT="$sf"; break
-      fi
-    done < <(ls -1t "$PLAN_DIR"/sprint-*.md 2>/dev/null)
+  if [ -d "$PLAN_DIR" ] && declare -F board_find >/dev/null 2>&1; then
+    ACTIVE_SPRINT="$(board_find "$PROJECT_NAME" board_needs_eyes)"
     if [ -n "$ACTIVE_SPRINT" ]; then
-      n=$(board_rows "$ACTIVE_SPRINT" 2>/dev/null | awk -F'\037' '
-        $2=="queued"||$2=="working"||$2=="review"||$2=="blocked"||$2=="error" {c++}
-        END{print c+0}')
+      # board_count, not a local awk over the stage names. The awk that stood here
+      # listed all five in-flight stages by hand, so it was a fourth copy of the
+      # vocabulary board_in_class owns — and one that would have kept printing a
+      # confident count while quietly ignoring any stage added after it was written.
+      n=$(board_count "$ACTIVE_SPRINT" eyes)
       mtime=$(stat -c %Y "$ACTIVE_SPRINT" 2>/dev/null || echo 0)
       age=$(( ( $(date +%s) - mtime ) / 60 ))
       echo "⚠ ACTIVE SPRINT: $(basename "$ACTIVE_SPRINT") — ${n:-1} in-flight row(s), last touched ${age}m ago."
