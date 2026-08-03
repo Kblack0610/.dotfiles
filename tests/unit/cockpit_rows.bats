@@ -335,7 +335,7 @@ mk_board() {
 | 1 | freshness | — | |
 | 2 | full e2e | — | |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe | wc -l'
   assert_output '1'
 }
 
@@ -351,7 +351,7 @@ B
 |------|------|--------|----------|
 | 1 | freshness | — | |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe'
   refute_output --partial 'freshness'
 }
 
@@ -365,7 +365,7 @@ B
 | 1 |  | ALW is not searchable | queued |
 | 2 |  | accepts filters are a no-op | queued |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe | wc -l'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe | wc -l'
   assert_output '2'
 }
 
@@ -376,7 +376,7 @@ B
 |---|--------|-------|--------|
 | 1 |  | ALW is not searchable | queued |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe'
   assert_output --partial '~1'
 }
 
@@ -387,7 +387,7 @@ B
 |---|--------|-------|--------|
 | 1 | 601 | a real bug | queued |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe'
   refute_output --partial 'Title'
 }
 
@@ -405,7 +405,7 @@ B
 |---|--------|-------|--------|
 | 1 | 601 | a versioned wave item | in-progress |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe'
   assert_output --partial 'a versioned wave item'
 }
 
@@ -426,7 +426,7 @@ B
 |---|--------|-------|--------|
 | 1 | 602 | the current wave | in-progress |
 B
-  run bash -c '. "$AGENT_BOARD_LIB"; eval "$(sed -n "/^_sprint_items()/,/^}/p" "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"; _sprint_items probe'
+  run bash -c 'source "$COCKPIT"; _sprint_items probe'
   assert_output --partial 'the current wave'
   refute_output --partial 'the old dated wave'
 }
@@ -460,9 +460,6 @@ B
 # taken from the AUTO block, which lab-sync regenerates, and with the one sentence of an
 # ask you actually have to answer.
 
-load_gists() {
-  eval "$(sed -n '/^_feed_gist()/,/^}/p; /^_ask_gist()/,/^}/p' "$REPO_ROOT/.local/src/tmux/notes-cockpit.sh")"
-}
 
 mk_summary() { SUMMARY="$BATS_TEST_TMPDIR/summary.md"; cat > "$SUMMARY"; }
 
@@ -483,7 +480,6 @@ mk_summary() { SUMMARY="$BATS_TEST_TMPDIR/summary.md"; cat > "$SUMMARY"; }
 - #1093 docs: a doc
 <!-- AUTO:END -->
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v1.10.0, 2 to ship, 2 open, 1 PR'
 }
@@ -495,7 +491,6 @@ S
 **shipped `alpha-v1.10.0`** (2026-07-18)
 <!-- AUTO:END -->
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v1.10.0'
 }
@@ -511,7 +506,6 @@ S
 - …(+10 more)
 <!-- AUTO:END -->
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output '12 open'
 }
@@ -522,13 +516,11 @@ S
 # a project
 just prose, never lab-synced.
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output ''
 }
 
 @test "_feed_gist is silent on a missing file" {
-  load_gists
   run _feed_gist "$BATS_TEST_TMPDIR/nope.md"
   assert_success
   assert_output ''
@@ -543,7 +535,6 @@ S
 
 **In flight** (open PRs)
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v2.0.0'
 }
@@ -551,33 +542,28 @@ S
 @test "_ask_gist keeps the QUESTION, which an agent writes LAST" {
   # The live wave posted ~900 characters of findings and closed with the one thing needing
   # an answer. Head-truncation would have cut off exactly that part.
-  load_gists
   run _ask_gist "Wave 2026-07-27: 3 items -> 3 tickets, but NOT the ones on the sheet. (a) already shipped. (b) the real gap is search. (c) a prod ops action, recommend trimming. Create the 3 tickets and cut the branch?"
   assert_output 'Create the 3 tickets and cut the branch?'
 }
 
 @test "_ask_gist leaves a short question alone" {
-  load_gists
   run _ask_gist "PR #1036 is green, merge it?"
   assert_output 'PR #1036 is green, merge it?'
 }
 
 @test "_ask_gist truncates when there is no trailing question" {
-  load_gists
   run bash -c "$(declare -f _ask_gist); _ask_gist 'Wave stopped before creating anything: 1 item, 0 tickets. Two hard blocks. The tracker is missing and the pass is headless.' | wc -c"
   assert_output '88'   # 85 chars + the ellipsis, no trailing newline
 }
 
 @test "_ask_gist collapses newlines and tabs so a row cannot break the wire" {
   # Field 7 is the DISPLAY column of a tab-separated row: a stray tab shifts every column.
-  load_gists
   run _ask_gist "$(printf 'one\ttwo\nthree?')"
   assert_output 'one two three?'
 }
 
 @test "_ask_gist ignores a trailing question that is really a whole paragraph" {
   # A long final clause is not a summary; fall back to truncation rather than emit a wall.
-  load_gists
   run bash -c "$(declare -f _ask_gist); _ask_gist 'Some findings here. Given all of the above and the fact that nothing else was reachable, should we now go ahead and create every one of the proposed tickets and cut the branch?' | wc -c"
   assert_output '88'   # 85 chars + the ellipsis, no trailing newline
 }
@@ -665,7 +651,6 @@ S
 - #166 fix: a fix
 <!-- AUTO:END -->
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v0.0.1, 1 PR'
 }
@@ -677,7 +662,6 @@ S
 **`alpha` · v0.0.1** — _(no git tag resolved)_
 <!-- AUTO:END -->
 S
-  load_gists
   run _feed_gist "$SUMMARY"
   assert_output 'shipped v1.10.0'
 }

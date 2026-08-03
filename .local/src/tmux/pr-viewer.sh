@@ -386,5 +386,9 @@ main() {
     fi
 }
 
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# `main` never invoked.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 # Run main function
 main

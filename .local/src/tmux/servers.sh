@@ -438,4 +438,9 @@ main() {
   esac
 }
 
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# `main` never invoked. The default arm of main's dispatch is `cmd_hop`, so without this
+# guard sourcing the file would try to SWITCH the caller's tmux client.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 main "$@"

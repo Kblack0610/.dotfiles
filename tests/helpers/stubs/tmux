@@ -30,9 +30,15 @@ target_key() { printf '%s' "${1//:/_}"; }
 
 # Pull `-t <target>` out of the arg list wherever it sits.
 target=""
+fmt=""
 prev=""
 for a in "$@"; do
   [ "$prev" = "-t" ] && target="$a"
+  # The -F format, extracted EXACTLY rather than grepped for. A substring test on the
+  # flattened arg list cannot tell '#{window_id}' from
+  # '#{window_id} #{session_name}:#{window_index}' -- the first is a prefix of the
+  # second -- and those two answers are not interchangeable to wind-down.sh.
+  [ "$prev" = "-F" ] && fmt="$a"
   prev="$a"
 done
 
@@ -40,7 +46,27 @@ case "${1:-}" in
   list-panes)
     [ -f "$FIX/tmux.panes" ] && cat "$FIX/tmux.panes"
     ;;
+  has-session)
+    # wind-down.sh `fire` gates every teardown on this: a session that is already gone
+    # must abort the fire, not fall through to a kill. Default 0 (exists) so no existing
+    # caller changes behaviour; drop tmux.no-session to make it report gone.
+    [ -f "$FIX/tmux.no-session" ] && exit 1
+    exit 0
+    ;;
   list-windows)
+    # wind-down.sh asks for two DIFFERENT formats and the answers are not
+    # interchangeable, so they get their own fixtures:
+    #   -F '#{window_id}'                              -> tmux.window_ids
+    #   -F '#{window_id} #{session_name}:#{window_index}' -> tmux.window_labels
+    # Anything else keeps the pre-existing tmux.windows behaviour (cockpit.sh stale).
+    case "$fmt" in
+      '#{window_id}')
+        [ -f "$FIX/tmux.window_ids" ] && cat "$FIX/tmux.window_ids"
+        exit 0 ;;
+      '#{window_id} #{session_name}:#{window_index}')
+        [ -f "$FIX/tmux.window_labels" ] && cat "$FIX/tmux.window_labels"
+        exit 0 ;;
+    esac
     # Canned rows for `cockpit.sh stale`, which reads
     #   session:index:name:pane_current_command:pane_current_path:window_activity
     #
@@ -58,9 +84,24 @@ case "${1:-}" in
     ;;
   display-message)
     # `-p -t <target> "#{window_activity}"` and `-p '#{session_name}'`
+    #
+    # ORDER IS LOAD-BEARING. wind-down.sh asks for the composite
+    # '#{session_name}:#{window_index}' as its human label, and that string CONTAINS
+    # session_name -- so the composite must be matched before the bare one or the label
+    # comes back as just the session and the sentinel records the wrong thing.
     if printf '%s ' "$@" | grep -q 'window_activity'; then
       f="$FIX/tmux.activity.$(target_key "$target")"
       [ -f "$f" ] && cat "$f"
+    elif printf '%s ' "$@" | grep -q 'session_name}:#{window_index'; then
+      echo "${STUB_LABEL:-cockpit:3}"
+    elif printf '%s ' "$@" | grep -q 'window_id'; then
+      echo "${STUB_WINDOW_ID:-@7}"
+    elif printf '%s ' "$@" | grep -q 'pane_id'; then
+      echo "${STUB_PANE_ID:-%12}"
+    elif printf '%s ' "$@" | grep -q 'session_windows'; then
+      echo "${STUB_SESSION_WINDOWS:-3}"
+    elif printf '%s ' "$@" | grep -q 'socket_path'; then
+      echo "${STUB_SOCKET:-}"
     elif printf '%s ' "$@" | grep -q 'session_name'; then
       [ -f "$FIX/tmux.session" ] && cat "$FIX/tmux.session" || echo dotfiles
     fi
