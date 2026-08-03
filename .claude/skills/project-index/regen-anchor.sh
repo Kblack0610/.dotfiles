@@ -9,9 +9,18 @@
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
-# project-map.json lives in the PRIVATE overlay and is stowed to ~/.config/shared-hooks;
-# it is NOT under ~/.dotfiles. Reading it from HOOKS_DIR silently yields an empty map.
-MAP_FILE="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+# project_map_file() from project-name.sh owns the path. It is defined there rather than
+# here because five files each defined it and one was wrong (see its comment). Fall back
+# only if the resolver is not on this machine yet.
+if [ -r "$HOME/.config/shared-hooks/project-name.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.config/shared-hooks/project-name.sh"
+fi
+if declare -F project_map_file >/dev/null 2>&1; then
+  MAP_FILE="$(project_map_file)"
+else
+  MAP_FILE="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+fi
 
 # --- resolve project name ---
 if [ "${1:-}" != "" ]; then
@@ -63,15 +72,17 @@ if declare -F lab_roots >/dev/null 2>&1; then
 else
   LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
 fi
+# The lab directory name IS the project name -- project-map.json is the sole registry
+# and project-map-doctor enforces that every lab dir has an entry, so there is nothing
+# to search for. The loop this replaces also tried `${PROJECT%-agent}` and
+# `${PROJECT%-platform}`, which silently attached a project's anchor to whatever
+# directory happened to look similar.
 LAB_DIR=""
 while IFS= read -r lab_root; do
   [ -n "$lab_root" ] || continue
-  [ -n "$LAB_DIR" ] && break
-  for cand in "$PROJECT" "${PROJECT%-agent}" "${PROJECT%-platform}"; do
-    if [ -d "$lab_root/$cand" ]; then
-      LAB_DIR="${lab_root/#$HOME/\~}/$cand/"; break
-    fi
-  done
+  if [ -d "$lab_root/$PROJECT" ]; then
+    LAB_DIR="${lab_root/#$HOME/\~}/$PROJECT/"; break
+  fi
 done <<< "$LAB_ROOT_LIST"
 [ -z "$LAB_DIR" ] && LAB_DIR="~/.notes/lab/ (no dedicated projects/current entry)"
 # repo docs
