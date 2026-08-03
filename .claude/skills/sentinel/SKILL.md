@@ -30,7 +30,7 @@ description: >-
 - **Registry:** `~/.dotfiles/.claude/PERSONAS.md`
 
 The standing watch companion. A persistent `agentctl` service
-(`~/.dotfiles/.config/agentctl/agents/sentinel.conf`) runs `watch-companion-loop daemon`, which
+(`~/.config/agentctl/agents/sentinel.conf`) runs `watch-companion-loop daemon`, which
 sweeps the registry every tick, runs each watch's probe, and is the **single notification voice**
 to the user via `agent-notify`. This skill is how you (and other agents) talk to it: it does
 manifest CRUD; the running service does the watching.
@@ -46,8 +46,8 @@ manifest CRUD; the running service does the watching.
   Paused watches are renamed `*.yaml.paused` (excluded by the loop's glob).
 - Runtime log: `~/.local/state/agentctl/sentinel/activity.log`; per-watch state in
   `~/.local/state/watch-companion/<name>.state`.
-- Runbook (schema, probe types, cost model): `~/.dotfiles/.config/agentctl/SENTINEL.md`.
-- Copy-ready templates: `~/.dotfiles/.config/agentctl/sentinel-watches.examples/`.
+- Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
+- Copy-ready templates: `~/.config/agentctl/sentinel-watches.examples/`.
 
 ## Hard constraints (read first, non-negotiable)
 
@@ -144,8 +144,8 @@ self-cleans. Sentinel remains the single notification voice for whatever it's wa
 
 - `~/.dotfiles/.local/bin/watch-companion-loop` — the registry loop (probe dispatch, dedupe,
   expiry, the single `run_agent_pass` model boundary)
-- `~/.dotfiles/.config/agentctl/SENTINEL.md` — runbook: manifest schema, probe types, cost model
-- `~/.dotfiles/.config/agentctl/sentinel-watches.examples/` — copy-ready manifests
-- `agentctl` (`~/.dotfiles/.config/agentctl/README.md`) — the service supervisor
+- `~/.config/agentctl/SENTINEL.md` — runbook: manifest schema, probe types, cost model
+- `~/.config/agentctl/sentinel-watches.examples/` — copy-ready manifests
+- `agentctl` (`~/.config/agentctl/README.md`) — the service supervisor
 - `release-coordinator` — registers bake-window watches; its hard constraints are inherited here
 - `sprint-overseer` (Argus) — the sibling observe-only persona for sprint runs
