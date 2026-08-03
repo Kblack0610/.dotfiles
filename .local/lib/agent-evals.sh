@@ -92,9 +92,13 @@ eval_files() { # $1=since (YYYY-MM-DD, empty = all) $2=project (empty = all)
 # ── the parser ───────────────────────────────────────────────────────────────
 # eval_rows <file>... -> TSV, one row per session, in file order.
 #
-#   1 project   2 date   3 session_n   4 sid   5 label   6 overall
-#   7..(6+N)    one column per EVAL_DIMS, in order
-#   last        nocorrection  (1 when the Lessons line was the "no correction" sentinel)
+#   1 project   2 date   3 line   4 session_n   5 sid   6 label   7 overall
+#   8..(7+N)    one column per EVAL_DIMS, in order
+#   last        nocorrection  (1 when the Lessons line carried a zero correction count)
+#
+# `line` is the 1-based line of the `## Session` header in that file. Carried so a caller
+# can open the eval AT the session rather than at the top of a 36KB file — the cockpit's
+# usage view jumps there from its attention lane.
 #
 # Empty is emitted as `-`, NEVER blank: TAB is IFS whitespace in bash, so `read`
 # collapses runs of it and one empty middle field shifts every later field left. Same
@@ -128,7 +132,7 @@ eval_rows() { # $1..=files
   awk -v DIMS="$dims" '
     function flush(   i) {
       if (!open) return
-      printf "%s\t%s\t%s\t%s\t%s\t%s", proj, date, snum, sid, label, (ov=="" ? "-" : ov)
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s", proj, date, lineno, snum, sid, label, (ov=="" ? "-" : ov)
       for (i = 1; i <= nd; i++) printf "\t%s", (sc[D[i]] == "" ? "-" : sc[D[i]])
       # `nocorr+0`, not `nocorr`: an awk variable never assigned is the empty string, so
       # every session that did not hit the sentinel emitted a BLANK last field — the exact
@@ -149,7 +153,7 @@ eval_rows() { # $1..=files
     }
     /^## Session/ {
       flush()
-      open = 1; sid = "-"; label = "-"; snum = "-"
+      open = 1; sid = "-"; label = "-"; snum = "-"; lineno = FNR
       # `## Session 3`, but also `## Session N+1` and `## Session Eval - ...` occur.
       if (match($0, /^## Session +[0-9]+/)) {
         snum = substr($0, RSTART, RLENGTH); sub(/^## Session +/, "", snum)

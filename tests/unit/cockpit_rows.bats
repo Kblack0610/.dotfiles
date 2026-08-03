@@ -433,10 +433,18 @@ B
 
 # ── view mode ────────────────────────────────────────────────────────────────
 
-@test "read_mode defaults to tasks and toggle_mode cycles all three views" {
+@test "read_mode defaults to tasks and toggle_mode cycles all four views" {
   assert_equal "$(read_mode)" 'tasks'
   toggle_mode; assert_equal "$(read_mode)" 'agents'
   toggle_mode; assert_equal "$(read_mode)" 'bridge'
+  toggle_mode; assert_equal "$(read_mode)" 'usage'
+  toggle_mode; assert_equal "$(read_mode)" 'tasks'
+}
+
+@test "an unreadable mode file falls back to tasks rather than wedging the cycle" {
+  # toggle_mode's last arm is `*)`, not `usage)`, so a garbage mode lands somewhere a
+  # renderer answers to instead of leaving `a` pressing against a name nothing handles.
+  printf 'nonsense' > "$MODEF"
   toggle_mode; assert_equal "$(read_mode)" 'tasks'
 }
 

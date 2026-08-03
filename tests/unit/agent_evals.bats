@@ -29,7 +29,7 @@ field() { rows | sed -n "${1}p" | cut -f"$2"; }
 dim_col() {
   local i
   for i in "${!EVAL_DIMS[@]}"; do
-    [ "${EVAL_DIMS[$i]}" = "$1" ] && { echo $(( i + 7 )); return; }
+    [ "${EVAL_DIMS[$i]}" = "$1" ] && { echo $(( i + 8 )); return; }
   done
   echo 0
 }
@@ -50,7 +50,7 @@ dim_col() {
 
 - **Workflow**: 9/10 — fine
 EOF
-  assert_equal "$(rows | awk -F'\t' '{print NF}')" "$(( 6 + ${#EVAL_DIMS[@]} + 1 ))"
+  assert_equal "$(rows | awk -F'\t' '{print NF}')" "$(( 7 + ${#EVAL_DIMS[@]} + 1 ))"
 }
 
 # ── the Lessons sentinel (364 occurrences in the real corpus) ────────────────
@@ -110,7 +110,7 @@ EOF
 **Summary:** ok. Overall: 8.5/10.
 EOF
   assert_equal "$(field 1 "$(dim_col Workflow)")" '9.5'
-  assert_equal "$(field 1 6)" '8.5'
+  assert_equal "$(field 1 7)" '8.5'
 }
 
 @test "eval_is_na accepts a decimal but rejects a dash, so callers never test -lt on one" {
@@ -142,7 +142,7 @@ EOF
 - **Workflow**: 9/10 — fine
 **Summary:** nothing shipped. Overall: n/a.
 EOF
-  assert_equal "$(field 1 6)" '-'
+  assert_equal "$(field 1 7)" '-'
 }
 
 # ── unknown dimensions ──────────────────────────────────────────────────────
@@ -157,11 +157,11 @@ EOF
 - **MAJOR/P1**: 3/10 — a one-off the judge invented
 - **Workflow**: 7/10 — fine
 EOF
-  assert_equal "$(rows | awk -F'\t' '{print NF}')" "$(( 6 + ${#EVAL_DIMS[@]} + 1 ))"
+  assert_equal "$(rows | awk -F'\t' '{print NF}')" "$(( 7 + ${#EVAL_DIMS[@]} + 1 ))"
   assert_equal "$(field 1 "$(dim_col Workflow)")" '7'
   # The dropped 3/10 must not have landed in ANY dimension column. Checked positionally
   # rather than with a substring refute, which would also match the `3` inside a date.
-  run bash -c "cut -f7- <<<\"\$(sed -n 1p <<<'$(rows)')\" | tr '\t' '\n' | grep -cx 3"
+  run bash -c "cut -f8- <<<\"\$(sed -n 1p <<<'$(rows)')\" | tr '\t' '\n' | grep -cx 3"
   assert_output '0'
 }
 
@@ -192,8 +192,8 @@ EOF
 
 - **Workflow**: 8/10 — fine
 EOF
-  assert_equal "$(field 1 4)" '-'
-  assert_equal "$(field 2 4)" '9d5e5467-1111-2222-3333-444455556666'
+  assert_equal "$(field 1 5)" '-'
+  assert_equal "$(field 2 5)" '9d5e5467-1111-2222-3333-444455556666'
 }
 
 @test "project and date come from the path, and the label from the header" {
@@ -204,8 +204,8 @@ EOF
 EOF
   assert_equal "$(field 1 1)" 'proj'
   assert_equal "$(field 1 2)" '2026-07-02'
-  assert_equal "$(field 1 3)" '3'
-  assert_equal "$(field 1 5)" 'repair the thing'
+  assert_equal "$(field 1 4)" '3'
+  assert_equal "$(field 1 6)" 'repair the thing'
 }
 
 @test "a non-numeric session header still emits a row, keyed with a dash" {
@@ -216,7 +216,7 @@ EOF
 - **Workflow**: 9/10 — fine
 EOF
   assert_equal "$(rows | wc -l)" '1'
-  assert_equal "$(field 1 3)" '-'
+  assert_equal "$(field 1 4)" '-'
 }
 
 # ── file discovery ──────────────────────────────────────────────────────────

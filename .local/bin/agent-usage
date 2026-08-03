@@ -266,6 +266,16 @@ cmd_session() {
 # mislabelled, it VANISHED. 967 of 1098 registry sessions have an empty title, and the
 # agents view has been silently showing about half the sessions it should. Bound the
 # title with `as` instead, so `.` stays the object.
+# Every registry file, NUL-delimited. One project when named, all of them otherwise.
+# NUL because $HOME can contain a space (see cmd_rollup).
+_registry_files() { # $1=project (empty = all)
+  if [ -n "${1:-}" ]; then
+    [ -f "$SESS_ROOT/$1/sessions.jsonl" ] && printf '%s\0' "$SESS_ROOT/$1/sessions.jsonl"
+    return 0
+  fi
+  find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl -print0 2>/dev/null
+}
+
 ROW_UNTIL_MAX=99999999999
 ROW_JQ='select(.session_id and ((.updated // 0) >= $since) and ((.updated // 0) <= $until))
     | [ .session_id, (.updated // 0), (.edits // 0),
@@ -323,23 +333,20 @@ cmd_rollup() {
     shift
   done
 
-  local files
-  if [ -n "$project" ]; then
-    files="$SESS_ROOT/$project/sessions.jsonl"
-  else
-    files="$(find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl 2>/dev/null)"
-  fi
-
+  # NUL-delimited, never a word-split of `find` output. A registry path can contain a
+  # space - the test sandbox deliberately puts HOME under `sb space/` for exactly this -
+  # and `for f in $files` then splits one real path into two that do not exist, so every
+  # project silently drops out and the view reports "no spend data".
   local f p
   {
-    for f in $files; do
+    while IFS= read -r -d '' f; do
       [ -f "$f" ] || continue
       p="${f%/sessions.jsonl}"; p="${p##*/}"
       jq -rc --argjson since "$since" --argjson until "$until" "$ROW_JQ" "$f" 2>/dev/null \
       | awk -F'\t' -v p="$p" '
           { n++; e += $3; c += $4; t += $6; if ($5 == "1") u++ }
           END { if (n) printf "%s\t%d\t%d\t%d\t%.2f\t%d\n", p, n, e, t, c, u + 0 }'
-    done
+    done < <(_registry_files "$project")
   } | sort -t"$TAB" -k5,5rn | awk -F'\t' '
       { print; N += $2; E += $3; T += $4; C += $5; U += $6 }
       END { if (NR) printf "TOTAL\t%d\t%d\t%d\t%.2f\t%d\n", N, E, T, C, U }'
@@ -429,15 +436,8 @@ cmd_backfill() {
   # one attempt, and the cost of a wasted try is one instant query.
   case "$since" in ''|*[!0-9]*) since="$(( $(date +%s) - 8*86400 ))" ;; esac
 
-  local files
-  if [ "$target" = "--all" ]; then
-    files="$(find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl 2>/dev/null)"
-  else
-    files="$SESS_ROOT/$target/sessions.jsonl"
-  fi
-
   local f n=0
-  for f in $files; do
+  while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue
     local tmp; tmp="$(mktemp)"
     while IFS= read -r line; do
@@ -475,7 +475,7 @@ cmd_backfill() {
       fi
     done < "$f"
     mv "$tmp" "$f" && chmod 600 "$f"
-  done
+  done < <(_registry_files "$([ "$target" = --all ] && printf '' || printf '%s' "$target")")
   echo "agent-usage: backfilled $n session(s)" >&2
 }
 

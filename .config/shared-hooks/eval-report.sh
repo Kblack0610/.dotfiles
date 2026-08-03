@@ -82,7 +82,7 @@ cell() { # $1=value $2=width
   printf '%-*s ' "$w" "$v"
 }
 
-while IFS=$'\t' read -r project date sess _sid _label overall rest; do
+while IFS=$'\t' read -r project date _line sess _sid _label overall rest; do
   printf "%-16s %-12s %-4s " "$project" "$date" "$sess"
   IFS=$'\t' read -r -a dims <<< "$rest"
   for ((i = 0; i < NDIM; i++)); do cell "${dims[$i]:--}" 7; done
@@ -104,17 +104,17 @@ printf '%s\n' "$ROWS" | awk -F'\t' \
   BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
   {
     for (i = 1; i <= nd; i++) {
-      v = $(6 + i)
+      v = $(7 + i)
       if (v != "-") {
         sum[i] += v; n[i]++
         if (mn[i] == "" || v < mn[i]) mn[i] = v
         if (mx[i] == "" || v > mx[i]) mx[i] = v
       }
     }
-    if ($6 != "-") {
-      osum += $6; on++
-      if (omn == "" || $6 < omn) omn = $6
-      if (omx == "" || $6 > omx) omx = $6
+    if ($7 != "-") {
+      osum += $7; on++
+      if (omn == "" || $7 < omn) omn = $7
+      if (omx == "" || $7 > omx) omx = $7
     }
     if ($NF == 1) nocorr++
     total++
@@ -140,8 +140,8 @@ echo ""
 ALERTS="$(printf '%s\n' "$ROWS" | awk -F'\t' \
   -v dims="$(printf '%s|' "${EVAL_DIMS[@]}")" -v floor="$EVAL_ATTENTION_FLOOR" '
   BEGIN { nd = split(dims, D, "|"); if (D[nd] == "") nd-- }
-  { for (i = 1; i <= nd; i++) { v = $(6 + i)
-      if (v != "-" && v < floor) printf "%s|%s|S%s|%s|%s\n", $1, $2, $3, D[i], v } }')"
+  { for (i = 1; i <= nd; i++) { v = $(7 + i)
+      if (v != "-" && v < floor) printf "%s|%s|S%s|%s|%s\n", $1, $2, $4, D[i], v } }')"
 
 if [ -n "$ALERTS" ]; then
   echo "=== Attention: Scores Below $EVAL_ATTENTION_FLOOR ==="
