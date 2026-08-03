@@ -129,8 +129,10 @@ run_pass() {
   # worked: `claude` exited non-zero, the status went nowhere, and the only report
   # the human got was the boilerplate `=== done` line. A `/wave` that failed in one
   # second announced itself as "finished".
-  claude -p "/wave $APP $VERB" \
-    --dangerously-skip-permissions \
+  # `build` role, same as delivery-loop: a wave writes code and opens PRs. The
+  # role pins the MCP set (playwright --headless) and carries its denials;
+  # --dangerously-skip-permissions still applies via the adapter.
+  agentctl-run --role build -p "/wave $APP $VERB" \
     --max-turns "${WAVE_MAX_TURNS:-60}" \
     >>"$LOG" 2>&1 || rc=$?
   echo "=== done (rc=$rc) — $(date -Is)" >>"$LOG"

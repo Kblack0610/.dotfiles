@@ -32,6 +32,11 @@ Available: $(role_list)"
   ROLE_DESC=""
   ROLE_WRITE="__unset__"; ROLE_TASK="__unset__"; ROLE_BASH="__unset__"
   ROLE_MCP="__unset__";   ROLE_MCP_DENY="__unset__"; ROLE_APPROVE="__unset__"
+  # Optional: extra tool denials beyond what the yes/no keys imply. Defaults to
+  # empty rather than the __unset__ sentinel because, unlike the capability keys,
+  # "no extras" is a sane and common answer that need not be restated in every
+  # role file.
+  ROLE_DENY_EXTRA=""
 
   # shellcheck source=/dev/null
   . "$f"
@@ -85,5 +90,9 @@ role_denied_tools() {
   [ "$ROLE_TASK"  = "no" ] && d="$d,Task"
   [ "$ROLE_BASH"  = "no" ] && d="$d,Bash"
   [ -n "$ROLE_MCP_DENY" ] && d="$d,$ROLE_MCP_DENY"
+  # Extras exist for capabilities the yes/no keys cannot express, e.g. "may
+  # create new files but must never modify an existing one" (agentctl-skill-refine
+  # is propose-only and documented as such, but nothing enforced it).
+  [ -n "$ROLE_DENY_EXTRA" ] && d="$d,$ROLE_DENY_EXTRA"
   echo "${d#,}"
 }
