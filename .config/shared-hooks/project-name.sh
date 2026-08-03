@@ -36,9 +36,24 @@
 # at the root on a fix/<app>/... branch, and CONTRIBUTING.md mandates that naming.
 # Repo-wide work (chore/ci-cache, docs/...) has no app segment and stays the repo.
 
+# project_map_file -> the ONE path to the registry.
+#
+# Five files each defined this for themselves and one of them was WRONG:
+# regen-project-index.sh looked in `~/.dotfiles/.config/shared-hooks/`, where the file
+# has never existed (it is private, and reaches ~/.config/shared-hooks/ by stow). Every
+# lookup there returned empty, silently, so the lab index lost every git-derived row and
+# said so in no way at all.
+#
+# The STOWED path, not either repo's, because the file is private and the public tree
+# must not name a private path. PROJECT_MAP_FILE still overrides, which is what the
+# private shell profile sets and what the tests use.
+project_map_file() {
+  printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+}
+
 resolve_project_name() {
   local abs_path="$1"
-  local map_file="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+  local map_file; map_file="$(project_map_file)"
   local base="${abs_path##*/}"
   base="${base#.}"
 

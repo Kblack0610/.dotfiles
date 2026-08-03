@@ -23,13 +23,16 @@ setup() {
 # Point the `notes` stub's --roll at $FROZEN so the post-roll steps have a real file.
 with_frozen() { printf '%s' "$FROZEN" > "$NOTES_FIXTURE/roll.frozen"; }
 
-# The agent changelog is keyed by the project's CANONICAL name, which `canonical_of`
-# resolves by reading a `<!-- canonical: -->` marker in the dir beside the summary. The
+# The agent changelog is keyed by the PROJECT NAME (the lowercased display name). The
 # shipped fixture's column 2 is prose rather than a path, so give the project a real dir.
-with_canonical() { # $1=canonical name
+#
+# This used to write a `<!-- canonical: -->` marker for the name to be read back out of.
+# It passed either way only because the marker happened to equal the display name -- a
+# test agreeing with itself. The name is now the join, so there is nothing to write.
+with_project_dir() { # $1=project name
   local dir="$HOME/vault/$1"
   mkdir -p "$dir"
-  printf '<!-- canonical: %s -->\n' "$1" > "$dir/summary.md"
+  : > "$dir/summary.md"
   printf 'Cockpit\t%s\tthe tmux cockpit\tv0.3\n' "$dir/summary.md" > "$NOTES_FIXTURE/projects.personal"
 }
 
@@ -100,7 +103,7 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
 [ "${1:-}" = changelog ] && printf '## Agents (%s)\n- 3 sessions, 42 edits\n' "${2:-}"
 EOF
   chmod +x "$SANDBOX/bin/agent-usage"
-  with_canonical cockpit
+  with_project_dir cockpit
   with_frozen
   run "$COCKPIT" --roll-now personal cockpit
   assert_success

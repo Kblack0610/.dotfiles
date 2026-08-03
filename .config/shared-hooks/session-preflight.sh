@@ -168,14 +168,18 @@ CONTEXT=$(
   fi
 
   # Lab readback — the human↔agent project BUS. Surface the human's "→ For the agents"
-  # section from the project's lab file (~/.notes/lab/projects/current/{name}/summary.md)
-  # so open comments/suggestions/tasks reach the agent at turn 1. Keyed on canonical name;
-  # resolves the lab dir via an authoritative `<!-- canonical: NAME -->` marker, else fuzzy.
-  # Fully best-effort — every step guarded so it can never break the hook.
-  # There is more than one bus root: the personal lab, the BNB lab (lab/bnb — BNB is
-  # ours, so it roots under lab/ rather than employment/), and the Gigantic work tree.
-  # lab-roots.sh owns that list; hard-coding the personal root here silently dropped the
-  # readback for every project that lives under another one.
+  # section from the project's lab file so open comments/tasks reach the agent at turn 1.
+  #
+  # THE JOIN IS THE DIRECTORY NAME. project-map.json is the sole registry and the sole
+  # minter of project names, and project-map-doctor enforces that every lab directory
+  # has an entry -- so `<lab root>/$PROJECT_NAME/summary.md` IS the file, with no search.
+  #
+  # This replaces a grep for `<!-- canonical: NAME -->` followed by a fuzzy fallback that
+  # guessed at `${NAME%-agent}` and `${NAME%-platform}`. Both halves were wrong in the
+  # same way: the marker MINTED names the registry had never heard of, and the fuzzy arm
+  # then silently attached a session to whatever directory happened to look similar. A
+  # readback that guesses is worse than one that reports nothing.
+  #
   # lab-roots.sh ships in the PRIVATE overlay, so it is colocated with this script only
   # at the stowed path — not inside ~/.dotfiles. Check both, or a run from the repo
   # checkout silently falls back to the personal root and drops the readback.
@@ -187,30 +191,20 @@ CONTEXT=$(
       break
     fi
   done
-  if declare -F lab_roots >/dev/null 2>&1; then
-    LAB_ROOT_LIST=$(lab_roots 2>/dev/null || true)
+  # lab_project_root already implements exactly this lookup and had no code callers.
+  if declare -F lab_project_root >/dev/null 2>&1; then
+    LAB_ROOT="$(lab_project_root "$PROJECT_NAME" 2>/dev/null || true)"
+    [ -n "$LAB_ROOT" ] && LAB_SUMMARY="$LAB_ROOT/$PROJECT_NAME/summary.md"
   else
-    LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
+    # Public-only checkout: the private overlay is not stowed. One root, same rule.
+    LAB_SUMMARY="$HOME/.notes/lab/projects/current/$PROJECT_NAME/summary.md"
   fi
-  while IFS= read -r LAB_CURRENT; do
-    [ -n "$LAB_CURRENT" ] && [ -d "$LAB_CURRENT" ] || continue
-    LAB_SUMMARY=$(grep -rlsF "canonical: $PROJECT_NAME " "$LAB_CURRENT"/*/summary.md 2>/dev/null | head -1 || true)
-    if [ -z "$LAB_SUMMARY" ]; then
-      for cand in "$PROJECT_NAME" "${PROJECT_NAME%-agent}" "${PROJECT_NAME%-platform}"; do
-        if [ -f "$LAB_CURRENT/$cand/summary.md" ]; then
-          LAB_SUMMARY="$LAB_CURRENT/$cand/summary.md"; break
-        fi
-      done
-    fi
-    [ -n "$LAB_SUMMARY" ] && break
-  done <<EOF
-$LAB_ROOT_LIST
-EOF
   if [ -n "$LAB_SUMMARY" ] && [ -f "$LAB_SUMMARY" ]; then
     # extract the "## → For the agents" section (up to the next "## " heading), drop the
     # italic descriptor line, and only inject if it holds real content (not the placeholder).
     LAB_MSGS=$(awk '/^## .*For the agents/{f=1;next} f&&/AUTO:START/{exit} f&&/^## /{exit} f' "$LAB_SUMMARY" 2>/dev/null \
-      | grep -vE '^_|^[[:space:]]*<!--|^[[:space:]]*$' | grep -vF '_(nothing yet)_' | head -15 || true)
+      | grep -vE '^_|^[[:space:]]*<!--|^[[:space:]]*$' \
+      | grep -vE '^[[:space:]]*-?[[:space:]]*_\(nothing yet' | head -15 || true)
     if [ -n "$LAB_MSGS" ]; then
       echo "📥 From you, via lab (${LAB_SUMMARY/#$HOME/\~}) — open comments/tasks for this project:"
       printf '%s\n' "$LAB_MSGS" | sed 's/^/  /'

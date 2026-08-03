@@ -39,6 +39,17 @@ SELF="$(realpath "$0")"
   || . "$HOME/.local/lib/agent-board.sh" 2>/dev/null \
   || . "$(dirname "$SELF")/../../lib/agent-board.sh" 2>/dev/null \
   || { echo "notes-cockpit: agent-board.sh not found" >&2; exit 1; }
+# The project registry accessor (project_map_file). Same lookup order. SOFT-FAIL with a
+# fallback definition rather than exit: this file is public and the registry is private,
+# so a public-only checkout must still open. canon_namespaces then finds no `repo`
+# relation and returns just the project name, which is the correct degraded answer.
+# shellcheck source=/dev/null
+. "${PROJECT_NAME_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../../.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || true
+declare -F project_map_file >/dev/null 2>&1 \
+  || project_map_file() { printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"; }
 # The one eval-corpus parser, shared with eval-report.sh. Same lookup order as the board
 # lib, but SOFT-FAIL: tasks, agents and bridge do not need it, so a machine with no eval
 # corpus should still get three working views rather than a cockpit that refuses to start.
@@ -61,8 +72,8 @@ STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.sec
 #   agents  WHO is working each project and what the finished ones cost: live Claude
 #           sessions (status/branch/what), then the sessions that shipped the CURRENT
 #           version with their tokens and USD, then a version total. Plus a headless
-#           runner row and a global sentinel/runners section. Joined by
-#           `<!-- canonical: NAME -->`, which may list several runtime names.
+#           runner row and a global sentinel/runners section. Joined by NAME: the
+#           lab project dir IS the ~/.agent project (project-map.json is the registry).
 #           It shows SESSIONS - asks and sprint rows belong to the bridge.
 #   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
 #           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
@@ -372,61 +383,38 @@ _profile_view() { # $1=rows $2=profile
 }
 
 # ══ AGENTS mode ═══════════════════════════════════════════════════════════════
-# Same sections/projects, but each project's body is the AGENTS working it. The join
-# from a vault project to its agent runtime state is the `<!-- canonical: NAME -->`
-# marker (sessions.jsonl, sprint blackboards, ~/.agent/asks are all keyed by it).
+# Same sections/projects, but each project's body is the AGENTS working it.
+#
+# THE JOIN IS IDENTITY. A lab project's directory name IS its runtime project name --
+# ~/.agent/{plans,asks,sessions,evals,...}/<name> -- because project-map.json is the
+# sole registry AND the sole minter of names, and every lab directory has an entry in
+# it (project-map-doctor enforces exactly that).
+#
+# This used to be a `<!-- canonical: NAME -->` marker inside each summary.md. The
+# marker did not POINT INTO the runtime namespace, it MINTED names nothing else had
+# heard of: ~/.agent/plans/notes-cockpit/ existed while `notes-cockpit` appeared zero
+# times in the registry, and resolve_project_name could never return that string. A
+# second source of truth for names, not a join. It was introduced 2026-06-24 to bridge
+# one specific gap and the `apps.<repo>` map closed that gap directly a month later.
+#
+# The one real thing it carried survives, and now comes from the registry instead of a
+# hand-maintained comment: a project's state can ALSO live under the repo it belongs
+# to, because a session registers under the repo it ran in. `notes-cockpit` is a
+# product the user tracks; the sessions that build it register under `dotfiles`. That
+# relation is `trackers.<project>.repo` in the map, which already existed and is
+# already validated -- so nobody has to remember to keep a marker in sync with it.
 
-# canonical_of <profile> <project-lc> -> canonical name(s), or the project name if
-# unmarked. A marker may name SEVERAL runtime projects, comma-separated:
-#
-#   <!-- canonical: notes-cockpit, dotfiles -->
-#
-# because a vault project and a repo are not the same axis. `notes-cockpit` is a product
-# the user tracks; the sessions that build it register under `dotfiles`, the repo they
-# ran in. Keying on one name made the agents view render "- idle" for the very project
-# being actively worked on. Callers treat the result as a LIST (see _canon_list).
-canonical_of() {
-  local prof="$1" proj="$2" path dir canon=""
-  path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
-  if [ -n "$path" ]; then
-    dir="$(dirname "$path")"
-    canon="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
-      | head -1 | sed -E 's/.*canonical:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//; s/[[:space:]]+$//')"
-  fi
-  # PRIMARY name only. Every other consumer - the bridge's `agent-ask list <canon>`,
-  # _sprint_items, _ckpt_file - passes this straight to a tool as a project name, so
-  # returning the raw "a, b" string here silently broke all of them: `agent-ask list
-  # 'notes-cockpit, dotfiles'` matches nothing, so the bridge rendered empty while a
-  # gate ask sat pending. Callers that want every name ask for it explicitly.
-  printf '%s' "${canon%%,*}" | sed 's/[[:space:]]*$//'
+# canon_namespaces <project> -> every ~/.agent namespace this project's state can be
+# in, one per line, most specific first. Used only where the cockpit LOOKS for existing
+# state; anything that WRITES, or passes a name to another tool, uses the project name.
+canon_namespaces() { # $1=project
+  local p="${1:-}" repo
+  [ -n "$p" ] || return 0
+  printf '%s\n' "$p"
+  repo="$(jq -r --arg p "$p" '.trackers[$p].repo // empty' "$(project_map_file)" 2>/dev/null || true)"
+  [ -n "$repo" ] && [ "$repo" != "$p" ] && printf '%s\n' "$repo"
+  return 0
 }
-
-# Every runtime name a vault project claims, one per line. Only the agents view uses
-# this: it LOOKS in several places for existing state. Anything that WRITES, or that
-# passes a name to another tool, wants canonical_of (the primary) instead.
-#
-# The extra names live in their OWN marker, `<!-- canonical-also: a, b -->`, and NOT as a
-# comma list inside `canonical:`. That was tried and broke a third consumer: lab-sync's
-# regen-lab-feed.sh matches `canonical:[[:space:]]*[A-Za-z0-9_.-]+` - a comma kills the
-# match, so the project's whole release feed silently rendered the literal `NAME`
-# placeholder instead of its name. `canonical:` is a single token to everything that
-# reads it; widening its grammar is a breaking change to files this script does not own.
-canonicals_of() { # $1=profile $2=project-lc
-  local prof="$1" proj="$2" path dir primary="" also=""
-  path="$(notes --profile "$prof" projects 2>/dev/null | awk -F'\t' -v p="$proj" 'tolower($1)==p{print $2; exit}')"
-  if [ -n "$path" ]; then
-    dir="$(dirname "$path")"
-    primary="$(grep -rhoE '<!--[[:space:]]*canonical:[[:space:]]*[A-Za-z0-9_.-]+' "$dir" 2>/dev/null \
-      | head -1 | sed -E 's/.*canonical:[[:space:]]*//')"
-    also="$(grep -rhoE '<!--[[:space:]]*canonical-also:[[:space:]]*[^>]+' "$dir" 2>/dev/null \
-      | head -1 | sed -E 's/.*canonical-also:[[:space:]]*//; s/[[:space:]]*--[[:space:]]*$//')"
-  fi
-  _canon_list "${primary:-$proj}${also:+, $also}"
-}
-
-# "a, b" -> one name per line. The primary (first) name is what new state is keyed by;
-# the rest are additional places to LOOK for existing state.
-_canon_list() { printf '%s' "${1:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'; }
 
 # which canonical project a headless runner is on right now (delivery-loop status is
 # read-only + cheap). Prints "<canonical>\t<detail>" or nothing.
@@ -482,12 +470,12 @@ _project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $
   local prof="$1" lc="$2" canon="$3" summary="${4:-}" rcanon="${5:-}" rdetail="${6:-}" sec="$1/$2"
   local vstart; vstart="$(_version_start "$summary")"
 
-  # A project may claim several runtime names (see canonicals_of); gather from each.
-  # $canon arrives as the PRIMARY name; the full list is looked up here so the rest of
-  # the cockpit keeps receiving a single usable project name.
+  # State can live under this project AND under the repo it belongs to (see
+  # canon_namespaces); gather from each. The rest of the cockpit keeps receiving a
+  # single usable project name.
   #
   # Resolved FIRST: everything below matches against it, including the runner check.
-  local names; names="$(canonicals_of "$prof" "$lc")"
+  local names; names="$(canon_namespaces "$lc")"
   [ -n "$names" ] || names="$canon"
   local primary="$canon"
 
@@ -592,7 +580,7 @@ _human_tok() {
 
 # One profile's AGENTS view: a group per project with its agent rows (or "- idle").
 # The summary path comes straight out of the `notes projects` row we are already
-# reading, so neither canonical_of nor _version_start needs to shell out again.
+# reading, so _version_start does not need to shell out again.
 _profile_agents_view() { # $1=profile
   local prof="$1" name sum st ver lc canon body rline rcanon rdetail
   rline="$(_runner_line)"
@@ -605,7 +593,7 @@ _profile_agents_view() { # $1=profile
     | while IFS=$'\037' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-    canon="$(canonical_of "$prof" "$lc")"
+    canon="$lc"
     _subheader "$name" "$(_status_gist "$sum" "$st")" "$ver"
     body="$(_project_agents "$prof" "$lc" "$canon" "$sum" "$rcanon" "$rdetail")"
     if [ -n "$body" ]; then printf '%s\n' "$body"
@@ -655,9 +643,9 @@ _global_agents() {
 #
 # KEYED ON THE RUNTIME PROJECT NAME, not on a vault profile, and therefore NOT scoped by
 # the active section. Both corpora this view reads — ~/.agent/sessions/<project>/ and
-# ~/.agent/evals/<project>/ — are keyed by the canonical runtime name, which is a
-# different namespace from the vault's per-profile project lists. Routing them through
-# canonical_of would be a lossy round trip to reach names we already hold. And the
+# ~/.agent/evals/<project>/ — are keyed by the runtime project name, and the vault's
+# per-profile project lists are a presentation of the same names, not a second
+# namespace. Re-resolving them per profile would be a lossy round trip. And the
 # question the view answers ("what did this week cost, and did it go well") is a
 # portfolio question: splitting it per profile would just hide half the spend.
 #
@@ -1027,7 +1015,7 @@ _bridge_view() { # $1=active profile
   while IFS=$'\037' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-    canon="$(canonical_of "$prof" "$lc")"
+    canon="$lc"
     # A project from another section carries its profile, so once everything shares one
     # list a row's origin is still unambiguous.
     label="$name"; [ "$prof" = "$active" ] || label="$prof/$name"
@@ -1264,7 +1252,7 @@ attention_counts() {
   while IFS= read -r p; do
     [ -z "$p" ] && continue
     for proj in $(projects_of "$p"); do
-      canon="$(canonical_of "$p" "$proj")"
+      canon="$proj"
       map+="$proj=$p"$'\n'          # vault name -> profile
       [ "$canon" != "$proj" ] && map+="$canon=$p"$'\n'  # canonical name -> profile
     done
@@ -1588,7 +1576,7 @@ roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
   # window has to be taken from the note BEFORE it.
   if [ -n "$frozen" ] && command -v agent-usage >/dev/null 2>&1; then
     local canon prev since block
-    canon="$(canonical_of "$profile" "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')")"
+    canon="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | sort -rV | sed -n 2p)"
     since=0
     if [ -n "$prev" ]; then
@@ -1597,7 +1585,7 @@ roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
     fi
     block="$(while IFS= read -r cn; do
                [ -n "$cn" ] && agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
-             done < <(_canon_list "$canon"))"
+             done < <(canon_namespaces "$canon"))"
     if [ -n "$block" ]; then
       printf '\n%s\n' "$block" >> "$frozen"
       echo "wrote the agent changelog into $(basename "$frozen")"
