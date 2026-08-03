@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# skill-drift - does a skill still describe a system that exists?
+#
+# A SKILL.md is prose an agent OBEYS. When a path in it moves, nothing fails
+# loudly: the agent opens a file that is not there, improvises, and the session
+# degrades silently. That is the same class as the LiteLLM/Ollama stale-SETUP
+# incident (an email-triage skill classified against a host decommissioned
+# months earlier, failing closed to "everything FYI" with no error) and as
+# dotfiles-drift's merged-is-not-deployed gap.
+#
+# It was written after `update-rules` was found pointing EVERY path it named at
+# ~/.dotfiles/, months after the rule layer moved to the ~/.dotfiles-private
+# overlay. Six workflows, all opening files that did not exist. Its own built-in
+# self-check had the same bug, so it could not report itself.
+#
+# Five checks, each a distinct failure mode:
+#
+#   DEADPATH   a ~/ or $HOME/ path named in a SKILL.md does not exist. This is
+#              the update-rules class and the reason this script exists.
+#   NOCMD      a command the skill tells you to RUN does not resolve on PATH.
+#              (`rulesync` lives at ~/.rulesync/bin/rulesync, never on PATH.)
+#   UNDEPLOYED a skill dir exists in a repo but has no link in ~/.claude/skills,
+#              so it is documented and unreachable.
+#   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
+#              advertised, so the agent tries to invoke it).
+#   UNLISTED   a skill is on disk but appears nowhere in CLAUDE.md, so nothing
+#              routes to it.
+#
+# Deliberately trivial and dependency-free: it is polled by a sentinel watch and
+# a checker that needs a working environment cannot report a broken one.
+#
+# Escape hatch: a line containing `skill-drift: ignore` is skipped entirely.
+# Hostnames of the form *.example.internal are SANITIZATION for the public repo
+# (see dotfiles-land), never drift - paths containing them are skipped.
+#
+# A BASELINE is what makes this adoptable. The first run found 60+ real findings
+# across skills written over months; a watch that is red from birth is a watch
+# nobody reads. `--write-baseline` freezes today's known debt, after which
+# --quiet trips only on drift that is NEW. The full report always shows
+# everything, baselined or not, so the debt stays visible instead of forgotten.
+#
+# Usage:
+#   skill-drift                  human-readable report (everything)
+#   skill-drift --quiet          print nothing; exit 1 on NEW drift only (for a watch)
+#   skill-drift --json           machine-readable (everything, with "new": true|false)
+#   skill-drift --new            human-readable, NEW findings only
+#   skill-drift --write-baseline freeze current findings as accepted
+set -uo pipefail
+
+SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
+PUB="${DOTFILES:-$HOME/.dotfiles}"
+PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
+BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
+
+MODE=report
+case "${1:-}" in
+  --quiet)          MODE=quiet ;;
+  --json)           MODE=json ;;
+  --new)            MODE=new ;;
+  --write-baseline) MODE=write_baseline ;;
+  -h|--help) sed -n '2,46p' "$0" | sed 's/^# \?//'; exit 0 ;;
+esac
+
+FINDINGS=()   # "TYPE|skill|item|detail"
+add() { FINDINGS+=("$1|$2|$3|$4"); }
+
+# Commands so ubiquitous that their absence means a broken box, not a stale
+# skill. Flagging these would bury the one finding that matters.
+COMMON=" cd ls cat echo grep sed awk cut sort uniq head tail find xargs tr wc
+diff comm test printf read for while if then else fi do done case esac exit
+export local return set shift source eval exec mkdir rm cp mv ln touch chmod
+git curl jq ssh scp rsync tar gzip open pwd env sleep date true false npx bash
+sh zsh python python3 node npm pnpm yarn make docker kubectl helm gh stow "
+
+is_common() { case "$COMMON" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# --- per-skill checks --------------------------------------------------------
+
+check_frontmatter() {
+  local skill="$1" f="$2"
+  head -1 "$f" | grep -q '^---$' || { add NOFRONTMATTER "$skill" SKILL.md "no YAML frontmatter"; return 0; }
+  sed -n '2,/^---$/p' "$f" | grep -q '^name:'        || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing name:"
+  sed -n '2,/^---$/p' "$f" | grep -q '^description:' || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing description:"
+  return 0
+}
+
+# Pull every ~/... or $HOME/... token out of the prose and test it. A path is
+# only CHECKABLE if it is concrete: placeholders (<repo>, {project}, *.md, ...)
+# describe a shape, not a file, and testing them would produce pure noise.
+#
+# A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
+# `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
+# stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
+check_paths() {
+  local skill="$1" f="$2" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*|*'...'*) continue ;;
+      *'example.internal'*|*AcmeCorp*|*YYYY*|*vX.Y.Z*) continue ;;
+      *-|*.) continue ;;
+      *'$'*) case "$p" in '$HOME/'*) : ;; *) continue ;; esac ;;
+    esac
+    p="${p/#\~\//$HOME/}"
+    p="${p/#\$HOME\//$HOME/}"
+    p="${p%/}"
+    [ -e "$p" ] || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist"
+  done < <(
+    grep -v 'skill-drift: ignore' "$f" \
+      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/-]*[A-Za-z0-9._-]' \
+      | sort -u
+  )
+  return 0
+}
+
+# The first token of a COMMAND line inside a ```bash fence. Two filters keep this
+# from reading prose as shell, which is the whole difficulty: a continuation line
+# (previous line ended in \ | && ||) has no command in first position, and a line
+# with no flag, path, assignment, pipe or quote in it is English, not a command.
+# Without those, `bump the version` reports a missing tool called "bump".
+check_cmds() {
+  local skill="$1" f="$2" c
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    is_common "$c" && continue
+    command -v "$c" >/dev/null 2>&1 && continue
+    add NOCMD "$skill" "$c" "command not found on PATH"
+  done < <(
+    awk '
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; cont=0; next }
+      /^[[:space:]]*```/ { inblock=0; next }
+      !inblock || /skill-drift: ignore/ { next }
+      {
+        line = $0
+        sub(/^[[:space:]]+/, "", line)
+        sub(/^[$#][[:space:]]+/, "", line)
+        was_cont = cont
+        cont = (line ~ /(\\|\||&&|\|\|)[[:space:]]*$/)
+        if (was_cont) next                      # continuation: no command here
+        # A command line carries a flag, a path, a pipe/redirect, or is a bare
+        # invocation. Prose ("bump the version", "crash-free rate > 99.5%")
+        # carries none of those. Precision over recall: a noisy report is an
+        # ignored report, and DEADPATH already does the heavy lifting.
+        if (line ~ /(^| )--?[A-Za-z]/)      { print line; next }   # flag
+        if (line ~ /(^| )[~\/]|[a-z]\//)    { print line; next }   # path
+        if (line ~ /\||>|\$\(/)             { print line; next }   # pipe/subshell
+        if (line ~ /^[a-z][a-z0-9_-]*$/)    { print line; next }   # bare invocation
+      }
+    ' "$f" \
+      | awk '{print $1}' \
+      | grep -xE '[a-z][a-z0-9_-]*' \
+      | sort -u
+  )
+  return 0
+}
+
+# --- registration checks -----------------------------------------------------
+
+# A skill dir in either repo with no link in ~/.claude/skills is documented and
+# unreachable - the agent cannot invoke it however well it is described.
+check_undeployed() {
+  local repo="$1" name="$2" d skill
+  [ -d "$repo/.claude/skills" ] || return 0
+  for d in "$repo"/.claude/skills/*/; do
+    [ -d "$d" ] || continue
+    skill="$(basename "$d")"
+    [ -e "$SKILLS/$skill" ] || add UNDEPLOYED "$skill" "$name" "in the $name repo but not linked into ~/.claude/skills"
+  done
+  return 0
+}
+
+check_registration() {
+  local skill
+  [ -f "$CLAUDE_MD" ] || { add DEADPATH CLAUDE.md "${CLAUDE_MD/#$HOME/\~}" "CLAUDE.md not found"; return 0; }
+
+  # Bulleted in CLAUDE.md but absent from disk: the agent will try to invoke it.
+  while IFS= read -r skill; do
+    [ -n "$skill" ] || continue
+    [ -e "$SKILLS/$skill" ] || add GHOST "$skill" CLAUDE.md "bulleted in CLAUDE.md but not on disk"
+  done < <(grep -oE '^- `[a-z][a-z0-9:-]*`' "$CLAUDE_MD" | sed 's/^- `//; s/`$//' | grep -v ':' | sort -u)
+
+  # On disk but nowhere in CLAUDE.md: nothing routes to it.
+  for skill in "$SKILLS"/*/; do
+    [ -e "$skill" ] || continue
+    skill="$(basename "$skill")"
+    grep -qF "\`$skill\`" "$CLAUDE_MD" || add UNLISTED "$skill" CLAUDE.md "on disk but not mentioned in CLAUDE.md"
+  done
+  return 0
+}
+
+# --- run ---------------------------------------------------------------------
+
+for d in "$SKILLS"/*/; do
+  [ -e "$d/SKILL.md" ] || continue
+  s="$(basename "$d")"
+  check_frontmatter "$s" "$d/SKILL.md"
+  check_paths       "$s" "$d/SKILL.md"
+  check_cmds        "$s" "$d/SKILL.md"
+done
+
+check_undeployed "$PUB"  public
+check_undeployed "$PRIV" private
+check_registration
+
+# Sorting keeps the baseline file stable across runs, so `git diff` on it shows
+# real change instead of reordering noise. Guarded on non-empty: `printf '%s\n'`
+# with no arguments still prints ONE blank line, which turned a clean run into a
+# single empty "finding" and made --quiet exit 1 while the report said clean.
+if [ ${#FINDINGS[@]} -gt 0 ]; then
+  mapfile -t FINDINGS < <(printf '%s\n' "${FINDINGS[@]}" | sort)
+fi
+n=${#FINDINGS[@]}
+
+if [ "$MODE" = write_baseline ]; then
+  mkdir -p "$(dirname "$BASELINE")"
+  [ "$n" -gt 0 ] && printf "%s\n" "${FINDINGS[@]}" > "$BASELINE" || : > "$BASELINE"
+  echo "skill-drift: baselined $n finding(s) -> ${BASELINE/#$HOME/\~}"
+  exit 0
+fi
+
+is_new() { [ -f "$BASELINE" ] || return 0; ! grep -qxF "$1" "$BASELINE"; }
+
+NEW=()
+for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+  is_new "$f" && NEW+=("$f")
+done
+nnew=${#NEW[@]}
+
+case "$MODE" in
+  quiet) [ "$nnew" -eq 0 ] && exit 0 || exit 1 ;;
+  json)
+    printf '{"drift":%s,"new":%s,"findings":[' "$n" "$nnew"
+    for i in "${!FINDINGS[@]}"; do
+      IFS='|' read -r t s p d <<< "${FINDINGS[$i]}"
+      [ "$i" -gt 0 ] && printf ','
+      printf '{"type":"%s","skill":"%s","item":"%s","detail":"%s","new":%s}' \
+        "$t" "$s" "$p" "$d" "$(is_new "${FINDINGS[$i]}" && echo true || echo false)"
+    done
+    printf ']}\n'
+    [ "$nnew" -eq 0 ] && exit 0 || exit 1 ;;
+esac
+
+if [ "$MODE" = new ]; then
+  if [ "$nnew" -eq 0 ]; then echo "skill-drift: no NEW drift since the baseline"; exit 0; fi
+  printf 'skill-drift: %s NEW finding(s) since the baseline\n\n' "$nnew"
+  for f in "${NEW[@]}"; do
+    IFS='|' read -r t s p d <<< "$f"
+    printf '  %-13s %-24s %-46s %s\n' "$t" "$s" "$p" "$d"
+  done
+  exit 1
+fi
+
+if [ "$n" -eq 0 ]; then
+  echo "skill-drift: clean - every skill still describes a system that exists"
+  exit 0
+fi
+printf 'skill-drift: %s finding(s) (%s new since the baseline)\n\n' "$n" "$nnew"
+for f in "${FINDINGS[@]}"; do
+  IFS='|' read -r t s p d <<< "$f"
+  printf '  %-13s %-24s %-46s %s%s\n' "$t" "$s" "$p" "$d" "$(is_new "$f" && echo '  <-- NEW')"
+done
+cat <<'EOF'
+
+  DEADPATH   -> the path moved. Find it (`fd`/`find` both repos) and fix the SKILL.md
+  NOCMD      -> the tool is not on PATH. Name its real location, or drop the step
+  UNDEPLOYED -> link it:  ln -s ../../<repo>/.claude/skills/<name> ~/.claude/skills/<name>
+  GHOST      -> the skill is retired; remove the bullet from CLAUDE.md
+  UNLISTED   -> add a bullet under the right category (see the update-rules skill)
+
+  Reason about these with `/skill-refine audit` - it adds the lessons/mem0 layer
+  and writes proposed diffs. Do NOT silence a finding by deleting the check.
+EOF
+exit 1
