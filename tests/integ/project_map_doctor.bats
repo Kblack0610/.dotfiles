@@ -164,3 +164,81 @@ EOF
   assert_failure
   assert_output --partial 'points at "default"'
 }
+
+# ── archived lab projects ────────────────────────────────────────────────────
+# lab_roots yields only `current/` roots, so check 6 never sees `projects/archived/`.
+# But regen-project-index.sh RENDERS an archived section with a repo column, so an
+# archived dir whose name is not a registered project silently loses that column.
+#
+# `archived/binks/` is the real instance: the dir is `binks`, its summary said
+# `<!-- canonical: binks-agent -->`, and deleting the marker join made it resolve to
+# nothing. Nothing caught it -- this check is that gap closed.
+
+mk_archived() { # $1=dirname, stdin=summary.md content
+  local d="$HOME/.notes/lab/projects/archived/$1"
+  mkdir -p "$d"
+  cat > "$d/summary.md"
+}
+
+@test "an archived project claiming a registered repo it no longer resolves to WARNS" {
+  clean_map
+  mk_archived binks <<'EOF'
+# binks
+<!-- canonical: other-canon -->
+EOF
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'WARN'
+  assert_output --partial 'binks'
+  assert_output --partial 'other-canon'
+}
+
+@test "the warning does NOT fail the gate — an archived project is not a broken build" {
+  # A directory nobody will touch again must not turn the doctor red; the signal is the
+  # delta, not the existence of archived work.
+  clean_map
+  mk_archived binks <<'EOF'
+<!-- canonical: other-canon -->
+EOF
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'all checks passed'
+}
+
+@test "an archived project that is itself registered is silent" {
+  clean_map
+  mk_archived other-canon <<'EOF'
+# other-canon
+EOF
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'WARN'
+  assert_output --partial 'archived lab projects resolve'
+}
+
+@test "an archived project claiming NOTHING is silent — that is a normal end state" {
+  # `home`, `old` and `playground` are all in this state on the real machine. Reporting
+  # them would be noise that trains the reader to ignore the whole check.
+  clean_map
+  mk_archived home <<'EOF'
+# home
+just some notes, no repo was ever wired
+EOF
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'WARN'
+}
+
+@test "an archived project claiming an UNregistered name is silent too" {
+  # Nothing was lost: that name never resolved under either scheme, so there is no
+  # delta to report and the row was always bare.
+  clean_map
+  mk_archived ghost <<'EOF'
+<!-- canonical: never-existed -->
+EOF
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'WARN'
+}
+
+@test "no archived root at all is a SKIP, never a silent pass" {
+  clean_map
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'SKIP  no archived lab root'
+}
