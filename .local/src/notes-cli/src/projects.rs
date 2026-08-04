@@ -286,12 +286,18 @@ fn check_name(name: &str) -> Result<()> {
 
 /// Scaffold for a new `summary.md` — the machine COCKPIT. The task list lives on the
 /// README sheet ([`sheet_body`]); this file only carries what the tools grep. The
-/// `## → For the agents` heading and the canonical/cockpit/STATUS/AUTO markers are
-/// load-bearing (the session preflight and lab-sync key on them), so they are verbatim.
+/// `## → For the agents` heading and the cockpit/STATUS/AUTO markers are load-bearing
+/// (the session preflight and lab-sync key on them), so they are verbatim.
+///
+/// There is deliberately NO `<!-- canonical: -->` line. The directory name IS the
+/// project name: project-map.json is the sole registry and the sole minter, and
+/// project-map-doctor fails if a lab directory has no entry there. Scaffolding a marker
+/// here is what created the problem it was meant to solve -- every new project got a
+/// second, hand-editable place to declare its name, and four of them ended up naming
+/// projects the registry had never heard of.
 fn summary_template(name: &str) -> String {
     format!(
         "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
-<!-- canonical: {name} -->\n\
 <!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
 Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
 ## → For the agents\n\
@@ -1003,7 +1009,9 @@ _(nothing yet)_
         assert!(t.contains("## → For the agents"));
         assert!(t.contains("STATUS:START") && t.contains("STATUS:END"));
         assert!(t.contains("AUTO:START") && t.contains("AUTO:END"));
-        assert!(t.contains("<!-- canonical: my-app -->"));
+        // and NOT a canonical marker: the directory name is the project name, so a
+        // scaffolded marker is a second source of truth for it from the very first day.
+        assert!(!t.contains("canonical:"));
         // the cockpit points at the working sheet; the task list is NOT in summary.md
         assert!(t.contains("Working sheet: [[README]]"));
     }
