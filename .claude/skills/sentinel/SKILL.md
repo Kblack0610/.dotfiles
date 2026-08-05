@@ -81,11 +81,26 @@ Picking the probe (deterministic-first):
 | "does X *look* healthy / are payments flowing / something off" | `agent` | `agent_question`, repeatable `signal:`, slow `interval`, `expiry` if temporary |
 
 Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high) and,
-for temporary asks, `expiry` (duration like `60m` from `created`, or an ISO timestamp). Example the
-user can read back:
+for temporary asks, `expiry` (duration like `60m` from `created`, or an ISO timestamp).
+
+**Every new manifest must carry the four legibility fields**, one line each - they are what `list`
+renders and what a page carries, and a watch nobody can read is a watch nobody acts on:
+
+| field | answers | note |
+|---|---|---|
+| `what` | what does it assert? | in plain language, not the probe's syntax |
+| `why` | what does it cost when this breaks? | name the incident that bought it, if there was one |
+| `where` | which system does it point at? | cluster / repo / URL / host. **8 of 10 live watches are `probe: command`, which has no `target`** - this is the only place that fact exists |
+| `action` | what should a human do on a trip? | it is appended to the notification verbatim |
+
+`who` is the existing `source:` field - don't add another.
 
 ```yaml
 name: prod-api
+what: GET https://api.myapp.com/health answers 200.
+why: That API is the whole product surface, and nothing else pages when it stops answering.
+where: MyApp prod API (do-nyc3-myapp-k8s-prod, namespace myapp)
+action: Check the api rollout and the ingress in the prod cluster.
 description: prod API liveness
 probe: http
 target: https://api.myapp.com/health
@@ -96,16 +111,41 @@ created: 2026-06-18T11:00:00-07:00
 source: user
 ```
 
+Then **verify before telling the user it is registered**:
+
+```bash
+sentinel-manifest validate --strict ~/.agent/watches/<name>.yaml
+```
+
+`--strict` is the write-time lint that requires the four fields; plain `validate` (what the daemon
+runs every pass) does not, so a manifest missing them fails here and NOT at runtime - deliberately,
+because a runtime failure notifies, and a documentation gap must never page. Use a folded scalar
+(`>-`) for a long value, never `|-`: the value must stay one line.
+
 ## Verb: `list`
 
-Enumerate `~/.agent/watches/*.yaml` (+ `*.yaml.paused`): for each, show name, probe/target,
-interval, current state (`~/.local/state/watch-companion/<name>.state`), expiry, and source. Pure
-read — no notifications, no service changes.
+**Run the command. Do not enumerate the YAML yourself.**
+
+```bash
+watch-companion-loop list             # table: STATE / NAME / AGE / EVERY / WHERE / WHO, tripped first
+watch-companion-loop list --long      # every watch: what / why / where / who / action + the real probe
+watch-companion-loop list <name>      # one watch, long form
+```
+
+This verb used to say "enumerate the manifests", and the result was a differently-shaped answer
+every time, none of it reproducible, with the one fact a reader wants - *where does this point* -
+left inside an embedded bash blob. The renderer is the answer now; relay it, don't rewrite it.
+
+Read-only: no probes, no notifications, no state writes. Safe at any cadence.
 
 ## Verb: `status`
 
-The `list` table **plus** service health: `agentctl status sentinel` (active? pid? uptime?) and the
-tail of `activity.log`. Use to answer "what are you watching / is Sentinel running". Read-only.
+```bash
+watch-companion-loop status
+```
+
+The `list` table plus daemon health (`agentctl status sentinel`) and the tail of `activity.log`.
+Answers "what are you watching / is Sentinel running". Read-only.
 
 ## Verb: `stop` / `remove <name>`
 
@@ -126,7 +166,9 @@ Any agent can self-register by writing a manifest directly — no skill call nee
 - **sprint-overseer / bug-bash** can drop targeted watches with `source: <agent>` and an `expiry`.
 
 Set `source:` to your agent name and **always** an `expiry` for anything temporary, so the watch
-self-cleans. Sentinel remains the single notification voice for whatever it's watching.
+self-cleans. Write the four legibility fields too, and check with `sentinel-manifest validate
+--strict` - a watch dropped by an agent is the one most likely to page someone who has no idea what
+registered it. Sentinel remains the single notification voice for whatever it's watching.
 
 ## Operational model
 
@@ -142,8 +184,10 @@ self-cleans. Sentinel remains the single notification voice for whatever it's wa
 
 ## Related
 
-- `~/.dotfiles/.local/bin/watch-companion-loop` — the registry loop (probe dispatch, dedupe,
-  expiry, the single `run_agent_pass` model boundary)
+- `watch-companion-loop` - the registry loop (probe dispatch, dedupe, expiry, `list`/`status`, the
+  single `run_agent_pass` model boundary). Source is in the **private overlay**
+  (`~/.dotfiles-private/.local/bin/`); the copy under `~/.dotfiles/.local/bin/` is the deployed
+  mirror and is gitignored there. Its parser `sentinel-manifest` is public-repo-owned.
 - `~/.config/agentctl/SENTINEL.md` — runbook: manifest schema, probe types, cost model
 - `~/.config/agentctl/sentinel-watches.examples/` — copy-ready manifests
 - `agentctl` (`~/.config/agentctl/README.md`) — the service supervisor
