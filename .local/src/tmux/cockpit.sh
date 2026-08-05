@@ -188,6 +188,11 @@ Windows: fleet · bridge · watch · prs · notes
 EOF
 }
 
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# no verb dispatched. Note the default arm here is `attach`, not a usage error -- so
+# without this guard, merely sourcing the file would try to ATTACH a tmux session.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 case "${1:-attach}" in
   ensure) cmd_ensure ;;
   attach) cmd_attach ;;

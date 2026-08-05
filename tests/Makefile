@@ -33,7 +33,7 @@ BATS_FLAGS ?= --print-output-on-failure --timing
 UI_TIMEOUT  ?= 420
 
 .PHONY: test test-fast test-unit test-integ test-ui test-ui-inner test-container \
-        test-docker lint fmt bootstrap clean clean-vendor help
+        test-docker lint fmt corpus-check bootstrap clean clean-vendor help
 
 help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
@@ -42,7 +42,8 @@ help:
 	@echo "  make test-fast    unit + integ            <- stop-hook gate"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
-	@echo "  make lint         shellcheck + shfmt over tracked shell scripts"
+	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
+	@echo "  make corpus-check ADVISORY: do the board fixtures still match ~/.agent/plans?"
 	@echo ""
 	@echo "container-only (real tmux servers; NEVER runs on this machine):"
 	@echo "  make test-ui      the tmux ui tier, inside docker"
@@ -111,3 +112,10 @@ clean:
 
 clean-vendor:
 	@rm -rf $(VENDOR)
+
+# Advisory drift check, never a gate: it reads LIVE state (~/.agent/plans), which differs
+# per machine and is empty in CI. Same precedent as runner_contract.bats reading the real
+# agentctl roster -- a fixture corpus can only ever confirm the fixture. Always exits 0;
+# read its output.
+corpus-check:
+	@./corpus-check.sh

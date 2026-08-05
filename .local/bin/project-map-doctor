@@ -153,6 +153,47 @@ else
   skip "lab-roots.sh unavailable (private overlay); cannot check lab projects"
 fi
 
+# --- 7. archived lab projects that USED to resolve and now do not ---------------------
+# lab_roots yields only `current/` roots, by design -- that is where active work lives.
+# But `projects/archived/` is still READ: regen-project-index.sh renders an "archived"
+# section with a repo column for each. So an archived directory whose name is not a
+# registered project silently loses that column, and check 6 cannot see it.
+#
+# This is not hypothetical. `archived/binks/` carried `<!-- canonical: binks-agent -->`
+# and the lab dir is named `binks`; when the marker join was deleted, `binks` resolved to
+# nothing. Registering `binks` with `repo: binks-agent` restored it. Found only because
+# someone looked -- which is what this check is for.
+#
+# WARN, not FAIL: an archived project with no repo at all (`home`, `old`, `playground`)
+# is a perfectly normal end state, and a directory nobody will touch again does not
+# deserve to break a gate. The signal worth having is the DELTA -- a name that resolves
+# to nothing while its summary still claims a repo.
+warns=0
+warn() { printf 'WARN  %s\n' "$*"; warns=$((warns + 1)); }
+archived_root="$HOME/.notes/lab/projects/archived"
+if [ -d "$archived_root" ]; then
+  n=0
+  for d in "$archived_root"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    n=$((n + 1))
+    is_known "$name" && continue
+    # Only worth reporting if the summary names a repo the registry could have resolved.
+    claim="$(grep -oE 'canonical:[[:space:]]*[A-Za-z0-9_.-]+' "$d/summary.md" 2>/dev/null \
+      | head -1 | sed 's/.*:[[:space:]]*//' || true)"
+    if [ -n "$claim" ] && is_known "$claim"; then
+      warn "archived lab project \"$name\" is unregistered but its summary still claims \"$claim\" — its index row lost its repo"
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    skip "no archived lab projects"
+  elif [ "$warns" -eq 0 ]; then
+    pass "all $n archived lab projects resolve (or claim nothing)"
+  fi
+else
+  skip "no archived lab root on this machine"
+fi
+
 printf '\n'
 if [ "$fails" -gt 0 ]; then
   printf '%s check(s) FAILED\n' "$fails"

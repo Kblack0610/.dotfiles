@@ -372,3 +372,53 @@ SH
   run "$WAVE_START" demoapp --now
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'STALLED'
 }
+
+@test "a board with NO Approval line at all still reports blocked when an ask is pending" {
+  # The polarity bug. `grep -q '^- Approval: PENDING'` and `board_approved` are NOT
+  # inverses: PENDING is only one of the ways a board can be un-approved, and a board
+  # carrying no Approval line matched neither branch. So a wave that paused for a human,
+  # with the ask sitting right there, reported `ok` - a dim tick instead of `!`, and
+  # nobody was told they were being waited on.
+  stub_agentctl
+  cat > "$SANDBOX/bin/agent-ask" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = list ] && printf 'ASK777\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
+SH
+  chmod +x "$SANDBOX/bin/agent-ask"
+  cat > "$SANDBOX/bin/claude" <<SH
+#!/usr/bin/env bash
+echo "proposed, waiting"
+mkdir -p "$HOME/.agent/plans/demoapp"
+printf '# board\n\n## Queue\n\n| Ticket | Status |\n|---|---|\n| 1 | dispatched |\n' \
+  > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
+SH
+  chmod +x "$SANDBOX/bin/claude"
+
+  run "$WAVE_START" demoapp --now
+  assert [ -n "$(reported blocked)" ]
+  refute [ -n "$(reported ok)" ]
+  assert_equal "$(reported blocked | grep -c 'ASK777')" '1'
+}
+
+@test "the approved token reads as approved, so an approved board is never blocked" {
+  # The other direction: the exact marker delivery-loop gates on must NOT read as waiting,
+  # or every approved wave would report blocked and the signal would invert.
+  stub_agentctl
+  cat > "$SANDBOX/bin/agent-ask" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = list ] && printf 'ASK888\tdemoapp\t\tpending\tgate\tq?\tapprove|hold\t-\n'
+SH
+  chmod +x "$SANDBOX/bin/agent-ask"
+  cat > "$SANDBOX/bin/claude" <<SH
+#!/usr/bin/env bash
+echo done
+mkdir -p "$HOME/.agent/plans/demoapp"
+printf '# board\n- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY\n' \
+  > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
+SH
+  chmod +x "$SANDBOX/bin/claude"
+
+  run "$WAVE_START" demoapp --now
+  refute [ -n "$(reported blocked)" ]
+  assert [ -n "$(reported ok)" ]
+}

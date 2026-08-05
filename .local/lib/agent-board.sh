@@ -49,15 +49,57 @@
 BOARD_APPROVAL_RE='^- *Approval: *APPROVED-FOR-AUTONOMOUS-DELIVERY *$'
 
 # ── board discovery ──────────────────────────────────────────────────────────
-# board_newest PROJECT -> path of the newest board, or nothing.
+# board_list PROJECT -> every board for a project, one per line, NEWEST FIRST.
 #
 # NEWEST BY MTIME, never by name. A wave is a patch version, so boards are named
 # both `sprint-2026-07-27.md` and `sprint-v1.10.1.md`; `sprint-2026-...` sorts after
 # `sprint-v...` in some collations and before it in others, so sorting by name picks
 # a different board depending on locale.
-board_newest() { # $1=project
+#
+# This is the ONLY place the board glob is written. It used to appear in six: here,
+# wave-session, wave-start, session-preflight, captain-watchdog and delivery-loop
+# (twice). The glob is not the interesting part — `sprint-*.md` is easy to copy
+# correctly — but every copy also re-decided, silently, what counts as a board and
+# in what order. Adding an archive convention (`sprint-*.md.done`, a `stale/`
+# subdirectory) then has to be found in six places, and the one that is missed does
+# not error: it just keeps handing out a board everything else has stopped counting.
+board_list() { # $1=project
   [ -n "${1:-}" ] || return 0
-  ls -1t "${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$1"/sprint-*.md 2>/dev/null | head -1
+  # `|| true` because EVERY consumer of this library sets `pipefail` (wave-session.sh,
+  # wave-start and notes-cockpit all open with `set -uo pipefail`). With pipefail a
+  # project that simply has no board yet made `ls` exit 2 and took the whole pipeline's
+  # status with it, so discovery reported FAILURE for the ordinary, expected case of
+  # "nothing scheduled here". Empty output is the answer; a non-zero status is a lie that
+  # any caller writing `board_newest x || die` would act on.
+  ls -1t "${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$1"/sprint-*.md 2>/dev/null || true
+}
+
+# board_newest PROJECT -> path of the newest board, or nothing.
+board_newest() { # $1=project
+  board_list "${1:-}" | head -1
+}
+
+# board_find PROJECT PREDICATE -> newest board satisfying PREDICATE, or nothing.
+#
+# PREDICATE is the NAME of a function taking a board path (board_needs_eyes,
+# board_drainable, board_approved...). Every scheduled reader of the board wants
+# exactly this — "the newest one that still matters to me" — and each had written
+# out the same six-line loop with its own predicate inlined. captain-watchdog and
+# delivery-loop even said so in a comment: "same contract as captain-watchdog's
+# active_blackboard - now literally the same code, rather than 'kept in sync
+# deliberately'." It was not the same code. Now it is.
+#
+# Returns 0 with empty output when nothing matches: "no board needs me" is the
+# normal state of a quiet project, not a failure, and these run on timers where a
+# non-zero status is noise.
+board_find() { # $1=project $2=predicate fn
+  local _f
+  [ -n "${2:-}" ] || return 0
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    if "$2" "$_f"; then printf '%s\n' "$_f"; return 0; fi
+  done < <(board_list "${1:-}")
+  return 0
 }
 
 # ── stage vocabulary ─────────────────────────────────────────────────────────
@@ -70,30 +112,95 @@ board_stage_of() { # $1=status text [$2=sentinel text] -> stage
   _board_stage "$(printf '%s %s' "${1:-}" "${2:-}")"
 }
 
-# The single source of the mapping, shared by board_stage_of and the awk in
-# board_rows. Kept as one ordered case so the two can never disagree.
+# THE mapping. One implementation, as awk source, used verbatim by both board_stage_of
+# and board_rows.
+#
+# It used to be two: a shell `case` here and an awk `stage()` in board_rows, with a
+# comment claiming they were "kept as one ordered case so the two can never disagree."
+# They disagreed. The shell arm `*done*` is a SUBSTRING match, so the status "abandoned"
+# classified as `merged` through board_stage_of and as `working` through board_rows --
+# the same word, two readers, opposite answers, which is the exact failure this library
+# was extracted to end. A rule written down twice is a rule that will diverge twice, and
+# no amount of comment prevents it.
+#
+# awk (not the shell case) is the survivor because only it can express a word boundary:
+# \<done\> matches "done" and not "abandoned". board_stage_of pays one subprocess per
+# call for this; it has exactly one caller (wave-session's _is_live, once per row), so
+# the cost is a rounding error against a class of silent misclassification.
+_BOARD_STAGE_AWK='
+# WHERE a verdict appears decides whether it is THIS row`s verdict.
+#
+# A status cell is prose, and prose mentions other things. A real row read
+#   "1st run: IPA built OK but submit REJECTED - dup buildNumber 1.
+#    FIX: PR #1008 bumped ->2 (merged). RE-RUN 29263920302 building 1.0.0(2)."
+# and classified as `merged`, because `merged` was tested as a bare substring anywhere in
+# the cell -- and this cell mentions a DIFFERENT PR having been merged, in the course of
+# saying the row is still running. A live row read as terminal is the exact silent failure
+# this library exists to end: delivery-loop skips it and the cockpit stops showing it,
+# and "no open rows" is indistinguishable from "done".
+#
+# So the VERDICT rules (merged / skipped / review / queued) look only at LEAD, the text
+# before the first sentence break. A cell states its verdict up front -- `MERGED (PR
+# #1004, CI green)`, `**DONE — PR #1036 merged**`, `filed, not dispatched` -- and
+# everything after the first `. ` is elaboration, which is where another PR`s fate,
+# a retry, or a follow-up gets mentioned.
+#
+# ATTENTION (blocked / error) and the SENTINEL keep matching the WHOLE cell. Those are not
+# elaboration: "blocked - PR #1036 merged, CI red" is BLOCKED no matter where the word
+# sits, and `STATUS: DONE` is a controlled token an agent writes, not prose. Getting
+# attention wrong strands a human; that asymmetry is deliberate and is why it is tested
+# first.
+function board_stage(s,  low, lead, i) {
+  low=tolower(s)
+  # `in-wave` is TERMINAL: the fix is squashed onto the wave branch and the work is done,
+  # pending delivery. Tested before the generic fallthrough or it reads as `working` and
+  # a finished row gets a tmux window it does not need.
+  if (low ~ /in-wave/)                              return "merged"
+  if (low ~ /reverted-from-wave/)                   return "queued"
+  # ATTENTION is tested BEFORE terminal, deliberately. "blocked - PR #1036 merged, CI
+  # red" is BLOCKED; the reverse order (which every earlier parser used) reads it as done
+  # and the row stops asking for the human it needs.
+  if (low ~ /blocked/)                              return "blocked"
+  if (low ~ /error|failed/)                         return "error"
+  # The sentinel: a controlled token, authoritative wherever it sits. board_rows appends
+  # it to the status, so restricting it to LEAD would throw it away on any row whose
+  # status runs past one sentence -- the rows most likely to have one.
+  if (low ~ /status:? *done/)                       return "merged"
+  i = index(low, ". ")
+  lead = (i > 0) ? substr(low, 1, i - 1) : low
+  if (lead ~ /merged|\<done\>/)                     return "merged"
+  if (lead ~ /skipped/)                             return "skipped"
+  if (lead ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
+  if (lead ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
+  return "working"
+}
+'
+
 _board_stage() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    # `in-wave` is TERMINAL: the fix is squashed onto the wave branch and the work is
-    # done, pending delivery. It must be tested before the generic fallthrough or it
-    # reads as `working` and a finished row gets a tmux window it does not need.
-    *in-wave*)                                       printf 'merged' ;;
-    *reverted-from-wave*)                            printf 'queued' ;;
-    # ATTENTION is tested BEFORE terminal, deliberately. "blocked - PR #1036 merged,
-    # CI red" is BLOCKED; the reverse order (which every earlier parser used) reads it
-    # as done and the row stops asking for the human it needs.
-    *blocked*)                                       printf 'blocked' ;;
-    *error*|*failed*)                                printf 'error' ;;
-    *merged*|*"status: done"*|*done*)                printf 'merged' ;;
-    *skipped*)                                       printf 'skipped' ;;
-    *pr-open*|*"pr open"*|*"pr #"*|*pull/*|*"merge it"*|*ready*) printf 'review' ;;
-    *queued*|*filed*|*"not dispatched"*|*n/a*|*returns*) printf 'queued' ;;
-    *)                                               printf 'working' ;;
-  esac
+  awk -v s="$1" "$_BOARD_STAGE_AWK"'BEGIN { printf "%s", board_stage(s) }' </dev/null
 }
 
 board_is_open()      { case "${1:-}" in queued|working|review) return 0 ;; *) return 1 ;; esac; }
 board_is_attention() { case "${1:-}" in blocked|error)         return 0 ;; *) return 1 ;; esac; }
+
+# The CLASSES a consumer may ask about. `eyes` (open OR attention) is a class in its
+# own right rather than an `||` at each call site, because it is the one every
+# human-facing surface actually wants and the one each surface got subtly wrong:
+# session-preflight open-coded it as a five-way awk comparison on stage names, and
+# captain-watchdog as `board_has_stage open || board_has_stage attention` — which
+# parses the whole board twice, and silently stops agreeing the moment a sixth stage
+# is added to one list and not the other.
+#
+# An unknown class returns 1 (no match) rather than erroring: a typo'd class must not
+# take down a timer-driven daemon. It is caught in tests instead, where it is cheap.
+board_in_class() { # $1=stage $2=class
+  case "${2:-}" in
+    open)      board_is_open      "${1:-}" ;;
+    attention) board_is_attention "${1:-}" ;;
+    eyes)      board_is_open "${1:-}" || board_is_attention "${1:-}" ;;
+    *)         return 1 ;;
+  esac
+}
 
 # ── the parser ───────────────────────────────────────────────────────────────
 # board_rows FILE -> one record per queue row, US(\037)-delimited:
@@ -102,21 +209,8 @@ board_is_attention() { case "${1:-}" in blocked|error)         return 0 ;; *) re
 # when the delimiter is whitespace.
 board_rows() { # $1=board file
   [ -f "${1:-}" ] || return 0
-  awk -F'|' '
+  awk -F'|' "$_BOARD_STAGE_AWK"'
     function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
-    function stage(s,  low) {
-      low=tolower(s)
-      if (low ~ /in-wave/)                              return "merged"
-      if (low ~ /reverted-from-wave/)                   return "queued"
-      # ATTENTION before terminal - see the note in _board_stage.
-      if (low ~ /blocked/)                              return "blocked"
-      if (low ~ /error|failed/)                         return "error"
-      if (low ~ /merged|status:? *done|\<done\>/)       return "merged"
-      if (low ~ /skipped/)                              return "skipped"
-      if (low ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
-      if (low ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
-      return "working"
-    }
     # A new H2 ends the table. See the header note: without this the column map
     # latches on the first ticket+status header and every later pipe table in the
     # file is parsed with the queue`s indices.
@@ -154,7 +248,7 @@ board_rows() { # $1=board file
       if(tk=="" || tolower(tk)=="ticket") next
       pr=""; if(match(st,/pull\/[0-9]+/)) pr=substr(st,RSTART+5,RLENGTH-5)
       else if(match(st,/#[0-9]+/)) pr=substr(st,RSTART+1,RLENGTH-1)
-      printf "%s\037%s\037%s\037%s\037%s\n", tk, stage(st" "sen), ti, pr, sen
+      printf "%s\037%s\037%s\037%s\037%s\n", tk, board_stage(st" "sen), ti, pr, sen
     }
   ' "$1"
 }
@@ -163,16 +257,23 @@ board_rows() { # $1=board file
 board_approved() { grep -Eq "$BOARD_APPROVAL_RE" "${1:-/dev/null}" 2>/dev/null; }
 board_started()  { grep -Eq '^- *Started: *[0-9]' "${1:-/dev/null}" 2>/dev/null; }
 
-# board_has_stage FILE open|attention -> 0 if any row qualifies
+# board_has_stage FILE open|attention|eyes -> 0 if any row qualifies
 board_has_stage() {
   local f="${1:-}" class="${2:-}" _t stage
   while IFS=$'\037' read -r _t stage _; do
-    case "$class" in
-      open)      board_is_open      "$stage" && return 0 ;;
-      attention) board_is_attention "$stage" && return 0 ;;
-    esac
+    board_in_class "$stage" "$class" && return 0
   done < <(board_rows "$f")
   return 1
+}
+
+# board_count FILE open|attention|eyes -> how many rows qualify. Always prints a
+# number, including 0, so a caller can use it unquoted in arithmetic.
+board_count() {
+  local f="${1:-}" class="${2:-}" _t stage n=0
+  while IFS=$'\037' read -r _t stage _; do
+    board_in_class "$stage" "$class" && n=$((n + 1))
+  done < <(board_rows "$f")
+  printf '%s\n' "$n"
 }
 
 # delivery-loop's predicate: approved AND work left. Fails closed on approval.
@@ -181,14 +282,16 @@ board_drainable() { board_approved "${1:-}" && board_has_stage "${1:-}" open; }
 # captain-watchdog's predicate: deliberately NOT approval-gated, and it includes
 # ATTENTION — a board whose every row is `blocked` is exactly when the watchdog must
 # not self-disarm.
-board_needs_eyes() { board_has_stage "${1:-}" open || board_has_stage "${1:-}" attention; }
+board_needs_eyes() { board_has_stage "${1:-}" eyes; }
 
 # ── checkpoint sentinel ──────────────────────────────────────────────────────
 # The dispatcher/overseer trust the SENTINEL, never an Agent "completed" event: a
 # "completed" with no STATUS: DONE is a false-completion (the agent died mid-run).
 board_sentinel_of() { # $1=checkpoint file -> DONE|FAILED|PARTIAL, or empty
   [ -f "${1:-}" ] || return 0
-  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}'
+  # `|| true` for the same pipefail reason as board_newest: a checkpoint with no sentinel
+  # yet is the normal in-progress case, and grep exiting 1 must not read as an error.
+  grep -oE 'STATUS:? *(DONE|FAILED|PARTIAL)' "$1" 2>/dev/null | tail -1 | awk '{print $NF}' || true
 }
 
 # board_checkpoint_of PROJECT TICKET [SENTINEL_HINT] -> path or empty

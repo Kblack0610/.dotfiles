@@ -138,6 +138,19 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
 
 # ── priority filter ──────────────────────────────────────────────────────────
 
+@test "--cycle-window advances the persisted usage window" {
+  run "$COCKPIT" --cycle-window
+  assert_success
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output '30d'
+  "$COCKPIT" --cycle-window
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output 'today'
+  "$COCKPIT" --cycle-window
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output '7d'
+}
+
 @test "--cycle-pfilter advances the persisted filter" {
   run "$COCKPIT" --cycle-pfilter
   assert_success
@@ -163,7 +176,7 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
 
 # ── view mode ────────────────────────────────────────────────────────────────
 
-@test "--toggle-mode cycles tasks -> agents -> bridge -> tasks and persists it" {
+@test "--toggle-mode cycles tasks -> agents -> bridge -> usage -> tasks and persists it" {
   run "$COCKPIT" --toggle-mode
   assert_success
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
@@ -171,6 +184,9 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
   "$COCKPIT" --toggle-mode
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
   assert_output 'bridge'
+  "$COCKPIT" --toggle-mode
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
+  assert_output 'usage'
   "$COCKPIT" --toggle-mode
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
   assert_output 'tasks'

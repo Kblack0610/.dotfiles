@@ -21,10 +21,13 @@ printf 'agent-notify %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
 EOF
   chmod +x "$SANDBOX/bin/agent-notify"
 
-  # The fixture's `projects.<profile>` column 2 is prose, but the cockpit treats it as the
-  # summary PATH -- `canonical_of` takes its dirname and greps there for a
-  # `<!-- canonical: -->` marker. Give every project a REAL directory, so canonical
-  # resolution is deterministic and the recursive grep cannot wander out of the sandbox.
+  # The fixture's `projects.<profile>` column 2 is prose, but the cockpit treats it as
+  # the summary PATH, so give every project a REAL directory.
+  #
+  # This block used to also write a `<!-- canonical: -->` marker into each one, purely so
+  # the marker grep had something deterministic to find. The join is now the NAME -- the
+  # lab directory name IS the runtime project name -- so the marker is gone and the
+  # scaffold is just directories.
   VAULT="$HOME/vault"
   _project personal Cockpit    cockpit    'the tmux cockpit' 'v0.3'
   _project personal Notes      notes      'the notes CLI'    'v1.2'
@@ -36,13 +39,15 @@ EOF
   printf bridge > "$MODEF"
 }
 
-# _project <profile> <Display> <canonical> <status> <version>
-# Writes the project dir + canonical marker and (re)declares the `notes` stub's row for it.
+# _project <profile> <Display> <project> <status> <version>
+# Writes the project dir and (re)declares the `notes` stub's row for it. <project> is the
+# runtime name, which is the lowercased display name -- passing them separately keeps the
+# tests honest about which one each assertion is really keyed on.
 _project() {
   local prof="$1" disp="$2" canon="$3" status="$4" ver="$5"
   local dir="$VAULT/$prof/$canon"
   mkdir -p "$dir"
-  printf '<!-- canonical: %s -->\n' "$canon" > "$dir/summary.md"
+  : > "$dir/summary.md"
   # First call for a profile replaces the shipped fixture; later calls append.
   local f="$NOTES_FIXTURE/projects.$prof"
   [ -f "$f.seeded" ] || { : > "$f"; : > "$f.seeded"; }
@@ -66,7 +71,7 @@ post() { "$AGENT_ASK" post --project "$1" ${3:+--kind "$3"} "$2"; }
   assert [ ! -L "$SANDBOX/bin/agent-ask" ]
 }
 
-# board <canonical> — a wave blackboard, fed on stdin
+# board <project> — a wave blackboard, fed on stdin
 board() {
   mkdir -p "$HOME/.agent/plans/$1"
   cat > "$HOME/.agent/plans/$1/sprint-v1.0.1.md"

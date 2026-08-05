@@ -59,7 +59,11 @@ repo_of() {
 
 # blackboard_of <app> -> newest sprint-*.md, or nothing
 blackboard_of() {
-  ls -1t "$PLANS_DIR/$1"/sprint-*.md 2>/dev/null | head -1
+  # A leftover from the parser consolidation: this file already sources agent-board.sh,
+  # but this one line kept its own glob. Two implementations of "the newest board" is
+  # exactly one too many — board_newest owns the `ls -1t` (newest by MTIME, never by name)
+  # and the archive-excluding glob, and both facts are documented at its definition.
+  board_newest "$1"
 }
 
 # rows_of <bb> -> `ticket<TAB>stage<TAB>title` for every queue row.
@@ -201,6 +205,19 @@ cmd_kill() {
   tmux kill-session -t "$sess" 2>/dev/null && echo "killed work session '$sess'" || echo "no session '$sess'"
 }
 
+# Sourcing this file loads the helpers and stops here; running it dispatches. Same seam
+# as tags.sh:506 and every other testable script in this directory.
+#
+# It was the ONE file here without the guard, so its tests had to `sed -n '/^rows_of()/,
+# /^}/p'` five functions out of it and eval them in a bare shell. That is not a test of
+# this program: a transplanted function loses everything around it, and it broke the
+# moment the stage mapping moved into a shell variable (`declare -f board_rows` copies
+# the function, never the `_BOARD_STAGE_AWK` it reads) and again when blackboard_of
+# started honouring AGENT_PLANS_DIR like the rest of the system. Both failures were in
+# the harness, not the code. Source the file instead.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
 case "${1:-}" in
   ensure)  shift; cmd_ensure "$@" ;;
   sync)    shift; cmd_sync "$@" ;;

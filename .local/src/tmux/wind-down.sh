@@ -147,6 +147,12 @@ cmd_fire() {
   local TM="tmux"
   [ -n "$socket" ] && [ -S "$socket" ] && TM="tmux -S $socket"
 
+  # `fire` is invoked by the Stop hook and may be the first thing to touch SPIN_DIR
+  # (arm can have run on a different machine, or the dir can be swept). Without this,
+  # every append below fails -- and it fails LOUDLY despite the `2>/dev/null || true`,
+  # because a redirection that cannot open its target is reported by the shell before
+  # the command ever runs, so neither guard applies to it. Cost: one mkdir.
+  mkdir -p "$SPIN_DIR"
   local logf="$SPIN_DIR/fire.log"
   printf '[%s] fire: scope=%s target=%s pane=%s socket=%s TM="%s"\n' \
     "$(date '+%F %T' 2>/dev/null)" "$scope" "$target" "$pane" "$socket" "$TM" >> "$logf" 2>/dev/null || true
@@ -219,6 +225,13 @@ cmd_note_path() {
   mkdir -p "$dir"
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
 }
+
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# no verb dispatched. Without this, sourcing falls into the case below with $1 unset, hits
+# the usage arm and `exit 2`s the test runner -- which is why the suite had reached for
+# `eval "$(sed -n ...)"` extraction instead, and why this file ended up with no coverage
+# at all despite arming a deferred `tmux kill-window`.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
