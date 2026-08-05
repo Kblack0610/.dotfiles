@@ -128,7 +128,29 @@ board_stage_of() { # $1=status text [$2=sentinel text] -> stage
 # call for this; it has exactly one caller (wave-session's _is_live, once per row), so
 # the cost is a rounding error against a class of silent misclassification.
 _BOARD_STAGE_AWK='
-function board_stage(s,  low) {
+# WHERE a verdict appears decides whether it is THIS row`s verdict.
+#
+# A status cell is prose, and prose mentions other things. A real row read
+#   "1st run: IPA built OK but submit REJECTED - dup buildNumber 1.
+#    FIX: PR #1008 bumped ->2 (merged). RE-RUN 29263920302 building 1.0.0(2)."
+# and classified as `merged`, because `merged` was tested as a bare substring anywhere in
+# the cell -- and this cell mentions a DIFFERENT PR having been merged, in the course of
+# saying the row is still running. A live row read as terminal is the exact silent failure
+# this library exists to end: delivery-loop skips it and the cockpit stops showing it,
+# and "no open rows" is indistinguishable from "done".
+#
+# So the VERDICT rules (merged / skipped / review / queued) look only at LEAD, the text
+# before the first sentence break. A cell states its verdict up front -- `MERGED (PR
+# #1004, CI green)`, `**DONE — PR #1036 merged**`, `filed, not dispatched` -- and
+# everything after the first `. ` is elaboration, which is where another PR`s fate,
+# a retry, or a follow-up gets mentioned.
+#
+# ATTENTION (blocked / error) and the SENTINEL keep matching the WHOLE cell. Those are not
+# elaboration: "blocked - PR #1036 merged, CI red" is BLOCKED no matter where the word
+# sits, and `STATUS: DONE` is a controlled token an agent writes, not prose. Getting
+# attention wrong strands a human; that asymmetry is deliberate and is why it is tested
+# first.
+function board_stage(s,  low, lead, i) {
   low=tolower(s)
   # `in-wave` is TERMINAL: the fix is squashed onto the wave branch and the work is done,
   # pending delivery. Tested before the generic fallthrough or it reads as `working` and
@@ -140,10 +162,16 @@ function board_stage(s,  low) {
   # and the row stops asking for the human it needs.
   if (low ~ /blocked/)                              return "blocked"
   if (low ~ /error|failed/)                         return "error"
-  if (low ~ /merged|status:? *done|\<done\>/)       return "merged"
-  if (low ~ /skipped/)                              return "skipped"
-  if (low ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
-  if (low ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
+  # The sentinel: a controlled token, authoritative wherever it sits. board_rows appends
+  # it to the status, so restricting it to LEAD would throw it away on any row whose
+  # status runs past one sentence -- the rows most likely to have one.
+  if (low ~ /status:? *done/)                       return "merged"
+  i = index(low, ". ")
+  lead = (i > 0) ? substr(low, 1, i - 1) : low
+  if (lead ~ /merged|\<done\>/)                     return "merged"
+  if (lead ~ /skipped/)                             return "skipped"
+  if (lead ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
+  if (lead ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"
   return "working"
 }
 '

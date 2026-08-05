@@ -70,22 +70,17 @@ nrows() { board_rows "$1" | grep -c . || true; }
   assert_equal "$(board_rows "$f" | sed -n 7p | cut -d$'\037' -f2)" 'merged'
 }
 
-@test "KNOWN LIMITATION: prose naming another PR as (merged) marks a live row terminal" {
-  # Row 5 is verbatim from the real board and is ACTIVELY IN FLIGHT:
+@test "prose naming ANOTHER PR as (merged) no longer marks a live row terminal" {
+  # This was a KNOWN LIMITATION test asserting the bug, added when the real corpus first
+  # surfaced it. Row 5 is verbatim from the real board and is ACTIVELY IN FLIGHT:
   #   "1st run: IPA built OK but submit REJECTED - dup buildNumber 1.
   #    FIX: PR #1008 bumped ->2 (merged). RE-RUN building 1.0.0(2). Background-watched."
-  # It classifies as `merged` because the mapping tests `merged` as a bare substring
-  # anywhere in the cell, and this cell mentions a DIFFERENT PR having been merged.
+  # It classified as `merged` because the mapping tested `merged` as a bare substring and
+  # this cell mentions a DIFFERENT PR having been merged.
   #
-  # The consequence is the exact failure class this library was extracted to end: a row
-  # with work left reads as terminal, so delivery-loop skips it and the cockpit stops
-  # showing it -- silently, because "no open rows" is indistinguishable from "done".
-  #
-  # Pinned here rather than fixed, because narrowing `merged` is a semantic change to
-  # every consumer and does not belong in a test-harness change. THIS TEST IS EXPECTED
-  # TO FAIL when it is fixed; that is the point. `\<done\>` already got the
-  # word-boundary treatment (so "abandoned" is not "done") -- `merged` did not.
-  assert_equal "$(board_rows "$BOARDS/wave-numbered.md" | sed -n 5p | cut -d$'\037' -f2)" 'merged'
+  # The verdict rules now read only LEAD -- the text before the first sentence break --
+  # so elaboration cannot cast the verdict.
+  assert_equal "$(board_rows "$BOARDS/wave-numbered.md" | sed -n 5p | cut -d$'\037' -f2)" 'working'
 }
 
 @test "a pre-approval wave renders its proposal rows despite empty Ticket cells" {
@@ -121,4 +116,39 @@ nrows() { board_rows "$1" | grep -c . || true; }
   board_drainable "$f"  && fail "an unapproved board must never be drainable"
   board_needs_eyes "$f" || fail "an unapproved board with queued rows is exactly what needs eyes"
   return 0
+}
+
+# ── where a verdict sits decides whether it is THIS row's verdict ─────────────
+
+@test "a verdict in the FIRST clause is the row's verdict" {
+  # Every real terminal cell states its verdict up front. These are verbatim shapes.
+  assert_equal "$(board_stage_of 'MERGED (PR #1004, CI green)')" 'merged'
+  assert_equal "$(board_stage_of '**DONE — PR #1036 merged `31f11fd6`, 13/13 CI green**')" 'merged'
+  assert_equal "$(board_stage_of 'DONE - migration 014 applied, DB 68->182 cards, api healthy')" 'merged'
+  assert_equal "$(board_stage_of 'filed, not dispatched')" 'queued'
+}
+
+@test "a verdict word AFTER the first sentence break is elaboration, not the verdict" {
+  # The sentence break is what separates "what happened" from "and by the way".
+  assert_equal "$(board_stage_of 'still building. an earlier PR was merged')" 'working'
+  assert_equal "$(board_stage_of 'retrying the upload. PR #99 open for the fix')"  'working'
+}
+
+@test "a DONE verdict is not undone by elaboration that mentions more work" {
+  # The converse must also hold, or the rule just moves the bug: a row that opens with
+  # DONE is done, even if the sentence after it mentions something still happening.
+  assert_equal "$(board_stage_of 'DONE - build success, IPA uploaded (app 6751792324). Apple now processing.')" 'merged'
+}
+
+@test "the SENTINEL is authoritative wherever it sits, unlike prose" {
+  # board_rows appends the sentinel to the status, so a LEAD-only rule would discard it on
+  # exactly the rows most likely to carry one: those whose status runs past one sentence.
+  assert_equal "$(board_stage_of 'a long prose status that rambles on. and then some more' 'STATUS: DONE')" 'merged'
+}
+
+@test "ATTENTION still matches the whole cell, and still beats a terminal verdict" {
+  # Getting attention wrong strands a human, so it keeps the broader match on purpose.
+  assert_equal "$(board_stage_of '**blocked - PR #1036 merged, CI red**')" 'blocked'
+  assert_equal "$(board_stage_of 'DONE with the build. later it turned out to be blocked')" 'blocked'
+  assert_equal "$(board_stage_of 'shipped it. the deploy failed')" 'error'
 }
