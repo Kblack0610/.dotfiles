@@ -7,9 +7,59 @@ return {
     "MeanderingProgrammer/render-markdown.nvim",
     ft = { "markdown" }, -- only load when opening a markdown file
     config = function()
+      -- Headings. A terminal grid has exactly one cell size, so no plugin can render a
+      -- taller `#` -- "size" has to be faked with weight instead: a full-width tinted bar
+      -- per level, a distinct accent color, and a thick border above/below H1/H2 so the
+      -- top-level sections read as slabs. For real font sizes use <leader>mo (export to
+      -- browser) or <leader>mp (live preview).
+      local HEADING_FG = { "#7aa2f7", "#bb9af7", "#7dcfff", "#9ece6a", "#e0af68", "#f7768e" }
+      -- Bar opacity falls off with depth, so H1 is loudest and H6 is barely a tint.
+      local HEADING_ALPHA = { 0.32, 0.26, 0.21, 0.17, 0.13, 0.10 }
+      -- tokyonight is configured `transparent = true`, so Normal has no bg to blend
+      -- against -- pin the palette's night bg explicitly.
+      local HEADING_BASE = "#1a1b26"
+
+      -- Blend `hex` toward `base` (alpha 1.0 = pure `hex`), returning "#rrggbb".
+      local function blend(hex, base, alpha)
+        local function chan(s, i)
+          return tonumber(s:sub(i, i + 1), 16)
+        end
+        local out = "#"
+        for i = 2, 6, 2 do
+          out = out .. string.format("%02x", math.floor(chan(hex, i) * alpha + chan(base, i) * (1 - alpha) + 0.5))
+        end
+        return out
+      end
+
+      -- render-markdown declares its own RenderMarkdown* groups with `default = true`,
+      -- linked to Diff*/Visual -- which tokyonight renders almost invisibly, hence
+      -- "headings look like nothing happened". A plain nvim_set_hl outranks a default
+      -- link. Re-run on ColorScheme, which clears explicitly-set groups.
+      local function set_heading_colors()
+        for i, fg in ipairs(HEADING_FG) do
+          vim.api.nvim_set_hl(0, "RenderMarkdownH" .. i, { fg = fg, bold = true })
+          vim.api.nvim_set_hl(0, "RenderMarkdownH" .. i .. "Bg", { bg = blend(fg, HEADING_BASE, HEADING_ALPHA[i]) })
+          -- The heading TEXT is treesitter's group, not the plugin's; match it so the
+          -- level is legible from the words, not only from the bar behind them.
+          vim.api.nvim_set_hl(0, "@markup.heading." .. i .. ".markdown", { fg = fg, bold = true })
+        end
+      end
+      set_heading_colors()
+      vim.api.nvim_create_autocmd("ColorScheme", {
+        group = vim.api.nvim_create_augroup("MarkdownHeadingColors", {}),
+        callback = set_heading_colors,
+      })
+
       require("render-markdown").setup {
         file_types = { "markdown" },
         render_modes = { "n", "v", "V", "i", "c" }, -- render markdown in all modes
+        heading = {
+          sign = false, -- the bar carries the level; no need for a gutter glyph too
+          width = "full", -- bar spans the window, not just the heading text
+          left_pad = 1,
+          right_pad = 1,
+          border = { true, false, false, false, false, false }, -- slab rules on H1 only
+        },
         code = {
           sign = false,
           style = "normal",
@@ -348,6 +398,32 @@ return {
             "<CMD>RenderMarkdown disable<CR>",
             { desc = "Markdown disable", silent = true }
           )
+          -- Export the current note to standalone, themed HTML and open it in the
+          -- browser. Unlike <leader>mp this needs no node server and produces a file
+          -- you can email; unlike the in-editor render it has real heading sizes.
+          -- Output goes to a tempfile so exports never land next to the note.
+          vim.keymap.set("n", "<leader>mo", function()
+            local src = vim.api.nvim_buf_get_name(0)
+            if src == "" then
+              return vim.notify("markdown: buffer has no file to export", vim.log.levels.ERROR)
+            end
+            for cmd, hint in pairs { ["md-export"] = "~/.dotfiles/.local/bin", pandoc = "pacman -S pandoc-cli" } do
+              if vim.fn.executable(cmd) == 0 then
+                return vim.notify(("markdown: %s not found (%s)"):format(cmd, hint), vim.log.levels.ERROR)
+              end
+            end
+            vim.cmd "silent write"
+            local out = vim.fn.tempname() .. ".html"
+            vim.system({ "md-export", "html", src, out }, { text = true }, function(res)
+              vim.schedule(function()
+                if res.code ~= 0 then
+                  vim.notify("md-export failed: " .. (res.stderr or ""), vim.log.levels.ERROR)
+                else
+                  vim.ui.open(out)
+                end
+              end)
+            end)
+          end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
           --   tt  new task below
@@ -430,9 +506,13 @@ return {
   {
     "iamcco/markdown-preview.nvim",
     ft = { "markdown" },
-    build = function()
-      vim.fn["mkdp#util#install"]() -- uses yarn/node
-    end,
+    -- A `build = function() vim.fn["mkdp#util#install"]() end` fails with E117 under
+    -- `Lazy! build` (the plugin's autoload isn't on rtp yet), which is how this silently
+    -- shipped with no app/bin and a dead <leader>mp. The ":"-prefixed form makes lazy
+    -- source the plugin first. Manual fallback, if it ever regresses:
+    --   cd ~/.local/share/nvim/lazy/markdown-preview.nvim/app
+    --   ./install.sh v$(node -p "require('../package.json').version")
+    build = ":call mkdp#util#install()",
     keys = {
       { "<leader>mp", "<cmd>MarkdownPreviewToggle<cr>", desc = "Markdown preview (browser)", ft = "markdown" },
     },
