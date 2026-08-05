@@ -79,6 +79,30 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   CLAUDE_SKIP_FOCUS_GATE=1 refute_blocks "$(CLAUDE_SKIP_FOCUS_GATE=1 gate s1)"
 }
 
+@test "CLAUDE_HEADLESS=1 disables it -- a timer has nobody to answer the question" {
+  # Regression: captain-watchdog fires `/captain watch` every 10 minutes. Blocked here,
+  # the headless agent complied the only way it could -- `focus add` then `focus done` --
+  # and 2026-08-04 accumulated 45 `captain watch pass` entries, burying the three real
+  # ones. Asking "did you declare your work" only makes sense with a human to ask.
+  dirty
+  refute_blocks "$(CLAUDE_HEADLESS=1 gate s1)"
+}
+
+@test "the headless guard fails SAFE -- an unset marker still gates" {
+  # The negative control for the test above. If the guard were inverted, or keyed on a
+  # var that is always set, the gate would silently never fire again and nothing would
+  # say so -- the exact silent-success failure mode this suite exists to catch.
+  dirty
+  assert_blocks "$(gate s1)"
+}
+
+@test "CLAUDE_HEADLESS=0 is not a disable" {
+  # `[ "${CLAUDE_HEADLESS:-0}" = "1" ]` -- an explicitly-off marker must behave as unset,
+  # so a runner that exports 0 does not think it opted out.
+  dirty
+  assert_blocks "$(CLAUDE_HEADLESS=0 gate s1)"
+}
+
 @test "an in-progress item means you already declared what you are on" {
   focus '- [/] the thing i am on (1d)' '- [ ] open thing (2d)'
   dirty

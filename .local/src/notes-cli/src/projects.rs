@@ -589,7 +589,26 @@ pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
 /// version is already on the line above; this makes the wave carry it too, so one id runs
 /// from the sheet through the branch and PR to the frozen note.
 fn sheet_body(title: &str, ver: &str) -> String {
-    format!("{title}\nVersion: {ver}\n\n## Wave: {ver} (current)\n- [ ] \n")
+    format!("{title}\nVersion: {ver}\n\n## {}\n- [ ] \n", wave_heading(ver))
+}
+
+/// The `## Wave` heading TEXT for a version — the ONE place that format is written.
+///
+/// There used to be two minters. This one seeded a fresh sheet with the version;
+/// `project_tasks::ensure_task_sheet` hardcoded the literal string `new` when appending a
+/// wave to a sheet that had none. So which id a wave got depended on which code path
+/// created it, and notes-cockpit sat on `## Wave: new (current)` under `Version: v0.0.2`
+/// until 2026-08-04 — the half of "the version is the wave's ONLY id" (2026-07-28) that
+/// never landed. Both callers now route through here.
+pub(crate) fn wave_heading(ver: &str) -> String {
+    format!("Wave: {ver} (current)")
+}
+
+/// The version a sheet's wave should be NAMED for: the sheet's own `Version:` line, else
+/// `v0.0.1` for a sheet that has none yet. Keeps `Version:` the single source of truth —
+/// a wave is never named anything the sheet has not already declared.
+pub(crate) fn wave_version_of(content: &str) -> String {
+    sheet_version(content).map_or_else(|| "v0.0.1".to_string(), fmt_version)
 }
 
 /// Does this sheet already carry a `## Wave` section? (The task-sheet test, mirroring

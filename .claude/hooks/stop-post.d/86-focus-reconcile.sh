@@ -31,6 +31,26 @@ fi
 
 [ "${CLAUDE_SKIP_FOCUS_GATE:-0}" = "1" ] && exit 0
 
+# --- headless runs are not the human's cockpit -------------------------------------
+# This gate asks "you did work, did you declare it on today's Focus?" — a question that
+# only has a listener when a human is in the loop. On a timer there is nobody to answer,
+# so the agent complies literally: `focus add` then `focus done`, every pass.
+#
+# Measured 2026-08-04, not assumed: today's note held 45 `captain watch pass` entries —
+# one per 10-minute `captain-watchdog` fire — burying the three items that actually
+# shipped. The daily note is the human's surface; a headless runner must never write to
+# it just to satisfy a gate aimed at a person.
+#
+# Fails SAFE: absent marker = gate still fires. A runner opts OUT explicitly, so a new
+# headless caller that forgets is merely noisy, never silently ungated.
+#
+# The marker belongs at the ONE place a runner invokes a harness. That choke point is
+# mid-move (`agentctl-claude` -> `.local/src/agent-run/`, PR #189), so it is set at the
+# timer-driven call sites for now. When agent-run lands, set CLAUDE_HEADLESS there and
+# drop it from the individual runners — per agentctl-claude's own header, a restriction
+# that can be lost by an unrelated edit is not a restriction.
+[ "${CLAUDE_HEADLESS:-0}" = "1" ] && exit 0
+
 # jq is how we emit the block safely (the reason contains quotes and newlines). Without it
 # the honest move is to stay quiet rather than hand-roll JSON escaping.
 command -v jq >/dev/null 2>&1 || exit 0
