@@ -2,61 +2,14 @@
 # Sourced from .commonrc
 
 # --- Claude Code OpenTelemetry ---
-# Ships coding-session metrics + tool-call event logs to the home-k3s Alloy
-# DaemonSet's OTLP receiver, which fans out to Prometheus (remote_write) and
-# Loki. Claude Code calls Anthropic directly, so this is separate from the
-# LiteLLM->Langfuse gateway tracing. Target hp-victus (always-on amd64 k3s node
-# running Alloy; static DHCP lease, LAN-DNS name). Alloy binds the OTLP port as
-# a hostPort on every node, so any node IP works; hp-victus is the stable pick.
-# Guarded on LAN reachability so it silently no-ops off-network (the exporter
-# would otherwise fire OTLP batches into the void). The lookup is wrapped in
-# `timeout 0.3` because off the home LAN (e.g. on the VDI/corporate network) the
-# resolver blocks ~8s on this name before failing, which would hang EVERY new
-# shell (.commonrc -> .ai-rc). On-LAN it resolves in a few ms (telemetry on);
-# off-LAN it is killed at 0.3s and telemetry stays off, which is the intent.
-# Cluster wiring: apps/alloy/{configmap,daemonset}.yaml in home-config.
-if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
-    export CLAUDE_CODE_ENABLE_TELEMETRY=1
-    export OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318
-    export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-    export OTEL_METRICS_EXPORTER=otlp
-    export OTEL_LOGS_EXPORTER=otlp
-    # REQUIRED for the Prometheus path: Claude Code defaults to delta
-    # temporality, but otelcol.exporter.prometheus only forwards cumulative -
-    # without this, only target_info lands and all counters are silently
-    # dropped. (Verified: cumulative makes session/token/cost metrics appear.)
-    export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
-
-    # --- Traces -> Langfuse (via the same Alloy receiver) --------------------
-    # Metrics answer "what did this session cost"; traces answer "what did it
-    # actually do". claude_code.interaction is the per-prompt root span, with
-    # .llm_request / .tool / .tool.execution / .hook beneath it. Tracing is beta
-    # and OFF unless the BETA flag is set, hence both lines.
-    # Cluster side: apps/alloy in home-config exports these on to Langfuse.
-    export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
-    export OTEL_TRACES_EXPORTER=otlp
-
-    # Full-fidelity content: prompts, responses, tool names/args, tool IO.
-    # Without these the spans carry structure and timing but every payload is
-    # redacted, which is enough to see that a tool ran and useless for judging
-    # whether it did the right thing. Langfuse's scoring and LLM-as-judge
-    # evaluators need the text, and replacing the hand-rolled eval markdown
-    # loop with them is the point of sending traces at all.
-    #
-    # READ THIS BEFORE WIDENING THE GUARD ABOVE. These four lines put real
-    # prompt and response text into ClickHouse. That is fine for a self-hosted
-    # Langfuse on the home LAN and NOT fine anywhere else - work sessions on the
-    # corporate VDI must never export. The `getent hosts hp-victus` guard is the
-    # only thing enforcing that, so it is now load-bearing for content privacy,
-    # not just for avoiding dead OTLP batches off-network.
-    export OTEL_LOG_USER_PROMPTS=1
-    export OTEL_LOG_ASSISTANT_RESPONSES=1
-    export OTEL_LOG_TOOL_DETAILS=1
-    export OTEL_LOG_TOOL_CONTENT=1
-
-    # Lets one Langfuse project separate machines without a second exporter.
-    export OTEL_RESOURCE_ATTRIBUTES="service.name=claude-code,host.name=$(hostname)"
-fi
+# Moved to .config/shared-hooks/claude-telemetry.sh so the HEADLESS path can use it too.
+# It lived inline here, and .ai-rc is only sourced by interactive shells - so systemd user
+# services (`/bin/bash -c 'exec ${COMMAND}'`, neither interactive nor login) never saw it,
+# and 835 of the last 886 sessions exported nothing. The LAN guard that keeps prompt text
+# off the corporate VDI moved with it, unchanged; see that file before widening it.
+# shellcheck source=/dev/null
+[ -f "$HOME/.config/shared-hooks/claude-telemetry.sh" ] \
+    && . "$HOME/.config/shared-hooks/claude-telemetry.sh"
 
 # --- mem0 API key ------------------------------------------------------------
 # The self-hosted mem0 server authenticates on an X-API-Key header carrying a
