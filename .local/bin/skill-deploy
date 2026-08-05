@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# skill-deploy - link every skill in both repos into ~/.claude/skills.
+#
+# The fixer for skill-drift's UNDEPLOYED finding. ~/.claude/skills is a plain
+# untracked directory of hand-made symlinks pointing back into ~/.dotfiles and
+# ~/.dotfiles-private. Nothing ever created it from the repos, so "add a skill"
+# silently had a second step: remember to symlink it. Forgetting is invisible -
+# the SKILL.md is committed, merged, and bulleted in CLAUDE.md, but the agent
+# never sees it, because a skill is only reachable if a link exists.
+#
+# That is exactly how `comms` and `meeting-ingest` sat undeployed: both written,
+# both merged, both documented, neither reachable. skill-drift found them months
+# later. This script closes the loop so the detector has a one-command answer
+# instead of a manual `ln -s` that is itself easy to get wrong.
+#
+# Idempotent by construction: an already-correct link is left alone, so this is
+# safe to run from provisioning on every boot and safe to run twice.
+#
+# It NEVER clobbers. A name that already exists as a real directory, or as a
+# link pointing somewhere unexpected, is reported as CONFLICT and skipped -
+# resolving it needs a human who knows which copy is the real one. Same for a
+# name present in BOTH repos: silently preferring one would create the second
+# source of truth this whole split exists to avoid.
+#
+# Usage:
+#   skill-deploy              create missing links, report what changed
+#   skill-deploy --dry-run    report only, touch nothing
+#   skill-deploy --quiet      print only changes and conflicts (for provisioning)
+set -uo pipefail
+
+SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
+PUB="${DOTFILES:-$HOME/.dotfiles}"
+PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+
+DRY=0 QUIET=0
+case "${1:-}" in
+  --dry-run) DRY=1 ;;
+  --quiet)   QUIET=1 ;;
+  -h|--help) sed -n '2,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
+esac
+
+say()  { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
+loud() { printf '%s\n' "$*"; }
+
+mkdir -p "$SKILLS"
+
+# Link target, relative to $SKILLS. For the normal layout this reproduces the
+# existing convention exactly (../../.dotfiles-private/.claude/skills/<name>),
+# but it is computed from where $SKILLS actually is rather than assumed - a
+# hand-written ../../ silently dangles the moment CLAUDE_SKILLS points anywhere
+# but ~/.claude/skills, which is precisely how a sandbox run produced 56 broken
+# links that still reported success. Absolute is the fallback: an ugly link that
+# resolves beats a tidy one that does not.
+rel_target() {
+  local repo=$1 name=$2 abs="$repo/.claude/skills/$2"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m --relative-to="$SKILLS" "$abs" 2>/dev/null || printf '%s\n' "$abs"
+  else
+    printf '%s\n' "$abs"
+  fi
+}
+
+linked=0 already=0 conflict=0
+
+# Collision guard: a skill name defined in both repos is ambiguous, not a race.
+declare -A OWNER=()
+for repo in "$PUB" "$PRIV"; do
+  [ -d "$repo/.claude/skills" ] || continue
+  for dir in "$repo"/.claude/skills/*/; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    if [ -n "${OWNER[$name]:-}" ]; then
+      loud "CONFLICT  $name  defined in BOTH ${OWNER[$name]} and $repo - skipped, resolve by hand"
+      OWNER[$name]="__ambiguous__"
+      conflict=$((conflict + 1))
+    else
+      OWNER[$name]=$repo
+    fi
+  done
+done
+
+for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
+  repo=${OWNER[$name]}
+  [ "$repo" = "__ambiguous__" ] && continue
+  want=$(rel_target "$repo" "$name")
+  link="$SKILLS/$name"
+
+  if [ -L "$link" ]; then
+    have=$(readlink "$link")
+    if [ "$have" = "$want" ]; then
+      already=$((already + 1)); continue
+    fi
+    # A link that resolves to the same place by another spelling is fine.
+    if [ -e "$link" ] && [ "$(cd "$(dirname "$link")" && readlink -f "$have")" = "$(readlink -f "$repo/.claude/skills/$name")" ]; then
+      already=$((already + 1)); continue
+    fi
+    loud "CONFLICT  $name  links to '$have', expected '$want' - skipped"
+    conflict=$((conflict + 1)); continue
+  fi
+
+  if [ -e "$link" ]; then
+    loud "CONFLICT  $name  exists as a real path in $SKILLS - skipped"
+    conflict=$((conflict + 1)); continue
+  fi
+
+  if [ "$DRY" = 1 ]; then
+    loud "WOULD LINK  $name -> $want"
+  else
+    if ln -s "$want" "$link"; then
+      loud "LINKED    $name -> $want"
+    else
+      loud "FAILED    $name -> $want"
+      conflict=$((conflict + 1)); continue
+    fi
+  fi
+  linked=$((linked + 1))
+done
+
+say "skill-deploy: $linked linked, $already already correct, $conflict conflict(s)"
+[ "$conflict" -gt 0 ] && exit 1
+exit 0
