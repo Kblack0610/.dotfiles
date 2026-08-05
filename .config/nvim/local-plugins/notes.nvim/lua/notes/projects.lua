@@ -1,6 +1,6 @@
 -- notes.projects — a project finder for the `~/.notes` vault, wired to the
 -- `notes` Rust CLI's `notes projects` subcommand. These are the same indexed
--- projects that populate the daily note's `## Current Projects` block.
+-- projects listed in the lab index, which the daily note links from its footer.
 --
 --   :lua require("notes.projects").pick()   (bound to <leader>np by notes.setup())
 --

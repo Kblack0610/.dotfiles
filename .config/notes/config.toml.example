@@ -32,7 +32,7 @@ zettel    = "journal/permanent"
 meetings  = "journal/meetings"        # `notes meeting new` → structured meeting logs
 index     = "journal/index"
 inbox     = "inbox"                   # dated captures (/remember, /daily:analysis, `notes inbox add`)
-projects  = "lab/projects/current"   # `notes today` auto-links these into ## Current Projects
+projects  = "lab/projects/current"   # `notes projects`; the daily note links the index from its footer
 # Work roster: render a ## Work section with one collapsed line per job - a link to the
 # job's latest note and its open-task count (`- AcmeCorp - [[..]] (7 open)`). The tasks
 # stay in the job's own note (gf the link to open it); ## Work is regenerated every run,

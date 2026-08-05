@@ -9,6 +9,14 @@
 //!     date nears, resurfaces it in Due. Tagging a surfaced task again pushes it back.
 //!   - **scheduled** (formerly carryover) is the holding pen for future-dated tasks;
 //!     **Fun** is a standing backlog. Both are linked at the bottom of the note.
+//!
+//! The note carries the human's own lists and the auto-rendered context sections
+//! (`## Work`, `## Watches`, `## Comms`, `## Inbox`). It deliberately does NOT render the
+//! project/AI board: that is regenerated as a FILE each run (`board.rs`) and reached from
+//! the footer's `Board:` link. A `## Current Projects` block used to duplicate the lab
+//! index here every morning; it was removed because the note is the FOCUS surface, and
+//! anything pasted into it competes with the one list the human actually maintains — which
+//! is exactly why the board is a link and not a section.
 
 use crate::config::{self, Profile};
 use crate::inbox;
@@ -81,6 +89,13 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
     crate::comms::refresh(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
+    // The project/AI board is regenerated as a FILE, not a section — the footer links it.
+    // Same "render an external source each run" pattern as the sections above; the target
+    // differs precisely so the note stays the human's focus surface. A failure here must
+    // not abort the note, so it is logged and swallowed like the sweep below.
+    if let Err(e) = crate::board::write(log) {
+        log.warn("today", &format!("board refresh skipped: {e}"));
+    }
     // Bucket `## Focus` by priority (Urgent/High/Low + Done) so a day whose items
     // just carried forward flat lands organized, matching the nvim on-save sweep. Idempotent,
     // writes only on change; a failure here never aborts note creation.
@@ -91,7 +106,6 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
 fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Result<()> {
     let today_s = today.format("%Y-%m-%d").to_string();
 
-    let mut projects = String::new();
     let mut focus_keep: Vec<String> = Vec::new();
     let mut focus_defer: Vec<String> = Vec::new();
     let mut due_keep: Vec<String> = Vec::new();
@@ -106,10 +120,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         // and `capture` only stops at the next H2 — so without this the footer bleeds
         // into the carried section and re-seeds a stale `Backlogs:` line downstream.
         strip_backlog_footer(&mut content);
-
-        if let Some(lines) = md::section_lines(&content, "Current Projects") {
-            projects = lines.join("\n");
-        }
 
         // Focus = "now": carry unfinished items forward; a task dated beyond the lead
         // window is pushed out to the scheduled backlog instead of cluttering today.
@@ -130,18 +140,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             let carried = carry(&lines, today, prev_date);
             (due_keep, due_defer) = route_by_due(&carried, today);
         }
-    }
-
-    // Current Projects precedence:
-    //   1. the hand-curated `## Current` lane of the project index (source of truth —
-    //      re-derived each day so editing the index changes tomorrow's note), else
-    //   2. carry-forward from the previous note (above), else
-    //   3. auto-discovery from the `projects` dir.
-    if let Some(lane) = current_lane_from_index(p) {
-        projects = lane;
-    }
-    if projects.trim().is_empty() {
-        projects = discover_projects(p);
     }
 
     // Scheduled backlog: surface any task now within the lead window into today's Due,
@@ -177,12 +175,11 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     s.push_str("tags: [daily]\n");
     s.push_str("---\n\n");
     s.push_str(&format!("# {today_s}\n\n"));
-    s.push_str("## Current Projects\n");
-    if !projects.is_empty() {
-        s.push_str(&projects);
-        s.push('\n');
-    }
-    s.push_str("\n## Focus\n");
+    // No `## Current Projects` block. It was a static link list re-derived from the lab
+    // index every morning, and the footer already carries `Projects: [[…/index]]` — the
+    // same destination, one line instead of a section. The daily note is the human's
+    // FOCUS surface; the project/AI board is a click away, not pasted in on top of it.
+    s.push_str("## Focus\n");
     for l in &focus_keep {
         s.push_str(l);
         s.push('\n');
@@ -240,29 +237,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     Ok(())
 }
 
-/// Read the `## Current` lane of the hand-curated project index (`lab/projects/index.md`),
-/// which is the source of truth for what's active. Returns the lane's lines verbatim
-/// (blank + placeholder `-`/`_…_` lines dropped) so the user's wikilinks flow straight
-/// into the daily note. `None` when the index is unset, absent, or has no `## Current`
-/// entries — callers then fall back to carry-forward / discovery.
-fn current_lane_from_index(p: &Profile) -> Option<String> {
-    let idx = p.project_index.as_ref()?;
-    let content = fs::read_to_string(idx).ok()?;
-    let lines = md::section_lines(&content, "Current")?;
-    let kept: Vec<String> = lines
-        .into_iter()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && t != "-" && !(t.starts_with('_') && t.ends_with('_'))
-        })
-        .collect();
-    if kept.is_empty() {
-        None
-    } else {
-        Some(kept.join("\n"))
-    }
-}
-
 /// Active-project `(name, summary_path)` pairs from the configured `projects` dir
 /// (e.g. lab/projects/current): each immediate subdir that contains a `summary.md`,
 /// sorted by name, `_`-prefixed dirs (e.g. `_index`) skipped. Empty when no `projects`
@@ -292,25 +266,6 @@ pub(crate) fn discover_project_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
-}
-
-/// Discover active projects from the configured `projects` dir as daily-note wikilinks:
-/// one `- [[…|name]]` per `discover_project_dirs` entry. The link targets the project's
-/// working SHEET (README/tasks) when it has one, else its `summary.md` cockpit — so
-/// clicking a project lands on the editable task list, not the machine cockpit. Returns
-/// "" when there are none.
-fn discover_projects(p: &Profile) -> String {
-    discover_project_dirs(p)
-        .iter()
-        .map(|(name, summary)| {
-            let target = summary
-                .parent()
-                .and_then(crate::projects::sheet_path)
-                .unwrap_or_else(|| summary.clone());
-            format!("- [[{}|{}]]", config::wikilink(&p.root, &target), name)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// How many days ahead of its `[date]` a task surfaces in Due ("a couple days
@@ -480,10 +435,17 @@ pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
 
 /// Add the backlog footer if not already present.
 fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
-    let mut content = fs::read_to_string(note)?;
-    if content.contains("Backlogs:") {
-        return Ok(());
-    }
+    let original = fs::read_to_string(note)?;
+    // REGENERATE, don't skip-if-present. The footer is generated content like `## Watches`,
+    // and its links change when the system does — a note written before the `Board:` link
+    // existed would otherwise never gain it, so a new link would only ever reach notes
+    // created after the upgrade and today's note would sit stale until tomorrow.
+    //
+    // Safe because the footer is always LAST: nothing legitimately writes below it (the
+    // warning in focus::add is about a bug that would, not a feature that does), and every
+    // section refresh goes through `insert_before_footer`.
+    let mut content = original.clone();
+    strip_backlog_footer(&mut content);
     // The linked backlogs are config-driven (`footer_backlogs`), so the list is edited
     // in config.toml, not hardcoded here. Defaults to fun + scheduled.
     let backlogs = p
@@ -495,6 +457,11 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if !content.ends_with('\n') {
         content.push('\n');
     }
+    // Board first, then the index. The board is the one the human opens daily (it carries
+    // the live wave + agent lane); the index is the slower "what projects exist" page.
+    let board_link = crate::board::board_path(p)
+        .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.root, &b)))
+        .unwrap_or_default();
     let projects_link = p
         .project_index
         .as_ref()
@@ -511,9 +478,13 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!(
-        "\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"
+        "\n---\nBacklogs: {backlogs}{board_link}{projects_link}{inbox_link}\n"
     ));
-    md::write_atomic(note, &content)?;
+    // Only write on change: `notes today` is idempotent and runs on every shell init, so a
+    // no-op rewrite would churn the vault's mtime and its git sync every single time.
+    if content != original {
+        md::write_atomic(note, &content)?;
+    }
     Ok(())
 }
 
@@ -1077,6 +1048,51 @@ mod tests {
 after
 ";
 
+    /// The daily note is the human's FOCUS surface: no `## Current Projects` block, and the
+    /// lab index still reachable in one click from the footer.
+    ///
+    /// Both halves matter. Dropping the section alone would strand the destination if the
+    /// footer link were ever conditional, so the reachability is asserted in the same test
+    /// rather than assumed — that link is now the ONLY path from the note to the projects.
+    #[test]
+    fn a_fresh_note_has_no_current_projects_but_still_reaches_the_index() {
+        let dir = std::env::temp_dir().join(format!("notes-slim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let projects = dir.join("lab/projects/current");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let mut p = profile(dir.to_str().unwrap());
+        p.projects = Some(projects.clone());
+        p.project_index = Some(projects.parent().unwrap().join("index.md"));
+        // A populated index: under the old behaviour its `## Current` lane was copied into
+        // the note verbatim, so this is exactly the fixture that used to produce a block.
+        std::fs::write(
+            p.project_index.as_ref().unwrap(),
+            "## Current\n- [[lab/projects/current/myapp/README|myapp]]\n",
+        )
+        .unwrap();
+
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-08-05.md");
+        create_note(&p, &log, d("2026-08-05"), &note).unwrap();
+        ensure_footer(&p, &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        assert!(!out.contains("## Current Projects"), "section is gone:\n{out}");
+        assert!(
+            !out.contains("myapp"),
+            "the index lane must not be copied in:\n{out}"
+        );
+        assert!(
+            out.contains("Projects: [[lab/projects/index]]"),
+            "footer still links the index:\n{out}"
+        );
+        // The note opens straight into the human's own list.
+        assert!(out.contains("## Focus"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn job_focus_tasks_filters_prose_and_preserves_indent() {
         let tasks = job_focus_tasks(JOB_FOCUS);
@@ -1338,40 +1354,6 @@ after
         let active = &remaining[..remaining.find("## Done").unwrap()];
         assert!(!active.contains("soon"));
         assert!(!active.contains("overdue"));
-    }
-
-    #[test]
-    fn current_lane_reads_index_and_falls_back() {
-        let dir = std::env::temp_dir().join(format!("notes-idx-{}", std::process::id()));
-        let projects = dir.join("lab/projects/current");
-        std::fs::create_dir_all(&projects).unwrap();
-        let mut p = profile(dir.to_str().unwrap());
-        p.projects = Some(projects.clone());
-        p.project_index = Some(projects.parent().unwrap().join("index.md"));
-
-        // no index file yet → None
-        assert!(current_lane_from_index(&p).is_none());
-
-        // index with a Current lane (plus a placeholder to ignore) → verbatim lines
-        std::fs::write(
-            p.project_index.as_ref().unwrap(),
-            "# Projects\n\n## Current\n- [[current/myapp/summary|myapp]]\n- [[current/time-tangle/summary|time-tangle]]\n\n## Backlog\n- _(nothing)_\n",
-        )
-        .unwrap();
-        let lane = current_lane_from_index(&p).unwrap();
-        assert!(lane.contains("myapp"));
-        assert!(lane.contains("time-tangle"));
-        assert!(!lane.contains("nothing"));
-
-        // an empty Current lane → None (so caller falls back)
-        std::fs::write(
-            p.project_index.as_ref().unwrap(),
-            "## Current\n- \n\n## Backlog\n- x\n",
-        )
-        .unwrap();
-        assert!(current_lane_from_index(&p).is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
