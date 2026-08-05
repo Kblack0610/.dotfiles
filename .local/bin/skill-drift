@@ -264,7 +264,7 @@ cat <<'EOF'
 
   DEADPATH   -> the path moved. Find it (`fd`/`find` both repos) and fix the SKILL.md
   NOCMD      -> the tool is not on PATH. Name its real location, or drop the step
-  UNDEPLOYED -> link it:  ln -s ../../<repo>/.claude/skills/<name> ~/.claude/skills/<name>
+  UNDEPLOYED -> link them all:  skill-deploy    (--dry-run to preview)
   GHOST      -> the skill is retired; remove the bullet from CLAUDE.md
   UNLISTED   -> add a bullet under the right category (see the update-rules skill)
 
