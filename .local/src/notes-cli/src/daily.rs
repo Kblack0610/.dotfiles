@@ -1,14 +1,21 @@
 //! `notes today` — idempotent daily-note creation with carry-forward.
 //!
-//! Model: a *backlog → on-deck → in-progress* pipeline with time-relative wording.
-//!   - **Focus** = "now / in progress": unfinished items carry forward, day-stamped.
-//!   - **Due** = "on deck / coming up" (formerly Priority): dated tasks surface here
-//!     within `LEAD_DAYS` of their date and carry forward until done or pushed later.
-//!   - A single inline `[YYYY-MM-DD]` tag is the only verb — it both defers a task
-//!     (a far-future date pushes it out to the `scheduled` backlog) and, once the
-//!     date nears, resurfaces it in Due. Tagging a surfaced task again pushes it back.
-//!   - **scheduled** (formerly carryover) is the holding pen for future-dated tasks;
-//!     **Fun** is a standing backlog. Both are linked at the bottom of the note.
+//! Model: ONE task list in the note, fed by two files that differ by whether a task has a
+//! time trigger.
+//!   - **`## Focus`** = today's list. Unfinished items carry forward, day-stamped. There is
+//!     no second list: `## Due` ("on deck", formerly `## Priority`) was removed because two
+//!     lists in one note make every glance a merge, and anything a schedule surfaces IS
+//!     today's work. A pre-migration note's Due items fold into Focus so nothing strands.
+//!   - **backlog** (`fun.md`) = no time trigger. A someday list you pull from by hand.
+//!   - **schedule** (`schedule.md`) = a time trigger. `[YYYY-MM-DD]` fires ONCE within
+//!     `LEAD_DAYS` and the master line is consumed; `(every:…)` fires each matching day and
+//!     the master line is kept. Tagging a surfaced task with a far-future date pushes it
+//!     back out to the schedule, which is what makes the date a two-way verb.
+//!
+//! `scheduled.md` + `recurring.md` merged into `schedule.md`: they were two files for one
+//! idea, differing only in consume-vs-keep, which the TOKEN already decides. Only one of
+//! the three files was ever a backlog, which is why the footer used to list three
+//! "backlogs" for two concepts.
 //!
 //! The note carries the human's own lists and the auto-rendered context sections
 //! (`## Work`, `## Watches`, `## Comms`, `## Inbox`). It deliberately does NOT render the
@@ -49,10 +56,12 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "refs" => p.refs.clone(),
         "refs-today" => today_refs_dir(p),
         "root" => p.root.clone(),
-        "fun" => p.fun.clone(),
-        // `carryover` kept as a back-compat alias — the file moved to scheduled.md.
-        "scheduled" | "carryover" | "carry" => p.scheduled.clone(),
-        "recurring" => p.recurring.clone(),
+        // `backlog` is the name that describes it: the standing list with NO time trigger.
+        "backlog" | "fun" => p.fun.clone(),
+        // `scheduled`/`recurring`/`carryover` are back-compat aliases. Both files merged
+        // into the one schedule, so every old name resolves there rather than to a path
+        // that no longer exists — an editor alias pointing at a dead file fails silently.
+        "schedule" | "scheduled" | "carryover" | "carry" | "recurring" => p.schedule.clone(),
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
@@ -108,8 +117,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
     let mut focus_keep: Vec<String> = Vec::new();
     let mut focus_defer: Vec<String> = Vec::new();
-    let mut due_keep: Vec<String> = Vec::new();
-    let mut due_defer: Vec<String> = Vec::new();
 
     if let Some(prev) = latest_prev(&p.daily, &today_s)? {
         let prev_date = file_date(&prev).unwrap_or(today);
@@ -132,40 +139,36 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             (focus_keep, focus_defer) = route_by_due(&carried, today);
         }
 
-        // Due = "on deck" (formerly Priority): carry forward, pushing far-future items
-        // out to scheduled. Fall back to a legacy `## Priority` section for migration.
-        let due_src =
+        // `## Due` is GONE — one task list, not two. It existed as "on deck" beside Focus's
+        // "now", but the split cost more than it bought: two lists in one note means every
+        // glance is a merge, and a surfaced item routinely sat in Due while the work it
+        // named was already in Focus. Anything a schedule surfaces IS today's work.
+        //
+        // Still READ here (and its `## Priority` ancestor) so a pre-migration note does not
+        // strand its items: they fold into Focus and carry forward normally from then on.
+        let legacy_due =
             md::section_lines(&content, "Due").or_else(|| md::section_lines(&content, "Priority"));
-        if let Some(lines) = due_src {
+        if let Some(lines) = legacy_due {
             let carried = carry(&lines, today, prev_date);
-            (due_keep, due_defer) = route_by_due(&carried, today);
+            let (keep, defer) = route_by_due(&carried, today);
+            focus_keep.extend(keep);
+            focus_defer.extend(defer);
         }
     }
 
-    // Scheduled backlog: surface any task now within the lead window into today's Due,
-    // then push the newly-deferred Focus/Due items back into the pen.
-    let sched_before = fs::read_to_string(&p.scheduled).unwrap_or_default();
-    let (promoted, sched_pruned) = promote_scheduled(&sched_before, today);
+    // The SCHEDULE: one pass surfaces both kinds of trigger into Focus — a `[date]` within
+    // the lead window (consumed) and an `(every:…)` firing today (master line kept).
+    let sched_before = fs::read_to_string(&p.schedule).unwrap_or_default();
+    let (promoted, sched_pruned) = promote_schedule(&sched_before, today);
     let n_promoted = promoted.len();
 
-    let mut due_lines = due_keep;
-    let mut due_keys: std::collections::HashSet<String> =
-        due_lines.iter().map(|l| md::task_key(l)).collect();
+    let mut focus_keys: std::collections::HashSet<String> =
+        focus_keep.iter().map(|l| md::task_key(l)).collect();
     for pr in promoted {
-        if due_keys.insert(md::task_key(&pr)) {
-            due_lines.push(pr);
-        }
-    }
-
-    // Recurring backlog: emit a fresh copy of each habit whose `(every:…)` cadence
-    // fires today into Due. The master file is read-only here (unlike scheduled, which
-    // prunes) so the habit returns every cycle. Deduped against carried/promoted items.
-    let recurring_before = fs::read_to_string(&p.recurring).unwrap_or_default();
-    let mut n_recurring = 0;
-    for rec in emit_recurring(&recurring_before, today) {
-        if due_keys.insert(md::task_key(&rec)) {
-            due_lines.push(rec);
-            n_recurring += 1;
+        // Dedup against what already carried forward: a habit whose surfaced copy is still
+        // open from yesterday must not land twice.
+        if focus_keys.insert(md::task_key(&pr)) {
+            focus_keep.push(pr);
         }
     }
 
@@ -186,29 +189,17 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     }
     s.push_str("- [ ] \n\n");
     s.push_str("## Notes\n\n");
-    s.push_str("## Due\n");
-    for l in &due_lines {
-        s.push_str(l);
-        s.push('\n');
-    }
-    s.push('\n');
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
         log.info(
             "today",
-            &format!("surfaced {n_promoted} scheduled item(s) into Due"),
-        );
-    }
-    if n_recurring > 0 {
-        log.info(
-            "today",
-            &format!("emitted {n_recurring} recurring item(s) into Due"),
+            &format!("surfaced {n_promoted} scheduled item(s) into Focus"),
         );
     }
 
-    // Persist the scheduled backlog: pruned (promoted removed) + newly deferred items.
-    let defers: Vec<String> = focus_defer.into_iter().chain(due_defer).collect();
+    // Persist the schedule: pruned (consumed dates removed) + newly deferred items.
+    let defers: Vec<String> = focus_defer;
     let mut seen: std::collections::HashSet<String> = sched_pruned
         .lines()
         .filter(|l| md::is_task(l))
@@ -225,8 +216,8 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         md::insert_under_heading(&sched_pruned, "Active", &fresh)
     };
     if sched_after != sched_before {
-        md::write_atomic(&p.scheduled, &sched_after)
-            .with_context(|| format!("writing {}", p.scheduled.display()))?;
+        md::write_atomic(&p.schedule, &sched_after)
+            .with_context(|| format!("writing {}", p.schedule.display()))?;
         if n_deferred > 0 {
             log.info(
                 "today",
@@ -303,10 +294,20 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     (keep, defer)
 }
 
-/// Pull tasks whose due-date is within the lead window (or overdue) out of the
-/// scheduled backlog's `## Active`. Surfaced lines have their `[date]` token stripped
-/// and a fresh day-count stamped. Returns `(surfaced, remaining_scheduled_content)`.
-fn promote_scheduled(content: &str, today: NaiveDate) -> (Vec<String>, String) {
+/// Surface today's due work out of the SCHEDULE's `## Active` in ONE pass, and return
+/// `(surfaced, remaining_schedule_content)`.
+///
+/// This replaced two functions that differed by a single behaviour. `promote_scheduled`
+/// matched a `[date]` token, emitted the task and REMOVED the line; `emit_recurring`
+/// matched an `(every:…)` token, emitted the task and KEPT the file untouched. Same
+/// input shape, same output section, same helpers — the only real difference is
+/// consume-vs-keep, and that is decided by which token the line carries, not by which
+/// file it sits in. Two files for one idea is what made the footer list three
+/// "backlogs" for two concepts.
+///
+/// Surfaced lines have their trigger token stripped and a fresh day-count stamped, so a
+/// surfaced copy is an ordinary task and the master line keeps its trigger.
+fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
     let horizon = today + chrono::Duration::days(LEAD_DAYS);
     let mut promoted = Vec::new();
     let mut out: Vec<String> = Vec::new();
@@ -318,11 +319,20 @@ fn promote_scheduled(content: &str, today: NaiveDate) -> (Vec<String>, String) {
             continue;
         }
         if in_active && md::is_task(line) && !md::is_checked(line) {
+            // A `[date]` fires ONCE: emit it and drop the master line.
             if let Some(due) = md::find_due(line) {
                 if due <= horizon {
                     promoted.push(md::stamp_line(&md::strip_due(line), today, today));
-                    continue; // drop from the scheduled backlog
+                    continue; // consumed
                 }
+            }
+            // An `(every:…)` fires EVERY matching day: emit a copy, keep the master line.
+            // Checked before the fall-through so a line carrying both tokens still lands
+            // in exactly one branch — the date wins, because a dated one-off that also
+            // repeats is a contradiction and the date is the more specific instruction.
+            if md::recurs_on(line, today) {
+                promoted.push(md::stamp_line(&md::strip_every(line), today, today));
+                // no `continue`: the master line is kept below
             }
         }
         out.push(line.to_string());
@@ -332,25 +342,6 @@ fn promote_scheduled(content: &str, today: NaiveDate) -> (Vec<String>, String) {
         new_content.push('\n');
     }
     (promoted, new_content)
-}
-
-/// Emit today's due recurring habits from the recurring backlog's `## Active`: for each
-/// unchecked task whose `(every:…)` cadence fires on `today`, produce a fresh daily copy
-/// with the cadence token stripped and a `(0d) <!-- since:today -->` stamp. Read-only —
-/// the backlog file is never modified (the master line recurs every cycle).
-fn emit_recurring(content: &str, today: NaiveDate) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_active = false;
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("## ") {
-            in_active = rest.trim().eq_ignore_ascii_case("Active");
-            continue;
-        }
-        if in_active && md::is_task(line) && !md::is_checked(line) && md::recurs_on(line, today) {
-            out.push(md::stamp_line(&md::strip_every(line), today, today));
-        }
-    }
-    out
 }
 
 fn latest_prev(dir: &Path, today_s: &str) -> Result<Option<PathBuf>> {
@@ -446,12 +437,13 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // section refresh goes through `insert_before_footer`.
     let mut content = original.clone();
     strip_backlog_footer(&mut content);
-    // The linked backlogs are config-driven (`footer_backlogs`), so the list is edited
-    // in config.toml, not hardcoded here. Defaults to fun + scheduled.
+    // Config-driven (`footer_links`), so the list is edited in config.toml, not here.
+    // Each link carries its own LABEL: a Backlog (no time trigger) and a Schedule (has one)
+    // are different kinds of thing, and the old single "Backlogs:" heading said otherwise.
     let backlogs = p
-        .footer_backlogs
+        .footer_links
         .iter()
-        .map(|b| format!("[[{}]]", config::wikilink(&p.root, b)))
+        .map(|(label, b)| format!("{label}: [[{}]]", config::wikilink(&p.root, b)))
         .collect::<Vec<_>>()
         .join(" · ");
     if !content.ends_with('\n') {
@@ -478,7 +470,7 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!(
-        "\n---\nBacklogs: {backlogs}{board_link}{projects_link}{inbox_link}\n"
+        "\n---\n{backlogs}{board_link}{projects_link}{inbox_link}\n"
     ));
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.
@@ -488,18 +480,48 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Truncate a note at its backlog footer (`\n---\nBacklogs: …`), leaving the body.
-/// Carry-forward reads the previous note's sections, and the last H2 sits directly
-/// above the footer with no H2 between — so stripping it here keeps the footer out
-/// of the carried section (and thus out of tomorrow's note).
+/// Byte offset of the note's link footer — the LAST `\n---\n` whose next line carries a
+/// wikilink.
+///
+/// It used to be a literal search for `\n---\nBacklogs:`, which stopped working the moment
+/// the footer's labels became config-driven (`Backlog: … · Schedule: …`). Matching on any
+/// one label is no better, since a custom `footer_links` entry is labelled by its filename.
+///
+/// The `[[` test is what distinguishes the footer from the OTHER horizontal rule in a note:
+/// `focus_sweep` writes `---` immediately above `### Done`, and that line has no wikilink.
+/// Taking the LAST match keeps the footer's own identity even if a body line ever matched.
+/// Old `Backlogs:` footers still resolve, so a pre-migration note migrates in place.
+fn footer_idx(content: &str) -> Option<usize> {
+    const RULE: &str = "\n---\n";
+    let mut found = None;
+    let mut from = 0;
+    while let Some(rel) = content[from..].find(RULE) {
+        let at = from + rel;
+        let line_start = at + RULE.len();
+        let line_end = content[line_start..]
+            .find('\n')
+            .map(|n| line_start + n)
+            .unwrap_or(content.len());
+        if content[line_start..line_end].contains("[[") {
+            found = Some(at);
+        }
+        from = at + RULE.len();
+    }
+    found
+}
+
+/// Truncate a note at its link footer, leaving the body. Carry-forward reads the previous
+/// note's sections, and the last H2 sits directly above the footer with no H2 between — so
+/// stripping it here keeps the footer out of the carried section (and thus out of
+/// tomorrow's note).
 fn strip_backlog_footer(content: &mut String) {
-    if let Some(idx) = content.find("\n---\nBacklogs:") {
+    if let Some(idx) = footer_idx(content) {
         content.truncate(idx);
     }
 }
 
 pub(crate) fn insert_before_footer(content: &str, block: &str) -> String {
-    if let Some(idx) = content.find("\n---\nBacklogs:") {
+    if let Some(idx) = footer_idx(content) {
         let (head, tail) = content.split_at(idx);
         format!("{}{}{}", head.trim_end(), block, tail)
     } else {
@@ -963,20 +985,81 @@ fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
             &format!("migrated carryover → {}", p.scheduled.display()),
         );
     }
+    migrate_to_schedule(p, log)?;
     ensure_backlog_file(
-        &p.scheduled,
-        "Scheduled",
-        "scheduled",
-        "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date.",
+        &p.schedule,
+        "Schedule",
+        "schedule",
+        "Every task with a time trigger, surfacing into a daily note's Focus when it fires. `[MM-DD-YY]` fires ONCE and the line is consumed; `(every:…)` fires each matching day and the line stays. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last.",
         log,
     )?;
-    ensure_backlog_file(
-        &p.recurring,
-        "Recurring",
-        "recurring",
-        "Standing habits: a task with an `(every:…)` token surfaces into a daily note's Due each matching day. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last.",
-        log,
-    )?;
+    Ok(())
+}
+
+/// One-time migration: `scheduled.md` + `recurring.md` -> `schedule.md`.
+///
+/// They were two files for one idea. A `[date]` line fires once and is consumed; an
+/// `(every:…)` line fires each cycle and is kept — that is a difference in the TOKEN, and
+/// both already surfaced through the same helpers into the same section. Concatenating
+/// their `## Active` bodies is therefore lossless: every line keeps the token that decides
+/// its behaviour.
+///
+/// Idempotent and non-destructive. It runs only while `schedule.md` is absent, and the two
+/// sources are RENAMED aside rather than deleted, so a bad merge is recoverable by hand.
+fn migrate_to_schedule(p: &Profile, log: &Logger) -> Result<()> {
+    if p.schedule.exists() {
+        return Ok(());
+    }
+    let sources = [&p.scheduled, &p.recurring];
+    if !sources.iter().any(|s| s.exists()) {
+        return Ok(()); // fresh vault — ensure_backlog_file scaffolds an empty schedule
+    }
+    let mut active: Vec<String> = Vec::new();
+    let mut done: Vec<String> = Vec::new();
+    for src in sources {
+        let Ok(c) = fs::read_to_string(src) else {
+            continue;
+        };
+        // Section-aware, not a blind concat: a blind one would fold `## Done` history into
+        // `## Active` and resurrect every finished habit as live work tomorrow morning.
+        active.extend(md::section_lines(&c, "Active").unwrap_or_default());
+        done.extend(md::section_lines(&c, "Done").unwrap_or_default());
+    }
+    let keep = |v: Vec<String>| -> Vec<String> {
+        v.into_iter().filter(|l| md::is_task(l)).collect()
+    };
+    let (active, done) = (keep(active), keep(done));
+
+    if let Some(parent) = p.schedule.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = format!(
+        "---\ntags: [schedule]\n---\n\n# Schedule\n\n\
+         Every task with a time trigger, surfacing into a daily note's Focus when it fires. \
+         `[MM-DD-YY]` fires ONCE and the line is consumed; `(every:…)` fires each matching \
+         day and the line stays. Cadences: every:fri · every:mon,thu · every:weekday · \
+         every:day · every:1st · every:last.\n\n## Active\n{}\n\n## Done\n{}\n",
+        active.join("\n"),
+        done.join("\n"),
+    );
+    md::write_atomic(&p.schedule, &body)?;
+
+    // Rename aside rather than delete: the merge is mechanical but the data is the user's.
+    for src in sources {
+        if src.exists() {
+            let bak = src.with_extension("md.premerge");
+            let _ = fs::rename(src, &bak);
+        }
+    }
+    log.info(
+        "backlog",
+        &format!(
+            "merged scheduled + recurring → {} ({} active, {} done; sources kept as .md.premerge)",
+            p.schedule.display(),
+            active.len(),
+            done.len()
+        ),
+    );
     Ok(())
 }
 
@@ -1018,9 +1101,10 @@ mod tests {
             carryover: r.join("journal/backlogs/carryover.md"),
             scheduled: r.join("journal/backlogs/scheduled.md"),
             recurring: r.join("journal/backlogs/recurring.md"),
-            footer_backlogs: vec![
-                r.join("journal/backlogs/fun.md"),
-                r.join("journal/backlogs/scheduled.md"),
+            schedule: r.join("journal/schedule.md"),
+            footer_links: vec![
+                ("Backlog".into(), r.join("journal/backlogs/fun.md")),
+                ("Schedule".into(), r.join("journal/schedule.md")),
             ],
             watches: None,
             watches_state: r.join("state/watch-companion"),
@@ -1345,7 +1429,7 @@ after
     }
 
     #[test]
-    fn promote_scheduled_surfaces_due_and_overdue() {
+    fn promote_schedule_surfaces_due_and_overdue() {
         let content = "\
 # Scheduled
 
@@ -1358,7 +1442,7 @@ after
 ## Done
 - [x] finished [2026-01-01]
 ";
-        let (promoted, remaining) = promote_scheduled(content, d("2026-06-30"));
+        let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         // soon + overdue surface; far + undated stay; Done is never touched
         assert_eq!(promoted.len(), 2);
         // surfaced lines have the [date] token stripped and a since: stamp added
@@ -1378,28 +1462,160 @@ after
         assert!(!active.contains("overdue"));
     }
 
+    /// The whole point of the merge: ONE file, ONE pass, and the TOKEN decides whether the
+    /// master line survives. A `[date]` is consumed; an `(every:…)` is kept. Getting this
+    /// backwards either loses a one-off silently or resurrects a habit as a duplicate every
+    /// single morning, and both failures are invisible until the file has rotted.
     #[test]
-    fn emit_recurring_surfaces_matching_active_only() {
+    fn a_date_is_consumed_and_a_cadence_is_kept_in_one_pass() {
         let content = "\
-# Recurring
+# Schedule
 
 ## Active
 - [ ] timesheets (every:fri)
 - [ ] rent (every:1st)
 - [ ] standup (every:mon)
 - [x] paused habit (every:fri)
+- [ ] one-off thing [2026-07-10]
+- [ ] far future [2027-01-01]
 
 ## Done
 - [x] old (done:2026-01-01)
 ";
-        // 2026-07-10 is a Friday (not the 1st, not a Monday).
-        let out = emit_recurring(content, d("2026-07-10"));
-        assert_eq!(out.len(), 1);
-        let line = &out[0];
-        // token stripped, since:today stamped, checked/off-cadence/Done items excluded
-        assert!(line.contains("timesheets"));
-        assert!(!line.contains("every:"));
-        assert!(line.contains("(0d) <!-- since:2026-07-10 -->"));
+        // 2026-07-10 is a Friday, not the 1st, not a Monday.
+        let (out, remaining) = promote_schedule(content, d("2026-07-10"));
+
+        let surfaced: Vec<&str> = out.iter().map(|s| s.as_str()).collect();
+        assert_eq!(surfaced.len(), 2, "friday habit + today's one-off: {surfaced:?}");
+        assert!(surfaced.iter().any(|l| l.contains("timesheets")));
+        assert!(surfaced.iter().any(|l| l.contains("one-off thing")));
+        // triggers stripped, day-stamped
+        assert!(!out.iter().any(|l| l.contains("every:") || l.contains("[2026-")));
+        assert!(out.iter().all(|l| l.contains("(0d) <!-- since:2026-07-10 -->")));
+
+        // the cadence line SURVIVES so it fires again next Friday...
+        assert!(remaining.contains("- [ ] timesheets (every:fri)"));
+        // ...and the one-off is GONE, so it never fires twice
+        assert!(!remaining.contains("one-off thing"));
+        // untouched: off-cadence, checked, far-future, and the whole Done section
+        assert!(remaining.contains("rent (every:1st)"));
+        assert!(remaining.contains("- [x] paused habit"));
+        assert!(remaining.contains("far future [2027-01-01]"));
+        assert!(remaining.contains("- [x] old (done:2026-01-01)"));
+    }
+
+    /// The footer marker must survive its own labels becoming config-driven, and must not
+    /// confuse the `---` that `focus_sweep` writes above `### Done` for the footer. Picking
+    /// that one would truncate the note at Done and delete everything below it — Notes,
+    /// Work, Watches, Comms and the footer itself — every single morning.
+    #[test]
+    fn footer_marker_finds_the_link_footer_not_the_done_rule() {
+        let with_done = "# t\n\n## Focus\n- [ ] a\n\n---\n### Done\n- [x] b\n\n## Notes\n\n---\nBacklog: [[journal/backlogs/fun]] · Schedule: [[journal/schedule]]\n";
+        let idx = footer_idx(with_done).expect("footer found");
+        assert!(
+            with_done[idx..].contains("Backlog: [["),
+            "picked the wrong rule: {:?}",
+            &with_done[idx..idx + 20]
+        );
+        assert!(
+            with_done[..idx].contains("### Done"),
+            "Done must survive the truncation"
+        );
+
+        // A pre-migration footer still resolves, so an old note migrates in place.
+        let legacy = "# t\n\n## Due\n- [ ] x\n\n---\nBacklogs: [[journal/backlogs/fun]]\n";
+        assert!(footer_idx(legacy).is_some());
+
+        // A note with no footer yet must report none rather than guessing.
+        assert!(footer_idx("# t\n\n## Focus\n- [ ] a\n").is_none());
+        // ...including one whose only rule is the Done separator.
+        assert!(footer_idx("# t\n\n## Focus\n\n---\n### Done\n- [x] b\n").is_none());
+    }
+
+    /// The merge must be LOSSLESS and section-aware. A blind concat would fold `## Done`
+    /// history into `## Active` and resurrect every finished habit as live work.
+    #[test]
+    fn migration_merges_both_files_section_aware_and_keeps_the_sources() {
+        let dir = std::env::temp_dir().join(format!("notes-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut p = profile(dir.to_str().unwrap());
+        p.scheduled = dir.join("backlogs/scheduled.md");
+        p.recurring = dir.join("backlogs/recurring.md");
+        p.schedule = dir.join("schedule.md");
+        std::fs::create_dir_all(dir.join("backlogs")).unwrap();
+        std::fs::write(
+            &p.scheduled,
+            "# Scheduled\n\n## Active\n- [ ] pay tax [2026-09-01]\n\n## Done\n- [x] old one\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &p.recurring,
+            "# Recurring\n\n## Active\n- [ ] water plants (every:sun)\n\n## Done\n- [x] old habit\n",
+        )
+        .unwrap();
+
+        let log = Logger::new(dir.join("log"), false);
+        migrate_to_schedule(&p, &log).unwrap();
+        let out = std::fs::read_to_string(&p.schedule).unwrap();
+
+        let active = &out[out.find("## Active").unwrap()..out.find("## Done").unwrap()];
+        assert!(active.contains("pay tax [2026-09-01]"), "{out}");
+        assert!(active.contains("water plants (every:sun)"), "{out}");
+        // the finished items stayed finished
+        assert!(!active.contains("old one"), "Done bled into Active:\n{out}");
+        assert!(!active.contains("old habit"), "Done bled into Active:\n{out}");
+        assert!(out.contains("- [x] old one") && out.contains("- [x] old habit"));
+
+        // sources renamed aside, not deleted — the data is the user's
+        assert!(!p.scheduled.exists() && !p.recurring.exists());
+        assert!(dir.join("backlogs/scheduled.md.premerge").exists());
+        assert!(dir.join("backlogs/recurring.md.premerge").exists());
+
+        // idempotent: a second run must not double anything
+        let before = out.clone();
+        migrate_to_schedule(&p, &log).unwrap();
+        assert_eq!(std::fs::read_to_string(&p.schedule).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `## Due` is gone, and a pre-migration note's Due items must fold into Focus rather
+    /// than be stranded — otherwise the upgrade silently eats a list of real tasks.
+    #[test]
+    fn due_is_gone_and_its_legacy_items_fold_into_focus() {
+        let dir = std::env::temp_dir().join(format!("notes-due-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        std::fs::write(
+            dir.join("journal/daily/2026-08-04.md"),
+            "# 2026-08-04\n\n## Focus\n- [ ] my thing\n\n## Notes\n\n## Due\n- [ ] water plants\n- [ ] pay rent\n",
+        )
+        .unwrap();
+
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-08-05.md");
+        create_note(&p, &log, d("2026-08-05"), &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        assert!(!out.contains("## Due"), "Due section is gone:\n{out}");
+        let focus = &out[out.find("## Focus").unwrap()..out.find("## Notes").unwrap()];
+        assert!(focus.contains("my thing"), "{out}");
+        assert!(focus.contains("water plants"), "legacy Due item stranded:\n{out}");
+        assert!(focus.contains("pay rent"), "legacy Due item stranded:\n{out}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line carrying BOTH tokens is a contradiction the format allows. It must land in
+    /// exactly one branch or it surfaces twice; the date wins as the more specific
+    /// instruction, and the line is consumed.
+    #[test]
+    fn a_line_with_both_triggers_fires_once_and_is_consumed() {
+        let content = "# S\n\n## Active\n- [ ] weird [2026-07-10] (every:fri)\n\n## Done\n";
+        let (out, remaining) = promote_schedule(content, d("2026-07-10"));
+        assert_eq!(out.len(), 1, "must not surface twice: {out:?}");
+        assert!(!remaining.contains("weird"), "date wins, so it is consumed");
     }
 
     #[test]
@@ -1568,9 +1784,9 @@ after
     }
 
     #[test]
-    fn promote_scheduled_noop_when_all_far() {
+    fn promote_schedule_noop_when_all_far() {
         let content = "## Active\n- [ ] later [2027-01-01]\n\n## Done\n";
-        let (promoted, remaining) = promote_scheduled(content, d("2026-06-30"));
+        let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         assert!(promoted.is_empty());
         assert_eq!(remaining, content);
     }
