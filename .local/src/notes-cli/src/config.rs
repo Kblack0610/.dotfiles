@@ -183,9 +183,11 @@ pub struct Profile {
     pub meetings: PathBuf,
     pub index: PathBuf,
     pub projects: Option<PathBuf>,
-    /// Hand-curated cross-project index (`lab/projects/index.md`) whose `## Current`
-    /// lane drives the daily note's Current Projects. Derived as the `index.md`
-    /// sibling of the `projects` dir's parent; None when `projects` is unset.
+    /// Hand-curated cross-project index (`lab/projects/index.md`). The daily note links
+    /// it from the footer (`Projects: [[…]]`); it used to also copy the index's
+    /// `## Current` lane into a `## Current Projects` block, which was the same
+    /// destination rendered twice. Derived as the `index.md` sibling of the `projects`
+    /// dir's parent; None when `projects` is unset.
     pub project_index: Option<PathBuf>,
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
