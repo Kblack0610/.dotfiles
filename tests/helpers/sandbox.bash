@@ -30,7 +30,9 @@ AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
 AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
 # The shared eval-corpus parser, same reason as the board lib above.
 AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB
+# The shared markdown renderer every preview pane goes through, same reason again.
+MD_RENDER_LIB="$REPO_ROOT/.local/lib/md-render.sh"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB MD_RENDER_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -114,6 +116,7 @@ sandbox_init() {
   ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-evals.sh" "$HOME/.local/lib/agent-evals.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
