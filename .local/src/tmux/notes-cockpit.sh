@@ -1316,6 +1316,13 @@ _rail_brief() { # $1 = <profile>/<project>
   # md_render reads FZF_PREVIEW_COLUMNS itself; the rail is narrow, so keep a hard floor
   # rather than inheriting an 80-column default when the variable is absent (a headless
   # `--rail` call, which is exactly what the tests make).
+  #
+  # The pane stays at 24%, deliberately: a percentage already adapts, and on a real terminal
+  # that is ~45 columns -- enough for this. Widening it to 30% to buy a few columns in the
+  # 100-column test terminal instead truncated the body's key header, which is a worse trade
+  # than a slightly narrower brief. `wrap` also stays on the window: the brief never reaches
+  # the pane width (md_render already wrapped it), but the rail's own view-indicator line is
+  # 35 columns and has always relied on it.
   w="${FZF_PREVIEW_COLUMNS:-40}"
   printf '\n'
   if [ -n "$now" ] || [ -n "$next" ]; then
@@ -1997,7 +2004,7 @@ list_section | fzf \
   --prompt='search > ' \
   --header='! answer · a views · enter open/answer · C-a add · C-t ai · ? keys' \
   --preview "$SELF --rail {6}" \
-  --preview-window 'left:30%:border-right' \
+  --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
   --bind "?:execute($SELF --help-view | less -R)" \
   --bind "!:execute($SELF --answer-next)+reload($SELF --list)+refresh-preview" \
