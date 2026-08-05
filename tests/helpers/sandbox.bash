@@ -30,7 +30,10 @@ AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
 AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
 # The shared eval-corpus parser, same reason as the board lib above.
 AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB
+# The shared lab-feed parser, same reason again. Its other consumer lives in the private
+# overlay (lab-sync's regen-project-index.sh), so this suite is where the grammar is pinned.
+LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -114,6 +117,7 @@ sandbox_init() {
   ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-evals.sh" "$HOME/.local/lib/agent-evals.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
