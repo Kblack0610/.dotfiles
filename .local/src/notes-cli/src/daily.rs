@@ -593,11 +593,17 @@ fn strip_legacy_rollup(content: &str, names: &[String]) -> String {
     joined
 }
 
-/// Render the currently-registered Sentinel watches as daily-note lines, unhealthy
-/// first. Scans `p.watches` for `*.yaml` (active) and `*.yaml.paused` (paused), reads
-/// each manifest's name/description/probe/interval and the live `<name>.state` from
-/// `p.watches_state`, and returns `- <STATE> <name> - <desc> (<probe>, <interval>)`
-/// lines. Empty when `watches` is unset, the dir is absent, or it has no manifests.
+/// Render the Sentinel registry for the daily note: a one-line roster summary, then a
+/// line per watch that actually needs the human (TRIP / ERROR / paused).
+///
+/// A healthy watch is deliberately NOT given a line. This section used to print all ten
+/// with their full assertion and target, which is ~2000 characters of prose reporting
+/// that nothing is wrong — in the note whose whole point is the human's focus. The
+/// detail did not become less true, it just does not belong on a glance surface:
+/// `watch-companion-loop list --long` is where a watch explains itself. The summary
+/// line follows the `## Comms` pattern in the same note (counts up top, only what needs
+/// you below).
+///
 /// Read-only — never writes. ASCII state markers (OK / TRIP / ERROR / paused / -).
 fn discover_watches(p: &Profile) -> Vec<String> {
     let Some(dir) = p.watches.as_ref() else {
@@ -624,13 +630,6 @@ fn discover_watches(p: &Profile) -> Vec<String> {
         };
         let content = fs::read_to_string(&path).unwrap_or_default();
         let name = md::parse_yaml_scalar(&content, "name").unwrap_or_else(|| stem.to_string());
-        // `what` is the manifest's one-line assertion and is what belongs in a glance
-        // surface; `description` is the long-form rationale and, for the watches that
-        // carry a real one, runs to twenty lines. Fall back to it only for a manifest
-        // written before the legibility fields existed.
-        let desc = md::parse_yaml_scalar(&content, "what")
-            .or_else(|| md::parse_yaml_scalar(&content, "description"))
-            .unwrap_or_default();
         // The one fact a glance most needs and could never get here: 8 of 10 live
         // watches are `probe: command`, which has no `target`, so without `where` the
         // line cannot say which system it is even about.
@@ -653,19 +652,42 @@ fn discover_watches(p: &Profile) -> Vec<String> {
             _ => 1,
         };
         // `at: <where>` deliberately mirrors what a Sentinel notification says, so the
-        // daily note and the page you get on your phone read the same way.
+        // daily note and the page you get on your phone read the same way. `what` is
+        // dropped here: on a line you only see because something is WRONG, the standing
+        // assertion is the least useful part -- you want the name, the system, and how
+        // stale the signal is.
         let mut line = format!("- {state} {name}");
-        if !desc.is_empty() {
-            line.push_str(&format!(" - {desc}"));
-        }
         if !wher.is_empty() {
             line.push_str(&format!(" - at: {wher}"));
         }
         line.push_str(&format!(" ({probe}, {interval})"));
         rows.push((rank, name, line));
     }
+    if rows.is_empty() {
+        return Vec::new();
+    }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    rows.into_iter().map(|(_, _, l)| l).collect()
+
+    // Counts come from the RANKS, not from re-reading state, so the summary can never
+    // disagree with the lines under it.
+    let total = rows.len();
+    let bad = rows.iter().filter(|r| r.0 == 0).count();
+    let paused = rows.iter().filter(|r| r.0 == 2).count();
+    let healthy = total - bad - paused;
+
+    let mut parts = vec![format!("{healthy} OK")];
+    if bad > 0 {
+        parts.push(format!("{bad} tripped"));
+    }
+    if paused > 0 {
+        parts.push(format!("{paused} paused"));
+    }
+    let summary = parts.join(", ");
+    let mut out = vec![format!("_{total} watches - {summary}_")];
+    // Only what needs the human. A healthy watch is accounted for in the count above and
+    // says the rest of itself in `watch-companion-loop list`.
+    out.extend(rows.into_iter().filter(|r| r.0 != 1).map(|(_, _, l)| l));
+    out
 }
 
 /// Refresh the daily note's `## Inbox` section with today's quick-captures (the bullet
@@ -1422,10 +1444,14 @@ after
         p.watches_state = sdir.clone();
 
         let lines = discover_watches(&p);
+        // Summary, then only what needs the human: the TRIP and the paused one. The
+        // healthy `api` watch is a number in the summary, not a line -- ten healthy
+        // watches printing their full assertion is what made this section unreadable.
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "- TRIP router - 5ghz dfs (command, 15m)"); // unhealthy first
-        assert_eq!(lines[1], "- OK api - prod api (http, 5m)");
-        assert_eq!(lines[2], "- paused parked - on hold (metric, 5m)"); // paused last
+        assert_eq!(lines[0], "_3 watches - 1 OK, 1 tripped, 1 paused_");
+        assert_eq!(lines[1], "- TRIP router (command, 15m)"); // unhealthy first
+        assert_eq!(lines[2], "- paused parked (metric, 5m)"); // paused last
+        assert!(!lines.iter().any(|l| l.contains("- OK api")));
 
         // unset → empty (opt-in gate)
         p.watches = None;
@@ -1435,7 +1461,7 @@ after
     }
 
     #[test]
-    fn discover_watches_reads_block_scalars_and_prefers_what() {
+    fn discover_watches_folds_block_scalars_and_surfaces_only_the_unhealthy() {
         // The regression this pins: every fixture above uses a plain one-line
         // `description:`, and real manifests overwhelmingly do not — a long description
         // is exactly when you reach for `>-`. So the daily note rendered
@@ -1453,7 +1479,7 @@ after
             "name: drift\n\
              what: >-\n  dotfiles-drift reports nothing: no repo behind main, no mirror adrift.\n\
              why: >-\n  A merged file goes live only when stow has run.\n\
-             where: ~/.dotfiles and the private overlay\n\
+             where: >-\n  ~/.dotfiles and the private overlay\n\
              description: >-\n  Trip when what is MERGED stops being what is RUNNING.\n\n  A second paragraph that must not leak into the line.\n\
              probe: command\ninterval: 6h\n",
         )
@@ -1472,20 +1498,20 @@ after
         p.watches_state = sdir.clone();
 
         let lines = discover_watches(&p);
+        // Summary + the one tripped watch; the healthy legacy one is just a count.
         assert_eq!(lines.len(), 2);
 
         // The marker must never reach the note. This is the assertion that fails on the
         // old parser, and the only one that really matters.
         assert!(!lines.iter().any(|l| l.contains(">-") || l.contains("|-")));
 
-        // `what` wins over `description`, and `where` rides along as `at:`.
+        assert_eq!(lines[0], "_2 watches - 1 OK, 1 tripped_");
+        // `where` rides along as `at:` -- for a `probe: command` watch it is the only
+        // thing naming the system, since a command watch carries no `target`.
         assert_eq!(
-            lines[0],
-            "- TRIP drift - dotfiles-drift reports nothing: no repo behind main, no mirror adrift. \
-             - at: ~/.dotfiles and the private overlay (command, 6h)"
+            lines[1],
+            "- TRIP drift - at: ~/.dotfiles and the private overlay (command, 6h)"
         );
-        // Legacy still renders: block description folded to one line, no `at:` to add.
-        assert_eq!(lines[1], "- OK legacy - first line second line (http, 5m)");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
