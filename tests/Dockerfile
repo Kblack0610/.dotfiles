@@ -46,7 +46,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
+      python3 python3-yaml \
     && rm -rf /var/lib/apt/lists/*
+
+# python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
+# sentinel-manifest parses and validates watch manifests with them. Without python3 the
+# whole `sentinel_manifest` suite fails with `env: 'python3': No such file or directory`;
+# with python3 but no PyYAML it fails with the subject's own honest refusal,
+# `sentinel-manifest: PyYAML is required`. Both were red; both are fixed here.
+#
+# That was invisible because of WHICH job runs the whole suite. The `ui` tier runs only
+# tests/ui/, and `fast` runs on the bare runner where python3 exists -- only the weekly
+# DRIFT sweep runs every tier inside this image, so the failure surfaced once a week in a
+# job nobody was watching, and both PR-gating tiers stayed green. A gate that runs weekly
+# and is never read is the same as no gate.
 
 # tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.7b, and floating
 # panes only exist from 3.7. Release tarballs ship a generated ./configure, so no autogen.
