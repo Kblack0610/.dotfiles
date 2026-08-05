@@ -56,6 +56,15 @@ SELF="$(realpath "$0")"
   || true
 declare -F project_map_file >/dev/null 2>&1 \
   || project_map_file() { printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"; }
+# The one lab-feed parser, shared with lab-sync's regen-project-index.sh — so a project row
+# here and its row in `lab/projects/index.md` cannot disagree. Same lookup order as the
+# board lib, and HARD-fail for the same reason: every view renders project rows through
+# _status_gist, so a missing parser is not a degraded cockpit, it is a blank one.
+# shellcheck source=/dev/null
+. "${LAB_FEED_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/lab-feed.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../lib/lab-feed.sh" 2>/dev/null \
+  || { echo "notes-cockpit: lab-feed.sh not found" >&2; exit 1; }
 # The one eval-corpus parser, shared with eval-report.sh. Same lookup order as the board
 # lib, but SOFT-FAIL: tasks, agents and bridge do not need it, so a machine with no eval
 # corpus should still get three working views rather than a cockpit that refuses to start.
@@ -901,53 +910,13 @@ _stage_gc() { # $1=stage
 # What is actually going on with a project, from its summary's AUTO block — the
 # `## <- Release & status feed` that lab-sync mirrors out of git + GitHub + the tracker.
 #
-# The bridge used to put the STATUS block on this row instead: prose an LLM writes and
-# nothing refreshes. On the live board that read `v1.8.15 live (2026-06-30)` for three
-# weeks while the project shipped v1.10.0 and opened v1.10.1 — a row that was not merely
-# unhelpful but actively wrong. The AUTO block sits four lines below it in the same file,
-# is regenerated weekly, and is where every number here comes from.
-#
-# Counted, not quoted, because this is one row: how many commits are waiting to ship, how
-# many tickets are in development, how many PRs are open. The detail is one `enter` away.
+# The parser moved to ~/.local/lib/lab-feed.sh so that lab-sync's regen-project-index.sh
+# can read the SAME feed the same way: `lab/projects/index.md` and these rows are now two
+# renderings of one answer rather than two scrapes that agree by luck. Every edge case the
+# body used to carry (the sheet -> sibling summary hop, the repo-less version shape, the
+# monorepo tag prefix, the `(+N more)` elision) went with it and is tested there.
 _feed_gist() { # $1=summary path -> "shipped v1.10.0, 6 to ship, 18 open, 1 PR"
-  local sum="${1:-}" auto tag ship tick prs sib out=""
-  [ -f "$sum" ] || return 0
-  auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$sum" 2>/dev/null)"
-  # The sheet model splits the two files: `notes projects` hands back the project's SHEET
-  # (`README.md`, where the tasks live), while lab-sync writes the feed into `summary.md`
-  # beside it. Without this every sheet-model project renders a blank status while its own
-  # feed sits one file away in the same directory.
-  if [ -z "$auto" ] && [ "${sum##*/}" != summary.md ]; then
-    sib="${sum%/*}/summary.md"
-    [ -f "$sib" ] && auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$sib" 2>/dev/null)"
-  fi
-  [ -n "$auto" ] || return 0
-
-  tag="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `\([^`]*\)`\*\*.*/\1/p' | head -1)"
-  # The REPO-LESS shape. A lab project with frozen versions but no git tag behind it gets
-  # `**`name` · v0.0.1** — _(no git tag resolved)_` instead of a `shipped` line: the same
-  # fact, written as a different sentence. Reading only the tagged shape is why every
-  # personal project rendered a blank status while its own feed named a version.
-  [ -n "$tag" ] || tag="$(printf '%s' "$auto" \
-    | sed -n 's/.*\*\*`[^`]*` . \(v[0-9][^*]*\)\*\*.*/\1/p' | head -1 | sed 's/[[:space:]]*$//')"
-  # strip the product prefix a monorepo tag carries; the project name is already on the row
-  tag="${tag##*-}"
-  # bullets between "Shipping next" and the next blank-line-terminated block
-  ship="$(printf '%s' "$auto" | awk '/\*\*Shipping next\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
-  # The elision marker is ITSELF a bullet (`- …(+10 more)`), so it must not be counted as a
-  # ticket before its number is added back — that is an off-by-one in the only direction
-  # nobody would notice, since the total still looks plausible.
-  tick="$(printf '%s' "$auto" | awk '/\*\*In progress\*\*/{f=1;next} f&&/more\)/{next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
-  # `(+10 more)` means the list was elided; add the remainder so the count is the real one
-  local more; more="$(printf '%s' "$auto" | sed -n 's/.*(+\([0-9]\{1,\}\) more).*/\1/p' | head -1)"
-  [ -n "$more" ] && tick=$((tick + more))
-  prs="$(printf '%s' "$auto" | awk '/\*\*In flight\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
-
-  [ -n "$tag" ] && out="shipped ${tag}"
-  [ "${ship:-0}" -gt 0 ] && out="${out:+$out, }${ship} to ship"
-  [ "${tick:-0}" -gt 0 ] && out="${out:+$out, }${tick} open"
-  [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR$([ "$prs" -gt 1 ] && printf s)"
-  printf '%s' "$out"
+  lab_feed_gist "${1:-}"
 }
 
 # The trailing status on a project header, in EVERY view. The live feed beats the prose,

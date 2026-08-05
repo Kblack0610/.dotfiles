@@ -138,31 +138,24 @@ local function get_projects_dir()
   return vim.fn.expand("~/.notes/lab/projects/current")
 end
 
+-- The projects front door. ONE file, the same one `Prefix+H` opens and the same one
+-- `notes` reads the `## Current` lane out of (notes-cli config.rs derives it as
+-- `<projects-dir>/../index.md`).
+--
+-- This used to point at `current/_index.md` and SCAFFOLD it when absent, which is how
+-- there came to be two "projects index" files saying different things: index.md was
+-- being maintained while _index.md sat unchanged for months documenting a `dev/projects/`
+-- layout that no longer existed — and deleting it just made this function write it back.
 local function get_projects_anchor()
-  return get_projects_dir() .. "/_index.md"
+  return vim.fn.expand("~/.notes/lab/projects/index.md")
 end
 
+-- Reveal target. Never creates anything: the index is owned by the vault and by
+-- lab-sync, and an editor plugin quietly minting a second one is the bug above.
 local function ensure_projects_anchor()
-  local projects_dir = get_projects_dir()
-  if not file_exists(projects_dir) then
-    vim.fn.mkdir(projects_dir, "p")
-  end
-
   local anchor = get_projects_anchor()
   if file_exists(anchor) then return anchor end
-
-  local lines = {
-    "---",
-    "id: \"dev-projects\"",
-    "tags: [projects]",
-    "---",
-    "",
-    "# Projects",
-    "",
-  }
-
-  write_file(anchor, table.concat(lines, "\n"))
-  return anchor
+  return get_projects_dir()
 end
 
 -- ============================================

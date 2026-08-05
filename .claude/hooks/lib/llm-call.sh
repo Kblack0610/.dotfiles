@@ -1,6 +1,12 @@
 #!/bin/bash
-# llm-call.sh — Calls an OpenAI-compatible LLM with judge prompt
-# Supports MLX -> LiteLLM fallback chain.
+# llm-call.sh — Calls an OpenAI-compatible LLM with the judge prompt.
+#
+# The backend chain comes from config.json: `.backend` first, then every other
+# key under `.backends` in declaration order. It used to be HARDCODED to
+# mlx -> litellm regardless of what the config actually declared, which meant
+# renaming or adding a backend silently produced a chain pointing at a key that
+# did not exist — the failover would "run" and fail on every hop. The config is
+# the source of truth for WHICH backends exist; this file only orders them.
 
 CONFIG_FILE="$HOME/.config/llm-judge/config.json"
 
@@ -13,16 +19,24 @@ call_judge_llm() {
     return 1
   fi
 
-  # Read backend preference
+  # Chain = the declared primary, then every OTHER declared backend in key order.
+  # Derived from the config so a rename cannot produce a chain of ghosts.
   local primary
-  primary=$(jq -r '.backend // "mlx"' "$CONFIG_FILE")
+  primary=$(jq -r '.backend // ""' "$CONFIG_FILE")
 
-  # Try primary backend, then fallback
-  local backends=("$primary")
-  if [[ "$primary" == "mlx" ]]; then
-    backends+=("litellm")
-  else
-    backends+=("mlx")
+  local backends=()
+  [[ -n "$primary" ]] && jq -e --arg b "$primary" '.backends[$b]' "$CONFIG_FILE" >/dev/null 2>&1 \
+    && backends=("$primary")
+
+  local rest
+  rest=$(jq -r --arg b "$primary" '.backends | keys_unsorted[] | select(. != $b)' "$CONFIG_FILE" 2>/dev/null)
+  while IFS= read -r b; do [[ -n "$b" ]] && backends+=("$b"); done <<<"$rest"
+
+  # An empty chain must be an error, not a silent success. A gate that reports
+  # OK on an empty input list is the failure mode this repo keeps hitting.
+  if [[ ${#backends[@]} -eq 0 ]]; then
+    echo "ERROR: no usable backends in $CONFIG_FILE (.backend='$primary')" >&2
+    return 1
   fi
 
   for backend in "${backends[@]}"; do

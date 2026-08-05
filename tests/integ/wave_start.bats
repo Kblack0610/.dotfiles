@@ -41,20 +41,26 @@ EOF
   chmod +x "$SANDBOX/bin/captain-watchdog"
 }
 
-# stub_claude <exit-code> <output> [write-board]
-stub_claude() {
+# stub_run <exit-code> <output> [write-board]
+#
+# Stubs `agentctl-run`, NOT `claude`. That is the invocation seam now: wave-start goes
+# through the role wrapper so the run carries its MCP set and its denials, and a test
+# that stubbed `claude` directly would exercise a path production no longer takes --
+# it would also fail with exit 127 the moment the wrapper is not on PATH, which is
+# exactly how this broke.
+stub_run() {
   local rc="$1" out="$2" board="${3:-}"
   {
     echo '#!/usr/bin/env bash'
     printf 'echo %q\n' "$out"
     [ -n "$board" ] && printf 'touch %q\n' "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
     echo "exit $rc"
-  } > "$SANDBOX/bin/claude"
-  chmod +x "$SANDBOX/bin/claude"
+  } > "$SANDBOX/bin/agentctl-run"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 }
 
-@test "a pass whose claude exits non-zero is reported as FAILED" {
-  stub_claude 1 'Unknown command: /wave. Did you mean /name?'
+@test "a pass whose runner exits non-zero is reported as FAILED" {
+  stub_run 1 'Unknown command: /wave. Did you mean /name?'
   run "$WAVE_START" demoapp --now
   assert_failure
   assert_output --partial 'FAILED (exit 1)'
@@ -64,7 +70,7 @@ stub_claude() {
   # Assert on the VERDICT line, not the whole run: --now also tails the log, so
   # `=== done` appears there legitimately. What must never happen is the verdict
   # itself being that boilerplate, which is what used to be reported.
-  stub_claude 1 'Unknown command: /wave. Did you mean /name?'
+  stub_run 1 'Unknown command: /wave. Did you mean /name?'
   run "$WAVE_START" demoapp --now
   local verdict
   verdict="$(printf '%s\n' "$output" | grep '^wave-start: ')"
@@ -72,7 +78,7 @@ stub_claude() {
 }
 
 @test "the notification says FAILED rather than finished" {
-  stub_claude 1 'Unknown command: /wave. Did you mean /name?'
+  stub_run 1 'Unknown command: /wave. Did you mean /name?'
   run "$WAVE_START" demoapp --now
   run cat "$NOTIFY_LOG"
   assert_output --partial 'FAILED'
@@ -82,7 +88,7 @@ stub_claude() {
 @test "a start that exits 0 but writes no blackboard is still FAILED" {
   # The quiet one: the pass 'succeeded' and produced nothing, which is how a wave
   # can look fine while no panel has anything to show.
-  stub_claude 0 'I did nothing useful'
+  stub_run 0 'I did nothing useful'
   run "$WAVE_START" demoapp --now
   assert_failure
   assert_output --partial 'FAILED (no blackboard written)'
@@ -92,14 +98,14 @@ stub_claude() {
   # Backdated well before the pass: if the check were merely "does a board exist",
   # last week's board would make every future failure look like a success.
   touch -d '2020-01-01' "$HOME/.agent/plans/demoapp/sprint-2020-01-01.md"
-  stub_claude 0 'still did nothing'
+  stub_run 0 'still did nothing'
   run "$WAVE_START" demoapp --now
   assert_failure
   assert_output --partial 'no blackboard written'
 }
 
 @test "a pass that writes a blackboard succeeds and reports what it did" {
-  stub_claude 0 'wave scoped 3 tickets, PR #99 opened' board
+  stub_run 0 'wave scoped 3 tickets, PR #99 opened' board
   run "$WAVE_START" demoapp --now
   assert_success
   run cat "$NOTIFY_LOG"
@@ -109,11 +115,11 @@ stub_claude() {
 }
 
 @test "the overseer is armed only when the pass actually produced a board" {
-  stub_claude 1 'boom'
+  stub_run 1 'boom'
   run "$WAVE_START" demoapp --now
   refute [ -f "$NOTIFY_LOG.watchdog" ]
 
-  stub_claude 0 'ok' board
+  stub_run 0 'ok' board
   run "$WAVE_START" demoapp --now
   assert [ -f "$NOTIFY_LOG.watchdog" ]
 }
@@ -164,7 +170,7 @@ teardown() {
   local holder
   holder="$(live_holder)"
   plant_lock "$holder"
-  stub_claude 0 'this pass must never run' board
+  stub_run 0 'this pass must never run' board
 
   run "$WAVE_START" demoapp --now
   assert_equal "$status" 3
@@ -177,7 +183,7 @@ teardown() {
   # starting. run_pass is the only thing that writes the pass log, so its absence is
   # direct evidence that claude was never invoked.
   plant_lock "$(live_holder)"
-  stub_claude 0 'this pass must never run' board
+  stub_run 0 'this pass must never run' board
 
   run "$WAVE_START" demoapp --now
   assert_equal "$status" 3
@@ -188,7 +194,7 @@ teardown() {
   # A bare "already running" leaves the human with no next move, which is what makes
   # them press W a third time.
   plant_lock "$(live_holder)"
-  stub_claude 0 'nope' board
+  stub_run 0 'nope' board
 
   run "$WAVE_START" demoapp --now
   assert_output --partial "$(PASS_LOG)"
@@ -197,7 +203,7 @@ teardown() {
 
 @test "a stale lock from a killed run does not lock the app out forever" {
   plant_lock "$(dead_pid)"
-  stub_claude 0 'ran despite the stale lock' board
+  stub_run 0 'ran despite the stale lock' board
 
   run "$WAVE_START" demoapp --now
   assert_success
@@ -206,7 +212,7 @@ teardown() {
 
 @test "a lock file that is not a pid is cleared rather than believed" {
   plant_lock 'not-a-pid'
-  stub_claude 0 'ran anyway' board
+  stub_run 0 'ran anyway' board
 
   run "$WAVE_START" demoapp --now
   assert_success
@@ -218,7 +224,7 @@ teardown() {
   # handled before it ever reaches the check.
   mkdir -p "$AGENTCTL_STATE_DIR/wave"
   : > "$(LOCK_FILE)"
-  stub_claude 0 'ran anyway' board
+  stub_run 0 'ran anyway' board
 
   run "$WAVE_START" demoapp --now
   assert_success
@@ -227,7 +233,7 @@ teardown() {
 
 @test "WAVE_FORCE=1 overrides a live holder" {
   plant_lock "$(live_holder)"
-  stub_claude 0 'forced through' board
+  stub_run 0 'forced through' board
 
   WAVE_FORCE=1 run "$WAVE_START" demoapp --now
   assert_success
@@ -235,7 +241,7 @@ teardown() {
 }
 
 @test "the lock is released when the pass finishes" {
-  stub_claude 0 'clean pass' board
+  stub_run 0 'clean pass' board
   run "$WAVE_START" demoapp --now
   assert_success
   refute [ -f "$(LOCK_FILE)" ]
@@ -244,7 +250,7 @@ teardown() {
 @test "the lock is released even when the pass fails" {
   # The trap, not the happy path, is what keeps a crashed wave from wedging the app.
   # The sandbox path contains a space, so this also pins the quoting in the trap.
-  stub_claude 1 'boom'
+  stub_run 1 'boom'
   run "$WAVE_START" demoapp --now
   assert_failure
   refute [ -f "$(LOCK_FILE)" ]
@@ -278,7 +284,7 @@ reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
 
 @test "a pass reports working while it runs" {
   stub_agentctl
-  stub_claude 0 'scoped' board
+  stub_run 0 'scoped' board
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported working)" ]
   assert_equal "$(reported working | grep -c 'project=demoapp')" '1'
@@ -286,7 +292,7 @@ reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
 
 @test "a finished pass reports ok" {
   stub_agentctl
-  stub_claude 0 'scoped 3 tickets' board
+  stub_run 0 'scoped 3 tickets' board
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported ok)" ]
   assert_output --partial ''
@@ -294,7 +300,7 @@ reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
 
 @test "a failed pass reports error, not ok" {
   stub_agentctl
-  stub_claude 1 'Unknown command: /wave'
+  stub_run 1 'Unknown command: /wave'
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported error)" ]
   refute [ -n "$(reported ok)" ]
@@ -302,7 +308,7 @@ reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
 
 @test "the error report carries the real diagnostic" {
   stub_agentctl
-  stub_claude 1 'Unknown command: /wave'
+  stub_run 1 'Unknown command: /wave'
   run "$WAVE_START" demoapp --now
   assert_equal "$(reported error | grep -c 'Unknown command')" '1'
 }
@@ -315,13 +321,13 @@ reported() { grep -F "state=$1" "$(STATUS_LOG)" 2>/dev/null | tail -1; }
 [ "$1" = list ] && printf 'ASK123\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
 SH
   chmod +x "$SANDBOX/bin/agent-ask"
-  cat > "$SANDBOX/bin/claude" <<SH
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
 #!/usr/bin/env bash
 echo "proposed 2 tickets, waiting"
 mkdir -p "$HOME/.agent/plans/demoapp"
 printf '# board\n- Approval: PENDING\n' > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
 SH
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported blocked)" ]
@@ -332,14 +338,14 @@ SH
 @test "an approved board is ok, not blocked" {
   # the same board WITHOUT a pending ask must not read as waiting on anyone
   stub_agentctl
-  stub_claude 0 'done' board
+  stub_run 0 'done' board
   run "$WAVE_START" demoapp --now
   refute [ -n "$(reported blocked)" ]
   assert [ -n "$(reported ok)" ]
 }
 
 @test "no agentctl on PATH is a silent no-op, not a failure" {
-  stub_claude 0 'scoped' board
+  stub_run 0 'scoped' board
   rm -f "$SANDBOX/bin/agentctl"
   run "$WAVE_START" demoapp --now
   assert_success
@@ -352,7 +358,7 @@ SH
 
 @test "a good pass reports WORKED on the proof contract" {
   stub_agentctl
-  stub_claude 0 'done' board
+  stub_run 0 'done' board
   run "$WAVE_START" demoapp --now
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'WORKED'
 }
@@ -362,7 +368,7 @@ SH
   # This is the negative control for the test above - without it, a proof_report
   # hardcoded to WORKED would pass that one.
   stub_agentctl
-  stub_claude 0 'I have prepared a plan for your approval'
+  stub_run 0 'I have prepared a plan for your approval'
   run "$WAVE_START" demoapp --now
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'STALLED'
 }
@@ -379,14 +385,14 @@ SH
 [ "$1" = list ] && printf 'ASK777\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
 SH
   chmod +x "$SANDBOX/bin/agent-ask"
-  cat > "$SANDBOX/bin/claude" <<SH
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
 #!/usr/bin/env bash
 echo "proposed, waiting"
 mkdir -p "$HOME/.agent/plans/demoapp"
 printf '# board\n\n## Queue\n\n| Ticket | Status |\n|---|---|\n| 1 | dispatched |\n' \
   > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
 SH
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported blocked)" ]
@@ -403,14 +409,14 @@ SH
 [ "$1" = list ] && printf 'ASK888\tdemoapp\t\tpending\tgate\tq?\tapprove|hold\t-\n'
 SH
   chmod +x "$SANDBOX/bin/agent-ask"
-  cat > "$SANDBOX/bin/claude" <<SH
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
 #!/usr/bin/env bash
 echo done
 mkdir -p "$HOME/.agent/plans/demoapp"
 printf '# board\n- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY\n' \
   > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
 SH
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
   run "$WAVE_START" demoapp --now
   refute [ -n "$(reported blocked)" ]
