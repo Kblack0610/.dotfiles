@@ -152,6 +152,20 @@ pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
+/// `notes board` — regenerate, then print the path so the caller can open it.
+pub fn run(log: &Logger) -> Result<i32> {
+    match write(log)? {
+        Some(p) => {
+            println!("{}", p.display());
+            Ok(0)
+        }
+        None => {
+            eprintln!("no `projects` dir configured for this profile — nothing to board");
+            Ok(1)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,19 +245,5 @@ mod tests {
         std::fs::write(dir.join("summary.md"), "# prose only, no wave\n").unwrap();
         assert!(project_block("nosheet", &dir).is_none());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-/// `notes board` — regenerate, then print the path so the caller can open it.
-pub fn run(log: &Logger) -> Result<i32> {
-    match write(log)? {
-        Some(p) => {
-            println!("{}", p.display());
-            Ok(0)
-        }
-        None => {
-            eprintln!("no `projects` dir configured for this profile — nothing to board");
-            Ok(1)
-        }
     }
 }
