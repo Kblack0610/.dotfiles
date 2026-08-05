@@ -48,7 +48,11 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/wave"
 LOG="$STATE_DIR/${APP}.log"
 mkdir -p "$STATE_DIR"
 
-command -v claude >/dev/null 2>&1 || { echo "wave-start: claude not on PATH" >&2; exit 1; }
+# Guard the seam this script ACTUALLY invokes. It used to check `claude`, which stopped
+# being the thing wave-start runs the moment the pass went through the role wrapper --
+# so on a host with claude installed but no agentctl-run the guard passed and the run
+# died later with exit 127, and on a host with neither it refused for the wrong reason.
+command -v agentctl-run >/dev/null 2>&1 || { echo "wave-start: agentctl-run not on PATH" >&2; exit 1; }
 
 # One wave per app at a time. Pressing W twice because the first press looked like it
 # did nothing starts a second scope-out over the SAME `#ai` items, and both then file
@@ -136,8 +140,10 @@ run_pass() {
   # worked: `claude` exited non-zero, the status went nowhere, and the only report
   # the human got was the boilerplate `=== done` line. A `/wave` that failed in one
   # second announced itself as "finished".
-  claude -p "/wave $APP $VERB" \
-    --dangerously-skip-permissions \
+  # `build` role, same as delivery-loop: a wave writes code and opens PRs. The
+  # role pins the MCP set (playwright --headless) and carries its denials;
+  # --dangerously-skip-permissions still applies via the adapter.
+  agentctl-run --role build -p "/wave $APP $VERB" \
     --max-turns "${WAVE_MAX_TURNS:-60}" \
     >>"$LOG" 2>&1 || rc=$?
   echo "=== done (rc=$rc) — $(date -Is)" >>"$LOG"

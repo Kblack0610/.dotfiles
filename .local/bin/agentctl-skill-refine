@@ -100,12 +100,13 @@ PROMPT_EOF
     # nobody will give. That silently killed 17 nights of dream sweeps before
     # anyone noticed; do not remove this flag.
     #
-    # No Edit tool in --allowedTools: this run has no legitimate reason to modify
-    # an existing file. Write is needed for the report itself.
-    printf '%s\n' "$PROMPT" | claude --print \
-      --permission-mode acceptEdits \
-      --append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval. You are PROPOSING changes to a report file only - never edit a SKILL.md or CLAUDE.md.' \
-      --allowedTools "Read,Write,Bash,Glob,Grep" 2>&1 || true
+    # `propose` role: may CREATE its report, may never MODIFY an existing file.
+    # The old comment here claimed "No Edit tool in --allowedTools" gave that
+    # guarantee. It did not - --allowedTools only pre-approves, it never removes
+    # a tool, so Edit was available on every run. The role denies it for real.
+    # That matters most here: a SKILL.md is prose the agent OBEYS, so an
+    # unattended rewrite changes every future session.
+    printf '%s\n' "$PROMPT" | agentctl-run --role propose --print 2>&1 || true
   fi
 
   printf '\n=== exit: 0 ===\n'
