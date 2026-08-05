@@ -24,9 +24,15 @@
 # Row wire format (TAB-delimited), consumed by fzf with --with-nth=7..:
 #   1 type(task|head|add|hint)  2 profile  3 file  4 line  5 key  6 section  7 DISPLAY
 #
-# Modes: (no args)=UI · --list [section] · --rail · --next/prev-section · --add
+# Modes: (no args)=UI · --list [section] · --rail [section] · --next/prev-section · --add
 #        --move · --jump · --new-project · --archive-project · --restore-project
+#        --preview-md <file>  (the rendered pane every note is read through)
 #        --roll-now <profile> <project> [patch|minor|major]  (headless; no key binding)
+#
+# Both preview panes render markdown through md-render.sh rather than showing its source,
+# and neither preview window is `wrap`: the renderer word-wraps to $FZF_PREVIEW_COLUMNS
+# itself, which is what removed the mid-word cuts and the continuation glyphs fzf's own
+# column wrap produced.
 
 set -uo pipefail
 SELF="$(realpath "$0")"
@@ -69,6 +75,19 @@ HAVE_EVALS=1
   || . "$HOME/.local/lib/agent-evals.sh" 2>/dev/null \
   || . "$(dirname "$SELF")/../../lib/agent-evals.sh" 2>/dev/null \
   || HAVE_EVALS=0
+# The markdown renderer every preview pane goes through. Same lookup order again, SOFT-FAIL
+# with a `cat` shim: an unrendered note is ugly but readable, and refusing to open the whole
+# cockpit because a cosmetic library is missing would be the wrong trade. The shim is
+# deliberately `cat` rather than a second stripper — one renderer or none, never two that
+# disagree about what a note looks like.
+# shellcheck source=/dev/null
+. "${MD_RENDER_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/md-render.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../lib/md-render.sh" 2>/dev/null \
+  || true
+declare -F md_render >/dev/null 2>&1 || md_render() {
+  if [ "${1:--}" = - ]; then cat; else cat -- "$1"; fi
+}
 # Per-instance state suffix. The section/mode/filter files are keyed on UID alone, which is
 # right for a popup (only one can be open) but wrong the moment two copies run at once —
 # the persistent cockpit session keeps a `bridge` window and a `notes` window both running
@@ -912,6 +931,19 @@ _status_gist() { # $1=sheet/summary path $2=STATUS prose
   printf '%s' "${g:-${2:-}}"
 }
 
+# project_row <profile> <project> -> that project's `notes projects` row, verbatim
+# (name<TAB>summary-path<TAB>status<TAB>version). The name match is case-insensitive because
+# a section carries the LOWERCASED name while the vault stores the display one -- which is
+# also why the row is returned whole: a caller that renders a header wants the vault's
+# capitalisation, not the section's. Two callers had this awk inline; a third is where a
+# lookup starts to drift.
+project_row() {
+  notes --profile "$1" projects 2>/dev/null \
+    | awk -F'\t' -v n="$2" 'tolower($1)==tolower(n){print; exit}'
+}
+
+summary_of() { project_row "$1" "$2" | cut -f2; }
+
 _ask_gist() { # $1=question -> one short line
   local q="$1" tail
   q="$(printf '%s' "$q" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +| +$//g')"
@@ -1241,7 +1273,73 @@ attention_counts() {
 }
 
 # ── the left sidebar rail: sections + counts, active marked ─────────
-rail() {
+# Cap stdin at N lines and SAY SO. A silent truncation in a pane reads as "that is all there
+# is", which is how a stale surface goes unnoticed; the `...` is the difference between a
+# summary and a lie. Also avoids `head` closing the pipe under pipefail.
+_rail_cap() { # $1 = max lines
+  awk -v n="$1" -v dim="$C_DIM" -v off="$C_OFF" \
+    'NR<=n {print; next} {more=1} END {if (more) printf "%s  ...%s\n", dim, off}'
+}
+
+# The project brief under the sections list, in the TASKS view only.
+#
+# WHY: the rail rendered the same bytes no matter which row the cursor was on, so the widest
+# pane in the default view answered nothing about the project you were standing in. The three
+# facts worth having there are what shipped, where we are, and what is next — and all three
+# already exist: `_feed_gist` counts the AUTO feed, and the nextup:auto block IS "## Now /
+# ## Next". Nothing new is computed here; it is rendered where you are already looking.
+#
+# CAPPED, because this is a sidebar and not the document: `o` opens the full overview, and a
+# forty-line Now paragraph would push the sections list off the top of the pane.
+_rail_brief() { # $1 = <profile>/<project>
+  local section="${1:-}" profile name row title summary gist block now next w
+  case "$section" in */*) profile="${section%%/*}"; name="${section#*/}" ;; *) return 0 ;; esac
+  row="$(project_row "$profile" "$name")"
+  title="$(cut -f1 <<<"$row")"        # the vault's capitalisation, not the section's
+  summary="$(cut -f2 <<<"$row")"
+  [ -n "$summary" ] && [ -f "$summary" ] || return 0
+  block="$(nextup_block "$summary")"
+  gist="$(_feed_gist "$summary")"
+  [ -n "$block" ] || [ -n "$gist" ] || return 0
+
+  printf '\n%s── %s ──%s\n' "$C_HEAD" "${title:-$name}" "$C_OFF"
+  [ -n "$gist" ] && printf '%s  %s%s\n' "$C_SEL" "$gist" "$C_OFF"
+  [ -n "$block" ] || return 0
+
+  # Now and Next are capped SEPARATELY. Capping the block as one unit spends the whole budget
+  # on the Now paragraph and truncates Next away entirely -- which drops the half of this pane
+  # that is actionable. The two headings are the shape notes-version-summary's `generate_overview`
+  # is prompted to produce, so splitting on them is reading a contract, not guessing; a block
+  # that carries neither falls through to the whole thing, capped.
+  now="$(awk 'f && /^## /{exit} /^##[ \t]+[Nn]ow/{f=1} f' <<<"$block")"
+  next="$(awk '/^##[ \t]+[Nn]ext/{f=1} f' <<<"$block")"
+  # md_render reads FZF_PREVIEW_COLUMNS itself; the rail is narrow, so keep a hard floor
+  # rather than inheriting an 80-column default when the variable is absent (a headless
+  # `--rail` call, which is exactly what the tests make).
+  #
+  # The pane stays at 24%, deliberately: a percentage already adapts, and on a real terminal
+  # that is ~45 columns -- enough for this. Widening it to 30% to buy a few columns in the
+  # 100-column test terminal instead truncated the body's key header, which is a worse trade
+  # than a slightly narrower brief. `wrap` also stays on the window: the brief never reaches
+  # the pane width (md_render already wrapped it), but the rail's own view-indicator line is
+  # 35 columns and has always relied on it.
+  w="${FZF_PREVIEW_COLUMNS:-40}"
+  printf '\n'
+  if [ -n "$now" ] || [ -n "$next" ]; then
+    [ -n "$now" ] && MD_WIDTH="$w" md_render - <<<"$now" | _rail_cap "${RAIL_NOW_LINES:-10}"
+    if [ -n "$next" ]; then
+      # md_render suppresses a LEADING blank (each call starts a fresh document), so the gap
+      # between the two sections has to come from here.
+      [ -n "$now" ] && printf '\n'
+      MD_WIDTH="$w" md_render - <<<"$next" | _rail_cap "${RAIL_NEXT_LINES:-16}"
+    fi
+  else
+    MD_WIDTH="$w" md_render - <<<"$block" | _rail_cap "${RAIL_NOW_LINES:-10}"
+  fi
+  printf '%s  o for the full overview%s\n' "$C_DIM" "$C_OFF"
+}
+
+rail() { # $1 = section of the highlighted row (optional; drives the brief)
   local cur ct at s n a badge
   cur="$(read_section)"
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
@@ -1278,6 +1376,10 @@ rail() {
   # task counts would just invite the question of what it filters.
   [ "$(read_mode)" = usage ] && \
     printf '\n  %swindow %s%s %s(w)%s\n' "$C_INP" "$(read_window)" "$C_OFF" "$C_DIM" "$C_OFF"
+  # Tasks only. The other three views already answer a question per row in the body — agents
+  # says who is working, the bridge what they asked, usage what it cost — and repeating a
+  # project brief beside each would be the duplication the agents view was pruned of.
+  [ "$(read_mode)" = tasks ] && _rail_brief "${1:-}"
   return 0
 }
 
@@ -1601,8 +1703,7 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) exec "$SELF" ;; # not a project row — just go back to the cockpit
   esac
-  summary="$(notes --profile "$profile" projects 2>/dev/null \
-    | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
+  summary="$(summary_of "$profile" "$name")"
   [ -n "$summary" ] && root="$(dirname "$summary")"
   # gather version notes from versions/ + changelog/; show basename, keep the path for preview
   rows="$( for d in "$root/versions" "$root/changelog"; do
@@ -1618,14 +1719,14 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   if [ -z "$all" ]; then
     echo "nothing for $name yet — roll a version with V, or generate an overview"; sleep 1.5; exec "$SELF"
   fi
-  if command -v bat >/dev/null 2>&1; then
-    prev="bat --color=always --style=plain --language=markdown {2}"
-  else
-    prev="cat {2}"
-  fi
+  # The pane renders the note (md-render.sh) instead of syntax-highlighting its SOURCE, and
+  # the preview window is deliberately NOT `wrap`: the renderer has already word-wrapped to
+  # $FZF_PREVIEW_COLUMNS, and fzf's own wrap is what used to cut words mid-syllable and stamp
+  # a continuation glyph on every second line.
+  prev="$SELF --preview-md {2}"
   printf '%s\n' "$all" | fzf \
     --ansi --reverse --delimiter='\t' --with-nth=1 \
-    --preview "$prev" --preview-window 'right:62%:wrap' \
+    --preview "$prev" --preview-window 'right:62%:border-left' \
     --prompt "$name > " \
     --header 'enter: nvim   C-d/C-u: scroll   C-s: (re)generate   q/esc: back' \
     --bind 'enter:execute(nvim {2})' --bind 'q:abort' \
@@ -1636,11 +1737,15 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
 }
 
 # ── accept the overview's "Next up" suggestions (the `g` key) ────────
-# Read the `- [ ]` tasks from a project's summary.md nextup:auto block, multi-select them, and for
-# each accepted one: add it to the project sheet (ptask), then optionally file it as a tracker ticket.
+# The `<!-- nextup:auto -->` block of a project's summary.md — the "## Now / ## Next" index
+# notes-version-summary --overview writes. Two readers on one extractor: the rail brief wants
+# the whole block as prose, the `g` accept flow wants only its unchecked tasks.
+nextup_block() { # $1 = summary.md path -> the block, markers excluded
+  awk '/<!-- nextup:auto -->/{s=1;next} /<!-- \/nextup:auto -->/{s=0} s' "$1" 2>/dev/null
+}
+
 nextup_tasks() { # $1 = summary.md path -> one suggested task per line (marker + checkbox stripped)
-  awk '/<!-- nextup:auto -->/{s=1;next} /<!-- \/nextup:auto -->/{s=0} s' "$1" \
-    | sed -n 's/^- \[ \] //p'
+  nextup_block "$1" | sed -n 's/^- \[ \] //p'
 }
 
 # repo_path_of <project> -> /abs/repo from REPOS_FILE (pathfilter stripped), or nothing.
@@ -1669,8 +1774,7 @@ accept_next() { # $1 = section of the highlighted row (<profile>/<project>)
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) exec "$SELF" ;; # not a project row
   esac
-  summary_md="$(notes --profile "$profile" projects 2>/dev/null \
-    | awk -F'\t' -v n="$name" 'tolower($1)==tolower(n){print $2; exit}')"
+  summary_md="$(summary_of "$profile" "$name")"
   [ -n "$summary_md" ] && [ -f "$summary_md" ] \
     || { echo "no summary.md for $name"; sleep 1.5; exec "$SELF"; }
   tasks="$(nextup_tasks "$summary_md")"
@@ -1778,6 +1882,10 @@ help_view() {
   other
     a              cycle views: tasks -> agents -> bridge -> usage -> tasks
 
+  the left pane, in the tasks view, follows the cursor: standing on a project
+  shows what shipped, the overview's "Now", and its "Next" checklist. It is a
+  capped summary — `o` opens the whole thing.
+
   usage  how well and how expensively the agents are working, over the window
          `w` cycles. Joins eval scores to session cost on the session id, so a
          row reads [9] $2.11 3 ed <what it did>. Enter resumes that session;
@@ -1810,7 +1918,8 @@ jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
 
 case "${1:-}" in
   --list) shift; list_section "${1:-}"; exit 0 ;;
-  --rail) rail; exit 0 ;;
+  --rail) rail "${2:-}"; exit 0 ;;
+  --preview-md) md_render "${2:--}"; exit $? ;;
   --next-section) next_section; exit 0 ;;
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
@@ -1890,11 +1999,11 @@ MODAL='j,k,h,l,i,q,s,m,n,V,o,p,w,g,a,A,R,T,!'
 # any other section opened with the sidebar pointing at `bnb` and the body listing
 # `personal`. The two surfaces openly disagreed about where you were standing.
 list_section | fzf \
-  --ansi --reverse --cycle --no-sort --border --no-input --wrap \
+  --ansi --reverse --cycle --no-sort --border --no-input --wrap --wrap-sign='  ' \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
   --header='! answer · a views · enter open/answer · C-a add · C-t ai · ? keys' \
-  --preview "$SELF --rail" \
+  --preview "$SELF --rail {6}" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
   --bind "?:execute($SELF --help-view | less -R)" \
