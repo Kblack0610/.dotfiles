@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # harnesses/binks.sh - NOT IMPLEMENTED. Refuses by design.
 #
 # Contract rule 3: a harness that cannot enforce a role's denials must refuse to

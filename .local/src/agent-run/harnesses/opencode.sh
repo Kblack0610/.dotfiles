@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # harnesses/opencode.sh - express the role contract as an opencode agent.
 #
 # opencode has no per-run tool flags (`opencode run --help` offers only --agent,

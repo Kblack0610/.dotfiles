@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # harnesses/claude.sh - express the role contract as Claude Code flags.
 #
 # Mapping (docs/contract.md has the table):

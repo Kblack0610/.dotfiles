@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # role.sh - resolve a role name into the capability contract.
 #
 # Sourced by agentctl-run. Mirrors ticket/lib/config.sh: this file decides WHAT
