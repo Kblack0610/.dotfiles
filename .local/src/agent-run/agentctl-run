@@ -47,6 +47,23 @@ while [ $# -gt 0 ]; do
 done
 export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
 
+# Every caller of this script is a runner on a timer with no human attached — that
+# is the premise the whole role contract rests on (see harnesses/claude.sh, which
+# passes --dangerously-skip-permissions for exactly this reason). Publish it as an
+# env fact so surfaces OUTSIDE the harness can honour it too.
+#
+# The one that needs it today is the Focus gate (86-focus-reconcile.sh): it blocks a
+# turn that changed code without declaring the work on the human's daily `## Focus`.
+# On a timer there is nobody to answer, so the agent complied the only way it could —
+# `focus add` then `focus done` — and captain-watchdog's 10-minute pass buried
+# 2026-08-04's real entries under 45 `captain watch pass` lines.
+#
+# It is set HERE, not at each call site, because there are seven `claude -p` callers
+# and a marker that can be lost by an unrelated edit is not a marker — the same
+# argument the wrapper's own header makes about capability flags. Harness-agnostic on
+# purpose: "no human is watching" is a property of the RUNNER, not of Claude.
+export CLAUDE_HEADLESS=1
+
 role_load "$role"
 
 harness_file="$SELF_DIR/harnesses/$harness.sh"
