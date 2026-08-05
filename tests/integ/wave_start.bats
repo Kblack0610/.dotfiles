@@ -385,14 +385,14 @@ SH
 [ "$1" = list ] && printf 'ASK777\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
 SH
   chmod +x "$SANDBOX/bin/agent-ask"
-  cat > "$SANDBOX/bin/claude" <<SH
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
 #!/usr/bin/env bash
 echo "proposed, waiting"
 mkdir -p "$HOME/.agent/plans/demoapp"
 printf '# board\n\n## Queue\n\n| Ticket | Status |\n|---|---|\n| 1 | dispatched |\n' \
   > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
 SH
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
   run "$WAVE_START" demoapp --now
   assert [ -n "$(reported blocked)" ]
@@ -409,14 +409,14 @@ SH
 [ "$1" = list ] && printf 'ASK888\tdemoapp\t\tpending\tgate\tq?\tapprove|hold\t-\n'
 SH
   chmod +x "$SANDBOX/bin/agent-ask"
-  cat > "$SANDBOX/bin/claude" <<SH
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
 #!/usr/bin/env bash
 echo done
 mkdir -p "$HOME/.agent/plans/demoapp"
 printf '# board\n- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY\n' \
   > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
 SH
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
   run "$WAVE_START" demoapp --now
   refute [ -n "$(reported blocked)" ]
