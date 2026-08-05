@@ -653,7 +653,17 @@ fn discover_watches(p: &Profile) -> Vec<String> {
         };
         let content = fs::read_to_string(&path).unwrap_or_default();
         let name = md::parse_yaml_scalar(&content, "name").unwrap_or_else(|| stem.to_string());
-        let desc = md::parse_yaml_scalar(&content, "description").unwrap_or_default();
+        // `what` is the manifest's one-line assertion and is what belongs in a glance
+        // surface; `description` is the long-form rationale and, for the watches that
+        // carry a real one, runs to twenty lines. Fall back to it only for a manifest
+        // written before the legibility fields existed.
+        let desc = md::parse_yaml_scalar(&content, "what")
+            .or_else(|| md::parse_yaml_scalar(&content, "description"))
+            .unwrap_or_default();
+        // The one fact a glance most needs and could never get here: 8 of 10 live
+        // watches are `probe: command`, which has no `target`, so without `where` the
+        // line cannot say which system it is even about.
+        let wher = md::parse_yaml_scalar(&content, "where").unwrap_or_default();
         let probe = md::parse_yaml_scalar(&content, "probe").unwrap_or_else(|| "?".into());
         let interval = md::parse_yaml_scalar(&content, "interval").unwrap_or_else(|| "?".into());
         let state = if paused {
@@ -671,11 +681,16 @@ fn discover_watches(p: &Profile) -> Vec<String> {
             "paused" => 2,
             _ => 1,
         };
-        let line = if desc.is_empty() {
-            format!("- {state} {name} ({probe}, {interval})")
-        } else {
-            format!("- {state} {name} - {desc} ({probe}, {interval})")
-        };
+        // `at: <where>` deliberately mirrors what a Sentinel notification says, so the
+        // daily note and the page you get on your phone read the same way.
+        let mut line = format!("- {state} {name}");
+        if !desc.is_empty() {
+            line.push_str(&format!(" - {desc}"));
+        }
+        if !wher.is_empty() {
+            line.push_str(&format!(" - at: {wher}"));
+        }
+        line.push_str(&format!(" ({probe}, {interval})"));
         rows.push((rank, name, line));
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -1433,6 +1448,62 @@ after
         // unset → empty (opt-in gate)
         p.watches = None;
         assert!(discover_watches(&p).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discover_watches_reads_block_scalars_and_prefers_what() {
+        // The regression this pins: every fixture above uses a plain one-line
+        // `description:`, and real manifests overwhelmingly do not — a long description
+        // is exactly when you reach for `>-`. So the daily note rendered
+        // `- TRIP deploy-drift - >- (command, 6h)` for most watches, printing the YAML
+        // marker as if it were the text, and no test noticed because none used a block.
+        let dir = std::env::temp_dir().join(format!("notes-watch-blk-{}", std::process::id()));
+        let wdir = dir.join("watches");
+        let sdir = dir.join("state");
+        std::fs::create_dir_all(&wdir).unwrap();
+        std::fs::create_dir_all(&sdir).unwrap();
+
+        // A current manifest: one-line `what` + `where`, with the essay in `description`.
+        std::fs::write(
+            wdir.join("drift.yaml"),
+            "name: drift\n\
+             what: >-\n  dotfiles-drift reports nothing: no repo behind main, no mirror adrift.\n\
+             why: >-\n  A merged file goes live only when stow has run.\n\
+             where: ~/.dotfiles and the private overlay\n\
+             description: >-\n  Trip when what is MERGED stops being what is RUNNING.\n\n  A second paragraph that must not leak into the line.\n\
+             probe: command\ninterval: 6h\n",
+        )
+        .unwrap();
+        // A legacy manifest: block `description`, no legibility fields at all.
+        std::fs::write(
+            wdir.join("legacy.yaml"),
+            "name: legacy\ndescription: |-\n  first line\n  second line\nprobe: http\ninterval: 5m\n",
+        )
+        .unwrap();
+        std::fs::write(sdir.join("drift.state"), "TRIP\n").unwrap();
+        std::fs::write(sdir.join("legacy.state"), "OK\n").unwrap();
+
+        let mut p = profile(dir.to_str().unwrap());
+        p.watches = Some(wdir.clone());
+        p.watches_state = sdir.clone();
+
+        let lines = discover_watches(&p);
+        assert_eq!(lines.len(), 2);
+
+        // The marker must never reach the note. This is the assertion that fails on the
+        // old parser, and the only one that really matters.
+        assert!(!lines.iter().any(|l| l.contains(">-") || l.contains("|-")));
+
+        // `what` wins over `description`, and `where` rides along as `at:`.
+        assert_eq!(
+            lines[0],
+            "- TRIP drift - dotfiles-drift reports nothing: no repo behind main, no mirror adrift. \
+             - at: ~/.dotfiles and the private overlay (command, 6h)"
+        );
+        // Legacy still renders: block description folded to one line, no `at:` to add.
+        assert_eq!(lines[1], "- OK legacy - first line second line (http, 5m)");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
