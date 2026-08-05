@@ -12,10 +12,11 @@
 //!
 //! The note carries the human's own lists and the auto-rendered context sections
 //! (`## Work`, `## Watches`, `## Comms`, `## Inbox`). It deliberately does NOT render the
-//! project/AI board: that lives on each project's `## Wave` sheet and is reachable from
-//! the footer's `Projects:` link. A `## Current Projects` block used to duplicate the lab
+//! project/AI board: that is regenerated as a FILE each run (`board.rs`) and reached from
+//! the footer's `Board:` link. A `## Current Projects` block used to duplicate the lab
 //! index here every morning; it was removed because the note is the FOCUS surface, and
-//! anything pasted into it competes with the one list the human actually maintains.
+//! anything pasted into it competes with the one list the human actually maintains — which
+//! is exactly why the board is a link and not a section.
 
 use crate::config::{self, Profile};
 use crate::inbox;
@@ -88,6 +89,13 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
     crate::comms::refresh(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
+    // The project/AI board is regenerated as a FILE, not a section — the footer links it.
+    // Same "render an external source each run" pattern as the sections above; the target
+    // differs precisely so the note stays the human's focus surface. A failure here must
+    // not abort the note, so it is logged and swallowed like the sweep below.
+    if let Err(e) = crate::board::write(log) {
+        log.warn("today", &format!("board refresh skipped: {e}"));
+    }
     // Bucket `## Focus` by priority (Urgent/High/Low + Done) so a day whose items
     // just carried forward flat lands organized, matching the nvim on-save sweep. Idempotent,
     // writes only on change; a failure here never aborts note creation.
@@ -427,10 +435,17 @@ pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
 
 /// Add the backlog footer if not already present.
 fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
-    let mut content = fs::read_to_string(note)?;
-    if content.contains("Backlogs:") {
-        return Ok(());
-    }
+    let original = fs::read_to_string(note)?;
+    // REGENERATE, don't skip-if-present. The footer is generated content like `## Watches`,
+    // and its links change when the system does — a note written before the `Board:` link
+    // existed would otherwise never gain it, so a new link would only ever reach notes
+    // created after the upgrade and today's note would sit stale until tomorrow.
+    //
+    // Safe because the footer is always LAST: nothing legitimately writes below it (the
+    // warning in focus::add is about a bug that would, not a feature that does), and every
+    // section refresh goes through `insert_before_footer`.
+    let mut content = original.clone();
+    strip_backlog_footer(&mut content);
     // The linked backlogs are config-driven (`footer_backlogs`), so the list is edited
     // in config.toml, not hardcoded here. Defaults to fun + scheduled.
     let backlogs = p
@@ -442,6 +457,11 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if !content.ends_with('\n') {
         content.push('\n');
     }
+    // Board first, then the index. The board is the one the human opens daily (it carries
+    // the live wave + agent lane); the index is the slower "what projects exist" page.
+    let board_link = crate::board::board_path(p)
+        .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.root, &b)))
+        .unwrap_or_default();
     let projects_link = p
         .project_index
         .as_ref()
@@ -458,9 +478,13 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!(
-        "\n---\nBacklogs: {backlogs}{projects_link}{inbox_link}\n"
+        "\n---\nBacklogs: {backlogs}{board_link}{projects_link}{inbox_link}\n"
     ));
-    md::write_atomic(note, &content)?;
+    // Only write on change: `notes today` is idempotent and runs on every shell init, so a
+    // no-op rewrite would churn the vault's mtime and its git sync every single time.
+    if content != original {
+        md::write_atomic(note, &content)?;
+    }
     Ok(())
 }
 

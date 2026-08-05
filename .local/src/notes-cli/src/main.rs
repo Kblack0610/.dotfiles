@@ -7,6 +7,7 @@
 
 mod archive;
 mod backlog;
+mod board;
 mod clickup;
 mod comms;
 mod config;
@@ -117,6 +118,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
+    /// Regenerate the project/AI board — every project's current `## Wave`, agent lane
+    /// first, across every profile — and print its path. Also refreshed by `notes today`.
+    /// The daily note LINKS this rather than rendering it: the note is the human's focus,
+    /// the board is one click away.
+    Board,
     /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
@@ -475,6 +481,7 @@ fn main() -> Result<()> {
                 project_tasks::rm(&prof, &log, &name, &query.join(" "))?
             }
         },
+        Cmd::Board => board::run(&log)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,

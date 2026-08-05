@@ -70,6 +70,26 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(readme)
 }
 
+/// A project directory's current wave: `(version, open_task_lines)`. `None` when the dir
+/// has no task sheet at all.
+///
+/// Keyed by DIRECTORY rather than profile+name, unlike `sheet_and_wave` below, because the
+/// board walks `daily::discover_project_dirs` across every configured profile — it already
+/// holds the path and has no name to re-resolve. Same sheet, same `## Wave`, same open-task
+/// predicate the cockpit and `ptask list` use, so the three cannot disagree about what is
+/// on a board.
+pub(crate) fn open_wave_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
+    let sheet = task_sheet(dir)?;
+    let content = fs::read_to_string(&sheet).ok()?;
+    let heading = current_wave(&content)?;
+    let open: Vec<String> = md::section_numbered(&content, &heading)
+        .into_iter()
+        .filter(|(_, l)| md::is_open_task(l))
+        .map(|(_, l)| l.trim_end().to_string())
+        .collect();
+    Some((projects::wave_version_of(&content), open))
+}
+
 /// The sheet + its resolved current-wave heading, for a named project. `None` when the
 /// project has no task sheet yet (a read verb then lists nothing).
 fn sheet_and_wave(p: &Profile, name: &str) -> Result<Option<(PathBuf, String, String)>> {

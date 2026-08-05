@@ -118,6 +118,29 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   refute_blocks "$(gate s2)"
 }
 
+@test "a ptask write satisfies the gate -- project work need not touch the daily note" {
+  # The daily note is ONE human's list. This gate used to accept only a write to it, so
+  # every agent session satisfied it the only way it could and dumped its own item there:
+  # 2026-08-05 opened with six Focus items, five of them agent sessions'. Project work
+  # tracked on the project's `## Wave` must count, or the note keeps getting crowded out.
+  dirty
+  gate s1 >/dev/null                       # stamp last_run
+  sleep 1
+  printf '[%s] [INFO] ptask: added to /p/README.md (notes-cockpit)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  refute_blocks "$(gate s2)"
+}
+
+@test "an UNRELATED notes write does not satisfy the gate" {
+  # The negative control for the test above. If the log match were loosened to any `notes`
+  # line, a passing `notes today` on shell init would silently satisfy the gate forever and
+  # nothing would ever be tracked again -- a gate that always passes is not a gate.
+  dirty
+  gate s1 >/dev/null
+  sleep 1
+  printf '[%s] [INFO] today: exists /p/2026-08-05.md\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  assert_blocks "$(gate s2)"
+}
+
 @test "it fires at most once per session" {
   dirty
   assert_blocks "$(gate s1)"
