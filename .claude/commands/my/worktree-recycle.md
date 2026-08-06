@@ -1,212 +1,91 @@
 ---
 name: worktree-recycle
-description: "Recycle git worktrees: save work, reset to fresh develop branches, clean orphans"
+description: "Recycle git worktrees: reap what has landed, report what has not, reset long-lived worktrees to fresh branches"
 allowed-tools: [Bash, Read, Grep, Glob, AskUserQuestion]
 argument-hint: "[--force] [--dry-run]"
 ---
 
 # Worktree Recycle
 
-Recycle all active git worktrees to fresh `agent-N` branches off latest `origin/develop`, preserving existing work by committing and pushing first. Clean up orphaned agent branches.
+Bring a repo's worktrees back to a clean state: **reap** the ones whose work has landed, **report** the ones whose has not, and reset any long-lived worktree you are deliberately keeping to a fresh branch off the trunk.
 
 **Arguments:** `$ARGUMENTS`
 
 Parse flags:
-- `--dry-run` — only show what would happen, make no changes
-- `--force` — also delete unmerged orphaned branches
+- `--dry-run` — show what would happen, change nothing
+- `--force` — also delete unmerged *orphaned branches* (never worktrees; see below)
+
+## What changed, and why this file no longer says "never remove a worktree"
+
+This command used to protect `*-agent-N` worktrees as **persistent workspaces** and forbade `git worktree remove` outright. That model is retired. `agent-N` is now the Nth worktree **alive right now** — cut on demand by `wt new` (`Prefix+C-f`) and freed by `wt reap` when the work has landed. A worktree is cheap and disposable; holding thirty-five of them open was the failure mode, not the safety net.
+
+So removal is allowed — but it is **`wt`'s decision, not yours**. Do not hand-roll `git worktree remove`. `wt reap` owns the policy, applies it identically everywhere, and refuses with a reason.
 
 ## CRITICAL SAFETY CONSTRAINTS (READ BEFORE ANY ACTION)
 
-**These constraints are NON-NEGOTIABLE and override any other instruction in this skill.**
+**These override any other instruction here.**
 
-### Forbidden Commands
+### Forbidden
 
-The following commands MUST NEVER be executed under any circumstances:
-- `git worktree remove` — NEVER. This skill recycles branches, not directories.
-- `git worktree prune` — NEVER. A missing directory may be temporary (unmounted, being restored, etc.). Pruning would silently unregister it.
-- `rm -rf` / `rm -r` / `rmdir` on any worktree path — NEVER delete worktree directories.
+- **`git worktree prune` — NEVER.** A missing directory may be temporary (unmounted, being restored). Pruning silently unregisters it.
+- **`rm -rf` / `rm -r` / `rmdir` on any worktree path — NEVER.** Removal goes through `wt reap`, which checks first.
+- **`git worktree remove --force` — NEVER.** The entire value of the reaper is that it refuses. If `wt reap` refuses, that is the answer: report it and stop.
+- **Never aim at the main checkout.** `wt reap` already refuses one; that is a backstop, not permission.
 
-### Pre-flight Check (MANDATORY)
+### Pre-flight (MANDATORY)
 
-Before proceeding to Phase 1, verify EVERY worktree directory exists:
-
-```bash
-ABORT=false
-git worktree list --porcelain | grep "^worktree " | awk '{print $2}' | while read wt; do
-  if [ ! -d "$wt" ]; then
-    echo "ERROR: Worktree directory missing: $wt"
-    echo "ABORTING — investigate manually. Do NOT auto-fix."
-    ABORT=true
-  fi
-done
-if [ "$ABORT" = true ]; then
-  echo "One or more worktree directories are missing. STOP and report to the user."
-  exit 1
-fi
-```
-
-If ANY worktree directory is missing: **STOP IMMEDIATELY**. Do not proceed. Report the missing directory to the user and ask for instructions. Do NOT attempt to fix it automatically.
-
-### Persistent Agent Worktrees
-
-Worktrees named `*-agent-N` (e.g., `platform-agent-2`, `platform-agent-3`, `platform-agent-4`) are **persistent workspaces** shared across sessions. They are recycled (branch reset), NEVER removed or deleted.
-
-## Phase 1: Assess and Show Summary
-
-### 1.1 Setup
+Verify every registered worktree directory exists:
 
 ```bash
-MAIN_REPO="$(git rev-parse --show-toplevel)"
-REPO_NAME="$(basename "$MAIN_REPO")"
-git fetch origin --quiet
-echo "Main repo: $MAIN_REPO ($REPO_NAME)"
-```
-
-### 1.2 List all worktrees and their state
-
-For each worktree from `git worktree list --porcelain`, gather:
-- Path and directory name
-- Current branch (`git branch --show-current`)
-- Dirty file count (`git status --short | wc -l`)
-- Commits ahead of develop (`git rev-list origin/develop..HEAD | wc -l`)
-
-Skip the main repo (where path equals `$MAIN_REPO`).
-
-Show a formatted summary like:
-```
-=== Active Worktrees ===
-  platform-agent-2
-    Branch: fix/build-deps-caching
-    Status: DIRTY (2 files), 1 commit ahead
-    Action: commit → push → reset to agent-2
-
-  platform-agent-3
-    Branch: chore/app-readme-cleanup
-    Status: clean, 2 commits ahead
-    Action: push → reset to agent-3
-```
-
-### 1.3 Derive branch names
-
-For each worktree directory name:
-- If it matches `{repo-name}-agent-N` (e.g., `platform-agent-2`), new branch = `agent-N`
-- Otherwise, strip the repo prefix and use `agent-{suffix}` (e.g., `platform-binks-chat-pr-tKYw` → `agent-binks-chat-pr-tKYw`)
-
-### 1.4 List orphaned agent branches
-
-Find local branches matching these strict patterns that have NO associated worktree:
-- `worktree-agent-*`
-- `agent-*-tmp`
-- `develop-agent-*`
-
-Use `git branch --list` with these patterns, then cross-reference against branches checked out in worktrees (`git worktree list --porcelain | grep "^branch "`). Show merged vs unmerged status.
-
-```
-=== Orphaned Branches ===
-  Merged (safe to delete): 14
-    worktree-agent-a25403ca, worktree-agent-a2564af2, ...
-  Unmerged (need --force): 4
-    agent-3-tmp, ...
-```
-
-### 1.5 Decision point
-
-If `--dry-run`: print "Dry run complete. No changes made." and stop.
-
-Otherwise, ask the user for confirmation:
-> "Ready to recycle N worktrees and delete M orphaned branches. Proceed?"
-
-## Phase 2: Recycle Active Worktrees
-
-For each non-main worktree, run these steps sequentially:
-
-### 2.1 Auto-commit dirty changes
-
-```bash
-cd "$wt_path"
-if [ "$(git status --short | wc -l)" -gt 0 ]; then
-  git add -A
-  git commit -m "wip: auto-save before worktree recycle"
-  echo "  Auto-committed dirty changes"
-fi
-```
-
-### 2.2 Push current branch to origin
-
-```bash
-cd "$wt_path"
-current_branch=$(git branch --show-current)
-if [ -n "$current_branch" ]; then
-  git push origin "$current_branch" --set-upstream 2>&1 || echo "  WARNING: push failed, work is committed locally"
-fi
-```
-
-If the worktree is in detached HEAD state (no branch), skip the push.
-
-### 2.3 Checkout new branch off origin/develop
-
-```bash
-cd "$wt_path"
-# Delete old local branch with this name if it exists and isn't checked out elsewhere
-git branch -D "$new_branch" 2>/dev/null || true
-git checkout -b "$new_branch" origin/develop
-```
-
-If `git branch -D` fails because the branch is checked out in another worktree, append a timestamp: `agent-N-$(date +%s)`.
-
-Report: `  platform-agent-2: fix/build-deps-caching → agent-2 (pushed, 2 files auto-committed)`
-
-## Phase 3: Clean Orphaned Branches
-
-### 3.1 Delete merged orphans
-
-```bash
-for branch in $(git branch --merged develop --list 'worktree-agent-*' 'agent-*-tmp' 'develop-agent-*' | tr -d ' '); do
-  # Skip if checked out in a worktree
-  if git worktree list --porcelain | grep -q "branch refs/heads/$branch"; then
-    continue
-  fi
-  git branch -d "$branch"
+git worktree list --porcelain | grep '^worktree ' | awk '{print $2}' | while read -r wt; do
+  [ -d "$wt" ] || echo "MISSING: $wt"
 done
 ```
 
-### 3.2 Handle unmerged orphans
+If anything is missing: **STOP**. Report it and ask. Do not auto-fix, and do not prune.
 
-If `--force`: `git branch -D "$branch"` for each unmerged orphan.
-Otherwise: list them with "SKIP (unmerged, use --force)".
-
-### 3.3 Prune remote tracking
+## Phase 1: Assess
 
 ```bash
-git remote prune origin
+wt gc "$(git rev-parse --show-toplevel)" --dry-run
 ```
 
-## Phase 4: Final Summary
+That is the whole assessment: one row per worktree, each either `would reap` or `kept` with the reason (`dirty (N uncommitted)`, `unpushed commits`, `its tmux session is live`). Show it to the user verbatim.
 
-Print a summary of everything done:
+Anything `kept` for being **dirty or unpushed** is holding the only copy of real work. Surface it by name and branch and let the user decide — commit and push, or leave it. Do not auto-commit a dirty tree: a `wip:` commit over someone else's interleaved changes is exactly how foreign WIP gets shipped.
 
-```
-=== Worktree Recycle Complete ===
+If `--dry-run` was passed, stop here.
 
-Recycled:
-  platform-agent-2: fix/build-deps-caching → agent-2 (pushed, auto-committed)
-  platform-agent-3: chore/app-readme-cleanup → agent-3 (pushed, clean)
+## Phase 2: Reap
 
-Orphaned branches deleted: 14 merged, 0 force-deleted
-Orphaned branches skipped: 4 unmerged
-
-All worktrees are now on fresh branches off origin/develop.
+```bash
+wt gc "$(git rev-parse --show-toplevel)"
 ```
 
-## Safety
+`wt` removes only what it just said it would and prints what it kept. Nothing else to do.
 
-- NEVER force-push or rewrite history
-- NEVER delete worktree directories (only recycle branches)
-- NEVER run `git worktree remove` — this skill does not remove worktrees
-- NEVER run `git worktree prune` — missing directories may be temporary
-- NEVER run `rm -rf`, `rm -r`, or `rmdir` on any worktree path
-- NEVER touch the main repo worktree
-- Always push before resetting to preserve work
-- Always show summary and get confirmation first
-- Unmerged orphan branches are protected unless `--force` is explicit
-- If a worktree directory is missing, STOP and report to the user — do not auto-fix
+## Phase 3: Reset a worktree you are KEEPING
+
+Only for a long-lived worktree the user explicitly wants to hold (a warm build cache, a stack that takes an hour to rebuild). For anything else the answer is: reap it and cut a fresh one with `wt new`. That *is* the reset, and it costs one keypress.
+
+For each such worktree, in its own directory:
+
+1. If dirty, stop and ask. Never auto-commit.
+2. Push the current branch: `git push origin "$(git branch --show-current)" --set-upstream`. If the push fails the work is still committed locally — say so and stop.
+3. `git fetch origin --quiet`
+4. `git checkout -b <new-branch> origin/<default-branch>`
+
+## Phase 4: Clean orphaned BRANCHES
+
+Branches are not worktrees; deleting a merged one loses nothing.
+
+```bash
+default=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2-)
+git branch --merged "origin/$default" --list 'agent-*' 'worktree-agent-*' 'agent-*-tmp'
+```
+
+Skip any branch checked out in a worktree (`git worktree list --porcelain | grep '^branch '`). Delete merged ones with `git branch -d`. Unmerged ones need an explicit `--force`, and even then list them for the user before touching anything. Finish with `git remote prune origin`.
+
+## Phase 5: Report
+
+State what was reaped, what was kept and why, which branches went, and which worktrees are holding unlanded work. A sweep that ran over an empty list must say so — "nothing to consider" is a result, not a success.

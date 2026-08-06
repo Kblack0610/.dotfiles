@@ -12,6 +12,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | Script | Keybinding | Description |
 |--------|------------|-------------|
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
+| `worktree.sh` (`wt`) | `Prefix+C-f` / `Prefix+F` | One worktree per piece of work. `C-f` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `F` lists every worktree on the machine. Reaped by `wind-down` once the work is clean and landed - see below. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
@@ -33,6 +34,8 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
+- **Cut a worktree**: `Prefix+C-f` → a fresh worktree off this repo, in its own session
+- **Find a worktree**: `Prefix+F` → every worktree on the machine, with what is safe to reap
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
@@ -233,6 +236,51 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 `hub` server only when called with no args from outside tmux - see `.zshrc`. An
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
+
+## Worktrees (`Prefix+C-f`, `Prefix+F`, `wt`)
+
+**The worktree is the unit of work.** `Prefix+C-f` cuts a fresh worktree off the repo the
+current pane is sitting in and drops you into a tmux session rooted there. A second agent
+therefore never shares the first one's checkout, branch or dirty status - which is what one
+session with seven windows all named `main` actually was.
+
+`agent-N` is **not** a persistent workspace slot. It is the Nth worktree alive right now:
+allocated by `new`, freed by `reap`, and the number is reused once it is free. Nothing else
+had to learn a new concept for this, because the layout keeps the basename as the identity:
+
+```
+~/.worktrees/<repo>-agent-N     directory basename
+           == <repo>-agent-N    tmux session name       sessionizer.sh:session_name
+           -> project <repo>    agent-panel             render.rs:project_from_path
+           -> label   N:<win>   agent-panel row label   render.rs:short_target
+```
+
+So `Prefix+g`, `Prefix+w` and `sesh` all show live worktrees the moment they exist. Nesting
+them under `~/.worktrees/<repo>/` would make the basename `agent-N`, losing the repo and
+breaking all three at once.
+
+| verb | what |
+|---|---|
+| `wt new [-c <dir>]` | cut a worktree off `<dir>`'s repo, open its session, land there |
+| `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
+| `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason |
+| `wt --list` | the rows behind `Prefix+F`, TSV |
+
+**Reaping is the load-bearing half.** Cheap creation with no reaper is how
+`~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
+`--force` - when the tree is dirty, when commits are unpushed, when the path is a main
+checkout, or when a tmux session for it is still live. "Clean and pushed" is a snapshot, not
+a promise: an agent working detached is clean-and-pushed for a moment after every push, so
+the live-session rule is what stops a `gc` deleting a worktree mid-turn.
+
+`wind-down` closes the loop: `arm` records the worktree in its sentinel, and `fire` runs
+`wt reap` **after** the kill, in the same backgrounded chain. Before the kill it would always
+refuse, correctly.
+
+> **Caveat, dotfiles only.** Stow symlinks point at `~/.dotfiles`
+> (`~/.local/src/tmux -> ../../.dotfiles/.local/src/tmux`), so edits made in a *dotfiles*
+> worktree are **not deployed**. You are exercising the repo copy, not the live one. Run
+> scripts by their path inside the worktree; `wt` on `PATH` is not the one you just edited.
 
 ## Sessions (`Prefix+S`)
 
