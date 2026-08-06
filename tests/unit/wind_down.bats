@@ -255,6 +255,105 @@ EOF
   assert_success
 }
 
+# ── the worktree hand-off (wt reap) ──────────────────────────────────────────
+#
+# One session per worktree means the worktree should go when the session does. wind-down
+# does NOT decide whether that is safe -- `wt reap` owns that policy and refuses anything
+# dirty, unpushed, or still holding a live session. All wind-down owes is: record the right
+# path at arm time, and run the reap strictly AFTER the kill.
+
+# A real linked worktree under $WT_ROOT, plus the `wt` that fire gates on.
+mk_worktree() {
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e.com
+  export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e.com
+  git init --quiet -b main "$HOME/repo"
+  printf 'x\n' > "$HOME/repo/f.txt"
+  git -C "$HOME/repo" add f.txt
+  git -C "$HOME/repo" commit --quiet -m seed
+  mkdir -p "$HOME/.worktrees"
+  git -C "$HOME/repo" worktree add --quiet "$HOME/.worktrees/repo-agent-1" -b agent-1 main
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\necho "wt $*"\n' > "$HOME/.local/bin/wt"
+  chmod +x "$HOME/.local/bin/wt"
+}
+
+@test "arm records the worktree ROOT when the pane sits inside one" {
+  mk_worktree
+  # A pane one directory DOWN is still in the worktree, but `git worktree remove` on a
+  # subdirectory is simply an error -- so what gets recorded must be --show-toplevel.
+  mkdir -p "$HOME/.worktrees/repo-agent-1/tests"
+  STUB_PANE_PATH="$HOME/.worktrees/repo-agent-1/tests" wd arm
+  assert_success
+  local s; s="$(ls "$SPIN_DIR"/*.request | head -1)"
+  run grep '^worktree=' "$s"
+  assert_output "worktree=$HOME/.worktrees/repo-agent-1"
+}
+
+@test "arm records NO worktree for an ordinary checkout" {
+  # The guard that keeps a main checkout away from `reap`. Winding down a normal session
+  # must not put its repo root in the sentinel at all.
+  mk_worktree
+  STUB_PANE_PATH="$HOME/repo" wd arm
+  assert_success
+  local s; s="$(ls "$SPIN_DIR"/*.request | head -1)"
+  run grep '^worktree=' "$s"
+  assert_output 'worktree='
+}
+
+@test "fire runs the reap AFTER the kill, in the same backgrounded chain" {
+  # ORDER IS THE WHOLE POINT. `wt reap` refuses while a tmux session for the worktree is
+  # live, which is the correct answer right up until this window is gone. Reaping first
+  # would always refuse; reaping in a separate process would race the kill.
+  mk_worktree
+  mk_sentinel <<EOF
+scope=session
+target=@7
+session=repo-agent-1
+worktree=$HOME/.worktrees/repo-agent-1
+EOF
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  assert_output --partial 'run-shell -b'
+  assert_output --partial "wt reap '$HOME/.worktrees/repo-agent-1'"
+  # kill-session must appear BEFORE the reap in the chain, not after it.
+  local chain="$output"
+  [ "${chain%%kill-session*}" != "$chain" ] || fail "no kill in the chain at all"
+  local before_kill="${chain%%kill-session*}"
+  case "$before_kill" in
+    *"wt reap"*) fail "the reap is scheduled BEFORE the kill -- it would always refuse" ;;
+  esac
+}
+
+@test "fire schedules no reap when the session was not in a worktree" {
+  mk_worktree
+  mk_sentinel <<'EOF'
+scope=session
+target=@7
+session=cockpit
+worktree=
+EOF
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  refute_output --partial 'wt reap'
+}
+
+@test "fire schedules no reap when the recorded worktree is already gone" {
+  mk_worktree
+  mk_sentinel <<EOF
+scope=session
+target=@7
+session=repo-agent-1
+worktree=$HOME/.worktrees/vanished
+EOF
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  refute_output --partial 'wt reap'
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 @test "an unknown verb is a usage error, not a silent no-op" {

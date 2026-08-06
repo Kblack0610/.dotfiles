@@ -98,6 +98,10 @@ case "${1:-}" in
       echo "${STUB_WINDOW_ID:-@7}"
     elif printf '%s ' "$@" | grep -q 'pane_id'; then
       echo "${STUB_PANE_ID:-%12}"
+    elif printf '%s ' "$@" | grep -q 'pane_current_path'; then
+      # wind-down.sh `arm` asks for this to decide whether the session sits in a `wt`
+      # worktree. Empty by default, which is the ordinary-checkout case.
+      echo "${STUB_PANE_PATH:-}"
     elif printf '%s ' "$@" | grep -q 'session_windows'; then
       echo "${STUB_SESSION_WINDOWS:-3}"
     elif printf '%s ' "$@" | grep -q 'socket_path'; then
