@@ -28,7 +28,6 @@
 #
 # table key   kind         geometry path                                  argv
 root    f     script       WIDE     .local/src/tmux/sessionizer.sh        -
-root    F     script       WIDE     .local/src/tmux/worktree.sh           -
 root    S     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-session
 root    R     script       WIDE     .local/bin/sessions                   search --window
 root    C-s   bin-symlink  SMALL    .local/src/tmux/servers.sh            pick

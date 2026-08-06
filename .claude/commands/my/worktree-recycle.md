@@ -17,7 +17,7 @@ Parse flags:
 
 ## What changed, and why this file no longer says "never remove a worktree"
 
-This command used to protect `*-agent-N` worktrees as **persistent workspaces** and forbade `git worktree remove` outright. That model is retired. `agent-N` is now the Nth worktree **alive right now** — cut on demand by `wt new` (`Prefix+C-f`) and freed by `wt reap` when the work has landed. A worktree is cheap and disposable; holding thirty-five of them open was the failure mode, not the safety net.
+This command used to protect `*-agent-N` worktrees as **persistent workspaces** and forbade `git worktree remove` outright. That model is retired. `agent-N` is now the Nth worktree **alive right now** — cut on demand by `wt new` (`Prefix+F`) and freed by `wt reap` when the work has landed. A worktree is cheap and disposable; holding thirty-five of them open was the failure mode, not the safety net.
 
 So removal is allowed — but it is **`wt`'s decision, not yours**. Do not hand-roll `git worktree remove`. `wt reap` owns the policy, applies it identically everywhere, and refuses with a reason.
 

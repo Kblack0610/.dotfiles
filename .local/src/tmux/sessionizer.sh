@@ -26,7 +26,7 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 # whitespace-delimited, so a session directory containing a space cannot be expressed there"),
 # and the first draft of this file reintroduced it. The test sandbox's path contains a space by
 # design, which is what caught it.
-IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$HOME/.agent:$HOME/.dotfiles:$HOME/.notes:$HOME/.worktrees}"
+IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$HOME/.agent:$HOME/.dotfiles:$HOME/.notes}"
 IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:node_modules:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 

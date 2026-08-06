@@ -12,7 +12,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | Script | Keybinding | Description |
 |--------|------------|-------------|
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
-| `worktree.sh` (`wt`) | `Prefix+C-f` / `Prefix+F` | One worktree per piece of work. `C-f` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `F` lists every worktree on the machine. Reaped by `wind-down` once the work is clean and landed - see below. |
+| `worktree.sh` (`wt`) | `Prefix+F` | One worktree per piece of work. Cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it. One key, one action - no picker. Reaped by `wind-down` once the work is clean and landed - see below. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
@@ -34,8 +34,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
-- **Cut a worktree**: `Prefix+C-f` → a fresh worktree off this repo, in its own session
-- **Find a worktree**: `Prefix+F` → every worktree on the machine, with what is safe to reap
+- **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
@@ -237,12 +236,18 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
 
-## Worktrees (`Prefix+C-f`, `Prefix+F`, `wt`)
+## Worktrees (`Prefix+F`, `wt`)
 
-**The worktree is the unit of work.** `Prefix+C-f` cuts a fresh worktree off the repo the
+**The worktree is the unit of work.** `Prefix+F` cuts a fresh worktree off the repo the
 current pane is sitting in and drops you into a tmux session rooted there. A second agent
 therefore never shares the first one's checkout, branch or dirty status - which is what one
 session with seven windows all named `main` actually was.
+
+**One key, one action.** `Prefix+F` opens no picker and asks nothing: the repo is the one
+the current pane is in, and the slot is the next free one. `Prefix+f` (the directory
+sessionizer) is untouched - same key, same list, same search roots as before. Worktrees are
+deliberately NOT added to its roots; a worktree is somewhere you are sent, not somewhere you
+go looking.
 
 `agent-N` is **not** a persistent workspace slot. It is the Nth worktree alive right now:
 allocated by `new`, freed by `reap`, and the number is reused once it is free. Nothing else
@@ -264,7 +269,8 @@ breaking all three at once.
 | `wt new [-c <dir>]` | cut a worktree off `<dir>`'s repo, open its session, land there |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason |
-| `wt --list` | the rows behind `Prefix+F`, TSV |
+| `wt --list` | every worktree on the machine, TSV |
+| `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no

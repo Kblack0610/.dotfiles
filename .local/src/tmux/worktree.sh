@@ -4,10 +4,12 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
-#                     ctrl-x reaps the row under the cursor, ctrl-r reloads.  [Prefix+F]
 #   new [-c <dir>]    cut a fresh worktree off the repo containing <dir> (default $PWD),
-#                     open a tmux session rooted in it, and land there.       [Prefix+C-f]
+#                     open a tmux session rooted in it, and land there.         [Prefix+F]
+#   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
+#                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
+#                     bound to a key: Prefix+F cuts a worktree outright rather than
+#                     opening anything to choose from.
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
