@@ -18,6 +18,7 @@ COCKPIT="$REPO_ROOT/.local/src/tmux/notes-cockpit.sh"
 FLEET="$REPO_ROOT/.local/src/tmux/fleet.sh"
 COCKPIT_SESSION_SH="$REPO_ROOT/.local/src/tmux/cockpit.sh"
 STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
+EDITOR_SH="$REPO_ROOT/.local/src/tmux/editor.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
 ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
 # NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
@@ -35,7 +36,7 @@ AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
 LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
 # The shared markdown renderer every preview pane goes through, same reason again.
 MD_RENDER_LIB="$REPO_ROOT/.local/lib/md-render.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds

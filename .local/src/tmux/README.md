@@ -11,6 +11,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 | Script | Keybinding | Description |
 |--------|------------|-------------|
+| `editor.sh` | `Alt+e` / `Prefix+e` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
@@ -27,6 +28,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
+- **The editor**: `Alt+e` → this session's editor; `Alt+e` again → back where you were
 - **Which world**: `Prefix+C-s` (or bare `tmx`) → the two worlds, sessions in the preview
 - **Everything, everywhere**: `Prefix+A` → every session and window on every server
 - **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)

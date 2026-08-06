@@ -1,0 +1,136 @@
+#!/usr/bin/env bats
+# Tier 2: the editor's BINDINGS, read out of .tmux.conf as text.
+#
+# A keybinding has no other test. tmux does not validate that a bound path exists -- it
+# registers the bind happily and the first symptom is a key that does nothing under a
+# finger. So the bind is checked the same way panel_conformance.bats checks the popups:
+# as data, cross-referenced against the filesystem.
+#
+# The rekey is the risky half. Moving mail off prefix+e to make room means TWO things must
+# hold at once -- the editor gained the key AND mail did not lose its own -- and each is
+# invisible from the other's assertion.
+
+setup() {
+  load '../vendor/bats-support/load'
+  load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
+  sandbox_init basic
+  load '../helpers/panel'
+  EDITOR_REL='.local/src/tmux/editor.sh'
+}
+
+# Every root-table binding, as "<key><TAB><command>". Flags other than -n are not used by
+# the binds under test, so this stays deliberately small rather than duplicating
+# panel_conf_bindings' full parser.
+root_binds() {
+  awk '
+    /^[[:space:]]*(bind|bind-key)[[:space:]]/ && !/-T[[:space:]]/ {
+      line = $0
+      n = split(line, F, /[[:space:]]+/)
+      key = ""
+      for (i = 2; i <= n; i++) {
+        if (F[i] == "-n" || F[i] ~ /^-/) continue
+        key = F[i]; break
+      }
+      cmd = line
+      sub(/^[[:space:]]*(bind|bind-key)[[:space:]]+(-n[[:space:]]+)?[^[:space:]]+[[:space:]]+/, "", cmd)
+      printf "%s\t%s\n", key, cmd
+    }
+  ' "$TMUX_CONF"
+}
+
+bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
+
+@test "the bind parser can actually see the config" {
+  # Without this every assertion below passes vacuously the moment the awk stops matching:
+  # "no bindings found" and "all bindings correct" print the same green.
+  local n
+  n="$(root_binds | grep -c .)"
+  [ "$n" -ge 20 ] || fail "parsed only $n root bindings from .tmux.conf -- the parser broke"
+  # And it must resolve a binding this file does not otherwise touch, so the parser is
+  # proved against something stable rather than only against its own subject.
+  assert_equal "$(bind_for C)" 'run-shell "$HOME/.local/src/tmux/cockpit.sh attach"'
+}
+
+# ── The editor keys ──────────────────────────────────────────────────────────
+
+@test "Alt+e toggles the editor with no prefix" {
+  assert_equal "$(bind_for M-e)" "run-shell \"\$HOME/$EDITOR_REL toggle '#{window_id}'\""
+  grep -qE '^[[:space:]]*bind -n M-e ' "$TMUX_CONF" \
+    || fail "M-e is bound but not with -n -- it would need the prefix, defeating the point"
+}
+
+@test "both binds hand the editor the window the key was pressed in" {
+  # Not cosmetic. run-shell leaves TMUX_PANE EMPTY, so a toggle with no argument reads
+  # tmux's current window -- which ensure's move-window has already changed by the time the
+  # second press asks, and the toggle-back then goes to the wrong window. Dropping
+  # '#{window_id}' from the bind reintroduces that silently, since the verb still runs.
+  local k
+  for k in M-e e; do
+    grep -qF "toggle '#{window_id}'" <<< "$(bind_for "$k")" \
+      || fail "bind $k does not pass '#{window_id}': $(bind_for "$k")"
+  done
+}
+
+@test "prefix+e is the same toggle, so the two keys cannot drift apart" {
+  assert_equal "$(bind_for e)" "$(bind_for M-e)"
+}
+
+@test "the editor is a window, never a display-popup" {
+  # A popup is torn down by the keypress that opens it, so there would be nothing to toggle
+  # back TO -- and CONVENTIONS.md:193 rules out load-bearing popups anyway. This is also
+  # what keeps editor.sh correctly ABSENT from tests/panels.manifest, whose closure
+  # assertion covers popups only.
+  run grep -nE '^[[:space:]]*(bind|bind-key)[[:space:]].*editor\.sh.*display-popup' "$TMUX_CONF"
+  assert_failure
+  run grep -cF "$EDITOR_REL" "$PANEL_MANIFEST"
+  assert_output '0'
+}
+
+# ── The rekey ────────────────────────────────────────────────────────────────
+
+@test "mail moved to prefix+E and is still bound" {
+  local mail
+  mail="$(bind_for E)"
+  [ -n "$mail" ] || fail "prefix+E is not bound -- mail was dropped rather than moved"
+  grep -qF 'aerc' <<< "$mail" || fail "prefix+E is bound to something that is not mail: $mail"
+}
+
+@test "nothing else still claims prefix+e" {
+  # The failure this catches is a duplicate bind: tmux takes the LAST one silently, so a
+  # leftover mail bind further down the file would beat the editor with no diagnostic.
+  local n
+  n="$(root_binds | awk -F'\t' '$1 == "e"' | grep -c .)"
+  [ "$n" -eq 1 ] || fail "prefix+e is bound $n times -- tmux silently keeps only the last"
+}
+
+@test "aerc is bound exactly once, so the move did not leave a copy behind" {
+  local n
+  n="$(grep -cE '^[[:space:]]*(bind|bind-key)[[:space:]].*aerc' "$TMUX_CONF")"
+  [ "$n" -eq 1 ] || fail "aerc appears in $n bindings, expected 1"
+}
+
+# ── What the binds point at ──────────────────────────────────────────────────
+
+@test "the bound script exists, is executable, and is tracked" {
+  # The check that catches "renamed the script, forgot the bind". Stats a file rather than
+  # running anything, so it passes on a CI runner with no tmux installed.
+  [ -f "$REPO_ROOT/$EDITOR_REL" ] || fail "$EDITOR_REL does not exist"
+  [ -x "$REPO_ROOT/$EDITOR_REL" ] || fail "$EDITOR_REL is not executable"
+  run git -C "$REPO_ROOT" ls-files --error-unmatch "$EDITOR_REL"
+  assert_success
+}
+
+@test "every verb the binds invoke has a dispatch arm" {
+  # cockpit_binds.bats' trick, scoped to one script: a verb named in a bind but absent from
+  # the case block fails silently inside run-shell, where nobody sees the error.
+  local invoked dispatched v
+  invoked="$(grep -oE "editor\.sh [a-z-]+" "$TMUX_CONF" | awk '{print $2}' | sort -u)"
+  dispatched="$(sed -n '/^case "\${1:-}" in$/,/^esac$/p' "$REPO_ROOT/$EDITOR_REL" \
+    | grep -oE '^[a-z-]+\)' | tr -d ')' | sort -u)"
+  [ -n "$invoked" ] || fail "no editor.sh verbs found in .tmux.conf -- the grep broke"
+  [ -n "$dispatched" ] || fail "no dispatch arms found in $EDITOR_REL -- the sed broke"
+  for v in $invoked; do
+    grep -qx "$v" <<< "$dispatched" || fail "bind invokes '$v' but editor.sh has no arm for it"
+  done
+}
