@@ -38,7 +38,11 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 
-EDITOR_WINDOW_CMD="${EDITOR_WINDOW_CMD:-nvim}"
+# `nvim .` and not a bare `nvim`: the window is already created in the session root, so the
+# dot opens THAT DIRECTORY rather than an empty scratch buffer. neo-tree sets
+# hijack_netrw_behavior = "open_current", so a directory argument lands you in the file tree
+# at the project root - which is the point of an editor pinned to the session.
+EDITOR_WINDOW_CMD="${EDITOR_WINDOW_CMD:-nvim .}"
 EDITOR_WINDOW_NAME="${EDITOR_WINDOW_NAME:-edit}"
 # Empty means "resolve it" (see _root_dir). Set it to pin the editor somewhere else.
 EDITOR_ROOT="${EDITOR_ROOT:-}"
@@ -172,11 +176,15 @@ cmd_ensure() {
 cmd_toggle() {
   panel_in_tmux || panel_die "not inside tmux - there is nothing to toggle"
 
-  local cur sess win back
+  local cur sess win back existed
   sess="$(_session)"
   cur="${1:-}"
   [ -n "$cur" ] || cur="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
   win="$(_editor_window)"
+  # Whether the editor was ALREADY there, asked before ensure can create one. The self-heal
+  # below is only meaningful for a window that has had time to live; see there.
+  existed=0
+  [ -n "$win" ] && existed=1
 
   # Already on the editor: go back where we came from.
   if [ -n "$win" ] && [ "$win" = "$cur" ]; then
@@ -200,7 +208,16 @@ cmd_toggle() {
   # Self-healing: you quit the editor, the window fell through to its shell. Re-enter it
   # rather than delivering you to a bare prompt. This is servers.sh:183-192's "the landing
   # page is back at a shell" repair, applied to a window instead of a session.
-  _at_shell "$win" && tmux send-keys -t "$win" "$EDITOR_WINDOW_CMD" Enter
+  #
+  # ONLY for a window that already existed. A window created a moment ago is a RACE: the
+  # pane runs `<editor>; exec <shell>` through sh, so for the first instants
+  # pane_current_command is the WRAPPING SHELL and not the editor. Healing then types the
+  # editor's own name into the editor that is just starting up - which lands as keystrokes,
+  # not a command, and leaves you in a scratch buffer containing the letters "vim". Observed,
+  # not theorised.
+  if [ "$existed" = 1 ] && _at_shell "$win"; then
+    tmux send-keys -t "$win" "$EDITOR_WINDOW_CMD" Enter
+  fi
 
   tmux select-window -t "$win"
 }
