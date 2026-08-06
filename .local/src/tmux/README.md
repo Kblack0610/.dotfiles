@@ -12,7 +12,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | Script | Keybinding | Description |
 |--------|------------|-------------|
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
-| `worktree.sh` (`wt`) | `Prefix+F` | One worktree per piece of work. Cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it. One key, one action - no picker. Reaped by `wind-down` once the work is clean and landed - see below. |
+| `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
@@ -35,6 +35,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find directories
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
+- **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Favourite a chat**: `Prefix+s` → star the agent in the current pane
 - **Reopen a chat**: `Prefix+o` → pick a favourite, resume the conversation
@@ -236,7 +237,7 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
 
-## Worktrees (`Prefix+F`, `wt`)
+## Worktrees (`Prefix+F`, `Prefix+X`, `wt`)
 
 **The worktree is the unit of work.** `Prefix+F` cuts a fresh worktree off the repo the
 current pane is sitting in and drops you into a tmux session rooted there. A second agent
@@ -267,6 +268,7 @@ breaking all three at once.
 | verb | what |
 |---|---|
 | `wt new [-c <dir>]` | cut a worktree off `<dir>`'s repo, open its session, land there |
+| `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason |
 | `wt --list` | every worktree on the machine, TSV |
@@ -278,6 +280,19 @@ breaking all three at once.
 checkout, or when a tmux session for it is still live. "Clean and pushed" is a snapshot, not
 a promise: an agent working detached is clean-and-pushed for a moment after every push, so
 the live-session rule is what stops a `gc` deleting a worktree mid-turn.
+
+**Tearing one down is `Prefix+X`, and it works from inside the session it is killing.** That
+sounds impossible - `tmux kill-session` takes your own shell with it, so any `wt reap` you
+chain after it never runs. The trick is to hand the job to something that outlives you: the
+tmux SERVER is a persistent daemon, and `run-shell -b` is its queue. `wt done` schedules
+`kill-session; wt reap` there and returns immediately.
+
+The refusal happens FIRST, in your terminal, while there is still a terminal to print it to.
+A worktree holding uncommitted or unpushed work is refused before anything is killed. The
+deferred reap then re-runs the FULL policy, live-session rule included - which passes
+honestly, because the session it would have objected to is the one just killed. Nothing is
+waived. Its outcome lands in `~/.agent/wt/done.log`, since by then there is nowhere else to
+print it.
 
 `wind-down` closes the loop: `arm` records the worktree in its sentinel, and `fire` runs
 `wt reap` **after** the kill, in the same backgrounded chain. Before the kill it would always
