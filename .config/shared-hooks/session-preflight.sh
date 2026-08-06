@@ -215,8 +215,15 @@ CONTEXT=$(
 
   # Focus cockpit — surface today's open `## Focus` tasks (your daily-note task list, the
   # thing you actually work from) at turn 1, so every session opens knowing what's actively
-  # in progress. If none are set, nudge to capture them. Read-only + best-effort here; task
-  # WRITES stay in the `notes` CLI (never hand-edit ~/.notes markdown). Keep items terse.
+  # in progress. Read-only + best-effort here; task WRITES stay in the `notes` CLI (never
+  # hand-edit ~/.notes markdown). Keep items terse.
+  #
+  # The nudge points PROJECT work at `notes ptask`, not at Focus, and an empty Focus is
+  # reported as fine rather than as something to fill. This is the turn-1 half of the same
+  # rule the Stop gate enforces at turn N (86-focus-reconcile.sh:124) — the two must agree.
+  # They did not: the gate learned `ptask:` in #204 while this still said "notes focus add",
+  # so an agent was TOLD to use the human's list and then blocked for having used it. That
+  # is how 2026-08-05 opened with five of six Focus items belonging to agent sessions.
   if command -v notes >/dev/null 2>&1 && declare -F focus_daily_note >/dev/null 2>&1; then
     DAILY_NOTE=$(focus_daily_note)
     # `[/]` (in progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
@@ -239,10 +246,13 @@ CONTEXT=$(
         printf '%s\n' "$FOCUS_OPEN" | head -8 | sed "s/^/$FOCUS_INDENT/"
         [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
       fi
-      echo "  → before you start: is this session's work one of these? If not, \`notes focus add\`; when it lands, \`notes focus done\`."
+      echo "  → this is the HUMAN's list, not your queue. PROJECT work goes on the board instead:"
+      echo "    \`notes ptask <project> add|start|done \"<short title>\"\`  (\`notes board\` shows every lane)"
+      echo "    Only add to Focus when the work is the human's own."
       echo
     else
-      echo "🎯 Focus: none set — run \`notes today\`, then capture what we're on (terse, plain, a couple words)."
+      echo "🎯 Focus: none set for today — that is fine, it is the human's list, not yours."
+      echo "  → track PROJECT work on the board: \`notes ptask <project> add|start|done\`, then \`notes board\`."
       echo
     fi
   fi
