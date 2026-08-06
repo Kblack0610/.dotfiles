@@ -10,6 +10,8 @@
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
 #                     bound to a key: Prefix+F cuts a worktree outright rather than
 #                     opening anything to choose from.
+#   done [<name>]     THE CLEANUP. Kill this worktree's session and reap the worktree, in
+#                     one go, safe to run FROM INSIDE that session.          [Prefix+X]
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
@@ -52,6 +54,10 @@ WT_NEW_CMD="${WT_NEW_CMD:-}"
 # Repo discovery for --list, so the picker sees worktrees of repos that have none under
 # $WT_ROOT yet (platform's siblings, for one). Same file the hooks resolve projects through.
 WT_PROJECT_MAP="${WT_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+# Where the DEFERRED reap reports to. `done` kills the terminal that asked for it, so the
+# outcome has nowhere to be printed; a refusal that nobody can read is the same as a silent
+# one. Mirrors wind-down's fire.log, for the same reason.
+WT_LOG="${WT_LOG:-$HOME/.agent/wt/done.log}"
 
 # ── Repo plumbing ────────────────────────────────────────────────────────────
 
@@ -143,10 +149,15 @@ wt_session_exists() { tmux has-session -t "=$1" 2>/dev/null; }
 
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
-# wt_reap_reason <path> -- print why <path> may NOT be reaped; print nothing and return 0
-# when it may. The ONE place the policy lives, so the picker's glyph, `reap` and `gc` can
-# never disagree about what is safe.
-wt_reap_reason() {
+# wt_work_reason <path> -- print why <path> still holds WORK; nothing, and rc 0, when the
+# work is safely elsewhere. Split out of wt_reap_reason for exactly one caller: `done` kills
+# its own session, so the live-session rule below would refuse it every single time. `done`
+# has to ask "is the work safe?" while the session is still up, which is this question, and
+# leave "is anything running there?" to the deferred reap that runs after the kill.
+#
+# Keeping it as one function with a flag was the alternative. Two questions that are asked at
+# two different MOMENTS are not one question with an argument.
+wt_work_reason() {
   local path="$1" main def base dirty up
 
   [ -d "$path" ] || {
@@ -186,13 +197,26 @@ wt_reap_reason() {
     return 1
   fi
 
+  return 0
+}
+
+# wt_reap_reason <path> -- print why <path> may NOT be reaped; nothing, and rc 0, when it may.
+# The ONE place the reap policy lives, so the picker's glyph, `reap` and `gc` can never
+# disagree about what is safe.
+wt_reap_reason() {
+  local reason
+  reason=$(wt_work_reason "$1") || {
+    printf '%s\n' "$reason"
+    return 1
+  }
+
   # A LIVE SESSION IS NEVER REAPED, attached or not. "Clean and pushed" is a snapshot, not a
   # promise: an agent working detached in this worktree is clean-and-pushed for a moment after
   # every push, and a `gc` that happened to run in that window would delete the tree out from
   # under it mid-turn. Being unattached says nothing about whether anything is running there.
-  # This is why wind-down reaps only AFTER it has killed the window -- by then there is no
-  # session, and the check passes honestly.
-  if wt_session_exists "$(basename "$path")"; then
+  # This is why wind-down -- and now `done` -- reap only AFTER the kill: by then there is no
+  # session, and the check passes honestly rather than being waived.
+  if wt_session_exists "$(basename "$1")"; then
     printf 'its tmux session is live\n'
     return 1
   fi
@@ -389,7 +413,7 @@ wt_land() {
 }
 
 cmd_reap() {
-  local path="${1:-$PWD}" reason main name
+  local path="${1:-$PWD}" reason main name branch
   path="$(realpath "$path" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
 
   if reason=$(wt_reap_reason "$path"); then
@@ -400,13 +424,84 @@ cmd_reap() {
 
   main=$(wt_main_repo "$path") || panel_die "cannot resolve the repo for $path"
   name="$(basename "$path")"
+  # Captured BEFORE the removal -- afterwards there is no worktree left to ask.
+  branch="$(wt_branch_of "$path")"
 
   # From the MAIN repo, never from inside the directory being removed. git's own dirty check
   # runs again here, which is a second lock on the same door -- deliberately, because
   # wt_reap_reason's snapshot and this moment are not the same instant.
   git -C "$main" worktree remove "$path" || panel_fail "git worktree remove refused $path" || return 1
 
+  # Take the branch with it, or the slot numbers ratchet forever: wt_next_n treats an existing
+  # `agent-N` branch as an occupied slot, so four reaped-but-not-deleted worktrees pushed the
+  # next one to agent-5 with nothing on disk. agent-panel renders that number as a row label,
+  # so left alone it grows to two and three digits for no reason.
+  #
+  # `-d`, never `-D`. git's own safe-delete refuses a branch that is not merged into HEAD or
+  # its upstream -- which is very nearly reap's own "landed" rule, enforced independently by
+  # git. If it refuses, the branch stays and we say so; there is no forcing here either.
+  if [ -n "$branch" ] && [ "$branch" != '(detached)' ]; then
+    if git -C "$main" branch -d "$branch" >/dev/null 2>&1; then
+      printf 'reaped %s (branch %s deleted)\n' "$name" "$branch"
+    else
+      printf 'reaped %s (branch %s kept: git will not safely delete it)\n' "$name" "$branch"
+    fi
+    return 0
+  fi
+
   printf 'reaped %s\n' "$name"
+}
+
+# done [<name|path>] -- the whole cleanup, from INSIDE the session it is cleaning up.
+#
+# You cannot do this by hand, and that is the entire reason this verb exists: `tmux
+# kill-session` takes your own shell with it, so any `wt reap` you chained after it never
+# runs. The work has to be handed to something that outlives you, and the tmux SERVER is
+# right there -- `run-shell -b` is a persistent daemon's job queue. wind-down has done it
+# this way since the macOS nohup bug; this is the same trick with a name.
+#
+# The safety checks happen HERE, before anything is killed, because afterwards there is no
+# terminal left to print a refusal to. A worktree holding real work must be refused while
+# you can still read why.
+cmd_done() {
+  local target="${1:-$PWD}" path name reason
+
+  case "$target" in
+  */*) path="$(realpath "$target" 2>/dev/null)" ;;
+  *) path="$(realpath "$WT_ROOT/$target" 2>/dev/null)" ;; # a bare name means a worktree
+  esac
+  [ -n "$path" ] && [ -d "$path" ] || panel_die "no such worktree: $target"
+
+  # Climb to the worktree ROOT. The keybinding passes #{pane_current_path}, which is wherever
+  # you happened to cd to -- and from <worktree>/tests, basename gives "tests", so the kill
+  # would miss and `git worktree remove` would simply error. wind-down learned this the same
+  # way; --show-toplevel is the answer in both.
+  path="$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" ||
+    panel_die "not inside a git worktree: $target"
+  name="$(basename "$path")"
+
+  # Ask about the WORK, not the session -- the session is the thing we are about to kill, so
+  # wt_reap_reason would refuse every time by design.
+  reason=$(wt_work_reason "$path") || panel_die "kept $name: $reason"
+
+  if ! panel_in_tmux && ! wt_session_exists "$name"; then
+    # Nothing to defer around: no session to kill and no shell to lose.
+    cmd_reap "$path"
+    return
+  fi
+
+  local me logf
+  me="$(printf '%q' "$SELF")"
+  logf="$WT_LOG"
+  mkdir -p "$(dirname "$logf")" 2>/dev/null
+
+  # kill THEN reap, in one chain on the server. The deferred reap re-runs the FULL policy
+  # including the live-session check -- which passes honestly by then, because the session it
+  # would have objected to is the one just killed. Nothing is waived anywhere.
+  tmux run-shell -b "sleep 1; tmux kill-session -t '=$name' 2>/dev/null; $me reap '$path' >> '$logf' 2>&1" 2>/dev/null ||
+    panel_die "could not schedule the teardown on the tmux server"
+
+  printf 'done: killing %s and reaping its worktree (log: %s)\n' "$name" "$logf"
 }
 
 cmd_gc() {
@@ -493,6 +588,10 @@ case "${1:-}" in
 new)
   shift
   cmd_new "$@"
+  ;;
+done)
+  shift
+  cmd_done "$@"
   ;;
 reap)
   shift

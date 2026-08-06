@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# worktree.sh -- the verb contract, as a subprocess. Prefix+F opens the picker; Prefix+C-f
-# runs `wt new`; the Stop hook runs `wt reap`. None of those callers can see a function, so
+# worktree.sh -- the verb contract, as a subprocess. Prefix+F runs `wt new`, Prefix+X runs
+# `wt done`, and the Stop hook runs `wt reap`. None of those callers can see a function, so
 # what they depend on is exactly this: exit codes, rows on stdout, and which tmux commands
 # get issued.
 #
@@ -46,7 +46,7 @@ make_repo() {
   export ORIGIN MAIN
 }
 
-# add_wt <name> [-b branch] -- a linked worktree off origin/main
+# add_wt <name> [branch] -- a linked worktree off origin/main
 add_wt() {
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/$1" -b "${2:-$1}" origin/main
 }
@@ -249,4 +249,138 @@ add_wt() {
   assert_success
   assert_output --partial 'sibling-wt'
   [ -d "$SANDBOX/sibling-wt" ] || fail "a dry run deleted a worktree"
+}
+
+# ── done: the one-shot teardown ──────────────────────────────────────────────
+#
+# `done` exists because you CANNOT do this by hand from inside the session: `tmux
+# kill-session` takes your shell with it, so a chained `wt reap` never runs. So the two
+# things worth pinning are that the refusal happens BEFORE anything is killed (afterwards
+# there is no terminal to print it to), and that the kill and the reap go to the tmux server
+# in that order.
+
+@test "done REFUSES a dirty worktree and kills NOTHING" {
+  # The critical one. A refusal that arrives after the session is dead is not a refusal --
+  # the terminal that would have shown it is gone, and so is the worktree.
+  make_repo
+  add_wt repo-agent-1
+  printf 'edit\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  # TMUX set, so `done` takes the DEFERRED path -- the one where the check has to happen
+  # up front. Without this the test passes through the direct-reap fallback, which re-checks
+  # anyway, and asserts nothing about the pre-kill guard.
+  export TMUX=fake
+
+  run "$WT" done "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'dirty'
+  [ -d "$WT_ROOT/repo-agent-1" ] || fail "refused and deleted it anyway"
+  assert_not_called 'kill-session'
+  assert_not_called 'run-shell'
+}
+
+@test "done REFUSES a worktree with unpushed commits and kills NOTHING" {
+  make_repo
+  add_wt repo-agent-1
+  printf 'work\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am work
+  export TMUX=fake
+
+  run "$WT" done "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'unpushed'
+  assert_not_called 'kill-session'
+}
+
+@test "done schedules the kill and THEN the reap, backgrounded on the server" {
+  # Order is the whole mechanism: the reap re-runs the full policy, including the
+  # live-session rule, which only passes once the kill has landed.
+  make_repo
+  add_wt repo-agent-1
+  export TMUX=fake
+
+  run "$WT" done "$WT_ROOT/repo-agent-1"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  assert_output --partial 'run-shell -b'
+  assert_output --partial "kill-session -t '=repo-agent-1'"
+  assert_output --partial 'reap'
+
+  local chain="$output"
+  case "${chain%%kill-session*}" in
+  *reap*) fail "the reap is scheduled BEFORE the kill -- it would refuse every time" ;;
+  esac
+}
+
+@test "done from a SUBDIRECTORY still targets the worktree root" {
+  # The keybinding passes #{pane_current_path}, which is wherever you cd'd to. From
+  # <worktree>/tests, a naive basename gives "tests": the kill misses and the remove errors.
+  make_repo
+  add_wt repo-agent-1
+  mkdir -p "$WT_ROOT/repo-agent-1/tests"
+  export TMUX=fake
+
+  run "$WT" done "$WT_ROOT/repo-agent-1/tests"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "kill-session -t '=repo-agent-1'"
+  refute_output --partial "'=tests'"
+}
+
+@test "done takes a bare worktree NAME, not just a path" {
+  make_repo
+  add_wt repo-agent-1
+  export TMUX=fake
+  run "$WT" done repo-agent-1
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "kill-session -t '=repo-agent-1'"
+}
+
+@test "done outside tmux with no session reaps directly instead of deferring" {
+  make_repo
+  add_wt repo-agent-1
+  run "$WT" done "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "nothing was actually removed"
+}
+
+# ── reap takes the branch with it ────────────────────────────────────────────
+
+@test "reap deletes the branch it just freed, so the slot is reusable" {
+  # Without this the numbers ratchet forever: wt_next_n counts an existing `agent-N` branch
+  # as an occupied slot, so four reaped worktrees pushed the next one to agent-5 with
+  # nothing on disk.
+  make_repo
+  add_wt repo-agent-1 agent-1
+  run "$WT" reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'branch agent-1 deleted'
+  run git -C "$MAIN" show-ref --verify --quiet refs/heads/agent-1
+  assert_failure
+  # and the slot is genuinely free again
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-1
+}
+
+@test "reap KEEPS a branch git will not safely delete, and says so" {
+  # `-d`, never `-D`. git's safe-delete is a second, independent check on the same question
+  # reap already asked -- if the two ever disagree, the branch survives.
+  make_repo
+  # --no-track, so the branch has no upstream to vouch for it. Its commit then goes straight
+  # onto origin/main, which is what makes the two checks genuinely disagree: reap sees HEAD
+  # as an ancestor of origin/main and proceeds, while `git branch -d` sees a branch merged
+  # into neither the LOCAL HEAD (still behind) nor any upstream, and declines.
+  git -C "$MAIN" worktree add --quiet --no-track -b agent-1 "$WT_ROOT/repo-agent-1" origin/main
+  printf 'work\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin HEAD:main
+  git -C "$MAIN" fetch --quiet origin
+
+  run "$WT" reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'branch agent-1 kept'
+  [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "the worktree should still have been removed"
 }
