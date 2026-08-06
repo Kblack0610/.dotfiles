@@ -133,6 +133,51 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_not_called "detach-client"
 }
 
+# ── The wiring ───────────────────────────────────────────────────────────────
+#
+# Everything above drives `tmx` verbs directly, and that is precisely how the first cut of
+# this feature shipped dead: the recorder lived on `_enter`, the tests drove `hop`/`root`
+# which reach it, and the KEYS bound `detach-client -E "tmx land ..."` which does not. Eight
+# green tests over a key that did nothing.
+#
+# So these read .tmux.conf and run whatever it actually binds. No assumption about which
+# verb that is - if someone rebinds a hop key back to `land`, or to anything else that skips
+# the recorder, the crumb stops being written and these fail.
+
+# bound_command <key> -- the quoted shell command .tmux.conf binds to a prefix key.
+bound_command() {
+  sed -nE "s/^bind $1 (run-shell|detach-client -E) \"(.*)\"$/\2/p" "$REPO_ROOT/.tmux.conf"
+}
+
+@test "every server-hop key binds a tmx command at all" {
+  # Guards the guard: if the parse silently returns nothing, every test below would pass
+  # by vacuum. An empty list is failure, not "all clear".
+  local key found=0
+  for key in N H C-n C-h; do
+    local cmd; cmd="$(bound_command "$key")"
+    [ -n "$cmd" ] || fail "no tmx command parsed for prefix key '$key' - has the binding form changed?"
+    [[ "$cmd" == tmx\ * ]] || fail "prefix '$key' binds '$cmd', which is not a tmx command"
+    found=$((found + 1))
+  done
+  assert_equal "$found" 4
+}
+
+@test "each server-hop key records where it left, so L has something to go back to" {
+  local key
+  for key in N H C-n C-h; do
+    local cmd; cmd="$(bound_command "$key")"
+    rm -f "$BACK_FILE"
+    at lab work 4
+    # Word-split on purpose: the binding is a command line, and running it as one is the
+    # whole point of this test.
+    # shellcheck disable=SC2086
+    run "$TMX" ${cmd#tmx }
+    assert_success
+    [ -s "$BACK_FILE" ] || fail "prefix '$key' runs '$cmd' and recorded NOTHING - Prefix+L will be dead after it"
+    assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
+  done
+}
+
 @test "a record pointing at the session we are already in falls back to last-session" {
   # Reachable by navigating back by hand (sesh, Prefix+w) after a hop. Switching to where
   # you already are is a no-op that would also strand you; stand aside instead.

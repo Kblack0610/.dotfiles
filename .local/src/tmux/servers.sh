@@ -254,6 +254,13 @@ _dest_session() {
 # Remember where we are leaving from. Called from _enter, which every hop goes through -
 # the keys, `tmx <server>`, `pick` and `pick-all` - so a jump made from the Prefix+A list
 # is just as reversible as one made from a key.
+#
+# LOAD-BEARING: a key must bind `tmx hop|root`, never `detach-client -E "tmx land ..."`.
+# land is the FAR side of the hop; it runs after the client is gone, so there is nothing
+# left for it to read. Binding land directly is how Prefix+L shipped dead - the recorder
+# sat on a path the keys did not take, and every test drove the path they did not take
+# either. tmx_back.bats now runs whatever .tmux.conf actually binds, so this cannot recur
+# silently.
 _record_back() {
   local dest_srv="${1:-}" dest_sess="${2:-}" loc srv sess win
   loc="$(_current_loc)" || return 0
@@ -398,7 +405,10 @@ cmd_back() {
   if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] ||
      ! tmux -L "$srv" has-session 2>/dev/null ||
      { [ "$srv" = "${cur_srv:-}" ] && [ "$sess" = "${cur_sess:-}" ]; }; then
-    [ -n "${TMUX:-}" ] && exec tmux switch-client -l 2>/dev/null
+    # Not exec'd, and the status is swallowed on purpose. switch-client -l exits 1 when the
+    # client has no last session, and run-shell surfaces a non-zero child as the popup
+    # `'tmx back' returned 1` - which reads as a broken key rather than "nowhere to go".
+    [ -n "${TMUX:-}" ] && tmux switch-client -l 2>/dev/null
     return 0
   fi
 
