@@ -6,9 +6,10 @@
 # finger. So the bind is checked the same way panel_conformance.bats checks the popups:
 # as data, cross-referenced against the filesystem.
 #
-# The rekey is the risky half. Moving mail off prefix+e to make room means TWO things must
-# hold at once -- the editor gained the key AND mail did not lose its own -- and each is
-# invisible from the other's assertion.
+# The editor deliberately took a key nothing else wanted (Space, whose stock binding is
+# next-layout), so no existing surface was rebound to make room. That is worth ASSERTING
+# rather than trusting: an earlier revision of this feature moved mail off prefix+e, and a
+# rekey is exactly the kind of change that silently strands a key you use daily.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -22,10 +23,16 @@ setup() {
 # Every root-table binding, as "<key><TAB><command>". Flags other than -n are not used by
 # the binds under test, so this stays deliberately small rather than duplicating
 # panel_conf_bindings' full parser.
+#
+# "Is this a table bind" is decided by WHERE -T sits, not by whether the line contains one.
+# `bind -T tags i ...` binds INTO a table; `bind a switch-client -T tags` is an ordinary root
+# bind whose COMMAND happens to name one. A naive !/-T/ filter drops the second, which made
+# prefix+a look unbound and this file report that the editor had displaced it.
 root_binds() {
   awk '
-    /^[[:space:]]*(bind|bind-key)[[:space:]]/ && !/-T[[:space:]]/ {
+    /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
       line = $0
+      if (line ~ /^[[:space:]]*(bind|bind-key)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-T[[:space:]]/) next
       n = split(line, F, /[[:space:]]+/)
       key = ""
       for (i = 2; i <= n; i++) {
@@ -54,26 +61,34 @@ bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
 
 # ── The editor keys ──────────────────────────────────────────────────────────
 
-@test "Alt+e toggles the editor with no prefix" {
-  assert_equal "$(bind_for M-e)" "run-shell \"\$HOME/$EDITOR_REL toggle '#{window_id}'\""
-  grep -qE '^[[:space:]]*bind -n M-e ' "$TMUX_CONF" \
-    || fail "M-e is bound but not with -n -- it would need the prefix, defeating the point"
+@test "prefix+Space toggles the editor" {
+  assert_equal "$(bind_for Space)" "run-shell \"\$HOME/$EDITOR_REL toggle '#{window_id}'\""
 }
 
-@test "both binds hand the editor the window the key was pressed in" {
+@test "the bind hands the editor the window the key was pressed in" {
   # Not cosmetic. run-shell leaves TMUX_PANE EMPTY, so a toggle with no argument reads
   # tmux's current window -- which ensure's move-window has already changed by the time the
   # second press asks, and the toggle-back then goes to the wrong window. Dropping
   # '#{window_id}' from the bind reintroduces that silently, since the verb still runs.
-  local k
-  for k in M-e e; do
-    grep -qF "toggle '#{window_id}'" <<< "$(bind_for "$k")" \
-      || fail "bind $k does not pass '#{window_id}': $(bind_for "$k")"
-  done
+  grep -qF "toggle '#{window_id}'" <<< "$(bind_for Space)" \
+    || fail "the editor bind does not pass '#{window_id}': $(bind_for Space)"
 }
 
-@test "prefix+e is the same toggle, so the two keys cannot drift apart" {
-  assert_equal "$(bind_for e)" "$(bind_for M-e)"
+@test "the editor is bound on exactly one key" {
+  # Two keys for one action drift: the second gets edited and the first does not. If a
+  # second key is ever wanted, this number is the deliberate place to change it.
+  local n
+  n="$(root_binds | awk -F'\t' '$2 ~ /editor\.sh/' | grep -c .)"
+  [ "$n" -eq 1 ] || fail "editor.sh is bound to $n keys, expected 1"
+}
+
+@test "the editor takes NO key from any existing surface" {
+  # Space's stock binding is next-layout, which is tmux's own and not a surface in this
+  # repo. Every other key in .tmux.conf must still point where it did.
+  local k
+  for k in e i I s o t p g C w m a f S A W r N H; do
+    [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
+  done
 }
 
 @test "the editor is a window, never a display-popup" {
@@ -87,27 +102,36 @@ bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
   assert_output '0'
 }
 
-# ── The rekey ────────────────────────────────────────────────────────────────
+# ── Mail, which this feature must NOT have touched ───────────────────────────
 
-@test "mail moved to prefix+E and is still bound" {
+@test "mail is still on prefix+e, exactly where it was" {
   local mail
-  mail="$(bind_for E)"
-  [ -n "$mail" ] || fail "prefix+E is not bound -- mail was dropped rather than moved"
-  grep -qF 'aerc' <<< "$mail" || fail "prefix+E is bound to something that is not mail: $mail"
+  mail="$(bind_for e)"
+  [ -n "$mail" ] || fail "prefix+e is not bound -- mail was dropped"
+  grep -qF 'aerc' <<< "$mail" || fail "prefix+e is bound to something that is not mail: $mail"
 }
 
-@test "nothing else still claims prefix+e" {
-  # The failure this catches is a duplicate bind: tmux takes the LAST one silently, so a
-  # leftover mail bind further down the file would beat the editor with no diagnostic.
+@test "prefix+e is bound exactly once" {
+  # A duplicate bind is silent: tmux keeps the LAST one, so a stray editor bind on e
+  # further down the file would beat mail with no diagnostic at load.
   local n
   n="$(root_binds | awk -F'\t' '$1 == "e"' | grep -c .)"
   [ "$n" -eq 1 ] || fail "prefix+e is bound $n times -- tmux silently keeps only the last"
 }
 
-@test "aerc is bound exactly once, so the move did not leave a copy behind" {
+@test "aerc is bound exactly once, and not on a second key" {
   local n
   n="$(grep -cE '^[[:space:]]*(bind|bind-key)[[:space:]].*aerc' "$TMUX_CONF")"
   [ "$n" -eq 1 ] || fail "aerc appears in $n bindings, expected 1"
+}
+
+@test "the editor claimed no Alt key, so nvim and the shell still see them" {
+  # A root-table (-n) bind is swallowed by tmux everywhere. The pane nav owns M-hjkl/HJKL
+  # by design; the editor must not have quietly added to that set.
+  local extra
+  extra="$(grep -E '^[[:space:]]*bind(-key)? -n ' "$TMUX_CONF" \
+    | grep -vE ' -n M-[hjklHJKL] ' | grep -c . || true)"
+  [ "$extra" -eq 0 ] || fail "$extra unexpected no-prefix binding(s) -- a global key was taken"
 }
 
 # ── What the binds point at ──────────────────────────────────────────────────
