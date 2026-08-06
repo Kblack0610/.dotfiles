@@ -228,28 +228,36 @@ conf_server() {
 }
 conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
 
-@test "the real .tmux.conf still loads, and registers both editor keys" {
+@test "the real .tmux.conf still loads, and registers the editor on prefix+Space" {
   conf_server || fail ".tmux.conf did not load -- a parse error drops every bind after it"
 
-  # prefix+e, and Alt+e in the ROOT table (no prefix). The table is asserted, not just the
-  # key: `bind e` and `bind -n e` are different bindings and only one of them is the point.
-  local pfx root
-  pfx="$(conf_tmux list-keys -T prefix | awk '$4 == "e" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  root="$(conf_tmux list-keys -T root | awk '$4 == "M-e" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-
+  # The TABLE is asserted, not just the key: `bind Space` and `bind -n Space` are different
+  # bindings and only the prefix one is the point.
+  local pfx
+  pfx="$(conf_tmux list-keys -T prefix | awk '$4 == "Space" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
   grep -qF "editor.sh toggle '#{window_id}'" <<< "$pfx" \
-    || fail "prefix+e did not register as the editor toggle: [$pfx]"
-  grep -qF "editor.sh toggle '#{window_id}'" <<< "$root" \
-    || fail "Alt+e did not register in the root table: [$root]"
+    || fail "prefix+Space did not register as the editor toggle: [$pfx]"
 
   conf_tmux kill-server 2>/dev/null || true
 }
 
-@test "mail really is on prefix+E after the rekey, per tmux itself" {
+@test "mail is still on prefix+e, per tmux itself" {
+  # The feature took a free key rather than rekeying anything. Asserted against the live
+  # binding table, not the file, because that is what actually decides what your finger does.
   conf_server
   local e
-  e="$(conf_tmux list-keys -T prefix | awk '$4 == "E" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  grep -qF 'aerc' <<< "$e" || fail "prefix+E is not mail: [$e]"
+  e="$(conf_tmux list-keys -T prefix | awk '$4 == "e" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
+  grep -qF 'aerc' <<< "$e" || fail "prefix+e is not mail: [$e]"
+  conf_tmux kill-server 2>/dev/null || true
+}
+
+@test "the editor took no key in the root table" {
+  # A root-table bind is consumed by tmux before nvim or the shell ever sees it. Only the
+  # pane nav is allowed to do that here.
+  conf_server
+  local rogue
+  rogue="$(conf_tmux list-keys -T root | grep -F 'editor.sh' | grep -c . || true)"
+  [ "$rogue" -eq 0 ] || fail "the editor is bound in the root table -- it swallows a global key"
   conf_tmux kill-server 2>/dev/null || true
 }
 
