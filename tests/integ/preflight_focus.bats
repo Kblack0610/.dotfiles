@@ -81,3 +81,49 @@ context() {
   refute_output --partial 'focus_daily_note'
   refute_output --partial 'command not found'
 }
+
+# --- where the nudge sends an agent's work --------------------------------------------
+#
+# The turn-1 nudge and the turn-N Stop gate (86-focus-reconcile.sh) state the same rule
+# from both ends and MUST agree. #204 taught the gate to accept a `ptask:` write but left
+# this hook saying "notes focus add", so an agent was instructed to use the human's list
+# and then blocked for having used it. These pin the halves together.
+#
+# `focus_daily_note` falls back to $HOME/.notes/journal/daily/<date>.md when `notes path
+# daily` prints nothing, which is exactly what the stub does -- so seeding that file is
+# enough to drive either branch.
+
+seed_focus() {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
+  mkdir -p "$HOME/.notes/journal/daily"
+  printf '# %s\n\n## Focus\n%s\n\n## Notes\n' \
+    "$(date +%F)" "${1:-}" > "$HOME/.notes/journal/daily/$(date +%F).md"
+}
+
+@test "with Focus items the nudge sends PROJECT work to ptask, not to Focus" {
+  seed_focus '- [ ] a human task'
+  run context
+  assert_output --partial 'a human task'
+  assert_output --partial 'notes ptask <project> add|start|done'
+  assert_output --partial 'notes board'
+}
+
+@test "with Focus items the nudge never tells an agent to add to Focus" {
+  # NEGATIVE CONTROL for the whole change. Before it, this line read
+  # "If not, \`notes focus add\`" -- the instruction that put five of six items on the
+  # human's 2026-08-05 list. If `notes focus add` ever comes back as advice here, the
+  # turn-1 half has silently reverted to disagreeing with the gate.
+  seed_focus '- [ ] a human task'
+  run context
+  refute_output --partial 'notes focus add'
+}
+
+@test "an empty Focus is reported as fine, and still points at the board" {
+  # The old empty-state text ("capture what we're on") read as an instruction to fill the
+  # human's list. An agent with nothing on Focus must be sent to ptask, not to `notes today`.
+  seed_focus ''
+  run context
+  assert_output --partial 'none set'
+  assert_output --partial 'notes ptask <project> add|start|done'
+  refute_output --partial 'notes focus add'
+}
