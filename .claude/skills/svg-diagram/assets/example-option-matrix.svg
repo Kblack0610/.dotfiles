@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900"
+     font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <!-- Exemplar for the OPTION MATRIX house style. See references/style-option-matrix.md.
+       Warm paper palette, one card per option, fixed columns that ask the same question of
+       each, one red accent per row for the catch. Transparent canvas: render with white. -->
+  <style>
+    .t-title   { font-size:20px; font-weight:700; fill:#1a1a1a; text-anchor:middle; letter-spacing:0.6px; }
+    .t-sub     { font-size:12.5px; fill:#6b6b6b; text-anchor:middle; }
+    .eyebrow   { font-size:10.5px; font-weight:600; fill:#8a8a8a; letter-spacing:1.4px; }
+    .rule      { stroke:#d9cec2; stroke-width:1; }
+    .card      { fill:none; stroke:#d9cec2; stroke-width:1.2; }
+    .seam      { stroke:#e8e0d6; stroke-width:1; }
+    .opt-name  { font-size:17px; font-weight:700; fill:#1a1a1a; }
+    .body      { font-size:11.5px; fill:#55565a; }
+    .lead      { font-size:11px; fill:#5a5a5a; }
+    .note      { font-size:11px; fill:#6a6b6f; }
+    .box       { fill:none; stroke:#d9cec2; stroke-width:1.2; }
+    .box.warn  { stroke:#c8452c; }
+    .box.risk  { stroke:#c8452c; stroke-dasharray:6 4; }
+    .b-title   { font-size:11.5px; font-weight:700; fill:#1a1a1a; text-anchor:middle; }
+    .b-sub     { font-size:10.5px; fill:#6a6b6f; text-anchor:middle; }
+    .b-accent  { font-size:10.5px; font-weight:700; fill:#c8452c; text-anchor:middle; }
+    .arrow     { fill:none; stroke:#1a1a1a; stroke-width:1.6; marker-end:url(#tip); }
+    .foot-lead { font-size:11.5px; font-weight:700; fill:#1a1a1a; }
+    .mono      { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:11.5px; fill:#1a1a1a; }
+  </style>
+  <defs>
+    <marker id="tip" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#1a1a1a"/>
+    </marker>
+  </defs>
+
+  <!-- ============ masthead ============ -->
+  <text class="t-title" x="620" y="40">HOW A CONFIG FILE REACHES A RUNNING SERVICE</text>
+  <text class="t-sub"   x="620" y="66">One file, about 4 KB. The question is who puts it there, and what it costs to change it later.</text>
+
+  <text class="eyebrow" x="52"   y="104">THE OPTION</text>
+  <text class="eyebrow" x="418"  y="104">HOW THE FILE GETS ONTO THE HOST</text>
+  <text class="eyebrow" x="1188" y="104" text-anchor="end">CHANGING IT AFTERWARDS</text>
+  <line class="rule" x1="52" y1="118" x2="1188" y2="118"/>
+
+  <!-- ============ row 1: bake it in ============ -->
+  <rect class="card" x="52" y="136" width="1136" height="176" rx="14"/>
+  <line class="seam" x1="396" y1="136" x2="396" y2="312"/>
+  <line class="seam" x1="900" y1="136" x2="900" y2="312"/>
+
+  <text class="opt-name" x="76" y="172">1. Bake it into</text>
+  <text class="opt-name" x="76" y="194">the service image</text>
+  <text class="body" x="76" y="224">The config rides along inside the service</text>
+  <text class="body" x="76" y="239">image. Nothing copies it at run time, and</text>
+  <text class="body" x="76" y="254">nothing on the host has to be right.</text>
+
+  <rect class="box" x="418" y="187" width="134" height="74" rx="8"/>
+  <text class="b-title" x="485" y="216">Baked at build</text>
+  <text class="b-sub"   x="485" y="236">part of the image</text>
+
+  <rect class="box warn" x="584" y="187" width="134" height="74" rx="8"/>
+  <text class="b-title"  x="651" y="208">Written to</text>
+  <text class="b-sub"    x="651" y="226">the config path</text>
+  <text class="b-accent" x="651" y="244">on first start only</text>
+
+  <rect class="box" x="750" y="187" width="134" height="74" rx="8"/>
+  <text class="b-title" x="817" y="216">Stays that way</text>
+  <text class="b-sub"   x="817" y="236">for the pod's life</text>
+
+  <path class="arrow" d="M558,224 L577,224"/>
+  <path class="arrow" d="M724,224 L743,224"/>
+
+  <text class="body" x="924" y="176">A new image only reaches a pod when it</text>
+  <text class="body" x="924" y="191">restarts. Rebuilding does not touch a</text>
+  <text class="body" x="924" y="206">service that is already running.</text>
+  <text class="body" x="924" y="234">To move one onto a new config, that pod</text>
+  <text class="body" x="924" y="249">has to be recycled. A restart, per</text>
+  <text class="body" x="924" y="264">service, coordinated with its owner.</text>
+
+  <!-- ============ row 2: bake it in, plus a second way in ============ -->
+  <rect class="card" x="52" y="332" width="1136" height="240" rx="14"/>
+  <line class="seam" x1="396" y1="332" x2="396" y2="572"/>
+  <line class="seam" x1="900" y1="332" x2="900" y2="572"/>
+
+  <text class="opt-name" x="76" y="372">2. Bake it in, and</text>
+  <text class="opt-name" x="76" y="394">let the control plane</text>
+  <text class="opt-name" x="76" y="416">replace it</text>
+  <text class="body" x="76" y="446">Everything option 1 does, plus a second</text>
+  <text class="body" x="76" y="461">way in. Operators see exactly what they</text>
+  <text class="body" x="76" y="476">see in option 1: the file is just there.</text>
+  <text class="body" x="76" y="504">The difference is on our side.</text>
+
+  <text class="lead" x="418" y="356">Two ways in, one result. The built-in copy covers a first start with</text>
+  <text class="lead" x="418" y="370">no network; the fetch is how we update it.</text>
+
+  <rect class="box" x="418" y="386" width="200" height="76" rx="8"/>
+  <text class="b-title" x="518" y="412">In the image</text>
+  <text class="b-sub"   x="518" y="430">exactly option 1: written</text>
+  <text class="b-sub"   x="518" y="446">at first start</text>
+
+  <rect class="box warn" x="418" y="478" width="200" height="88" rx="8"/>
+  <text class="b-title"  x="518" y="502">From the control plane</text>
+  <text class="b-sub"    x="518" y="520">the desired state names the</text>
+  <text class="b-sub"    x="518" y="536">file and its checksum, and</text>
+  <text class="b-accent" x="518" y="554">agents re-read it every minute</text>
+
+  <rect class="box" x="678" y="430" width="204" height="86" rx="8"/>
+  <text class="mono"  x="780" y="456" text-anchor="middle">config.json on disk</text>
+  <text class="b-sub" x="780" y="476">the built-in copy from day</text>
+  <text class="b-sub" x="780" y="492">one, the fetched one once</text>
+  <text class="b-sub" x="780" y="508">there is one</text>
+
+  <path class="arrow" d="M624,424 L671,450"/>
+  <path class="arrow" d="M624,520 L671,496"/>
+
+  <text class="body" x="924" y="372">We publish a new copy and point the</text>
+  <text class="body" x="924" y="387">desired state at it. Agents pick it up on</text>
+  <text class="body" x="924" y="402">their next check, so about a minute.</text>
+  <text class="body" x="924" y="430">Desired state is per service, so a new</text>
+  <text class="body" x="924" y="445">version can go to one cluster, be</text>
+  <text class="body" x="924" y="460">confirmed in the data, then go wider.</text>
+  <text class="body" x="924" y="488">Build cost: one new field in the desired</text>
+  <text class="body" x="924" y="503">state, an endpoint that serves the file,</text>
+  <text class="body" x="924" y="518">and a fetch-and-verify step in the agent.</text>
+
+  <!-- ============ row 3: fetch it at start ============ -->
+  <rect class="card" x="52" y="592" width="1136" height="186" rx="14"/>
+  <line class="seam" x1="396" y1="592" x2="396" y2="778"/>
+  <line class="seam" x1="900" y1="592" x2="900" y2="778"/>
+
+  <text class="opt-name" x="76" y="632">3. Fetch it at start</text>
+  <text class="opt-name" x="76" y="654">from a URL of ours</text>
+  <text class="body" x="76" y="684">The ordinary pattern: the process pulls</text>
+  <text class="body" x="76" y="699">its config from a public address. The file</text>
+  <text class="body" x="76" y="714">is never on the host at all.</text>
+
+  <rect class="box" x="418" y="629" width="134" height="74" rx="8"/>
+  <text class="b-title" x="485" y="658">Process starts</text>
+  <text class="b-sub"   x="485" y="678">it needs config now</text>
+
+  <rect class="box risk" x="584" y="629" width="134" height="74" rx="8"/>
+  <text class="b-title"  x="651" y="650">Network, then</text>
+  <text class="b-sub"    x="651" y="668">our endpoint</text>
+  <text class="b-accent" x="651" y="686">both up right then</text>
+
+  <rect class="box" x="750" y="629" width="134" height="74" rx="8"/>
+  <text class="b-title" x="817" y="658">It arrives,</text>
+  <text class="b-sub"   x="817" y="678">or it does not</text>
+
+  <path class="arrow" d="M558,666 L577,666"/>
+  <path class="arrow" d="M724,666 L743,666"/>
+
+  <text class="note" x="418" y="740">The host keeps running through an outage. This is the one</text>
+  <text class="note" x="418" y="754">option where startup needs the network.</text>
+
+  <text class="body" x="924" y="632">We replace the file on our server. Every</text>
+  <text class="body" x="924" y="647">process picks it up on its next start,</text>
+  <text class="body" x="924" y="662">with no image rebuild and no operator.</text>
+  <text class="body" x="924" y="690">Their network team has to allow the</text>
+  <text class="body" x="924" y="705">domain, per environment.</text>
+  <text class="body" x="924" y="733">An outage on our side reaches every</text>
+  <text class="body" x="924" y="748">cluster at the same time.</text>
+
+  <!-- ============ footer: what is the same either way ============ -->
+  <line class="rule" x1="52" y1="812" x2="1188" y2="812"/>
+  <text class="foot-lead" x="52"  y="840">What a service owner writes, the same under options 1 and 2:</text>
+  <text class="mono"      x="478" y="840">load("./config.json")</text>
+  <text class="note"      x="646" y="840">in the entrypoint, and nothing else.</text>
+  <text class="note" x="52" y="864">The image unpacks to /opt/app on the host, and the config is written into that same folder, so a plain relative path finds it.</text>
+  <text class="note" x="52" y="882">Under option 3 the call points at a full https:// address instead, and nothing is written to disk.</text>
+</svg>
