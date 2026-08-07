@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 972"
+     font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <!-- Exemplar for the LANE TIMELINE house style. See references/style-lane-timeline.md.
+       X is time (left to right), Y is proximity to the customer (higher is closer).
+       Colour is role, held identically across panels. Red is the emergency path, and
+       nothing else. Dashed means a merge running against the normal flow.
+       Transparent canvas: render on a light grey page for the printed look, e.g.
+       rsvg-convert -b '#f4f5f6' -z 2 example-lane-timeline.svg -o out.png -->
+  <style>
+    .h-title    { font-size:25px; font-weight:700; fill:#16181d; }
+    .h-sub      { font-size:13px; fill:#6b7280; }
+    .panel      { fill:#ffffff; stroke:#e3e5e8; stroke-width:1.2; }
+    .p-head     { font-size:13px; font-weight:700; fill:#16181d; }
+    .p-sub      { font-size:13px; font-weight:400; fill:#6b7280; }
+    .lane       { stroke-width:2.2; fill:none; }
+    .rail       { fill:none; stroke-width:2.2; }
+    .rail.dash  { stroke-dasharray:6 5; }
+    .dot        { stroke:none; }
+    .lane-name  { font-size:12px; font-weight:700; text-anchor:end; }
+    .lane-note  { font-size:9.5px; font-style:italic; fill:#6b7280; text-anchor:end; }
+    .tag        { font-size:10.5px; font-weight:700; fill:#16181d; text-anchor:middle; }
+    .tag.hot    { fill:#c62828; }
+    .ann        { font-size:10.5px; }
+    .strip-head { font-size:15px; font-weight:700; fill:#c62828; }
+    .card       { fill:#ffffff; stroke:#e3e5e8; stroke-width:1.2; }
+    .c-title    { font-size:12px; font-weight:700; fill:#16181d; }
+    .c-body     { font-size:10.5px; fill:#55565a; }
+    .c-warn     { font-size:10.5px; fill:#c62828; }
+  </style>
+
+  <!-- ============ masthead ============ -->
+  <text class="h-title" x="32" y="44">Branching strategies - and where the hotfix goes</text>
+  <text class="h-sub"   x="32" y="70">Same work, three release philosophies. The higher the lane, the closer to the customer. Red = the emergency patch path.</text>
+
+  <!-- ============ panel 1: release-branch flow ============ -->
+  <rect class="panel" x="32" y="92" width="1116" height="272" rx="8"/>
+  <text class="p-head" x="54" y="124">1 - Release-branch flow<tspan class="p-sub" dx="10">Long-lived develop plus versioned releases. Fits shipped software: desktop, mobile, on-prem, firmware.</tspan></text>
+
+  <!-- lanes -->
+  <line class="lane" x1="200" y1="178" x2="1120" y2="178" style="stroke:#16181d"/>
+  <line class="lane" x1="200" y1="296" x2="1120" y2="296" style="stroke:#2563eb"/>
+
+  <text class="lane-name" x="182" y="182" style="fill:#16181d">main</text>
+  <text class="lane-note" x="182" y="195">what the customer runs</text>
+  <text class="lane-name" x="182" y="216" style="fill:#c62828">hotfix/*</text>
+  <text class="lane-note" x="182" y="229">cut from the tag</text>
+  <text class="lane-name" x="182" y="254" style="fill:#15803d">release/*</text>
+  <text class="lane-note" x="182" y="267">stabilise, no new work</text>
+  <text class="lane-name" x="182" y="300" style="fill:#2563eb">develop</text>
+  <text class="lane-note" x="182" y="313">the integration branch</text>
+  <text class="lane-name" x="182" y="334" style="fill:#7c3aed">feature/*</text>
+  <text class="lane-note" x="182" y="347">days to a week</text>
+
+  <!-- feature: branch off develop, merge back -->
+  <path class="rail" style="stroke:#7c3aed" d="M290,296 C304,296 306,330 320,330 L 486,330 C500,330 516,296 530,296"/>
+  <circle class="dot" cx="360" cy="330" r="6" style="fill:#7c3aed"/>
+  <circle class="dot" cx="440" cy="330" r="6" style="fill:#7c3aed"/>
+  <text class="ann" x="400" y="350" text-anchor="middle" style="fill:#7c3aed">feature work</text>
+
+  <!-- release: off develop, stabilise, up into main -->
+  <path class="rail" style="stroke:#15803d" d="M596,296 C624,296 634,250 662,250 L 946,250 C974,250 962,178 990,178"/>
+  <circle class="dot" cx="700" cy="250" r="6" style="fill:#15803d"/>
+  <circle class="dot" cx="800" cy="250" r="6" style="fill:#15803d"/>
+  <text class="ann" x="750" y="240" text-anchor="middle" style="fill:#15803d">stabilise / QA</text>
+  <!-- back-merge: runs against the flow, so dashed -->
+  <path class="rail dash" style="stroke:#15803d" d="M900,250 C930,250 965,296 995,296"/>
+
+  <!-- hotfix: off the main tag, back into main -->
+  <path class="rail" style="stroke:#c62828" d="M1010,178 C1024,178 1026,212 1040,212 L 1052,212 C1066,212 1066,178 1080,178"/>
+  <circle class="dot" cx="1041" cy="212" r="6" style="fill:#c62828"/>
+  <text class="ann" x="1041" y="204" text-anchor="middle" style="fill:#c62828">fix</text>
+  <path class="rail dash" style="stroke:#c62828" d="M1080,178 C1100,178 1110,250 1110,296"/>
+  <text class="ann" x="1108" y="316" text-anchor="end" style="fill:#6b7280">back-merge</text>
+
+  <!-- commits + tags -->
+  <circle class="dot" cx="214"  cy="178" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="990"  cy="178" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="1080" cy="178" r="7" style="fill:#16181d"/>
+  <text class="tag"     x="214"  y="158">v1.0</text>
+  <text class="tag"     x="990"  y="158">v1.1</text>
+  <text class="tag hot" x="1080" y="158">v1.1.1</text>
+
+  <circle class="dot" cx="214"  cy="296" r="7" style="fill:#2563eb"/>
+  <circle class="dot" cx="340"  cy="296" r="7" style="fill:#2563eb"/>
+  <circle class="dot" cx="530"  cy="296" r="7" style="fill:#2563eb"/>
+  <circle class="dot" cx="995"  cy="296" r="7" style="fill:#2563eb"/>
+  <circle class="dot" cx="1110" cy="296" r="7" style="fill:#2563eb"/>
+
+  <!-- ============ panel 2: environment-branch flow ============ -->
+  <rect class="panel" x="32" y="380" width="1116" height="220" rx="8"/>
+  <text class="p-head" x="54" y="412">2 - Environment-branch flow<tspan class="p-sub" dx="10">One trunk plus a branch per deployed environment, for when merging cannot deploy straight to the customer.</tspan></text>
+
+  <line class="lane" x1="560" y1="452" x2="1120" y2="452" style="stroke:#b45309"/>
+  <line class="lane" x1="490" y1="486" x2="1120" y2="486" style="stroke:#b45309"/>
+  <line class="lane" x1="200" y1="534" x2="1120" y2="534" style="stroke:#16181d"/>
+
+  <text class="lane-name" x="182" y="456" style="fill:#b45309">production</text>
+  <text class="lane-note" x="182" y="469">what customers see</text>
+  <text class="lane-name" x="182" y="490" style="fill:#b45309">pre-prod</text>
+  <text class="lane-note" x="182" y="503">the staging twin</text>
+  <text class="lane-name" x="182" y="538" style="fill:#16181d">main</text>
+  <text class="lane-note" x="182" y="551">sits where develop sits</text>
+  <text class="lane-name" x="182" y="570" style="fill:#7c3aed">feature/*</text>
+  <text class="lane-note" x="182" y="583">days</text>
+
+  <path class="rail" style="stroke:#7c3aed" d="M300,534 C314,534 316,566 330,566 L 400,566 C414,566 416,534 430,534"/>
+  <circle class="dot" cx="365" cy="566" r="6" style="fill:#7c3aed"/>
+  <path class="rail" style="stroke:#7c3aed" d="M520,534 C534,534 536,566 550,566 L 670,566 C684,566 686,534 700,534"/>
+  <circle class="dot" cx="610" cy="566" r="6" style="fill:#7c3aed"/>
+
+  <!-- promotions: drawn upward because production is the last stop -->
+  <path class="rail" style="stroke:#b45309" d="M430,534 C452,534 468,486 490,486"/>
+  <path class="rail" style="stroke:#b45309" d="M490,486 C512,486 538,452 560,452"/>
+  <path class="rail" style="stroke:#b45309" d="M900,534 C922,534 938,486 960,486"/>
+  <path class="rail" style="stroke:#b45309" d="M960,486 C980,486 985,452 1000,452"/>
+  <text class="ann" x="200" y="588" style="fill:#6b7280">Merges only flow downstream. They are drawn upward here because production is the last stop, not the first.</text>
+
+  <circle class="dot" cx="214"  cy="534" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="430"  cy="534" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="700"  cy="534" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="900"  cy="534" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="490"  cy="486" r="7" style="fill:#b45309"/>
+  <circle class="dot" cx="960"  cy="486" r="7" style="fill:#b45309"/>
+  <circle class="dot" cx="560"  cy="452" r="7" style="fill:#b45309"/>
+  <circle class="dot" cx="1000" cy="452" r="7" style="fill:#b45309"/>
+
+  <!-- the one upstream exception -->
+  <circle class="dot" cx="1075" cy="452" r="8" style="fill:#c62828"/>
+  <text class="ann" x="1120" y="436" text-anchor="end" style="fill:#c62828; font-weight:700">patch production directly</text>
+  <path class="rail dash" style="stroke:#c62828" d="M1075,452 C1092,452 1094,534 1090,534"/>
+  <circle class="dot" cx="1090" cy="534" r="7" style="fill:#c62828"/>
+  <text class="ann" x="1120" y="556" text-anchor="end" style="fill:#c62828">cherry-pick back into main</text>
+
+  <!-- ============ panel 3: trunk-based ============ -->
+  <rect class="panel" x="32" y="616" width="1116" height="160" rx="8"/>
+  <text class="p-head" x="54" y="648">3 - Trunk-based<tspan class="p-sub" dx="10">Everyone integrates into the trunk at least daily. Unfinished work merges dark behind a flag.</tspan></text>
+
+  <line class="lane" x1="200" y1="716" x2="1120" y2="716" style="stroke:#16181d"/>
+
+  <text class="lane-name" x="182" y="684" style="fill:#15803d">release/1.4</text>
+  <text class="lane-note" x="182" y="697">optional</text>
+  <text class="lane-name" x="182" y="720" style="fill:#16181d">main</text>
+  <text class="lane-note" x="182" y="733">the trunk</text>
+  <text class="lane-name" x="182" y="754" style="fill:#7c3aed">short/*</text>
+  <text class="lane-note" x="182" y="767">hours, never days</text>
+
+  <path class="rail" style="stroke:#7c3aed" d="M350,716 C364,716 366,750 380,750 L 400,750 C414,750 416,716 430,716"/>
+  <circle class="dot" cx="390" cy="750" r="6" style="fill:#7c3aed"/>
+  <path class="rail" style="stroke:#7c3aed" d="M590,716 C604,716 606,750 620,750 L 636,750 C650,750 652,716 666,716"/>
+  <circle class="dot" cx="628" cy="750" r="6" style="fill:#7c3aed"/>
+  <text class="ann" x="300" y="704" style="fill:#6b7280">small commits, integrated continuously</text>
+
+  <path class="rail" style="stroke:#15803d" d="M880,716 C900,716 906,680 926,680 L 1120,680"/>
+  <circle class="dot" cx="960"  cy="680" r="7" style="fill:#15803d"/>
+  <circle class="dot" cx="1085" cy="680" r="7" style="fill:#15803d"/>
+  <text class="tag"     x="960"  y="666" style="fill:#15803d">v1.4.0</text>
+  <text class="tag hot" x="1085" y="666">v1.4.1</text>
+
+  <circle class="dot" cx="214"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="266"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="318"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="470"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="522"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="700"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="760"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="820"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="880"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="950"  cy="716" r="7" style="fill:#16181d"/>
+  <circle class="dot" cx="1105" cy="716" r="7" style="fill:#16181d"/>
+
+  <!-- fix the trunk first, then carry it forward -->
+  <circle class="dot" cx="1010" cy="716" r="8" style="fill:#c62828"/>
+  <text class="ann" x="1010" y="738" text-anchor="middle" style="fill:#c62828; font-weight:700">fix trunk first</text>
+  <path class="rail dash" style="stroke:#c62828" d="M1010,716 C1035,716 1058,680 1085,680"/>
+  <text class="ann" x="860" y="686" text-anchor="end" style="fill:#c62828">cherry-pick forward into the release</text>
+
+  <!-- ============ the payoff strip ============ -->
+  <text class="strip-head" x="32" y="812">Where the hotfix goes - what actually differs</text>
+
+  <rect class="card" x="32" y="828" width="361" height="120" rx="8"/>
+  <text class="c-title" x="50" y="854">Release-branch flow</text>
+  <text class="c-body"  x="50" y="876">Branch from the tag, not from develop.</text>
+  <text class="c-body"  x="50" y="891">Fix, merge to main, tag, then back-merge</text>
+  <text class="c-body"  x="50" y="906">into develop and any open release.</text>
+  <text class="c-warn"  x="50" y="928">Miss one and the bug returns.</text>
+
+  <rect class="card" x="409" y="828" width="361" height="120" rx="8"/>
+  <text class="c-title" x="427" y="854">Environment-branch flow</text>
+  <text class="c-body"  x="427" y="876">The one upstream exception: patch</text>
+  <text class="c-body"  x="427" y="891">production to stop the bleeding, then</text>
+  <text class="c-body"  x="427" y="906">cherry-pick that same commit into main.</text>
+  <text class="c-warn"  x="427" y="928">Else the next deploy undoes it.</text>
+
+  <rect class="card" x="786" y="828" width="361" height="120" rx="8"/>
+  <text class="c-title" x="804" y="854">Trunk-based</text>
+  <text class="c-body"  x="804" y="876">Fix forward: commit to trunk and let CI</text>
+  <text class="c-body"  x="804" y="891">ship it. If a release branch exists, still</text>
+  <text class="c-body"  x="804" y="906">fix trunk first, then cherry-pick into it.</text>
+  <text class="c-warn"  x="804" y="928">Never patch the release alone.</text>
+</svg>
