@@ -614,6 +614,44 @@ setup_rbw() {
     log_info "rbw setup complete — see .config/rbw/README.md"
 }
 
+# Lock down aerc's accounts.conf (it holds mail passwords).
+#
+# aerc REFUSES to start if accounts.conf is group/world-readable, and it fails in
+# the worst possible way: it prints the reason and exits before any TUI is drawn,
+# so `bind e` in .tmux.conf (`new-session -d -s mail aerc`) creates a session that
+# dies in the same instant and the following `switch-client -t mail` finds nothing.
+# The key looks dead. Nothing is logged. That is exactly how it presented.
+#
+# This has to live in the installer rather than in the repo because git records
+# only the exec bit — a 0600 file is stored as 100644 and every fresh clone of the
+# private overlay recreates it at the umask default. So the mode cannot be
+# committed; it can only be re-applied. Idempotent: chmod on an already-0600 file
+# is a no-op.
+#
+# Must run AFTER apply_dotfiles — until stow has linked ~/.config/aerc there is
+# nothing to resolve.
+setup_aerc() {
+    log_section "Securing aerc account credentials"
+
+    if ! command -v aerc &>/dev/null; then
+        log_warning "aerc not installed — skipping"
+        return 0
+    fi
+
+    # Follow the symlink: ~/.config/aerc is stowed from the private overlay, and
+    # chmod on the link would change the link's own (meaningless) mode instead.
+    local accounts
+    accounts="$(readlink -f "$HOME/.config/aerc/accounts.conf" 2>/dev/null)"
+
+    if [[ ! -f "$accounts" ]]; then
+        log_warning "No aerc accounts.conf found — skipping (needs the private overlay + apply_dotfiles)"
+        return 0
+    fi
+
+    chmod 600 "$accounts"
+    log_info "✓ aerc accounts.conf is 0600 ($accounts)"
+}
+
 # Setup FreeRDP (webview) for Azure Virtual Desktop
 # Stock Arch `freerdp` ships WITH_WEBVIEW=OFF, which forces a manual copy-paste
 # OAuth flow for Entra ID. This rebuilds the same version WITH_WEBVIEW=ON so the
@@ -717,6 +755,9 @@ install_all() {
 
     # Secrets CLI (rbw → self-hosted Vaultwarden)
     setup_rbw
+
+    # Mail credentials (aerc refuses to start on a lax accounts.conf)
+    setup_aerc
 
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
