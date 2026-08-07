@@ -188,6 +188,9 @@ test_notifications.sh
 .ssh/README.md
 .bin/csa-firefox-auth-bridge
 .config/agentctl/
+# fleet-pulse: GATUS_BASE/FLEET_ROSTER name real infra, and `token` is the shared
+# bearer token for every heartbeat. Both live in the private overlay.
+.config/fleet-pulse/
 .config/smug/
 .config/infra-dash/
 .config/llm-judge/
@@ -222,6 +225,13 @@ test_notifications.sh
 .local/bin/opencode-binks
 .local/bin/opencode-binks-bootstrap
 .local/bin/watch-companion-loop
+# fleet-pulse identity is PER-MACHINE and must never be shared. ~/.config/systemd
+# is a whole-directory symlink into this repo, so a drop-in written at runtime
+# lands here rather than staying local. fleet-pulse.service itself is tracked and
+# identical everywhere; the drop-in is what says WHICH machine this is. Commit one
+# and every box that pulls it starts reporting under that name - the desktop would
+# claim the laptop's key, which is the collision the separate keys exist to prevent.
+.config/systemd/user/fleet-pulse.service.d/
 # personal notes/agent systemd units (+ their .target.wants symlinks), both levels
 .config/systemd/user/*notes*
 .config/systemd/user/*agentctl*

@@ -41,7 +41,10 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # Groups not named here stay in the tooltip only. Gatus group names are the key
 # (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
 # a future settings submenu just rewrites this line and signals the module.
-: "${FLEET_DISPLAY:=gp-mac=gp lazer-machine=lzr @k3s=k3s}"
+# The two personal CachyOS boxes lead: they were reporting fine but were named in
+# no token, so they rendered only in the tooltip - the bar showed work + k3s and
+# said nothing about the machine you were sitting at.
+: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap gp-mac=gp lazer-machine=lzr @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
