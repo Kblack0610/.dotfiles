@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# agentctl-skill-refine - weekly audit of the SKILL corpus itself.
+#
+# A SKILL.md is prose an agent OBEYS, with no compiler and no test. When a path
+# moves or a host is decommissioned, nothing fails loudly - the agent opens a
+# file that is not there and improvises. This is the scheduled twin of the
+# interactive /skill-refine command, the way agentctl-dream pairs with /dream.
+#
+# PROPOSE-ONLY, and that is ENFORCED here rather than merely requested in the
+# prompt. The run writes a report; if any SKILL.md changed while it ran, the
+# verdict is STALLED and the diff is preserved in the inbox. A prompt asking a
+# model not to edit is a hope; comparing checksums is a guarantee.
+#
+# It does NOT auto-revert an unexpected edit. Reverting would destroy whatever
+# was there, including a human's in-progress work if a session happened to be
+# open at 05:00. Detect, preserve, shout - never silently undo.
+#
+# Cadence split (don't duplicate):
+#   nightly-sync (23:00)     notes -> mem0
+#   dream        (03:00)     agent corpus -> lessons/memory/mem0-queue
+#   lab-sync     (Mon 04:00) git + ~/.agent -> lab feed
+#   skill-refine (Mon 05:00) skill corpus -> audit report   (this)
+#
+# 05:00 is deliberate: after dream, so the audit sees the latest consolidation,
+# and after lab-sync.
+#
+# Usage:
+#   agentctl-skill-refine              # full audit -> report
+#   agentctl-skill-refine --drift-only # deterministic only, no LLM, no tokens
+
+set -euo pipefail
+
+INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/skill-refine}"
+LOG="$HOME/.local/log/skill-refine.log"
+REPORT_DIR="$HOME/.agent/plans/dotfiles"
+TODAY="$(date +%F)"
+REPORT="$REPORT_DIR/skill-refine-$TODAY.md"
+SKILLS="$HOME/.claude/skills"
+DRIFT_ONLY=0
+[ "${1:-}" = "--drift-only" ] && DRIFT_ONLY=1
+
+mkdir -p "$(dirname "$LOG")" "$INBOX" "$REPORT_DIR"
+
+command -v skill-drift >/dev/null 2>&1 || {
+  printf '[skill-refine] ERROR: skill-drift not on PATH (stow has not run?)\n' >&2
+  exit 1
+}
+
+# shellcheck source=/dev/null
+. "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || true
+command -v proof_watch >/dev/null 2>&1 && proof_watch "$REPORT"
+
+# Fingerprint every SKILL.md BEFORE the run. -L follows the symlinks in
+# ~/.claude/skills through to the file in whichever repo owns it, so this
+# covers the public and private corpus in one pass.
+snapshot() { find -L "$SKILLS" -name SKILL.md -exec md5sum {} + 2>/dev/null | sort -k2; }
+PRE="$INBOX/.pre-hashes"
+POST="$INBOX/.post-hashes"
+snapshot > "$PRE"
+
+DRIFT_JSON="$(skill-drift --json 2>/dev/null || true)"
+DRIFT_TEXT="$(skill-drift 2>/dev/null || true)"
+N_DRIFT="$(printf '%s' "$DRIFT_JSON" | sed -n 's/^{"drift":\([0-9]*\).*/\1/p')"
+N_NEW="$(printf '%s' "$DRIFT_JSON" | sed -n 's/^{"drift":[0-9]*,"new":\([0-9]*\).*/\1/p')"
+
+read -r -d '' PROMPT <<PROMPT_EOF || true
+Run the \`skill-refine\` skill's \`audit\` verb. Read ~/.claude/skills/skill-refine/SKILL.md first and follow it exactly.
+
+Deterministic ground truth is already computed - do not re-run skill-drift for the raw list:
+
+${DRIFT_TEXT}
+
+That is ${N_DRIFT:-?} finding(s), ${N_NEW:-?} new since the baseline.
+
+Your job is the JUDGMENT layer the script cannot do:
+1. For each DEADPATH, find where the file ACTUALLY went (search BOTH ~/.dotfiles and ~/.dotfiles-private). Most are the public/private overlay migration. Propose the corrected path. Do not guess - verify with the filesystem.
+2. Read ~/.agent/lessons/*.md for corrections whose root cause was a skill saying something untrue, and for a multi-step manual workflow recurring 3+ times with no skill covering it.
+3. Check skill descriptions for overlapping triggers with no "Differs from" clause, and for stale "Do NOT" clauses.
+4. Rank everything by blast radius: a constantly-invoked skill with a dead path outranks a rare one with a clumsy description.
+
+Write the report to ${REPORT} exactly as the skill's audit verb specifies: findings table, proposed diffs as fenced blocks, skill-candidates section, and an explicit verified/unverified split.
+
+ABSOLUTE CONSTRAINT: you are PROPOSING. Write ONLY ${REPORT}. Do NOT edit any SKILL.md, CLAUDE.md, or create any symlink. Every fix goes in the report as a proposed diff for a human to apply. This is checked after you exit and a violation fails the run.
+PROMPT_EOF
+
+{
+  printf '\n=== %s ===\n' "$(date -Is)"
+  printf 'agent: skill-refine  drift: %s (%s new)  mode: %s\n' \
+    "${N_DRIFT:-?}" "${N_NEW:-?}" "$([ "$DRIFT_ONLY" = 1 ] && echo deterministic || echo 'claude --print')"
+  printf 'report: %s\n\n' "$REPORT"
+
+  if [ "$DRIFT_ONLY" = 1 ]; then
+    { printf '# skill-refine (deterministic) - %s\n\n' "$TODAY"
+      printf '%s findings, %s new since baseline.\n\n```\n%s\n```\n' \
+        "${N_DRIFT:-?}" "${N_NEW:-?}" "$DRIFT_TEXT"; } > "$REPORT"
+    printf 'wrote deterministic report (no LLM)\n'
+  else
+    # --permission-mode acceptEdits: settings.json defaults to plan mode, which a
+    # headless `claude --print` inherits and then waits forever for an approval
+    # nobody will give. That silently killed 17 nights of dream sweeps before
+    # anyone noticed; do not remove this flag.
+    #
+    # `propose` role: may CREATE its report, may never MODIFY an existing file.
+    # The old comment here claimed "No Edit tool in --allowedTools" gave that
+    # guarantee. It did not - --allowedTools only pre-approves, it never removes
+    # a tool, so Edit was available on every run. The role denies it for real.
+    # That matters most here: a SKILL.md is prose the agent OBEYS, so an
+    # unattended rewrite changes every future session.
+    printf '%s\n' "$PROMPT" | agentctl-run --role propose --print 2>&1 || true
+  fi
+
+  printf '\n=== exit: 0 ===\n'
+} | tee -a "$LOG"
+
+# --- enforce propose-only ----------------------------------------------------
+snapshot > "$POST"
+VERDICT=OK
+if ! diff -q "$PRE" "$POST" >/dev/null 2>&1; then
+  VERDICT=VIOLATION
+  {
+    printf '[%s] skill-refine: PROPOSE-ONLY VIOLATION - SKILL.md changed during a headless run\n' "$(date -Is)"
+    diff "$PRE" "$POST" || true
+  } >> "$INBOX/violations.log"
+  cp "$PRE" "$INBOX/violation-$TODAY.pre"
+  cp "$POST" "$INBOX/violation-$TODAY.post"
+  command -v agent-notify >/dev/null 2>&1 && \
+    agent-notify "skill-refine: a SKILL.md changed during the headless run - see $INBOX/violations.log" || true
+fi
+
+if [ -s "$REPORT" ]; then
+  printf '[%s] skill-refine: %s finding(s), %s new -> %s\n' \
+    "$(date -Is)" "${N_DRIFT:-?}" "${N_NEW:-?}" "$REPORT" >> "$INBOX/activity.log"
+fi
+
+if command -v proof_report >/dev/null 2>&1; then
+  if [ "$VERDICT" = VIOLATION ]; then
+    proof_report skill-refine STALLED "propose-only violated: a SKILL.md was modified"
+  elif [ ! -s "$REPORT" ]; then
+    proof_report skill-refine STALLED "no report written"
+  elif [ "${N_DRIFT:-0}" = 0 ]; then
+    proof_report skill-refine NOOP "skill corpus clean"
+  else
+    proof_report skill-refine WORKED "${N_DRIFT} finding(s), ${N_NEW} new"
+  fi
+fi
+
+[ "$VERDICT" = VIOLATION ] && exit 1
+exit 0

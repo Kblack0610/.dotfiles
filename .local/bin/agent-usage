@@ -3,6 +3,7 @@
 #
 #   agent-usage session <id> [--json]        one session's rollup
 #   agent-usage rows <project> [--since E]   TSV for the cockpit (registry, no recompute)
+#   agent-usage rollup [--project P] [--since E] [--until E]   per-project totals + TOTAL
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #
@@ -29,8 +30,13 @@
 # records, 272 distinct requestIds, identical usage within a requestId). Summing rows
 # instead of requests roughly doubles the total.
 #
-# Nothing here is on a render path: the cockpit reads the registry, which stop-post.d/
-# 80-session-register.sh fills by calling this once when a session ends.
+# WHICH VERBS ARE ON A RENDER PATH. `rows` and `rollup` ARE: the cockpit calls them from
+# _project_agents / _usage_view, which run on every fzf reload and keypress. They read the
+# registry and nothing else - no network, no recompute - and must stay that way.
+# `session` and `backfill` are NOT, and may query Prometheus.
+#
+# (This block used to say "nothing here is on a render path", which was already false when
+# written - _project_agents has called `rows` since the agents view shipped.)
 
 set -uo pipefail
 
@@ -246,6 +252,41 @@ cmd_session() {
 # `read` collapses runs of it: one empty middle field (a session with no model recorded)
 # silently shifts every later field left, and the label lands in the duration variable.
 # Same reason `sessions:live_lines` sentinels its columns.
+#
+# THE PROJECTION LIVES HERE ONCE, shared by `rows` and `rollup`. The `nocost` rule below -
+# a null cost reports 1 so the caller can render `-` rather than a `$0.00` that reads as
+# "this was free" - is the kind of invariant that only survives having a single owner.
+# THE LABEL FALLBACK USED TO DROP THE ROW ENTIRELY. It was written as
+#
+#     ((.title // "") | select(. != "") // .head_commit // .first_prompt // "-")
+#
+# where the `|` makes `.` the TITLE STRING for everything downstream - so on a session
+# with an empty title, `.head_commit` indexes a string, jq raises "Cannot index string
+# with string", and the `2>/dev/null` on the call site swallowed it. The row was not
+# mislabelled, it VANISHED. 967 of 1098 registry sessions have an empty title, and the
+# agents view has been silently showing about half the sessions it should. Bound the
+# title with `as` instead, so `.` stays the object.
+# Every registry file, NUL-delimited. One project when named, all of them otherwise.
+# NUL because $HOME can contain a space (see cmd_rollup).
+_registry_files() { # $1=project (empty = all)
+  if [ -n "${1:-}" ]; then
+    [ -f "$SESS_ROOT/$1/sessions.jsonl" ] && printf '%s\0' "$SESS_ROOT/$1/sessions.jsonl"
+    return 0
+  fi
+  find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl -print0 2>/dev/null
+}
+
+ROW_UNTIL_MAX=99999999999
+ROW_JQ='select(.session_id and ((.updated // 0) >= $since) and ((.updated // 0) <= $until))
+    | [ .session_id, (.updated // 0), (.edits // 0),
+        (.cost_usd // 0), (if .cost_usd == null then "1" else "0" end),
+        ((.tokens.total) // 0),
+        ((.models // []) | join(",")),
+        (.duration_s // 0),
+        ((.title // "") as $t
+         | if $t != "" then $t else (.head_commit // .first_prompt // "-") end) ]
+    | map(tostring | if . == "" then "-" else . end) | @tsv'
+
 cmd_rows() {
   local project="" since=0 limit=0
   while [ $# -gt 0 ]; do
@@ -262,17 +303,53 @@ cmd_rows() {
   local f="$SESS_ROOT/$project/sessions.jsonl"
   [ -f "$f" ] || return 0
 
-  jq -rc --argjson since "$since" '
-    select(.session_id and ((.updated // 0) >= $since))
-    | [ .session_id, (.updated // 0), (.edits // 0),
-        (.cost_usd // 0), (if .cost_usd == null then "1" else "0" end),
-        ((.tokens.total) // 0),
-        ((.models // []) | join(",")),
-        (.duration_s // 0),
-        ((.title // "") | select(. != "") // .head_commit // .first_prompt // "-") ]
-    | map(tostring | if . == "" then "-" else . end) | @tsv' "$f" 2>/dev/null \
+  jq -rc --argjson since "$since" --argjson until "$ROW_UNTIL_MAX" "$ROW_JQ" "$f" 2>/dev/null \
   | sort -t"$TAB" -k2,2rn \
   | { [ "$limit" -gt 0 ] 2>/dev/null && head -n "$limit" || cat; }
+}
+
+# Every finished session in a window, folded per project, plus a TOTAL line.
+#
+#   agent-usage rollup [--project P] [--since E] [--until E]
+#   project \t sessions \t edits \t tokens \t cost \t nocost
+#
+# `nocost` counts the sessions in that bucket with NO telemetry, and it is not
+# decoration: cost coverage on this machine is ~1% (Prometheus retains a week and the
+# register hook races its export interval), so a bare total silently reads as "this is
+# what the agents cost" when it is really "this is what the 1% we measured cost". A
+# caller that prints the sum without printing nocost beside it is lying by omission.
+#
+# Registry-only and on the cockpit's render path - no network, no recompute.
+cmd_rollup() {
+  local project="" since=0 until="$ROW_UNTIL_MAX"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2:-}"; shift ;;
+      --since) since="${2:-0}"; shift ;;
+      --until) until="${2:-$ROW_UNTIL_MAX}"; shift ;;
+      -*) echo "agent-usage: unknown flag '$1'" >&2; return 2 ;;
+      *) project="$1" ;;
+    esac
+    shift
+  done
+
+  # NUL-delimited, never a word-split of `find` output. A registry path can contain a
+  # space - the test sandbox deliberately puts HOME under `sb space/` for exactly this -
+  # and `for f in $files` then splits one real path into two that do not exist, so every
+  # project silently drops out and the view reports "no spend data".
+  local f p
+  {
+    while IFS= read -r -d '' f; do
+      [ -f "$f" ] || continue
+      p="${f%/sessions.jsonl}"; p="${p##*/}"
+      jq -rc --argjson since "$since" --argjson until "$until" "$ROW_JQ" "$f" 2>/dev/null \
+      | awk -F'\t' -v p="$p" '
+          { n++; e += $3; c += $4; t += $6; if ($5 == "1") u++ }
+          END { if (n) printf "%s\t%d\t%d\t%d\t%.2f\t%d\n", p, n, e, t, c, u + 0 }'
+    done < <(_registry_files "$project")
+  } | sort -t"$TAB" -k5,5rn | awk -F'\t' '
+      { print; N += $2; E += $3; T += $4; C += $5; U += $6 }
+      END { if (NR) printf "TOTAL\t%d\t%d\t%d\t%.2f\t%d\n", N, E, T, C, U }'
 }
 
 cmd_changelog() {
@@ -329,27 +406,54 @@ cmd_changelog() {
 
 # Fill telemetry into registry lines that predate it. Rewrites each sessions.jsonl in
 # place via a temp file - never edits a line by hand.
+#
+#   backfill <project|--all> [--since EPOCH]
+#
+# WHAT IS ACTUALLY REPAIRABLE, which is what --since exists to encode. Two cases:
+#
+#   1. A row with no token data at all (predates the feature). The TRANSCRIPT fills it,
+#      and a transcript never expires - so age is irrelevant and these are always tried.
+#   2. A row whose cost is null because the register hook lost the race against OTel's
+#      60s export. Only PROMETHEUS can fill that, and Prometheus here retains `1w or
+#      5GiB` - so past the window there is nothing to fetch, ever.
+#
+# Case 2 is why this runs on a schedule rather than once: the repair window is a week
+# wide and closes silently. It is also why an old, already-tokenised row is skipped -
+# re-deriving it from the transcript rewrites the identical partial numbers, and there
+# are ~950 of them, each a scan of a file that can reach hundreds of MB.
 cmd_backfill() {
-  local target="${1:-}"
-  [ -n "$target" ] || { echo "usage: agent-usage backfill <project|--all>" >&2; return 2; }
-
-  local files
-  if [ "$target" = "--all" ]; then
-    files="$(find "$SESS_ROOT" -mindepth 2 -maxdepth 2 -name sessions.jsonl 2>/dev/null)"
-  else
-    files="$SESS_ROOT/$target/sessions.jsonl"
-  fi
+  local target="" since=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:-}"; shift ;;
+      -*) [ "$1" = "--all" ] && target="--all" || { echo "agent-usage: unknown flag '$1'" >&2; return 2; } ;;
+      *) target="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$target" ] || { echo "usage: agent-usage backfill <project|--all> [--since EPOCH]" >&2; return 2; }
+  # A day of slack over the 1w retention: a session right on the boundary is still worth
+  # one attempt, and the cost of a wasted try is one instant query.
+  case "$since" in ''|*[!0-9]*) since="$(( $(date +%s) - 8*86400 ))" ;; esac
 
   local f n=0
-  for f in $files; do
+  while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue
     local tmp; tmp="$(mktemp)"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      local id has
+      local id skip
       id="$(printf '%s' "$line" | jq -r '.session_id // empty' 2>/dev/null)"
-      has="$(printf '%s' "$line" | jq -r 'has("cost_usd") and has("title")' 2>/dev/null)"
-      if [ -z "$id" ] || [ "$has" = "true" ]; then
+      # `.cost_usd != null`, NOT `has("cost_usd")`. The register hook always WRITES the
+      # key, null when it lost the race - so `has("cost_usd")` was true for precisely the
+      # rows backfill exists to repair, and every one of them was skipped. Measured when
+      # this was found: 14 of 1068 rows carried a cost, and no amount of re-running
+      # backfill could ever raise it.
+      skip="$(printf '%s' "$line" | jq -r --argjson since "$since" '
+        if (.cost_usd != null) and has("title") then "1"
+        elif ((.tokens.total // 0) > 0) and has("title") and ((.updated // 0) < $since) then "1"
+        else "0" end' 2>/dev/null)"
+      if [ -z "$id" ] || [ "$skip" = "1" ]; then
         printf '%s\n' "$line" >> "$tmp"; continue
       fi
       local u; u="$(cmd_session "$id" --json 2>/dev/null)"
@@ -371,7 +475,7 @@ cmd_backfill() {
       fi
     done < "$f"
     mv "$tmp" "$f" && chmod 600 "$f"
-  done
+  done < <(_registry_files "$([ "$target" = --all ] && printf '' || printf '%s' "$target")")
   echo "agent-usage: backfilled $n session(s)" >&2
 }
 
@@ -386,6 +490,7 @@ sub="${1:-}"; shift 2>/dev/null || true
 case "$sub" in
   session)   cmd_session "$@" ;;
   rows)      cmd_rows "$@" ;;
+  rollup)    cmd_rollup "$@" ;;
   changelog) cmd_changelog "$@" ;;
   backfill)  cmd_backfill "$@" ;;
   -h|--help|help|'') usage ;;

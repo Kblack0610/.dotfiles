@@ -3,11 +3,17 @@
 # to ASK the human a question and later READ the answer.
 #
 #   agent-ask post [opts] "question"    create a pending ask; print its id
-#   agent-ask list [project|--all] [--pending]   TSV rows for the bridge/cockpit
+#     --options a|b|c   the fixed answer vocabulary
+#     --recommend b     which of them YOU recommend; shown marked in the picker
+#   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
+#                                       TSV rows for the bridge/cockpit
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify
 #   agent-ask cancel <id>               flip to cancelled
 #   agent-ask count [project|--all]     number of pending asks (for cockpit badges)
+#   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
+#   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
+#   agent-ask recommend <id> <option>   set/replace the recommended option
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
@@ -16,6 +22,13 @@
 # ASYNC IS THE PRIMARY PATH. The main producers (delivery-loop, /kb:sprint BLOCK) are
 # headless and CANNOT block: they post and exit, and a later fire / `/captain resume`
 # consumes the answer. `post --wait` is a secondary convenience for an attended agent.
+#
+# ANSWERING IS ONLY HALF A LOOP. `answer` records the decision and notifies; it does not
+# re-run the thing that asked. That producer-side half is `resumable` + `mark-resumed`:
+# an ask posted with `--resume "<command>"` stays listed by `resumable` until somebody
+# runs the command and stamps `resumed_at`. A wave that posted a gate, got `approve`, and
+# never moved is exactly what this pair exists to make impossible - `resumed_at` empty on
+# an answered ask IS the "your answer went nowhere" signal, and the cockpit renders it.
 #
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
 # "PR #1036 is green, merge it?" - the loop's common ask under AUTONOMY=pr.
@@ -69,7 +82,7 @@ set_field() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" resume="" wait=0 question=""
+        options="" recommend="" resume="" wait=0 question=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -79,6 +92,7 @@ cmd_post() {
       --task)    task="$2"; shift 2 ;;
       --kind)    kind="$2"; shift 2 ;;
       --options) options="$2"; shift 2 ;;
+      --recommend) recommend="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
@@ -91,6 +105,15 @@ cmd_post() {
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
+  # A recommendation that is not one of the offered options is a bug in the caller, and a
+  # silent one: the picker would mark nothing and the human would never know it was meant to
+  # advise. Refuse rather than drop it.
+  if [ -n "$recommend" ]; then
+    case "|$options|" in
+      *"|$recommend|"*) ;;
+      *) echo "agent-ask post: --recommend '$recommend' is not one of '$options'" >&2; return 2 ;;
+    esac
+  fi
 
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
@@ -112,9 +135,17 @@ cmd_post() {
     printf 'status: pending\n'
     printf 'question: %s\n'   "$(oneline "$question")"
     printf 'options: %s\n'    "$(oneline "$options")"
+    # Which option the ASKING agent would pick, and why it is a separate field rather than a
+    # sentence in the question: a recommendation buried in 900 characters of prose is a
+    # recommendation the human reads only if they open the ask. As a field the picker can
+    # mark it, the way any decent approval UI does.
+    printf 'recommend: %s\n'  "$(oneline "$recommend")"
     printf 'answer: \n'
     printf 'answered_at: \n'
     printf 'resume: %s\n'     "$(oneline "$resume")"
+    # empty until somebody actually RUNS `resume`. An ask that is answered but not
+    # resumed is a decision the system has not acted on yet - see the header.
+    printf 'resumed_at: \n'
   } > "$file"
 
   if [ "$wait" -eq 1 ]; then
@@ -145,26 +176,40 @@ ask_files() {
 }
 
 cmd_list() {
-  local key="" pending=0
-  for a in "$@"; do
-    case "$a" in
-      --pending) pending=1 ;;
-      --all) key="--all" ;;
-      *) key="$a" ;;
+  local key="" want="" since=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pending)  want=pending; shift ;;
+      --answered) want=answered; shift ;;
+      --since)    since="$2"; shift 2 ;;
+      --all)      key="--all"; shift ;;
+      *)          key="$1"; shift ;;
     esac
   done
   [ -n "$key" ] || key="$(resolve_project)"
 
-  # tsv: id, project, profile, status, kind, question, options, task
-  local f st
+  # `--since 7d` -> an ISO cutoff. Ask timestamps are `date +%Y-%m-%dT%H:%M:%S%z`, all
+  # written on this host in one TZ, so a lexical compare on the prefix is a date compare.
+  local cutoff=""
+  if [ -n "$since" ]; then
+    cutoff="$(date -d "-${since%d} days" +%Y-%m-%d 2>/dev/null || true)"
+  fi
+
+  # tsv: id, project, profile, status, kind, question, options, task, answered_at,
+  #      resumed_at, recommend
+  local f st at
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     st="$(field "$f" status)"
-    [ "$pending" -eq 1 ] && [ "$st" != pending ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    [ -n "$want" ] && [ "$st" != "$want" ] && continue
+    at="$(field "$f" answered_at)"
+    # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
+    [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
-      "$(field "$f" options)" "$(field "$f" task)"
+      "$(field "$f" options)" "$(field "$f" task)" \
+      "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)"
   done < <(ask_files "$key")
 }
 
@@ -207,10 +252,70 @@ cmd_cancel() {
   echo "cancelled $id" >&2
 }
 
+cmd_recommend() {
+  local id="${1:-}" opt="${2:-}"
+  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  local options; options="$(field "$f" options)"
+  case "|$options|" in
+    *"|$opt|"*) ;;
+    *) echo "agent-ask recommend: '$opt' is not one of '$options'" >&2; return 2 ;;
+  esac
+  set_field "$f" recommend "$opt"
+  echo "recommend $id: $opt" >&2
+}
+
+# --- the producer half of the loop -----------------------------------------
+#
+# Answered asks whose `resume` command has not been run yet. This is the queue a
+# headless producer drains on its next fire, and it is the ONLY thing that turns an
+# answer into an action - `answer` itself just records and notifies.
+#
+# Three conditions, all required. `status: answered` (not cancelled, not still pending),
+# a non-empty `resume` (an ask with nothing to re-run is a question, not a gate), and an
+# empty `resumed_at` (nobody has consumed it). Anything else is not this queue's business.
+#
+# An ask file written before `resumed_at` existed simply has no such key, and `field`
+# returns empty for a missing key - which reads as "not yet consumed". That is the right
+# default: the whole reason this verb exists is that those asks were never acted on.
+cmd_resumable() {
+  local key="${1:-}"; [ -n "$key" ] || key="$(resolve_project)"
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$(field "$f" status)" = answered ] || continue
+    local r; r="$(field "$f" resume)"
+    [ -n "$r" ] || continue
+    [ -z "$(field "$f" resumed_at)" ] || continue
+    printf '%s\t%s\t%s\t%s\n' \
+      "$(field "$f" id)" "$(field "$f" project)" "$r" "$(field "$f" answer)"
+  done < <(ask_files "$key")
+}
+
+# Claim an answered ask: stamp `resumed_at` so it leaves the `resumable` queue.
+#
+# Callers MUST mark before they run, not after. A resume command that crashes half way
+# would otherwise stay in the queue and be re-run on every single fire - and these
+# commands create tickets and cut branches, so a re-run is not idempotent. Marking first
+# trades "a failed resume needs a human" for "a failed resume floods the tracker", which
+# is the correct trade; the board and the run log are where the failure is visible.
+cmd_mark_resumed() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask mark-resumed <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  [ -z "$(field "$f" resumed_at)" ] || { echo "agent-ask: $id already resumed" >&2; return 0; }
+  set_field "$f" resumed_at "$(now_iso)"
+  echo "resumed $id" >&2
+}
+
 # --- dispatch --------------------------------------------------------------
 
+# The header block IS the usage text. Read it by shape (leading `#` lines after the
+# shebang, up to the first blank/code line) rather than by a hardcoded line range - the
+# range was `3,26p` and silently started truncating the moment the header grew.
 usage() {
-  sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
 }
 
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
@@ -224,6 +329,9 @@ case "$sub" in
   show)   cmd_show "$@" ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
+  recommend)    cmd_recommend "$@" ;;
+  resumable)    cmd_resumable "$@" ;;
+  mark-resumed) cmd_mark_resumed "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

@@ -79,6 +79,30 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   CLAUDE_SKIP_FOCUS_GATE=1 refute_blocks "$(CLAUDE_SKIP_FOCUS_GATE=1 gate s1)"
 }
 
+@test "CLAUDE_HEADLESS=1 disables it -- a timer has nobody to answer the question" {
+  # Regression: captain-watchdog fires `/captain watch` every 10 minutes. Blocked here,
+  # the headless agent complied the only way it could -- `focus add` then `focus done` --
+  # and 2026-08-04 accumulated 45 `captain watch pass` entries, burying the three real
+  # ones. Asking "did you declare your work" only makes sense with a human to ask.
+  dirty
+  refute_blocks "$(CLAUDE_HEADLESS=1 gate s1)"
+}
+
+@test "the headless guard fails SAFE -- an unset marker still gates" {
+  # The negative control for the test above. If the guard were inverted, or keyed on a
+  # var that is always set, the gate would silently never fire again and nothing would
+  # say so -- the exact silent-success failure mode this suite exists to catch.
+  dirty
+  assert_blocks "$(gate s1)"
+}
+
+@test "CLAUDE_HEADLESS=0 is not a disable" {
+  # `[ "${CLAUDE_HEADLESS:-0}" = "1" ]` -- an explicitly-off marker must behave as unset,
+  # so a runner that exports 0 does not think it opted out.
+  dirty
+  assert_blocks "$(CLAUDE_HEADLESS=0 gate s1)"
+}
+
 @test "an in-progress item means you already declared what you are on" {
   focus '- [/] the thing i am on (1d)' '- [ ] open thing (2d)'
   dirty
@@ -92,6 +116,29 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   sleep 1
   printf '[%s] [INFO] focus: added "freshly added"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   refute_blocks "$(gate s2)"
+}
+
+@test "a ptask write satisfies the gate -- project work need not touch the daily note" {
+  # The daily note is ONE human's list. This gate used to accept only a write to it, so
+  # every agent session satisfied it the only way it could and dumped its own item there:
+  # 2026-08-05 opened with six Focus items, five of them agent sessions'. Project work
+  # tracked on the project's `## Wave` must count, or the note keeps getting crowded out.
+  dirty
+  gate s1 >/dev/null                       # stamp last_run
+  sleep 1
+  printf '[%s] [INFO] ptask: added to /p/README.md (notes-cockpit)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  refute_blocks "$(gate s2)"
+}
+
+@test "an UNRELATED notes write does not satisfy the gate" {
+  # The negative control for the test above. If the log match were loosened to any `notes`
+  # line, a passing `notes today` on shell init would silently satisfy the gate forever and
+  # nothing would ever be tracked again -- a gate that always passes is not a gate.
+  dirty
+  gate s1 >/dev/null
+  sleep 1
+  printf '[%s] [INFO] today: exists /p/2026-08-05.md\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  assert_blocks "$(gate s2)"
 }
 
 @test "it fires at most once per session" {

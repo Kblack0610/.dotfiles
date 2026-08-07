@@ -213,3 +213,44 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
   assert_success
   refute_output --partial 'reported:'
 }
+
+# ── the proof-contract envelope (PENDING -> STALLED) ─────────────────────────
+# The distinction this buys: "never wired" and "ran and said nothing" used to be
+# the same observable (an absent last-outcome) and need different fixes.
+
+@test "--lifecycle start seeds PENDING so silence stops reading as unwired" {
+  run "$AGENTCTL_BIN" report --name probe --lifecycle start
+  assert_success
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/probe/last-outcome")" 'PENDING'
+}
+
+@test "--lifecycle stop promotes an untouched PENDING to STALLED" {
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  run "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_success
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/probe/last-outcome")" 'STALLED'
+}
+
+@test "a runner's own verdict survives the stop envelope" {
+  # The whole point: the engine only fills the gap. A runner that DID report must
+  # not have its answer overwritten with STALLED.
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'WORKED' > "$AGENTCTL_STATE_DIR/probe/last-outcome"
+  "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/probe/last-outcome")" 'WORKED'
+}
+
+@test "NOOP also survives, not just WORKED" {
+  # Negative control for the test above: if promote matched on 'not STALLED'
+  # rather than 'is PENDING', NOOP would be clobbered and that test would still pass.
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'NOOP' > "$AGENTCTL_STATE_DIR/probe/last-outcome"
+  "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/probe/last-outcome")" 'NOOP'
+}
+
+@test "stop on a runner that never started does not invent an outcome" {
+  run "$AGENTCTL_BIN" report --name never --lifecycle stop
+  assert_success
+  [ ! -e "$AGENTCTL_STATE_DIR/never/last-outcome" ]
+}

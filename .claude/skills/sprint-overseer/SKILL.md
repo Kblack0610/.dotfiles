@@ -122,7 +122,7 @@ End-of-batch (or on demand for a post-mortem of an aborted sprint):
 
 - `/kb:sprint` — dispatcher (plan/run/resume/status) + sprint plan file schema
 - `kb-sprint-owner` agent — queue builder
-- `~/.dotfiles/.claude/agents/sprint-overseer.md` — agent definition (delegate `watch` legwork
+- `~/.claude/agents/sprint-overseer.md` — agent definition (delegate `watch` legwork
   to it as a subagent for headless/loop runs)
 - `release-coordinator` — downstream handoff target; its hard constraints are inherited here
 - `loop` skill — the recurrence mechanism

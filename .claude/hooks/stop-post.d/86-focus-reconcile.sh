@@ -31,6 +31,26 @@ fi
 
 [ "${CLAUDE_SKIP_FOCUS_GATE:-0}" = "1" ] && exit 0
 
+# --- headless runs are not the human's cockpit -------------------------------------
+# This gate asks "you did work, did you declare it on today's Focus?" — a question that
+# only has a listener when a human is in the loop. On a timer there is nobody to answer,
+# so the agent complies literally: `focus add` then `focus done`, every pass.
+#
+# Measured 2026-08-04, not assumed: today's note held 45 `captain watch pass` entries —
+# one per 10-minute `captain-watchdog` fire — burying the three items that actually
+# shipped. The daily note is the human's surface; a headless runner must never write to
+# it just to satisfy a gate aimed at a person.
+#
+# Fails SAFE: absent marker = gate still fires. A runner opts OUT explicitly, so a new
+# headless caller that forgets is merely noisy, never silently ungated.
+#
+# The marker belongs at the ONE place a runner invokes a harness. That choke point is
+# mid-move (`agentctl-claude` -> `.local/src/agent-run/`, PR #189), so it is set at the
+# timer-driven call sites for now. When agent-run lands, set CLAUDE_HEADLESS there and
+# drop it from the individual runners — per agentctl-claude's own header, a restriction
+# that can be lost by an unrelated edit is not a restriction.
+[ "${CLAUDE_HEADLESS:-0}" = "1" ] && exit 0
+
 # jq is how we emit the block safely (the reason contains quotes and newlines). Without it
 # the honest move is to stay quiet rather than hand-roll JSON escaping.
 command -v jq >/dev/null 2>&1 || exit 0
@@ -101,13 +121,25 @@ FOCUS_BODY=$(focus_body "$DAILY_NOTE")
 WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 [ -n "$WIP" ] && { save_state; exit 0; }
 
-# --- 3. was Focus touched since the last run? ---
+# --- 3. was the work tracked since the last run? ---
 # `notes` logs every command as `[<iso8601>] [INFO] <cmd>: <msg>` (logging.rs). The most
-# recent `focus:` line is enough — if it postdates our last run, this turn touched Focus.
-# Bounded tail so the scan cost does not grow with the log.
+# recent `focus:` OR `ptask:` line is enough — if it postdates our last run, this turn
+# tracked its work somewhere. Bounded tail so the scan cost does not grow with the log.
+#
+# `ptask:` counts, and that is the whole point. The daily note is ONE human's list; this
+# gate used to accept only a write to it, so every agent session satisfied it the only way
+# it could and dumped its own work item there. 2026-08-05 opened with six Focus items of
+# which five were agent sessions' (sentinel legibility, cockpit md preview, md render
+# headings, llm route contract, opencode+judge) — the human's own list had been crowded
+# out of the human's own note. Same disease as the 45 `captain watch pass` lines the
+# CLAUDE_HEADLESS guard above fixed, contracted from interactive agents instead of timers.
+#
+# Project work belongs on the project's `## Wave` (`notes ptask <project> …`), which is
+# what the cockpit and the generated board already read. Accepting it here means an agent
+# can declare its work on the board it actually works from and never touch the daily note.
 if [ -r "$NOTES_LOG" ]; then
   LAST_FOCUS_TS=$(tail -n 2000 "$NOTES_LOG" 2>/dev/null \
-    | grep -E '^\[[^]]+\] \[[A-Z]+\] focus:' | tail -1 \
+    | grep -E '^\[[^]]+\] \[[A-Z]+\] (focus|ptask):' | tail -1 \
     | sed -E 's/^\[([^]]+)\].*/\1/' || true)
   if [ -n "$LAST_FOCUS_TS" ]; then
     LAST_FOCUS_EPOCH=$(date -d "$LAST_FOCUS_TS" +%s 2>/dev/null || echo 0)
@@ -126,12 +158,17 @@ fi
 OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
-REASON="focus-gate: this turn changed code, but today's ## Focus was not touched and nothing is marked in progress.
+REASON="focus-gate: this turn changed code, but the work was not tracked anywhere and nothing is marked in progress.
 
-Reconcile before you finish - pick whichever is true:
-  notes focus start \"<couple words>\"   you are on this now      -> [/]
-  notes focus add   \"<couple words>\"   not tracked yet          -> new item
-  notes focus done  \"<couple words>\"   it landed                -> [x]
+PROJECT work belongs on the project's board, NOT the daily note - the note is the human's
+own list and an agent item added there crowds it out:
+  notes ptask <project> add   \"<short title>\"   not tracked yet
+  notes ptask <project> start \"<a word or two>\"  you are on it   -> [/]
+  notes ptask <project> done  \"<a word or two>\"  it landed       -> [x]
+  notes board                                     regenerate the board, print its path
+
+Use the daily ## Focus only for the HUMAN's own work on this machine:
+  notes focus start \"<couple words>\"   |  notes focus add \"<couple words>\"  |  notes focus done \"<couple words>\"
 
 Open today ($(basename "$DAILY_NOTE")):
 $OPEN_LIST

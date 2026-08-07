@@ -138,6 +138,19 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
 
 # ── priority filter ──────────────────────────────────────────────────────────
 
+@test "--cycle-window advances the persisted usage window" {
+  run "$COCKPIT" --cycle-window
+  assert_success
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output '30d'
+  "$COCKPIT" --cycle-window
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output 'today'
+  "$COCKPIT" --cycle-window
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.window'
+  assert_output '7d'
+}
+
 @test "--cycle-pfilter advances the persisted filter" {
   run "$COCKPIT" --cycle-pfilter
   assert_success
@@ -163,7 +176,7 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
 
 # ── view mode ────────────────────────────────────────────────────────────────
 
-@test "--toggle-mode cycles tasks -> agents -> bridge -> tasks and persists it" {
+@test "--toggle-mode cycles tasks -> agents -> bridge -> usage -> tasks and persists it" {
   run "$COCKPIT" --toggle-mode
   assert_success
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
@@ -171,6 +184,9 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
   "$COCKPIT" --toggle-mode
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
   assert_output 'bridge'
+  "$COCKPIT" --toggle-mode
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
+  assert_output 'usage'
   "$COCKPIT" --toggle-mode
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
   assert_output 'tasks'
@@ -215,6 +231,140 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
   "$COCKPIT" --next-section
   after="$("$COCKPIT" --rail)"
   refute [ "$before" = "$after" ]
+}
+
+# ── --rail <section>: the project brief that follows the cursor ──────────────
+#
+# The rail used to render the same bytes whatever row you were on, so the widest pane in the
+# default view said nothing about the project you were standing in. It now takes the
+# highlighted row's section (fzf field 6) and answers what shipped / where we are / what next.
+
+# A project whose summary column is a REAL path, which the `basic` fixture's is not (it holds
+# a description). Same shape as the feed-gist tests below.
+_seed_overview() { # $1 = extra summary body (optional)
+  local dir="$NOTES_FIXTURE/rail-proj"
+  mkdir -p "$dir"
+  cat > "$dir/summary.md" <<'S'
+---
+id: summary
+---
+
+# Cockpit
+<!-- canonical: cockpit -->
+
+<!-- nextup:auto -->
+## Now
+The rail brief landed and the preview panes now render notes instead of showing their source.
+
+## Next
+- [ ] widen the pane and re-check the wrap at a narrow split
+<!-- /nextup:auto -->
+
+<!-- AUTO:START -->
+**shipped `cockpit-v1.10.0`** (2026-07-18)
+
+**In flight** (open PRs)
+- #1093 docs: a doc
+<!-- AUTO:END -->
+S
+  printf 'Cockpit\t%s\tthe tmux cockpit\tv0.3\n' "$dir/summary.md" \
+    > "$NOTES_FIXTURE/projects.personal"
+}
+
+@test "--rail on a project row appends what shipped, Now and Next" {
+  _seed_overview
+  run bash -c '"$COCKPIT" --rail personal/cockpit | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'personal'          # the sections list is still there
+  assert_output --partial 'Cockpit'
+  assert_output --partial 'shipped v1.10.0'   # _feed_gist, not a second parser
+  assert_output --partial 'NOW'
+  assert_output --partial 'NEXT'
+  assert_output --partial '[ ] widen the pane'
+}
+
+@test "--rail renders the brief rather than the note's source" {
+  # The whole point: no frontmatter, no markers, no `##`.
+  _seed_overview
+  run bash -c '"$COCKPIT" --rail personal/cockpit | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  refute_output --partial '<!--'
+  refute_output --partial 'nextup'
+  refute_output --partial 'id: summary'
+  refute_output --partial '## '
+}
+
+@test "--rail with no section renders exactly what it always did" {
+  # The brief is ADDITIVE. A regression here breaks the launch render, which passes no row.
+  _seed_overview
+  local bare
+  bare="$("$COCKPIT" --rail)"
+  refute [ "$(printf '%s' "$bare" | grep -c 'NOW')" -gt 0 ]
+}
+
+@test "--rail on a section that is not a project adds nothing" {
+  _seed_overview
+  local plain
+  plain="$("$COCKPIT" --rail personal)"
+  assert_equal "$plain" "$("$COCKPIT" --rail)"
+}
+
+@test "--rail adds no brief outside the tasks view" {
+  # agents, bridge and usage each answer a question per row in the BODY; repeating a project
+  # brief beside every one of them is the duplication the agents view was pruned of.
+  _seed_overview
+  "$COCKPIT" --toggle-mode                       # tasks -> agents
+  run bash -c '"$COCKPIT" --rail personal/cockpit | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  refute_output --partial 'NOW'
+  refute_output --partial 'shipped v1.10.0'
+}
+
+@test "--rail says when it truncated the brief" {
+  # A silent cap reads as "that is all there is", which is how a stale pane goes unnoticed.
+  _seed_overview
+  run bash -c 'RAIL_NOW_LINES=1 "$COCKPIT" --rail personal/cockpit | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial '...'
+}
+
+@test "--rail degrades to the plain sidebar when a project has no overview" {
+  # A project with a summary path that does not exist must not blank the rail.
+  printf 'Cockpit\t/does/not/exist.md\t\tv0.3\n' > "$NOTES_FIXTURE/projects.personal"
+  run "$COCKPIT" --rail personal/cockpit
+  assert_success
+  assert_output --partial 'personal'
+}
+
+# ── --preview-md: the pane every note is read through ────────────────────────
+
+@test "--preview-md renders a note instead of printing its source" {
+  local f="$NOTES_FIXTURE/note.md"
+  cat > "$f" <<'S'
+---
+id: v1.2.3
+---
+
+<!-- summary:auto -->
+## Summary
+It shipped.
+<!-- /summary:auto -->
+S
+  run bash -c '"$COCKPIT" --preview-md "$1" | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"' _ "$f"
+  assert_success
+  refute_output --partial '<!--'
+  refute_output --partial 'id: v1.2.3'
+  refute_output --partial '## '
+  assert_output --partial 'SUMMARY'
+  assert_output --partial 'It shipped.'
+}
+
+@test "--preview-md on a missing file fails instead of rendering an empty pane" {
+  # An empty preview reads as "this note is empty", which is the wrong answer to a bad path
+  # -- and a preview command is exactly where nobody sees an exit code.
+  run "$COCKPIT" --preview-md /does/not/exist.md
+  assert_failure
+  assert_output --partial 'no such file'
 }
 
 # ── mutation verbs: assert the vault-safe CLI call, not the vault ────────────
@@ -311,4 +461,66 @@ _boot_section() { # <stored value> -> what the launch block settles on
 
 @test "no stored section at all opens on personal" {
   assert_equal "$(_boot_section '')" 'personal'
+}
+
+# ── the project header's status ──────────────────────────────────────────────
+
+@test "--list puts the LIVE feed on a project header, not the stale STATUS prose" {
+  # The tasks view passed the STATUS column straight through: prose an LLM writes and
+  # nothing refreshes. The bridge was fixed to count the AUTO block instead; this is the
+  # same fix on the view you actually spend the day in.
+  local dir="$NOTES_FIXTURE/cockpit-proj"; mkdir -p "$dir"
+  cat > "$dir/summary.md" <<'S'
+<!-- AUTO:START -->
+**shipped `cockpit-v1.10.0`** (2026-07-18)
+
+**In flight** (open PRs)
+- #1093 docs: a doc
+<!-- AUTO:END -->
+S
+  printf 'Cockpit\t%s\t_2026-06-30_ - v1.8.15 live\tv0.3\n' "$dir/summary.md" \
+    > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'shipped v1.10.0, 1 PR'
+  refute_output --partial 'v1.8.15 live'
+}
+
+@test "--list keeps the STATUS prose on a project that was never lab-synced" {
+  # No AUTO block anywhere -> the old line, not a blank row.
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'shipping the rail'
+}
+
+@test "--list with no section renders the one you are standing on" {
+  # This is the path the launch render now takes; it used to be pinned to `personal`.
+  "$COCKPIT" --next-section          # personal -> work
+  run bash -c '"$COCKPIT" --list | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_output --partial 'Playground'
+  refute_output --partial 'Cockpit'
+}
+
+@test "--list keeps the VERSION on a project whose STATUS column is empty" {
+  # `notes projects` emits `name<TAB>path<TAB>status<TAB>version` and most projects have an
+  # empty status. Tab is an IFS *whitespace* character, so `IFS=$'\t' read` folded the two
+  # adjacent tabs into one delimiter and every field after the gap shifted left: the version
+  # landed in `st` and `ver` came back empty. The row looked right - it was rendering the
+  # version AS the status - until a real status arrived and the version vanished.
+  #
+  # Asserted as an EXACT line: under the bug the text `v0.3` is still present, just in the
+  # wrong slot with the status separator's three spaces in front of it.
+  printf 'Cockpit\t/does/not/exist.md\t\tv0.3\n' > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line '  Cockpit v0.3'
+  refute_line '  Cockpit   v0.3'
+}
+
+@test "--list keeps version AND status in their own slots when both are present" {
+  printf 'Cockpit\t/does/not/exist.md\tsteady\tv0.3\n' > "$NOTES_FIXTURE/projects.personal"
+  run bash -c '"$COCKPIT" --list personal | grep -P "^head\t" | cut -f7 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line '  Cockpit v0.3   steady'
 }

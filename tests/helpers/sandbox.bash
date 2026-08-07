@@ -19,12 +19,23 @@ FLEET="$REPO_ROOT/.local/src/tmux/fleet.sh"
 COCKPIT_SESSION_SH="$REPO_ROOT/.local/src/tmux/cockpit.sh"
 STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
+ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
 # NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
 # its former $BRIDGE export is gone with it. fleet.sh is the headless-side surface now.
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK AGENTCTL_BIN
+# The shared board parser. Exported so a subject can find it even though sandbox_init
+# rewrites $HOME, which is where the deployed copy would otherwise live.
+AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
+# The shared eval-corpus parser, same reason as the board lib above.
+AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
+# The shared lab-feed parser, same reason again. Its other consumer lives in the private
+# overlay (lab-sync's regen-project-index.sh), so this suite is where the grammar is pinned.
+LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
+# The shared markdown renderer every preview pane goes through, same reason again.
+MD_RENDER_LIB="$REPO_ROOT/.local/lib/md-render.sh"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -78,7 +89,7 @@ sandbox_init() {
   # legitimately) writes straight THROUGH the link and truncates the real script in the
   # repo. That is a test suite silently editing its own subject.
   local b
-  for b in agent-ask; do
+  for b in agent-ask ask-resume; do
     [ -f "$REPO_ROOT/.local/bin/$b" ] || continue
     cp "$REPO_ROOT/.local/bin/$b" "$SANDBOX/bin/$b"
     chmod +x "$SANDBOX/bin/$b"
@@ -100,6 +111,17 @@ sandbox_init() {
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect
   # above relocates them for free; they are exported explicitly anyway so a test can point
   # one at an empty dir to exercise the "nothing here" branch without touching the others.
+  # Mirror the DEPLOYED lib path. Several subjects source ~/.local/lib/*.sh directly
+  # (agent-proof.sh has no env override and is sourced by five runners), and
+  # sandbox_init rewrites $HOME -- so without this the source silently no-ops and a
+  # test asserting on proof output sees an empty file rather than a failure.
+  mkdir -p "$HOME/.local/lib"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-evals.sh" "$HOME/.local/lib/agent-evals.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
+
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   export WATCH_DIR="$HOME/.agent/watches"

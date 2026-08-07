@@ -17,8 +17,22 @@ if [ -r "$FOCUS_LIB" ]; then
   # shellcheck source=/dev/null
   . "$FOCUS_LIB"
 fi
+# The one board parser (see .local/lib/agent-board.sh). Guarded for the same stow reason
+# as focus-lib above: losing the stranded-sprint banner is survivable, losing the whole
+# preflight is not.
+for AGENT_BOARD_LIB_CANDIDATE in "${AGENT_BOARD_LIB:-}" "$HOME/.local/lib/agent-board.sh" \
+                                 "$(dirname "$0")/../../.local/lib/agent-board.sh"; do
+  if [ -n "$AGENT_BOARD_LIB_CANDIDATE" ] && [ -r "$AGENT_BOARD_LIB_CANDIDATE" ]; then
+    # shellcheck source=/dev/null
+    . "$AGENT_BOARD_LIB_CANDIDATE"
+    break
+  fi
+done
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
-PLAN_DIR="$HOME/.agent/plans/$PROJECT_NAME"
+# Honour AGENT_PLANS_DIR, the override agent-board.sh reads. Without it this hook and
+# the library it calls disagree about where boards live the moment anything sets it —
+# the banner would test one directory for existence and read boards out of another.
+PLAN_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 # Compaction marker — canonical path is defined in compact-prep.sh (kept in sync here).
@@ -77,18 +91,26 @@ CONTEXT=$(
   fi
 
   # Stranded-sprint detection — surface an in-flight sprint at turn 1 so the user
-  # never has to remember to resume after a crash/outage/process-exit. A row is
-  # non-terminal if its Status is queued|in-progress|pr-open. Best-effort only.
-  if [ -d "$PLAN_DIR" ]; then
-    ACTIVE_SPRINT=""
-    while IFS= read -r sf; do
-      [ -n "$sf" ] || continue
-      if grep -Eq '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$sf" 2>/dev/null; then
-        ACTIVE_SPRINT="$sf"; break
-      fi
-    done < <(ls -1t "$PLAN_DIR"/sprint-*.md 2>/dev/null)
+  # never has to remember to resume after a crash/outage/process-exit.
+  #
+  # This used to grep for the literal words queued|in-progress|pr-open. Those are three
+  # of the many strings a Status cell actually holds, and NOT the ones a wave writes
+  # (`in-wave`, `reverted-from-wave`) or that a human writes by hand (`**DONE - PR #1036
+  # merged**`, `blocked on access`). Measured against the real boards on this machine the
+  # regex matched NOTHING while two rows sat `working` — so the banner whose entire job is
+  # to stop work being forgotten was itself silently forgotten. Ask the shared parser,
+  # which normalizes every one of those spellings to a stage.
+  #
+  # board_needs_eyes, not board_drainable: an unapproved board still needs the human's
+  # eyes at turn 1 — that is exactly the state an approval gate leaves it in.
+  if [ -d "$PLAN_DIR" ] && declare -F board_find >/dev/null 2>&1; then
+    ACTIVE_SPRINT="$(board_find "$PROJECT_NAME" board_needs_eyes)"
     if [ -n "$ACTIVE_SPRINT" ]; then
-      n=$(grep -Ec '^\|[^|]*\|[^|]*\|.*\b(queued|in-progress|pr-open)\b' "$ACTIVE_SPRINT" 2>/dev/null || true)
+      # board_count, not a local awk over the stage names. The awk that stood here
+      # listed all five in-flight stages by hand, so it was a fourth copy of the
+      # vocabulary board_in_class owns — and one that would have kept printing a
+      # confident count while quietly ignoring any stage added after it was written.
+      n=$(board_count "$ACTIVE_SPRINT" eyes)
       mtime=$(stat -c %Y "$ACTIVE_SPRINT" 2>/dev/null || echo 0)
       age=$(( ( $(date +%s) - mtime ) / 60 ))
       echo "⚠ ACTIVE SPRINT: $(basename "$ACTIVE_SPRINT") — ${n:-1} in-flight row(s), last touched ${age}m ago."
@@ -146,14 +168,18 @@ CONTEXT=$(
   fi
 
   # Lab readback — the human↔agent project BUS. Surface the human's "→ For the agents"
-  # section from the project's lab file (~/.notes/lab/projects/current/{name}/summary.md)
-  # so open comments/suggestions/tasks reach the agent at turn 1. Keyed on canonical name;
-  # resolves the lab dir via an authoritative `<!-- canonical: NAME -->` marker, else fuzzy.
-  # Fully best-effort — every step guarded so it can never break the hook.
-  # There is more than one bus root: the personal lab, the BNB lab (lab/bnb — BNB is
-  # ours, so it roots under lab/ rather than employment/), and the Gigantic work tree.
-  # lab-roots.sh owns that list; hard-coding the personal root here silently dropped the
-  # readback for every project that lives under another one.
+  # section from the project's lab file so open comments/tasks reach the agent at turn 1.
+  #
+  # THE JOIN IS THE DIRECTORY NAME. project-map.json is the sole registry and the sole
+  # minter of project names, and project-map-doctor enforces that every lab directory
+  # has an entry -- so `<lab root>/$PROJECT_NAME/summary.md` IS the file, with no search.
+  #
+  # This replaces a grep for `<!-- canonical: NAME -->` followed by a fuzzy fallback that
+  # guessed at `${NAME%-agent}` and `${NAME%-platform}`. Both halves were wrong in the
+  # same way: the marker MINTED names the registry had never heard of, and the fuzzy arm
+  # then silently attached a session to whatever directory happened to look similar. A
+  # readback that guesses is worse than one that reports nothing.
+  #
   # lab-roots.sh ships in the PRIVATE overlay, so it is colocated with this script only
   # at the stowed path — not inside ~/.dotfiles. Check both, or a run from the repo
   # checkout silently falls back to the personal root and drops the readback.
@@ -165,30 +191,20 @@ CONTEXT=$(
       break
     fi
   done
-  if declare -F lab_roots >/dev/null 2>&1; then
-    LAB_ROOT_LIST=$(lab_roots 2>/dev/null || true)
+  # lab_project_root already implements exactly this lookup and had no code callers.
+  if declare -F lab_project_root >/dev/null 2>&1; then
+    LAB_ROOT="$(lab_project_root "$PROJECT_NAME" 2>/dev/null || true)"
+    [ -n "$LAB_ROOT" ] && LAB_SUMMARY="$LAB_ROOT/$PROJECT_NAME/summary.md"
   else
-    LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
+    # Public-only checkout: the private overlay is not stowed. One root, same rule.
+    LAB_SUMMARY="$HOME/.notes/lab/projects/current/$PROJECT_NAME/summary.md"
   fi
-  while IFS= read -r LAB_CURRENT; do
-    [ -n "$LAB_CURRENT" ] && [ -d "$LAB_CURRENT" ] || continue
-    LAB_SUMMARY=$(grep -rlsF "canonical: $PROJECT_NAME " "$LAB_CURRENT"/*/summary.md 2>/dev/null | head -1 || true)
-    if [ -z "$LAB_SUMMARY" ]; then
-      for cand in "$PROJECT_NAME" "${PROJECT_NAME%-agent}" "${PROJECT_NAME%-platform}"; do
-        if [ -f "$LAB_CURRENT/$cand/summary.md" ]; then
-          LAB_SUMMARY="$LAB_CURRENT/$cand/summary.md"; break
-        fi
-      done
-    fi
-    [ -n "$LAB_SUMMARY" ] && break
-  done <<EOF
-$LAB_ROOT_LIST
-EOF
   if [ -n "$LAB_SUMMARY" ] && [ -f "$LAB_SUMMARY" ]; then
     # extract the "## → For the agents" section (up to the next "## " heading), drop the
     # italic descriptor line, and only inject if it holds real content (not the placeholder).
     LAB_MSGS=$(awk '/^## .*For the agents/{f=1;next} f&&/AUTO:START/{exit} f&&/^## /{exit} f' "$LAB_SUMMARY" 2>/dev/null \
-      | grep -vE '^_|^[[:space:]]*<!--|^[[:space:]]*$' | grep -vF '_(nothing yet)_' | head -15 || true)
+      | grep -vE '^_|^[[:space:]]*<!--|^[[:space:]]*$' \
+      | grep -vE '^[[:space:]]*-?[[:space:]]*_\(nothing yet' | head -15 || true)
     if [ -n "$LAB_MSGS" ]; then
       echo "📥 From you, via lab (${LAB_SUMMARY/#$HOME/\~}) — open comments/tasks for this project:"
       printf '%s\n' "$LAB_MSGS" | sed 's/^/  /'
@@ -199,8 +215,15 @@ EOF
 
   # Focus cockpit — surface today's open `## Focus` tasks (your daily-note task list, the
   # thing you actually work from) at turn 1, so every session opens knowing what's actively
-  # in progress. If none are set, nudge to capture them. Read-only + best-effort here; task
-  # WRITES stay in the `notes` CLI (never hand-edit ~/.notes markdown). Keep items terse.
+  # in progress. Read-only + best-effort here; task WRITES stay in the `notes` CLI (never
+  # hand-edit ~/.notes markdown). Keep items terse.
+  #
+  # The nudge points PROJECT work at `notes ptask`, not at Focus, and an empty Focus is
+  # reported as fine rather than as something to fill. This is the turn-1 half of the same
+  # rule the Stop gate enforces at turn N (86-focus-reconcile.sh:124) — the two must agree.
+  # They did not: the gate learned `ptask:` in #204 while this still said "notes focus add",
+  # so an agent was TOLD to use the human's list and then blocked for having used it. That
+  # is how 2026-08-05 opened with five of six Focus items belonging to agent sessions.
   if command -v notes >/dev/null 2>&1 && declare -F focus_daily_note >/dev/null 2>&1; then
     DAILY_NOTE=$(focus_daily_note)
     # `[/]` (in progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
@@ -223,10 +246,13 @@ EOF
         printf '%s\n' "$FOCUS_OPEN" | head -8 | sed "s/^/$FOCUS_INDENT/"
         [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
       fi
-      echo "  → before you start: is this session's work one of these? If not, \`notes focus add\`; when it lands, \`notes focus done\`."
+      echo "  → this is the HUMAN's list, not your queue. PROJECT work goes on the board instead:"
+      echo "    \`notes ptask <project> add|start|done \"<short title>\"\`  (\`notes board\` shows every lane)"
+      echo "    Only add to Focus when the work is the human's own."
       echo
     else
-      echo "🎯 Focus: none set — run \`notes today\`, then capture what we're on (terse, plain, a couple words)."
+      echo "🎯 Focus: none set for today — that is fine, it is the human's list, not yours."
+      echo "  → track PROJECT work on the board: \`notes ptask <project> add|start|done\`, then \`notes board\`."
       echo
     fi
   fi

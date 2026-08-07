@@ -14,6 +14,7 @@ description: >-
   involves a BAA/DPA, or before shipping anything that stores or moves sensitive
   personal data. Pairs with the `compliance` skill (the reference lookup).
 category: compliance
+tools: Bash, Read, Grep, Glob, WebFetch, WebSearch
 ---
 
 # COMPLIANCE COUNSEL Agent

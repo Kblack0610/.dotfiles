@@ -470,28 +470,78 @@ pub fn recurs_on(line: &str, date: NaiveDate) -> bool {
 /// manifest) without pulling in a YAML crate. Returns the value with surrounding single
 /// or double quotes stripped and whitespace trimmed. First match wins; comment lines
 /// (`# …`) and non-matching keys are skipped. `None` if the key is absent or empty.
+///
+/// Block scalars (`key: >-` / `|-` / `>` / `|` / `>+` / `|+`) are read: the indented
+/// block beneath the marker is collected and folded to ONE line, whatever the style.
+/// Folding a literal `|` block is not what YAML says, and is deliberate — every caller
+/// here renders a single line of a note, so a value with newlines in it would break the
+/// markdown rather than inform it.
+///
+/// This case is the whole reason this function has a history. It used to return the
+/// marker verbatim, so the daily note's `## Watches` section read
+/// `- TRIP deploy-drift - >- (command, 6h)` for every manifest whose description was a
+/// block — which was most of them, since a long description is exactly when you reach
+/// for `>-`. That is the third hand-rolled YAML reader in this system to be caught
+/// mangling block scalars (the other two were in watch-companion-loop and are now a
+/// python parser); the failure is always silent, because a marker is a valid string.
 pub fn parse_yaml_scalar(text: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
-    for line in text.lines() {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
         let t = line.trim_start();
         if t.starts_with('#') {
             continue;
         }
-        if let Some(rest) = t.strip_prefix(&prefix) {
-            let v = rest.trim();
-            let v = v
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-                .unwrap_or(v)
-                .trim();
-            if v.is_empty() {
-                return None;
-            }
-            return Some(v.to_string());
+        let Some(rest) = t.strip_prefix(&prefix) else {
+            continue;
+        };
+        let v = rest.trim();
+        if is_block_marker(v) {
+            return fold_block(&mut lines);
         }
+        let v = v
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(v)
+            .trim();
+        if v.is_empty() {
+            return None;
+        }
+        return Some(v.to_string());
     }
     None
+}
+
+/// Is this value a YAML block-scalar indicator rather than a value? Covers both styles
+/// (`>` folded, `|` literal) with every chomping modifier, plus an explicit indent digit
+/// (`>-2`). Anything else — including a value that merely starts with `>` — is a scalar.
+fn is_block_marker(v: &str) -> bool {
+    let mut c = v.chars();
+    if !matches!(c.next(), Some('>') | Some('|')) {
+        return false;
+    }
+    c.all(|ch| matches!(ch, '-' | '+') || ch.is_ascii_digit())
+}
+
+/// Collect the indented block under a block-scalar marker and fold it to one line.
+/// Stops at the first line that is neither blank nor indented — i.e. the next key.
+fn fold_block<'a, I: Iterator<Item = &'a str>>(lines: &mut I) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            // A blank line inside a folded block is a paragraph break. The daily note
+            // wants one line, so it collapses to a single space like any other gap.
+            continue;
+        }
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            break; // dedent: the block ended and this is the next key
+        }
+        parts.push(line.trim().to_string());
+    }
+    let joined = parts.join(" ");
+    let joined = joined.trim();
+    (!joined.is_empty()).then(|| joined.to_string())
 }
 
 /// Strip a trailing ` (Nd)` day-count suffix, if any.
@@ -1235,6 +1285,51 @@ after
         assert_eq!(parse_yaml_scalar(y, "probe").as_deref(), Some("http"));
         assert_eq!(parse_yaml_scalar(y, "interval").as_deref(), Some("5m"));
         assert_eq!(parse_yaml_scalar(y, "comment"), None); // comment line skipped
+    }
+
+    #[test]
+    fn parse_yaml_scalar_reads_block_scalars_instead_of_their_marker() {
+        // Returning ">-" here is a silent lie: it is a perfectly valid string, so every
+        // consumer rendered it as the value. That is what put `- TRIP deploy-drift - >-`
+        // in the daily note for weeks.
+        let y = "name: w\n\
+                 what: >-\n  folded across\n  two source lines\n\
+                 desc: |-\n  literal one\n  literal two\n\
+                 plain: still a scalar\n";
+        assert_eq!(
+            parse_yaml_scalar(y, "what").as_deref(),
+            Some("folded across two source lines")
+        );
+        // A literal block is folded too - every caller renders one line of a note.
+        assert_eq!(
+            parse_yaml_scalar(y, "desc").as_deref(),
+            Some("literal one literal two")
+        );
+        // The key after a block is still reachable: the block stops at the dedent.
+        assert_eq!(parse_yaml_scalar(y, "plain").as_deref(), Some("still a scalar"));
+    }
+
+    #[test]
+    fn parse_yaml_scalar_block_edge_cases() {
+        // Every chomping/indent modifier is a marker, not a value.
+        for marker in [">", ">-", ">+", "|", "|-", "|+", ">-2"] {
+            let y = format!("k: {marker}\n  the value\nnext: x\n");
+            assert_eq!(
+                parse_yaml_scalar(&y, "k").as_deref(),
+                Some("the value"),
+                "marker {marker} was not treated as a block"
+            );
+        }
+        // A blank line inside a folded block is a paragraph break, collapsed to a space.
+        let y = "k: >-\n  para one\n\n  para two\nnext: x\n";
+        assert_eq!(parse_yaml_scalar(y, "k").as_deref(), Some("para one para two"));
+        // An empty block yields None rather than an empty bullet.
+        assert_eq!(parse_yaml_scalar("k: >-\nnext: x\n", "k"), None);
+        // NEGATIVE CONTROL: a value that merely starts with '>' is a scalar, not a block.
+        assert_eq!(
+            parse_yaml_scalar("k: > 40 chars\n", "k").as_deref(),
+            Some("> 40 chars")
+        );
         assert_eq!(parse_yaml_scalar(y, "empty"), None); // empty value → None
         assert_eq!(parse_yaml_scalar(y, "missing"), None);
         assert_eq!(

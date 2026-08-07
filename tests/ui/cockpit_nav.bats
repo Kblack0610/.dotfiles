@@ -141,14 +141,20 @@ start_cockpit() {
   wait_until 'screen_lacks "fix the rail badge"'
 }
 
-@test "a cycles all three views and returns to tasks" {
-  # tasks -> agents -> bridge -> tasks (notes-cockpit.sh toggle_mode).
+@test "a cycles all four views and returns to tasks" {
+  # tasks -> agents -> bridge -> usage -> tasks (notes-cockpit.sh toggle_mode).
   start_cockpit
   wait_until 'screen_has "fix the rail badge"'
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'   # agents
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'   # bridge
+  tmux_keys a
+  wait_until 'screen_lacks "fix the rail badge"'   # usage
+  wait_until 'screen_has "usage ·"'                # ...and it is REALLY the usage view:
+                                                   # three `screen_lacks` in a row would
+                                                   # pass on any view that merely lacks
+                                                   # the task, including a broken render.
   tmux_keys a
   wait_until 'screen_has "fix the rail badge"'     # back to tasks
 }
@@ -217,4 +223,21 @@ start_cockpit() {
   for k in j j k l h p p j a a; do tmux_keys "$k"; done
   # Still painting the rail: the process did not crash out of fzf.
   wait_until 'screen_has "SECTIONS"'
+}
+
+# ── the launch render ────────────────────────────────────────────────────────
+
+@test "the cockpit opens on the section it was left on, rail and body agreeing" {
+  # The launch was pinned to `list_section personal` while the rail preview -- and every
+  # `reload($SELF --list)` after the first keypress -- followed $STATE. So relaunching on
+  # any other section opened with the sidebar pointing at one section and the body listing
+  # another, and the two surfaces openly disagreed about where you were standing. Every
+  # action that re-execs the cockpit (V, o, g, W) comes back through this render.
+  #
+  # Asserted on the BODY, which is the half that was wrong: `Playground` is a project of
+  # `work` and appears only inside `work`'s listing.
+  printf 'work' > "$TMPDIR/notes-cockpit-${UID:-$(id -u)}.section"
+  start_cockpit
+  wait_until 'screen_has "Playground"'
+  wait_until 'screen_lacks "Cockpit"'   # personal's project — what the body used to show
 }

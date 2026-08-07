@@ -30,6 +30,14 @@ Verbs
   validate FILE  exit non-zero with a reason if the manifest is unparseable,
                  is missing fields its probe type requires, or (for command
                  watches) carries an expect_cmd that is not valid bash.
+  validate --strict FILE
+                 the above, plus the four legibility fields (what/why/where/
+                 action). This is a LINT, deliberately not part of plain
+                 `validate`: the loop runs `validate` on every pass and sends a
+                 manifest that fails it to ERROR *and notifies*, so promoting a
+                 documentation gap to a runtime fault would have paged eleven
+                 times for eleven healthy watches. Skills run --strict when
+                 WRITING a manifest; the daemon never does.
 
 Timestamps are deliberately kept as strings: PyYAML would otherwise resolve
 `created: 2026-07-26T10:50:00-07:00` into a datetime and reformat it, and the
@@ -70,6 +78,23 @@ LEADING_REDIRECT = re.compile(r"^\s*[|<>]")
 
 PROBES = ("http", "metric", "kubectl", "command", "agent")
 METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
+
+# The four legibility axes a reader needs to act on a page at 3am.
+#
+# `who` is deliberately absent: `source:` has carried provenance since the first
+# manifest and renaming it would churn every live watch to say the same thing.
+#
+# Nothing used to REQUIRE these, and the result was that eight of eleven live
+# watches were `probe: command` -- which takes no `target` -- so the one fact you
+# most want ("where did this fire?") existed only inside an embedded bash blob.
+# No renderer could reach it and no notification could carry it. `description`
+# was the sole human field and drifted to both extremes: four twenty-line essays
+# and, at the other end, a six-word restatement of the watch's own name.
+#
+# Each must be a SINGLE LINE. They render into one table cell and one push
+# notification; a folded block scalar (`>-`) is the right way to write a long
+# one, an unfolded one (`|-`) is not.
+LEGIBILITY_FIELDS = ("what", "why", "where", "action")
 
 
 def scalar(value):
@@ -142,7 +167,24 @@ def bash_syntax_error(cmd):
     return proc.stderr.strip().replace("\n", " ") or "bash -n rejected it"
 
 
-def cmd_validate(path):
+def legibility_errors(doc):
+    """--strict only: the four fields must be present and one line each."""
+    errors = []
+    for field in LEGIBILITY_FIELDS:
+        value = scalar(doc.get(field)).strip()
+        if not value:
+            errors.append(
+                f"missing '{field}' -- a watch nobody can read is a watch nobody acts on"
+            )
+        elif "\n" in value:
+            errors.append(
+                f"'{field}' must be a single line (it renders into one table cell and "
+                "one push notification); use a folded block scalar '>-', not '|-'"
+            )
+    return errors
+
+
+def cmd_validate(path, strict=False):
     try:
         doc = load(path)
     except ValueError as exc:
@@ -150,6 +192,8 @@ def cmd_validate(path):
         return 1
 
     errors = []
+    if strict:
+        errors.extend(legibility_errors(doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
@@ -211,6 +255,16 @@ def cmd_validate(path):
         if probe_date.returncode != 0:
             errors.append(f"expiry {expiry!r} is neither a duration nor a date")
 
+    # How long a still-unresolved TRIP/ERROR stays quiet before nagging again.
+    # `null` opts out entirely. A typo here fails silently in the worst possible
+    # way -- to_secs returns 0 for an unparseable duration and the loop then skips
+    # the re-notify, so a watch you thought was nagging would be permanently mute.
+    renotify = scalar(doc.get("renotify_after"))
+    if renotify and renotify not in ("null", "~") and not DURATION.match(renotify):
+        errors.append(
+            f"renotify_after {renotify!r} is not a duration (e.g. 12h 2d) or null"
+        )
+
     if errors:
         for err in errors:
             print(f"invalid: {err}", file=sys.stderr)
@@ -218,18 +272,29 @@ def cmd_validate(path):
     return 0
 
 
+USAGE = "usage: sentinel-manifest {env|validate [--strict]} FILE"
+
+
 def main(argv):
-    if len(argv) != 3 or argv[1] not in ("env", "validate"):
-        print("usage: sentinel-manifest {env|validate} FILE", file=sys.stderr)
+    args = argv[1:]
+    strict = "--strict" in args
+    args = [a for a in args if a != "--strict"]
+    if len(args) != 2 or args[0] not in ("env", "validate"):
+        print(USAGE, file=sys.stderr)
         return 2
-    verb, path = argv[1], argv[2]
+    verb, path = args
+    if strict and verb != "validate":
+        # Silently ignoring the flag would report a pass that was never checked,
+        # which is the exact shape of every failure this file exists to prevent.
+        print("sentinel-manifest: --strict applies to 'validate' only", file=sys.stderr)
+        return 2
     if verb == "env":
         try:
             return cmd_env(path)
         except ValueError as exc:
             print(f"sentinel-manifest: {path}: {exc}", file=sys.stderr)
             return 1
-    return cmd_validate(path)
+    return cmd_validate(path, strict=strict)
 
 
 if __name__ == "__main__":

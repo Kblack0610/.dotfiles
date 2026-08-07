@@ -41,8 +41,14 @@ fn task_sheet(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Resolve (or create) a project's task sheet. Prefers an existing `## Wave` sheet; else
-/// appends a `## Wave: new (current)` to an existing `README.md`; else scaffolds a fresh
-/// `README.md` task sheet. `name` seeds the title of a fresh sheet.
+/// appends a wave to an existing `README.md`; else scaffolds a fresh `README.md` task
+/// sheet. `name` seeds the title of a fresh sheet.
+///
+/// The wave is NAMED for the sheet's `Version:` line via `projects::wave_heading` — the
+/// same minter `projects::sheet_body` uses. This path used to hardcode the literal string
+/// `new`, which is how a sheet could read `## Wave: new (current)` directly under
+/// `Version: v0.0.2`: the version is meant to be the wave's only id, and a wave created
+/// through here had no id at all.
 fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
     if let Some(s) = task_sheet(dir) {
         return Ok(s);
@@ -52,15 +58,36 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
         if !c.ends_with('\n') {
             c.push('\n');
         }
-        c.push_str("\n## Wave: new (current)\n- [ ] \n");
+        let heading = projects::wave_heading(&projects::wave_version_of(&c));
+        c.push_str(&format!("\n## {heading}\n- [ ] \n"));
         md::write_atomic(&readme, &c)?;
     } else {
-        fs::write(
-            &readme,
-            format!("# {name}\n\n## Wave: new (current)\n- [ ] \n"),
-        )?;
+        // No sheet at all, so no `Version:` line to read: a fresh sheet opens at v0.0.1,
+        // matching what `projects --new` seeds.
+        let heading = projects::wave_heading("v0.0.1");
+        fs::write(&readme, format!("# {name}\n\n## {heading}\n- [ ] \n"))?;
     }
     Ok(readme)
+}
+
+/// A project directory's current wave: `(version, open_task_lines)`. `None` when the dir
+/// has no task sheet at all.
+///
+/// Keyed by DIRECTORY rather than profile+name, unlike `sheet_and_wave` below, because the
+/// board walks `daily::discover_project_dirs` across every configured profile — it already
+/// holds the path and has no name to re-resolve. Same sheet, same `## Wave`, same open-task
+/// predicate the cockpit and `ptask list` use, so the three cannot disagree about what is
+/// on a board.
+pub(crate) fn open_wave_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
+    let sheet = task_sheet(dir)?;
+    let content = fs::read_to_string(&sheet).ok()?;
+    let heading = current_wave(&content)?;
+    let open: Vec<String> = md::section_numbered(&content, &heading)
+        .into_iter()
+        .filter(|(_, l)| md::is_open_task(l))
+        .map(|(_, l)| l.trim_end().to_string())
+        .collect();
+    Some((projects::wave_version_of(&content), open))
 }
 
 /// The sheet + its resolved current-wave heading, for a named project. `None` when the
@@ -188,6 +215,49 @@ Version: v0.1.0
 ## Backlog
 - [ ] later
 ";
+
+    // Negative control for the two-minter bug: before `ensure_task_sheet` routed through
+    // `projects::wave_heading`, this appended the literal `## Wave: new (current)` to a
+    // sheet declaring `Version: v0.2.0`, and both assertions below failed. A sheet must
+    // never name a wave anything other than the version it already declares.
+    #[test]
+    fn appended_wave_is_named_for_the_sheets_version_not_the_literal_new() {
+        let dir = std::env::temp_dir().join(format!("ptask-wave-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let readme = dir.join("README.md");
+        // A prose README carrying a version but no wave — the path that used to hardcode.
+        fs::write(&readme, "# demo\nVersion: v0.2.0\n\nsome prose\n").unwrap();
+
+        let sheet = ensure_task_sheet(&dir, "demo").unwrap();
+        let body = fs::read_to_string(&sheet).unwrap();
+
+        assert_eq!(
+            current_wave(&body).as_deref(),
+            Some("Wave: v0.2.0 (current)"),
+            "the appended wave must carry the sheet's declared version"
+        );
+        assert!(
+            !body.contains("Wave: new"),
+            "the literal `new` must never be minted as a wave id: {body}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A sheet with no `Version:` line has nothing to inherit, so it opens at v0.0.1 —
+    // the same seed `projects --new` uses. Guards the fallback from drifting back to `new`.
+    #[test]
+    fn a_versionless_fresh_sheet_opens_at_v0_0_1() {
+        let dir = std::env::temp_dir().join(format!("ptask-fresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let sheet = ensure_task_sheet(&dir, "demo").unwrap();
+        let body = fs::read_to_string(&sheet).unwrap();
+
+        assert_eq!(current_wave(&body).as_deref(), Some("Wave: v0.0.1 (current)"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn current_wave_finds_the_first_wave_heading() {

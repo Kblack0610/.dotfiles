@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# agentctl-run - the ONE place an agentctl runner invokes an LLM harness.
+#
+# Resolves ROLE (what this agent may do) and HARNESS (what runs it) into an
+# invocation that actually enforces the role, then execs. Every runner calls this
+# instead of `claude -p` / `opencode run` directly.
+#
+# WHY A CHOKE POINT AND NOT PER-SCRIPT FLAGS
+# There are 17 `claude -p` call sites across 7 runner scripts. Scoping them
+# individually drifts, and we have proof: on 2026-07-28 an --mcp-config fix
+# applied directly to delivery-loop vanished TWICE within the hour, because a
+# concurrent session was branch-switching the working tree. A capability
+# restriction that an unrelated edit can silently remove is not a restriction.
+#
+# WHY THE ROLE IS NOT CLAUDE-SHAPED
+# agentctl has always documented itself as harness-agnostic (opencode, claude,
+# openclaw, binks) but had no HARNESS key - the choice hid inside each COMMAND.
+# Meanwhile opencode already modelled roles as agents with tool grants. So the
+# role is the abstraction and claude is one implementation of it, not the name on
+# the tin. Structure mirrors the `ticket` CLI: entrypoint + lib/ + harnesses/.
+#
+# Usage:
+#   ROLE=build HARNESS=claude agentctl-run -p "<prompt>" [--max-turns N ...]
+#   agentctl-run --role observe --harness claude -p "<prompt>"
+#   agentctl-run --explain build            # print the resolved invocation, run nothing
+#
+# Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
+# MCP sets: ~/.config/agentctl/mcp/<set>.json      (override: $AGENTCTL_MCP)
+# Contract: docs/contract.md
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=lib/role.sh
+. "$SELF_DIR/lib/role.sh"
+
+role="${ROLE:-${AGENTCTL_ROLE:-}}"
+harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
+args=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --role)    role="${2:?--role needs a value}"; shift 2 ;;
+    --harness) harness="${2:?--harness needs a value}"; shift 2 ;;
+    --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { role="$2"; shift; }; shift ;;
+    *)         args+=("$1"); shift ;;
+  esac
+done
+export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
+
+# Every caller of this script is a runner on a timer with no human attached — that
+# is the premise the whole role contract rests on (see harnesses/claude.sh, which
+# passes --dangerously-skip-permissions for exactly this reason). Publish it as an
+# env fact so surfaces OUTSIDE the harness can honour it too.
+#
+# The one that needs it today is the Focus gate (86-focus-reconcile.sh): it blocks a
+# turn that changed code without declaring the work on the human's daily `## Focus`.
+# On a timer there is nobody to answer, so the agent complied the only way it could —
+# `focus add` then `focus done` — and captain-watchdog's 10-minute pass buried
+# 2026-08-04's real entries under 45 `captain watch pass` lines.
+#
+# It is set HERE, not at each call site, because there are seven `claude -p` callers
+# and a marker that can be lost by an unrelated edit is not a marker — the same
+# argument the wrapper's own header makes about capability flags. Harness-agnostic on
+# purpose: "no human is watching" is a property of the RUNNER, not of Claude.
+export CLAUDE_HEADLESS=1
+
+role_load "$role"
+
+harness_file="$SELF_DIR/harnesses/$harness.sh"
+[ -r "$harness_file" ] || role_die "unknown harness '$harness' (no $harness_file).
+Available: $(ls -1 "$SELF_DIR/harnesses" 2>/dev/null | sed 's/\.sh$//' | tr '\n' ' ')"
+# shellcheck source=/dev/null
+. "$harness_file"
+
+# Contract rule 3. This is the check that makes a role mean something across
+# harnesses: if this one cannot enforce the denials, stop. Do NOT fall back.
+if ! harness_supports; then
+  role_die "harness '$harness' cannot enforce role '$ROLE_NAME'. Refusing to run.
+Running anyway would mean the role's denials silently do not apply - see
+docs/contract.md, rule 3."
+fi
+
+if [ -n "$AGENTCTL_EXPLAIN" ]; then
+  printf 'role:        %s\n'  "$ROLE_NAME"
+  printf 'description: %s\n'  "$ROLE_DESC"
+  printf 'write:       %s\n'  "$ROLE_WRITE"
+  printf 'task:        %s\n'  "$ROLE_TASK"
+  printf 'bash:        %s\n'  "$ROLE_BASH"
+  printf 'mcp set:     %s\n'  "$ROLE_MCP"
+  printf 'denied:      %s\n'  "$(role_denied_tools)"
+  if [ "$ROLE_WRITE" = "no" ] && [ "$ROLE_BASH" = "yes" ]; then
+    printf 'CAVEAT:      write is denied but bash is granted, and bash can still write\n'
+    printf '             via redirection. Constrains shape, not proven harmless.\n'
+  fi
+  harness_exec "${args[@]+"${args[@]}"}"
+  exit 0
+fi
+
+harness_exec "${args[@]+"${args[@]}"}"

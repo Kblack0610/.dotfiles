@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The cockpit's AGENTS view: _project_agents, _version_start, _canon_list.
+# The cockpit's AGENTS view: _project_agents, _version_start, canon_namespaces.
 #
 # The view answers "who is working this project, and what did the finished ones
 # cost for the version we are building". It used to render pending asks and the
@@ -46,11 +46,11 @@ EOF
   C_DIM=''; C_OFF=''; C_PROJ=''; C_INP=''; C_SEL=''; C_BOX=''; C_HEAD=''
 }
 
-# $3 of _project_agents is the PRIMARY canonical name; the full set of runtime names a
-# project claims is looked up from its marker by canonicals_of. Tests that care about
-# the multi-name case override that lookup rather than smuggling a list through the
-# primary argument - passing "a, b" there is exactly the bug this split fixed, because
-# every other consumer (agent-ask, sprint items, checkpoints) uses the primary verbatim.
+# $3 of _project_agents is the project name; the full set of ~/.agent namespaces its
+# state can live in is derived from the registry by canon_namespaces. Tests that care
+# about the two-namespace case override that lookup rather than smuggling a list through
+# the argument - passing "a, b" there is exactly the bug the split fixed, because every
+# other consumer (agent-ask, sprint items, checkpoints) uses the name verbatim.
 render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}" "${3:-}"; }
 
 
@@ -145,37 +145,74 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
   done
 }
 
-# ── several runtime names per vault project ──────────────────────────────────
+# ── the namespaces a project's state can live in ─────────────────────────────
+#
+# This used to be a `<!-- canonical: a, b -->` marker inside each summary.md, parsed by
+# canonical_of / canonicals_of / _canon_list. The marker did not point into the runtime
+# namespace, it MINTED names nothing else had heard of. The relation it actually carried
+# -- "a session registers under the REPO it ran in" -- is `trackers.<project>.repo` in
+# project-map.json, which already existed and is already validated.
 
-@test "_canon_list splits and trims a multi-name marker" {
-  assert_equal "$(_canon_list 'a, b')" "$(printf 'a\nb')"
-  assert_equal "$(_canon_list 'solo')" 'solo'
+mk_map() { MAPF="$BATS_TEST_TMPDIR/map.json"; cat > "$MAPF"; export PROJECT_MAP_FILE="$MAPF"; }
+
+@test "canon_namespaces returns the project, then the repo it belongs to" {
+  mk_map <<'J'
+{ "trackers": { "notes-cockpit": { "repo": "dotfiles" } } }
+J
+  assert_equal "$(canon_namespaces notes-cockpit | tr '\n' ' ')" 'notes-cockpit dotfiles '
 }
 
-@test "a project claiming two canonical names gathers from both" {
-  canonicals_of() { printf 'demo\nalias-repo\n'; }
+@test "a project with no repo relation yields only itself" {
+  mk_map <<'J'
+{ "trackers": { "gsuite-comms": { "repo": null } } }
+J
+  assert_equal "$(canon_namespaces gsuite-comms)" 'gsuite-comms'
+}
+
+@test "an unregistered project still yields itself, never nothing" {
+  # The cockpit passes this straight on as a project name. Returning empty would render
+  # the row as idle for a project that is being actively worked.
+  mk_map <<'J'
+{ "trackers": {} }
+J
+  assert_equal "$(canon_namespaces whatever)" 'whatever'
+}
+
+@test "a repo equal to the project name is not emitted twice" {
+  mk_map <<'J'
+{ "trackers": { "dotfiles": { "repo": "dotfiles" } } }
+J
+  assert_equal "$(canon_namespaces dotfiles)" 'dotfiles'
+}
+
+@test "canon_namespaces survives a missing or unreadable registry" {
+  # This file is PUBLIC and the registry is PRIVATE, so a public-only checkout has no
+  # map at all. Degrading to "just the project name" is correct; failing is not.
+  export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/nope.json"
+  run canon_namespaces demo
+  assert_success
+  assert_output 'demo'
+}
+
+@test "a project whose state lives under the repo gathers from both" {
+  mk_map <<'J'
+{ "trackers": { "demo": { "repo": "alias-repo" } } }
+J
   run render demo
   assert_output --partial 'writing the thing'
   assert_output --partial 'second canonical'
 }
 
-@test "canonical_of hands back ONE usable name, never the joined marker text" {
-  # The bridge does `agent-ask list <canon>`, so a returned "a, b" matches no project
-  # and the view renders empty while a gate ask sits pending. That regression shipped.
-  local out; out="$(canonical_of personal notes-cockpit 2>/dev/null || true)"
-  refute [ -n "$(printf '%s' "$out" | grep ',')" ]
-}
-
 # ── the headless runner ──────────────────────────────────────────────────────
 
 @test "a delivery-loop runner on THIS project is shown" {
-  canonicals_of() { printf 'demo\n'; }
+  canon_namespaces() { printf 'demo\n'; }
   run render demo demo 'draining the queue'
   assert_output --partial 'draining the queue'
 }
 
 @test "a delivery-loop runner on another project is not" {
-  canonicals_of() { printf 'demo\n'; }
+  canon_namespaces() { printf 'demo\n'; }
   run render demo other 'draining the queue'
   refute_output --partial 'draining the queue'
 }

@@ -92,6 +92,7 @@ Media/Music
 !.claude/skills/sentinel/
 !.claude/skills/session-snapshot/
 !.claude/skills/shell-test-harness/
+!.claude/skills/skill-refine/
 !.claude/skills/sprint-overseer/
 !.claude/skills/svg-diagram/
 !.claude/skills/update-rules/
@@ -230,6 +231,7 @@ test_notifications.sh
 .config/systemd/user/*mqtt*
 .config/systemd/user/*regen-project*
 .config/systemd/user/*lab-sync*
+.config/systemd/user/*captain-watchdog*
 .config/systemd/user/*/*notes*
 .config/systemd/user/*/*agentctl*
 .config/systemd/user/*/*git-sync*
@@ -238,11 +240,17 @@ test_notifications.sh
 .config/systemd/user/*/*mqtt*
 .config/systemd/user/*/*regen-project*
 .config/systemd/user/*/*lab-sync*
+.config/systemd/user/*/*captain-watchdog*
 
 # Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
 .agent/
 
 # Test suite: vendored bats + per-run failure artifacts (see tests/Makefile bootstrap)
+# Trailing slash would match only a real directory. A git worktree needs `tests/vendor`
+# SYMLINKED to the primary checkout's copy (bootstrap clones it once), and a symlink is
+# not a directory -- so the slash form left it showing as untracked in every worktree,
+# one `git add .` away from being committed.
+tests/vendor
 tests/vendor/
 tests/artifacts/
 

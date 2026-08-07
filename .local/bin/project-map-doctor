@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# project-map-doctor - referential integrity for project-map.json.
+#
+# The map is the registry: it decides what a project IS. Nothing validated it, and the
+# cost was not theoretical. Four projects (notes-cockpit, gsuite-comms, boot-runtime-admin,
+# media_player_fleet) existed ONLY as a `<!-- canonical: NAME -->` marker in ~/.notes and
+# appeared nowhere in this file. `resolve_project_name` can never return those strings, so
+# the marker was not pointing into the runtime namespace - it was MINTING names the
+# registry had never heard of, which is how ~/.agent/plans/notes-cockpit came to exist.
+#
+# Every failure mode here is silent by construction: a name that resolves to nothing does
+# not error, it returns zero rows, and zero rows is indistinguishable from "no work". So
+# this script exists to turn that silence into an exit code.
+#
+# SKIP IS NOT PASS. Checks that need the private overlay (lab roots) or a populated
+# ~/.agent report SKIP when they cannot look. A doctor that reports green because it was
+# blindfolded is the same disease it is meant to catch.
+#
+# Usage: project-map-doctor [MAP_FILE]
+# Exit:  0 = every check passed (skips allowed), 1 = at least one FAIL.
+
+set -uo pipefail
+
+MAP_FILE="${1:-${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}}"
+AGENT_PLANS_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}"
+
+fails=0
+pass() { printf 'PASS  %s\n' "$*"; }
+fail() { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
+skip() { printf 'SKIP  %s\n' "$*"; }
+
+command -v jq >/dev/null 2>&1 || { printf 'FAIL  jq is not installed; cannot read the map\n'; exit 1; }
+[ -f "$MAP_FILE" ] || { printf 'FAIL  no project map at %s\n' "$MAP_FILE"; exit 1; }
+
+if ! jq -e . "$MAP_FILE" >/dev/null 2>&1; then
+  fail "map is not valid JSON: $MAP_FILE"
+  exit 1
+fi
+pass "map is valid JSON ($MAP_FILE)"
+
+# The set of names the registry considers real. `default` is a tracker fallback, not a
+# project, so it is excluded deliberately - otherwise every typo'd name would "resolve".
+known() {
+  jq -r '
+    [ (.paths // {}) | to_entries[] | .value ]
+    + [ (.apps  // {}) | to_entries[] | .value | to_entries[] | .value ]
+    + [ (.trackers // {}) | keys[] | select(. != "default") ]
+    | unique[]' "$MAP_FILE" 2>/dev/null
+}
+is_known() { known | grep -qxF -- "$1"; }
+
+# --- 1. every `apps.<repo>` key names a registered repo -----------------------------
+# A typo here does not error: the app block is simply never consulted and every path in
+# that repo falls through to the repo name.
+n=0
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  n=$((n + 1))
+  is_known "$repo" || fail "apps.\"$repo\" names no registered project"
+done < <(jq -r '(.apps // {}) | keys[]' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n apps.<repo> keys are registered projects" \
+  || skip "no apps blocks to check"
+
+# --- 2. every `inherits` names a real tracker ---------------------------------------
+n=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="${line%%	*}"; parent="${line#*	}"
+  n=$((n + 1))
+  jq -e --arg p "$parent" '(.trackers // {}) | has($p)' "$MAP_FILE" >/dev/null 2>&1 \
+    || fail "trackers.$name inherits \"$parent\", which is not a tracker"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value.inherits) | "\(.key)\t\(.value.inherits)"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n inherits targets exist" || skip "no inherits to check"
+
+# --- 3. every `repo` relation names a registered project ----------------------------
+# This is the relation the lab join now rides on: a project with no code declares the repo
+# whose runtime state it shares. A dangling one silently reads an empty namespace.
+n=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="${line%%	*}"; repo="${line#*	}"
+  n=$((n + 1))
+  is_known "$repo" || fail "trackers.$name has repo \"$repo\", which names no registered project"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value.repo != null) | "\(.key)\t\(.value.repo)"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n repo relations resolve" || skip "no repo relations to check"
+
+# --- 4. aliases point at real projects, and never shadow one ------------------------
+n=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  a="${line%%	*}"; target="${line#*	}"
+  n=$((n + 1))
+  is_known "$target" || fail "alias \"$a\" points at \"$target\", which is not a registered project"
+  # An alias whose own name is a project name is unreachable-or-worse: resolution order
+  # decides which wins, and the loser is invisible.
+  if jq -e --arg a "$a" '[(.paths // {}) | to_entries[] | .value] | index($a)' "$MAP_FILE" >/dev/null 2>&1; then
+    fail "alias \"$a\" collides with a project of the same name"
+  fi
+done < <(jq -r '(.aliases // {}) | to_entries[] | "\(.key)\t\(.value)"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n aliases resolve and none shadow a project" || skip "no aliases to check"
+
+# --- 5. every directory holding a sprint board is a registered project --------------
+# The write-side canary. A board under an unregistered name is work that four daemons
+# poll for and none of them can see.
+if [ -d "$AGENT_PLANS_DIR" ]; then
+  n=0; bad=0
+  for d in "$AGENT_PLANS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    ls "$d"/sprint-*.md >/dev/null 2>&1 || continue
+    name="$(basename "$d")"
+    n=$((n + 1))
+    if ! is_known "$name"; then
+      fail "board directory \"$name\" holds sprint boards but names no registered project"
+      bad=$((bad + 1))
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    skip "no sprint boards on disk to check"
+  elif [ "$bad" -eq 0 ]; then
+    pass "all $n board directories are registered projects"
+  fi
+else
+  skip "no $AGENT_PLANS_DIR; cannot check board directories"
+fi
+
+# --- 6. every lab project is registered ---------------------------------------------
+# Needs the private overlay. This is the check that would have caught all four minted
+# names at the moment they were created.
+if [ -r "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}" ]; then
+  # shellcheck source=/dev/null
+  . "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}"
+fi
+if declare -F lab_roots >/dev/null 2>&1; then
+  n=0; bad=0
+  while IFS= read -r root; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      n=$((n + 1))
+      if ! is_known "$name"; then
+        fail "lab project \"$name\" names no registered project (it can only mint one)"
+        bad=$((bad + 1))
+      fi
+    done
+  done < <(lab_roots)
+  if [ "$n" -eq 0 ]; then
+    skip "lab roots present but empty"
+  elif [ "$bad" -eq 0 ]; then
+    pass "all $n lab projects are registered"
+  fi
+else
+  skip "lab-roots.sh unavailable (private overlay); cannot check lab projects"
+fi
+
+# --- 7. archived lab projects that USED to resolve and now do not ---------------------
+# lab_roots yields only `current/` roots, by design -- that is where active work lives.
+# But `projects/archived/` is still READ: regen-project-index.sh renders an "archived"
+# section with a repo column for each. So an archived directory whose name is not a
+# registered project silently loses that column, and check 6 cannot see it.
+#
+# This is not hypothetical. `archived/binks/` carried `<!-- canonical: binks-agent -->`
+# and the lab dir is named `binks`; when the marker join was deleted, `binks` resolved to
+# nothing. Registering `binks` with `repo: binks-agent` restored it. Found only because
+# someone looked -- which is what this check is for.
+#
+# WARN, not FAIL: an archived project with no repo at all (`home`, `old`, `playground`)
+# is a perfectly normal end state, and a directory nobody will touch again does not
+# deserve to break a gate. The signal worth having is the DELTA -- a name that resolves
+# to nothing while its summary still claims a repo.
+warns=0
+warn() { printf 'WARN  %s\n' "$*"; warns=$((warns + 1)); }
+archived_root="$HOME/.notes/lab/projects/archived"
+if [ -d "$archived_root" ]; then
+  n=0
+  for d in "$archived_root"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    n=$((n + 1))
+    is_known "$name" && continue
+    # Only worth reporting if the summary names a repo the registry could have resolved.
+    claim="$(grep -oE 'canonical:[[:space:]]*[A-Za-z0-9_.-]+' "$d/summary.md" 2>/dev/null \
+      | head -1 | sed 's/.*:[[:space:]]*//' || true)"
+    if [ -n "$claim" ] && is_known "$claim"; then
+      warn "archived lab project \"$name\" is unregistered but its summary still claims \"$claim\" — its index row lost its repo"
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    skip "no archived lab projects"
+  elif [ "$warns" -eq 0 ]; then
+    pass "all $n archived lab projects resolve (or claim nothing)"
+  fi
+else
+  skip "no archived lab root on this machine"
+fi
+
+printf '\n'
+if [ "$fails" -gt 0 ]; then
+  printf '%s check(s) FAILED\n' "$fails"
+  exit 1
+fi
+printf 'all checks passed\n'
+exit 0

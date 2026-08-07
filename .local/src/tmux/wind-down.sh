@@ -29,6 +29,9 @@
 #   pane=<pane_id>
 #   session=<session_name>
 #   windows=<window_count_in_session>
+#   worktree=<path>             # set only when this session sits in a `wt` worktree; `fire`
+#                               #   hands it to `wt reap` AFTER the kill, and reap refuses
+#                               #   unless it is clean, landed and has no live session
 #   ts=<unix>
 
 set -uo pipefail
@@ -90,6 +93,20 @@ cmd_arm() {
     return 1
   fi
 
+  # The worktree this session is sitting in, resolved NOW for the same reason as everything
+  # above: at fire time the window is being killed and $PWD is long gone. Recorded only when
+  # the session actually lives under $WT_ROOT -- winding down an ordinary session must never
+  # put a main checkout anywhere near `reap`.
+  local worktree='' cwd top
+  cwd=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+  # --show-toplevel, not the pane path itself: a pane sitting in <worktree>/tests is still
+  # in the worktree, but `git worktree remove <worktree>/tests` is simply an error.
+  if [ -n "$cwd" ] && top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
+    case "$top" in
+      "${WT_ROOT:-$HOME/.worktrees}"/*) worktree="$top" ;;
+    esac
+  fi
+
   local proj sentinel sid
   proj=$(resolve_project)
   sid="${CLAUDE_CODE_SESSION_ID:-}"
@@ -113,6 +130,7 @@ cmd_arm() {
     echo "session=$session"
     echo "socket=$socket"
     echo "windows=$windows"
+    echo "worktree=$worktree"
     echo "ts=$(date +%s)"
   } > "$sentinel"
 
@@ -130,8 +148,9 @@ cmd_fire() {
   [ -n "$sentinel" ] && [ -f "$sentinel" ] || { echo "wind-down fire: sentinel not found: $sentinel" >&2; return 1; }
 
   # shellcheck source=/dev/null
-  local scope target session pane socket label
+  local scope target session pane socket label worktree
   scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
+  worktree=$(grep '^worktree=' "$sentinel" | head -1 | cut -d= -f2-)
   target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
   session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
   pane=$(grep '^pane=' "$sentinel" | head -1 | cut -d= -f2-)
@@ -147,6 +166,12 @@ cmd_fire() {
   local TM="tmux"
   [ -n "$socket" ] && [ -S "$socket" ] && TM="tmux -S $socket"
 
+  # `fire` is invoked by the Stop hook and may be the first thing to touch SPIN_DIR
+  # (arm can have run on a different machine, or the dir can be swept). Without this,
+  # every append below fails -- and it fails LOUDLY despite the `2>/dev/null || true`,
+  # because a redirection that cannot open its target is reported by the shell before
+  # the command ever runs, so neither guard applies to it. Cost: one mkdir.
+  mkdir -p "$SPIN_DIR"
   local logf="$SPIN_DIR/fire.log"
   printf '[%s] fire: scope=%s target=%s pane=%s socket=%s TM="%s"\n' \
     "$(date '+%F %T' 2>/dev/null)" "$scope" "$target" "$pane" "$socket" "$TM" >> "$logf" 2>/dev/null || true
@@ -206,7 +231,18 @@ cmd_fire() {
   else
     kill_cmd="$TM kill-window -t '$target'"
   fi
-  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'" 2>/dev/null
+
+  # Reap the worktree AFTER the kill, in the same chain, and never before: `wt reap` refuses
+  # while a tmux session for the worktree is live, which is the correct answer right up until
+  # this window is gone. Ordering it here is what turns that refusal from an obstacle into
+  # the guard it is meant to be. `reap` also refuses anything dirty or unpushed, so a session
+  # that ended mid-thought keeps its worktree and says so in the log -- there is no --force.
+  local reap_cmd=''
+  if [ -n "$worktree" ] && [ -d "$worktree" ] && [ -x "$HOME/.local/bin/wt" ]; then
+    reap_cmd="; $HOME/.local/bin/wt reap '$worktree' >> '$logf' 2>&1"
+  fi
+
+  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd" 2>/dev/null
   local sched_rc=$?
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
@@ -219,6 +255,13 @@ cmd_note_path() {
   mkdir -p "$dir"
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
 }
+
+# Sourced (by the test suite) rather than run: stop here with every function defined but
+# no verb dispatched. Without this, sourcing falls into the case below with $1 unset, hits
+# the usage arm and `exit 2`s the test runner -- which is why the suite had reached for
+# `eval "$(sed -n ...)"` extraction instead, and why this file ended up with no coverage
+# at all despite arming a deferred `tmux kill-window`.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;

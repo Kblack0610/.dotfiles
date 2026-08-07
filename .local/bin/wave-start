@@ -22,6 +22,13 @@
 
 set -uo pipefail
 
+# The one board parser, shared with the cockpit, wave-session and the headless daemons.
+# shellcheck source=/dev/null
+. "${AGENT_BOARD_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/agent-board.sh" 2>/dev/null \
+  || . "$(dirname "$(realpath "$0")")/../lib/agent-board.sh" 2>/dev/null \
+  || { echo "wave-start: agent-board.sh not found" >&2; exit 1; }
+
 APP="${1:-}"
 [ -n "$APP" ] || { echo "usage: wave-start <app> [--now] [--verb start|status|ship]" >&2; exit 2; }
 shift
@@ -41,7 +48,11 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/wave"
 LOG="$STATE_DIR/${APP}.log"
 mkdir -p "$STATE_DIR"
 
-command -v claude >/dev/null 2>&1 || { echo "wave-start: claude not on PATH" >&2; exit 1; }
+# Guard the seam this script ACTUALLY invokes. It used to check `claude`, which stopped
+# being the thing wave-start runs the moment the pass went through the role wrapper --
+# so on a host with claude installed but no agentctl-run the guard passed and the run
+# died later with exit 127, and on a host with neither it refused for the wrong reason.
+command -v agentctl-run >/dev/null 2>&1 || { echo "wave-start: agentctl-run not on PATH" >&2; exit 1; }
 
 # One wave per app at a time. Pressing W twice because the first press looked like it
 # did nothing starts a second scope-out over the SAME `#ai` items, and both then file
@@ -100,6 +111,16 @@ _report() { # <state> <item> [detail]
 run_pass() {
   cd "$REPO" 2>/dev/null || { echo "wave-start: repo $REPO missing" >&2; return 1; }
 
+  # Backstop for the answer loop. The cockpit resumes an ask on the keypress that answers
+  # it, which covers the normal path; this catches an answer given anywhere else (a
+  # terminal `agent-ask answer`, a phone notification action) so a `W` press never scopes
+  # a fresh wave on top of an approval that was already given and never acted on.
+  # ASK_RESUME_DRAINING guards the recursion: ask-resume runs a `/wave` resume BY calling
+  # this script, which would otherwise drain again from inside its own drain.
+  if [ -z "${ASK_RESUME_DRAINING:-}" ] && command -v ask-resume >/dev/null 2>&1; then
+    ASK_RESUME_DRAINING=1 ask-resume --all >>"$LOG" 2>&1 || true
+  fi
+
   local t0 rc=0
   t0="$(date +%s)"
 
@@ -119,8 +140,10 @@ run_pass() {
   # worked: `claude` exited non-zero, the status went nowhere, and the only report
   # the human got was the boilerplate `=== done` line. A `/wave` that failed in one
   # second announced itself as "finished".
-  claude -p "/wave $APP $VERB" \
-    --dangerously-skip-permissions \
+  # `build` role, same as delivery-loop: a wave writes code and opens PRs. The
+  # role pins the MCP set (playwright --headless) and carries its denials;
+  # --dangerously-skip-permissions still applies via the adapter.
+  agentctl-run --role build -p "/wave $APP $VERB" \
     --max-turns "${WAVE_MAX_TURNS:-60}" \
     >>"$LOG" 2>&1 || rc=$?
   echo "=== done (rc=$rc) — $(date -Is)" >>"$LOG"
@@ -129,7 +152,7 @@ run_pass() {
   # has not succeeded without it, whatever it exited with. Compare against the pass
   # start time so a stale board from last week cannot vouch for this run.
   local board board_ts=0
-  board="$(ls -1t "$HOME/.agent/plans/$APP"/sprint-*.md 2>/dev/null | head -1)"
+  board="$(board_newest "$APP")"
   [ -n "$board" ] && board_ts="$(stat -c %Y "$board" 2>/dev/null || echo 0)"
 
   WAVE_VERDICT=ok
@@ -154,8 +177,15 @@ run_pass() {
   # person, and it is what makes the row show `!` instead of a dim tick. Detected
   # mechanically: a board that still says `Approval: PENDING` plus a pending ask for this
   # app. Checked BEFORE ok, because a paused wave has not finished.
+  # `! board_approved`, not `grep PENDING`. Those are not inverses: PENDING is only ONE of
+  # the ways a board can be un-approved, and a board carrying no Approval line at all
+  # matched neither branch — so a wave that paused for a human, with a pending ask sitting
+  # right there, reported `ok` and the row showed a dim tick instead of `!`. Ask the
+  # single approval predicate (BOARD_APPROVAL_RE) that delivery-loop already gates on, so
+  # the thing that STARTS a wave and the thing that DRAINS one cannot disagree about what
+  # approved means.
   local waiting=0 askid=""
-  if [ -n "$board" ] && grep -q '^- Approval: PENDING' "$board" 2>/dev/null; then
+  if [ -n "$board" ] && ! board_approved "$board"; then
     if command -v agent-ask >/dev/null 2>&1; then
       askid="$(agent-ask list "$APP" --pending 2>/dev/null | awk -F'\t' 'NR==1{print $1}')"
       [ -n "$askid" ] && waiting=1
@@ -168,6 +198,25 @@ run_pass() {
     _report blocked "$VERB waiting on ask $askid" "$WAVE_DIAG"
   else
     _report ok "$VERB ok" "$WAVE_DIAG"
+  fi
+
+  # Publish the proof-contract outcome too. `_report` writes the agentctl STATUS
+  # (state/project/item, last-value-only); last-outcome is the separate did-it-work
+  # axis that fleet-liveness asserts across the whole roster, and `wave` was one of
+  # the runners that had never written it -- so its absence read as "never wired".
+  #
+  # Derived from WAVE_VERDICT rather than from claude's exit code, because this
+  # script already knows better: a pass can exit 0 having written no blackboard,
+  # which is why WAVE_VERDICT exists at all. A wave HELD at its approval gate is
+  # NOOP, not STALLED -- stopping for a human is the gate working, not a failure.
+  if . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null; then
+    if [ "$WAVE_VERDICT" != ok ]; then
+      proof_report "${AGENTCTL_NAME:-wave}" STALLED "$APP $VERB $WAVE_VERDICT"
+    elif [ "$waiting" -eq 1 ]; then
+      proof_report "${AGENTCTL_NAME:-wave}" NOOP "$APP $VERB held at gate (ask $askid)"
+    else
+      proof_report "${AGENTCTL_NAME:-wave}" WORKED "$APP $VERB ok"
+    fi
   fi
 
   # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on

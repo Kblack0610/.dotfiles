@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# ask-resume — run the `resume` command of an answered ask. The producer half of the
+# human<->agent loop, and the piece that was missing.
+#
+#   ask-resume <id>          resume one ask (what the cockpit calls on Enter)
+#   ask-resume --all         drain every resumable ask, any project
+#   ask-resume --dry-run     print what would run, run nothing
+#
+# `agent-ask answer` records a decision and fires a notification. That is all it does.
+# Nothing read those answers: a wave posted a gate, you answered `approve`, and the wave
+# stayed blocked forever because no code path anywhere turned the answer back into an
+# action. `agent-ask`'s own header promised "a later fire / `/captain resume` consumes the
+# answer" and that consumer was never written. This is it.
+#
+# Called from two places, deliberately:
+#   - the cockpit's answer path, with an id, so answering IS starting (instant feedback)
+#   - `wave-start`, with --all, so an answer given anywhere else still gets picked up
+#
+# Marking happens BEFORE running (`agent-ask mark-resumed`), so a resume that dies part
+# way is not retried forever. These commands create tickets and cut branches; re-running
+# one is not free. A failed resume is visible in the wave log and the blackboard.
+
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+DRY=0
+TARGET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all)     TARGET="--all" ;;
+    --dry-run) DRY=1 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)        echo "ask-resume: unknown flag '$1'" >&2; exit 2 ;;
+    *)         TARGET="$1" ;;
+  esac
+  shift
+done
+[ -n "$TARGET" ] || TARGET="--all"
+
+command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PATH" >&2; exit 1; }
+
+# Run one resume command.
+#
+# A `/wave <app> <verb>` resume goes through `wave-start`, NOT through a bare `claude -p`.
+# wave-start owns the per-app lock, the log, the pid file and the runner status contract —
+# bypassing it is how you end up with two concurrent scope-outs filing duplicate tickets
+# for the same items. Anything else falls back to a plain headless claude.
+#
+# The Anthropic transport env is scrubbed first. A caller may be `delivery-loop`, which
+# exports ANTHROPIC_BASE_URL pointing at the LiteLLM gateway's Lazer (client proxy) route;
+# inheriting that would silently push a personal project's notes-vault content through a
+# client's proxy. Resumes run on the native subscription, always.
+run_resume() { # $1=id $2=project $3=command
+  local id="$1" project="$2" cmd="$3"
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY
+
+  local app verb
+  if [[ "$cmd" =~ ^/wave[[:space:]]+([^[:space:]]+)([[:space:]]+([^[:space:]]+))?[[:space:]]*$ ]]; then
+    app="${BASH_REMATCH[1]}"; verb="${BASH_REMATCH[3]:-start}"
+    if [ "$DRY" = 1 ]; then echo "would run: wave-start $app --verb $verb   (ask $id)"; return 0; fi
+    command -v wave-start >/dev/null 2>&1 || { echo "ask-resume: wave-start not on PATH" >&2; return 1; }
+    agent-ask mark-resumed "$id" >/dev/null 2>&1
+    echo "ask-resume: $id ($project) -> wave-start $app --verb $verb" >&2
+    # wave-start drains this queue itself as a backstop; tell it not to, or it re-enters
+    # the drain from inside a drain. Terminating either way (the ask is already marked),
+    # but the extra pass is pure noise in the log.
+    ASK_RESUME_DRAINING=1 wave-start "$app" --verb "$verb"
+    return $?
+  fi
+
+  if [ "$DRY" = 1 ]; then echo "would run: claude -p '$cmd'   (ask $id)"; return 0; fi
+  command -v claude >/dev/null 2>&1 || { echo "ask-resume: claude not on PATH" >&2; return 1; }
+  agent-ask mark-resumed "$id" >/dev/null 2>&1
+  echo "ask-resume: $id ($project) -> $cmd" >&2
+  local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
+  mkdir -p "$log"
+  setsid -f claude -p "$cmd" --dangerously-skip-permissions \
+    --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
+    >>"$log/${project}.log" 2>&1 </dev/null
+}
+
+# --- one id -----------------------------------------------------------------
+if [ "$TARGET" != "--all" ]; then
+  line="$(agent-ask resumable --all 2>/dev/null | awk -F'\t' -v i="$TARGET" '$1==i')"
+  if [ -z "$line" ]; then
+    # Not an error: an ask with no `resume`, or one already consumed, is the common case.
+    # The cockpit calls this on EVERY answer and must stay silent for ordinary questions.
+    exit 0
+  fi
+  IFS=$'\t' read -r id project cmd _answer <<<"$line"
+  run_resume "$id" "$project" "$cmd"
+  exit $?
+fi
+
+# --- drain everything -------------------------------------------------------
+n=0
+while IFS=$'\t' read -r id project cmd _answer; do
+  [ -n "$id" ] || continue
+  run_resume "$id" "$project" "$cmd" || true
+  n=$((n + 1))
+done < <(agent-ask resumable --all 2>/dev/null)
+[ "$n" -gt 0 ] && echo "ask-resume: resumed $n" >&2
+exit 0

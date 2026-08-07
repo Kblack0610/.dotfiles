@@ -93,11 +93,18 @@ struct RawProfile {
     /// falls back to a `recurring.md` sibling of `scheduled`.
     #[serde(default)]
     recurring: Option<String>,
-    /// Which backlogs the daily-note footer links, in order. Each entry is a known name
-    /// (`fun` | `scheduled` | `recurring`) or a vault-relative path. Optional — defaults
-    /// to `["fun", "scheduled"]` when unset. This is the editable lever for that list.
+    /// The SCHEDULE: every task carrying a time trigger, `[date]` (once) or `(every:…)`
+    /// (repeating). Supersedes `scheduled` + `recurring`, which were two files for one
+    /// idea. Optional — resolve() falls back to a `schedule.md` sibling of the daily dir,
+    /// deliberately outside `backlogs/`: a backlog has no time trigger, a schedule does.
     #[serde(default)]
-    footer_backlogs: Option<Vec<String>>,
+    schedule: Option<String>,
+    /// Which files the daily-note footer links, in order. Each entry is a known name
+    /// (`backlog`/`fun` | `schedule` | `scheduled` | `recurring`) or a vault-relative
+    /// path. Optional — defaults to `["fun", "schedule"]`: one backlog, one schedule.
+    /// `footer_backlogs` is the legacy key name, kept as a serde alias.
+    #[serde(default, alias = "footer_backlogs")]
+    footer_links: Option<Vec<String>>,
     /// Sentinel watches dir (`~/.agent/watches`), a RUNTIME path outside the vault. When
     /// set, `notes today` renders a `## Watches` section from the `*.yaml` manifests +
     /// their live state. Optional — unset means no watches surface (opt-in).
@@ -159,8 +166,16 @@ pub struct Profile {
     /// Standing recurring-task backlog — `(every:…)` cadence lines emitted into the
     /// daily note's Due on matching days. Sibling `recurring.md` by default.
     pub recurring: PathBuf,
+    /// The SCHEDULE — one file for every task with a time trigger. `[date]` fires once and
+    /// is consumed; `(every:…)` fires each cycle and is kept. Supersedes `scheduled` +
+    /// `recurring`, which are still resolved above so a pre-migration vault keeps working.
+    pub schedule: PathBuf,
     /// Resolved backlog paths the daily-note footer links, in order (config-driven).
-    pub footer_backlogs: Vec<PathBuf>,
+    /// Files the daily-note footer links, as `(label, path)`. The LABEL travels with the
+    /// path so the footer can say what each link IS — "Backlog" and "Schedule" are
+    /// different kinds of thing, and rendering both under one "Backlogs:" heading is the
+    /// mislabelling this split exists to remove.
+    pub footer_links: Vec<(String, PathBuf)>,
     /// Sentinel watches dir (runtime, outside the vault). `None` disables the daily
     /// note's `## Watches` section (opt-in via config).
     pub watches: Option<PathBuf>,
@@ -183,9 +198,11 @@ pub struct Profile {
     pub meetings: PathBuf,
     pub index: PathBuf,
     pub projects: Option<PathBuf>,
-    /// Hand-curated cross-project index (`lab/projects/index.md`) whose `## Current`
-    /// lane drives the daily note's Current Projects. Derived as the `index.md`
-    /// sibling of the `projects` dir's parent; None when `projects` is unset.
+    /// Hand-curated cross-project index (`lab/projects/index.md`). The daily note links
+    /// it from the footer (`Projects: [[…]]`); it used to also copy the index's
+    /// `## Current` lane into a `## Current Projects` block, which was the same
+    /// destination rendered twice. Derived as the `index.md` sibling of the `projects`
+    /// dir's parent; None when `projects` is unset.
     pub project_index: Option<PathBuf>,
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
@@ -272,7 +289,8 @@ fn builtin_default() -> RawConfig {
             carryover: "journal/backlogs/carryover.md".into(),
             scheduled: None,
             recurring: None,
-            footer_backlogs: None,
+            schedule: None,
+            footer_links: None,
             watches: None,
             watches_state: None,
             clickup_list: None,
@@ -368,20 +386,48 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         .unwrap_or_else(|| scheduled.with_file_name("recurring.md"));
     let fun = join(&rp.fun);
 
+    // The SCHEDULE: one file for every task with a time trigger, `[date]` (fires once,
+    // consumed) or `(every:…)` (fires each cycle, kept). `scheduled` and `recurring` were
+    // two files for one idea — the difference is a TOKEN, not a location, and both already
+    // surfaced into the same section by the same helpers.
+    //
+    // It lives OUTSIDE `backlogs/` on purpose. A backlog is what has no time trigger; a
+    // schedule is what does. Calling all three "backlogs" is what made the daily note's
+    // footer list three links for two concepts.
+    let schedule = rp
+        .schedule
+        .as_ref()
+        .map(|s| join(s))
+        .unwrap_or_else(|| join(&rp.daily).with_file_name("schedule.md"));
+
     // Which backlogs the daily-note footer links, in order. Known names map to their
     // resolved paths; anything else is treated as a vault-relative path. Defaults to
     // fun + scheduled so existing behavior is unchanged.
-    let footer_backlogs: Vec<PathBuf> = match &rp.footer_backlogs {
-        Some(names) => names
-            .iter()
-            .map(|n| match n.as_str() {
-                "fun" => fun.clone(),
-                "scheduled" | "carryover" | "carry" => scheduled.clone(),
-                "recurring" => recurring.clone(),
-                other => join(other),
-            })
-            .collect(),
-        None => vec![fun.clone(), scheduled.clone()],
+    // `scheduled` and `recurring` still RESOLVE to their old names so a pre-migration
+    // vault keeps working and the migration has something to read; they simply are not
+    // linked any more. The default is now one backlog + one schedule.
+    // A label travels with each path. An unknown entry is a vault-relative path, and its
+    // label falls back to the file stem so a custom link is still self-describing.
+    let label_path = |n: &str| -> (String, PathBuf) {
+        match n {
+            "backlog" | "fun" => ("Backlog".into(), fun.clone()),
+            "schedule" => ("Schedule".into(), schedule.clone()),
+            "scheduled" | "carryover" | "carry" => ("Schedule".into(), scheduled.clone()),
+            "recurring" => ("Schedule".into(), recurring.clone()),
+            other => {
+                let p = join(other);
+                let stem = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(other)
+                    .to_string();
+                (stem, p)
+            }
+        }
+    };
+    let footer_links: Vec<(String, PathBuf)> = match &rp.footer_links {
+        Some(names) => names.iter().map(|n| label_path(n)).collect(),
+        None => vec![label_path("backlog"), label_path("schedule")],
     };
 
     // Sentinel watches (runtime paths OUTSIDE the vault; join honors absolute/~). Opt-in:
@@ -421,7 +467,8 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         carryover: join(&rp.carryover),
         scheduled,
         recurring,
-        footer_backlogs,
+        schedule,
+        footer_links,
         watches,
         watches_state,
         // A list id (not a path) — carried through verbatim; `None` keeps the bridge off.
@@ -558,13 +605,12 @@ pub fn print(p: &Profile) {
     println!("refs        {}", p.refs.display());
     println!("fun         {}", p.fun.display());
     println!("carryover   {}", p.carryover.display());
-    println!("scheduled   {}", p.scheduled.display());
-    println!("recurring   {}", p.recurring.display());
+    println!("schedule    {}", p.schedule.display());
     println!(
         "footer      {}",
-        p.footer_backlogs
+        p.footer_links
             .iter()
-            .map(|d| d.display().to_string())
+            .map(|(l, d)| format!("{l}: {}", d.display()))
             .collect::<Vec<_>>()
             .join(", ")
     );

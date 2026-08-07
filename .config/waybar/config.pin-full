@@ -31,7 +31,8 @@
 
     // Gated + signal 10 like the config.base modules, so `modules.sh` can hide
     // them. Signal 10 doubles as this module's manual re-probe (it was 8, which
-    // hypr/scripts/voice_to_text.sh also fires at an unrelated module).
+    // the since-removed hypr/scripts/voice_to_text.sh also fired at an
+    // unrelated module).
     "custom/machines": {
         "format": "{}",
         "return-type": "json",
