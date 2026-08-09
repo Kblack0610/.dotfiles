@@ -33,7 +33,7 @@ BATS_FLAGS ?= --print-output-on-failure --timing
 UI_TIMEOUT  ?= 420
 
 .PHONY: test test-fast test-unit test-integ test-ui test-ui-inner test-container \
-        test-docker lint fmt corpus-check bootstrap clean clean-vendor help
+        test-docker test-rust lint fmt corpus-check bootstrap clean clean-vendor help
 
 help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
@@ -43,6 +43,7 @@ help:
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
+	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates"
 	@echo "  make corpus-check ADVISORY: do the board fixtures still match ~/.agent/plans?"
 	@echo ""
 	@echo "container-only (real tmux servers; NEVER runs on this machine):"
@@ -105,6 +106,16 @@ test-container: test-fast test-ui-inner
 # the file list both live there, so a local green cannot mean a CI red.
 lint:
 	@$(HERE)lint.sh
+
+# The Rust crates (notes-cli, agent-panel, timebox). Same shape as `lint`: one
+# implementation in rust.sh, shared with CI, carrying its own ratchet.
+#
+# Deliberately NOT part of test-fast. test-fast is the Stop-hook gate and is measured in
+# seconds; a cold cargo build is ~20s and would tax every single turn. It is also
+# deliberately not part of test-container -- the test image has no Rust toolchain, and
+# rust.sh skips cleanly when cargo is absent rather than going red on that.
+test-rust:
+	@$(HERE)rust.sh
 
 clean:
 	@rm -rf $(ARTIFACTS)
