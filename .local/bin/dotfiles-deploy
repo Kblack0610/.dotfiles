@@ -1,0 +1,541 @@
+#!/usr/bin/env bash
+# dotfiles-deploy - converge ~/ onto the TRACKED source by turning copies into links.
+#
+# THE BUG THIS EXISTS FOR
+# -----------------------
+# Two repos stow into the same $HOME: the public ~/.dotfiles and the private overlay
+# ~/.dotfiles-private. When a file moved from public to private, the public tree kept a
+# PHYSICAL copy of it - gitignored there, so nothing in the public repo ever complains
+# about it again. $HOME still points at the public tree (directly, or through a folded
+# directory link like ~/.config/systemd -> ../.dotfiles/.config/systemd), so that orphaned
+# copy is what actually runs, while the tracked source in the private repo is what gets
+# reviewed and merged. The two then drift, silently, forever.
+#
+# Measured on this machine 2026-08-09: 56 of the private repo's 299 tracked files have a
+# physical twin in the public tree, and 53 private deploy paths resolve to the public copy
+# rather than to the tracked source. Only 5 of those had drifted in CONTENT yet. The other
+# 48 are the same latent bug that has simply not been edited since the split.
+#
+# The worst instance found: ~/.config/systemd/user/agentctl@.service, which is what systemd
+# actually executes, was a 07-27 copy in the public tree missing the telemetry fix merged in
+# the private repo on 08-05 (3b80c8f, "source the Claude OTel env, so runners are measurable
+# at all"). Every headless runner had been starting without telemetry for four days, and
+# nothing anywhere reported an error.
+#
+# WHY THE EXISTING TOOLS CANNOT CLOSE IT
+# -------------------------------------
+#   dotfiles-drift        DETECTS. It reports MIRROR findings and is deliberately left
+#                         alone (a Sentinel watch calls `dotfiles-drift --quiet`). It only
+#                         looks at .local/bin, .local/lib and .config/systemd/user, so it
+#                         misses e.g. .claude/commands/kb/workflow.md, and it only fires
+#                         once the content has ALREADY diverged. It never repairs.
+#   dotfiles-overlay-link REPAIRS, but its safety rule is "only ever touch a link that is
+#                         missing or dangling, never overwrite a real file". These ARE real
+#                         files. So it skips precisely the failure that matters, reports
+#                         "already in sync", and the repair loop can never converge.
+#
+# So there is a detector that under-reports and a repairer that structurally cannot fix the
+# thing detected. This script is the converging half: after `--apply`, `--check` is clean.
+#
+# WHAT IT DOES
+# ------------
+#   1. Builds a manifest of every path each repo actually DEPLOYS: tracked, minus whatever
+#      that repo's .stow-local-ignore excludes, minus tracked symlinks (git stores those as
+#      mode 120000 blobs holding the link target, so diffing one against a resolved file is
+#      a guaranteed false positive - the same 15-false-positives lesson dotfiles-drift
+#      records).
+#   2. A path deployed by BOTH repos is a HARD ERROR, not a precedence rule. Ambiguous
+#      ownership is the disease; quietly picking a winner is how it hid for six weeks.
+#      (In practice there is nothing to pick: README.md, .gitignore and .stow-local-ignore
+#      are tracked in both repos and stow-ignored by both, so they never deploy at all.)
+#   3. Symlinks only, never copies. Copying a file to "fix" it creates a second source of
+#      truth, which is the original bug. Where the deployed content is a physical file, it
+#      shows the diff against the tracked source and replaces the file with a link to it.
+#
+# The tracked source always wins. When the physical copy differs it is backed up first,
+# under $XDG_STATE_HOME/dotfiles-deploy/backup/<stamp>/, because its content exists in no
+# repo's history and cannot be recovered any other way.
+#
+# WORKING TREE, NOT origin/main
+# -----------------------------
+# This reads `git ls-files` - the working tree, which is what stow deploys. That is a
+# deliberate split of concerns from dotfiles-drift, which compares against origin/main to
+# answer "is what is MERGED deployed". Two questions, two answers:
+#   dotfiles-drift   is the checked-out tree behind what was merged?
+#   dotfiles-deploy  does ~/ point at the checked-out tree?
+# Both must be clean for merged to equal running.
+#
+# INTERFACE
+# ---------
+#   dotfiles-deploy            same as --check (the default is never destructive)
+#   dotfiles-deploy --check    read-only report; exit 1 if there is work to do
+#   dotfiles-deploy --apply    do the repair, then re-check; exit 1 if it did not converge
+#   dotfiles-deploy --quiet    print nothing; exit 1 if there is work to do (for a watch)
+#   dotfiles-deploy --json     machine-readable report
+#
+# Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)
+#
+# It REFUSES (2) rather than reporting clean when a repo is present but enumerates zero
+# deploy paths, or when two repos claim the same path. "Nothing to check" and "everything
+# passed" must not print the same thing - every failure in this repo's tooling has been a
+# silent success.
+set -uo pipefail
+
+PUB="${DOTFILES:-$HOME/.dotfiles}"
+PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# Anchored to $HOME, deliberately NOT to $XDG_STATE_HOME. This tool's whole subject is one
+# particular $HOME, so its backups have to land in the same one it is rewriting. Honouring
+# XDG_STATE_HOME would let a run pointed at $HOME=X drop the only surviving copy of X's
+# files into someone else's state dir - which is not hypothetical: writing this script's own
+# test suite did exactly that, because XDG_STATE_HOME is inherited by the sandbox while HOME
+# is redirected. Same class of leak as .dotfiles#220.
+BACKUP_ROOT="$HOME/.local/state/dotfiles-deploy/backup"
+
+MODE=check
+FORMAT=text
+
+# Field separator for the internal record arrays. A unit separator rather than the `|` a
+# reader might expect, because these records carry filesystem paths and `|` is a legal
+# character in one. Nothing here should be able to be broken by a weird filename.
+SEP=$'\x1f'
+
+# ── stow's ignore rules ──────────────────────────────────────────────────────
+# Re-derived empirically against GNU Stow 2.4.1 rather than from the man page, because
+# three of the four rules below are not obvious from reading it:
+#
+#   1. A pattern containing `/` is matched against the path relative to the package root
+#      WITH A LEADING SLASH ("/.config/hypr"). A pattern without one is matched against the
+#      BASENAME of each component.
+#   2. Every pattern is implicitly anchored at both ends. Bare `notes` does not match
+#      `notes.txt`; bare `hypr` does not match `xhyprx`.
+#   3. Ignoring a directory prunes its whole subtree.
+#   4. The package's own top-level .stow-local-ignore is ALWAYS ignored, even though the
+#      public repo's list does not mention it. This is the rule that decides whether
+#      .stow-local-ignore counts as a dual-owned deploy path. It does not.
+#
+# Consequence of 1 + 2 together: `^/README\.md$` excludes only the top-level README, and
+# .local/bin/README.md would still deploy. That precision matters here, because getting it
+# wrong in either direction invents a conflict or hides one.
+#
+# stow's patterns are Perl regexes and these are matched with bash ERE. Every pattern in
+# both repos is a plain anchored literal, so the dialects agree; anything fancier would
+# need re-checking.
+
+# stow's built-in list, used only when a repo ships no .stow-local-ignore. Neither repo
+# here is in that state, but a third one might be, and defaulting to "ignore nothing"
+# would silently claim ~40 junk paths as deploy paths.
+STOW_DEFAULT_IGNORE=(
+  'RCS' '.+,v' 'CVS' '\.\#.+' '\.cvsignore' '\.svn' '_darcs' '\.hg'
+  '\.git' '\.gitignore' '\.gitmodules' '.+~' '\#.*\#'
+  '^/README.*' '^/LICENSE.*' '^/COPYING'
+)
+
+IGNORE_PATS=()
+
+# load_ignore <repo-dir> - fill IGNORE_PATS from that repo's .stow-local-ignore.
+load_ignore() {
+  local repo="$1" file="$1/.stow-local-ignore" line
+  IGNORE_PATS=()
+  if [ ! -f "$file" ]; then
+    IGNORE_PATS=("${STOW_DEFAULT_IGNORE[@]}")
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    line="${line%"${line##*[![:space:]]}"}"   # rtrim
+    [ -z "$line" ] && continue
+    case "$line" in '#'*) continue ;; esac
+    IGNORE_PATS+=("$line")
+  done < "$file"
+  return 0
+}
+
+# pat_matches <pattern> <string> - one pattern, implicitly anchored at both ends.
+# The explicit ^ and $ that stow's own lists carry are stripped before re-anchoring, so
+# `^/\.git$` and `/\.git` behave identically instead of depending on how ERE happens to
+# treat an anchor nested inside a group.
+pat_matches() {
+  local pat="$1" s="$2"
+  pat="${pat#^}"
+  pat="${pat%\$}"
+  [[ "$s" =~ ^(${pat})$ ]]
+}
+
+# stow_ignored <path> - would stow skip this path, given the loaded IGNORE_PATS?
+# Every ancestor is tested, not just the path itself: rule 3 above means an ignored
+# directory takes its whole subtree with it.
+#
+# The components are walked with parameter expansion rather than by splitting on IFS,
+# because a filename here may legitimately contain a space (this repo's own test sandbox
+# lives under a path with one, on purpose) and an IFS split would quietly mangle it.
+stow_ignored() {
+  local path="$1" rest="$1" prefix="" comp pat
+  # Rule 4: the package's own ignore file never deploys.
+  [ "$path" = ".stow-local-ignore" ] && return 0
+  while [ -n "$rest" ]; do
+    comp="${rest%%/*}"
+    prefix="${prefix:+$prefix/}$comp"
+    for pat in "${IGNORE_PATS[@]}"; do
+      case "$pat" in
+        */*) pat_matches "$pat" "/$prefix" && return 0 ;;
+        *)   pat_matches "$pat" "$comp"    && return 0 ;;
+      esac
+    done
+    if [ "$rest" = "$comp" ]; then rest=""; else rest="${rest#*/}"; fi
+  done
+  return 1
+}
+
+# ── the manifest ─────────────────────────────────────────────────────────────
+# MANIFEST holds "path<SEP>owner-name<SEP>owner-dir". OWNER_OF maps a path to the name of
+# the repo that claims it, which is how a second claim is detected.
+
+declare -A OWNER_OF=()
+MANIFEST=()
+CONFLICTS=()
+SKIPPED_REPOS=()
+
+# add_repo <name> <dir>
+add_repo() {
+  local name="$1" dir="$2" mode rest path n=0
+  if [ ! -d "$dir/.git" ]; then
+    SKIPPED_REPOS+=("$name${SEP}$dir")
+    return 0
+  fi
+  load_ignore "$dir"
+  while IFS= read -r -d '' rest; do
+    mode="${rest%% *}"
+    path="${rest#*$'\t'}"
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    # A tracked symlink is not a copy that can drift. git stores it as a mode-120000 blob
+    # holding the link TARGET, so comparing it to the resolved file on disk always reports
+    # a difference - 15 false positives from systemd .wants/ entries alone the last time
+    # someone tried. Skipped on both sides, exactly as dotfiles-drift does.
+    [ "$mode" = "120000" ] && continue
+    stow_ignored "$path" && continue
+    if [ -n "${OWNER_OF[$path]:-}" ]; then
+      CONFLICTS+=("$path${SEP}${OWNER_OF[$path]}${SEP}$name")
+      continue
+    fi
+    OWNER_OF["$path"]="$name"
+    MANIFEST+=("$path${SEP}$name${SEP}$dir")
+  done < <(git -C "$dir" ls-files -sz 2>/dev/null)
+
+  # A repo that is present but enumerates NOTHING means git failed, not that the repo is
+  # empty. Reporting "clean" off an empty input list is how tests/lint.sh once passed
+  # having checked zero files.
+  if [ "$n" -eq 0 ]; then
+    printf 'dotfiles-deploy: refusing to run - %s (%s) enumerated ZERO tracked files.\n' "$name" "$dir" >&2
+    printf '                 That is a broken `git ls-files`, not a clean repo.\n' >&2
+    exit 2
+  fi
+  return 0
+}
+
+# build_manifest - both repos, then the two refusals that stop a broken run reading clean.
+build_manifest() {
+  local c cp ca cb
+  add_repo public  "$PUB"
+  add_repo private "$PRIV"
+
+  if [ "${#CONFLICTS[@]}" -gt 0 ]; then
+    printf 'dotfiles-deploy: refusing to run - %s path(s) are deployed by BOTH repos.\n\n' "${#CONFLICTS[@]}" >&2
+    for c in "${CONFLICTS[@]}"; do
+      IFS="$SEP" read -r cp ca cb <<< "$c"
+      printf '  CONFLICT  %-52s claimed by %s and %s\n' "$cp" "$ca" "$cb" >&2
+    done
+    cat >&2 <<'EOF'
+
+  Which repo owns a path has to be a fact, not a coin toss. Deleting the loser's copy
+  makes it one; adding the path to the loser's .stow-local-ignore makes it one too.
+  This script will not choose for you - picking a winner silently is the whole bug.
+EOF
+    exit 2
+  fi
+
+  # Both repos absent (or both un-gitted) leaves nothing to check. Same reasoning as the
+  # per-repo zero guard: an empty manifest is a broken run, not a clean one.
+  if [ "${#MANIFEST[@]}" -eq 0 ]; then
+    printf 'dotfiles-deploy: refusing to run - the manifest is EMPTY (no repo enumerated a deploy path).\n' >&2
+    printf '                 Looked for: %s and %s\n' "$PUB" "$PRIV" >&2
+    exit 2
+  fi
+  return 0
+}
+
+# ── classification ───────────────────────────────────────────────────────────
+# FINDINGS holds "status<SEP>owner<SEP>path<SEP>physical<SEP>detail".
+#
+#   OK       $HOME/<path> resolves to the owning repo's tracked source.
+#   MISSING  $HOME/<path> does not resolve at all - stow has not run, or its link dangles.
+#   MIRROR   $HOME/<path> resolves to a real file somewhere ELSE. That other file is the
+#            deployed copy, and it is the thing that has to become a link.
+#
+# The comparison is on the RESOLVED path, not on whether $HOME/<path> is itself a symlink.
+# The public repo is stowed folded - ~/.config/systemd is a single directory link - so most
+# correctly-deployed files are not individually symlinked and asserting that they are would
+# flag the entire tree.
+
+FINDINGS=()
+
+classify_all() {
+  FINDINGS=()
+  local rec path owner dir src tgt real_src real_tgt
+  for rec in "${MANIFEST[@]}"; do
+    IFS="$SEP" read -r path owner dir <<< "$rec"
+    src="$dir/$path"
+    tgt="$HOME/$path"
+    real_src="$(readlink -f -- "$src" 2>/dev/null)"
+
+    if [ ! -e "$tgt" ]; then
+      if [ -L "$tgt" ]; then
+        FINDINGS+=("MISSING${SEP}$owner${SEP}$path${SEP}$tgt${SEP}symlink dangles (target missing)")
+      else
+        FINDINGS+=("MISSING${SEP}$owner${SEP}$path${SEP}$tgt${SEP}not linked into \$HOME (stow has not run)")
+      fi
+      continue
+    fi
+
+    real_tgt="$(readlink -f -- "$tgt" 2>/dev/null)"
+    if [ -n "$real_src" ] && [ "$real_tgt" = "$real_src" ]; then
+      continue
+    fi
+
+    local detail
+    if cmp -s -- "$src" "$real_tgt" 2>/dev/null; then
+      # Identical today. This is the LATENT half of the bug and the reason --check is
+      # noisier than dotfiles-drift on purpose: nothing is wrong yet, and nothing will
+      # report it on the day the tracked source is edited and this copy is not.
+      detail="served by a copy at ${real_tgt/#$HOME/\~} (same content, will drift on the next edit)"
+    else
+      detail="served by a copy at ${real_tgt/#$HOME/\~} (CONTENT DIFFERS from the tracked source)"
+    fi
+    FINDINGS+=("MIRROR${SEP}$owner${SEP}$path${SEP}$real_tgt${SEP}$detail")
+  done
+  return 0
+}
+
+# ── repair ───────────────────────────────────────────────────────────────────
+
+# tracked_somewhere <abs-path> - is this file tracked by either repo?
+# The guard on every write. Replacing a TRACKED file with a symlink would delete real
+# source from a real repo, which is a far worse outcome than the drift being fixed. In a
+# clean two-repo split this can only fire for a path that is tracked but stow-ignored.
+tracked_somewhere() {
+  local abs="$1" repo rel
+  for repo in "$PUB" "$PRIV"; do
+    [ -d "$repo/.git" ] || continue
+    case "$abs" in
+      "$repo"/*)
+        rel="${abs#"$repo"/}"
+        git -C "$repo" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+APPLIED=0
+FAILED=0
+STAMP="$(date +%Y%m%dT%H%M%S)"
+
+# convert <physical-file> <tracked-source> <path> - the operation this script exists for.
+convert() {
+  local phys="$1" src="$2" path="$3" backup
+
+  if [ -d "$phys" ]; then
+    printf '  SKIP  %s - the deployed thing is a DIRECTORY, not a file\n' "$path" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  if tracked_somewhere "$phys"; then
+    printf '  SKIP  %s - the deployed copy at %s is TRACKED; refusing to delete repo source\n' "$path" "$phys" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+
+  # Back up only when the content differs. When it matches, the copy's content already
+  # exists in the owning repo and a backup would just be litter. When it differs, this is
+  # the only copy of whatever was actually running and it is in no repo's history.
+  if ! cmp -s -- "$src" "$phys" 2>/dev/null; then
+    backup="$BACKUP_ROOT/$STAMP/$path"
+    mkdir -p -- "$(dirname -- "$backup")" || { FAILED=$((FAILED + 1)); return 1; }
+    cp -p -- "$phys" "$backup" || { FAILED=$((FAILED + 1)); return 1; }
+    printf '  backed up %s -> %s\n' "$path" "$backup"
+  fi
+
+  # Absolute link target, matching dotfiles-overlay-link, so the link still reads correctly
+  # when something follows it from another directory.
+  if ln -sfn -- "$src" "$phys"; then
+    printf '  linked    %s -> %s\n' "${phys/#$HOME/\~}" "${src/#$HOME/\~}"
+    APPLIED=$((APPLIED + 1)); return 0
+  fi
+  FAILED=$((FAILED + 1)); return 1
+}
+
+# attach <target> <tracked-source> <path> - the MISSING case, which is all
+# dotfiles-overlay-link ever did. Creating the parent may land inside the OTHER repo's tree
+# when that parent is a folded directory link; that is correct for this layout and is
+# exactly how the committed .local/bin/* overlay links already resolve.
+attach() {
+  local tgt="$1" src="$2" path="$3" parent
+  parent="$(dirname -- "$tgt")"
+  mkdir -p -- "$parent" || { FAILED=$((FAILED + 1)); return 1; }
+  if tracked_somewhere "$(readlink -f -- "$parent")/$(basename -- "$tgt")"; then
+    printf '  SKIP  %s - would overwrite a TRACKED path\n' "$path" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  if ln -sfn -- "$src" "$tgt"; then
+    printf '  linked    %s -> %s\n' "${tgt/#$HOME/\~}" "${src/#$HOME/\~}"
+    APPLIED=$((APPLIED + 1)); return 0
+  fi
+  FAILED=$((FAILED + 1)); return 1
+}
+
+apply_all() {
+  local rec status owner path phys dir
+  for rec in "${FINDINGS[@]}"; do
+    IFS="$SEP" read -r status owner path phys _ <<< "$rec"
+    dir="$PUB"; [ "$owner" = private ] && dir="$PRIV"
+    case "$status" in
+      MIRROR)  convert "$phys" "$dir/$path" "$path" ;;
+      MISSING) attach  "$phys" "$dir/$path" "$path" ;;
+    esac
+  done
+  return 0
+}
+
+# ── reporting ────────────────────────────────────────────────────────────────
+
+# The diff a human needs to see before agreeing to overwrite the running copy. Capped,
+# because five of these unabridged is a report nobody reads to the end.
+DIFF_CAP=40
+show_diffs() {
+  local rec status owner path phys dir shown=0
+  for rec in "${FINDINGS[@]}"; do
+    IFS="$SEP" read -r status owner path phys _ <<< "$rec"
+    [ "$status" = MIRROR ] || continue
+    dir="$PUB"; [ "$owner" = private ] && dir="$PRIV"
+    cmp -s -- "$dir/$path" "$phys" 2>/dev/null && continue
+    [ "$shown" -eq 0 ] && printf '\n  --- what is running vs what is tracked ---\n'
+    shown=$((shown + 1))
+    printf '\n'
+    diff -u --label "tracked   $owner/$path" --label "deployed  ${phys/#$HOME/\~}" \
+      -- "$dir/$path" "$phys" 2>/dev/null | head -n "$DIFF_CAP" | sed 's/^/  /'
+    printf '  (diff capped at %s lines)\n' "$DIFF_CAP"
+  done
+  return 0
+}
+
+report_text() {
+  local rec status owner path detail n="${#FINDINGS[@]}" s sname sdir
+  # Name every repo that was NOT examined. A box with no private overlay is a legitimate
+  # state, but "clean" has to mean "clean over what I actually looked at" - a report that
+  # silently drops half the input reads identically to one that checked everything.
+  for s in "${SKIPPED_REPOS[@]:-}"; do
+    [ -n "$s" ] || continue
+    IFS="$SEP" read -r sname sdir <<< "$s"
+    printf 'dotfiles-deploy: NOT CHECKED - %s repo at %s is absent or not a git repo\n' "$sname" "$sdir"
+  done
+  if [ "$n" -eq 0 ]; then
+    printf 'dotfiles-deploy: clean - all %s deploy path(s) resolve to their tracked source\n' "${#MANIFEST[@]}"
+    return 0
+  fi
+  printf 'dotfiles-deploy: %s of %s deploy path(s) do NOT resolve to their tracked source\n\n' \
+    "$n" "${#MANIFEST[@]}"
+  for rec in "${FINDINGS[@]}"; do
+    IFS="$SEP" read -r status owner path _ detail <<< "$rec"
+    printf '  %-7s %-8s %-52s %s\n' "$status" "$owner" "$path" "$detail"
+  done
+  show_diffs
+  cat <<'EOF'
+
+  MIRROR  -> a physical copy is serving this path. `dotfiles-deploy --apply` replaces the
+             copy with a link to the tracked source (backing it up first if it differs).
+  MISSING -> stow has not attached it. --apply links it; `stow --no-folding .` also works.
+
+  A path listed here that SHOULD NOT deploy at all belongs in the owning repo's
+  .stow-local-ignore. Do not add a skip list to this script - a second place that decides
+  what deploys is how the first one stopped being true.
+EOF
+  return 0
+}
+
+json_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+report_json() {
+  local status owner path phys detail i
+  printf '{"deploy_paths":%s,"findings":[' "${#MANIFEST[@]}"
+  for i in "${!FINDINGS[@]}"; do
+    IFS="$SEP" read -r status owner path phys detail <<< "${FINDINGS[$i]}"
+    [ "$i" -gt 0 ] && printf ','
+    printf '{"status":"%s","repo":"%s","path":"%s","deployed_from":"%s","detail":"%s"}' \
+      "$(json_esc "$status")" "$(json_esc "$owner")" "$(json_esc "$path")" \
+      "$(json_esc "$phys")" "$(json_esc "$detail")"
+  done
+  printf ']}\n'
+  return 0
+}
+
+# ── run ──────────────────────────────────────────────────────────────────────
+
+main() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) MODE=check ;;
+      --apply) MODE=apply ;;
+      --quiet) FORMAT=quiet ;;
+      --json)  FORMAT=json ;;
+      -h|--help)
+        # Print the header block, stopping at the first line that is not a comment.
+        awk 'NR==1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
+        exit 0 ;;
+      *)
+        printf 'dotfiles-deploy: unknown argument: %s (try --help)\n' "$1" >&2
+        exit 2 ;;
+    esac
+    shift
+  done
+
+  build_manifest
+  classify_all
+
+  if [ "$MODE" = apply ]; then
+    if [ "${#FINDINGS[@]}" -eq 0 ]; then
+      printf 'dotfiles-deploy: nothing to do - all %s deploy path(s) already resolve to their tracked source\n' \
+        "${#MANIFEST[@]}"
+      exit 0
+    fi
+    printf 'dotfiles-deploy: repairing %s path(s)\n' "${#FINDINGS[@]}"
+    show_diffs
+    printf '\n'
+    apply_all
+
+    # CONVERGENCE. The reason this script exists rather than a longer
+    # dotfiles-overlay-link: re-classifying from scratch afterwards is the only honest
+    # proof that the repair took. dotfiles-overlay-link reports "attached N link(s)" and
+    # then reports "already in sync" on every run after, while the mirrors it structurally
+    # skipped are still sitting there serving the wrong content.
+    classify_all
+    if [ "${#FINDINGS[@]}" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+      printf '\ndotfiles-deploy: converged - %s path(s) repaired, re-check is clean\n' "$APPLIED"
+      exit 0
+    fi
+    printf '\ndotfiles-deploy: DID NOT CONVERGE - %s repaired, %s refused, %s still wrong\n' \
+      "$APPLIED" "$FAILED" "${#FINDINGS[@]}" >&2
+    report_text >&2
+    exit 1
+  fi
+
+  case "$FORMAT" in
+    quiet) [ "${#FINDINGS[@]}" -eq 0 ] && exit 0 || exit 1 ;;
+    json)  report_json; [ "${#FINDINGS[@]}" -eq 0 ] && exit 0 || exit 1 ;;
+    *)     report_text; [ "${#FINDINGS[@]}" -eq 0 ] && exit 0 || exit 1 ;;
+  esac
+}
+
+# Source guard. A unit test sources this file to drive stow_ignored() directly, which is
+# the only way to pin the ignore-matching rules against a table of cases rather than
+# through a whole fixture repo. Everything above is definitions; nothing runs until here.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
+main "$@"
