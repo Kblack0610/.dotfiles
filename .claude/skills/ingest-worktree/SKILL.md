@@ -82,8 +82,8 @@ Bucket by landability. Never merge blind — the diff review IS the gate on a re
 - **needs review / `reviewDecision: REVIEW_REQUIRED`** -> respect it unless the user owns the repo and waives it.
 Check file sets across the PRs you'll land: disjoint files merge in any order; overlapping files mean land one, then re-check the others' mergeability.
 
-### R3. Confirm + land
-Show the queue (per PR: number, title, mergeable/CI, the one-line what, land-vs-hold) and get an OK — merging is a visible write, and you may be landing PRs you did not author. Then land each, matching the repo's merge convention (check `git log`: "Merge pull request #NN" => merge commits; a flat history => squash):
+### R3. Land
+Show the queue (per PR: number, title, mergeable/CI, the one-line what, land-vs-hold) as a **report**, then land — invoking the skill is the authorization, so do not stop for an OK (Landing rule, `CLAUDE.md`). The R2 gates above hold a bad PR on their own; the only thing that still needs an ask is a PR **another author** owns. Land each matching the repo's merge convention (check `git log`: "Merge pull request #NN" => merge commits; a flat history => squash):
 ```bash
 gh pr merge <n> --merge --delete-branch      # or --squash to match a squash repo
 ```
