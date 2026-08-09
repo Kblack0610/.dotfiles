@@ -35,7 +35,11 @@ AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
 LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
 # The shared markdown renderer every preview pane goes through, same reason again.
 MD_RENDER_LIB="$REPO_ROOT/.local/lib/md-render.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB
+# The merge-proof gate. Its OTHER consumer is the private overlay's `ticket` CLI, so
+# this suite is where the git-graph contract is pinned -- the private side has no bats
+# tier of its own, and an unpinned gate is one nobody notices going soft.
+MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -121,6 +125,7 @@ sandbox_init() {
   ln -sfn "$REPO_ROOT/.local/lib/agent-evals.sh" "$HOME/.local/lib/agent-evals.sh"
   ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"

@@ -46,15 +46,23 @@ headless/loop runs.
    `~/.agent/plans/{project}/checkpoints/{ticket}.md` must end with `STATUS: DONE`. The overseer's
    value is independent verification — if it parrots the dispatcher (or the "completed" event) it's
    dead weight.
+5. **Ask git, not only GitHub.** The three checks above — PR state, tracker flag, disk sentinel —
+   all agreed with the agent the day one reported `completed · 16h` after dying on a model outage,
+   because none of them consults the repository. Before notifying "merged", also run
+   `merge_proof <repo> <ticket-ref> <branch> [merge-sha]` (source
+   `~/.local/lib/agent-merge-proof.sh`) and require exit `0`. `1` means the content is not on the
+   integration branch yet — that is a **false-completion**, not a merge, no matter what the PR
+   object says. `2` means a claim was wrong; escalate rather than retry. A PR can be merged and its
+   content still unreachable from `develop`: reverted, force-pushed over, or merged to the wrong base.
 
 ## Event catalog (the ONLY notifications)
 
 | Event | Priority | Verified trigger |
 |---|---|---|
-| ticket merged | normal | `mergedAt` set + tracker done flag (note if fallback `ticket done` was used) |
+| ticket merged | normal | `mergedAt` set + tracker done flag + **`merge_proof` exit 0** (note if fallback `ticket done` was used). Without the git-graph check this event has fired on work that never reached `develop`. |
 | ticket blocked/errored | high | row `blocked`/`error` + `## Blocks` entry; ping includes the punch-list head |
 | stall | high | no Run-log append AND no observable change on the in-progress row (PR head SHA, check states, tracker labels) for **>30 min** → "dispatcher may be dead — resume with `/kb:sprint resume`" |
-| false-completion | high | the Agent reported "completed" but the row's checkpoint sentinel is NOT `STATUS: DONE` (it's `FAILED`/`PARTIAL`/absent) and live `gh`/tracker doesn't prove done → "agent died mid-run, work unfinished — resume with `/captain resume`". This is the exact failure that hid a model-outage death behind a `completed · 16h` event. |
+| false-completion | high | the Agent reported "completed" but the row's checkpoint sentinel is NOT `STATUS: DONE` (it's `FAILED`/`PARTIAL`/absent) and live `gh`/tracker doesn't prove done, **or `merge_proof` refuses a row marked `merged`** → "agent died mid-run, work unfinished — resume with `/captain resume`". This is the exact failure that hid a model-outage death behind a `completed · 16h` event. |
 | batch complete | normal | all rows terminal **and sentinel-confirmed**; sent with the `report` summary |
 
 Dedupe: every fired event appends `notified: <ticket> <event>` to the Run log. A pass fires only
