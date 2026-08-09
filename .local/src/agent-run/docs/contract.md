@@ -51,7 +51,7 @@ restriction was never in force.
 
 ## Fail closed, always
 
-Three rules, no exceptions:
+Four rules, no exceptions:
 
 1. **Unknown or missing role -> refuse to run.** A typo in a `.conf` must not
    silently restore full privilege.
@@ -61,9 +61,69 @@ Three rules, no exceptions:
    degrade to unrestricted. Flipping `HARNESS=claude` to `HARNESS=binks` must not
    quietly drop the guarantee, because that is exactly how "observe-only" became
    fiction: prose asserted it, nothing checked it.
+4. **Unprovable model-family independence -> refuse to run.** A role that sets
+   `ROLE_FAMILY_EXCLUDE` never launches on a family it must not share, and never
+   launches when either side cannot be classified.
 
 Rule 3 is why `openclaw.sh` and `binks.sh` ship as stubs that refuse. A stub that
 refuses is worth more than an adapter that pretends.
+
+## Rule 4: model-family independence
+
+A reviewer that shares the author's model family is not an independent review; it
+is the same weights marking their own homework in a different voice. Ours were
+exactly that until 2026-08-07 — no `kb-*` agent set a `model:`, so kb-developer,
+kb-reviewer and kb-qa all inherited `delivery-loop`'s single
+`ANTHROPIC_MODEL=claude-sonnet-5`, and the separation was persona plus tool grant
+only.
+
+Two optional role keys:
+
+| key | meaning |
+|---|---|
+| `ROLE_MODEL` | pin the model this role runs on. Exported to the harness, so the pin is real rather than documentation. |
+| `ROLE_FAMILY_EXCLUDE` | a comma-separated list of family slugs, or the token `author` (read from `$AGENT_AUTHOR_FAMILY`, which may be a slug or a model id). |
+
+Families are derived from the model id (`anthropic`, `openai`, `google`, `xai`,
+`meta`, `mistral`, `deepseek`, `moonshot`, `qwen`, `zhipu`). Anything unrecognised
+is `unknown`, and **`unknown` is a refusal, never a "probably fine"** — an unknown
+family cannot be proven different from anything.
+
+Every uncertain path ends in a refusal rather than a warning:
+
+- `$AGENT_AUTHOR_FAMILY` unset -> refuse. Nothing to compare against.
+- either side unclassifiable -> refuse.
+- `ROLE_FAMILY_EXCLUDE` set but no model pinned -> refuse. Independence that
+  depends on whatever the transport happens to point at is not independence.
+
+The reason it is this strict: a review that cannot prove its independence still
+gets *recorded* as independent, which is worse than no review at all.
+
+**The pin must be a route with no fallback edge.** A LiteLLM fallback fires inside
+the router *after* the key check, so a scoped virtual key cannot stop a spill back
+onto the excluded family — which would silently re-cross the line while every
+check still reported green. Prefer a direct-to-origin route, or a gateway route
+with no fallback configured, and verify with `x-litellm-attempted-fallbacks: 0`
+plus `x-litellm-model-api-base`.
+
+**Bare gateway aliases (`code`, `reasoning`, `fast`) classify as `unknown` and are
+therefore refused.** That is deliberate, not a gap: an alias can be repointed at
+any upstream without the consumer noticing, so it is not evidence of a family.
+Pin the id that names the real model.
+
+Herdforge's `TARGET-WORKFLOW.md` states both halves of this rule and the failure
+mode it guards: *"if independence cannot be proven, review waits; the router does
+not degrade to self-review... Fallback can lose the different-family guarantee
+instead of failing closed."*
+
+Audit any role without spending tokens: `agentctl-run --explain <role>` prints the
+model, its family, and the exclusion (or says the role is unconstrained).
+
+**Scope limit, stated plainly:** this enforces the family of the *process*
+agentctl-run launches. `kb-reviewer` and `kb-qa` are dispatched as **subagents**
+inside a `kb-coordinator` process running `ROLE=build`, so rule 4 does not reach
+them — their independence comes from the `model:` frontmatter in
+`~/.claude/agents/*.md`. Two levers, both needed; this one covers direct runners.
 
 ## Harness mapping
 

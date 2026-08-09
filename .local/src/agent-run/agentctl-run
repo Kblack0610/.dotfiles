@@ -80,6 +80,15 @@ Running anyway would mean the role's denials silently do not apply - see
 docs/contract.md, rule 3."
 fi
 
+# Contract rule 4. Same shape as rule 3 above and deliberately in the same place:
+# a role that demands model-family independence from the work's author does not
+# get to run on the author's family. Refuses on any doubt, including "I cannot
+# tell which family this is" - see lib/role.sh.
+role_family_check
+
+# A role that pins its model pins it for the harness too, or the pin is decoration.
+[ -n "$ROLE_MODEL" ] && export ANTHROPIC_MODEL="$ROLE_MODEL"
+
 if [ -n "$AGENTCTL_EXPLAIN" ]; then
   printf 'role:        %s\n'  "$ROLE_NAME"
   printf 'description: %s\n'  "$ROLE_DESC"
@@ -88,6 +97,17 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   printf 'bash:        %s\n'  "$ROLE_BASH"
   printf 'mcp set:     %s\n'  "$ROLE_MCP"
   printf 'denied:      %s\n'  "$(role_denied_tools)"
+  # Printed unconditionally so a run WITHOUT an exclusion is visibly unconstrained
+  # rather than just quiet about it. `--explain` is the audit surface, and it costs
+  # no tokens; an independence claim nobody can inspect is not much of a claim.
+  printf 'model:       %s\n'  "$(role_run_model)${ROLE_MODEL:+  (pinned by role)}"
+  printf 'family:      %s\n'  "$(role_family_of "$(role_run_model)")"
+  if [ -n "$ROLE_FAMILY_EXCLUDE" ]; then
+    printf 'excludes:    %s%s\n' "$ROLE_FAMILY_EXCLUDE" \
+      "$([ "$ROLE_FAMILY_EXCLUDE" = author ] && printf ' -> %s' "$(role_family_of "${AGENT_AUTHOR_FAMILY:-}")")"
+  else
+    printf 'excludes:    (none - this role may run on ANY model family)\n'
+  fi
   if [ "$ROLE_WRITE" = "no" ] && [ "$ROLE_BASH" = "yes" ]; then
     printf 'CAVEAT:      write is denied but bash is granted, and bash can still write\n'
     printf '             via redirection. Constrains shape, not proven harmless.\n'
