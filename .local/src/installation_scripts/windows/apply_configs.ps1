@@ -172,7 +172,31 @@ Write-Step 'Zebar minimal pack'
 $zebarPackPath = Join-Path $env:USERPROFILE '.glzr\zebar\kblack-minimal'
 Copy-ConfigDir (Join-Path $WinCfg 'zebar\kblack-minimal') $zebarPackPath
 
-Write-Step 'Flow Launcher settings (Hotkey: Alt+D)'
+Write-Step 'Win-key ownership (registry)'
+# GlazeWM's mod key is lwin, and Explorer/winlogon fight it. Three HKCU values
+# stop the shell claiming Win+<key> and stop lwin+l locking the session.
+# Idempotent. Two apply unelevated; DisableLockWorkstation lives in the Policies
+# subtree that managed images ACL read-only, so it is skipped unless this script
+# is itself elevated. See .config/windows/ahk/README.md.
+& (Join-Path $WinCfg 'scripts\win-key-ownership.ps1')
+
+Write-Step 'Win-key mask script (AutoHotkey)'
+# The registry above does NOT stop a bare Win tap opening the Start menu -- that
+# is glzr-io/glazewm#1215, still open. This AHK script masks the chord so the
+# keyup never reads as a bare tap. It must run ELEVATED to work over elevated
+# windows, so the scheduled task registration is a separate, admin-only step.
+$ahkDst = Join-Path $env:USERPROFILE '.dotfiles-win\ahk'
+Copy-ConfigDir (Join-Path $WinCfg 'ahk') $ahkDst
+try {
+    & (Join-Path $WinCfg 'scripts\register-winkey-task.ps1')
+} catch {
+    # Expected when this script is not run elevated. Same carve-out as the
+    # Firefox policies.json copy: tell the user, do not auto-elevate.
+    Write-Warning "Win-key mask task not registered: $_"
+    Write-Warning "Re-run from an elevated PowerShell, or from WSL: win-key-task"
+}
+
+Write-Step 'Flow Launcher settings (Hotkey disabled; opened via GlazeWM lwin+d)'
 # Flow rewrites this file with full defaults on first save, so shipping just
 # the Hotkey pin is enough -- Flow merges defaults around it. If Flow is
 # running, the file is locked; restart Flow afterward to pick up the change.

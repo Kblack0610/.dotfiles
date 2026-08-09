@@ -12,7 +12,8 @@ The default invocation is **configs-only** — it pulls the dotfiles repo and co
 - **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
 - **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
 - **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
-- **Flow Launcher** — dmenu equivalent. `Alt+D` opens a fuzzy launcher (hotkey pinned via `.config/windows/flow-launcher/Settings.json`). Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
+- **Flow Launcher** — dmenu equivalent. `lwin+D` opens a fuzzy launcher. Flow's own hotkey is deliberately blanked in `.config/windows/flow-launcher/Settings.json` (a `RegisterHotKey` on Win+D loses to the shell's Show-Desktop); GlazeWM's low-level hook wins and relaunches the single-instance stub instead. Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
+- **Win-key ownership** — GlazeWM uses `lwin` as its mod key, and Windows fights it. `.config/windows/ahk/glazewm-winkey.ahk` (elevated, via AutoHotkey v2) masks the Win chord so Explorer stops popping the Start menu over every binding ([glzr-io/glazewm#1215](https://github.com/glzr-io/glazewm/issues/1215), still open), and `.config/windows/scripts/win-key-ownership.ps1` sets three HKCU values that stop the shell claiming `Win+<key>` and stop `lwin+l` locking the session. Both layers are needed; neither is sufficient alone. `apply_configs.ps1` does the unelevated part, then run `win-key-task` from WSL for one UAC prompt that finishes it. Background, verification and rollback: `.config/windows/ahk/README.md`.
 - **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
 - **`.wslconfig`** — WSL2 tuning: mirrored networking, DNS tunneling, `autoMemoryReclaim=dropcache`. No RAM cap (host is 32 GB; WSL's default ~50% is fine). Swap thrash is handled by `vm.swappiness=10` (see `etc/sysctl.d/99-wsl-memory.conf`) + `dropcache`, not a memory cap.
 
@@ -111,6 +112,7 @@ The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh,
 | `.config/windows/glazewm/config.yaml` | `%USERPROFILE%\.glzr\glazewm\config.yaml` |
 | `.config/windows/zebar/settings.json` | `%USERPROFILE%\.glzr\zebar\settings.json` |
 | `.config/windows/zebar/kblack-minimal/` | `%USERPROFILE%\.glzr\zebar\kblack-minimal\` |
+| `.config/windows/ahk/` | `%USERPROFILE%\.dotfiles-win\ahk\` (run at logon, elevated, by scheduled task `dotfiles-glazewm-winkey`) |
 | `.config/windows/wsl/.wslconfig` | `%USERPROFILE%\.wslconfig` |
 | `.config/nvim/` | `%LOCALAPPDATA%\nvim\` |
 | `.config/opencode/` | `%APPDATA%\opencode\` (excluding `node_modules/`) |
@@ -164,7 +166,7 @@ wsl --list --verbose        # archlinux, state Running, version 2
 
 The starship prompt should render automatically. All of `nvim`, `rg`, `fzf`, `lazygit`, `starship`, `gh`, `node` resolve directly in PowerShell.
 
-GlazeWM: `Alt+Enter` spawns Windows Terminal; `Alt+1..9` switches workspaces; `Alt+Shift+R` reloads config; `Alt+D` opens Flow Launcher (dmenu equivalent).
+GlazeWM: `lwin+T` spawns Windows Terminal; `lwin+1..9` switches workspaces; `lwin+Shift+R` reloads config; `lwin+D` opens Flow Launcher (dmenu equivalent); `lwin+H/J/K/L` moves focus. Full map in `.config/windows/glazewm/config.yaml`.
 
 Windows taskbar position is a Windows setting (*Settings → Personalization → Taskbar → Taskbar behaviors → Taskbar alignment*) — GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
 
@@ -271,7 +273,7 @@ We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synt
 & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1"
 ```
 
-After it finishes, reload GlazeWM (`Alt+Shift+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
+After it finishes, reload GlazeWM (`lwin+Shift+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
 
 Add `-Install` if you also want to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$MinimalPackages` / `$FullExtraPackages` in `install_packages.ps1`.
 
