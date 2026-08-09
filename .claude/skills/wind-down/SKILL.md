@@ -103,10 +103,12 @@ choose to surface every session, so multiple wind-downs don't flood it. The cock
 ### 2. Land the session's work (commit, push, clean up)
 
 Wind-down means leaving the tree the way you'd hand it to someone else: nothing this session
-produced should be stranded uncommitted, and no scratch artifacts should be left behind. The
-teardown is already **gated** on this (the Stop content checks defer the kill over a dirty or
-unpushed tree, see the intro) - this step is Claude doing it deliberately instead of relying on
-the gate to catch it.
+produced should be stranded uncommitted, and no scratch artifacts should be left behind.
+
+**Do not lean on the Stop gate here.** It defers the kill over unpushed *commits*
+(`stop-checks.d/10-git-workflow.sh`), and that is all it sees. A dirty tree only ever produces a
+warning that its own code comments as "does not gate" (`pre-stop-checks.sh`). So uncommitted work
+sails through every clean Stop, indefinitely - this step is the safeguard, not a backstop for one.
 
 1. **Survey the tree.** `git status --short`. Separate what THIS session changed from any
    pre-existing WIP that was already dirty when the session started.
@@ -122,9 +124,23 @@ the gate to catch it.
 4. **Clean up after yourself.** Remove this session's scratch artifacts (the session scratchpad
    dir, temp files, stray `*.tmp`, throwaway test output). Leave the working tree and `/tmp`
    scratch area as clean as you found them.
-5. **Report the landing state** in your closing message: branch + PR link for what shipped, and
-   an explicit line for anything intentionally left uncommitted (so the gate deferring the kill,
-   if it does, is never a surprise).
+5. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
+
+   ```bash
+   ~/.local/bin/wt done          # from anywhere inside the worktree
+   ```
+
+   `wt done` climbs to the worktree root itself, so a subdirectory is fine, and it refuses from a
+   main checkout ("a main checkout, not a worktree") - so run it unconditionally rather than
+   branching on where you are. It **keeps** the worktree and names the reason when the work is
+   dirty or unpushed; that refusal is the correct outcome and step 2 is what clears it. There is
+   no `--force`, and branch deletion is git's safe `-d`. Otherwise it kills the session, removes
+   the directory and frees the `agent-N` slot for reuse.
+
+   The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
+6. **Report the landing state** in your closing message: branch + PR link for what shipped, an
+   explicit line for anything intentionally left uncommitted (so the gate deferring the kill, if
+   it does, is never a surprise), and whether the worktree was released or kept with its reason.
 
 If the session produced nothing to commit (pure Q&A / read-only), say so and skip to arming.
 
