@@ -92,6 +92,7 @@ gh api --paginate repos/owner/name/issues
 - Prefer creating new commits over `git commit --amend` when a pre-commit hook fails — the failed commit did not happen, so `--amend` would modify the previous commit.
 - Before commenting on a PR or closing an issue, confirm with the user unless the action was explicitly requested — these are visible to others.
 - For destructive ops (force-push, branch delete, release delete), confirm first.
+- Pushing a branch, opening a PR, and merging your own green PR are none of the above — they are covered by the Landing rule in `CLAUDE.md` and need no confirmation. Do not invent a gate for them here.
 
 ## Tips
 
