@@ -70,6 +70,23 @@ sandbox_init() {
   unset TMUX TMUX_PANE
   export TMUX_TMPDIR="$SANDBOX/tmp"
 
+  # Detach from any inherited agentctl identity, for the same reason and with a worse
+  # blast radius: rewriting $HOME is NOT enough to isolate agentctl state.
+  #
+  # agentctl@.service exports both of these, and systemd expands %h at unit-load time, so
+  # a runner unit carries a LITERAL absolute path. `agentctl` resolves
+  # `${AGENTCTL_STATE:-$HOME/...}`, so the fallback the $HOME rewrite relies on never
+  # fires. The assertions below read $AGENTCTL_STATE_DIR (sandboxed), while the forked
+  # real binary writes production -- the suite passes from a terminal and corrupts live
+  # state from inside a runner, which is why local runs never reproduced it.
+  #
+  # AGENTCTL_NAME is the worse half. wave-start reports with
+  # `--name "${AGENTCTL_NAME:-wave}"`, so fixtures land on the SUPERVISING runner's own
+  # row: production `dream/status` and `nightly-sync/status` both read
+  # `project=demoapp item="start ok"` -- strings that exist only in wave_start.bats --
+  # and the fleet view rendered them as real for two weeks.
+  unset AGENTCTL_STATE AGENTCTL_NAME
+
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"
