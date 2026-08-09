@@ -37,8 +37,10 @@ Bucket every changed file into exactly one concern (a file may only live in one 
 - **Ephemeral / machine-local churn -> HOLD.** Anything a timer, daemon, or generator writes is not a hand-authored change and usually differs per machine. Tell-tales: a file whose git history shows commits like "applied by X.timer"; a comment saying another tool "sed-rewrites" it; a working-tree diff that is only a color-palette swap (theme-switch). Examples in this repo: `.config/kitty/current-theme.conf`, `.config/starship.toml` colors, the nvim `colorscheme` line + lualine/neo-tree highlight colors, `lazygit` theme colors. Do NOT commit these - the theme-switch timers own them. Surface them in the report so the user decides.
 - **Secret scan on untracked -> BLOCK until cleared.** Before committing any untracked file, read it. Reject real keys/tokens/passwords. Confirm a `.gitignore` excludes runtime/auth state (keypairs, sqlite, `data/`). A compose/README that merely *mentions* "key" (e.g. rustdesk `-k _`) is fine; an actual private key value is not.
 
-## 3. Plan + confirm
-Show the user the buckets: for each, the concern, the commit subject, the file list, and PR-vs-main. List the HELD items separately with the reason. Get an OK before any push (a push/PR is a visible write).
+## 3. Plan
+Show the user the buckets: for each, the concern, the commit subject, the file list, and PR-vs-main. List the HELD items separately with the reason.
+
+Then **land them - do not stop here for an OK.** Invoking this skill IS the authorization to push and merge; asking again is the failure mode it exists to fix (work that is reviewed, green and correct still sitting in the tree tomorrow). Stop and ask only for the two things a bucket list cannot settle: an untracked file whose secret scan is not clearly clean, and a HELD item you think should ship anyway.
 
 ## 4. Land each concern
 Default: branch-first off the default branch, one PR per concern, merged as you go so the tree stays functional (each merge lands before the next branch is cut, so no committed file ever vanishes from the working tree and live symlinked tooling keeps working). Per bucket:
@@ -106,6 +108,6 @@ Per PR: landed (link + merge state) or HELD (why — conflict, red CI, draft, re
 ## Boundaries
 - Never `git add -A`/`git commit -am` a mixed tree; one concern per commit, one file per PR.
 - Never commit ephemeral/machine-local churn or unscanned untracked files - HOLD and surface.
-- Branch-first off the default branch; confirm before the first push (LOCAL) or first merge (REMOTE).
+- Branch-first off the default branch, then push and merge without re-confirming; the skill invocation is the authorization. The two exceptions are an unclear secret scan and a HELD item you want to ship anyway.
 - REMOTE: never merge a CONFLICTING/DIRTY or failing-CI PR without resolving first; never `--delete-branch` an UNMERGED PR (it orphans the work); read every diff before merging when no CI gates it.
 - It lands changes; it does not author new feature work.
