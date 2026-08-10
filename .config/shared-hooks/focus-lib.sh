@@ -24,11 +24,28 @@ focus_daily_note() {
   printf '%s' "$p"
 }
 
-# focus_body <note> — the `## Focus` section body, up to the next H2. Empty if the note
-# has no Focus section (or does not exist), which every caller must treat as "nothing".
+# focus_body <note> — the `## Focus` section body, up to the next H2 OR a `rollup:start`
+# sentinel. Empty if the note has no Focus section (or does not exist), which every caller
+# must treat as "nothing".
+#
+# BOTH terminators, because this is the shell half of a boundary rule the Rust CLI owns
+# (md.rs::section_span, the single place that knows it) and the two must agree. This half
+# knew only the H2 arm.
+#
+# Latent today -- no live daily note carries the sentinel -- and that is exactly why it is
+# worth fixing now rather than when it fires. The moment a job profile rolls up, everything
+# below `<!-- rollup:start -->` is ANOTHER profile's mirrored tasks, and a parser that runs
+# past it counts them as this human's Focus: the preflight would inflate the turn-1 count,
+# and 86-focus-reconcile.sh would block a Stop over a task that is not the session's.
+# `trim` before comparing, matching the Rust `l.trim() == ROLLUP_START`.
 focus_body() {
   [ -f "${1:-}" ] || return 0
-  awk '/^## Focus/{f=1;next} f&&/^## /{exit} f' "$1" 2>/dev/null || true
+  awk '
+    /^## Focus/ { f=1; next }
+    f && /^## / { exit }
+    f { line=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); if (line == "<!-- rollup:start -->") exit }
+    f
+  ' "$1" 2>/dev/null || true
 }
 
 # focus_items <state> — reads a Focus body on stdin, emits that state's items as `- text`.

@@ -127,3 +127,129 @@ seed_focus() {
   assert_output --partial 'notes ptask <project> add|start|done'
   refute_output --partial 'notes focus add'
 }
+
+# -- the @ai board lane: the channel that replaced "## -> For the agents" ------
+
+# seed_ai_stub -- a `notes` stub that emits <project>\t<text> rows for --ai, and records
+# the projects it was asked for so the JOIN can be asserted, not just the output.
+seed_ai_stub() {
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+if [ "${1:-}" = "board" ] && [ "${2:-}" = "--ai" ]; then
+  for a in "$@"; do
+    case "$a" in
+      notes-cockpit) printf 'notes-cockpit\tcockpit row one\n' ;;
+      agent-runtime) printf 'agent-runtime\truntime row one\n' ;;
+    esac
+  done
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+}
+
+# A registry whose repo hop matches this test's project, INCLUDING the string-valued
+# comment key that lives in the real one.
+seed_tracker_map() {
+  export PROJECT_MAP_FILE="$SANDBOX/map.json"
+  cat > "$PROJECT_MAP_FILE" <<EOF
+{
+  "paths": { "$REPO": "toolrepo" },
+  "apps": {},
+  "aliases": {},
+  "trackers": {
+    "_comment_lab_projects": "a STRING value; an unguarded .value.repo dies on this",
+    "notes-cockpit": { "system": "vikunja", "repo": "toolrepo" },
+    "agent-runtime": { "system": "vikunja", "repo": "toolrepo" }
+  }
+}
+EOF
+}
+
+@test "the @ai lane surfaces the board rows for THIS repo's lab projects" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_ai_stub
+
+  run context
+  assert_success
+  assert_output --partial '@ai board items'
+  assert_output --partial '[notes-cockpit] cockpit row one'
+  assert_output --partial '[agent-runtime] runtime row one'
+}
+
+@test "the @ai lane joins through trackers.repo, NOT the directory name" {
+  # The whole point. The project resolves to `toolrepo`; its board projects are named
+  # something else entirely. A directory-name join asks for the wrong thing and finds
+  # nothing -- which is what the replaced lab readback did for every real session.
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_ai_stub
+
+  context >/dev/null
+  assert_called '--project notes-cockpit'
+  assert_called '--project agent-runtime'
+  # It must NOT have asked for the repo's own name, which has no board.
+  run grep -c -- '--project toolrepo' "$NOTES_FIXTURE/calls.log"
+  assert_output '0'
+}
+
+@test "a registry with a STRING-valued trackers key still emits a full context" {
+  # The direct negative control for the jq trap. `.trackers` holds a documentation key
+  # whose value is a string; an unguarded `.value.repo` over it exits 5, and under this
+  # hook's `set -e` that costs the ENTIRE turn-1 context with no error anyone sees.
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_ai_stub
+
+  run context
+  assert_success
+  assert_output --partial 'Session Preflight'
+  assert_output --partial 'Recent commits'
+  refute_output --partial 'Cannot index string'
+}
+
+@test "the retired '-> For the agents' channel is gone" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_ai_stub
+  run context
+  assert_success
+  refute_output --partial 'For the agents'
+  refute_output --partial 'via lab'
+}
+
+@test "no notes binary means no @ai block, and the rest of the context survives" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  rm -f "$SANDBOX/bin/notes"
+
+  run context
+  assert_success
+  assert_output --partial 'Recent commits'
+  refute_output --partial '@ai board items'
+}
+
+@test "the injected context stays well under the old 28.5 KB" {
+  # The budget this rewrite exists for. Not a hard 8 KB: measured, the anchor's
+  # non-truncatable sections alone are 5.3 KB and its newest single decision entry is
+  # 2.9 KB, so ~8.3 KB is the anchor's floor before anything else is added.
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_ai_stub
+
+  local n
+  n=$(context | wc -c)
+  [ "$n" -lt 16384 ] || {
+    echo "turn-1 context is ${n} bytes, over the 16 KB ceiling" >&2
+    return 1
+  }
+}

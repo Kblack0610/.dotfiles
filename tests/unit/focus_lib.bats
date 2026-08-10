@@ -140,3 +140,61 @@ items() { focus_body "$NOTE" | focus_items "$1"; }
   run focus_daily_note
   assert_output "$HOME/.notes/journal/daily/$(date +%F).md"
 }
+
+# -- the rollup sentinel, the OTHER terminator md.rs::section_span knows ------
+
+@test "focus_body stops at a rollup:start sentinel, not just the next H2" {
+  # NEGATIVE CONTROL for the awk that knew only the H2 arm. Everything below the sentinel
+  # is another profile's MIRRORED tasks; counting them as this human's Focus inflates the
+  # turn-1 count and makes the Stop gate block over a task that is not the session's.
+  cat > "$NOTE" <<'EOF'
+## Focus
+- [ ] mine one
+- [/] mine two
+
+<!-- rollup:start -->
+- [ ] someone else's mirrored task
+- [/] another mirrored one
+<!-- rollup:end -->
+EOF
+  run focus_body "$NOTE"
+  assert_success
+  assert_output --partial 'mine one'
+  assert_output --partial 'mine two'
+  refute_output --partial "someone else's mirrored task"
+  refute_output --partial 'another mirrored one'
+}
+
+@test "focus_body matches the sentinel even when it is indented" {
+  # md.rs compares `l.trim() == ROLLUP_START`, so the shell half must trim too.
+  cat > "$NOTE" <<'EOF'
+## Focus
+- [ ] mine
+
+   <!-- rollup:start -->
+- [ ] mirrored
+EOF
+  run focus_body "$NOTE"
+  assert_success
+  assert_output --partial 'mine'
+  refute_output --partial 'mirrored'
+}
+
+@test "focus_body still returns the whole section when there is no sentinel" {
+  # The control: the fix must not truncate an ordinary note.
+  cat > "$NOTE" <<'EOF'
+## Focus
+- [ ] one
+- [ ] two
+- [ ] three
+
+## Notes
+- not focus
+EOF
+  run focus_body "$NOTE"
+  assert_success
+  assert_output --partial 'one'
+  assert_output --partial 'two'
+  assert_output --partial 'three'
+  refute_output --partial 'not focus'
+}

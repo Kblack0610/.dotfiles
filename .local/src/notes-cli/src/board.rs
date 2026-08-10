@@ -152,6 +152,66 @@ pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
+/// `notes board --ai [--project N]...` — print the agent lane as `<project>\t<text>`.
+///
+/// The READ side of the board, for the session preflight. It exists because the board was
+/// the human's channel to the agent and had ZERO automated readers: 41 open items, 21 of
+/// them `#ai`, and nothing at turn 1 looked at any of them. Meanwhile the one channel the
+/// preflight did read was an empty placeholder in every project. The human wrote where
+/// nothing read; the agent read where nothing wrote.
+///
+/// Three properties this must hold, all of them because a hook calls it at turn 1:
+///
+/// 1. NEVER writes. `run` regenerates board.md; this does not touch it. A preflight that
+///    rewrites the human's board as a side effect of being asked a question is a
+///    surprise, and it would fight `notes today` for the file.
+/// 2. ALWAYS exits 0. No projects, no matches, no sheets, no `projects` dir configured --
+///    all are ordinary answers meaning "nothing queued". Only a hard I/O error is an
+///    error, and even then the caller guards with `|| true`.
+/// 3. Reuses `open_wave_for_dir` + `is_ai` + `render`, so it cannot drift from what
+///    `board.md` shows. A fourth `#ai` parser is exactly what `is_ai`'s `#aid` trap is
+///    about; this adds none.
+///
+/// An empty `projects` filter means every project, so a caller that cannot resolve the
+/// join still gets the whole lane rather than silence.
+pub fn print_ai(projects: &[String]) -> Result<i32> {
+    let wanted: Vec<String> = projects.iter().map(|p| p.to_lowercase()).collect();
+
+    for name in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&name)) else {
+            continue;
+        };
+        for (proj, summary) in daily::discover_project_dirs(&p) {
+            if !wanted.is_empty() && !wanted.contains(&proj.to_lowercase()) {
+                continue;
+            }
+            let Some(dir) = summary.parent() else { continue };
+            for row in ai_rows_for_dir(&proj, dir) {
+                println!("{row}");
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// The per-project half of `print_ai`, split out so it is testable without a configured
+/// profile tree. Returns `<project>\t<text>` rows for the `#ai` lane of the current wave.
+fn ai_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
+    let Some((_version, open)) = project_tasks::open_wave_for_dir(dir) else {
+        return Vec::new();
+    };
+    open.iter()
+        .filter(|l| is_ai(l))
+        .map(|line| {
+            // `render` prefixes `@ai`, which is redundant once the caller has asked for
+            // only the ai lane and is joining on a tab.
+            let text = render(line);
+            let text = text.strip_prefix("@ai ").unwrap_or(&text).to_string();
+            format!("{proj}\t{text}")
+        })
+        .collect()
+}
+
 /// `notes board` — regenerate, then print the path so the caller can open it.
 pub fn run(log: &Logger) -> Result<i32> {
     match write(log)? {
@@ -234,6 +294,83 @@ mod tests {
         assert!(b.contains("nothing queued"), "{b}");
         assert!(!b.contains("(0 @ai)"), "no lane count when there is none:\n{b}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `sheet <name>` -> a temp project dir holding that README body.
+    fn sheet(name: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "notes-board-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README.md"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ai_rows_emit_project_tab_text_for_the_agent_lane_only() {
+        let dir = sheet(
+            "airows",
+            "# demo\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
+             - [ ] human task\n- [ ] agent task #ai\n- [x] done one #ai\n",
+        );
+        let rows = ai_rows_for_dir("demo", &dir);
+        // Exactly the ai lane: not the human's row, not the checked one.
+        assert_eq!(rows, vec!["demo\tagent task".to_string()], "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_rows_do_not_re_prefix_the_at_ai_marker() {
+        // The board renders `@ai <text>` because it mixes both lanes in one list. This
+        // path is already ai-only and tab-joined, so a repeated marker is just noise the
+        // consumer would have to strip.
+        let dir = sheet(
+            "noprefix",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] a thing #ai\n",
+        );
+        let rows = ai_rows_for_dir("d", &dir);
+        assert_eq!(rows, vec!["d\ta thing".to_string()]);
+        assert!(!rows[0].contains("@ai"), "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_rows_still_exclude_the_aid_substring_trap() {
+        // The SAME trap `is_ai` guards, asserted on this path too: it is a new consumer of
+        // the lane rule, and the failure would be a first-aid task silently claimed as
+        // agent work at turn 1.
+        let dir = sheet(
+            "aidtrap",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n\
+             - [ ] restock the first #aid kit\n- [ ] real one #ai\n",
+        );
+        let rows = ai_rows_for_dir("d", &dir);
+        assert_eq!(rows, vec!["d\treal one".to_string()], "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_rows_are_empty_for_a_project_with_no_agent_work() {
+        // Empty is a valid answer, and must be empty rather than absent-or-error: the
+        // preflight prints nothing and moves on.
+        let dir = sheet(
+            "quiet",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] only mine\n",
+        );
+        assert!(ai_rows_for_dir("d", &dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_rows_are_empty_for_a_dir_with_no_sheet_at_all() {
+        let dir = sheet("nosheet", "# prose only\n");
+        std::fs::remove_file(dir.join("README.md")).unwrap();
+        std::fs::write(dir.join("summary.md"), "# prose only, no wave\n").unwrap();
+        assert!(ai_rows_for_dir("d", &dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

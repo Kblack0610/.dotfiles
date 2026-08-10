@@ -122,7 +122,22 @@ enum Cmd {
     /// first, across every profile — and print its path. Also refreshed by `notes today`.
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
-    Board,
+    Board {
+        /// Print the `#ai` rows as `<project>\t<text>` instead of writing the board.
+        /// READ-ONLY: this path never touches board.md. Exits 0 even with no rows —
+        /// "nothing queued for the agent" is a valid answer, not an error, and the
+        /// session preflight that calls this must never be able to lose a turn over it.
+        #[arg(long)]
+        ai: bool,
+        /// Limit to these projects (repeatable). Names are the LAB project names, which
+        /// are not the same namespace as the agent-side project name: a session in
+        /// ~/.dotfiles resolves to `dotfiles`, whose lab projects are `notes-cockpit` and
+        /// `agent-runtime`. Callers join the two through project-map.json
+        /// `trackers.<n>.repo` (see `project_lab_names` in project-name.sh) and pass the
+        /// results here. Ignored without --ai.
+        #[arg(long = "project")]
+        projects: Vec<String>,
+    },
     /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
@@ -481,7 +496,13 @@ fn main() -> Result<()> {
                 project_tasks::rm(&prof, &log, &name, &query.join(" "))?
             }
         },
-        Cmd::Board => board::run(&log)?,
+        Cmd::Board { ai, projects } => {
+            if ai {
+                board::print_ai(&projects)?
+            } else {
+                board::run(&log)?
+            }
+        }
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
