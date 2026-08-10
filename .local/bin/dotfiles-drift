@@ -18,9 +18,11 @@
 #
 #   BEHIND  the repo is checked out below origin/main, so merged work is not in
 #           the working tree that ~/ points at.
-#   MIRROR  a private-overlay file also exists as a real file in the public tree
-#           (the deployed mirror) and its content differs from the tracked
-#           source. This is the one that hid for six weeks.
+#   MIRROR  a private-overlay file also exists as a REAL FILE in the public tree
+#           (a deployed mirror). This is the one that hid for six weeks. It fires
+#           on the duplicate itself, not only on a difference: a copy that still
+#           matches is drift that has not happened yet, and the fix for both is
+#           the same one - own the file in one repo and LINK to it, never copy.
 #   LINK    a tracked file under a stow root has no ~/ counterpart, or has one
 #           that dangles. That is "stow has not run".
 #
@@ -63,9 +65,19 @@ check_behind() {
 }
 
 # --- MIRROR -----------------------------------------------------------------
-# Every file tracked in the private overlay that ALSO exists as a real file in
-# the public tree is a deployed mirror. If the two differ, the running copy is
-# not the tracked one.
+# Every file tracked in the private overlay that ALSO exists as a REAL FILE in
+# the public tree is a second copy of something that already has an owner, and
+# a second copy is the whole bug. A symlink is fine and is skipped: it has no
+# content of its own, so it cannot disagree with anything.
+#
+# This check used to fire only when the two copies DIFFERED. That is one commit
+# too late. A duplicate whose content currently matches is not converged, it is
+# drift that has not happened yet - the next commit to the private repo makes it
+# stale, silently, and nothing runs between those two moments to notice. The
+# six-week watch-companion-loop outage began its life as a byte-identical copy.
+#
+# So: any real file here is a finding. The detail says which of the two states it
+# is in, because the urgency differs - one is already lying, the other is loaded.
 check_mirror() {
   local p pub_file
   [ -d "$PRIV/.git" ] || return 0
@@ -76,7 +88,9 @@ check_mirror() {
     [ -L "$pub_file" ] && continue          # a correct overlay symlink, not a mirror
     # skip symlinks on the git side too (mode 120000)
     [ "$(git -C "$PRIV" ls-tree "origin/main" -- "$p" 2>/dev/null | awk '{print $1}')" = "120000" ] && continue
-    if ! git -C "$PRIV" show "origin/main:$p" 2>/dev/null | diff -q - "$pub_file" >/dev/null 2>&1; then
+    if git -C "$PRIV" show "origin/main:$p" 2>/dev/null | diff -q - "$pub_file" >/dev/null 2>&1; then
+      add MIRROR private "$p" "duplicate copy, matches for now - drifts on the next private commit"
+    else
       add MIRROR private "$p" "deployed copy differs from tracked source"
     fi
   done < <(git -C "$PRIV" ls-tree -r --name-only origin/main 2>/dev/null \
@@ -136,8 +150,13 @@ done
 cat <<'EOF'
 
   BEHIND -> check the tree out on origin/main (or merge it into your branch)
-  MIRROR -> refresh the deployed copy from the tracked source:
-              git -C ~/.dotfiles-private show origin/main:<path> > ~/.dotfiles/<path>
-  LINK   -> run `stow --no-folding .` in the repo, then re-check
+  MIRROR -> do NOT refresh the copy. Copying fixes it today and re-arms it for the
+            next private commit - that loop is why this drift kept coming back.
+            Replace the duplicate with a link to the repo that OWNS the file, so
+            there is one source of truth and it cannot disagree with itself:
+              ln -sfn ~/.dotfiles-private/<path> ~/.dotfiles/<path>
+  LINK   -> run `stow --no-folding .` in the repo, then re-check.
+            Check `stow --simulate` first: stow deploys the FILESYSTEM, not the
+            git index, so untracked junk in the tree gets linked into $HOME too.
 EOF
 exit 1
