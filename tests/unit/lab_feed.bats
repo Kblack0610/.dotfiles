@@ -374,3 +374,65 @@ S
   assert_success
   assert_output 'shipped v5.0.0, 2 PRs'
 }
+
+# ── the plural landmine ──────────────────────────────────────────────────────
+#
+# These two must be run from a `set -e` CALLER, not through bats' `run`. The whole point
+# is a status that only propagates when -e is active: `run` swallows it, which is why the
+# 1-PR case above ("joins only the parts that have something to say", via seed_alpha) has
+# been passing all along while the same input killed the private regen script outright.
+#
+# `bash -e -c` is the harness because it is what the real callers are — regen-lab-feed.sh
+# and regen-project-index.sh both open with `set -euo pipefail`.
+
+# gist_under_e <file> — source the lib and call the gist from a `set -e` shell.
+gist_under_e() {
+  bash -e -c '. "$1"; lab_feed_gist "$2"' _ "$LAB_FEED_LIB" "$1"
+}
+
+@test "lab_feed_gist survives a set -e caller at exactly one open PR" {
+  # The landmine. `PR$([ "$prs" -gt 1 ] && printf s)` exits 1 at prs==1, the assignment
+  # carries that status, and -e kills the caller — emitting NOTHING, so the row reads as
+  # "no feed" rather than as a failure. One PR is the single arming value: zero
+  # short-circuits on the preceding `[`, two or more make `printf s` succeed.
+  mk_summary sigma <<'S'
+<!-- AUTO:START -->
+**shipped `v5.0.0`** (2026-06-06)
+
+**In flight** (open PRs)
+- #1 a
+<!-- AUTO:END -->
+S
+  run gist_under_e "$PROJ/sigma/summary.md"
+  assert_success
+  assert_output 'shipped v5.0.0, 1 PR'
+}
+
+@test "lab_feed_gist under a set -e caller pluralises from two PRs up" {
+  # The control that proves the test above is testing the arming value and not just
+  # "does it run": same shell, same path, one more PR.
+  mk_summary tau <<'S'
+<!-- AUTO:START -->
+**shipped `v5.0.0`** (2026-06-06)
+
+**In flight** (open PRs)
+- #1 a
+- #2 b
+<!-- AUTO:END -->
+S
+  run gist_under_e "$PROJ/tau/summary.md"
+  assert_success
+  assert_output 'shipped v5.0.0, 2 PRs'
+}
+
+@test "lab_feed_gist under a set -e caller is silent, not fatal, with no feed" {
+  # The other end of the same class: zero PRs takes the short-circuit path, which must
+  # also not trip -e. Silence here is the correct answer and must arrive as exit 0.
+  mk_summary upsilon <<'S'
+# upsilon
+prose only.
+S
+  run gist_under_e "$PROJ/upsilon/summary.md"
+  assert_success
+  assert_output ''
+}

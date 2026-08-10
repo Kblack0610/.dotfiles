@@ -87,10 +87,12 @@ One idempotent observation pass — designed to be the recurring half of a sprin
    (incl. the checkpoint mtime) against the previous pass; >30 min frozen → stall event.
 5. If all rows are terminal **and sentinel-confirmed** and no `## Batch summary` exists → run `report`.
 
-This pass is observe-only and idempotent, so it is safe to run headlessly on a schedule. The captain
-arms the **autonomous watchdog** (`captain-watchdog`, a user systemd timer running `claude -p
-"/captain watch"`) so these notifications fire without the user keeping a `/loop` session open; the
-user-run `/loop 10m /captain watch` is an optional live-tail equivalent.
+This pass is observe-only and idempotent, so it is safe to run headlessly on a schedule. The
+**autonomous watchdog** (`captain-watchdog`, an agentctl runner on a permanently armed 12-min timer,
+running headless `/captain watch`) fires these notifications without the user keeping a `/loop`
+session open, and without anyone arming it - its idle pass no-ops in milliseconds. Inspect it like
+any other runner: `agentctl status captain-watchdog`. The user-run `/loop 10m /captain watch` is an
+optional live-tail equivalent.
 
 ## Verb: `status`
 
@@ -117,7 +119,7 @@ End-of-batch (or on demand for a post-mortem of an aborted sprint):
 
 - Dispatcher (`/kb:sprint run`) lives in the **main session** — synchronously busy inside Task
   calls. The watch pass runs **out-of-band** so it survives dispatcher death — primarily via the
-  captain's **autonomous watchdog** (`captain-watchdog` systemd timer, headless `claude -p`), and/or
+  captain's **autonomous watchdog** (`captain-watchdog`, an agentctl runner, headless `claude -p`), and/or
   a user `/loop 10m /captain watch` second session. Stall + false-completion detection are the reason
   this is a separate process; the user is never required to host it.
 - The dispatcher's only notification is its own terminal abort (it can't assume the overseer

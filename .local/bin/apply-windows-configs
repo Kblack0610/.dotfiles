@@ -235,7 +235,10 @@ else
             copy_file "$ff_src/chrome/userChrome.css" "$p/chrome/userChrome.css"
         done
     done
-    if [[ "$ff_src/policies.json" && -f "$ff_src/policies.json" ]]; then
+    # Was `[[ "$ff_src/policies.json" && -f "$ff_src/policies.json" ]]`. The first operand is
+    # a string that always contains "/policies.json", so it is unconditionally true (SC2157)
+    # and the -f test was already doing all the work. Same behaviour, one test.
+    if [[ -f "$ff_src/policies.json" ]]; then
         dim "note: policies.json under Program Files\\<browser>\\distribution\\ needs admin - run apply_configs.ps1 elevated to install it"
     fi
     (( found_any )) || dim "skip - no Firefox/Floorp profile dir under %APPDATA% (run the browser once first)"

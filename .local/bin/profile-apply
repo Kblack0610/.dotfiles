@@ -53,7 +53,10 @@ else
         echo "Available profiles:"
         for profile in "$PROFILES_DIR"/*; do
             [[ -f "$profile" ]] || continue
-            local name desc
+            # No `local` here: this block is at top level, not inside a function, and this
+            # file is SOURCED by .zprofile. Under bash `local` outside a function is an
+            # error (SC2168) that aborts the listing; zsh tolerates it, which is why the
+            # bug survived - the only shell that ever ran this line was the forgiving one.
             name=$(basename "$profile")
             desc=$(grep "^PROFILE_DESCRIPTION=" "$profile" 2>/dev/null | cut -d'"' -f2)
             echo "  - $name: $desc"
