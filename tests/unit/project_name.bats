@@ -219,3 +219,139 @@ APPS='{ "apps/alpha": "alpha", "apps/beta": "beta" }'
   assert_success
   assert_output 'stranger'
 }
+
+# -- the inverse relation: project -> repo, and repo -> projects --------------
+#
+# These three read `trackers.<project>.repo`, the registry relation that four
+# hand-rolled copies re-implemented and one of them lost -- which is why the lab
+# index rendered no git tag at all for the two projects that need the hop.
+#
+# EVERY test here uses a map containing `_comment_lab_projects`, a STRING-valued key
+# inside `.trackers`. That is the shape of the real registry, and it is the negative
+# control: an iterating jq without `select(.value | type == "object")` dies on it with
+# `Cannot index string with string`. In the session preflight -- which runs under
+# `set -e` -- that failure prints NOTHING and costs the whole turn-1 context.
+
+# write_tracker_map -- mirrors the real registry's shape, comment key included.
+write_tracker_map() {
+  cat > "$MAP" <<EOF
+{
+  "paths": {
+    "/repos/toolrepo": "toolrepo",
+    "/repos/monorepo": "monorepo"
+  },
+  "apps": {},
+  "aliases": {},
+  "trackers": {
+    "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
+    "monorepo":   { "system": "clickup" },
+    "app-one":    { "system": "vikunja", "repo": "monorepo" },
+    "app-two":    { "system": "vikunja", "repo": "monorepo" },
+    "cockpit":    { "system": "vikunja", "repo": "toolrepo" },
+    "runtime":    { "system": "vikunja", "repo": "toolrepo" },
+    "no-repo":    { "system": "vikunja" }
+  }
+}
+EOF
+}
+
+@test "project_repo_name: a project with a repo hop resolves to the repo" {
+  write_tracker_map
+  run project_repo_name cockpit
+  assert_success
+  assert_output 'toolrepo'
+}
+
+@test "project_repo_name: a project that IS its own repo resolves to itself" {
+  write_tracker_map
+  run project_repo_name monorepo
+  assert_success
+  assert_output 'monorepo'
+}
+
+@test "project_repo_name: a tracker entry with no repo key resolves to itself" {
+  write_tracker_map
+  run project_repo_name no-repo
+  assert_success
+  assert_output 'no-repo'
+}
+
+@test "project_repo_name: an unregistered project resolves to itself" {
+  write_tracker_map
+  run project_repo_name never-heard-of-it
+  assert_success
+  assert_output 'never-heard-of-it'
+}
+
+@test "project_repo_name: the string-valued comment key does not error" {
+  # Passing it is absurd, but a caller iterating the registry WILL reach it.
+  write_tracker_map
+  run project_repo_name _comment_lab_projects
+  assert_success
+  assert_output '_comment_lab_projects'
+}
+
+@test "project_repo_path: two hops, project -> repo name -> checkout path" {
+  write_tracker_map
+  run project_repo_path app-two
+  assert_success
+  assert_output '/repos/monorepo'
+}
+
+@test "project_repo_path: a repo registered under its own name still resolves" {
+  write_tracker_map
+  run project_repo_path monorepo
+  assert_success
+  assert_output '/repos/monorepo'
+}
+
+@test "project_repo_path: a project whose repo has no paths entry is empty" {
+  write_tracker_map
+  run project_repo_path no-repo
+  assert_success
+  assert_output ''
+}
+
+@test "project_lab_names: a repo lists every project that belongs to it, itself included" {
+  write_tracker_map
+  run project_lab_names monorepo
+  assert_success
+  # The repo's own entry plus both apps that hop to it.
+  assert_line 'monorepo'
+  assert_line 'app-one'
+  assert_line 'app-two'
+  assert_equal "${#lines[@]}" 3
+}
+
+@test "project_lab_names: a repo that is not itself a tracked project lists only its projects" {
+  write_tracker_map
+  run project_lab_names toolrepo
+  assert_success
+  assert_line 'cockpit'
+  assert_line 'runtime'
+  assert_equal "${#lines[@]}" 2
+}
+
+@test "project_lab_names: NEVER emits the string-valued comment key" {
+  # The direct negative control. Without the type guard this jq does not merely
+  # include a junk row -- it exits nonzero and prints nothing at all.
+  write_tracker_map
+  run project_lab_names toolrepo
+  assert_success
+  refute_output --partial '_comment_lab_projects'
+  refute_output --partial 'Cannot index string'
+}
+
+@test "project_lab_names: a repo with no projects at all emits nothing, successfully" {
+  write_tracker_map
+  run project_lab_names some-other-repo
+  assert_success
+  assert_output ''
+}
+
+@test "project_lab_names: with no registry present, falls back to the repo itself" {
+  export PROJECT_MAP_FILE="$HOME/does-not-exist.json"
+  run project_lab_names toolrepo
+  assert_success
+  assert_output 'toolrepo'
+}

@@ -51,6 +51,81 @@ project_map_file() {
   printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 }
 
+# ── the registry's OTHER relation: project -> repo ────────────────────────────
+#
+# resolve_project_name answers "what project is this PATH", which is the question
+# the hooks ask. The three functions below answer the inverse, which is the
+# question every lab/notes surface asks: given a project NAME, what repo is it,
+# and which projects belong to a given repo?
+#
+# `trackers.<project>.repo` is that relation and it is already correct in the
+# registry (notes-cockpit -> dotfiles, time-tangle -> bnb-platform). It had four
+# hand-rolled copies, one of which had lost the hop entirely — which is why the
+# lab index rendered no git tag at all for notes-cockpit and time-tangle.
+#
+# THE JQ TRAP, and the reason these live here rather than being inlined again:
+# `.trackers` contains a documentation key whose value is a STRING
+# (`_comment_lab_projects`). A bare `.trackers | to_entries[] | .value.repo` dies
+# with `Cannot index string with string`, and in a caller running under `set -e`
+# — the session preflight is one — that takes the whole turn-1 context with it,
+# printing nothing. Every iterating jq below therefore carries
+# `select(.value | type == "object")`. Do not inline one of these without it.
+
+# project_repo_name <project> -> the repo NAME that owns it, or the project name
+# itself when it is its own repo.
+project_repo_name() {
+  local proj="$1" map_file rn=""
+  map_file="$(project_map_file)"
+  if [ -f "$map_file" ] && command -v jq >/dev/null 2>&1; then
+    # `select(type == "object")` guards the string-valued comment key, in case a
+    # caller passes its name.
+    rn=$(jq -r --arg n "$proj" \
+      '(.trackers[$n] // empty) | select(type == "object") | (.repo // empty)' \
+      "$map_file" 2>/dev/null || true)
+  fi
+  printf '%s' "${rn:-$proj}"
+}
+
+# project_repo_path <project> -> the repo's CHECKOUT PATH, or "".
+#
+# Two hops, because a project need not be a repo: an app in a monorepo, or a
+# product whose sessions register under the repo they ran in. First
+# project -> repo name, then the `paths` reverse lookup to a checkout.
+project_repo_path() {
+  local proj="$1" map_file repo_name repo=""
+  map_file="$(project_map_file)"
+  repo_name="$(project_repo_name "$proj")"
+  if [ -f "$map_file" ] && command -v jq >/dev/null 2>&1; then
+    repo=$(jq -r --arg n "$repo_name" \
+      '.paths | to_entries[] | select(.value == $n) | .key' \
+      "$map_file" 2>/dev/null | head -1 || true)
+  fi
+  printf '%s' "$repo"
+}
+
+# project_lab_names <repo> -> every project belonging to that repo, one per line.
+#
+# The INVERSE of project_repo_name, and the join the session preflight needs: a
+# session in ~/.dotfiles resolves to `dotfiles`, but the human's project boards
+# for it are filed under `agent-runtime` and `notes-cockpit`. Joining those two
+# namespaces by directory name — which is what the preflight did — produces an
+# empty intersection for every session anyone actually opens.
+#
+# A repo that is itself a registered project is included, so a caller gets one
+# complete list rather than a list plus a special case.
+project_lab_names() {
+  local repo="$1" map_file
+  map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || { printf '%s\n' "$repo"; return 0; }
+  jq -r --arg n "$repo" '
+    .trackers // {}
+    | to_entries[]
+    | select(.value | type == "object")
+    | select(.value.repo == $n or .key == $n)
+    | .key
+  ' "$map_file" 2>/dev/null || true
+}
+
 resolve_project_name() {
   local abs_path="$1"
   local map_file; map_file="$(project_map_file)"
