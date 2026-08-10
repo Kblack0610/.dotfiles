@@ -87,15 +87,19 @@ _publishes() { # <script path>
 
 # Runners that publish through neither. Each needs a reason; an empty list is the goal.
 #
-# As of this change the silent ones are `comms` and `delivery-loop`, and `wave` /
-# `captain-watchdog` are not on the roster at all. The roster-wide assertion that would
-# catch that ships with the PRIVATE change which fixes it - those scripts and the conf
-# dir both live in the private overlay, and a test that is red the day it lands only
-# teaches people to ignore red.
+# The silent ones are `comms`, `delivery-loop` and `captain-watchdog`. The roster-wide
+# assertion that would catch them ships with the PRIVATE change which fixes it - those
+# scripts and the conf dir both live in the private overlay, and a test that is red the
+# day it lands only teaches people to ignore red.
+#
+# captain-watchdog joined the roster when it stopped being its own scheduler; folding it
+# in made it VISIBLE, which is a different thing from making it publish. It still reports
+# through neither mechanism.
 _known_non_adopters() {
   cat <<'EOF'
 comms
 delivery-loop
+captain-watchdog
 EOF
 }
 

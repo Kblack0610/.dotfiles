@@ -33,7 +33,8 @@ echo "$*" >> "$NOTIFY_LOG"
 EOF
   chmod +x "$SANDBOX/bin/agent-notify"
 
-  # captain-watchdog must never arm during a test
+  # captain-watchdog must never be invoked from wave-start, and never reach the real
+  # script during a test. This stub records every call so the assertion below can say so.
   cat > "$SANDBOX/bin/captain-watchdog" <<'EOF'
 #!/usr/bin/env bash
 echo "watchdog $*" >> "$NOTIFY_LOG.watchdog"
@@ -114,14 +115,25 @@ stub_run() {
   refute_output --partial 'FAILED'
 }
 
-@test "the overseer is armed only when the pass actually produced a board" {
+# Arming the overseer is no longer wave-start's job, board or no board.
+#
+# captain-watchdog used to be its own scheduler: `arm` wrote and enabled its own systemd
+# unit + timer, and any pass that found no active sprint DISARMED itself - so wave-start
+# had to re-arm it at exactly the moment a board appeared, and this test asserted that
+# timing. Folding the watchdog into the agentctl roster (agents/captain-watchdog.conf,
+# private overlay) put it on a permanently armed 12-min timer whose idle pass no-ops in
+# milliseconds, so there is nothing left to trigger and no arming verb to call.
+#
+# The stub in setup() records EVERY invocation, so a re-introduced `captain-watchdog arm`
+# fails this in both arms. Verified by putting the call back: both assertions go red.
+@test "wave-start never arms the watchdog itself, board or no board" {
   stub_run 1 'boom'
   run "$WAVE_START" demoapp --now
   refute [ -f "$NOTIFY_LOG.watchdog" ]
 
   stub_run 0 'ok' board
   run "$WAVE_START" demoapp --now
-  assert [ -f "$NOTIFY_LOG.watchdog" ]
+  refute [ -f "$NOTIFY_LOG.watchdog" ]
 }
 
 # --- the lock: one wave per app at a time -------------------------------------------

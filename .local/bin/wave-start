@@ -219,14 +219,13 @@ run_pass() {
     fi
   fi
 
-  # Arm the overseer, but only now that a board exists. captain-watchdog SELF-DISARMS on
-  # any pass that finds no active sprint (cmd_run -> cmd_disarm removes its own units), so
-  # arming it before this point is a no-op that looks like it worked: it fires once,
-  # sees nothing, and deletes itself. Nothing armed it at wave start, which is the real
-  # reason no stall or false-completion detection has ever fired.
-  if [ -n "$board" ] && [ "$board_ts" -ge "$t0" ]; then
-    command -v captain-watchdog >/dev/null 2>&1 && captain-watchdog arm >>"$LOG" 2>&1 || true
-  fi
+  # No overseer to arm here any more. captain-watchdog used to be its own scheduler -
+  # `arm` wrote its own systemd unit + timer, and a pass finding no active sprint
+  # DISARMED itself - so wave-start had to re-arm it at exactly the moment a board
+  # appeared, and any arming before that point was a no-op that looked like it worked.
+  # It is now an ordinary agentctl runner (agents/captain-watchdog.conf, private
+  # overlay) on a permanently armed 12-min timer whose idle pass costs nothing, so the
+  # watchdog is already watching when the board lands and there is nothing to trigger.
 
   # Say what actually happened. This used to report the last non-empty line of the
   # log, which is always our own `=== done` marker - so every pass, including a
