@@ -126,14 +126,38 @@ systemd unit files live at `~/.dotfiles/.config/systemd/user/theme-*.{service,ti
 
 ## What each tool gets
 
-| Tool      | How it's updated                                                  |
-| --------- | ----------------------------------------------------------------- |
-| kitty     | full template copy + `SIGUSR1` live reload                        |
-| nvim      | colorscheme name patched in `init.lua`                            |
-| lualine   | branch fg color patched                                           |
-| neo-tree  | `NeoTreeModified` highlight patched                               |
-| starship  | 7 color values patched in `starship.toml`                         |
-| lazygit   | 11 color values patched in `config.yml` (restart lazygit to see)  |
-| waybar    | full template copy + `SIGUSR2` live reload                        |
-| hyprland  | active/inactive border + shadow rgba patched + `hyprctl reload`   |
-| wallpaper | random pick matching prefix; backend: hyprpaper > swww > swaybg   |
+| Tool       | How it's updated                                                 | Target   |
+| ---------- | ---------------------------------------------------------------- | -------- |
+| kitty      | full template copy + `SIGUSR1` live reload                        | generated |
+| waybar     | full template copy + `SIGUSR2` live reload                        | generated |
+| sketchybar | `colors.sh` rebuilt from the palette (no per-theme template)      | generated |
+| nvim       | colorscheme name patched in `init.lua`                            | tracked  |
+| lualine    | branch fg color patched                                           | tracked  |
+| neo-tree   | `NeoTreeModified` highlight patched                               | tracked  |
+| starship   | 7 color values patched in `starship.toml`                         | tracked  |
+| lazygit    | 11 color values patched in `config.yml` (restart lazygit to see)  | tracked  |
+| hyprland   | active/inactive border + shadow rgba patched + `hyprctl reload`   | tracked  |
+| wallpaper  | random pick matching prefix; backend: hyprpaper > swww > swaybg   | n/a      |
+
+## Tracked vs generated
+
+The palette (`palettes/<name>.sh`) and the templates are the source of truth. A
+**generated** target is written in full from them and is gitignored -- git never
+sees it, so switching themes cannot dirty the repo.
+
+That distinction is load-bearing. These three files were tracked for years while
+`theme-day.timer` and `theme-night.timer` rewrote them at 07:00 and 19:00 every
+day, so the repo dirtied itself twice daily and every session had to decide to
+hold the churn. A generator aimed at its own source is not mess to sweep up, it
+is a loop to cut.
+
+Because a fresh clone has none of them -- and `sketchybarrc` hard-`source`s
+`colors.sh` -- the installers call `setup_theme()` after `apply_dotfiles` to
+render them once. It passes `--only` the generated targets on purpose: every
+**tracked** target above already ships correct, and re-patching those at install
+time would hand a fresh machine a dirty tree before first login.
+
+The remaining `tracked` rows are hand-authored config with a few values patched
+in place, so they still churn on a theme switch. Converting each to its tool's
+native include (hyprland `source =`, lazygit `LG_CONFIG_FILE`, an nvim palette
+module) is the follow-up that finishes the job.

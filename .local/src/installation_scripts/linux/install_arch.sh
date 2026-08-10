@@ -550,6 +550,35 @@ setup_profile() {
     fi
 }
 
+# Render theme-switch's generated output. kitty's current-theme.conf, waybar's
+# style.css and sketchybar's colors.sh are NOT tracked -- they are the render of
+# a tracked palette + template, and tracking them meant the theme-day/theme-night
+# timers dirtied the repo twice a day. A fresh clone therefore has none of them,
+# and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
+#
+# --only the three generated targets on purpose: every other tool theme-switch
+# touches is a TRACKED file that already ships correct, and re-patching those
+# here would leave a fresh install with a dirty tree before first login.
+setup_theme() {
+    log_section "Rendering theme (generated config)"
+
+    local theme_switch="$HOME/.local/bin/theme-switch"
+    if [[ ! -x "$theme_switch" ]]; then
+        log_warning "theme-switch not found at $theme_switch - skipping"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar"
+        return 0
+    fi
+
+    # Honour a theme already chosen on this machine; otherwise the daytime
+    # default, matching what theme-day.timer applies at 07:00.
+    local state="$HOME/.config/theme/current"
+    local theme="jackie-brown"
+    [[ -r "$state" ]] && theme="$(<"$state")"
+
+    log_info "Rendering generated theme files for: $theme"
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar
+}
+
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
 # MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
 # so it runs on every machine; only the sync wiring is gated on the URL
@@ -749,6 +778,10 @@ install_all() {
 
     # Setup startup profile (must come after apply_dotfiles)
     setup_profile
+
+    # Generated theme files (must come after apply_dotfiles -- writes into the
+    # stowed config tree, and these three are gitignored so a clone lacks them)
+    setup_theme
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
     setup_notes_sync

@@ -266,3 +266,19 @@ tests/artifacts/
 # for one) drops these next to the source, where a `git add -A` will sweep them up.
 __pycache__/
 *.pyc
+
+# theme-switch OUTPUT. These three files are generated in full -- kitty and
+# waybar are copied verbatim from `.local/src/theme/templates/<tool>/<theme>`,
+# sketchybar's colors.sh is a heredoc built from `palettes/<theme>.sh`. The
+# tracked source of truth is the palette + template; these are the render.
+#
+# They were tracked for years, and the theme-day/theme-night systemd timers
+# rewrite them at 07:00 and 19:00 DAILY -- so the repo dirtied itself twice a
+# day forever and every session had to decide to hold the churn. A generator
+# aimed at its own source is not mess to sweep, it is a loop to cut.
+#
+# A fresh clone has none of these files, and sketchybarrc hard-`source`s
+# colors.sh -- so the installer's setup_theme() renders them at install time.
+.config/kitty/current-theme.conf
+.config/waybar/style.css
+.config/sketchybar/colors.sh

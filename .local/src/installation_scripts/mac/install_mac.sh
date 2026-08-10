@@ -383,6 +383,32 @@ configure_macos_defaults() {
     fi
 }
 
+# Render theme-switch's generated output. sketchybar's colors.sh is NOT tracked
+# -- it is a heredoc built from the tracked palette, and tracking it meant the
+# theme timers dirtied the repo twice a day. sketchybarrc hard-`source`s it, so
+# on macOS a fresh clone without this step leaves sketchybar unable to start.
+#
+# --only the generated targets: every other tool theme-switch touches is a
+# TRACKED file that already ships correct, and re-patching those here would
+# leave a fresh install with a dirty tree before first login.
+setup_theme() {
+    log_section "Rendering theme (generated config)"
+
+    local theme_switch="$HOME/.local/bin/theme-switch"
+    if [[ ! -x "$theme_switch" ]]; then
+        log_warning "theme-switch not found at $theme_switch — skipping"
+        log_info "Render later with:  theme-switch <theme> --only kitty,sketchybar"
+        return 0
+    fi
+
+    local state="$HOME/.config/theme/current"
+    local theme="jackie-brown"
+    [[ -r "$state" ]] && theme="$(<"$state")"
+
+    log_info "Rendering generated theme files for: $theme"
+    "$theme_switch" "$theme" --only kitty,sketchybar
+}
+
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
 # MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
 # so it runs on every machine; only the sync wiring is gated on the URL.
@@ -454,6 +480,10 @@ install_all() {
 
     # System configuration
     configure_macos_defaults
+
+    # Generated theme files (must come after apply_dotfiles -- writes into the
+    # stowed config tree, and these are gitignored so a clone lacks them)
+    setup_theme
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
     setup_notes_sync
