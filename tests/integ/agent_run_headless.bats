@@ -75,3 +75,43 @@ EOF
   run grep -rn "CLAUDE_HEADLESS" "$HOME/.config/agentctl/roles"
   assert_failure
 }
+
+# ---------------------------------------------------------------- interactive
+#
+# `agentctl run` at a terminal sets AGENTCTL_INTERACTIVE=1, because on that path
+# the marker above would be a LIE: a human IS watching, and the Focus gate this
+# file exists to protect SHOULD fire for a human-initiated turn.
+#
+# The danger in adding a second mode is that "interactive" quietly becomes
+# "unenforced". These four tests exist to hold that line: the mode may change
+# what the model is TOLD and whether it may PROMPT, and nothing else.
+
+@test "interactive: the headless marker is not exported (a human IS watching)" {
+  AGENTCTL_INTERACTIVE=1 run "$RUN" --role fixture -p "anything"
+  assert_success
+  assert_equal "$(cat "$SEEN")" "CLAUDE_HEADLESS=<unset>"
+}
+
+@test "interactive still passes --disallowedTools -- capability is NOT a mode" {
+  # THE test of the pair. --dangerously-skip-permissions governs PROMPTING and
+  # --disallowedTools governs CAPABILITY; that distinction was measured (see
+  # harnesses/claude.sh). If interactive ever dropped the denylist it would be a
+  # far worse bug than the one the mode fixes, and it would look like a feature.
+  AGENTCTL_EXPLAIN=1 AGENTCTL_INTERACTIVE=1 run "$RUN" --role fixture --explain
+  assert_success
+  assert_output --partial '--disallowedTools'
+}
+
+@test "interactive drops ONLY the two prompting flags" {
+  AGENTCTL_EXPLAIN=1 AGENTCTL_INTERACTIVE=1 run "$RUN" --role fixture --explain
+  refute_output --partial '--dangerously-skip-permissions'
+  refute_output --partial '--append-system-prompt'
+}
+
+@test "...and headless still carries both, so the test above is not vacuous" {
+  AGENTCTL_EXPLAIN=1 run "$RUN" --role fixture --explain
+  assert_success
+  assert_output --partial '--dangerously-skip-permissions'
+  assert_output --partial '--append-system-prompt'
+  assert_output --partial '--disallowedTools'
+}

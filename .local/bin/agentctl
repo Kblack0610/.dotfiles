@@ -165,8 +165,20 @@ status_get() {
 # file is created in the same directory so the mv is a rename, not a copy.
 status_write() {
     local name="$1"; shift
-    local dir="$STATE_DIR/$name" f tmp kv k v
-    f="$(status_file "$name")"
+    status_write_dir "$STATE_DIR/$name" "$@"
+}
+
+# The same writer, addressed by DIRECTORY rather than by roster name.
+#
+# A run lives wherever runs_dir() says (which honours $AGENTCTL_RUNS_DIR), and
+# that is not always $STATE_DIR/runs -- so deriving the status path from a name
+# would put the file somewhere the reader is not looking. That is precisely the
+# two-names-one-location bug fixed in .dotfiles#231, and it showed up here within
+# an hour of the run subtree existing. Take the directory as the argument and it
+# cannot happen: the caller that owns the directory names the file.
+status_write_dir() {
+    local dir="$1"; shift
+    local f="$dir/status" tmp kv k v
     mkdir -p "$dir" || die "cannot create $dir"
 
     declare -A merged=()
@@ -536,11 +548,268 @@ cmd_watch() {
     exec watch -n 2 -c -t -- agentctl list
 }
 
+# ----------------------------------------------------------------------
+# run / runs — the ad-hoc front door
+# ----------------------------------------------------------------------
+# agentctl supervised RUNNERS and nothing else, so every ad-hoc invocation
+# became a bare `claude -p` at a call site with its own flags and no trace.
+# A RUN is the missing unit: one invocation, through the role contract,
+# recorded where a supervised runner is already visible.
+#
+# TWO LAYERS, OPPOSITE FAILURE POLICIES, and the whole design falls out of
+# keeping them apart:
+#
+#   agentctl-run   capability   fail CLOSED (78, never degrade)
+#   agentctl run   observability fail OPEN  (never break the run)
+#
+# So this forks agentctl-run as a CHILD rather than absorbing it. agentctl-run
+# keeps its exec and stays on PATH: wave-start wraps it with its own lock, trap
+# and proof and reads `|| rc=$?`, and interposing a supervisor would change what
+# that $? means. A telemetry bug here must not be able to take down the fleet,
+# which is the same reason the unit prefixes its lifecycle hooks with `-`.
+
+RUNS_LIB="${AGENTCTL_RUNS_LIB:-$HOME/.local/lib/agentctl-runs.sh}"
+[ -r "$RUNS_LIB" ] || RUNS_LIB="$(dirname "$(readlink -f "$0")")/../lib/agentctl-runs.sh"
+
+# Resolve the child deterministically before falling back to PATH: a sibling of
+# the resolved $0 is what this repo ships, and PATH-first is how a test passes
+# against the wrong binary.
+_run_child() {
+    if [ -n "${AGENTCTL_RUN:-}" ]; then printf '%s' "$AGENTCTL_RUN"; return 0; fi
+    local sib; sib="$(dirname "$(readlink -f "$0")")/agentctl-run"
+    if [ -x "$sib" ]; then printf '%s' "$sib"; return 0; fi
+    command -v agentctl-run 2>/dev/null || true
+}
+
+cmd_run() {
+    local role="" harness="" route="" label="" project="" mode="" quiet=0
+    local explain=0 dry=0
+    local -a watch=() argv=()
+
+    # Option parsing STOPS at the first token we do not own. `agentctl run` exists
+    # to carry ANY prompt, and agentctl-run's habit of picking --role out of the
+    # middle of a line means a prompt containing that text gets eaten.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --role)     shift; role="${1:?--role needs a value}" ;;
+            --harness)  shift; harness="${1:?--harness needs a value}" ;;
+            --route)    shift; route="${1:?--route needs a value}" ;;
+            --label)    shift; label="${1:?--label needs a value}" ;;
+            --project)  shift; project="${1:?--project needs a value}" ;;
+            --watch)    shift; watch+=("${1:?--watch needs a path}") ;;
+            --interactive) mode=interactive ;;
+            --headless)    mode=headless ;;
+            --explain)  explain=1 ;;
+            --dry-run)  dry=1 ;;
+            --quiet)    quiet=1 ;;
+            --)         shift; argv=("$@"); break ;;
+            *)          argv=("$@"); break ;;
+        esac
+        shift
+    done
+
+    local child; child="$(_run_child)"
+    [ -n "$child" ] && [ -x "$child" ] || {
+        printf 'agentctl: run: agentctl-run not found (is the repo stowed?)\n' >&2
+        exit 70   # distinct from 78: "not installed" and "refused" are different alarms
+    }
+
+    local -a pass=()
+    [ -n "$role" ]    && pass+=(--role "$role")
+    [ -n "$harness" ] && pass+=(--harness "$harness")
+    [ -n "$route" ]   && pass+=(--route "$route")
+
+    # --explain runs nothing and costs nothing: hand it straight through, record
+    # no run. An audit is not an invocation.
+    if [ "$explain" -eq 1 ]; then
+        exec "$child" "${pass[@]+"${pass[@]}"}" --explain "${argv[@]+"${argv[@]}"}"
+    fi
+
+    # Interactive vs headless. agentctl-run exports CLAUDE_HEADLESS=1 and the
+    # claude harness justifies BOTH --dangerously-skip-permissions and its
+    # "nobody is watching" system prompt solely by "every caller is a timer".
+    # At a terminal both premises are false. Ambiguity resolves toward KEEPING
+    # the permission gate, because headless is the more permissive mode and a
+    # wrong headless guess is loud (a hang) rather than silent.
+    if [ -z "$mode" ]; then
+        if [ -t 0 ] && [ -t 1 ] && [ -z "${AGENTCTL_NAME:-}" ]; then mode=interactive
+        else mode=headless; fi
+    fi
+
+    # A headless run with no prompt is a REPL with tools and no human: refuse.
+    if [ "$mode" = headless ]; then
+        local has_prompt=0 a
+        for a in "${argv[@]+"${argv[@]}"}"; do
+            case "$a" in -p|--print|-p=*|--print=*) has_prompt=1 ;; esac
+        done
+        [ "$has_prompt" -eq 1 ] || {
+            printf 'agentctl: run: headless with no prompt would start an unattended REPL with tools.\n' >&2
+            printf '  pass -p "<prompt>", or --interactive if you meant to drive it yourself.\n' >&2
+            exit 64
+        }
+    fi
+
+    [ "$dry" -eq 1 ] && { printf 'agentctl: run: would exec %s %s\n' "$child" "${pass[*]-}" >&2; return 0; }
+
+    # PREFLIGHT, before any state is allocated. `--explain` resolves the role and
+    # harness and applies every fail-closed rule without running a model or
+    # touching the network, so an unknown role or an unenforcing harness is
+    # refused here for free.
+    #
+    # A refusal is NOT a run: it gets no directory, because a directory it never
+    # used would eat the prune budget and read like an attempt. But the fact that
+    # something was refused is exactly what you want to find later, so it still
+    # gets one ledger line.
+    local pre_rc=0 pre_msg
+    pre_msg="$("$child" "${pass[@]+"${pass[@]}"}" --explain 2>&1)" || pre_rc=$?
+    if [ "$pre_rc" -ne 0 ]; then
+        printf '%s\n' "$pre_msg" >&2
+        # shellcheck source=/dev/null
+        if [ -r "$RUNS_LIB" ] && . "$RUNS_LIB" 2>/dev/null; then
+            runs_ledger_append "$(date -Is)" refused "-" "${label:-}" "${role:-}" \
+                "${harness:-claude}" "" "REFUSED" "$pre_rc" "0" "${argv[*]-}" 2>/dev/null || true
+        fi
+        exit "$pre_rc"
+    fi
+
+    # ---- telemetry: from here to the end, every failure is non-fatal ----
+    # shellcheck source=/dev/null
+    local have_lib=0
+    [ -r "$RUNS_LIB" ] && { . "$RUNS_LIB" && have_lib=1; }
+
+    local dir="" id=""
+    if [ "$have_lib" -eq 1 ]; then
+        dir="$(runs_new 2>/dev/null || true)"
+    fi
+    if [ -z "$dir" ]; then
+        [ "$quiet" -eq 1 ] || printf 'agentctl: run: telemetry unavailable, running anyway\n' >&2
+        exec "$child" "${pass[@]+"${pass[@]}"}" "${argv[@]+"${argv[@]}"}"
+    fi
+    id="$(runs_id_of "$dir")"
+    chmod 700 "$dir" 2>/dev/null || true
+
+    [ -n "$project" ] || project="$(_resolve_project "$PWD")"
+
+    runs_meta_write "$dir" \
+        "id=$id" "label=${label:-$id}" "role=${role:-}" "harness=${harness:-claude}" \
+        "route=${route:-}" "project=${project:-}" "cwd=$PWD" "mode=$mode" \
+        "unit=${AGENTCTL_NAME:-}" "supervised=$([ -n "${AGENTCTL_NAME:-}" ] && echo yes || echo no)" \
+        "started=$(date +%s)" "git_mark=$(runs_git_mark "$PWD" 2>/dev/null || true)"
+
+    { printf '%q\n' "${argv[@]+"${argv[@]}"}"; } > "$dir/prompt" 2>/dev/null || true
+    chmod 600 "$dir/prompt" 2>/dev/null || true
+
+    status_write_dir "$dir" state=working "project=${project:-}" \
+        "item=${label:-$id}" "detail=role=${role:-none} harness=${harness:-claude} mode=$mode" 2>/dev/null || true
+    printf 'PENDING' > "$dir/last-outcome" 2>/dev/null || true
+
+    local excerpt="${argv[*]-}"; excerpt="${excerpt:0:200}"
+    runs_ledger_append "$(date -Is)" start "$id" "${label:-$id}" "${role:-}" \
+        "${harness:-claude}" "${project:-}" "" "" "" "$excerpt"
+    runs_prune >/dev/null 2>&1 || true
+    runs_ledger_trim >/dev/null 2>&1 || true
+
+    [ "$quiet" -eq 1 ] || printf 'agentctl: run %s  role=%s harness=%s mode=%s\n' \
+        "$id" "${role:-none}" "${harness:-claude}" "$mode" >&2
+
+    local out="$dir/output.log" rc=0 child_pid tail_pid="" started
+    started="$(date +%s)"
+
+    if [ "$mode" = interactive ]; then
+        # No capture: the child inherits the real tty. The stall regex is then
+        # unavailable, and that is correct -- with a human present, plan mode is
+        # not a failure.
+        AGENTCTL_INTERACTIVE=1 "$child" "${pass[@]+"${pass[@]}"}" "${argv[@]+"${argv[@]}"}" &
+        child_pid=$!
+        runs_meta_write "$dir" "pid=$child_pid"
+        set +e; wait "$child_pid"; rc=$?; set -e
+    else
+        : > "$out" 2>/dev/null || true
+        "$child" "${pass[@]+"${pass[@]}"}" "${argv[@]+"${argv[@]}"}" >>"$out" 2>&1 &
+        child_pid=$!
+        runs_meta_write "$dir" "pid=$child_pid"
+        # tail --pid, not `| tee`: a pipeline loses $! so signals cannot be
+        # forwarded, and process substitution is unreapable so the log may be
+        # unflushed when the verdict is scored.
+        tail --pid="$child_pid" -n +1 -f "$out" 2>/dev/null &
+        tail_pid=$!
+        set +e; wait "$child_pid"; rc=$?; set -e
+        [ -n "$tail_pid" ] && wait "$tail_pid" 2>/dev/null || true
+    fi
+
+    local verdict; verdict="$(runs_verdict "$dir" "$rc" "${watch[@]+"${watch[@]}"}" 2>/dev/null || echo UNKNOWN)"
+    local st=ok; [ "$rc" -ne 0 ] && st=error
+
+    printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
+    status_write_dir "$dir" "state=$st" "detail=exit=$rc outcome=$verdict" 2>/dev/null || true
+    printf '[%s] outcome=%s exit=%s\n' "$(date -Is)" "$verdict" "$rc" >> "$dir/activity.log" 2>/dev/null || true
+    runs_ledger_append "$(date -Is)" end "$id" "${label:-$id}" "${role:-}" \
+        "${harness:-claude}" "${project:-}" "$verdict" "$rc" "$(( $(date +%s) - started ))" ""
+
+    # Supervised: the run is a DETAIL RECORD on a roster row, not a row of its
+    # own. Mirroring item/project up costs the runner nothing, and writing a real
+    # verdict means _outcome_promote finds a non-PENDING value and leaves it --
+    # so every adopter inherits the anti-stall guard nightly-sync went six nights
+    # without.
+    if [ -n "${AGENTCTL_NAME:-}" ]; then
+        status_write "$AGENTCTL_NAME" "project=${project:-}" "item=${label:-$id}" 2>/dev/null || true
+        printf '%s' "$verdict" > "$STATE_DIR/$AGENTCTL_NAME/last-outcome" 2>/dev/null || true
+    fi
+
+    exit "$rc"   # the child's code, verbatim: the primary contract
+}
+
+# Best-effort project name. The canonical resolver lives in shared-hooks; this
+# only needs a label, so a miss is empty rather than fatal.
+_resolve_project() {
+    local d="$1" root
+    root="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
+    basename "$root" | sed 's/^\.//'
+}
+
+cmd_runs() {
+    # shellcheck source=/dev/null
+    [ -r "$RUNS_LIB" ] && . "$RUNS_LIB" || die "runs: $RUNS_LIB not found"
+    local sub="${1:-list}"; [ $# -gt 0 ] && shift
+    local d; d="$(runs_dir)"
+    case "$sub" in
+        list|-n)
+            [ "$sub" = -n ] && set -- "$@"
+            local n="${1:-15}"
+            [ -d "$d" ] || { echo "no runs yet"; return 0; }
+            printf '%-22s %-9s %-10s %-8s %s\n' ID STATE OUTCOME ROLE LABEL
+            local p
+            while IFS= read -r p; do
+                [ -n "$p" ] || continue
+                printf '%-22s %-9s %-10s %-8s %s\n' \
+                    "$(basename "$p")" "$(runs_state "$p")" "$(runs_outcome "$p")" \
+                    "$(runs_meta_get "$p" role)" "$(runs_meta_get "$p" label)"
+            done < <(find "$d" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort -r | head -n "$n")
+            ;;
+        show)
+            local id="${1:?runs show <id>}" p="$d/${1}"
+            [ -d "$p" ] || die "runs: no such run '$id'"
+            cat "$p/meta" 2>/dev/null
+            printf -- '--- status ---\n'; cat "$p/status" 2>/dev/null
+            printf -- '--- outcome ---\n%s\n' "$(runs_outcome "$p")"
+            ;;
+        log)
+            local id="${1:?runs log <id>}" p="$d/${1}"; shift || true
+            [ -d "$p" ] || die "runs: no such run '$id'"
+            if [ "${1:-}" = -f ]; then tail -f "$p/output.log"; else cat "$p/output.log" 2>/dev/null; fi
+            ;;
+        prune) runs_prune "${1:-}" ; echo "pruned to ${1:-$RUNS_KEEP}" ;;
+        *) die "runs: unknown subcommand '$sub' (list|show|log|prune)" ;;
+    esac
+}
+
 cmd_help() {
     cat <<'EOF'
 agentctl — manage named long-running Claude agents via systemd
 
 Usage:
+  agentctl run [opts] -- <args>  Run ANY prompt through the role contract, recorded
+  agentctl runs [-n N]           List recent runs (show <id> | log <id> | prune)
   agentctl list                  List all configured agents and their state
   agentctl status <name>         Detailed status for one agent
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
@@ -555,6 +824,24 @@ Usage:
 
 Configs live at ~/.config/agentctl/agents/<name>.conf.
 See ~/.config/agentctl/README.md for the schema.
+
+Running something ad-hoc (the front door — prefer this over a bare `claude -p`):
+  agentctl run --role plan -p 'what changed in this repo today?'
+  agentctl run --role curate --label digest --watch out.md -p "$(cat prompt)"
+  agentctl run --harness opencode --role propose --explain
+
+  --role/--harness/--route pass through to agentctl-run, which resolves the
+  capability contract and REFUSES rather than degrading. Option parsing stops at
+  the first token agentctl does not own, so everything from `-p` onward reaches
+  the harness verbatim.
+
+  Two layers, opposite policies: agentctl-run is the capability layer and fails
+  CLOSED (exit 78, never degrade); `agentctl run` is the observability layer and
+  fails OPEN (a telemetry problem must never break your run). A caller that
+  already owns its telemetry — wave-start, skill-refine, watch-companion-loop —
+  calls agentctl-run directly; a human, a script, or a conf's COMMAND calls this.
+
+  Exit codes: the harness's own, verbatim. 78 refused. 64 usage. 70 not installed.
 
 The status contract (what a headless runner publishes, and readers consume):
   agentctl report state=working project=bnb-platform item='/kb:sprint resume'
@@ -574,6 +861,8 @@ case "${1:-}" in
     list)              cmd_list ;;
     status)            shift; cmd_status "$@" ;;
     report)            shift; cmd_report "$@" ;;
+    run)               shift; cmd_run "$@" ;;
+    runs)              shift; cmd_runs "$@" ;;
     start)             shift; cmd_start "$@" ;;
     stop)              shift; cmd_stop "$@" ;;
     restart)           shift; cmd_restart "$@" ;;
