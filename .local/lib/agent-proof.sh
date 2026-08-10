@@ -87,9 +87,18 @@ proof_verdict() {
 # proof_report NAME VERDICT [DETAIL] — publish the verdict where readers look.
 # fleet.sh and the drift/liveness watches read last-outcome; the activity log is
 # what `agentctl status <name>` tails.
+# Both names resolve to the one state dir, in the same precedence agentctl uses.
+# The two used to disagree - agentctl wrote via $AGENTCTL_STATE (exported by the
+# unit) while this read via $AGENTCTL_STATE_DIR - so a run that set only one of
+# them had its verdict written somewhere the reader never looked, and both halves
+# reported success. Keep this expression identical to .local/bin/agentctl's.
+proof_state_dir() {
+  printf '%s' "${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
+}
+
 proof_report() {
   local name="$1" verdict="$2" detail="${3:-}"
-  local dir="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/$name"
+  local dir="$(proof_state_dir)/$name"
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true

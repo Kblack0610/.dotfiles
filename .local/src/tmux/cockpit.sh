@@ -30,7 +30,10 @@ set -uo pipefail
 
 SESSION="${COCKPIT_SESSION:-cockpit}"
 HERE="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
-STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
+# Both names, same precedence as .local/bin/agentctl - see the note there. A
+# reader that honours only one of them addresses a different directory than the
+# writer whenever the other is set, and neither side notices.
+STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
 
 FLEET="$HERE/fleet.sh"
 COCKPIT_SH="$HERE/notes-cockpit.sh"

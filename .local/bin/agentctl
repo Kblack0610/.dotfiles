@@ -9,9 +9,19 @@ set -euo pipefail
 
 CONFIG_DIR="${HOME}/.config/agentctl/agents"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
-# AGENTCTL_STATE is already exported into every unit by agentctl@.service, so honouring it
-# here means a runner's `agentctl report` writes where the engine said state lives.
-STATE_DIR="${AGENTCTL_STATE:-${HOME}/.local/state/agentctl}"
+# ONE state dir, reachable under EITHER name.
+#
+# This was two names for one thing, split across the write and read sides: this
+# file honoured AGENTCTL_STATE (which agentctl@.service exports into every unit),
+# while every reader - agent-proof.sh, fleet.sh, the bats sandbox - honoured
+# AGENTCTL_STATE_DIR. They agreed only because both defaulted to the same path,
+# so nothing ever looked wrong until something set one of them. Then the writer
+# and the reader addressed different directories and both reported success.
+#
+# AGENTCTL_STATE_DIR wins when both are set: it is the name the readers and the
+# test harness use, so whoever is trying to redirect state gets what they asked
+# for rather than silently losing to the unit's absolute path.
+STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-${HOME}/.local/state/agentctl}}"
 
 mkdir -p "$STATE_DIR"
 
