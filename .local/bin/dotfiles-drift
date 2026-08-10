@@ -50,6 +50,27 @@ esac
 FINDINGS=()   # "TYPE|repo|path|detail"
 add() { FINDINGS+=("$1|$2|$3|$4"); }
 
+# is_repo_root <dir> - is <dir> the root of a git working tree?
+#
+# NOT `[ -d "$dir/.git" ]`, which every check below used to ask and which is FALSE for a git
+# WORKTREE: there `.git` is a regular FILE holding `gitdir: <main>/.git/worktrees/<name>`.
+# Worktrees are the working convention in these repos, so this was the detector declining to
+# look at exactly the tree someone was working in - and, unlike dotfiles-deploy, saying
+# nothing at all about it. Every check simply `return 0`d and the run printed
+# "dotfiles-drift: clean - merged == deployed". A detector that reports clean over a tree it
+# never opened is worse than no detector.
+#
+# `rev-parse --show-toplevel` answers the question git's own way and is worktree-blind by
+# construction; the result is compared against <dir> so a SUBDIRECTORY of some unrelated
+# checkout is still not accepted as a dotfiles repo.
+is_repo_root() {
+  local dir="$1" top
+  [ -d "$dir" ] || return 1
+  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  [ "$(readlink -f -- "$top")" = "$(readlink -f -- "$dir")" ]
+}
+
 # --- BEHIND -----------------------------------------------------------------
 # No fetch here: this runs from a monitoring probe every few hours and must stay
 # cheap and offline-safe. It compares against the last-known origin/main, so it
@@ -57,7 +78,7 @@ add() { FINDINGS+=("$1|$2|$3|$4"); }
 # quieter, never noisier — it cannot produce a false alarm.
 check_behind() {
   local repo="$1" name="$2" n head
-  [ -d "$repo/.git" ] || return 0
+  is_repo_root "$repo" || return 0
   head="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
   n="$(git -C "$repo" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
   [ "${n:-0}" -gt 0 ] && add BEHIND "$name" "$head" "$n commit(s) on origin/main not in the checked-out tree"
@@ -80,7 +101,7 @@ check_behind() {
 # is in, because the urgency differs - one is already lying, the other is loaded.
 check_mirror() {
   local p pub_file
-  [ -d "$PRIV/.git" ] || return 0
+  is_repo_root "$PRIV" || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     pub_file="$PUB/$p"
@@ -102,7 +123,7 @@ check_mirror() {
 # A tracked file under a stow root should have a ~/ counterpart that resolves.
 check_links() {
   local repo="$1" name="$2" p target
-  [ -d "$repo/.git" ] || return 0
+  is_repo_root "$repo" || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -L "$repo/$p" ] && continue

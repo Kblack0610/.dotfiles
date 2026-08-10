@@ -186,6 +186,32 @@ stow_ignored() {
   return 1
 }
 
+# ── "is this a repo?" ────────────────────────────────────────────────────────
+# is_repo_root <dir> - is <dir> the root of a git working tree?
+#
+# NOT `[ -d "$dir/.git" ]`, which is what this used to be and which is FALSE for a git
+# WORKTREE: there `.git` is a regular FILE holding `gitdir: /path/to/main/.git/worktrees/x`.
+# Worktrees are the working convention in these repos, so pointing the tool at one to
+# preview a change before landing it - exactly when you want it - reported:
+#
+#   dotfiles-deploy: NOT CHECKED - private repo at .../wt-ignore is absent or not a git repo
+#   dotfiles-deploy: clean - all 1 deploy path(s) resolve to their tracked source
+#
+# and exited 0. Half the world unexamined, and a green word on the last line.
+#
+# `rev-parse --show-toplevel` answers the question git's own way and is worktree-blind by
+# construction. The result is compared against <dir> so this stays as strict as the old
+# test in the one way that mattered: a SUBDIRECTORY of a repo is still not a repo root, so
+# a mistyped DOTFILES_PRIVATE pointing inside some unrelated checkout is still rejected
+# rather than silently adopted as a dotfiles repo.
+is_repo_root() {
+  local dir="$1" top
+  [ -d "$dir" ] || return 1
+  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  [ "$(readlink -f -- "$top")" = "$(readlink -f -- "$dir")" ]
+}
+
 # ── the manifest ─────────────────────────────────────────────────────────────
 # MANIFEST holds "path<SEP>owner-name<SEP>owner-dir". OWNER_OF maps a path to the name of
 # the repo that claims it, which is how a second claim is detected.
@@ -198,7 +224,7 @@ SKIPPED_REPOS=()
 # add_repo <name> <dir>
 add_repo() {
   local name="$1" dir="$2" mode rest path n=0
-  if [ ! -d "$dir/.git" ]; then
+  if ! is_repo_root "$dir"; then
     SKIPPED_REPOS+=("$name${SEP}$dir")
     return 0
   fi
@@ -325,7 +351,10 @@ classify_all() {
 tracked_somewhere() {
   local abs="$1" repo rel
   for repo in "$PUB" "$PRIV"; do
-    [ -d "$repo/.git" ] || continue
+    # Same worktree-blind test as add_repo. Getting this wrong here is the worse half: this
+    # is the guard that stops a write from deleting tracked repo source, and a repo it
+    # cannot recognise is a repo whose files it will happily overwrite.
+    is_repo_root "$repo" || continue
     case "$abs" in
       "$repo"/*)
         rel="${abs#"$repo"/}"

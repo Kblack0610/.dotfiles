@@ -43,6 +43,33 @@ mkrepo() {
   git -C "$dir" add -- .stow-local-ignore
 }
 
+# mkrepo_worktree <dir> <ignore-line>... — the same thing, but <dir> is a git WORKTREE.
+#
+# Worktrees are the working convention in these repos, so the tool has to accept one: a
+# worktree is exactly where you point it to preview a change before landing it. In a
+# worktree `.git` is a regular FILE holding `gitdir: <main>/.git/worktrees/<name>`, so any
+# `[ -d "$dir/.git" ]` test is false and the repo silently drops out of the run.
+#
+# The base repo lives beside the worktree INSIDE $BATS_TEST_TMPDIR, so nothing is registered
+# against the real checkout and there is nothing to prune in teardown - bats deletes the
+# whole thing. Never build this fixture off $REPO_ROOT.
+WT_N=0
+mkrepo_worktree() {
+  local dir="$1"; shift
+  local base="$dir.base"
+  WT_N=$((WT_N + 1))
+  mkdir -p "$base"
+  git -C "$base" init -q
+  printf '%s\n' "$@" > "$base/.stow-local-ignore"
+  git -C "$base" add -- .stow-local-ignore
+  git -C "$base" -c user.email=t@example.com -c user.name=tester commit -qm base
+  git -C "$base" worktree add -q "$dir" -b "wt$WT_N"
+  # The fixture must actually BE a worktree, or every assertion below passes for the wrong
+  # reason. A plain checkout would satisfy them all.
+  [ -f "$dir/.git" ] || fail "fixture is not a worktree: $dir/.git is not a regular file"
+  [ ! -d "$dir/.git" ] || fail "fixture is not a worktree: $dir/.git is a directory"
+}
+
 # radd <repo> <path> <content> — track a file in a repo.
 radd() {
   local repo="$1" path="$2" content="$3"
@@ -80,6 +107,18 @@ world() {
   radd "$PUB"  .local/bin/pubtool   'public tool v1'
   radd "$PRIV" README.md            'private readme'
   radd "$PRIV" .gitignore           'ignored-by-private'
+  radd "$PRIV" .local/bin/privtool  'private tool v2'
+  link .local/bin/pubtool  "$PUB"
+  link .local/bin/privtool "$PRIV"
+}
+
+# world_wt_private — the same world, but the PRIVATE repo is a git worktree.
+world_wt_private() {
+  mkrepo          "$PUB"  '^/\.git$' '^/\.gitignore$' '^/README\.md$'
+  mkrepo_worktree "$PRIV" '^/\.git$' '^/\.gitignore$' '^/\.stow-local-ignore$' '^/README\.md$'
+  radd "$PUB"  README.md            'public readme'
+  radd "$PUB"  .local/bin/pubtool   'public tool v1'
+  radd "$PRIV" README.md            'private readme'
   radd "$PRIV" .local/bin/privtool  'private tool v2'
   link .local/bin/pubtool  "$PUB"
   link .local/bin/privtool "$PRIV"
@@ -360,6 +399,104 @@ world() {
   run "$DEPLOY" --repair-everything
   assert_equal "$status" 2
   assert_output --partial 'unknown argument'
+}
+
+# ── git WORKTREES ────────────────────────────────────────────────────────────
+# The repo-detection test used to be `[ -d "$dir/.git" ]`, which is false for a worktree
+# because there `.git` is a regular FILE holding a `gitdir:` pointer. Since worktrees are
+# the working convention here, the tool could not be pointed at one - which is exactly when
+# you want it, to preview a change before landing it. Observed before the fix:
+#
+#   dotfiles-deploy: NOT CHECKED - private repo at .../wt-priv is absent or not a git repo
+#   dotfiles-deploy: clean - all 1 deploy path(s) resolve to their tracked source
+#
+# Exit 0, the word "clean", and half the world never looked at. That is the house failure
+# mode again, and the reason these tests assert on the deploy-path COUNT and on the absence
+# of "NOT CHECKED" rather than only on the exit code.
+
+@test "a PRIVATE repo that is a git worktree is examined, not skipped" {
+  world_wt_private
+  run "$DEPLOY" --check
+  assert_success
+  refute_output --partial 'NOT CHECKED'
+  # 2, not 1: pubtool AND privtool. The old code dropped the whole private side and still
+  # printed "clean", so the count is the assertion that can actually tell them apart.
+  assert_output --partial 'all 2 deploy path(s)'
+}
+
+@test "a PUBLIC repo that is a git worktree is examined, not skipped" {
+  mkrepo_worktree "$PUB"  '^/\.git$' '^/\.stow-local-ignore$' '^/README\.md$'
+  mkrepo          "$PRIV" '^/\.git$' '^/\.stow-local-ignore$' '^/README\.md$'
+  radd "$PUB"  .local/bin/pubtool   'public tool v1'
+  radd "$PRIV" .local/bin/privtool  'private tool v2'
+  link .local/bin/pubtool  "$PUB"
+  link .local/bin/privtool "$PRIV"
+  run "$DEPLOY" --check
+  assert_success
+  refute_output --partial 'NOT CHECKED'
+  assert_output --partial 'all 2 deploy path(s)'
+}
+
+@test "a MIRROR is still detected when the owning repo is a worktree" {
+  # The finding this tool exists for, over the fixture that used to be invisible.
+  world_wt_private
+  radd "$PRIV" .local/bin/svc 'tracked'
+  mirror_into_public .local/bin/svc 'running'
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --partial 'MIRROR'
+  assert_output --partial '.local/bin/svc'
+  assert_output --partial 'CONTENT DIFFERS'
+}
+
+@test "--apply CONVERGES against a worktree, and serves the tracked content" {
+  world_wt_private
+  radd "$PRIV" .local/bin/svc 'tracked'
+  mirror_into_public .local/bin/svc 'running'
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial 'converged'
+  assert_equal "$(cat "$HOME/.local/bin/svc")" 'tracked'
+  run "$DEPLOY" --check
+  assert_success
+  assert_output --partial 'clean'
+}
+
+@test "the refuse-to-delete-tracked-source guard holds when the repo is a worktree" {
+  # The blast-radius case, and the reason the fix had to reach tracked_somewhere() too and
+  # not just the manifest builder. That guard also asked `[ -d "$repo/.git" ]`, so with a
+  # worktree it saw no repo, answered "not tracked", and the write went ahead - deleting a
+  # real file out of a real repo, which is the worst thing this tool can do.
+  #
+  # Here the public repo TRACKS .config/waybar/style.css but stow-ignores it, so it is not a
+  # public deploy path, yet it is what $HOME resolves to for the private path of the same
+  # name. Converting it would destroy public source.
+  mkrepo_worktree "$PUB"  '^/\.git$' '^/\.config/waybar$'
+  mkrepo          "$PRIV" '^/\.git$' '^/\.stow-local-ignore$'
+  radd "$PUB"  .local/bin/pubtool          'public tool'
+  radd "$PUB"  .config/waybar/style.css    'the public tracked css'
+  radd "$PRIV" .config/waybar/style.css    'the private tracked css'
+  link .local/bin/pubtool "$PUB"
+  ln -sfn "$PUB/.config/waybar" "$HOME/.config/waybar"
+
+  run "$DEPLOY" --apply
+  assert_failure
+  assert_output --partial 'TRACKED'
+  assert_output --partial 'DID NOT CONVERGE'
+  [ -f "$PUB/.config/waybar/style.css" ] && [ ! -L "$PUB/.config/waybar/style.css" ] \
+    || fail 'it deleted tracked repo source out of a worktree'
+  assert_equal "$(cat "$PUB/.config/waybar/style.css")" 'the public tracked css'
+}
+
+@test "a SUBDIRECTORY of a repo is still not a repo, worktree or not" {
+  # The strictness the old `-d "$dir/.git"` test bought, which must survive the fix. A
+  # mistyped DOTFILES_PRIVATE pointing inside some unrelated checkout must be rejected, not
+  # silently adopted as a dotfiles repo - `rev-parse --git-dir` alone would accept it.
+  world_wt_private
+  run env DOTFILES_PRIVATE="$PRIV/.local" "$DEPLOY" --check
+  assert_success
+  assert_output --partial 'NOT CHECKED'
+  assert_output --partial 'private'
 }
 
 # ── the machine-readable surfaces ────────────────────────────────────────────
