@@ -1,0 +1,97 @@
+# scrub.list -- which environment variables can redirect an agent's TRANSPORT,
+# and which merely look like they can.
+#
+# DATA, not code, on purpose: a test reads this file and asserts that every
+# ANTHROPIC_* / CLAUDE_CODE_* / LLM_* / OPENCODE_* name appearing anywhere in
+# either dotfiles tree is classified in one of the two sections below. So the
+# list cannot silently fall behind the codebase -- adding a new one of these
+# names fails the suite until a human says which kind it is, in writing.
+#
+# WHY THIS EXISTS. agentctl-run resolves ROLE (what an agent may do) but not
+# TRANSPORT (whose wire, whose money, whose data). Of the raw call sites, one set
+# transport, one defensively scrubbed it, and six silently INHERITED whatever
+# happened to be in the environment -- including the two runners that read the
+# personal notes vault. An inherited ANTHROPIC_BASE_URL is not a configuration,
+# it is whatever the last thing to touch this shell decided, and it is invisible.
+#
+# The scrub is UNCONDITIONAL and runs BEFORE the role is loaded. Order matters:
+# role_run_model() falls back to ${ANTHROPIC_MODEL:-}, so without scrubbing first
+# an ambient model id can satisfy the model-family independence check. After it,
+# only an explicit pin can -- which is the honest behaviour.
+#
+# Format: one NAME per line, `#` comments, two [sections]. Reason required for
+# anything in [not-transport]: "I looked at it and it is fine" must be written
+# down, or the next person re-derives it.
+
+[scrub]
+# --- Anthropic endpoint, credentials, model -------------------------------
+ANTHROPIC_BASE_URL
+ANTHROPIC_API_URL
+ANTHROPIC_API_KEY
+ANTHROPIC_AUTH_TOKEN
+ANTHROPIC_CUSTOM_HEADERS          # can carry auth or routing headers
+ANTHROPIC_MODEL
+ANTHROPIC_SMALL_FAST_MODEL        # the background/title model, separately settable
+ANTHROPIC_DEFAULT_OPUS_MODEL      # the DEFAULT_* trio silently repoints an alias
+ANTHROPIC_DEFAULT_SONNET_MODEL
+ANTHROPIC_DEFAULT_HAIKU_MODEL
+CLAUDE_CODE_OAUTH_TOKEN           # a credential; claude-wrapper injects it per session
+
+# --- Alternate clouds. The USE_* switches move the whole request to another
+# provider, and the rest are the credentials/region those switches consume, so
+# scrubbing the switch alone would leave a loaded gun.
+CLAUDE_CODE_USE_BEDROCK
+CLAUDE_CODE_USE_VERTEX
+CLAUDE_CODE_SKIP_BEDROCK_AUTH
+CLAUDE_CODE_SKIP_VERTEX_AUTH
+AWS_BEARER_TOKEN_BEDROCK
+CLOUD_ML_REGION
+ANTHROPIC_BEDROCK_BASE_URL
+ANTHROPIC_VERTEX_BASE_URL
+ANTHROPIC_VERTEX_PROJECT_ID
+
+# --- opencode. Choosing the config IS choosing the provider: personal.json pins
+# local MLX, opencode.json reaches the paid client proxy. Four names select it
+# and one holds the credentials, so all five have to go.
+OPENCODE_CONFIG
+OPENCODE_CONFIG_FILE
+OPENCODE_CONFIG_DIR
+OPENCODE_CONFIG_PATH
+OPENCODE_HOME                     # config-discovery root; relocating it reselects the provider
+OPENCODE_AUTH_FILE                # credentials
+
+# --- The `raw` harness convention. comms-triage.sh, notes-version-summary and
+# llm-call.sh all read these names, so an inherited value repoints a summariser
+# at somebody else's gateway exactly as easily as an ANTHROPIC_* one.
+LLM_BASE_URL
+LLM_MODEL
+LLM_MODEL_FALLBACK                # a cross-data-class fallback is the leak, not the safety net
+LLM_API_KEY
+LLM_KEY_RBW
+LLM_KEY_RESOLVED
+LLM_ENV                           # points at a file that sets all of the above
+
+[not-transport]
+# Kept deliberately. Each line says why, because an unexplained exclusion is how
+# a real redirect gets parked here later and nobody re-reads it.
+CLAUDE_HEADLESS                   # ours: "no human is watching". Set by agentctl-run itself
+CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
+CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
+CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY
+CLAUDE_CODE_ENABLE                # not a variable: a prefix fragment inside a regex
+CLAUDE_CODE_ENHANCED              # in tests/unit/claude_telemetry.bats:24
+LLM_MAXTOK                        # token budget, not a destination
+LLM_MAXTOK_REWRITE
+LLM_JUDGE_DRY_RUN                 # behaviour flag
+OPENCODE_DB                       # sqlite path read by favourites.sh; runtime state
+OPENCODE_DATA_DIR
+OPENCODE_AGENTS_DIR               # asset locations for the binks-fork sync tooling,
+OPENCODE_COMMANDS_DIR             # all of which describe WHERE FILES ARE, never
+OPENCODE_MANAGED_ASSETS_DIR       # which provider or model answers
+OPENCODE_STAGE_PATH
+OPENCODE_UPDATER_AGENT_FILE
+OPENCODE_UPDATE_COMMAND_FILE
+OPENCODE_EXPERT_AGENT_FILE
+OPENCODE_BINKS_DIR
+OPENCODE_BINKS_BIN

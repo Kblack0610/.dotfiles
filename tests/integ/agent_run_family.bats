@@ -152,7 +152,34 @@ EOF
 @test "a role with no exclusion is not silently exempted -- --explain still shows its family" {
   # Auditability: `--explain` costs no tokens, so the family a role WILL run on
   # should be inspectable whether or not anything constrains it.
-  run env ANTHROPIC_MODEL=claude-sonnet-5 "$RUN" --explain plain
+  #
+  # The model comes from a ROLE PIN, not from an ambient ANTHROPIC_MODEL. This
+  # test used to set that variable, and the transport scrub now removes it before
+  # the role is even loaded -- deliberately, because role_run_model() falls back
+  # to it and an "independent" review whose independence was established by a
+  # leftover environment variable is precisely what rule 4 exists to refuse.
+  # A pin is a declaration; an inherited variable is an accident that looks like one.
+  cat > "$HOME/.config/agentctl/roles/pinned.role" <<'ROLE'
+ROLE_DESC="fixture"
+ROLE_WRITE=no
+ROLE_TASK=no
+ROLE_BASH=yes
+ROLE_MCP=none
+ROLE_MCP_DENY=""
+ROLE_APPROVE="Read"
+ROLE_MODEL="claude-sonnet-5"
+ROLE
+  run env -u AGENT_AUTHOR_FAMILY "$RUN" --explain pinned
   assert_success
   assert_output --partial 'family:      anthropic'
+}
+
+# The other half of the pair, and the one that is actually new: an AMBIENT model
+# must NOT establish a family. Without this, the test above would still pass if
+# the scrub silently stopped working.
+@test "an ambient ANTHROPIC_MODEL does not establish a family" {
+  run env ANTHROPIC_MODEL=claude-sonnet-5 "$RUN" --explain plain
+  assert_success
+  assert_output --partial 'family:      unknown'
+  refute_output --partial 'family:      anthropic'
 }

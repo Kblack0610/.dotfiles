@@ -32,6 +32,8 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/role.sh
 . "$SELF_DIR/lib/role.sh"
+. "$SELF_DIR/lib/scrub.sh"
+. "$SELF_DIR/lib/route.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
@@ -40,6 +42,8 @@ args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --role)    role="${2:?--role needs a value}"; shift 2 ;;
+    --route)      AGENTCTL_ROUTE="${2:?--route needs a value}"; shift 2 ;;
+    --data-class) AGENTCTL_DATA_CLASS="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) harness="${2:?--harness needs a value}"; shift 2 ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
@@ -80,7 +84,43 @@ else
   export CLAUDE_HEADLESS=1
 fi
 
+# TRANSPORT SCRUB -- unconditional, and BEFORE role_load.
+#
+# The order is load-bearing, not stylistic: role_run_model() falls back to
+# ${ANTHROPIC_MODEL:-}, so scrubbing after the role is loaded would let an
+# ambient model id satisfy the model-family independence check (contract rule 4).
+# An "independent" review whose independence was established by an inherited
+# variable is exactly the thing that rule exists to refuse.
+# Read the DECLARATION before the scrub, because on a supervised runner the
+# .conf arrives as environment too and the scrub cannot tell a declaration from
+# ambient pollution -- that indistinguishability is the bug a route file fixes.
+_declared_route="${AGENTCTL_ROUTE:-${ROUTE:-}}"
+_declared_class="${AGENTCTL_DATA_CLASS:-${DATA_CLASS:-}}"
+# Remember WHERE it came from, not just what it was. Both names collapse into
+# AGENTCTL_ROUTE below so the scrub cannot eat the declaration, and without this
+# the audit line would report every conf-declared route as "--route" - a
+# provenance field that lies is worse than none.
+if   [ -n "${AGENTCTL_ROUTE:-}" ]; then ROUTE_FROM='--route / $AGENTCTL_ROUTE'
+elif [ -n "${ROUTE:-}" ];         then ROUTE_FROM='$ROUTE (agent .conf)'
+else                                    ROUTE_FROM=''
+fi
+export ROUTE_FROM
+
+scrub_env
+
+# Re-assert the declaration the scrub was not aimed at. ROUTE and DATA_CLASS are
+# not transport; they are how transport gets CHOSEN, which is the opposite.
+AGENTCTL_ROUTE="$_declared_route"
+AGENTCTL_DATA_CLASS="$_declared_class"
+
 role_load "$role"
+
+# ROUTE, then the interlock, BEFORE the harness file is even sourced -- so
+# "the harness was never invoked on a refused pair" is structurally true rather
+# than something a test has to catch after the fact.
+route_load "$(route_resolve)"
+route_check_pair
+route_apply
 
 harness_file="$SELF_DIR/harnesses/$harness.sh"
 [ -r "$harness_file" ] || role_die "unknown harness '$harness' (no $harness_file).
@@ -118,6 +158,13 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   # no tokens; an independence claim nobody can inspect is not much of a claim.
   printf 'model:       %s\n'  "$(role_run_model)${ROLE_MODEL:+  (pinned by role)}"
   printf 'family:      %s\n'  "$(role_family_of "$(role_run_model)")"
+  # Names only, never values. Printed even when empty: "(none)" is the evidence
+  # that the scrub RAN and found nothing, which is a different fact from the
+  # scrub not running at all -- and telling those two apart is the entire reason
+  # this line exists. The negative control asserts that a hostile
+  # ANTHROPIC_BASE_URL shows up here and nowhere else.
+  printf 'env scrubbed: %s\n' "${SCRUBBED:-(none)}"
+  route_explain
   if [ -n "$ROLE_FAMILY_EXCLUDE" ]; then
     printf 'excludes:    %s%s\n' "$ROLE_FAMILY_EXCLUDE" \
       "$([ "$ROLE_FAMILY_EXCLUDE" = author ] && printf ' -> %s' "$(role_family_of "${AGENT_AUTHOR_FAMILY:-}")")"
