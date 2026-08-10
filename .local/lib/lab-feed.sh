@@ -192,16 +192,31 @@ lab_feed_fields() {
 # `v1.8.15 live (2026-06-30)` for three weeks while the project shipped v1.10.0 and
 # opened v1.10.1 — a row that was not merely unhelpful but actively wrong.
 lab_feed_gist() {
-  local f tag ship tick prs out=""
+  local f tag ship tick prs plural="" out=""
   f="$(_lf_feed_file "${1:-}")"
   [ -n "$f" ] || return 0
   # \037, not \t — see the field table. A project with no next-up item has two adjacent
   # tabs, and IFS-whitespace would eat them both.
   IFS=$'\037' read -r tag ship tick prs _ _ _ _ < <(lab_feed_fields "$1" | tr '\t' '\037')
 
+  # The plural is its own statement and never lives inside the assignment. Written as
+  # `${prs} PR$([ "$prs" -gt 1 ] && printf s)` it is a landmine that arms itself at
+  # exactly ONE open PR: the substitution exits 1, an assignment carries the status of
+  # its last substitution, and a caller running `set -e` then dies — printing NOTHING,
+  # so the row reads as "this project has no feed" rather than as an error.
+  #
+  # The three lines below are the same `A && B` shape and are safe, which is what makes
+  # this hard to see: -e is ignored for every command of an AND list EXCEPT the last, so
+  # a failing `[` short-circuits harmlessly while a failing ASSIGNMENT does not.
+  #
+  # Latent here only because notes-cockpit.sh does not `set -e`. The identical idiom in
+  # the private regen-project-index.sh, which does, stalled agentctl@project-index for
+  # four days (2026-08-06..09) the moment a project reached exactly one open PR.
+  [ "${prs:-0}" -gt 1 ] && plural=s
+
   [ -n "$tag" ] && out="shipped ${tag}"
   [ "${ship:-0}" -gt 0 ] && out="${out:+$out, }${ship} to ship"
   [ "${tick:-0}" -gt 0 ] && out="${out:+$out, }${tick} open"
-  [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR$([ "$prs" -gt 1 ] && printf s)"
+  [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR${plural}"
   printf '%s' "$out"
 }
