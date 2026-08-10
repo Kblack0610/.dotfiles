@@ -39,7 +39,8 @@ set -uo pipefail
 SELF="$(realpath "$0")"
 
 AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
-AGENTCTL_STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
+# Both names, same precedence as .local/bin/agentctl - see the note there.
+AGENTCTL_STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
 WATCH_DIR="${WATCH_DIR:-$HOME/.agent/watches}"
 WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
 
