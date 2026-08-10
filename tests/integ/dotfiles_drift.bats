@@ -58,6 +58,34 @@ make_repo() {
   git -C "$work" push --quiet -u origin main
 }
 
+# remake_as_worktree <dir> -- replace the repo setup() built at <dir> with a git WORKTREE of
+# an equivalent repo, so the same fixtures can be pointed at one.
+#
+# In a worktree `.git` is a regular FILE holding `gitdir: <main>/.git/worktrees/<name>`, so
+# every `[ -d "$repo/.git" ]` test is false and the check it guards simply returns. Since
+# worktrees are the working convention in these repos, that was the detector declining to
+# look at exactly the tree someone was working in - and saying nothing about it, so the run
+# still printed "clean".
+#
+# Base repo and worktree both live under $BATS_TEST_TMPDIR. Nothing is registered against
+# the real checkout, so there is nothing to remove or `git worktree prune` in teardown.
+# The worktree is the one holding `main`, and the base is left DETACHED. That is the shape
+# these repos are actually used in - the branch you work on is checked out in the worktree,
+# not in the original clone - and it is load-bearing here: with the worktree on a side
+# branch, `git push origin main` from it would push the base's stale `main` and origin/main
+# would never move, so every MIRROR assertion would pass or fail for the wrong reason.
+remake_as_worktree() {
+  local dir="$1" base="$1.base"
+  rm -rf "$dir" "$dir.git"
+  make_repo "$base"
+  git -C "$base" checkout --quiet --detach
+  git -C "$base" worktree add --quiet "$dir" main
+  [ -f "$dir/.git" ] && [ ! -d "$dir/.git" ] \
+    || fail "fixture is not a worktree: $dir/.git must be a regular file"
+  [ "$(git -C "$dir" rev-parse --abbrev-ref HEAD)" = main ] \
+    || fail "fixture worktree is not on main"
+}
+
 # Track a deploy-path file in the PRIVATE repo -- the shape check_mirror scans for.
 priv_tracks() {
   local rel="$1" body="$2"
@@ -190,6 +218,65 @@ link_into_home() {
   assert_failure
   assert_output --partial 'BEHIND'
   assert_output --partial '1 commit(s)'
+}
+
+# ---------------------------------------------------------------- worktrees
+
+@test "MIRROR is still detected when the PRIVATE repo is a git worktree" {
+  # Before the fix this printed "dotfiles-drift: clean - merged == deployed" and exited 0.
+  # No "not checked" line, no warning: check_mirror returned at its first statement. A
+  # detector that reports clean over a tree it never opened is worse than no detector, and
+  # this one is what the 6-hourly `deploy-drift` sentinel watch reads.
+  remake_as_worktree "$PRIV"
+  priv_tracks .local/bin/runner 'v2-merged'
+  pub_copy .local/bin/runner 'v1-stale'
+  link_into_home .local/bin/runner
+
+  run "$DRIFT"
+  assert_failure
+  assert_output --partial 'MIRROR'
+  assert_output --partial '.local/bin/runner'
+}
+
+@test "BEHIND is still detected when the repo is a git worktree" {
+  # check_behind carried the same guard. A worktree left behind origin/main is the single
+  # most likely thing to be behind, since that is what a worktree is for.
+  remake_as_worktree "$PUB"
+  printf 'later\n' > "$PUB/seed.txt"
+  git -C "$PUB" commit --quiet -am later
+  git -C "$PUB" push --quiet origin main
+  git -C "$PUB" reset --hard --quiet HEAD~1        # fetched, merged, not checked out
+
+  run "$DRIFT"
+  assert_failure
+  assert_output --partial 'BEHIND'
+  assert_output --partial '1 commit(s)'
+}
+
+@test "a worktree with nothing wrong is still reported clean, not vacuously" {
+  # The negative control's partner: prove the two worktree tests above are not passing
+  # because the scanner now fires on everything.
+  remake_as_worktree "$PRIV"
+  priv_tracks .local/bin/runner 'v2'
+  pub_link .local/bin/runner
+  link_into_home .local/bin/runner
+
+  run "$DRIFT"
+  assert_success
+  assert_output --partial 'clean'
+  refute_output --partial 'MIRROR'
+}
+
+@test "a SUBDIRECTORY of a repo is still not a repo" {
+  # The strictness the old `-d "$repo/.git"` test bought, which must survive the fix:
+  # `rev-parse --git-dir` alone would accept any path inside any checkout.
+  remake_as_worktree "$PRIV"
+  priv_tracks .local/bin/runner 'v2-merged'
+  pub_copy .local/bin/runner 'v1-stale'
+  link_into_home .local/bin/runner
+
+  DOTFILES_PRIVATE="$PRIV/.local" run "$DRIFT"
+  refute_output --partial 'MIRROR'
 }
 
 # ---------------------------------------------------------------- modes
