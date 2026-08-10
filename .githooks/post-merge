@@ -1,0 +1,69 @@
+#!/bin/bash
+# Post-merge hook: re-render theme-switch's generated files when a merge removed them.
+#
+# THE HAZARD THIS EXISTS FOR
+# --------------------------
+# #243 untracked the three files theme-switch renders in full (kitty's
+# current-theme.conf, waybar's style.css, sketchybar's colors.sh) because the
+# theme-day/theme-night timers rewrote them twice a day and dirtied the repo.
+#
+# Untracking has a consequence that is invisible until it bites: pulling ACROSS
+# that commit deletes all three from disk. Git is removing a file it tracked at
+# the old commit and does not track at the new one, which is correct behaviour
+# and exactly wrong for the user -- the files are still needed, they are just
+# no longer git's to manage. It happened on the machine that made the change and
+# the files had to be restored out of the pre-merge commit by hand.
+#
+# On Linux the damage is cosmetic: kitty loses its palette, waybar renders
+# unstyled. On macOS it is not. sketchybarrc does `source "$CONFIG_DIR/colors.sh"`
+# with no guard, so a missing colors.sh means sketchybar does not start at all --
+# and it would fail at the next login, long after the pull that caused it, which
+# is the silent-breakage shape this repo keeps getting bitten by.
+#
+# The installers' setup_theme() covers a FRESH clone. This covers an EXISTING
+# machine pulling the change, which is every other box and every worktree.
+#
+# Costs three [ -f ] tests on a merge that changed nothing relevant, and exits.
+
+set -euo pipefail
+
+DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+THEME_SWITCH="$DOTFILES_ROOT/.local/src/theme/theme-switch"
+
+# Kept in step with .gitignore and tests/unit/theme_generated.bats, which fails
+# if theme-switch grows a target that is not classified in both places.
+GENERATED=(
+  ".config/kitty/current-theme.conf"
+  ".config/waybar/style.css"
+  ".config/sketchybar/colors.sh"
+)
+
+missing=()
+for rel in "${GENERATED[@]}"; do
+  [ -f "$DOTFILES_ROOT/$rel" ] || missing+=("$rel")
+done
+
+[ ${#missing[@]} -eq 0 ] && exit 0
+
+if [ ! -x "$THEME_SWITCH" ]; then
+  echo "post-merge: ${#missing[@]} generated theme file(s) missing and theme-switch is not executable" >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  echo "  render them with: theme-switch <theme> --only kitty,waybar,sketchybar" >&2
+  exit 0
+fi
+
+# Honour the theme this machine already chose; fall back to the daytime default
+# that theme-day.timer applies, matching setup_theme() in both installers.
+state="$HOME/.config/theme/current"
+theme="jackie-brown"
+[ -r "$state" ] && theme="$(cat "$state")"
+
+echo "post-merge: re-rendering ${#missing[@]} generated theme file(s) for '$theme'"
+printf '  %s\n' "${missing[@]}"
+
+# Never fail the merge over a theme render. The merge already succeeded; a
+# non-zero exit here would report the whole pull as broken over cosmetics.
+"$THEME_SWITCH" "$theme" --only kitty,waybar,sketchybar || {
+  echo "post-merge: theme render failed; run it by hand" >&2
+  exit 0
+}
