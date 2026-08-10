@@ -286,8 +286,16 @@ fn check_name(name: &str) -> Result<()> {
 
 /// Scaffold for a new `summary.md` — the machine COCKPIT. The task list lives on the
 /// README sheet ([`sheet_body`]); this file only carries what the tools grep. The
-/// `## → For the agents` heading and the cockpit/STATUS/AUTO markers are load-bearing
-/// (the session preflight and lab-sync key on them), so they are verbatim.
+/// cockpit/STATUS/AUTO markers are load-bearing (lab-sync keys on them), so they are
+/// verbatim.
+///
+/// There is deliberately NO `## → For the agents` section. It was the human's channel TO
+/// the agent, and it was the wrong one in the most complete way available: the session
+/// preflight read it, and it sat as the untouched placeholder in all seven live projects,
+/// while the project BOARD held 41 open items — 21 of them `#ai` — that nothing read.
+/// Scaffolding it into every new project only widened the trap, because a section that
+/// invites you to "type a want" and is then read by nothing is worse than no section.
+/// The `#ai` lane on the board is the channel now, and the preflight reads that.
 ///
 /// There is deliberately NO `<!-- canonical: -->` line. The directory name IS the
 /// project name: project-map.json is the sole registry and the sole minter, and
@@ -300,10 +308,7 @@ fn summary_template(name: &str) -> String {
         "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
 <!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
 Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
-## → For the agents\n\
-_Type wants / tasks / direction here — read at session start (preflight injects it). \
-Agents scope each into a ticket, which then surfaces in the cockpit below. \
-lab-sync never edits this section._\n- _(nothing yet — type a want)_\n\n\
+Wants for the agents go on the BOARD, not here: `notes ptask {name} add \"<title>\" #ai` (the session preflight injects that lane at turn 1).\n\n\
 <!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
 _(no status yet)_\n<!-- STATUS:END -->\n\n\
 <!-- AUTO:START — maintained by /lab-sync (regen-lab-feed.sh); edits below are overwritten -->\n\
@@ -761,7 +766,11 @@ fn note_body(content: &str) -> String {
 }
 
 /// Ensure `summary.md` carries the `Working sheet: [[README]]` pointer (idempotent). Inserts
-/// it just before the first `## ` heading (i.e. `## → For the agents`) when absent.
+/// it just before the first `## ` heading when absent, and appends when the file has none.
+///
+/// The template no longer scaffolds a heading above the STATUS marker (the retired
+/// `## → For the agents`), so a freshly scaffolded summary takes the append path. Both
+/// paths are exercised below; an EXISTING summary still has headings and takes the first.
 fn ensure_sheet_pointer(summary: &Path) -> Result<()> {
     let content = fs::read_to_string(summary).unwrap_or_default();
     if content.contains("Working sheet:") {
@@ -1024,8 +1033,7 @@ _(nothing yet)_
     #[test]
     fn template_carries_the_load_bearing_markers() {
         let t = summary_template("my-app");
-        // preflight greps the agents heading; lab-sync greps the AUTO/STATUS markers
-        assert!(t.contains("## → For the agents"));
+        // lab-sync greps the AUTO/STATUS markers
         assert!(t.contains("STATUS:START") && t.contains("STATUS:END"));
         assert!(t.contains("AUTO:START") && t.contains("AUTO:END"));
         // and NOT a canonical marker: the directory name is the project name, so a
@@ -1033,6 +1041,13 @@ _(nothing yet)_
         assert!(!t.contains("canonical:"));
         // the cockpit points at the working sheet; the task list is NOT in summary.md
         assert!(t.contains("Working sheet: [[README]]"));
+        // and NOT the retired human->agent channel. It was read by the preflight and
+        // written by nobody, in all seven live projects, while the board's `#ai` lane was
+        // written by the human and read by nobody. Scaffolding it into every NEW project
+        // widened the trap: a section that says "type a want" and is read by nothing is
+        // worse than no section. Points at the board instead.
+        assert!(!t.contains("For the agents"));
+        assert!(t.contains("#ai"));
     }
 
     #[test]
