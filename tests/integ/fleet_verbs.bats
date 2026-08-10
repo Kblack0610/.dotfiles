@@ -245,15 +245,15 @@ setup() {
 
 # ── mutation verbs: assert the CLI call, never real state ────────────────────
 
-@test "--runner-op start issues an agentctl start for that runner" {
-  run "$FLEET" --runner-op start delivery-loop
+@test "--runner-op runner start issues an agentctl start for that runner" {
+  run "$FLEET" --runner-op runner start delivery-loop
   assert_success
   assert_called 'agentctl start delivery-loop'
 }
 
-@test "--runner-op stop and restart map to their agentctl verbs" {
-  "$FLEET" --runner-op stop sentinel
-  "$FLEET" --runner-op restart sentinel
+@test "--runner-op runner stop and restart map to their agentctl verbs" {
+  "$FLEET" --runner-op runner stop sentinel
+  "$FLEET" --runner-op runner restart sentinel
   assert_called 'agentctl stop sentinel'
   assert_called 'agentctl restart sentinel'
 }
@@ -261,15 +261,15 @@ setup() {
 @test "--runner-op refuses any verb outside start/stop/restart" {
   # enable/disable are deliberately absent: they change durable schedule state, and a
   # nightly job switched off from a TUI is not noticed for a week.
-  run "$FLEET" --runner-op enable sentinel
+  run "$FLEET" --runner-op runner enable sentinel
   assert_success
   assert_not_called 'agentctl enable'
-  run "$FLEET" --runner-op disable sentinel
+  run "$FLEET" --runner-op runner disable sentinel
   assert_not_called 'agentctl disable'
 }
 
 @test "--runner-op with no runner name is a no-op rather than a broad command" {
-  run "$FLEET" --runner-op start
+  run "$FLEET" --runner-op runner start
   assert_success
   assert_not_called 'agentctl start '
 }
@@ -338,4 +338,28 @@ setup() {
   run bash -c '"$FLEET" --runners | grep -cP "^runner\t"'
   assert_success
   assert_output '1'
+}
+
+# The mutation verbs take the row TYPE as well as the id, and refuse anything
+# that is not a roster runner.
+#
+# Before the `run` section existed every row's {2} was a roster name, so passing
+# {2} alone was safe BY ACCIDENT. A run row's {2} is a run id, which made
+# `agentctl start <runid>` reachable from the keyboard; it no-opped only because
+# agentctl's output is redirected to /dev/null. "Does nothing" and "cannot be
+# asked" are different guarantees, and only the second survives a refactor.
+@test "--runner-op refuses a non-runner row type" {
+  run "$FLEET" --runner-op run 20260809T000000-abcdef start
+  assert_success
+  # Assert on CONTENT, not on the log's absence: the fixture may already have
+  # one, and "the file is not there" would pass for the wrong reason.
+  run cat "$NOTES_FIXTURE/calls.log"
+  refute_output --partial '20260809T000000-abcdef'
+}
+
+@test "...and a runner row still issues the verb, so the refusal is not vacuous" {
+  run "$FLEET" --runner-op runner start sentinel
+  assert_success
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial 'start sentinel'
 }

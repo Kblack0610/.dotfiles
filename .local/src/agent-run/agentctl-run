@@ -62,7 +62,23 @@ export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
 # and a marker that can be lost by an unrelated edit is not a marker — the same
 # argument the wrapper's own header makes about capability flags. Harness-agnostic on
 # purpose: "no human is watching" is a property of the RUNNER, not of Claude.
-export CLAUDE_HEADLESS=1
+#
+# ...unless a human IS watching. `agentctl run` at a terminal sets
+# AGENTCTL_INTERACTIVE=1, and then this marker would be a lie: downstream
+# consumers (86-focus-reconcile.sh) skip gates on it that SHOULD fire for a
+# human-initiated turn. Same argument as above, in the other direction - the
+# fact belongs at the layer that knows it, which is the one that was invoked.
+#
+# This changes exactly two things, both about PROMPTING, and nothing about
+# capability: the marker, and the two flags claude.sh gates on it. Role
+# resolution, harness_supports, role_family_check and the denylist are identical
+# in both modes, because the gate governs prompting and the denylist governs
+# capability - measured, and stated in docs/contract.md.
+if [ -n "${AGENTCTL_INTERACTIVE:-}" ]; then
+  unset CLAUDE_HEADLESS
+else
+  export CLAUDE_HEADLESS=1
+fi
 
 role_load "$role"
 
