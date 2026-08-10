@@ -1,0 +1,23 @@
+# subscription -- the personal Claude Max seat, spoken to natively.
+#
+# The built-in default, and the one every runner falls back to when it names no
+# route. That default is deliberate: defaulting rather than failing on ABSENCE is
+# what makes adopting routes a provable no-op, because a runner that says nothing
+# keeps exactly the behaviour it had.
+#
+# anthropic-native means no base URL and no key of our own: Claude Code uses its
+# stored OAuth credentials. That is also why it is the only tier with no failover
+# edge to reason about - there is no router in the path to have one.
+ROUTE_DESC="personal Claude Max seat, native endpoint, OAuth credentials"
+ROUTE_TRANSPORT="anthropic-native"
+ROUTE_BASE_URL=""
+ROUTE_MODEL_CLAUDE=""          # no pin: let the harness/CLI choose
+ROUTE_KEY_SOURCE="oauth"
+ROUTE_PAYER="subscription"
+ROUTE_PERSONAL_SAFE="yes"
+# Deliberately NO. Client work billed to a personal seat is a decision, not a
+# default; flipping this is a one-line, visible act.
+ROUTE_WORK_SAFE="no"
+ROUTE_FALLBACK_SAFE="yes"      # native: no router in the path, so no edge exists
+ROUTE_HARNESSES="claude"
+ROUTE_NOTE="opencode is NOT listed: it would need a fourth credential mechanism (~/.local/share/opencode/auth.json) and driving a Max seat from a third-party client is a ToS question for a human, not a default."
