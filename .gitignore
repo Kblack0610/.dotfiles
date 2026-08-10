@@ -297,3 +297,13 @@ __pycache__/
 # which is exactly what was found sitting untracked in this tree.
 .local/src/meeting-status/meeting-end-trigger.sh
 .local/src/meeting-status/meeting-ingest-mqtt-sub.sh
+
+# Same overlay nesting as the meeting-status scripts above: ~/.config is a folded
+# stow symlink into this repo, so the private overlay's tmux-servers/work.conf
+# deploys to a path that lands physically inside this checkout.
+#
+# It MUST deploy -- servers.sh discovers worlds by globbing $MANIFEST_DIR/*.conf,
+# so an undeployed manifest is a world that does not exist. And it must NOT be
+# committed here: client names and repo layouts are exactly what the private
+# overlay is for.
+.config/tmux-servers/work.conf
