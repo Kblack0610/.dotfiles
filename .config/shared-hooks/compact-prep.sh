@@ -35,7 +35,6 @@ resolve_project() {
 
 PROJECT="$(resolve_project)"
 AGENT="$HOME/.agent"
-ARCHIVE_DIR="$AGENT/archives/$PROJECT"
 MARKER="$AGENT/compact/$PROJECT.pending"
 
 cmd_paths() {
@@ -45,7 +44,6 @@ ANCHOR=$AGENT/anchors/$PROJECT.md
 PLAN_DIR=$AGENT/plans/$PROJECT
 CLAUDE_PLAN_DIR=$HOME/.claude/plans
 LESSONS=$AGENT/lessons/$PROJECT.md
-ARCHIVE_DIR=$ARCHIVE_DIR
 MARKER=$MARKER
 EOF
 }
@@ -64,7 +62,7 @@ cmd_precompact() {
   #   .transcript_path     — path to the full uncompacted session transcript (JSONL)
   #   .reason              — "manual" | "auto"
   #   .custom_instructions — user-supplied /compact focus string (may be empty)
-  local payload transcript reason ts archived
+  local payload transcript reason ts
   payload="$(cat 2>/dev/null || true)"
 
   if command -v jq >/dev/null 2>&1 && [ -n "$payload" ]; then
@@ -74,22 +72,26 @@ cmd_precompact() {
   reason="${reason:-unknown}"
   ts="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo unknown)"
 
-  # 1. Archive the full uncompacted transcript (the recoverable ground truth).
-  archived=""
-  if [ -n "${transcript:-}" ] && [ -f "$transcript" ]; then
-    mkdir -p "$ARCHIVE_DIR" 2>/dev/null || true
-    archived="$ARCHIVE_DIR/${ts}-${reason}.jsonl"
-    cp "$transcript" "$archived" 2>/dev/null || archived=""
-  fi
+  # NOTE: this used to `cp` the transcript into ~/.agent/archives/{project}/ and record
+  # the copy as `archived=`. It never preserved anything the live transcript did not.
+  # Compaction does not truncate or rotate the session JSONL -- it keeps growing in
+  # place -- so every archive was a byte-exact PREFIX of a file still sitting in
+  # ~/.claude/projects/, and always a shorter one. Measured 2026-08-09: all 14 archives
+  # matched a live transcript by md5 over their own length, 11/11 sessions still present,
+  # every live copy larger; several sessions had been archived two or three times, each
+  # copy a prefix of the next. 58 MB, zero unique bytes.
+  #
+  # The marker now points at the transcript itself. That is the same file the reconcile
+  # actually wants, and `claude-recall`, 80-session-register.sh and 90-eval-gate.sh all
+  # already depend on ~/.claude/projects/ being there, so this adds no new dependency.
 
-  # 2. Drop the capture-check marker so the next SessionStart (source=compact) can
-  #    surface "an auto-compact just happened; run /compact-prep check to reconcile".
+  # Drop the capture-check marker so the next SessionStart (source=compact) can
+  # surface "an auto-compact just happened; run /compact-prep check to reconcile".
   mkdir -p "$(dirname "$MARKER")" 2>/dev/null || true
   {
     echo "reason=$reason"
     echo "ts=$ts"
     echo "transcript=${transcript:-}"
-    echo "archived=${archived:-}"
   } > "$MARKER" 2>/dev/null || true
 
   # Never block. No stdout needed — the marker + SessionStart re-inject carry the signal.

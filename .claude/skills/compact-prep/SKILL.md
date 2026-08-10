@@ -48,7 +48,7 @@ Get the paths from the executor so project resolution matches the hooks exactly 
 ```
 
 It prints `KEY=VALUE` lines: `PROJECT`, `ANCHOR`, `PLAN_DIR`, `CLAUDE_PLAN_DIR`, `LESSONS`,
-`ARCHIVE_DIR`, `MARKER`. The per-project `memory/` dir is the one named in your session's memory
+`MARKER`. The per-project `memory/` dir is the one named in your session's memory
 system-reminder (`~/.claude/projects/<encoded-cwd>/memory/`) — use that directly.
 
 ### 2. Inventory the durable layer (read-only)
@@ -119,9 +119,12 @@ read from it to recover anything the summary dropped, close the gaps, then clear
 ## Related machinery (do not invoke directly)
 
 - **PreCompact hook** — `~/.dotfiles/.config/shared-hooks/compact-prep.sh precompact`, wired in
-  `settings.json` (matcher `""` = manual + auto). On every compaction it archives the full
-  uncompacted transcript to `ARCHIVE_DIR` and drops the `MARKER`. Exits 0 always (never blocks —
-  a blocked compaction can trap a full window).
+  `settings.json` (matcher `""` = manual + auto). On every compaction it drops the `MARKER`,
+  whose `transcript=` line points at the full session JSONL. Exits 0 always (never blocks —
+  a blocked compaction can trap a full window). It does NOT copy the transcript anywhere:
+  compaction grows the JSONL in place rather than rotating it, so the pre-compaction turns
+  are still in that file. The copy it used to make into `~/.agent/archives/` was always a
+  byte-exact prefix of the live file, and was removed as 58 MB of zero unique content.
 - **SessionStart re-inject** — `session-preflight.sh` handles `source == compact`: re-injects the
   anchor + plans + lessons and, if `MARKER` exists, prepends a "context was just compacted; run
   /compact-prep check" banner pointing at the archived transcript, then leaves the marker for the

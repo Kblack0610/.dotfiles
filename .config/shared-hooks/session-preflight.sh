@@ -71,10 +71,12 @@ CONTEXT=$(
     echo "🗜  Context was just compacted."
     if [ -f "$COMPACT_MARKER" ]; then
       c_reason=$(awk -F= '/^reason=/{print $2; exit}' "$COMPACT_MARKER" 2>/dev/null)
-      c_arch=$(awk -F= '/^archived=/{print $2; exit}' "$COMPACT_MARKER" 2>/dev/null)
+      # The transcript itself, not a copy of it: compaction grows the session JSONL in
+      # place rather than rotating it, so the pre-compaction turns are still in this file.
+      c_arch=$(awk -F= '/^transcript=/{print $2; exit}' "$COMPACT_MARKER" 2>/dev/null)
       echo "   Trigger: ${c_reason:-unknown}. Durable-layer pointers are re-injected below."
       echo "   In-flight work not written to the durable layer may have been summarized away."
-      echo "   Run /compact-prep check to reconcile${c_arch:+ against the archived transcript:}"
+      echo "   Run /compact-prep check to reconcile${c_arch:+ against the full transcript:}"
       [ -n "$c_arch" ] && echo "     $c_arch"
     else
       echo "   Durable-layer pointers re-injected below. Run /compact-prep check if unsure nothing was lost."
