@@ -91,6 +91,23 @@ EOF
   assert_output --partial 'rc=7'
 }
 
+# The failover's WARN has to carry the backend's own reason. Printing a fixed
+# "failed, trying next..." is what made 446 eval entries record one sentence and no cause.
+@test "the failover WARN carries the reason, not just the fact" {
+  cat > "$SANDBOX/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl: (6) Could not resolve host: stub" >&2
+exit 6
+EOF
+  chmod +x "$SANDBOX/bin/curl"
+
+  run call_judge_llm "sys" "usr"
+  assert_failure
+  assert_output --partial 'Could not resolve host'
+  assert_output --partial "Backend 'alpha' failed"
+  assert_output --partial "Backend 'beta-8bit' failed"
+}
+
 @test "an empty response still says something rather than nothing" {
   cat > "$SANDBOX/bin/curl" <<'EOF'
 #!/usr/bin/env bash

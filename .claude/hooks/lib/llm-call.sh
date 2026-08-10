@@ -40,13 +40,27 @@ call_judge_llm() {
   fi
 
   for backend in "${backends[@]}"; do
-    local result
-    result=$(_call_backend "$backend" "$system_prompt" "$user_content" 2>/dev/null)
+    # _call_backend's stderr IS the diagnosis - "No content in response", an API error
+    # message, or curl's own reason for a dead transport. Discarding it with 2>/dev/null
+    # and printing a fixed "failed, trying next..." made every distinct failure look
+    # identical, and the judge truncates this stream to 200 chars, so the eval file
+    # recorded one sentence naming no cause for 446 consecutive sessions. Four separate
+    # investigations then re-derived "the endpoint is healthy" from that silence, because
+    # the one line that knew better was being thrown away one frame up.
+    #
+    # Keep it and put it in the WARN. A failover that cannot say why it failed over is
+    # indistinguishable from one that never ran - which is the same class as the hardcoded
+    # chain this file's header already documents.
+    local result berr
+    berr=$(mktemp)
+    result=$(_call_backend "$backend" "$system_prompt" "$user_content" 2>"$berr")
     if [[ $? -eq 0 ]] && [[ -n "$result" ]]; then
+      rm -f "$berr"
       printf '%s' "$result"
       return 0
     fi
-    echo "WARN: Backend '$backend' failed, trying next..." >&2
+    echo "WARN: Backend '$backend' failed: $(tr '\n' ' ' <"$berr" | head -c 200)" >&2
+    rm -f "$berr"
   done
 
   echo "ERROR: All LLM backends failed" >&2
