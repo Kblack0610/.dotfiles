@@ -33,11 +33,21 @@ CONF_DIR="${NOTES_COCKPIT_CONF:-$HOME/.config/notes-cockpit}"
 REPOS_FILE="$CONF_DIR/repos"
 LLM_ENV="$CONF_DIR/llm.env"
 
-# Gateway comes from llm.env / the environment — never hardcode a host in this public repo.
+# Endpoint comes from llm.env / the environment — never hardcode a host in this public repo.
 # Model defaults to the fast local tier; base_url must be set (feature stays dormant otherwise).
-# LLM_MODEL_FALLBACK (optional) is tried when the primary model errors — e.g. primary is a paid
-# route and its upstream is down, fallback is a local model on the same gateway. Reasoning models
-# need a big token budget (they spend tokens thinking before the answer), hence the high default.
+# Reasoning models need a big token budget (they spend tokens thinking before the answer), hence
+# the high default.
+#
+# LLM_MODEL_FALLBACK (optional) is tried when the primary model errors. It is a LOADED GUN and
+# this comment used to recommend pointing it the wrong way ("primary is a paid route ... fallback
+# is a local model on the same gateway"). What this summarizes is the personal notes vault, and
+# on 2026-08-09 llm.env was found running primary AND fallback into a paid third-party work proxy
+# that personal content must never touch — the fallback did not help, because the gateway config
+# chains the "local" fallback straight back to the paid route.
+#
+# Rule: a fallback must never cross a data-class boundary. If the personal-safe origin is down,
+# FAIL and say so; answering from somewhere else is the silent-reroute failure this system keeps
+# paying for. Prefer leaving it unset and reaching a no-router origin directly.
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 LLM_MODEL="${LLM_MODEL:-fast (Qwen3-4B)}"
 LLM_MODEL_FALLBACK="${LLM_MODEL_FALLBACK:-}"
@@ -169,8 +179,14 @@ _one_call() {
   body="$(jq -n --arg m "$model" --arg s "$sys" --arg u "$usr" --argjson mt "$maxtok" \
     '{model:$m, temperature:0.2, max_tokens:$mt,
       messages:[{role:"system",content:$s},{role:"user",content:$u}]}')" || return 1
+  # Authorization only when a key exists. A personal-safe origin is reached
+  # DIRECTLY (mlx-server has no router and no auth), and an empty Bearer there is
+  # noise; on a gateway it is the difference between "unauthenticated" and
+  # "malformed credential".
+  local auth=()
+  [ -n "$key" ] && auth=(-H "Authorization: Bearer $key")
   resp="$(curl -sS --max-time 240 "$LLM_BASE_URL/chat/completions" \
-    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+    "${auth[@]}" -H 'Content-Type: application/json' \
     -d "$body" 2>/dev/null)" || return 1
   if printf '%s' "$resp" | jq -e '.error' >/dev/null 2>&1; then
     printf 'gateway error: %s\n' "$(printf '%s' "$resp" | jq -r '.error.message // .error')" >&2
@@ -185,7 +201,14 @@ call_llm() { # $1=system $2=user [$3=max_tokens]  -> content; tries primary then
   local sys="$1" usr="$2" maxtok="${3:-$LLM_MAXTOK}" key out
   [ -n "$LLM_BASE_URL" ] || { echo "no gateway (set LLM_BASE_URL in ~/.config/notes-cockpit/llm.env)" >&2; return 1; }
   key="$(resolve_key)"
-  [ -n "$key" ] || { echo "no gateway key (set LLM_KEY_RBW / LLM_API_KEY)" >&2; return 1; }
+  # A key is required for a GATEWAY, and must not be for a direct origin. This
+  # summarizes the personal notes vault, and the personal-safe route for that is
+  # mlx-server directly - which is unauthenticated, so demanding a key here made
+  # the safe configuration the one that could not run.
+  case "$LLM_BASE_URL" in
+    http://127.0.0.1*|http://localhost*|http://192.168.*|http://10.*) : ;;
+    *) [ -n "$key" ] || { echo "no key for $LLM_BASE_URL (set LLM_KEY_RBW / LLM_API_KEY)" >&2; return 1; } ;;
+  esac
   if out="$(_one_call "$key" "$LLM_MODEL" "$maxtok" "$sys" "$usr")"; then
     printf '%s' "$out"; return 0
   fi
