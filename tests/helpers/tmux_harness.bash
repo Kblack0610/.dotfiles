@@ -220,6 +220,21 @@ require_disposable_host() {
 # only skips, since that is an environment gap rather than a hazard.
 require_tmux() {
   require_disposable_host || return 1
+
+  # Drop the fzf STUB, exactly as tmux_shim drops the tmux stub, and for the same
+  # reason: sandbox_init copies every stub onto PATH, but this tier drives the REAL
+  # cockpit and needs the real binary behind it.
+  #
+  # The stub exists so the FAST tier cannot hang -- fzf opens /dev/tty and blocks
+  # forever on a machine with a terminal -- and it delivers that by exiting 130
+  # immediately. Here that is fatal in a way that reads as unrelated: the cockpit
+  # aborts before painting, and every test dies at `start_cockpit' failed with
+  # nothing on screen to explain why.
+  #
+  # Removed BEFORE the check below, so "fzf not installed" keeps meaning the real
+  # binary is absent rather than being satisfied by the stub we just planted.
+  [ -n "${SANDBOX:-}" ] && rm -f "$SANDBOX/bin/fzf"
+
   command -v tmux >/dev/null 2>&1 || skip "tmux not installed"
   command -v fzf  >/dev/null 2>&1 || skip "fzf not installed"
 }

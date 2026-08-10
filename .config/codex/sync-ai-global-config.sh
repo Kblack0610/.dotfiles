@@ -52,7 +52,20 @@ managed_tmp="$(mktemp)"
 features_tmp="$(mktemp)"
 trap 'rm -rf "$stage_dir"; rm -f "$codex_tmp" "$managed_tmp" "$features_tmp"' EXIT
 
-cp -R "$RULESYNC_ROOT"/. "$stage_dir"/
+# -L dereferences. On a --no-folding stow layout every file under $RULESYNC_ROOT is a
+# RELATIVE symlink into the private overlay (../../../../.dotfiles-private/...), and a plain
+# `cp -R` copies the link verbatim — so it dangles the moment it lands in $stage_dir and
+# rulesync reads an empty tree. It failed silently this way: the generate step still emitted
+# the files the required-file check below looks for, so the sync exited 0 having synced nothing.
+cp -RL "$RULESYNC_ROOT"/. "$stage_dir"/
+
+# rulesync exits 0 even when it cannot read its own inputs, so the staged tree is the only
+# place a broken source is still detectable. Assert the canonical rule file survived the copy.
+if [ ! -s "$stage_dir/.rulesync/rules/overview.md" ]; then
+    echo "Staged rulesync tree is missing or empty: .rulesync/rules/overview.md" >&2
+    echo "  (source: $RULESYNC_ROOT — check for dangling symlinks)" >&2
+    exit 1
+fi
 
 (
     cd "$stage_dir"

@@ -5,6 +5,46 @@
 ^/AGENTS\.md$
 ^/README\.md$
 ^/\.local/src/installation_scripts$
+
+# Nothing untracked belongs in $HOME. stow cannot read .gitignore, so every ignored
+# thing that physically lands in this working tree has to be named here or the
+# installer's `stow --no-folding .` deploys it. Measured on a real machine: a bare
+# stow wanted to create ~3,700 junk symlinks — 2,351 Rust build artifacts under
+# .local/src/*/target, 1,286 Claude session transcripts, plus paste/image caches and
+# plugin PID files. It also aborted on conflicts with the loose runtime JSON below.
+^/tests$
+target
+
+# systemd enablement links that point into /usr/lib/systemd (a distro-owned path, not
+# this repo). stow REFUSES to stow an absolute source symlink and aborts the entire run
+# when it meets one, so leaving these in place meant `stow --no-folding .` deployed
+# nothing at all - on Linux as much as on macOS. `systemctl --user enable` recreates them.
+^/\.config/systemd/user/sunshine\.service$
+^/\.config/systemd/user/graphical-session\.target\.wants/app-dev\.lizardbyte\.app\.Sunshine\.service$
+^/\.config/systemd/user/graphical-session\.target\.wants/waybar\.service$
+^/\.claude/projects$
+^/\.claude/sessions$
+^/\.claude/paste-cache$
+^/\.claude/image-cache$
+^/\.claude/file-history$
+^/\.claude/shell-snapshots$
+^/\.claude/backups$
+^/\.claude/cache$
+^/\.claude/plugins$
+^/\.claude/plans$
+^/\.claude/tasks$
+^/\.claude/session-env$
+^/\.claude/output-styles$
+# Named individually, NOT as ^/\.claude/.*\.json$ — that pattern also swallows the
+# TRACKED .claude/settings.json and would silently stop it deploying on a fresh install.
+^/\.claude/settings\.local\.json$
+^/\.claude/remote-settings\.json$
+^/\.claude/policy-limits\.json$
+^/\.claude/mcp-needs-auth-cache\.json$
+^/\.claude/last-update-result\.json$
+^/\.claude/history\.jsonl$
+^/\.claude/\.last-cleanup$
+^/\.claude/\.last-update-result\.json$
 ^/etc$
 ^/\.fonts$
 ^/\.config/hypr$
