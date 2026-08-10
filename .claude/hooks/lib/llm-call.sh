@@ -60,9 +60,23 @@ _call_backend() {
 
   local base_url model timeout api_key
 
-  base_url=$(jq -r ".backends.${backend}.base_url" "$CONFIG_FILE")
-  model=$(jq -r ".backends.${backend}.model" "$CONFIG_FILE")
-  timeout=$(jq -r ".backends.${backend}.timeout_seconds // 30" "$CONFIG_FILE")
+  # The backend name is DATA, so it is passed with --arg and indexed as .backends[$b].
+  # Interpolated into the filter as `.backends.${backend}` it is jq SYNTAX, and a name
+  # containing a hyphen then parses as subtraction: `.backends.mlx-8bit` reads as
+  # `.backends.mlx - 8bit` and dies with "syntax error, unexpected IDENT".
+  #
+  # `mlx-8bit` is the judge's only fallback, so it never worked - not once. The primary
+  # (`mlx`) has no hyphen and resolved fine, which is exactly why this hid: the chain
+  # looked like it had a spare wheel and had none. Every time the primary hiccuped, the
+  # fallback failed to even parse its own config and the eval was lost. bnb-platform ran
+  # 446 sessions at 100% EVAL PENDING from 2026-08-05, all of them reporting
+  # "All LLM backends failed" against an endpoint that was up the whole time.
+  #
+  # The DISCOVERY half of this file (see _backend_order) already does it correctly with
+  # --arg. Only the USE half interpolated, so the bug needed a hyphenated name to appear.
+  base_url=$(jq -r --arg b "$backend" '.backends[$b].base_url' "$CONFIG_FILE")
+  model=$(jq -r --arg b "$backend" '.backends[$b].model' "$CONFIG_FILE")
+  timeout=$(jq -r --arg b "$backend" '.backends[$b].timeout_seconds // 30' "$CONFIG_FILE")
 
   if [[ "$base_url" == "null" ]] || [[ -z "$base_url" ]]; then
     echo "ERROR: No config for backend '$backend'" >&2
@@ -71,7 +85,7 @@ _call_backend() {
 
   # Resolve API key from env var if specified
   local api_key_env
-  api_key_env=$(jq -r ".backends.${backend}.api_key_env // empty" "$CONFIG_FILE")
+  api_key_env=$(jq -r --arg b "$backend" '.backends[$b].api_key_env // empty' "$CONFIG_FILE")
   if [[ -n "$api_key_env" ]]; then
     api_key="${!api_key_env}"
   fi
@@ -112,11 +126,29 @@ _call_backend() {
     curl_args=(-H "$auth_header" "${curl_args[@]}")
   fi
 
-  response=$(curl "${curl_args[@]}" 2>/dev/null)
+  # Keep curl's own diagnosis. `2>/dev/null` here plus a bare `return 1` below meant every
+  # transport failure - refused connection, DNS, TLS, timeout, a malformed filter dying
+  # before curl ran - surfaced identically as "Backend 'X' failed, trying next...". The
+  # caller then truncates to 200 chars, so the eval file recorded the same sentence for
+  # 446 sessions and named no cause. Four separate investigations re-derived the endpoint
+  # as healthy because the one line that knew why was being thrown away.
+  #
+  # -S is already set, so curl writes a real reason to stderr; capture it instead.
+  # `local` on its own line: `local x=$(...)` would mask curl's exit status behind
+  # local's own.
+  local curl_err rc
+  curl_err=$(mktemp)
+  response=$(curl "${curl_args[@]}" 2>"$curl_err")
+  rc=$?
 
-  if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+  if [[ $rc -ne 0 ]] || [[ -z "$response" ]]; then
+    local why
+    why=$(tr '\n' ' ' <"$curl_err" | head -c 300)
+    rm -f "$curl_err"
+    echo "ERROR: $backend transport failed (curl rc=$rc): ${why:-empty response, no curl diagnostic}" >&2
     return 1
   fi
+  rm -f "$curl_err"
 
   # Check for API error
   local error
