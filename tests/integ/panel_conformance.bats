@@ -245,28 +245,30 @@ setup() {
   # Without `set -u`, a typo'd variable expands to empty and the script carries on with a
   # wrong value instead of stopping.
   #
-  # RATCHET: 1 -- pr-viewer.sh. (sessionizer.sh migrated onto panel-lib.sh.)
-  panel_ratchet 1 "strict-mode preamble" panel_assert_strict_mode
+  # RATCHET: 0 -- every panel conforms. (sessionizer.sh then pr-viewer.sh migrated onto
+  # panel-lib.sh; pr-viewer.sh was the last one.)
+  panel_ratchet 0 "strict-mode preamble" panel_assert_strict_mode
 }
 
 @test "panels resolve \$SELF absolutely" {
   # fzf --bind re-invokes the script from inside the picker, where a relative $0 does not
   # resolve.
   #
-  # RATCHET: 2.
-  #   pr-viewer.sh       no SELF at all; :371 interpolates $0 directly into a reload()
+  # RATCHET: 1.
   #   servers.sh:228     no SELF; embeds printf '%q' "$0" into the detach-client hop string,
   #                      which survives only because `tmx` happens to be on PATH
   # tags.sh:56 already conforms, via the explicit absolutize branch this assertion accepts.
-  # sessionizer.sh and favourites.sh migrated onto panel-lib.sh.
-  panel_ratchet 2 "absolute \$SELF" panel_assert_self_absolute
+  # sessionizer.sh, favourites.sh and pr-viewer.sh migrated onto panel-lib.sh.
+  panel_ratchet 1 "absolute \$SELF" panel_assert_self_absolute
 }
 
 @test "no fzf action interpolates a bare \$0" {
-  # pr-viewer.sh:371 -- `--bind "ctrl-r:reload(bash $0)"`. Unquoted, so it breaks on any
-  # path containing a space, and the sandbox path contains one by design (sandbox.bash:32).
-  # RATCHET: 1 -- pr-viewer.sh.
-  panel_ratchet 1 "no bare \$0 in an fzf action" panel_assert_no_bare_dollar_zero
+  # The live offender was pr-viewer.sh:371 -- `--bind "ctrl-r:reload(bash $0)"`. Unquoted,
+  # so it broke on any path containing a space, and the sandbox path contains one by design
+  # (sandbox.bash:50). Now `reload($(printf '%q' "$SELF") --list)`, and integ/pr_viewer.bats
+  # exercises the spaced-path case rather than only grepping for the shape.
+  # RATCHET: 0.
+  panel_ratchet 0 "no bare \$0 in an fzf action" panel_assert_no_bare_dollar_zero
 }
 
 @test "no fzf action hardcodes the script's own name" {

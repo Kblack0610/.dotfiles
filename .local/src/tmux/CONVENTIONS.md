@@ -63,10 +63,11 @@ just the tier.
 Every tunable is `${VAR:-default}` at the top of the script.
 
 - **No** sourced sibling `.conf`.
-- **No** `$HOME/.dotfiles/...` literal. `pr-viewer.sh:18` has one, and it breaks the moment
-  the repo moves - and, worse, makes the script untestable, because a fixture cannot redirect
-  it. Use `${PR_REPOS_CONF:-$PANEL_DIR/pr-repos.conf}`: correct under stow, overridable from
-  the sandbox.
+- **No** `$HOME/.dotfiles/...` literal. `pr-viewer.sh:18` used to have one, and it broke the
+  moment the repo moved - and, worse, made the script untestable, because a fixture could not
+  redirect it. It now uses `${PR_REPOS_CONF:-$PANEL_DIR/pr-repos.conf}`: correct under stow,
+  overridable from the sandbox, and `integ/pr_viewer.bats` asserts the key is actually read
+  rather than merely present.
 
 `$PANEL_DIR` is the realpath'd directory of the running script, so it is right under stow.
 
@@ -80,8 +81,9 @@ panels are theme-responsive **because** they use indices. `theme-switch` recolou
 surface to one theme and **stops** it tracking the terminal - a regression that presents as a
 feature. Enforced by both test files.
 
-The `$'..'` form matters too: `pr-viewer.sh`'s single-quoted `'\033[..'` needs `printf %b`, so
-the first person to reach for `%s` prints a literal `\033`.
+The `$'..'` form matters too. `pr-viewer.sh` used to define its own palette with single-quoted
+`'\033[..'`, which needs `printf %b` - so the first person to reach for `%s` printed a literal
+`\033`. Taking `C_*` from the library removes the choice.
 
 `PANEL_NO_COLOR` (and `NO_COLOR`) blank the palette, which is what lets assertions skip
 `strip_ansi`.
@@ -107,7 +109,9 @@ call, and they need the reason, not just an exit code. The flash is additive, fo
   show.
 
 What is not acceptable is neither: `favourites.sh:241` uses `jq` unchecked two lines after
-checking `sqlite3`, and `pr-viewer.sh` checks `gh auth status` while never checking `gh`.
+checking `sqlite3`. `pr-viewer.sh` used to check `gh auth status` while never checking `gh`,
+so a machine without `gh` at all reported an authentication problem; it now does
+`panel_need gh` first, then the credential.
 
 ## fzf: one dialect
 

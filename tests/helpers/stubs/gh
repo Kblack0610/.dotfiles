@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Stub for the `gh` CLI.
+#
+# Serves canned `gh pr list` JSON per repo and records every invocation, so a test can
+# assert both what pr-viewer.sh rendered AND that it never reached for the network.
+#
+# Fixture files under $GH_FIXTURE (all optional):
+#   prs.<owner>-<repo>        the JSON array `gh pr list --json ...` would return
+#   auth.fail                 present => `gh auth status` exits 1
+#
+# A repo with no fixture returns `[]`, which is the real gh's answer for "no open PRs" --
+# so "this repo has none" and "this repo is not set up" stay distinguishable in a test.
+set -uo pipefail
+
+FIX="${GH_FIXTURE:?GH_FIXTURE unset - stub used outside the sandbox}"
+printf 'gh %s\n' "$*" >> "$FIX/calls.log"
+
+case "${1:-}" in
+auth)
+  [ -f "$FIX/auth.fail" ] && exit 1
+  exit 0
+  ;;
+pr)
+  case "${2:-}" in
+  list)
+    # Pull `-R owner/repo` out of anywhere in the arg list.
+    repo=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+      -R | --repo)
+        repo="${2:-}"
+        shift 2
+        ;;
+      *) shift ;;
+      esac
+    done
+    f="$FIX/prs.${repo//\//-}"
+    [ -f "$f" ] && cat "$f" || printf '[]\n'
+    exit 0
+    ;;
+  view)
+    printf 'stub: gh pr view %s\n' "$*"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+
+exit 0
