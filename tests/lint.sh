@@ -9,15 +9,18 @@
 # notch down as findings get fixed:  error -> warning -> info -> style.  That is a one-line
 # diff per step, with no baseline file to maintain and no stale suppressions to rot.
 #
-# Do NOT jump straight to `style`. This repo has ~134 shell scripts written before any
+# Do NOT jump straight to `style`. This repo has ~235 shell scripts written before any
 # linting existed, so a big-bang change produces a permanently red check that everyone
 # learns to ignore.
 #
-# Current state, measured 2026-07-26 over 134 files (shellcheck 0.11.0):
+# Re-measured 2026-08-09 over 235 files (shellcheck 0.11.0), after lint-files.sh started
+# selecting by SHEBANG as well as by extension. The previous measurement said 134 files and
+# was taken over a list that structurally could not contain an extensionless script - i.e.
+# almost everything in .local/bin/. See the header of lint-files.sh.
 #   error    0     <- the gate
-#   warning  328
-#   info     79
-#   style    4
+#   warning  400
+#   info     141
+#   style    9
 # Re-measure before each notch down:
 #   docker run --rm -v "$PWD:/work" -w /work <img> shellcheck -x $(tests/lint-files.sh)
 #
@@ -35,7 +38,7 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 mapfile -t FILES < <(tests/lint-files.sh)
-# An empty list is a BROKEN GATE, not a clean tree - this repo has ~140 shell scripts, so
+# An empty list is a BROKEN GATE, not a clean tree - this repo has ~235 shell scripts, so
 # zero can only mean lint-files.sh could not enumerate them. Exiting 0 here would report
 # "clean" having checked nothing.
 [ "${#FILES[@]}" -gt 0 ] || {
@@ -105,7 +108,10 @@ if command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck: clean at severity=$SEVERITY (${#FILES[@]} files)"
     ran+=("shellcheck")
   else
-    echo "shellcheck: FAILED at severity=$SEVERITY" >&2
+    # The count goes on the FAILED line too. A pass that says "(235 files)" and a failure
+    # that says nothing means the one number that reveals an under-selected input list is
+    # printed only in the case nobody reads closely.
+    echo "shellcheck: FAILED at severity=$SEVERITY (${#FILES[@]} files)" >&2
     ran+=("shellcheck")
     rc=1
   fi
