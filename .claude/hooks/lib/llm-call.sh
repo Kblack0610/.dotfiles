@@ -72,7 +72,19 @@ _call_backend() {
   local system_prompt="$2"
   local user_content="$3"
 
-  local base_url model timeout api_key
+  # api_key MUST be initialised, not merely declared. `local x` leaves x UNSET, and this
+  # library is sourced by llm-judge.sh, which runs `set -uo pipefail` - so the later
+  # `[[ -n "$api_key" ]]` aborted the function with "api_key: unbound variable" on every
+  # single call. A backend with no api_key_env (both of ours) never assigns it.
+  #
+  # This is what actually caused the eval blackout: bnb-platform, 446 sessions,
+  # 100% EVAL PENDING from 2026-08-05. It is DETERMINISTIC under set -u, not the
+  # intermittent endpoint problem it was repeatedly diagnosed as - and it is invisible
+  # from an interactive shell, which does not set -u. Four investigations (including two
+  # of mine) sourced this file by hand, saw a clean rc=0, and cleared the endpoint,
+  # the model names, the config and the timeout in turn. The bug was one frame below the
+  # thing everyone was measuring.
+  local base_url model timeout api_key=""
 
   # The backend name is DATA, so it is passed with --arg and indexed as .backends[$b].
   # Interpolated into the filter as `.backends.${backend}` it is jq SYNTAX, and a name
