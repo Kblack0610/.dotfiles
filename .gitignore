@@ -282,3 +282,18 @@ __pycache__/
 .config/kitty/current-theme.conf
 .config/waybar/style.css
 .config/sketchybar/colors.sh
+
+# Private-overlay files that NEST inside this repo's working tree.
+#
+# ~/.local/src is a FOLDED stow symlink into this repo, so when the overlay
+# deploys ~/.local/src/meeting-status/<script>, the link is physically created
+# at .dotfiles/.local/src/meeting-status/<script> -- inside this checkout. That
+# nesting is the documented design (see dotfiles-overlay-link's header), and it
+# only works when the public repo cannot see the result.
+#
+# These two must deploy: com.kblack.meeting-ingest-{watch,mqtt}.plist invoke
+# them by the literal path ~/.local/src/meeting-status/<script>. They are
+# TRACKED IN THE PRIVATE OVERLAY; a copy here would be a second source of truth,
+# which is exactly what was found sitting untracked in this tree.
+.local/src/meeting-status/meeting-end-trigger.sh
+.local/src/meeting-status/meeting-ingest-mqtt-sub.sh
