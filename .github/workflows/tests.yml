@@ -1,6 +1,6 @@
 name: shell tests
 
-# Three jobs, by what they can catch:
+# Five jobs, by what they can catch:
 #
 #   fast   the tmux-free tiers (unit + contract). Runs directly on the runner because it
 #          never starts a tmux server. This is the same target the local stop-hook gates on.
@@ -10,6 +10,13 @@ name: shell tests
 #   drift  weekly sweep across tmux versions. What a local hook cannot catch is the
 #          environment moving underneath the repo -- a new tmux, a new fzf, a distro bump --
 #          which surfaces precisely when nothing in the repo changed.
+#   rust   the three tracked crates (notes-cli, agent-panel, timebox). Runs on the bare
+#          runner, NOT in the test image, which has no Rust toolchain. Added 2026-08-09:
+#          those crates carried 188 in-tree tests that had never run anywhere, and the
+#          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
+#          so a crate could stop compiling and the only symptom would be a tool quietly
+#          behaving like an older version.
+#   lint   shellcheck + shfmt + house rules, in the pinned image.
 on:
   # `push` is restricted to main on purpose. With `branches: ['**']` every job runs TWICE on
   # a PR branch -- once for the push event, once for the pull_request event -- which doubles
@@ -98,6 +105,33 @@ jobs:
           path: tests/artifacts/
           if-no-files-found: ignore
           retention-days: 14
+
+  rust:
+    name: rust crates (test + clippy + fmt)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The ubuntu-24.04 image ships a stable Rust toolchain, so no third-party setup
+      # action is needed -- consistent with this repo running zero tmux plugins by policy.
+      # `rustup component add` is idempotent and only guards against an image that ships
+      # cargo without clippy/rustfmt; rust.sh degrades to advisory on those two anyway.
+      - name: Toolchain
+        run: |
+          rustup component add clippy rustfmt || true
+          cargo --version && cargo clippy --version && cargo fmt --version
+      # Keyed on the lockfiles, which ARE tracked here (and rust.sh passes --locked, so a
+      # stale lockfile fails rather than silently resolving a newer dependency).
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Rust gate
+        run: make -C tests test-rust
 
   lint:
     name: shellcheck + shfmt
