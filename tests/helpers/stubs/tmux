@@ -42,7 +42,27 @@ for a in "$@"; do
   prev="$a"
 done
 
-case "${1:-}" in
+# The SUBCOMMAND, which is not always "$1". tmux takes global flags before it, and
+# servers.sh addresses a world by socket -- `tmux -L lab list-sessions` -- so keying the
+# dispatch on "$1" saw `-L` and matched nothing, falling through to a silent exit 0.
+#
+# That silence is indistinguishable from a real answer of "no sessions", which is exactly
+# the condition cmd_land refuses to attach on. Every existing caller happens to put the
+# subcommand first, so the gap only appeared once something used a global flag.
+#
+# -L/-S/-f take a value; the rest of tmux's global flags (-2, -u, -v, -C) do not.
+verb=""
+skip_value=0
+for a in "$@"; do
+  if [ "$skip_value" = 1 ]; then skip_value=0; continue; fi
+  case "$a" in
+    -L|-S|-f) skip_value=1; continue ;;
+    -*)       continue ;;
+    *)        verb="$a"; break ;;
+  esac
+done
+
+case "$verb" in
   list-panes)
     [ -f "$FIX/tmux.panes" ] && cat "$FIX/tmux.panes"
     ;;
@@ -51,6 +71,20 @@ case "${1:-}" in
     # must abort the fire, not fall through to a kill. Default 0 (exists) so no existing
     # caller changes behaviour; drop tmux.no-session to make it report gone.
     [ -f "$FIX/tmux.no-session" ] && exit 1
+    exit 0
+    ;;
+  list-sessions)
+    # servers.sh `session_count` pipes this to `wc -l`, and cmd_land refuses to attach
+    # to a world whose count is 0 ("every manifest entry's directory is missing"). An
+    # unmodelled command answers with silence, which reads as that empty world -- so
+    # every hop/back test would die on a guard about a condition it never set up.
+    #
+    # Default is ONE session, matching has-session above: a stub that does not model a
+    # command must not change the behaviour of callers that never cared about it. Drop
+    # tmux.sessions to name the sessions a test needs, or tmux.no-sessions to assert
+    # the genuinely-empty world the guard exists for.
+    [ -f "$FIX/tmux.no-sessions" ] && exit 0
+    if [ -f "$FIX/tmux.sessions" ]; then cat "$FIX/tmux.sessions"; else echo "stub"; fi
     exit 0
     ;;
   list-windows)
