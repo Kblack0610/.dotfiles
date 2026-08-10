@@ -11,6 +11,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 | Script | Keybinding | Description |
 |--------|------------|-------------|
+| `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted — no existing key was moved. |
 | `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
@@ -28,6 +29,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 
 ### Quick Reference
 
+- **The editor**: `Prefix+Space` → this session's editor; again → back where you were
 - **Which world**: `Prefix+C-s` (or bare `tmx`) → the two worlds, sessions in the preview
 - **Everything, everywhere**: `Prefix+A` → every session and window on every server
 - **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)

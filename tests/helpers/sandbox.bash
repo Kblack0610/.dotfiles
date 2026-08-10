@@ -18,6 +18,7 @@ COCKPIT="$REPO_ROOT/.local/src/tmux/notes-cockpit.sh"
 FLEET="$REPO_ROOT/.local/src/tmux/fleet.sh"
 COCKPIT_SESSION_SH="$REPO_ROOT/.local/src/tmux/cockpit.sh"
 STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
+EDITOR_SH="$REPO_ROOT/.local/src/tmux/editor.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
 ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
 # NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
@@ -45,7 +46,7 @@ MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
 GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 # The shared AUTO-block splicer, same reason again.
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
+export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
