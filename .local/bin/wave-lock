@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# wave-lock — one wave per app, whichever door it came in by.
+#
+# `wave-start` has locked the headless path since the day three W presses started
+# three concurrent waves on one app. But that lock lives in the LAUNCHER, not on
+# the resource, and there is a second door: a human (or agent) typing `/wave <app>`
+# inside a Claude session never runs wave-start, never touches the pid file, and so
+# starts a second wave over the same branch with nothing objecting. 2026-08-10: two
+# sessions drove the same wave/<app>/<ver> branch at once. It happened to be survivable
+# only because they serialized by luck.
+#
+# The wave format's core invariant is "one writer to the wave branch: the
+# dispatcher" (wave.md, per-bug loop). Two writers means two agents squash-merging
+# into the same branch and pushing over each other - a lost commit reads as a fix
+# that silently did not ship.
+#
+# DELIBERATELY the same lock file and format as wave-start ($STATE_DIR/<app>.pid, a
+# BARE PID and nothing else), so the two doors interlock without wave-start needing
+# to change: it already treats a non-numeric file as garbage and clears it. Human
+# readable metadata goes in a sidecar wave-start ignores.
+#
+# The recorded pid is the owning long-lived process (the `claude` session, or
+# wave-start itself), NOT the transient shell that ran this command - a shell pid
+# exits microseconds later and the lock would read stale immediately.
+#
+#   wave-lock claim   <app> [desc]   0 = claimed, 3 = held by a live wave
+#   wave-lock release <app>          release ours (refuses to steal another's)
+#   wave-lock check   <app>          0 = held (prints holder), 1 = free
+set -euo pipefail
+
+STATE_DIR="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/wave"
+CMD="${1:-}"; APP="${2:-}"; DESC="${3:-}"
+[ -n "$CMD" ] && [ -n "$APP" ] || { echo "usage: wave-lock {claim|release|check} <app> [desc]" >&2; exit 2; }
+LOCK="$STATE_DIR/${APP}.pid"
+HOLDER="$STATE_DIR/${APP}.holder"
+
+# The owning process: walk up from this shell to the nearest long-lived ancestor we
+# recognise. A `claude` session is the common case (conversational /wave); wave-start
+# is the headless one. Falling back to $PPID is still far better than $$, which is
+# this script and is gone before the next command runs.
+owning_pid() {
+  local pid=$PPID depth=0 comm
+  while [ "${pid:-1}" -gt 1 ] && [ $depth -lt 12 ]; do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    case "$comm" in
+      claude|wave-start) echo "$pid"; return 0 ;;
+    esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    [ -n "${pid:-}" ] || pid=1
+    depth=$((depth + 1))
+  done
+  echo "$PPID"
+}
+
+# A live holder is a numeric pid that still exists. Anything else is stale and is
+# cleared rather than locking the app out forever - the same rule wave-start uses.
+live_holder() {
+  local held
+  [ -f "$LOCK" ] || return 1
+  held="$(cat "$LOCK" 2>/dev/null || true)"
+  case "$held" in
+    ''|*[!0-9]*) rm -f "$LOCK" "$HOLDER" 2>/dev/null || true; return 1 ;;
+  esac
+  if kill -0 "$held" 2>/dev/null; then echo "$held"; return 0; fi
+  rm -f "$LOCK" "$HOLDER" 2>/dev/null || true
+  return 1
+}
+
+case "$CMD" in
+  claim)
+    mkdir -p "$STATE_DIR"
+    if held="$(live_holder)"; then
+      echo "wave-lock: $APP already has a wave running (pid $held)." >&2
+      [ -f "$HOLDER" ] && sed 's/^/  /' "$HOLDER" >&2
+      echo "  This is the one-writer rule: two dispatchers on one wave branch push over" >&2
+      echo "  each other, and a lost commit reads as a fix that silently did not ship." >&2
+      echo "  If that wave is genuinely dead: wave-lock release $APP" >&2
+      exit 3
+    fi
+    printf '%s' "$(owning_pid)" > "$LOCK"
+    { echo "app:     $APP"
+      echo "pid:     $(owning_pid)"
+      echo "desc:    ${DESC:-unspecified}"
+      echo "claimed: $(date -Iseconds)"
+    } > "$HOLDER" 2>/dev/null || true
+    echo "wave-lock: claimed $APP (pid $(cat "$LOCK"))"
+    ;;
+  release)
+    if held="$(live_holder)"; then
+      # Only the owner may release. A wave that releases someone else's lock
+      # re-creates the exact race this file exists to close.
+      if [ "$held" != "$(owning_pid)" ]; then
+        echo "wave-lock: $APP is held by pid $held, not us ($(owning_pid)) — refusing to steal." >&2
+        exit 3
+      fi
+    fi
+    rm -f "$LOCK" "$HOLDER" 2>/dev/null || true
+    echo "wave-lock: released $APP"
+    ;;
+  check)
+    if held="$(live_holder)"; then
+      echo "held by pid $held"
+      [ -f "$HOLDER" ] && cat "$HOLDER"
+      exit 0
+    fi
+    echo "free"
+    exit 1
+    ;;
+  *) echo "usage: wave-lock {claim|release|check} <app> [desc]" >&2; exit 2 ;;
+esac
