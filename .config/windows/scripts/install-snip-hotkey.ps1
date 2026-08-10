@@ -5,7 +5,7 @@
 # clipboard to a WSL file path -> paste in WSL terminal.
 #
 # Run from WSL:
-#   powershell.exe -ExecutionPolicy Bypass -File "$(wslpath -w ~/.dotfiles/scripts/windows/install-snip-hotkey.ps1)"
+#   powershell.exe -ExecutionPolicy Bypass -File "$(wslpath -w ~/.dotfiles/.config/windows/scripts/install-snip-hotkey.ps1)"
 #
 # Run from Windows PowerShell:
 #   powershell -ExecutionPolicy Bypass -File install-snip-hotkey.ps1
