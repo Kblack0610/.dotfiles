@@ -123,6 +123,11 @@ sandbox_init() {
   fi
   : > "$NOTES_FIXTURE/calls.log"   # stub CLIs append every invocation here
 
+  # The `gh` stub reads canned PR JSON from the SAME fixture dir, so its invocations land in
+  # the one calls.log that assert_called reads. A second log would mean a test could assert
+  # against gh calls while silently missing tmux ones, or the reverse.
+  export GH_FIXTURE="$NOTES_FIXTURE"
+
   # Cockpit machine-local config: point at the sandbox, empty by default.
   export NOTES_COCKPIT_ALIASES="$NOTES_FIXTURE/aliases"
   export NOTES_COCKPIT_REPOS="$NOTES_FIXTURE/repos"

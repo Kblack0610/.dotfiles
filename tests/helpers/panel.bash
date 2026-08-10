@@ -196,9 +196,10 @@ panel_assert_self_absolute() {
 
 # No fzf action may interpolate a bare $0, and none may hardcode the script's own name.
 #
-# pr-viewer.sh:371 is the live offender on both counts: `--bind "ctrl-r:reload(bash $0)"`.
-# Unquoted, so it also breaks on any path containing a space -- and the test sandbox's path
-# contains one by design (sandbox.bash:32), which is exactly the class that catches.
+# pr-viewer.sh:371 was the live offender on both counts: `--bind "ctrl-r:reload(bash $0)"`.
+# Unquoted, so it also broke on any path containing a space -- and the test sandbox's path
+# contains one by design (sandbox.bash:50), which is exactly the class that catches. Both
+# ratchets are at 0 now; this assertion is what keeps them there.
 panel_assert_no_bare_dollar_zero() {
   local f="$REPO_ROOT/$1"
   ! grep -qE '(execute|execute-silent|reload|become|preview|transform)\([^)]*\$0' "$f"
