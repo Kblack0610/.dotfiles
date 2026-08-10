@@ -44,6 +44,34 @@ EOF
   source "$REPO_ROOT/.claude/hooks/lib/llm-call.sh"
 }
 
+# THE ONE THAT MATTERS. Every other test in this file runs in bats' own shell, which does
+# NOT `set -u` - and under those conditions this library has always worked. llm-judge.sh,
+# its only real caller, runs `set -uo pipefail`, and there `local ... api_key` (declared,
+# never assigned) made `[[ -n "$api_key" ]]` abort the function on EVERY call.
+#
+# That is what the eval blackout actually was: bnb-platform, 446 sessions, 100% EVAL
+# PENDING from 2026-08-05, deterministic rather than the intermittent endpoint fault it was
+# diagnosed as four separate times. Each investigation sourced this file from an
+# interactive shell, got a clean rc=0, and cleared the endpoint / model / config / timeout
+# in turn. A test that does not reproduce the CALLER'S shell options cannot see it, which
+# is why the rest of this file passed throughout.
+@test "resolves under set -u, the mode llm-judge.sh actually runs in" {
+  run bash -c 'set -uo pipefail
+    source "$1"
+    _call_backend alpha "sys" "usr"' _ "$REPO_ROOT/.claude/hooks/lib/llm-call.sh"
+  assert_success
+  assert_output --partial 'OK-CONTENT'
+  refute_output --partial 'unbound variable'
+}
+
+@test "the whole failover chain survives set -u too" {
+  run bash -c 'set -uo pipefail
+    source "$1"
+    call_judge_llm "sys" "usr"' _ "$REPO_ROOT/.claude/hooks/lib/llm-call.sh"
+  assert_success
+  refute_output --partial 'unbound variable'
+}
+
 @test "a plain backend name resolves" {
   run _call_backend alpha "sys" "usr"
   assert_success
