@@ -39,6 +39,16 @@ PLANS_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}"
   || . "$HERE/../../lib/agent-board.sh" 2>/dev/null \
   || { echo "wave-session: agent-board.sh not found" >&2; exit 1; }
 
+# The project registry resolver, which owns project -> repo. Same lookup order as
+# agent-board.sh above, but NON-FATAL: repo_of already degrades to empty (that is what
+# the hand-rolled copy did when the map was absent), and this file is sourced by tests
+# where $HERE is the bats runner rather than this script.
+# shellcheck source=/dev/null
+. "${PROJECT_NAME_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || . "$HERE/../../../.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || true
+
 have_tmux() { command -v tmux >/dev/null 2>&1; }
 
 # session_of <app> -> the work session's name. Deliberately the bare app name, matching
@@ -46,15 +56,15 @@ have_tmux() { command -v tmux >/dev/null 2>&1; }
 # named after the thing and rooted at its directory.
 session_of() { printf '%s' "$1"; }
 
-# repo_of <app> -> the app's repo root, from project-map.json `trackers.<app>.repo`
-# resolved through `paths`. The map is the single source of truth for where an app lives.
+# repo_of <app> -> the app's repo root. Delegates to `project_repo_path` in
+# project-name.sh, which owns the two-hop `trackers.<app>.repo` -> `paths` lookup.
+#
+# This was a hand-rolled copy of that lookup. Four of those existed; the shared one
+# was extracted precisely because a copy that loses the tracker hop returns EMPTY for
+# an app inside a monorepo, silently, and the surface it feeds just renders nothing.
 repo_of() {
-  local app="$1" map repo
-  map="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
-  [ -f "$map" ] && command -v jq >/dev/null 2>&1 || return 0
-  repo=$(jq -r --arg a "$app" '.trackers[$a].repo // $a' "$map" 2>/dev/null || true)
-  # canonical repo name -> filesystem path (reverse of `paths`)
-  jq -r --arg r "$repo" '.paths | to_entries[] | select(.value == $r) | .key' "$map" 2>/dev/null | head -1
+  declare -F project_repo_path >/dev/null 2>&1 || return 0
+  project_repo_path "$1"
 }
 
 # blackboard_of <app> -> newest sprint-*.md, or nothing

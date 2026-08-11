@@ -80,11 +80,19 @@ MAP="${PROJECT_MAP_FILE:-$SHARED_HOOKS/project-map.json}"
 
 # The app's repo, so the run starts where its code is (the tracker, the branch and the
 # worktrees are all resolved relative to it).
+#
+# `project_repo_path` from project-name.sh owns the two-hop `trackers.<app>.repo` ->
+# `paths` lookup. This file used to hand-roll it; four such copies existed, and the one
+# that lost the tracker hop returned EMPTY for every app inside a monorepo without
+# erring. Sourced non-fatally so a machine without the resolver still starts a wave in
+# $PWD, which is the fallback the next line already implements.
+if [ -r "$SHARED_HOOKS/project-name.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SHARED_HOOKS/project-name.sh"
+fi
 repo_of() {
-  local repo
-  [ -f "$MAP" ] && command -v jq >/dev/null 2>&1 || return 0
-  repo=$(jq -r --arg a "$APP" '.trackers[$a].repo // $a' "$MAP" 2>/dev/null || true)
-  jq -r --arg r "$repo" '.paths | to_entries[] | select(.value == $r) | .key' "$MAP" 2>/dev/null | head -1
+  declare -F project_repo_path >/dev/null 2>&1 || return 0
+  project_repo_path "$APP"
 }
 REPO="$(repo_of)"
 [ -n "$REPO" ] && [ -d "$REPO" ] || REPO="$PWD"

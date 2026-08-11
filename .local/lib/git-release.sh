@@ -37,6 +37,7 @@
 #
 # Public API:
 #   git_latest_tag    <repo> <name> [summary]                       -> one tag, or ""
+#   git_product_tag   <repo> <product>                               -> one tag, or ""
 #   git_shipping_next <repo> <tag> <branch> [pathfilter] [limit]     -> N subject lines
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
 #
@@ -103,6 +104,40 @@ git_latest_tag() {
   [ -z "$t" ] && t=$(_gr_highest "$repo" "${name}-v*")
   [ -z "$t" ] && t=$(_gr_highest "$repo" "v*")
   [ -z "$t" ] && t=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)
+  printf '%s' "$t"
+}
+
+# git_product_tag <repo> <product> - one PRODUCT's release tag inside a monorepo.
+#
+# git_latest_tag's step 3 falls back to a bare `v*`, which is right for a repo that
+# ships one thing and actively wrong for a repo that ships several: that glob matches
+# every product's tags at once. Its own header already says so: "falling through would
+# hand a monorepo caller some other product's tag, which is worse than the empty string
+# it asked for", but the guarantee only holds for an explicit `<!-- tagglob: -->`, and
+# a caller with no summary.md still falls through.
+#
+# Measured, which is why this exists: asking this monorepo for `time-tangle` returned a
+# SIBLING PRODUCT's tag. `time-tangle-v*` matches nothing (its tags are
+# `time-tangle-web-v*`), so it fell to bare `v*` and handed back a DIFFERENT PRODUCT's
+# version - with no error, and looking entirely plausible.
+#
+# So: product-scoped globs only, and NO bare fallback. Empty means "this product has
+# never shipped", which is a true and useful answer.
+#
+# Glob order is the one the tag corpus actually uses, most specific first:
+#   <product>-v*        <product>-v1.11.0          (web+api, the primary line)
+#   <product>-web-v*    time-tangle-web-v1.0.1     (apps that name the web line)
+#   <product>-*-v*      anything else product-scoped (mobile-only, etc.)
+# The primary/web line wins over a platform line deliberately: web ships more often
+# than mobile here, so it is the line that tracks "what version is this product on".
+git_product_tag() {
+  local repo="$1" product="$2" glob t=""
+  [ -n "$repo" ] && [ -n "$product" ] && [ -d "$repo/.git" ] \
+    && command -v git >/dev/null 2>&1 || return 0
+  for glob in "${product}-v*" "${product}-web-v*" "${product}-*-v*"; do
+    t=$(_gr_highest "$repo" "$glob")
+    [ -n "$t" ] && break
+  done
   printf '%s' "$t"
 }
 
