@@ -287,6 +287,60 @@ load_lib() {
   assert_not_called 'new-session'
 }
 
+# ── The session name ─────────────────────────────────────────────────────────
+#
+# One rule, three former copies that disagreed (sessionizer.sh, favourites.sh, worktree.sh).
+# The disagreement was not theoretical: Prefix+f on ~/.dotfiles opened `_dotfiles` beside the
+# `dotfiles` session tmux-servers/hub.conf had already created there.
+
+@test "a leading dot is stripped, not folded" {
+  load_lib
+  run panel_session_name /home/someone/.dotfiles
+  assert_success
+  assert_output 'dotfiles'
+  # The negative control: the pre-fix rule produced this, and it is the whole bug.
+  refute_output '_dotfiles'
+}
+
+@test "an interior dot is folded to an underscore" {
+  # tmux reads `.` as the window separator inside a target, so `-t my.project` addresses
+  # window "project" of session "my" -- a different thing, or nothing at all.
+  load_lib
+  run panel_session_name /home/someone/my.dotted.project
+  assert_success
+  assert_output 'my_dotted_project'
+}
+
+@test "a leading dot AND interior dots are handled in one pass" {
+  load_lib
+  run panel_session_name /home/someone/.my.config
+  assert_success
+  assert_output 'my_config'
+}
+
+@test "an ordinary name passes through untouched" {
+  load_lib
+  run panel_session_name /home/someone/dev/platform
+  assert_success
+  assert_output 'platform'
+}
+
+@test "a trailing slash does not eat the name" {
+  # find(1) never emits one, but a hand-typed `sessionizer.sh ~/.dotfiles/` does, and
+  # ${1##*/} on that yields the empty string -- a session named "".
+  load_lib
+  run panel_session_name /home/someone/.dotfiles/
+  assert_success
+  assert_output 'dotfiles'
+}
+
+@test "a name that is only a dot-prefix does not become empty" {
+  load_lib
+  run panel_session_name '/home/someone/.x'
+  assert_success
+  assert_output 'x'
+}
+
 # ── The skeleton is a real, working panel ────────────────────────────────────
 
 @test "the skeleton lists three rows of two tab-separated fields" {

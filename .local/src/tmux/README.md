@@ -275,7 +275,7 @@ had to learn a new concept for this, because the layout keeps the basename as th
 
 ```
 ~/.worktrees/<repo>-agent-N     directory basename
-           == <repo>-agent-N    tmux session name       sessionizer.sh:session_name
+           == <repo>-agent-N    tmux session name       panel-lib.sh:panel_session_name
            -> project <repo>    agent-panel             render.rs:project_from_path
            -> label   N:<win>   agent-panel row label   render.rs:short_target
 ```

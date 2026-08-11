@@ -66,7 +66,7 @@ make_repo() {
 
 @test "an interior dot is folded to an underscore" {
   # tmux reads `.` as the window separator inside a target: `-t my.project` addresses window
-  # "project" of session "my". sessionizer.sh:38 folds for the same reason.
+  # "project" of session "my". panel-lib.sh:panel_session_name is where the rule lives.
   run wt_repo_name /home/someone/my.dotted.project
   assert_success
   assert_output 'my_dotted_project'

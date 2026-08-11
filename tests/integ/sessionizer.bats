@@ -26,6 +26,7 @@ setup() {
   mkdir -p "$SANDBOX/roots/alpha/proj-one" \
     "$SANDBOX/roots/alpha/node_modules/should-be-pruned" \
     "$SANDBOX/roots/beta/my.dotted.project" \
+    "$SANDBOX/roots/beta/.dotted-root" \
     "$SANDBOX/roots/beta/.git/hooks"
   # COLON-separated, like PATH: $SANDBOX contains a space by design, and a space-delimited
   # list cannot express such a path at all. The first draft of the script used spaces and this
@@ -41,6 +42,15 @@ setup() {
   run "$SESSIONIZER" --name "$SANDBOX/roots/beta/my.dotted.project"
   assert_success
   assert_output 'my_dotted_project'
+}
+
+@test "a leading dot is stripped rather than folded" {
+  # `~/.dotfiles` is the project `dotfiles` everywhere else (project-name.sh), and
+  # tmux-servers/hub.conf names its session `dotfiles` by hand. Folding gave `_dotfiles`, so
+  # Prefix+f opened a SECOND session on the same directory.
+  run "$SESSIONIZER" --name "$SANDBOX/roots/beta/.dotted-root"
+  assert_success
+  assert_output 'dotted-root'
 }
 
 @test "an ordinary name is passed through untouched" {
@@ -134,6 +144,16 @@ setup() {
   assert_success
   assert_called 'switch-client -t my_dotted_project'
   assert_not_called 'my.dotted.project'
+}
+
+@test "a dot-directory reaches tmux as the project's own session, not a second one" {
+  # The end-to-end half of the strip. `assert_not_called '_dotted-root'` is the negative
+  # control: it is exactly the name the old rule sent, and it is what put two sessions on one
+  # directory.
+  TMUX=/tmp/fake,1,0 run "$SESSIONIZER" "$SANDBOX/roots/beta/.dotted-root"
+  assert_success
+  assert_called 'switch-client -t dotted-root'
+  assert_not_called '_dotted-root'
 }
 
 @test "a path that is not a directory is rejected before any tmux call" {
