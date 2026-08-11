@@ -257,6 +257,32 @@ board_rows() { # $1=board file
 board_approved() { grep -Eq "$BOARD_APPROVAL_RE" "${1:-/dev/null}" 2>/dev/null; }
 board_started()  { grep -Eq '^- *Started: *[0-9]' "${1:-/dev/null}" 2>/dev/null; }
 
+# board_is_wave FILE -> 0 if the board DECLARES wave mode in its `## Meta` block.
+#
+# Which driver a board gets is decided by this one test, and getting it wrong is
+# silent both ways: a wave board handed to /kb:sprint is branched, PR'd and merged
+# with no wave semantics at all, and a sprint board handed to /wave waits forever
+# for a branch nobody cut.
+#
+# THE ANCHOR IS THE WHOLE POINT. `- Mode: wave:1` is a declaration; the same words
+# inside a `## Run log` line ("refused: board is Mode: wave:1, needs /wave") are a
+# description of one. An unanchored matcher cannot tell them apart, so a plain
+# sprint board acquires wave mode the moment anything writes prose about a wave
+# into its log — including this harness's own refusal messages, which is exactly
+# the shape that makes it self-inflicted. `^- *` pins it to a Meta list item.
+#
+# Case-insensitive because the Meta block is hand-editable and `Mode: Wave` is the
+# same declaration; the leading `- ` is not negotiable, the capital W is.
+#
+# It lives HERE rather than in delivery-loop (where it started) for the reason this
+# whole file exists: it had two readers that did not agree. delivery-loop's was
+# anchored, wave-overseer/SKILL.md told the model to run a bare `grep -q 'Mode:
+# wave'`. All four wave boards on disk today declare it anchored, so the two have
+# not yet split on a real board — this is a latent divergence being closed before
+# it fires, not a post-mortem. Worth closing early precisely because the failure is
+# a silent mode mismatch, which presents as "the timer fires and nothing moves".
+board_is_wave() { grep -qiE '^- *Mode: *wave' "${1:-/dev/null}" 2>/dev/null; }
+
 # board_has_stage FILE open|attention|eyes -> 0 if any row qualifies
 board_has_stage() {
   local f="${1:-}" class="${2:-}" _t stage

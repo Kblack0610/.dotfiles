@@ -189,6 +189,66 @@ EOF
   run board_approved "$BB"; assert_failure
 }
 
+# ── board_is_wave: which driver a board gets ─────────────────────────────────
+
+@test "board_is_wave reads a Meta declaration, in either case" {
+  write_bb <<'EOF'
+## Meta
+- Mode: wave:1
+EOF
+  run board_is_wave "$BB"; assert_success
+  # The Meta block is hand-editable, so the capital is not a different mode.
+  write_bb <<'EOF'
+## Meta
+- Mode: Wave:1
+EOF
+  run board_is_wave "$BB"; assert_success
+}
+
+@test "board_is_wave ignores PROSE about a wave — the anchor is the whole point" {
+  # THE negative control, and the reason this predicate is anchored. A board that
+  # merely TALKS about wave mode is not in it. Every line below is a real message
+  # this harness emits: delivery-loop's own refusal text names the mode it refused,
+  # and an overseer pass quotes the board it just read. An unanchored matcher makes
+  # a plain sprint board acquire wave mode the moment the harness writes about one
+  # — self-inflicted, and silent, because a mode mismatch presents as "the timer
+  # fires and nothing moves".
+  write_bb <<'EOF'
+## Meta
+- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY
+
+## Run log
+- 07:48 refused: sprint-v1.11.1.md is Mode: wave:1 with no wave driver armed
+- 07:56 overseer pass: confirmed `Mode: wave` on the sibling board, not this one
+
+## Overseer pass
+A `Mode: wave:1` board is drainable by delivery-loop, which fires /kb:sprint resume.
+EOF
+  run board_is_wave "$BB"; assert_failure
+}
+
+@test "board_is_wave is false for a plain sprint board and a missing file" {
+  write_bb <<'EOF'
+## Meta
+- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY
+EOF
+  run board_is_wave "$BB"; assert_failure
+  # Same no-op-on-missing-file contract as every other predicate here: a timer-driven
+  # daemon must not die because a board was archived between two passes.
+  run board_is_wave "$BATS_TEST_TMPDIR/gone.md"; assert_failure
+  run board_is_wave; assert_failure
+}
+
+@test "board_is_wave agrees with the real wave fixtures" {
+  # Provenance guard: the fixtures are sanitized copies of real boards, so if a wave
+  # ever stops declaring its mode the way these do, this fails instead of the driver
+  # silently picking /kb:sprint.
+  run board_is_wave "$BATS_TEST_DIRNAME/../fixtures/boards/wave-gated.md"
+  assert_success
+  run board_is_wave "$BATS_TEST_DIRNAME/../fixtures/boards/queue-ticket-first.md"
+  assert_failure
+}
+
 @test "board_drainable needs BOTH approval and open work" {
   write_bb <<'EOF'
 ## Meta
