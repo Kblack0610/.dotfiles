@@ -30,12 +30,9 @@ IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$
 IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:node_modules:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 
-# session_name <dir> -- basename with dots folded to underscores.
-#
-# The fold is not cosmetic. tmux treats `.` as the window/pane separator inside a target, so
-# `-t my.project` addresses window "project" of session "my" -- an unsanitised name silently
-# addresses something else, or nothing at all.
-session_name() { basename "$1" | tr . _; }
+# session_name <dir> -- the session this directory lands in. panel-lib owns the rule
+# (leading dot stripped, interior dots folded); this is the `--name` verb's front door.
+session_name() { panel_session_name "$1"; }
 
 cmd_list() {
   local roots=() r prune_expr=() p

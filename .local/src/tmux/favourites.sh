@@ -287,7 +287,7 @@ cmd_restore() {  # tool id cwd
     [ -d "$cwd" ] || die "directory gone: $cwd"
 
     local name inner
-    name=$(basename "$cwd" | tr . _)
+    name=$(panel_session_name "$cwd")
     case "$tool" in
         claude)   inner="claude --resume $id || claude" ;;
         opencode) inner="opencode --session $id || opencode" ;;
