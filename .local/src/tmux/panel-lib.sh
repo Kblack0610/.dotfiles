@@ -206,6 +206,29 @@ panel_fzf_preview() {
 # ── tmux ─────────────────────────────────────────────────────────────────────
 panel_in_tmux() { [ -n "${TMUX:-}" ]; }
 
+# panel_session_name <dir> -- the tmux session name a directory carries.
+#
+# Leading dot STRIPPED, then any remaining dot folded to an underscore. Both halves are
+# load-bearing and they answer different failures:
+#
+#   the strip -- `~/.dotfiles` is the project `dotfiles` to every other layer of this repo
+#     (project-name.sh:resolve_project_name, and .config/tmux-servers/hub.conf names the
+#     session `dotfiles` by hand). A picker that folded instead of stripped produced
+#     `_dotfiles`, so Prefix+f on ~/.dotfiles opened a SECOND session beside the one already
+#     sitting there -- same directory, two sessions, neither one wrong-looking.
+#   the fold  -- tmux reads `.` as the window separator inside a target, so `-t my.project`
+#     addresses window "project" of session "my", not a session named `my.project`.
+#
+# One copy, because there were three and they disagreed: sessionizer.sh and favourites.sh
+# folded only, worktree.sh stripped and folded while its comment credited sessionizer with a
+# rule sessionizer did not have.
+panel_session_name() {
+  local base
+  base="$(basename -- "$1")"
+  base="${base#.}"
+  printf '%s\n' "${base//./_}"
+}
+
 # panel_focus_session <name> / panel_focus_window <target>
 # switch-client inside tmux, attach outside. Three correct copies existed (cockpit.sh:90,
 # favourites.sh:302, agent-panel/src/tmux.rs:75); this is the fourth and last.

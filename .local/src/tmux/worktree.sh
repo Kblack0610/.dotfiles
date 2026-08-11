@@ -32,7 +32,7 @@
 # So the layout is FLAT and the basename carries the identity:
 #
 #   ~/.worktrees/<repo>-agent-N        directory basename
-#              == <repo>-agent-N       tmux session name  (sessionizer.sh:session_name)
+#              == <repo>-agent-N       tmux session name  (panel_session_name)
 #              -> project <repo>       agent-panel render.rs:project_from_path
 #              -> label   N:<window>   agent-panel render.rs:short_target
 #
@@ -77,15 +77,10 @@ wt_main_repo() {
 
 # wt_repo_name <main-repo> -- the name a worktree of this repo carries.
 #
-# Leading dot stripped (`.dotfiles` -> `dotfiles`) and dots folded to underscores. The fold
-# is sessionizer.sh:38's rule and is not cosmetic: tmux reads `.` as the window separator
-# inside a target, so `-t my.project` addresses window "project" of session "my".
-wt_repo_name() {
-  local base
-  base="$(basename "$1")"
-  base="${base#.}"
-  printf '%s\n' "$base" | tr . _
-}
+# Leading dot stripped (`.dotfiles` -> `dotfiles`), interior dots folded. Same rule as every
+# other session name, and it lives in panel-lib:panel_session_name -- see the note there for
+# why each half matters.
+wt_repo_name() { panel_session_name "$1"; }
 
 # wt_default_branch <main-repo> -- what this repo calls its trunk.
 wt_default_branch() {
