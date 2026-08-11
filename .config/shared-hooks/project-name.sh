@@ -103,6 +103,59 @@ project_repo_path() {
   printf '%s' "$repo"
 }
 
+# ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
+#
+# project_release_version <project> [summary] -> `v1.11.0`, or "" if it ships nothing.
+#
+# THE EMPTY STRING IS THE INTERESTING ANSWER. It is the one discriminator the wave
+# needs, and it needs no new config key to express:
+#
+#   non-empty -> a SHIPPING APP. The app owns the version. The notes sheet must
+#                track the next RELEASE and never mint a number of its own.
+#   empty     -> a NOTES-ONLY project (agent-runtime, notes-cockpit, gsuite-comms:
+#                no repo artifact, no tags). The sheet counter is the only counter
+#                there is, and it is already correct. Nothing changes for these.
+#
+# Why this function exists at all: the notes CLI has ZERO knowledge of app versions
+# - no package.json read, no tag read - so its `vX.Y.Z` counter and the app's real
+# release tags were two counters in one namespace with no link in either direction.
+# A wave rolled `v1.11.1` and `v1.11.2` into the notes while the app's newest tag was
+# still `v1.11.0`; nothing errored, and the wave had named itself after two versions
+# that will never ship. This is the read side of that link.
+#
+# Prints the bare VERSION, not the tag: callers want `v1.11.0`, not `<app>-v1.11.0`.
+project_release_version() {
+  local proj="$1" summary="${2:-}" repo repo_name lib tag=""
+  repo="$(project_repo_path "$proj")"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+
+  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=/dev/null
+  . "$lib" 2>/dev/null || return 0
+
+  repo_name="$(project_repo_name "$proj")"
+  if [ "$repo_name" = "$proj" ]; then
+    # The project IS the repo, so a bare `v*` cannot collide with a sibling product
+    # and git_latest_tag's full ladder (incl. the `<!-- tagglob: -->` override and
+    # `git describe`) is exactly right.
+    tag="$(git_latest_tag "$repo" "$proj" "$summary")"
+  else
+    # An app inside a monorepo. git_latest_tag would fall through to bare `v*` and
+    # hand back a SIBLING's tag - measured: `time-tangle` resolved to a different app's
+    # mobile tag entirely. Product-scoped globs only.
+    tag="$(git_product_tag "$repo" "$proj")"
+  fi
+
+  [ -n "$tag" ] || return 0
+  # Tag -> bare version, for BOTH tag shapes. `##*-v` strips a product prefix
+  # (`shipper-v1.11.0` -> `1.11.0`) but leaves an unprefixed tag untouched
+  # (`v2.3.4` -> `v2.3.4`), so the `#v` normalises that second case instead of
+  # emitting `vv2.3.4`. Caught by the single-product-repo test, not by reading it.
+  local ver="${tag##*-v}"
+  printf 'v%s' "${ver#v}"
+}
+
 # project_lab_names <repo> -> every project belonging to that repo, one per line.
 #
 # The INVERSE of project_repo_name, and the join the session preflight needs: a
