@@ -90,7 +90,7 @@ Model notes:
 ## Project overview / "Next up" index
 
 `notes-version-summary --overview <profile> <project>` (or `--overview --all`) writes a
-`<!-- nextup:auto -->` block into the project's `summary.md`, just above `## → For the agents`:
+`<!-- nextup:auto -->` block into the project's `summary.md`, above the STATUS marker:
 
 ```
 ## Now
@@ -105,8 +105,11 @@ Model notes:
 It is generated in one pass from the last few release summaries + a dated git log + the full working
 sheet, so `## Now` is a thorough read of where the project is and `## Next` proposes NEW steps (it does
 NOT repeat tasks already on the sheet - the `## Next` items are additive suggestions you can accept). It
-owns only its marker block; STATUS (lab-status), the AUTO feed (lab-sync), and `## → For the agents`
-(yours) are left untouched.
+owns only its marker block; STATUS (lab-status) and the AUTO feed (lab-sync) are left untouched.
+
+There is no longer a `## → For the agents` section. It was the human's channel TO the agent and was
+read by the preflight while sitting empty in every live project, so wants now go on the BOARD
+(`notes ptask <project> add "..." #ai`), whose `#ai` lane the preflight injects at turn 1.
 
 Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
 browser (the whole `summary.md` in the preview) above the version list; `C-s` on that row regenerates
