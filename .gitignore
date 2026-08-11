@@ -216,6 +216,7 @@ test_notifications.sh
 .local/bin/binks
 .local/bin/captain-watchdog
 .local/bin/delivery-loop
+.local/bin/wave-watchdog
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
 .local/bin/notes-to-vikunja

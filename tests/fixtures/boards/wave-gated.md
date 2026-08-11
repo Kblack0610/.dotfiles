@@ -1,6 +1,10 @@
 # Wave 2026-07-28
 
+## Meta
+- Mode: wave:1
+- Started:
 - Approval: PENDING
+- Gate ask: ask:0ACTm8 (scope-out gate, pending)
 
 ## Queue
 
