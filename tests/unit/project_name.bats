@@ -355,3 +355,130 @@ EOF
   assert_success
   assert_output 'toolrepo'
 }
+
+# ── project_release_version: does this project SHIP anything? ─────────────────
+#
+# The empty string is the load-bearing answer. It is the discriminator between a
+# shipping app (the app owns the version; the notes sheet must never mint one) and
+# a notes-only project (the sheet counter is the only counter). Getting it wrong in
+# the "" direction makes a shipping app start minting phantom versions again;
+# getting it wrong in the other direction hands a project a SIBLING's version.
+
+# tagged_repo <tag>... -- a throwaway repo carrying the given tags. Host-safe: git
+# only, no daemon, no server, all inside $SANDBOX.
+tagged_repo() {
+  mkdir -p "$REPO"
+  git -C "$REPO" init -q -b develop
+  git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
+  touch "$REPO/README.md"
+  git -C "$REPO" add -A >/dev/null
+  git -C "$REPO" commit -qm init
+  local t; for t in "$@"; do git -C "$REPO" tag "$t"; done
+}
+
+# A registry whose monorepo is the sandbox repo, so the two hops reach real tags.
+write_release_map() {
+  cat > "$MAP" <<EOF
+{
+  "paths": { "$REPO": "monorepo" },
+  "apps": {},
+  "aliases": {},
+  "trackers": {
+    "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
+    "monorepo":  { "system": "vikunja" },
+    "shipper":   { "system": "vikunja", "repo": "monorepo" },
+    "webbish":   { "system": "vikunja", "repo": "monorepo" },
+    "quiet-app": { "system": "vikunja", "repo": "monorepo" },
+    "no-repo":   { "system": "vikunja" }
+  }
+}
+EOF
+}
+
+@test "project_release_version: an app in a monorepo gets its own product tag, as a bare version" {
+  write_release_map
+  tagged_repo shipper-v1.11.0 shipper-v1.10.0
+  run project_release_version shipper
+  assert_success
+  # The VERSION, not the tag: callers want v1.11.0, not shipper-v1.11.0.
+  assert_output 'v1.11.0'
+}
+
+@test "project_release_version: an app with NO tags does not inherit a SIBLING's version" {
+  # THE negative control, and a bug that was live: git_latest_tag's step 3 falls back
+  # to a bare `v*`, which in a monorepo matches every product at once. Measured before
+  # the fix -- asking for `time-tangle` returned a SIBLING app's mobile tag, a different
+  # product's version, with no error and looking entirely plausible. A wave reading that
+  # would name its branch, board and frozen note after another app's release.
+  write_release_map
+  tagged_repo shipper-v1.11.0 v9.9.9
+  run project_release_version quiet-app
+  assert_success
+  assert_output ''
+}
+
+@test "project_release_version: the <app>-web-v* convention resolves too" {
+  # Tag conventions differ per app in the real corpus: some use `<app>-v*`, others use
+  # `<app>-web-v*`. Both must work or the second group silently reads as notes-only.
+  write_release_map
+  tagged_repo webbish-web-v1.0.1 webbish-mobile-v1.0.0
+  run project_release_version webbish
+  assert_success
+  assert_output 'v1.0.1'
+}
+
+@test "project_release_version: the primary line wins over a platform line" {
+  # Web ships more often than mobile here, so `<app>-v*` is the line that tracks
+  # "what version is this product on". Ordering, not luck.
+  write_release_map
+  tagged_repo shipper-v1.11.0 shipper-mobile-v1.12.0
+  run project_release_version shipper
+  assert_success
+  assert_output 'v1.11.0'
+}
+
+@test "project_release_version: a project that IS its own repo may use bare v* tags" {
+  # No sibling to collide with, so the full git_latest_tag ladder is correct here.
+  write_release_map
+  tagged_repo v2.3.4
+  run project_release_version monorepo
+  assert_success
+  assert_output 'v2.3.4'
+}
+
+@test "project_release_version: a repo with NO tags at all is a notes-only project" {
+  # agent-runtime, notes-cockpit, gsuite-comms. The sheet counter is the only counter
+  # they have and it is already correct -- this must stay empty so nothing changes.
+  write_release_map
+  tagged_repo
+  run project_release_version shipper
+  assert_success
+  assert_output ''
+}
+
+@test "project_release_version: no repo, no registry, and a missing lib all return empty successfully" {
+  write_release_map
+  tagged_repo shipper-v1.11.0
+  run project_release_version no-repo
+  assert_success
+  assert_output ''
+
+  # Every caller runs under `set -e`; a project nobody has released is a normal state,
+  # never an error. Same contract as the rest of git-release.sh.
+  GIT_RELEASE_LIB="$HOME/nope.sh" run project_release_version shipper
+  assert_success
+  assert_output ''
+
+  export PROJECT_MAP_FILE="$HOME/does-not-exist.json"
+  run project_release_version shipper
+  assert_success
+  assert_output ''
+}
+
+@test "project_release_version: a prerelease never outranks its own release" {
+  write_release_map
+  tagged_repo shipper-v1.11.0 shipper-v1.12.0-rc1
+  run project_release_version shipper
+  assert_success
+  assert_output 'v1.11.0'
+}
