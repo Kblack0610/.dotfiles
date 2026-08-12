@@ -72,32 +72,40 @@ Media/Music
 !.claude/hooks/
 !.claude/settings.json
 # .mcp.json (personal MCP endpoints) lives in the private overlay.
-# Skills: allowlist the generic ones (client/infra skills are in the private overlay).
+# Skills: an ALLOWLIST. Everything under .claude/skills is ignored, then the generic
+# skills are named back in one at a time; anything client- or infra-specific lives in
+# the private overlay instead, and .githooks/pre-commit blocks the tokens that decide
+# which is which. Skills are stored as <category>/<name>/, so the un-ignore has to walk
+# back down two levels - hence the */ and */* pairs below.
 !.claude/skills/
 .claude/skills/*
-!.claude/skills/claude-recall/
-!.claude/skills/compact-prep/
-!.claude/skills/compliance/
-!.claude/skills/deep-research/
-!.claude/skills/deep-research-code/
-!.claude/skills/dotfiles-land/
-!.claude/skills/figma-use/
-!.claude/skills/gh-workflows/
-!.claude/skills/ingest-worktree/
-!.claude/skills/marp-slide/
-!.claude/skills/notes-system/
-!.claude/skills/one-pager/
-!.claude/skills/project-index/
-!.claude/skills/provision-capture/
-!.claude/skills/sentinel/
-!.claude/skills/session-snapshot/
-!.claude/skills/shell-test-harness/
-!.claude/skills/skill-refine/
-!.claude/skills/sprint-overseer/
-!.claude/skills/svg-diagram/
-!.claude/skills/update-rules/
-!.claude/skills/wind-down/
-!.claude/skills/work-comms/
+!.claude/skills/SKILL-TEMPLATE.md
+!.claude/skills/*/
+.claude/skills/*/*
+!.claude/skills/authoring/figma-use/
+!.claude/skills/authoring/marp-slide/
+!.claude/skills/authoring/one-pager/
+!.claude/skills/authoring/shell-test-harness/
+!.claude/skills/authoring/skill-refine/
+!.claude/skills/authoring/svg-diagram/
+!.claude/skills/authoring/update-rules/
+!.claude/skills/memory/claude-recall/
+!.claude/skills/memory/compact-prep/
+!.claude/skills/memory/notes-system/
+!.claude/skills/memory/project-index/
+!.claude/skills/memory/session-registry/
+!.claude/skills/memory/session-snapshot/
+!.claude/skills/memory/wind-down/
+!.claude/skills/messaging/work-comms/
+!.claude/skills/monitoring/sentinel/
+!.claude/skills/ops/gh-workflows/
+!.claude/skills/ops/provision-capture/
+!.claude/skills/reference/compliance/
+!.claude/skills/research/deep-research/
+!.claude/skills/research/deep-research-code/
+!.claude/skills/workstreams/dotfiles-land/
+!.claude/skills/workstreams/ingest-worktree/
+!.claude/skills/workstreams/sprint-overseer/
 # Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
 !.claude/agents/
 .claude/agents/*
