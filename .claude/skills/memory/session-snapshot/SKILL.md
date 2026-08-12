@@ -1,6 +1,6 @@
 ---
 name: session-snapshot
-description: Snapshot every live working process before a reboot/logout and restore it after. Capture the things that DIE on reboot — tmux/Claude sessions (cwd + branch), dev servers (command line + port), `systemd --user` services split into auto-start-vs-manual, docker containers (with restart policy), and dirty/unpushed git repos — into a dated checklist in the notes inbox, then offer to recreate them. Use when the user says "snapshot running agents/tasks/processes", "what's running before I reboot", "what do I need to bring back up", "save my session state", "restore my sessions", or before any planned reboot/logout. Verbs: snapshot | restore. It OBSERVES and REPORTS, and on restore only acts with confirmation — it never kills sessions or force-restarts on its own.
+description: Snapshot every live working process before a reboot/logout and restore it after. Capture the things that DIE on reboot - tmux/Claude sessions (cwd + branch), dev servers (command line + port), `systemd --user` services split into auto-start-vs-manual, docker containers (with restart policy), and dirty/unpushed git repos - into a dated checklist in the notes inbox, then offer to recreate them. Use when the user says "snapshot running agents/tasks/processes", "what's running before I reboot", "what do I need to bring back up", "save my session state", "restore my sessions", or before any planned reboot/logout. Verbs: snapshot | restore. It OBSERVES and REPORTS, and on restore only acts with confirmation - it never kills sessions or force-restarts on its own.
 metadata:
   category: memory
   tags: [session, reboot, inventory]
@@ -22,10 +22,10 @@ Two verbs: **`snapshot`** (default) and **`restore`**.
 The checklist goes to the **notes inbox**, not `$HOME` root:
 
 - Full doc: `"$(notes path inbox)/<date>-reboot-restore.md"`  (e.g. `~/.notes/inbox/2026-06-30-reboot-restore.md`)
-- Triage pointer (so it surfaces in `notes inbox`): `notes inbox add "reboot restore checklist → <file>"`
+- Triage pointer (so it surfaces in `notes inbox`): `notes inbox add "reboot restore checklist -> <file>"`
 
 Use the resolved path from `notes path inbox`; never hard-code `~/.notes`. Never hand-write into
-`~/.notes/journal/` — but the inbox is a capture surface and a standalone dated file there is fine.
+`~/.notes/journal/` - but the inbox is a capture surface and a standalone dated file there is fine.
 
 ## snapshot
 
@@ -63,17 +63,17 @@ done
 ```
 
 Write the file with these sections (see the template the skill emits):
-- **⚠️ Before reboot** — dirty/unpushed repos (commit/stash prompt)
-- **🟢 Auto-restarts (enabled --user units)** — do nothing
-- **🟡 Manual restart** — running-but-not-enabled services + dev servers (with exact relaunch cmd + port)
-- **🔴 Dies on reboot** — tmux/Claude sessions table (session | dir | branch)
-- **Docker** — containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
-- **Resume task** — any in-flight task to pick up (e.g. the original reason for rebooting)
+- **⚠️ Before reboot** - dirty/unpushed repos (commit/stash prompt)
+- **🟢 Auto-restarts (enabled --user units)** - do nothing
+- **🟡 Manual restart** - running-but-not-enabled services + dev servers (with exact relaunch cmd + port)
+- **🔴 Dies on reboot** - tmux/Claude sessions table (session | dir | branch)
+- **Docker** - containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
+- **Resume task** - any in-flight task to pick up (e.g. the original reason for rebooting)
 
-Then: `notes inbox add "reboot restore checklist → $OUT"` and tell the user the path.
+Then: `notes inbox add "reboot restore checklist -> $OUT"` and tell the user the path.
 
 Key classification rule: **running ∧ ¬enabled = manual restart**. Enabled units auto-start; don't
-list them as action items. Ephemeral `mcp/filesystem` containers are noise — Claude respawns them.
+list them as action items. Ephemeral `mcp/filesystem` containers are noise - Claude respawns them.
 
 ## restore
 
@@ -95,5 +95,5 @@ Never auto-kill or auto-restart without an explicit go-ahead. Confirm the batch,
 ## Notes
 
 - The skill may use real `date`; in a sandboxed agent context, accept the date as an argument.
-- Don't touch auth tokens, sqlite, or other runtime state — this is read-only inventory + opt-in restart.
+- Don't touch auth tokens, sqlite, or other runtime state - this is read-only inventory + opt-in restart.
 - Pairs with `wind-down` (single-session teardown). This skill is host-wide: every session at once.

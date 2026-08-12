@@ -1,6 +1,6 @@
 ---
 name: gh-workflows
-description: GitHub operations via the gh CLI — pull requests, issues, CI checks, workflow runs, releases, and repo management. Use whenever the user asks to interact with GitHub (create/view PRs, check CI, browse issues, run workflows, etc.). Prefer this over any GitHub MCP.
+description: GitHub operations via the gh CLI - pull requests, issues, CI checks, workflow runs, releases, and repo management. Use whenever the user asks to interact with GitHub (create/view PRs, check CI, browse issues, run workflows, etc.). Prefer this over any GitHub MCP.
 metadata:
   category: ops
   tags: [git, github, pull-requests, ci]
@@ -9,7 +9,7 @@ metadata:
 
 # gh-workflows
 
-Drive GitHub through the `gh` CLI via Bash. No MCP wrapper needed — `gh` is authenticated on this machine and covers the full GitHub surface.
+Drive GitHub through the `gh` CLI via Bash. No MCP wrapper needed - `gh` is authenticated on this machine and covers the full GitHub surface.
 
 ## Pull requests
 
@@ -24,7 +24,7 @@ gh pr view <number> --json state,statusCheckRollup,reviewDecision
 gh pr diff <number>
 gh pr checks <number>
 
-# Create a PR — always pass body via HEREDOC for multi-line content
+# Create a PR - always pass body via HEREDOC for multi-line content
 gh pr create --title "short title under 70 chars" --body "$(cat <<'EOF'
 ## Summary
 - bullet one
@@ -93,10 +93,10 @@ gh api --paginate repos/owner/name/issues
 
 - Never use `--no-verify`, `--no-gpg-sign`, or similar hook-bypass flags unless the user explicitly asks.
 - Never force-push to `main` / `master`. Warn the user if they request it.
-- Prefer creating new commits over `git commit --amend` when a pre-commit hook fails — the failed commit did not happen, so `--amend` would modify the previous commit.
-- Before commenting on a PR or closing an issue, confirm with the user unless the action was explicitly requested — these are visible to others.
+- Prefer creating new commits over `git commit --amend` when a pre-commit hook fails - the failed commit did not happen, so `--amend` would modify the previous commit.
+- Before commenting on a PR or closing an issue, confirm with the user unless the action was explicitly requested - these are visible to others.
 - For destructive ops (force-push, branch delete, release delete), confirm first.
-- Pushing a branch, opening a PR, and merging your own green PR are none of the above — they are covered by the Landing rule in `CLAUDE.md` and need no confirmation. Do not invent a gate for them here.
+- Pushing a branch, opening a PR, and merging your own green PR are none of the above - they are covered by the Landing rule in `CLAUDE.md` and need no confirmation. Do not invent a gate for them here.
 
 ## Tips
 

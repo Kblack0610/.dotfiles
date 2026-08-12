@@ -1,14 +1,14 @@
 ---
 name: sprint-overseer
 description: >-
-  Sprint Overseer — watchdog and single notification voice for /kb:sprint batch runs. Use when
+ Sprint Overseer - watchdog and single notification voice for /kb:sprint batch runs. Use when
   the user says "watch the sprint", "how's the batch going", "is the sprint stuck", "escalate
-  that block", or "wrap up the sprint report" — and as the recurring half of a sprint via
+ that block", or "wrap up the sprint report" - and as the recurring half of a sprint via
   `/loop 10m /sprint-overseer watch`. Verbs: watch | status | escalate | report. It OBSERVES,
-  VERIFIES, and NOTIFIES — it has no execution verb: it never dispatches agents, never merges or
+ VERIFIES, and NOTIFIES - it has no execution verb: it never dispatches agents, never merges or
   closes PRs, never flips tracker state, and never touches release gates. Execution belongs to
   the /kb:sprint dispatcher; queueing to kb-sprint-owner; release analysis to release-coordinator.
-  Prefer /captain as the user entry point — this skill is internal watchdog machinery; the
+ Prefer /captain as the user entry point - this skill is internal watchdog machinery; the
   canonical loop line is `/loop 10m /captain watch` (which runs this skill's watch pass).
 metadata:
   category: workstreams
@@ -43,19 +43,19 @@ headless/loop runs.
    the Vikunja `HUMAN:` line, or GitHub approval issues.
 3. **Only writes:** `agent-notify` calls, `notified: <ticket> <event>` markers in the Run log,
    and the `## Batch summary` section. Nothing else.
-4. **Verify, don't trust — including "completed".** A row's Status is the dispatcher's claim, and an
+4. **Verify, don't trust - including "completed".** A row's Status is the dispatcher's claim, and an
    Agent "completed" event means only "no exception at the supervisor level", NOT that the work
    finished. Before notifying "merged", re-check `gh pr view <pr> --json state,mergedAt` and the
    ticket's done flag. For audit/fix rows, re-check the **disk sentinel**: the agent's
    `~/.agent/plans/{project}/checkpoints/{ticket}.md` must end with `STATUS: DONE`. The overseer's
-   value is independent verification — if it parrots the dispatcher (or the "completed" event) it's
+ value is independent verification - if it parrots the dispatcher (or the "completed" event) it's
    dead weight.
-5. **Ask git, not only GitHub.** The three checks above — PR state, tracker flag, disk sentinel —
-   all agreed with the agent the day one reported `completed · 16h` after dying on a model outage,
+5. **Ask git, not only GitHub.** The three checks above - PR state, tracker flag, disk sentinel - 
+ all agreed with the agent the day one reported `completed - 16h` after dying on a model outage,
    because none of them consults the repository. Before notifying "merged", also run
    `merge_proof <repo> <ticket-ref> <branch> [merge-sha]` (source
    `~/.local/lib/agent-merge-proof.sh`) and require exit `0`. `1` means the content is not on the
-   integration branch yet — that is a **false-completion**, not a merge, no matter what the PR
+ integration branch yet - that is a **false-completion**, not a merge, no matter what the PR
    object says. `2` means a claim was wrong; escalate rather than retry. A PR can be merged and its
    content still unreachable from `develop`: reverted, force-pushed over, or merged to the wrong base.
 
@@ -65,16 +65,16 @@ headless/loop runs.
 |---|---|---|
 | ticket merged | normal | `mergedAt` set + tracker done flag + **`merge_proof` exit 0** (note if fallback `ticket done` was used). Without the git-graph check this event has fired on work that never reached `develop`. |
 | ticket blocked/errored | high | row `blocked`/`error` + `## Blocks` entry; ping includes the punch-list head |
-| stall | high | no Run-log append AND no observable change on the in-progress row (PR head SHA, check states, tracker labels) for **>30 min** → "dispatcher may be dead — resume with `/kb:sprint resume`" |
-| false-completion | high | the Agent reported "completed" but the row's checkpoint sentinel is NOT `STATUS: DONE` (it's `FAILED`/`PARTIAL`/absent) and live `gh`/tracker doesn't prove done, **or `merge_proof` refuses a row marked `merged`** → "agent died mid-run, work unfinished — resume with `/captain resume`". This is the exact failure that hid a model-outage death behind a `completed · 16h` event. |
+| stall | high | no Run-log append AND no observable change on the in-progress row (PR head SHA, check states, tracker labels) for **>30 min** -> "dispatcher may be dead - resume with `/kb:sprint resume`" |
+| false-completion | high | the Agent reported "completed" but the row's checkpoint sentinel is NOT `STATUS: DONE` (it's `FAILED`/`PARTIAL`/absent) and live `gh`/tracker doesn't prove done, **or `merge_proof` refuses a row marked `merged`** -> "agent died mid-run, work unfinished - resume with `/captain resume`". This is the exact failure that hid a model-outage death behind a `completed - 16h` event. |
 | batch complete | normal | all rows terminal **and sentinel-confirmed**; sent with the `report` summary |
 
 Dedupe: every fired event appends `notified: <ticket> <event>` to the Run log. A pass fires only
-unmarked events — re-running is always safe, and a missed event self-heals on the next pass.
+unmarked events - re-running is always safe, and a missed event self-heals on the next pass.
 
 ## Verb: `watch`
 
-One idempotent observation pass — designed to be the recurring half of a sprint:
+One idempotent observation pass - designed to be the recurring half of a sprint:
 
 ```
 /loop 10m /sprint-overseer watch
@@ -88,8 +88,8 @@ One idempotent observation pass — designed to be the recurring half of a sprin
 3. Fire `agent-notify` for each unmarked event per the catalog
    (`agent-notify -t "sprint" -p <prio> "<event>"`); append the marker.
 4. Check stall: compare the Run log tail timestamp and the in-progress row's observable state
-   (incl. the checkpoint mtime) against the previous pass; >30 min frozen → stall event.
-5. If all rows are terminal **and sentinel-confirmed** and no `## Batch summary` exists → run `report`.
+ (incl. the checkpoint mtime) against the previous pass; >30 min frozen -> stall event.
+5. If all rows are terminal **and sentinel-confirmed** and no `## Batch summary` exists -> run `report`.
 
 This pass is observe-only and idempotent, so it is safe to run headlessly on a schedule. The
 **autonomous watchdog** (`captain-watchdog`, an agentctl runner on a permanently armed 12-min timer,
@@ -100,7 +100,7 @@ optional live-tail equivalent.
 
 ## Verb: `status`
 
-Same dashboard printed to the session — queue table with verified states, Run-log tail, any
+Same dashboard printed to the session - queue table with verified states, Run-log tail, any
 divergence between claimed and verified state. **No notifications, no markers.** Safe anytime.
 
 ## Verb: `escalate <ticket>`
@@ -113,30 +113,30 @@ head, what the human must decide, and the PR/ticket links. Marks `notified: <tic
 End-of-batch (or on demand for a post-mortem of an aborted sprint):
 
 1. Write `## Batch summary` into the sprint file: merged/blocked/skipped counts, PR list,
-   duration (Started → last terminal event), blocks needing human decisions.
+ duration (Started -> last terminal event), blocks needing human decisions.
 2. Send the batch-complete notification, ending with the handoff line:
    "next: `/release-coordinator status` or `plan`".
-3. Does **not** invoke release-coordinator — the human (or a normal session) picks it up; merged PRs
+3. Does **not** invoke release-coordinator - the human (or a normal session) picks it up; merged PRs
    surface in the captain's `status` automatically via `git log $LAST_TAG..origin/develop`.
 
 ## Operational model
 
-- Dispatcher (`/kb:sprint run`) lives in the **main session** — synchronously busy inside Task
-  calls. The watch pass runs **out-of-band** so it survives dispatcher death — primarily via the
+- Dispatcher (`/kb:sprint run`) lives in the **main session** - synchronously busy inside Task
+ calls. The watch pass runs **out-of-band** so it survives dispatcher death - primarily via the
   captain's **autonomous watchdog** (`captain-watchdog`, an agentctl runner, headless `claude -p`), and/or
   a user `/loop 10m /captain watch` second session. Stall + false-completion detection are the reason
   this is a separate process; the user is never required to host it.
 - The dispatcher's only notification is its own terminal abort (it can't assume the overseer
-  loop is running). Everything else is this skill's voice — never double-ping.
+ loop is running). Everything else is this skill's voice - never double-ping.
 - `agent-notify` (`~/.dotfiles/.local/bin/agent-notify`) fans out to every configured channel:
-  ntfy (`NTFY_URL`), Slack (`SLACK_WEBHOOK_URL`), desktop (`DISPLAY`). Always exits 0 — a
+ ntfy (`NTFY_URL`), Slack (`SLACK_WEBHOOK_URL`), desktop (`DISPLAY`). Always exits 0 - a
   notification must never fail a pass.
 
 ## Related
 
-- `/kb:sprint` — dispatcher (plan/run/resume/status) + sprint plan file schema
-- `kb-sprint-owner` agent — queue builder
-- `~/.claude/agents/sprint-overseer.md` — agent definition (delegate `watch` legwork
+- `/kb:sprint` - dispatcher (plan/run/resume/status) + sprint plan file schema
+- `kb-sprint-owner` agent - queue builder
+- `~/.claude/agents/sprint-overseer.md` - agent definition (delegate `watch` legwork
   to it as a subagent for headless/loop runs)
-- `release-coordinator` — downstream handoff target; its hard constraints are inherited here
-- `loop` skill — the recurrence mechanism
+- `release-coordinator` - downstream handoff target; its hard constraints are inherited here
+- `loop` skill - the recurrence mechanism

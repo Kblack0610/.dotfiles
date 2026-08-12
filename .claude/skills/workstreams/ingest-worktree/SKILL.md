@@ -9,10 +9,10 @@ metadata:
 
 # ingest-worktree
 
-Land work into landed, reviewable units — one concern per PR, nothing mixed, nothing unsafe. Two modes:
+Land work into landed, reviewable units - one concern per PR, nothing mixed, nothing unsafe. Two modes:
 
-- **LOCAL (default)** — ingest a dirty working tree, fanning it OUT into scoped PRs. Sections 1-5.
-- **REMOTE** — drain the open-PR queue that already exists on the forge. "Mode: REMOTE" below.
+- **LOCAL (default)** - ingest a dirty working tree, fanning it OUT into scoped PRs. Sections 1-5.
+- **REMOTE** - drain the open-PR queue that already exists on the forge. "Mode: REMOTE" below.
 
 Pick by what the user points at: their `git status` (local) vs "we have N open PRs / land them" (remote).
 
@@ -71,14 +71,14 @@ When the user points at the forge ("we have N open PRs", "land the open PRs", "d
 ```bash
 gh pr list --state open --json number,title,headRefName,baseRefName,isDraft,mergeable,mergeStateStatus,reviewDecision
 ```
-`mergeable`/`mergeStateStatus` often read `UNKNOWN` right after a push — GitHub computes them lazily. Viewing a PR forces the calc:
+`mergeable`/`mergeStateStatus` often read `UNKNOWN` right after a push - GitHub computes them lazily. Viewing a PR forces the calc:
 ```bash
 gh pr view <n> --json number,title,mergeable,mergeStateStatus,statusCheckRollup,files
 ```
 Reconcile the count with reality: a PR you JUST merged is gone from the list; a PR you just opened may not be counted yet.
 
 ### R2. Triage each PR
-Bucket by landability. Never merge blind — the diff review IS the gate on a repo with no CI.
+Bucket by landability. Never merge blind - the diff review IS the gate on a repo with no CI.
 - **MERGEABLE / CLEAN + green (or no CI configured)** -> land. `CI:none` means no checks run, so YOU are the check: `gh pr diff <n>` and read it.
 - **CONFLICTING / DIRTY** -> HOLD (or rebase the branch onto the base first); do not force it.
 - **failing CI (`statusCheckRollup` has failure)** -> HOLD; fix or hand back.
@@ -87,11 +87,11 @@ Bucket by landability. Never merge blind — the diff review IS the gate on a re
 Check file sets across the PRs you'll land: disjoint files merge in any order; overlapping files mean land one, then re-check the others' mergeability.
 
 ### R3. Land
-Show the queue (per PR: number, title, mergeable/CI, the one-line what, land-vs-hold) as a **report**, then land — invoking the skill is the authorization, so do not stop for an OK (Landing rule, `CLAUDE.md`). The R2 gates above hold a bad PR on their own; the only thing that still needs an ask is a PR **another author** owns. Land each matching the repo's merge convention (check `git log`: "Merge pull request #NN" => merge commits; a flat history => squash):
+Show the queue (per PR: number, title, mergeable/CI, the one-line what, land-vs-hold) as a **report**, then land - invoking the skill is the authorization, so do not stop for an OK (Landing rule, `CLAUDE.md`). The R2 gates above hold a bad PR on their own; the only thing that still needs an ask is a PR **another author** owns. Land each matching the repo's merge convention (check `git log`: "Merge pull request #NN" => merge commits; a flat history => squash):
 ```bash
 gh pr merge <n> --merge --delete-branch      # or --squash to match a squash repo
 ```
-`--delete-branch` is safe here because the branch is MERGED. NEVER `gh pr close --delete-branch` an UNMERGED PR — it orphans the only copy of that work (recover via `git log -g`).
+`--delete-branch` is safe here because the branch is MERGED. NEVER `gh pr close --delete-branch` an UNMERGED PR - it orphans the only copy of that work (recover via `git log -g`).
 
 ### R4. Sync local
 The merges advanced the remote base; bring local level and prune:
@@ -103,11 +103,11 @@ git stash pop
 ```
 
 ### R5. Report
-Per PR: landed (link + merge state) or HELD (why — conflict, red CI, draft, review gate). Then the synced main SHA and any branches pruned.
+Per PR: landed (link + merge state) or HELD (why - conflict, red CI, draft, review gate). Then the synced main SHA and any branches pruned.
 
 ## Triggers
 - Manual: `/ingest-worktree` (or the phrases in the description). LOCAL typically at end of a work batch or when `git status` has sprawled; REMOTE when open PRs have piled up.
-- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). REMOTE overlaps `my:pr-merge-flow` (which drives ONE PR deeply) — use this to drain MANY at once, that to babysit one.
+- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). REMOTE overlaps `my:pr-merge-flow` (which drives ONE PR deeply) - use this to drain MANY at once, that to babysit one.
 
 ## Boundaries
 - Never `git add -A`/`git commit -am` a mixed tree; one concern per commit, one file per PR.

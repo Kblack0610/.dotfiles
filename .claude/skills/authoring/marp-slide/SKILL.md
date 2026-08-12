@@ -27,12 +27,12 @@ Use this skill when the user:
 First, determine the appropriate theme based on the user's request and content.
 
 **Quick theme selection:**
-- **Technical/Developer content** → tech theme
-- **Business/Corporate** → business theme
-- **Creative/Event** → colorful or gradient theme
-- **Academic/Simple** → minimal theme
-- **General/Unsure** → default theme
-- **Dark background preferred** → dark or tech theme
+- **Technical/Developer content** -> tech theme
+- **Business/Corporate** -> business theme
+- **Creative/Event** -> colorful or gradient theme
+- **Academic/Simple** -> minimal theme
+- **General/Unsure** -> default theme
+- **Dark background preferred** -> dark or tech theme
 
 For detailed theme selection guidance, read `references/theme-selection.md`.
 
@@ -57,10 +57,10 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 4. Structure content following best practices:
    - Title slide with `<!-- _class: lead -->`
-   - Concise h2 titles (short noun phrase, ~2–6 words)
+ - Concise h2 titles (short noun phrase, ~2 - 6 words)
    - 3-5 bullet points per slide
    - Adequate whitespace
-   - **Budget by section** — 3–7 content slides per section, one idea per slide. See the
+ - **Budget by section** - 3 - 7 content slides per section, one idea per slide. See the
      Section-Budget Standard in `references/best-practices.md` (the canonical rule).
 
 5. Add images if needed using patterns from `references/image-patterns.md`
@@ -124,7 +124,7 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 2. **Outline by section**
    - Group the content into sections; each section = one audience attention span
-   - Apply the **Section-Budget Standard** (`references/best-practices.md`): 3–7 content
+ - Apply the **Section-Budget Standard** (`references/best-practices.md`): 3 - 7 content
      slides per section, one idea per slide; past ~7, split the section or cut
    - Purpose filter: drop anything that doesn't serve this audience's need
 
@@ -143,14 +143,14 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 5. **Structure content**
    - Title slide: `<!-- _class: lead -->` + h1
    - Content slides: h2 title + bullet points
-   - Keep titles to a short noun phrase (~2–6 words)
+ - Keep titles to a short noun phrase (~2 - 6 words)
    - Use 3-5 bullet points per slide
 
 6. **Refine quality**
    - Read `references/best-practices.md`
    - Ensure adequate whitespace
    - Maintain consistency
-   - Keep each bullet to one line (~6–12 words)
+ - Keep each bullet to one line (~6 - 12 words)
 
 7. **Add images**
    - If needed, consult `references/image-patterns.md`
@@ -162,7 +162,7 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
    - Use descriptive filename like `presentation.md`
 
 9. **Render & verify** (built-in quality gate)
-   - Prefer the global **`deck`** CLI — it auto-injects the kb-* theme-set so the deck
+ - Prefer the global **`deck`** CLI - it auto-injects the kb-* theme-set so the deck
      renders styled from any directory: `deck build presentation.md` (PDF), or
      `deck watch presentation.md` for a live-reloading preview server. See the
      "Global `deck` CLI" section below.
@@ -170,9 +170,9 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
      `marp presentation.md -o presentation.pdf --theme-set ~/.claude/skills/marp-slide/assets/themes`
      (add `--html` for an HTML preview).
    - Watch marp-cli output for overflow / content-bleed warnings, and confirm no slide
-     spills past its frame. If a slide overflows, split it — don't shrink the font.
+ spills past its frame. If a slide overflows, split it - don't shrink the font.
    - If neither `deck` nor `marp` is installed, print the install hint and skip
-     rendering — do not fail the task. Install, most to least portable: macOS
+ rendering - do not fail the task. Install, most to least portable: macOS
      `brew install marp-cli`; any OS with Node `npm install -g @marp-team/marp-cli`;
      one-off/CI `npx -y @marp-team/marp-cli@4 ...`; container/CI
      `docker run --rm -v "$PWD":/home/marp/app marpteam/marp-cli ...`.
@@ -182,7 +182,7 @@ For detailed theme selection guidance, read `references/theme-selection.md`.
 
 `deck` (on PATH via `~/.local/bin/deck`) is a thin, cross-machine wrapper around
 marp-cli that auto-injects this skill's theme-set (`--theme-set assets/themes`), so
-decks render fully styled from **any** directory — no per-project code repo needed. It
+decks render fully styled from **any** directory - no per-project code repo needed. It
 is the portable generalization of the fleet-platform `pnpm deck:build`/`deck:watch`.
 
 ```
@@ -223,13 +223,13 @@ name), then offer `deck watch <name>` to preview and `deck build <name>` to expo
 When users give vague instructions like "make it look good", "make it pop", or "make it cool" (in any language):
 
 1. **Infer theme from content**:
-   - Business content → business theme
-   - Technical content → tech or dark theme
-   - Creative content → gradient or colorful theme
-   - General → default theme
+ - Business content -> business theme
+ - Technical content -> tech or dark theme
+ - Creative content -> gradient or colorful theme
+ - General -> default theme
 
 2. **Apply best practices automatically**:
-   - Shorten titles to a short noun phrase (~2–6 words)
+ - Shorten titles to a short noun phrase (~2 - 6 words)
    - Limit bullet points to 3-5 items
    - Add adequate whitespace
    - Use consistent structure
@@ -237,7 +237,7 @@ When users give vague instructions like "make it look good", "make it pop", or "
 3. **Enhance visual hierarchy**:
    - Use h3 for sub-sections when appropriate
    - Break up dense text into multiple slides
-   - Ensure logical flow (intro → body → conclusion)
+ - Ensure logical flow (intro -> body -> conclusion)
 
 4. **Maintain professional tone**:
    - Match formality to content
@@ -286,12 +286,12 @@ Before delivering slides, verify:
 - [ ] Theme selected appropriately for content
 - [ ] Frontmatter sets `theme: kb-<name>` matching a theme in `assets/themes/`
 - [ ] Title slide uses `<!-- _class: lead -->`
-- [ ] All h2 titles are concise (short noun phrase, ~2–6 words)
+- [ ] All h2 titles are concise (short noun phrase, ~2 - 6 words)
 - [ ] Bullet points are 3-5 items per slide, one line each
-- [ ] Every section stays within the 3–7-slide budget (one idea per slide)
+- [ ] Every section stays within the 3 - 7-slide budget (one idea per slide)
 - [ ] Images / tables / diagrams use proper Marp syntax
 - [ ] File saved to the working directory (or user-specified path)
-- [ ] Rendered & verified — no slide overflow (or marp-cli absent and install hint shown)
+- [ ] Rendered & verified - no slide overflow (or marp-cli absent and install hint shown)
 
 ## References
 
