@@ -112,8 +112,91 @@ read by the preflight while sitting empty in every live project, so wants now go
 (`notes ptask <project> add "..." #ai`), whose `#ai` lane the preflight injects at turn 1.
 
 Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
-browser (the whole `summary.md` in the preview) above the version list; `C-s` on that row regenerates
+browser (the whole `summary.md` in the preview) above the roadmap; `C-s` on that row regenerates
 the overview. Rolling a version (`V`) refreshes the overview automatically. `--dry-run` previews.
+
+## The roadmap (`o`)
+
+A project sheet holds a PAST, a PRESENT and a FUTURE, and `o` shows all three in one list that
+reads down out of the future and into the past:
+
+```
+= overview =                     the summary.md index above
+  + v1.15.0  planned  3 open     the roadmap, furthest first
+  + v1.14.0  planned  6 open
+  > v1.13.0  current  2 open     the wave /wave runs and V freezes
+    v1.12.0                      frozen release records, newest first
+    v1.11.1
+```
+
+- `a` adds a task to the highlighted wave; `N` plans a new version (it opens with its first
+  task - a planned wave with nothing in it is a heading that says nothing).
+- `enter` opens the sheet (a wave row) or the note (overview / frozen row).
+- The preview of a wave row is that wave's section of the live sheet plus its AI note.
+
+On the sheet these are just more `## Wave:` sections below the current one:
+
+```markdown
+# myapp
+Version: v1.13.0
+
+## Wave: v1.13.0 (current)
+- [ ] full flow e2e #ai
+
+## Wave: v1.14.0 (planned)
+- [ ] android: sweep remaining screens #ai
+```
+
+The FIRST `## Wave` is the current one, always - `notes ptask`, `notes board`, `/wave` and the
+cockpit all read it by position, which is exactly why they ignore everything planned below it.
+Anything writing a planned section must keep it there; `notes ptask <project> add --to vX.Y.Z`
+is the sanctioned way, and it inserts in version order.
+
+From the shell:
+
+```bash
+notes projects --waves <project>                     # the roadmap, TSV
+notes ptask <project> add --to v1.14.0 "..."         # plan forward (mints the wave)
+notes ptask <project> move "<word>" --to v1.14.0     # split a pile into versions
+notes ptask <project> list --all                     # every wave, with its version
+```
+
+### A version does not close until it is finished
+
+`V` (and the headless `--roll-now`) REFUSES to roll while the current wave has open tasks. It
+names them and points at `move --to`. `--force` overrides.
+
+This is deliberate. Rolling used to freeze the whole sheet and reset it to an empty wave, so
+anything still unchecked left the live sheet and survived only inside the frozen note - which
+is how six open items ended up sealed in one project's `versions/v1.12.0.md` and on no live
+list anywhere. "Rolled" now means finished, or explicitly moved on.
+
+The roll then freezes the current wave ALONE (the planned ones are not a release record) and
+PROMOTES the planned wave named for the next version, tasks and all. So the loop is: plan into
+v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> `/wave` runs the promoted v1.14.0.
+
+### AI notes and the proof gate (`ai/<vX.Y.Z>.md`)
+
+Each version gets an AI note beside `versions/`:
+
+```
+myapp/
+  README.md          the sheet: current wave + the roadmap
+  summary.md         the overview
+  versions/v1.12.0.md
+  ai/v1.13.0.md      what the agents did this version, and the evidence
+```
+
+`notes ptask <project> done` requires evidence and appends a row to it:
+
+- `--proof <ref>` - something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped into the
+  line's marker comment beside any existing `vk:`/`ask:` id.
+- `--unverified "<why>"` - no checkable artifact, said out loud rather than left blank.
+
+Both doors exist on purpose. The failure mode of a proof field is not people lying in it, it is
+people leaving it blank until it means nothing - and the roll gate above only means something if
+a ticked checkbox does. `notes projects --ai-note <project> [--version vX.Y.Z]` resolves (and
+creates) the path, so no writer has to build it.
 
 ### Accepting suggestions (the `g` key)
 

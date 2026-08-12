@@ -203,6 +203,35 @@ pub fn cu_marker(line: &str) -> Option<String> {
     }
 }
 
+/// Merge `token` into a task line's trailing `<!-- … -->` marker comment, creating the
+/// comment when the line has none:
+///
+/// ```text
+/// - [x] facility save 400 #ai <!-- vk:602 -->   + "pr:1142"
+/// - [x] facility save 400 #ai <!-- vk:602 pr:1142 -->
+/// ```
+///
+/// ONE comment per line is the established shape (`vk:`, `ask:`, `pr:` all share it), and
+/// the cockpit's `ask:`/`vk:` readers scan for their own key inside it — so a second
+/// `<!-- … -->` appended alongside would still parse but would drift out of sync the first
+/// time anything rewrote one of them. A `-->` inside `token` would close the comment early
+/// and swallow the rest of the line, so it is neutralised rather than trusted.
+pub fn add_marker(line: &str, token: &str) -> String {
+    let token = token.replace("-->", "--&gt;");
+    let token = token.split_whitespace().collect::<Vec<_>>().join(" ");
+    if token.is_empty() {
+        return line.to_string();
+    }
+    let trimmed = line.trim_end();
+    match (trimmed.rfind("<!--"), trimmed.ends_with("-->")) {
+        (Some(i), true) => {
+            let inner = trimmed[i + 4..trimmed.len() - 3].trim();
+            format!("{}<!-- {inner} {token} -->", &trimmed[..i])
+        }
+        _ => format!("{trimmed} <!-- {token} -->"),
+    }
+}
+
 /// Remove a `<!-- cu:ID -->` bridge marker from a line, collapsing the space it leaves behind.
 /// No-op when absent. Keeps the ClickUp bridge's machine marker out of human-facing text
 /// (summaries) - it is not a comment-ONLY line, so the section-text filter alone would keep it.

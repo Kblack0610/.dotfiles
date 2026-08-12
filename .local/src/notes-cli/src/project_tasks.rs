@@ -13,20 +13,47 @@ use crate::config::Profile;
 use crate::logging::Logger;
 use crate::md;
 use crate::projects;
+use crate::waves;
 use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The current wave's heading TEXT — the first `## Wave…` line's text (e.g.
-/// `"Wave: new (current)"`). `md::section_span` matches a heading exactly, so callers
+/// The current wave's heading TEXT — the FIRST `## Wave…` line's text (e.g.
+/// `"Wave: v1.13.0 (current)"`). `md::section_span` matches a heading exactly, so callers
 /// resolve the live text rather than assuming a fixed string.
+///
+/// First, not `(current)`-suffixed: position is the invariant, and it is what makes the
+/// planned waves below it invisible to every reader here.
 fn current_wave(content: &str) -> Option<String> {
-    content.lines().find_map(|l| {
-        let rest = l.strip_prefix("## ")?;
-        rest.trim_start()
-            .starts_with("Wave")
-            .then(|| rest.trim().to_string())
-    })
+    waves::sections(content).first().map(|s| s.heading.clone())
+}
+
+/// The heading of the wave a verb should act on: the named one for `--to/--wave <ver>`,
+/// else the current wave. Minting a planned section when `--to` names a version the
+/// roadmap does not have yet is the point — that is how you plan forward.
+fn target_wave(content: &str, want: Option<&str>, mint: bool) -> Result<(String, Option<String>)> {
+    let Some(want) = want else {
+        let h = current_wave(content)
+            .ok_or_else(|| anyhow::anyhow!("no `## Wave` section on the sheet"))?;
+        return Ok((h, None));
+    };
+    let ver = waves::parse(want.trim())
+        .ok_or_else(|| anyhow::anyhow!("not a version: '{want}' (want vX.Y.Z)"))?;
+    if let Some(s) = waves::find(content, ver) {
+        return Ok((s.heading, None));
+    }
+    if !mint {
+        bail!(
+            "no wave {} on the sheet — plan it first with `add --to {}`",
+            waves::fmt(ver),
+            waves::fmt(ver)
+        );
+    }
+    let grown = waves::insert_planned(content, ver);
+    let heading = waves::find(&grown, ver)
+        .map(|s| s.heading)
+        .ok_or_else(|| anyhow::anyhow!("could not open wave {}", waves::fmt(ver)))?;
+    Ok((heading, Some(grown)))
 }
 
 /// The project's TASK sheet: `README.md` then `tasks.md`, whichever carries a `## Wave`.
@@ -44,7 +71,7 @@ fn task_sheet(dir: &Path) -> Option<PathBuf> {
 /// appends a wave to an existing `README.md`; else scaffolds a fresh `README.md` task
 /// sheet. `name` seeds the title of a fresh sheet.
 ///
-/// The wave is NAMED for the sheet's `Version:` line via `projects::wave_heading` — the
+/// The wave is NAMED for the sheet's `Version:` line via `waves::heading_current` — the
 /// same minter `projects::sheet_body` uses. This path used to hardcode the literal string
 /// `new`, which is how a sheet could read `## Wave: new (current)` directly under
 /// `Version: v0.0.2`: the version is meant to be the wave's only id, and a wave created
@@ -58,13 +85,13 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
         if !c.ends_with('\n') {
             c.push('\n');
         }
-        let heading = projects::wave_heading(&projects::wave_version_of(&c));
+        let heading = waves::heading_current(&projects::wave_version_of(&c));
         c.push_str(&format!("\n## {heading}\n- [ ] \n"));
         md::write_atomic(&readme, &c)?;
     } else {
         // No sheet at all, so no `Version:` line to read: a fresh sheet opens at v0.0.1,
         // matching what `projects --new` seeds.
-        let heading = projects::wave_heading("v0.0.1");
+        let heading = waves::heading_current("v0.0.1");
         fs::write(&readme, format!("# {name}\n\n## {heading}\n- [ ] \n"))?;
     }
     Ok(readme)
@@ -110,25 +137,68 @@ fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
-/// `notes ptask <name> list` — TSV `path<TAB>line<TAB>key<TAB>text` of the current wave's
-/// OPEN tasks (the cockpit's per-project data source; parallels `focus::open_focus_positions`).
-pub fn list(p: &Profile, name: &str) -> Result<i32> {
-    let Some((sheet, heading, content)) = sheet_and_wave(p, name)? else {
+/// `notes ptask <name> list [--wave vX.Y.Z | --all]` — TSV of OPEN tasks.
+///
+/// Bare `list` is the current wave and emits exactly the four columns it always has —
+/// `path<TAB>line<TAB>key<TAB>text` — because the cockpit and `/wave` both parse it. A
+/// wave SELECTOR adds a fifth column (the wave's version) rather than changing the first
+/// four, so a reader that only wants `$1..$4` is unaffected either way.
+pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool) -> Result<i32> {
+    let dir = projects::project_dir(p, name)?;
+    let Some(sheet) = task_sheet(&dir) else {
         return Ok(0);
     };
+    let content = fs::read_to_string(&sheet)?;
     let file = sheet.display();
-    for (n, l) in md::section_numbered(&content, &heading) {
-        if md::is_open_task(l) {
-            println!("{file}\t{n}\t{}\t{}", md::task_key(l), l.trim_end());
+
+    if !all && wave.is_none() {
+        let Some(heading) = current_wave(&content) else {
+            return Ok(0);
+        };
+        for (n, l) in md::section_numbered(&content, &heading) {
+            if md::is_open_task(l) {
+                println!("{file}\t{n}\t{}\t{}", md::task_key(l), l.trim_end());
+            }
+        }
+        return Ok(0);
+    }
+
+    let want = match wave {
+        Some(w) => Some(
+            waves::parse(w.trim())
+                .ok_or_else(|| anyhow::anyhow!("not a version: '{w}' (want vX.Y.Z)"))?,
+        ),
+        None => None,
+    };
+    for s in waves::sections(&content) {
+        if want.is_some() && s.version != want {
+            continue;
+        }
+        for (n, l) in md::section_numbered(&content, &s.heading) {
+            if md::is_open_task(l) {
+                println!(
+                    "{file}\t{n}\t{}\t{}\t{}",
+                    md::task_key(l),
+                    l.trim_end(),
+                    s.label()
+                );
+            }
         }
     }
     Ok(0)
 }
 
-/// `notes ptask <name> add <text>` — append `- [ ] <text>` under the current wave, creating
-/// the task sheet if the project has none. Unlike daily `focus add`, wave tasks are NOT
-/// day-stamped (they live in the version's wave until done or rolled, not carried forward).
-pub fn add(p: &Profile, log: &Logger, name: &str, text: &str) -> Result<i32> {
+/// `notes ptask <name> add <text> [--to vX.Y.Z]` — add `- [ ] <text>` to a wave, creating
+/// the task sheet if the project has none.
+///
+/// Without `--to` this is the current wave, exactly as before. With it, the task goes to a
+/// PLANNED wave — minted in version order below the current one if the roadmap does not
+/// hold it yet. That is the whole roadmap-forward loop: plan into `v1.14.0` while `v1.13.0`
+/// is still running, and the roll promotes it when v1.13.0 closes.
+///
+/// Unlike daily `focus add`, wave tasks are NOT day-stamped (they live in the version's
+/// wave until done or rolled, not carried forward).
+pub fn add(p: &Profile, log: &Logger, name: &str, text: &str, to: Option<&str>) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
@@ -136,44 +206,178 @@ pub fn add(p: &Profile, log: &Logger, name: &str, text: &str) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
     let sheet = ensure_task_sheet(&dir, name)?;
     let content = fs::read_to_string(&sheet)?;
-    let Some(heading) = current_wave(&content) else {
-        bail!("no `## Wave` section in {}", sheet.display());
-    };
+    let (heading, grown) = target_wave(&content, to, true)?;
+    let base = grown.unwrap_or(content);
     let line = format!("- [ ] {text}");
-    let new = md::insert_under_heading(&content, &heading, std::slice::from_ref(&line));
+    let new = md::insert_under_heading(&base, &heading, std::slice::from_ref(&line));
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("added to {} ({name})", sheet.display()));
     println!("{line}");
+    if to.is_some() {
+        println!("  -> {heading}");
+    }
     Ok(0)
 }
 
-/// `notes ptask <name> done <query>` — check off the first open wave task matching `<query>`.
-pub fn done(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> {
-    edit(p, log, name, query, "done", |l| Some(md::set_checkbox(l, 'x')))
+/// `notes ptask <name> move <query> --to vX.Y.Z` — move the first open task matching
+/// `<query>` from whatever wave holds it into `<ver>`, minting that wave if it is new.
+///
+/// The verb that splits a pile into a roadmap, and the one the roll gate points at: a
+/// version that still has open work does not close, so either finish the task or say
+/// explicitly which version it belongs to instead.
+pub fn move_task(p: &Profile, log: &Logger, name: &str, query: &str, to: &str) -> Result<i32> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        bail!("which one? (provide a word from the task)");
+    }
+    let dir = projects::project_dir(p, name)?;
+    let Some(sheet) = task_sheet(&dir) else {
+        bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
+    };
+    let content = fs::read_to_string(&sheet)?;
+    let (heading, grown) = target_wave(&content, Some(to), true)?;
+    let content = grown.unwrap_or(content);
+
+    // Find it in any wave EXCEPT the target, so a move onto its own wave is a clear no-op
+    // rather than a silent delete-and-reinsert.
+    let mut found: Option<(String, String)> = None; // (source heading, line)
+    for s in waves::sections(&content) {
+        if s.heading == heading {
+            continue;
+        }
+        if let Some((_, l)) = md::section_numbered(&content, &s.heading)
+            .into_iter()
+            .find(|(_, l)| is_match(l, &query))
+        {
+            found = Some((s.heading.clone(), l.trim_end().to_string()));
+            break;
+        }
+    }
+    let Some((from, line)) = found else {
+        eprintln!("no open task matches '{query}' outside {heading} in {name}");
+        return Ok(1);
+    };
+    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| is_match(l, &query), |_| None)
+    else {
+        bail!("could not lift '{query}' out of {from}");
+    };
+    let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&line));
+    md::write_atomic(&sheet, &new)?;
+    log.info("ptask", &format!("moved to {heading} in {} ({name})", sheet.display()));
+    println!("moved {}\n  {from} -> {heading}", line.trim());
+    Ok(0)
+}
+
+/// `notes ptask <name> done <query> (--proof <ref> | --unverified "<why>")` — check off the
+/// first open wave task matching `<query>`, and record WHY it counts as done.
+///
+/// Done needs evidence. A bare `done` is rejected because "closed" and "finished" drifted
+/// apart everywhere they were allowed to: the roll gate above only means something if the
+/// checkboxes it counts mean something. Two doors, deliberately:
+///
+/// - `--proof <ref>` — something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped
+///   into the line's marker comment beside any existing `vk:`/`ask:` id.
+/// - `--unverified "<why>"` — no checkable artifact exists. Also stamped, and visibly so,
+///   because the failure mode of a proof field is not people lying in it, it is people
+///   leaving it blank until it means nothing. `/wave`'s report already had this instinct:
+///   `n/a - <why>` mandatory rather than blank.
+///
+/// Either way the row lands in the version's AI note (`ai/<vX.Y.Z>.md`), which is what
+/// turns a pile of ticked boxes into an evidence trail somebody can audit.
+pub fn done(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    query: &str,
+    proof: Option<&str>,
+    unverified: Option<&str>,
+) -> Result<i32> {
+    let stamp = proof_stamp(proof, unverified)?;
+    let marker = stamp.clone();
+    let (code, matched) = edit(p, log, name, query, "done", move |l| {
+        Some(md::add_marker(&md::set_checkbox(l, 'x'), &marker))
+    })?;
+    let Some(matched) = matched.filter(|_| code == 0) else {
+        return Ok(code);
+    };
+    // The task as the SHEET has it, not as the query spelled it — the row has to be
+    // recognisable next to the checkbox it vouches for.
+    record_proof(p, name, &md::task_key(&matched), &stamp)?;
+    Ok(0)
+}
+
+/// The marker text a `done` will stamp, or the error explaining that it needs one.
+///
+/// The gate itself, kept out of `done` so it is testable without a vault. A bare `done`
+/// must FAIL: the roll gate above only means something if a ticked checkbox does.
+fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Result<String> {
+    match (proof, unverified) {
+        (Some(_), Some(_)) => bail!("--proof and --unverified are alternatives; pick one"),
+        (Some(r), None) if !r.trim().is_empty() => Ok(r.trim().to_string()),
+        (None, Some(w)) if !w.trim().is_empty() => Ok(format!("unverified: {}", w.trim())),
+        _ => bail!(
+            "done needs proof. one of:\n  \
+             --proof pr:1142          a merged PR, a run id, a URL - something checkable\n  \
+             --unverified \"<why>\"     no checkable artifact, and this says so out loud"
+        ),
+    }
+}
+
+/// Append the proof row for the task just closed to the current version's AI note.
+///
+/// Best-effort by design: the checkbox is already written by the time this runs, and a
+/// vault that cannot take the note must not make `done` look like it failed. It says so
+/// on stderr instead.
+fn record_proof(p: &Profile, name: &str, query: &str, stamp: &str) -> Result<()> {
+    let Ok(dir) = projects::project_dir(p, name) else {
+        return Ok(());
+    };
+    let Some(sheet) = task_sheet(&dir) else {
+        return Ok(());
+    };
+    let Ok(content) = fs::read_to_string(&sheet) else {
+        return Ok(());
+    };
+    let ver = projects::wave_version_of(&content);
+    let when = chrono::Local::now().format("%Y-%m-%d").to_string();
+    match projects::append_proof(&dir, name, &ver, query.trim(), stamp, &when) {
+        Ok(path) => println!("  proof -> {}", path.display()),
+        Err(e) => eprintln!("(proof row not written: {e})"),
+    }
+    Ok(())
 }
 
 /// `notes ptask <name> rm <query>` — delete the first open wave task matching `<query>`.
 pub fn rm(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> {
-    edit(p, log, name, query, "removed", |_| None)
+    Ok(edit(p, log, name, query, "removed", |_| None)?.0)
 }
 
 /// `notes ptask <name> start <query>` — toggle the first matching wave task between todo
 /// (`[ ]`) and in-progress (`[/]`).
 pub fn start(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> {
-    edit(p, log, name, query, "toggled", |l| {
+    Ok(edit(p, log, name, query, "toggled", |l| {
         let mark = if l.trim_start().starts_with("- [/]") {
             ' '
         } else {
             '/'
         };
         Some(md::set_checkbox(l, mark))
-    })
+    })?
+    .0)
 }
 
 /// Shared body for `done`/`rm`/`start`: apply `f` to the first open wave task matching
-/// `query`. Non-zero exit on no-match (the cockpit drives these through `execute-silent`,
-/// which discards stdout, so a zero exit would hide "matched nothing").
-fn edit<F>(p: &Profile, log: &Logger, name: &str, query: &str, verb: &str, f: F) -> Result<i32>
+/// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
+/// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
+/// "matched nothing").
+fn edit<F>(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    query: &str,
+    verb: &str,
+    f: F,
+) -> Result<(i32, Option<String>)>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -189,11 +393,11 @@ where
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
             println!("{verb} {}", matched.trim());
-            Ok(0)
+            Ok((0, Some(matched)))
         }
         None => {
             eprintln!("no open task matches '{query}' in {name}");
-            Ok(1)
+            Ok((1, None))
         }
     }
 }
@@ -289,6 +493,118 @@ Version: v0.1.0
         assert!(out.contains("- [x] second task"));
         // the backlog task in the next section is untouched
         assert!(out.contains("## Backlog\n- [ ] later"));
+    }
+
+    // A sheet with a roadmap: current wave plus two planned ones.
+    const ROADMAP: &str = "\
+# demo
+Version: v1.13.0
+
+## Wave: v1.13.0 (current)
+- [ ] live one
+
+## Wave: v1.14.0 (planned)
+- [ ] planned one #ai
+
+## Wave: v1.16.0 (planned)
+- [ ] much later
+";
+
+    // THE invariant the whole roadmap rests on. Everything that predates planned waves -
+    // `notes board`, `notes ptask list`, `/wave`, the cockpit - reads the CURRENT wave via
+    // this one function. If a planned task ever shows up here, the board starts advertising
+    // work that has not started and `/wave` starts dispatching it.
+    #[test]
+    fn the_board_sees_the_current_wave_and_none_of_the_roadmap() {
+        let dir = std::env::temp_dir().join(format!("ptask-roadmap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), ROADMAP).unwrap();
+
+        let (ver, open) = open_wave_for_dir(&dir).unwrap();
+        assert_eq!(ver, "v1.13.0");
+        assert_eq!(open, vec!["- [ ] live one"], "planned work is not on the board");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_wave_is_the_first_section_even_with_a_roadmap_below_it() {
+        assert_eq!(
+            current_wave(ROADMAP).as_deref(),
+            Some("Wave: v1.13.0 (current)")
+        );
+    }
+
+    // `--to` on a version the roadmap does not hold yet opens it, in order, below current.
+    #[test]
+    fn target_wave_mints_a_planned_section_for_an_unknown_version() {
+        let (heading, grown) = target_wave(ROADMAP, Some("v1.15.0"), true).unwrap();
+        assert_eq!(heading, "Wave: v1.15.0 (planned)");
+        let grown = grown.expect("the sheet had to grow a section");
+        let got: Vec<_> = waves::sections(&grown)
+            .iter()
+            .map(|s| s.version.unwrap())
+            .collect();
+        assert_eq!(got, vec![(1, 13, 0), (1, 14, 0), (1, 15, 0), (1, 16, 0)]);
+    }
+
+    #[test]
+    fn target_wave_reuses_a_section_that_already_exists() {
+        let (heading, grown) = target_wave(ROADMAP, Some("v1.14.0"), true).unwrap();
+        assert_eq!(heading, "Wave: v1.14.0 (planned)");
+        assert!(grown.is_none(), "an existing wave must not be re-minted");
+    }
+
+    #[test]
+    fn target_wave_rejects_a_non_version() {
+        assert!(target_wave(ROADMAP, Some("next"), true).is_err());
+        assert!(target_wave(ROADMAP, Some("v1.14"), true).is_err());
+    }
+
+    // `move` without a mint (the read-only path) must refuse rather than invent a wave.
+    #[test]
+    fn target_wave_without_mint_refuses_an_unknown_version() {
+        let e = target_wave(ROADMAP, Some("v9.9.9"), false).unwrap_err().to_string();
+        assert!(e.contains("no wave v9.9.9"), "{e}");
+    }
+
+    // THE proof gate. A bare `done` must be refused - if this ever passes, "closed" and
+    // "finished" have come apart again and the roll gate above is counting nothing.
+    #[test]
+    fn done_without_evidence_is_refused() {
+        let e = proof_stamp(None, None).unwrap_err().to_string();
+        assert!(e.contains("--proof"), "{e}");
+        assert!(e.contains("--unverified"), "{e}");
+        // blank is not evidence either
+        assert!(proof_stamp(Some("  "), None).is_err());
+        assert!(proof_stamp(None, Some("")).is_err());
+        // and the two doors are alternatives, not a belt-and-braces
+        assert!(proof_stamp(Some("pr:1"), Some("why")).is_err());
+    }
+
+    #[test]
+    fn both_doors_produce_a_stamp_and_the_unverified_one_says_so() {
+        assert_eq!(proof_stamp(Some("pr:1142"), None).unwrap(), "pr:1142");
+        assert_eq!(
+            proof_stamp(None, Some("no staging seed")).unwrap(),
+            "unverified: no staging seed"
+        );
+    }
+
+    // The stamp joins whatever marker the line already carries rather than opening a
+    // second comment - `vk:`/`ask:` readers scan inside the one comment.
+    #[test]
+    fn the_stamp_merges_into_an_existing_marker() {
+        let line = "- [ ] facility save 400 #ai <!-- vk:602 -->";
+        let out = md::add_marker(&md::set_checkbox(line, 'x'), "pr:1142");
+        assert_eq!(out, "- [x] facility save 400 #ai <!-- vk:602 pr:1142 -->");
+        assert_eq!(out.matches("<!--").count(), 1);
+    }
+
+    #[test]
+    fn the_stamp_opens_a_marker_on_a_bare_line() {
+        let out = md::add_marker("- [x] plain task", "unverified: no artifact");
+        assert_eq!(out, "- [x] plain task <!-- unverified: no artifact -->");
     }
 
     #[test]

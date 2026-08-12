@@ -11,6 +11,7 @@ use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
+use crate::waves;
 use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -594,19 +595,10 @@ pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
 /// version is already on the line above; this makes the wave carry it too, so one id runs
 /// from the sheet through the branch and PR to the frozen note.
 fn sheet_body(title: &str, ver: &str) -> String {
-    format!("{title}\nVersion: {ver}\n\n## {}\n- [ ] \n", wave_heading(ver))
-}
-
-/// The `## Wave` heading TEXT for a version — the ONE place that format is written.
-///
-/// There used to be two minters. This one seeded a fresh sheet with the version;
-/// `project_tasks::ensure_task_sheet` hardcoded the literal string `new` when appending a
-/// wave to a sheet that had none. So which id a wave got depended on which code path
-/// created it, and notes-cockpit sat on `## Wave: new (current)` under `Version: v0.0.2`
-/// until 2026-08-04 — the half of "the version is the wave's ONLY id" (2026-07-28) that
-/// never landed. Both callers now route through here.
-pub(crate) fn wave_heading(ver: &str) -> String {
-    format!("Wave: {ver} (current)")
+    format!(
+        "{title}\nVersion: {ver}\n\n## {}\n- [ ] \n",
+        waves::heading_current(ver)
+    )
 }
 
 /// The version a sheet's wave should be NAMED for: the sheet's own `Version:` line, else
@@ -616,13 +608,9 @@ pub(crate) fn wave_version_of(content: &str) -> String {
     sheet_version(content).map_or_else(|| "v0.0.1".to_string(), fmt_version)
 }
 
-/// Does this sheet already carry a `## Wave` section? (The task-sheet test, mirroring
-/// `project_tasks::current_wave` — kept local so `projects` does not depend on it.)
+/// Does this sheet already carry a `## Wave` section? (The task-sheet test.)
 fn has_wave(content: &str) -> bool {
-    content.lines().any(|l| {
-        l.strip_prefix("## ")
-            .is_some_and(|r| r.trim_start().starts_with("Wave"))
-    })
+    !waves::sections(content).is_empty()
 }
 
 /// The sheet to roll, ADOPTING a wave sheet that never got a `Version:` line.
@@ -664,11 +652,135 @@ fn sheet_to_roll(dir: &Path, log: &Logger) -> Result<Option<PathBuf>> {
     Ok(Some(readme))
 }
 
-/// `notes projects --roll <name> [--minor|--major]` — close the current version and open
-/// the next on the working sheet: freeze the whole sheet into `versions/<vX.Y.Z>.md`
-/// (never overwriting a frozen one), bump the semver, and reset the sheet to a fresh
-/// `## Wave: new`. The sheet's `Version:` line stays the single source of truth.
-pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
+/// Why this version cannot close, if it cannot: the current wave still has open tasks.
+///
+/// `None` means the gate is satisfied. Separate from `roll` so the rule is testable
+/// without a profile or a vault — this is the check that decides whether "rolled" means
+/// "finished", and a check nothing can exercise is a check that quietly stops holding.
+fn roll_blocker(
+    content: &str,
+    name: &str,
+    cur: (u32, u32, u32),
+    next: (u32, u32, u32),
+) -> Option<String> {
+    let current = waves::sections(content).into_iter().next()?;
+    let open = waves::open_tasks(content, &current);
+    if open.is_empty() {
+        return None;
+    }
+    let listed = open
+        .iter()
+        .map(|l| format!("  {}", l.trim()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "{} has {} open task(s) - a version does not close until its work is done:\n{listed}\n\n\
+         finish them, or move them forward:\n  \
+         notes ptask {name} move \"<word from the task>\" --to {}\n\
+         override with --force",
+        fmt_version(cur),
+        open.len(),
+        fmt_version(next)
+    ))
+}
+
+/// Rebuild a sheet for the next version: freeze the CURRENT wave, promote the planned
+/// wave named `next` if there is one, and carry the rest of the roadmap over untouched.
+/// Returns `(frozen_note_body, new_sheet_body)`.
+///
+/// Split out of `roll` so it is testable without a profile, a vault or a filesystem —
+/// this is the part that can silently eat work, and it is the part that needs the
+/// negative controls.
+fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> (String, String) {
+    let cur_s = fmt_version(cur);
+    let next_s = fmt_version(next);
+    let title = content.lines().next().unwrap_or("# project").to_string();
+
+    let secs = waves::sections(content);
+    let Some(current) = secs.first().cloned() else {
+        // No wave at all (a bare sheet): nothing to freeze but the file itself, and
+        // nothing to promote. Behaves exactly as it did before the roadmap existed.
+        return (content.to_string(), sheet_body(&title, &next_s));
+    };
+
+    // FREEZE: the title, the version line as it stood, and the current wave alone. The
+    // planned waves are the future and have no business in a release record.
+    let head = format!("{title}\nVersion: {cur_s}\n");
+    let body: String = content
+        .lines()
+        .skip(current.start)
+        .take(current.end - current.start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let frozen = format!("{head}\n{}\n", body.trim_end());
+
+    // PROMOTE: the sheet keeps everything below the current wave. If the roadmap already
+    // holds a wave named `next`, it becomes the current one, tasks and all — that is the
+    // whole point of planning forward. Otherwise open an empty one.
+    let (rest, _) = waves::cut(content, &current);
+    let rest_secs = waves::sections(&rest);
+    let promoted = rest_secs.iter().find(|s| s.version == Some(next)).cloned();
+
+    let mut out: Vec<String> = vec![title, format!("Version: {next_s}"), String::new()];
+    match promoted {
+        Some(s) => {
+            // Re-title it `(current)` and lift it to the top; everything else keeps its order.
+            let (without, mut taken) = waves::cut(&rest, &s);
+            taken[0] = format!("## {}", waves::heading_current(&next_s));
+            out.extend(taken.into_iter().map(|l| l.trim_end().to_string()));
+            out.push(String::new());
+            out.extend(body_after_head(&without));
+        }
+        None => {
+            out.push(format!("## {}", waves::heading_current(&next_s)));
+            out.push("- [ ] ".to_string());
+            out.push(String::new());
+            out.extend(body_after_head(&rest));
+        }
+    }
+    // Collapse runs of blank lines the cut/paste can leave behind.
+    let mut sheet: Vec<String> = Vec::new();
+    for l in out {
+        if l.trim().is_empty() && sheet.last().is_some_and(|p: &String| p.trim().is_empty()) {
+            continue;
+        }
+        sheet.push(l);
+    }
+    while sheet.last().is_some_and(|l| l.trim().is_empty()) {
+        sheet.pop();
+    }
+    (frozen, format!("{}\n", sheet.join("\n")))
+}
+
+/// A sheet's content with its title line and `Version:` line dropped — the part that gets
+/// re-attached under a freshly written head.
+fn body_after_head(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .skip(1) // the title
+        .filter(|l| !l.trim_start().starts_with("Version:"))
+        .map(|l| l.trim_end().to_string())
+        .skip_while(|l| l.trim().is_empty())
+        .collect()
+}
+
+/// `notes projects --roll <name> [--minor|--major] [--force]` — close the current version
+/// and open the next on the working sheet.
+///
+/// Three steps, and the first one is why this is not a one-liner:
+///
+/// 1. **Gate.** A version with open tasks does not roll. Rolling used to mean "we moved
+///    on": it froze the whole sheet and reset it to an empty wave, so anything still
+///    unchecked left the live sheet and survived only inside the frozen note. That is how
+///    `versions/v1.12.0.md` ended up holding six open items — a full-flow e2e, the
+///    database recovery runbook, an account reset — that are on no live list anywhere.
+///    A closed version now means the work is FINISHED, or a human explicitly moved it on
+///    with `notes ptask <name> move "<q>" --to <ver>`. `--force` is the deliberate override.
+/// 2. **Freeze.** Only the current wave goes into `versions/<vX.Y.Z>.md` (never
+///    overwriting a frozen one), stamped with the epoch that bounds this version's work.
+/// 3. **Promote.** A planned `## Wave: <next>` becomes the current wave, carrying its
+///    tasks; the rest of the roadmap carries over untouched.
+pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_roll(&dir, log)? else {
         // No sheet (a legacy / changelog-only project): advance by writing the next version
@@ -682,8 +794,16 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
+    let next = next_version(Some(cur), level);
 
-    // freeze the whole current sheet under versions/<cur>.md
+    // 1. the gate
+    if !force {
+        if let Some(why) = roll_blocker(&content, name, cur, next) {
+            bail!(why);
+        }
+    }
+
+    // 2. the freeze
     let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
     let frozen = versions.join(format!("{}.md", fmt_version(cur)));
@@ -693,6 +813,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
             frozen.display()
         );
     }
+    let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // Stamp WHEN this version was frozen. That epoch is the boundary between one
     // version's work and the next, and consumers (the cockpit's agents panel, the
     // release agent-changelog) need it to scope "what happened this version".
@@ -701,7 +822,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     // an old frozen note's summary (`C-s` in the version browser) rewrites the file and
     // would silently drag the boundary forward by however long ago the release was.
     let stamped = format!(
-        "{content}\n<!-- rolled: {} -->\n",
+        "{frozen_body}\n<!-- rolled: {} -->\n",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -709,16 +830,23 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
     );
     fs::write(&frozen, &stamped)?;
 
-    // reset the sheet to the next version, keeping its title line
-    let next = fmt_version(next_version(Some(cur), level));
-    let title = content.lines().next().unwrap_or("# project");
-    fs::write(&sheet, sheet_body(title, &next))?;
+    // 3. the promote
+    md::write_atomic(&sheet, &new_sheet)?;
 
+    let next_s = fmt_version(next);
+    let carried = waves::find(&content, next).is_some();
     log.info(
         "projects",
-        &format!("{name} {} -> {next} (froze {})", fmt_version(cur), frozen.display()),
+        &format!("{name} {} -> {next_s} (froze {})", fmt_version(cur), frozen.display()),
     );
-    println!("rolled {name}: {} -> {next} (froze {})", fmt_version(cur), frozen.display());
+    println!(
+        "rolled {name}: {} -> {next_s} (froze {})",
+        fmt_version(cur),
+        frozen.display()
+    );
+    if carried {
+        println!("promoted the planned wave {next_s} to current");
+    }
     Ok(())
 }
 
@@ -866,6 +994,124 @@ pub fn show_version(p: &Profile, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `notes projects --waves <name>` — the project's ROADMAP, current wave first, as TSV:
+/// `version<TAB>state<TAB>open<TAB>done<TAB>heading`.
+///
+/// TSV rather than prose because the cockpit's version browser reads it to build its rows;
+/// `state` is `current` or `planned`.
+pub fn show_waves(p: &Profile, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let Some(sheet) = sheet_path(&dir) else {
+        return Ok(());
+    };
+    let content = fs::read_to_string(&sheet)?;
+    for (i, s) in waves::sections(&content).iter().enumerate() {
+        let open = waves::open_tasks(&content, s).len();
+        let done = content
+            .lines()
+            .skip(s.start + 1)
+            .take(s.end.saturating_sub(s.start + 1))
+            .filter(|l| md::is_checked(l))
+            .count();
+        let state = if i == 0 { "current" } else { "planned" };
+        println!("{}\t{state}\t{open}\t{done}\t{}", s.label(), s.heading);
+    }
+    Ok(())
+}
+
+/// A project's AI note for `ver`: `<project>/ai/<vX.Y.Z>.md`.
+///
+/// ONE resolver, so no writer guesses the path. The agents' evidence for a version used to
+/// live only on the runtime axis (`~/.agent/plans/<app>/wave-<ver>-report.md`), where the
+/// human never sees it and where it is eventually archived; this puts it in the lab dir
+/// beside the frozen version note it belongs to. Version-named, so a roll moves nothing.
+pub(crate) fn ai_note_path(dir: &Path, ver: &str) -> PathBuf {
+    dir.join("ai").join(format!("{ver}.md"))
+}
+
+/// The AI note for `ver`, created (with its `## Proof` table and `## Notes` log) if absent.
+pub(crate) fn ensure_ai_note(dir: &Path, project: &str, ver: &str) -> Result<PathBuf> {
+    let path = ai_note_path(dir, ver);
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        format!(
+            "# {project} {ver} - AI notes\n\n\
+             What the agents did for this version and the evidence behind it. The human's \
+             task list is the sheet (`README.md`); this is the proof and the working log \
+             underneath it. Rows are appended by `notes ptask <project> done`.\n\n\
+             ## Proof\n\
+             | task | proof | when |\n\
+             |---|---|---|\n\n\
+             ## Notes\n"
+        ),
+    )?;
+    Ok(path)
+}
+
+/// Append a row to an AI note's `## Proof` table.
+///
+/// Inserted after the LAST existing row rather than under the heading, so the table reads
+/// oldest-first and a new row can never land between the header and its `|---|` separator
+/// (which is what `md::insert_under_heading` would do — it inserts at the top of a section).
+pub(crate) fn append_proof(
+    dir: &Path,
+    project: &str,
+    ver: &str,
+    task: &str,
+    proof: &str,
+    when: &str,
+) -> Result<PathBuf> {
+    let path = ensure_ai_note(dir, project, ver)?;
+    let content = fs::read_to_string(&path)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let row = format!("| {} | {} | {when} |", cell(task), cell(proof));
+
+    let Some(span) = md::section_span(&lines, "Proof") else {
+        // No `## Proof` section (a hand-edited note): append one rather than lose the row.
+        let mut out = content.trim_end().to_string();
+        out.push_str(&format!("\n\n## Proof\n| task | proof | when |\n|---|---|---|\n{row}\n"));
+        md::write_atomic(&path, &out)?;
+        return Ok(path);
+    };
+    let at = lines[span.clone()]
+        .iter()
+        .rposition(|l| l.trim_start().starts_with('|'))
+        .map_or(span.end, |i| span.start + i + 1);
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    out.insert(at, row);
+    md::write_atomic(&path, &format!("{}\n", out.join("\n")))?;
+    Ok(path)
+}
+
+/// Make a string safe inside a markdown table cell.
+fn cell(s: &str) -> String {
+    s.replace('|', "\\|").trim().to_string()
+}
+
+/// `notes projects --ai-note <name> [--version vX.Y.Z]` — print the path to a version's AI
+/// note, creating it if absent. The seam every other writer (the wave, the cockpit's roll)
+/// goes through instead of building the path themselves.
+pub fn show_ai_note(p: &Profile, name: &str, version: Option<&str>) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let ver = match version {
+        Some(v) => {
+            let parsed = waves::parse(v.trim())
+                .ok_or_else(|| anyhow::anyhow!("not a version: '{v}' (want vX.Y.Z)"))?;
+            waves::fmt(parsed)
+        }
+        None => fmt_version(open_version(&dir).unwrap_or((0, 0, 1))),
+    };
+    let path = ensure_ai_note(&dir, name, &ver)?;
+    println!("{}", path.display());
+    Ok(())
+}
+
 /// `notes projects --archived` — list archived projects in the same
 /// `name<TAB>summary<TAB>status` shape as `list`, so a picker can restore from it.
 pub fn list_archived(p: &Profile) -> Result<()> {
@@ -933,6 +1179,142 @@ fn collect_project_files(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
                 .to_string();
             out.push((path, stem));
         }
+    }
+}
+
+#[cfg(test)]
+mod roll_tests {
+    use super::*;
+
+    // A sheet mid-roadmap: one open task in the current wave, two versions planned, and a
+    // non-wave section that must survive everything.
+    const SHEET: &str = "\
+# demo
+Version: v1.13.0
+
+## Wave: v1.13.0 (current)
+- [x] shipped thing <!-- pr:1142 -->
+- [ ] still open
+
+## Wave: v1.14.0 (planned)
+- [ ] planned thing #ai
+
+## Wave: v1.15.0 (planned)
+- [ ] much later
+
+## Backlog
+- [ ] someday
+";
+
+    fn finished() -> String {
+        SHEET.replace("- [ ] still open\n", "")
+    }
+
+    // THE gate. Rolling used to freeze a whole sheet and reset it to an empty wave, so an
+    // unchecked task left the live sheet and survived only inside the frozen note - which
+    // is how six open items ended up sealed inside versions/v1.12.0.md and on no live list
+    // anywhere. If this test ever passes with `is_none()`, that behaviour is back.
+    #[test]
+    fn a_version_with_open_work_refuses_to_close() {
+        let why = roll_blocker(SHEET, "demo", (1, 13, 0), (1, 14, 0));
+        let why = why.expect("an open task must block the roll");
+        assert!(why.contains("still open"), "it must name what is blocking: {why}");
+        assert!(why.contains("move"), "and how to move it on: {why}");
+    }
+
+    // The positive half: an empty wave rolls, and a CHECKED task is not "open".
+    #[test]
+    fn a_finished_version_closes() {
+        assert!(roll_blocker(&finished(), "demo", (1, 13, 0), (1, 14, 0)).is_none());
+    }
+
+    // Only the planned waves stop it - work planned for LATER is not work owed now.
+    #[test]
+    fn a_planned_wave_full_of_open_tasks_does_not_block_the_roll() {
+        let s = finished();
+        assert!(s.contains("- [ ] planned thing #ai"), "fixture sanity");
+        assert!(roll_blocker(&s, "demo", (1, 13, 0), (1, 14, 0)).is_none());
+    }
+
+    #[test]
+    fn the_freeze_takes_the_current_wave_and_nothing_below_it() {
+        let (frozen, _) = rebuild_sheet(&finished(), (1, 13, 0), (1, 14, 0));
+        assert!(frozen.contains("Version: v1.13.0"));
+        assert!(frozen.contains("shipped thing"));
+        // the release record is this version, not the roadmap after it
+        assert!(!frozen.contains("v1.14.0"), "planned work is not a release record:\n{frozen}");
+        assert!(!frozen.contains("much later"), "{frozen}");
+        assert!(!frozen.contains("someday"), "{frozen}");
+    }
+
+    // The point of planning forward: the wave you scoped is the wave you get.
+    #[test]
+    fn the_planned_next_version_is_promoted_with_its_tasks() {
+        let (_, sheet) = rebuild_sheet(&finished(), (1, 13, 0), (1, 14, 0));
+        assert!(sheet.contains("Version: v1.14.0"), "{sheet}");
+        assert!(
+            sheet.contains("## Wave: v1.14.0 (current)"),
+            "the planned wave becomes the current one:\n{sheet}"
+        );
+        assert!(sheet.contains("- [ ] planned thing #ai"), "carrying its tasks:\n{sheet}");
+        assert!(!sheet.contains("(planned)\n- [ ] planned thing"), "{sheet}");
+    }
+
+    // The rest of the roadmap is not collateral damage.
+    #[test]
+    fn the_rest_of_the_roadmap_and_the_backlog_survive_a_roll() {
+        let (_, sheet) = rebuild_sheet(&finished(), (1, 13, 0), (1, 14, 0));
+        assert!(sheet.contains("## Wave: v1.15.0 (planned)"), "{sheet}");
+        assert!(sheet.contains("- [ ] much later"), "{sheet}");
+        assert!(sheet.contains("## Backlog"), "{sheet}");
+        assert!(sheet.contains("- [ ] someday"), "{sheet}");
+        let secs = waves::sections(&sheet);
+        assert_eq!(secs.len(), 2, "current + one planned:\n{sheet}");
+        assert_eq!(secs[0].version, Some((1, 14, 0)), "current wave first:\n{sheet}");
+    }
+
+    // Rolling to a version nobody planned still opens an empty wave, as it always did.
+    #[test]
+    fn an_unplanned_next_version_opens_empty() {
+        let (_, sheet) = rebuild_sheet(&finished(), (1, 13, 0), (1, 20, 0));
+        assert!(sheet.contains("## Wave: v1.20.0 (current)"), "{sheet}");
+        let secs = waves::sections(&sheet);
+        assert_eq!(secs[0].version, Some((1, 20, 0)));
+        // v1.14.0 and v1.15.0 are still planned, untouched
+        assert_eq!(secs.len(), 3, "{sheet}");
+        assert!(sheet.contains("- [ ] planned thing #ai"), "{sheet}");
+    }
+
+    // A sheet from before the roadmap existed: one wave, no planned sections, nothing else.
+    #[test]
+    fn a_plain_single_wave_sheet_rolls_the_way_it_always_did() {
+        let plain = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [x] a\n";
+        let (frozen, sheet) = rebuild_sheet(plain, (0, 1, 0), (0, 1, 1));
+        assert!(frozen.contains("- [x] a"));
+        assert!(sheet.contains("Version: v0.1.1"), "{sheet}");
+        assert!(sheet.contains("## Wave: v0.1.1 (current)"), "{sheet}");
+        assert!(!sheet.contains("- [x] a"), "the closed work does not come back:\n{sheet}");
+    }
+
+    #[test]
+    fn proof_rows_append_in_order_under_the_table_header() {
+        let dir = std::env::temp_dir().join(format!("proj-proof-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        append_proof(&dir, "demo", "v1.13.0", "first task", "pr:1", "2026-08-11").unwrap();
+        let path =
+            append_proof(&dir, "demo", "v1.13.0", "second | task", "pr:2", "2026-08-11").unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+
+        // `|---|` is the separator and does not match `"| "`, so: header + two rows.
+        let rows: Vec<&str> = body.lines().filter(|l| l.starts_with("| ")).collect();
+        assert_eq!(rows.len(), 3, "header + two rows:\n{body}");
+        assert!(rows[1].contains("first task"), "oldest first:\n{body}");
+        assert!(rows[2].contains("second \\| task"), "pipes escaped:\n{body}");
+        assert!(body.contains("## Notes"), "the log section survives:\n{body}");
+        assert_eq!(path, ai_note_path(&dir, "v1.13.0"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

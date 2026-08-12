@@ -336,9 +336,14 @@ S
   assert_output --partial 'personal'
 }
 
-# ── --preview-md: the pane every note is read through ────────────────────────
+# ── --preview-version: the pane every note is read through ───────────────────
+#
+# Was `--preview-md <file>`. The version browser now holds three kinds of row, so the
+# preview dispatches on kind; every kind except `wave` renders a whole file, which is what
+# `--preview-md` did and what these two pin. (The `wave` kind, which slices the live sheet
+# instead, is covered in cockpit_roadmap.bats.)
 
-@test "--preview-md renders a note instead of printing its source" {
+@test "--preview-version renders a note instead of printing its source" {
   local f="$NOTES_FIXTURE/note.md"
   cat > "$f" <<'S'
 ---
@@ -350,7 +355,7 @@ id: v1.2.3
 It shipped.
 <!-- /summary:auto -->
 S
-  run bash -c '"$COCKPIT" --preview-md "$1" | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"' _ "$f"
+  run bash -c '"$COCKPIT" --preview-version frozen "$1" v1.2.3 personal demo | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"' _ "$f"
   assert_success
   refute_output --partial '<!--'
   refute_output --partial 'id: v1.2.3'
@@ -359,10 +364,10 @@ S
   assert_output --partial 'It shipped.'
 }
 
-@test "--preview-md on a missing file fails instead of rendering an empty pane" {
+@test "--preview-version on a missing file fails instead of rendering an empty pane" {
   # An empty preview reads as "this note is empty", which is the wrong answer to a bad path
   # -- and a preview command is exactly where nobody sees an exit code.
-  run "$COCKPIT" --preview-md /does/not/exist.md
+  run "$COCKPIT" --preview-version frozen /does/not/exist.md v1.2.3 personal demo
   assert_failure
   assert_output --partial 'no such file'
 }
