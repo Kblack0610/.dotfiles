@@ -21,6 +21,14 @@ src/
 
 .local/share/applications/*.desktop
 
+# ...and the association cache derived from them. update-desktop-database
+# regenerates it from whatever .desktop files exist on THIS box, and those are
+# ignored above, so a tracked cache is a pointer to files the repo does not
+# ship. It was tracked, and it recorded a machine-local kiosk launcher as the
+# default http/https handler - so every link on every box opened that instead
+# of the browser. Generated, machine-local, never tracked.
+.local/share/applications/mimeinfo.cache
+
 .fonts/.uuid
 
 
