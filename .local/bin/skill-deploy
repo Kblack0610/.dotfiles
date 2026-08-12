@@ -106,7 +106,7 @@ adoptable() {
   [ "$found" = 1 ]
 }
 
-linked=0 already=0 conflict=0 adopted=0
+linked=0 already=0 conflict=0 adopted=0 relinked=0
 
 # Collision guard: a skill name defined in both repos is ambiguous, not a race.
 # Discovery is by SKILL.md rather than by directory so the flat and categorised
@@ -146,6 +146,31 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
     if [ -e "$link" ] && [ "$(cd "$(dirname "$link")" && readlink -f "$have")" = "$(readlink -f "$src")" ]; then
       already=$((already + 1)); continue
     fi
+    # A DANGLING link whose old target was inside one of the two repos is a skill
+    # whose source moved - a re-categorisation, or a hop between the public and
+    # private repos. It points at nothing, so there is no other copy to lose and
+    # nothing for a human to adjudicate: repoint it.
+    #
+    # This is narrower than it looks, and deliberately so. A link that still
+    # RESOLVES but resolves somewhere unexpected stays a CONFLICT, because that
+    # is the case where two real things disagree and only a human knows which is
+    # meant. Only "points into our repos, and the target is gone" is auto-fixed.
+    #
+    # Without this the category migration stranded every machine: 29 dangling
+    # links, and skill-deploy refused all of them and exited 1.
+    if [ ! -e "$link" ]; then
+      case "$(cd "$(dirname "$link")" 2>/dev/null && readlink -f "$have" 2>/dev/null)" in
+        "$PUB"/*|"$PRIV"/*)
+          if [ "$DRY" = 1 ]; then
+            loud "WOULD RELINK $name  (source moved) -> $want"
+          else
+            rm -f -- "$link" && ln -s "$want" "$link" \
+              && loud "RELINKED  $name -> $want" \
+              || { loud "FAILED    $name  could not repoint stale link"; conflict=$((conflict + 1)); continue; }
+          fi
+          relinked=$((relinked + 1)); continue ;;
+      esac
+    fi
     loud "CONFLICT  $name  links to '$have', expected '$want' - skipped"
     conflict=$((conflict + 1)); continue
   fi
@@ -181,6 +206,6 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   linked=$((linked + 1))
 done
 
-say "skill-deploy: $linked linked, $already already correct, $adopted adopted, $conflict conflict(s)"
+say "skill-deploy: $linked linked, $already already correct, $relinked relinked, $adopted adopted, $conflict conflict(s)"
 [ "$conflict" -gt 0 ] && exit 1
 exit 0

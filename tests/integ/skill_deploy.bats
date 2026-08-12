@@ -105,13 +105,66 @@ mkskill() {
   assert [ ! -e "$SKILLS/twice" ]
 }
 
-@test "a link pointing somewhere unexpected is left alone" {
+@test "a DANGLING link pointing outside the repos is left alone" {
   mkskill "$PUB" ops/nested-one
   ln -s /nowhere/at/all "$SKILLS/nested-one"
   run "$SKILL_DEPLOY"
   assert_failure
   assert_output --partial "CONFLICT"
   assert_equal "$(readlink "$SKILLS/nested-one")" /nowhere/at/all
+}
+
+# ── stale links from a skill whose source moved ──────────────────────────────
+#
+# The category migration created exactly this on every machine: 29 links into
+# .dotfiles-private/.claude/skills/<name>/ that no longer existed, because the
+# skill was now at <category>/<name>/. skill-deploy refused all of them.
+
+@test "a dangling link into a repo is repointed when the source moved" {
+  mkskill "$PUB" ops/moved
+  ln -s "$PUB/.claude/skills/moved" "$SKILLS/moved"   # the old flat path
+  assert [ ! -e "$SKILLS/moved" ]                                   # dangling
+
+  run "$SKILL_DEPLOY"
+  assert_success
+  assert_output --partial "RELINKED"
+  assert [ -f "$SKILLS/moved/SKILL.md" ]
+}
+
+@test "relinking works across a hop from one repo to the other" {
+  # A skill that was public and is now private. The old link points into $PUB.
+  mkskill "$PRIV" ops/hopped
+  ln -s "$PUB/.claude/skills/hopped" "$SKILLS/hopped"
+  assert [ ! -e "$SKILLS/hopped" ]
+
+  run "$SKILL_DEPLOY"
+  assert_success
+  assert [ -f "$SKILLS/hopped/SKILL.md" ]
+  assert_equal "$(readlink -f "$SKILLS/hopped")" "$(readlink -f "$PRIV/.claude/skills/ops/hopped")"
+}
+
+# NEGATIVE CONTROL. The auto-repair is only for a link pointing at NOTHING. A
+# link that still RESOLVES, but to somewhere unexpected, is two real things
+# disagreeing - only a human knows which is meant, so it stays a CONFLICT.
+@test "a link that RESOLVES elsewhere is still refused, not repointed" {
+  mkskill "$PUB" ops/contested
+  mkdir -p "$HOME/other/contested"
+  printf -- '---\nname: contested\n---\n' > "$HOME/other/contested/SKILL.md"
+  ln -s "$HOME/other/contested" "$SKILLS/contested"
+
+  run "$SKILL_DEPLOY"
+  assert_failure
+  assert_output --partial "CONFLICT"
+  assert_equal "$(readlink -f "$SKILLS/contested")" "$(readlink -f "$HOME/other/contested")"
+}
+
+@test "--dry-run reports a relink without performing it" {
+  mkskill "$PUB" ops/moved
+  ln -s "$PUB/.claude/skills/moved" "$SKILLS/moved"
+  run "$SKILL_DEPLOY" --dry-run
+  assert_success
+  assert_output --partial "WOULD RELINK"
+  assert [ ! -e "$SKILLS/moved" ]
 }
 
 # ── adoption, and the negative control that keeps it narrow ──────────────────
