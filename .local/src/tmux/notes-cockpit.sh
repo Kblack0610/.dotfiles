@@ -26,8 +26,12 @@
 #
 # Modes: (no args)=UI · --list [section] · --rail [section] · --next/prev-section · --add
 #        --move · --jump · --new-project · --archive-project · --restore-project
-#        --preview-md <file>  (the rendered pane every note is read through)
+#        --preview-version <kind> <file> <version> <profile> <project>
+#                             (the rendered pane every note is read through; `wave` slices
+#                              the live sheet, anything else renders the whole file)
 #        --roll-now <profile> <project> [patch|minor|major]  (headless; no key binding)
+#        --browse-versions <profile>/<project>   (the `o` roadmap + release-note browser)
+#        --wave-rows / --wave-add / --wave-plan   (that browser's internals)
 #
 # Both preview panes render markdown through md-render.sh rather than showing its source,
 # and neither preview window is `wrap`: the renderer word-wraps to $FZF_PREVIEW_COLUMNS
@@ -1690,32 +1694,74 @@ roll_now() { # $1=profile $2=project [$3=level]
   roll_do "$profile" "$name" "$flag"
 }
 
-# Browse a project's release notes — per-version `.md` from BOTH `versions/` (sheet-model
-# rollovers) and `changelog/` (release-managed projects keep their release notes here),
-# newest first, previewed. Reached via fzf `become` (the `o` bind), so THIS runs as the sole
-# fzf in the cockpit's window — a fresh fzf that owns the terminal, not a nested one
-# (fzf-in-fzf-execute / a popup launched from execute are both fragile inside the cockpit's
-# display-popup — see move_task; they render the cockpit instead). `q`/esc returns by
-# re-`exec`ing the cockpit; enter opens a version in nvim. Rows are `basename<TAB>fullpath`.
+# The wave rows of the version browser: the project's ROADMAP, read from
+# `notes projects --waves` (TSV `version<TAB>state<TAB>open<TAB>done<TAB>heading`).
+#
+# Ordered planned-first DESCENDING, so the list reads DOWN out of the future and into the
+# past: furthest plan, ..., next plan, the current wave, then the frozen versions below it.
+# Wire: `DISPLAY<TAB>path<TAB>kind<TAB>version`.
+_wave_rows() { # $1=profile $2=project $3=sheet-path
+  local profile="$1" name="$2" sheet="$3"
+  [ -n "$sheet" ] && [ -f "$sheet" ] || return 0
+  notes --profile "$profile" projects --waves "$name" 2>/dev/null | awk -v s="$sheet" '
+    BEGIN { FS="\t"; OFS="\t" }
+    { ver[NR]=$1; state[NR]=$2; open[NR]=$3; n=NR }
+    END {
+      # planned, furthest first
+      for (i=n; i>=2; i--) printf "  + %-9s %-8s %s open\t%s\twave\t%s\n", ver[i], state[i], open[i], s, ver[i]
+      if (n >= 1) printf "  > %-9s %-8s %s open\t%s\twave\t%s\n", ver[1], state[1], open[1], s, ver[1]
+    }'
+}
+
+# Browse a project's ROADMAP and its release notes, in one list that runs future -> past:
+# the overview, the planned waves, the current wave, then the frozen per-version `.md` from
+# BOTH `versions/` (sheet-model rollovers) and `changelog/` (release-managed projects keep
+# their release notes here), newest first.
+#
+# Reached via fzf `become` (the `o` bind), so THIS runs as the sole fzf in the cockpit's
+# window — a fresh fzf that owns the terminal, not a nested one (fzf-in-fzf-execute / a
+# popup launched from execute are both fragile inside the cockpit's display-popup — see
+# move_task; they render the cockpit instead). `q`/esc returns by re-`exec`ing the cockpit.
+#
+# Rows are `DISPLAY<TAB>path<TAB>kind<TAB>version`, kind ∈ overview|wave|frozen. The kind is
+# what lets one list hold three things that answer `enter`, the preview and `C-s`
+# differently, without a second picker.
+#
+# The row list itself, so the `a`/`N` binds can `reload` it after adding to a wave. Emitting
+# only the wave rows there would have replaced the whole list with them.
+browse_rows() { # $1=profile $2=project
+  local profile="$1" name="$2" summary root rows d sheet waverows all=""
+  summary="$(summary_of "$profile" "$name")"
+  [ -n "$summary" ] && root="$(dirname "$summary")"
+  [ -n "$root" ] || return 0
+  # the working sheet — README.md when it carries the waves, else tasks.md
+  for d in "$root/README.md" "$root/tasks.md"; do
+    [ -f "$d" ] && grep -q '^## *Wave' "$d" 2>/dev/null && { sheet="$d"; break; }
+  done
+  waverows="$(_wave_rows "$profile" "$name" "${sheet:-}")"
+  # frozen notes from versions/ + changelog/; show basename, keep the path for preview
+  rows="$( for d in "$root/versions" "$root/changelog"; do
+             [ -d "$d" ] && ls -1 "$d"/*.md 2>/dev/null
+           done | awk -F/ 'NF{print "    "$NF"\t"$0"\tfrozen\t"$NF}' | sort -rV )"
+  # pin the project overview (summary.md — the "where we are / next up" index) at the very TOP,
+  # above everything. Enter opens it; C-s regenerates the overview (vs a version summary).
+  [ -n "$summary" ] && [ -f "$summary" ] &&
+    all="$(printf '= overview =\t%s\toverview\t-' "$summary")"
+  for d in "$waverows" "$rows"; do
+    [ -n "$d" ] || continue
+    if [ -n "$all" ]; then all="$all"$'\n'"$d"; else all="$d"; fi
+  done
+  [ -n "$all" ] && printf '%s\n' "$all"
+  return 0
+}
+
 browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
-  local section="${1:-}" profile name summary root rows prev d
+  local section="${1:-}" profile name prev all
   case "$section" in
     */*) profile="${section%%/*}"; name="${section#*/}" ;;
     *) exec "$SELF" ;; # not a project row — just go back to the cockpit
   esac
-  summary="$(summary_of "$profile" "$name")"
-  [ -n "$summary" ] && root="$(dirname "$summary")"
-  # gather version notes from versions/ + changelog/; show basename, keep the path for preview
-  rows="$( for d in "$root/versions" "$root/changelog"; do
-             [ -d "$d" ] && ls -1 "$d"/*.md 2>/dev/null
-           done | awk -F/ 'NF{print $NF"\t"$0}' | sort -rV )"
-  # pin the project overview (summary.md — the "where we are / next up" index) at the very TOP,
-  # above the version list. Enter opens it; C-s regenerates the overview (vs a version summary).
-  local pinned="" all
-  [ -n "$summary" ] && [ -f "$summary" ] && pinned="$(printf '= overview =\t%s' "$summary")"
-  if [ -n "$pinned" ] && [ -n "$rows" ]; then all="$pinned"$'\n'"$rows"
-  elif [ -n "$pinned" ]; then all="$pinned"
-  else all="$rows"; fi
+  all="$(browse_rows "$profile" "$name")"
   if [ -z "$all" ]; then
     echo "nothing for $name yet — roll a version with V, or generate an overview"; sleep 1.5; exec "$SELF"
   fi
@@ -1723,17 +1769,79 @@ browse_versions() { # $1 = section of the highlighted row (<profile>/<project>)
   # the preview window is deliberately NOT `wrap`: the renderer has already word-wrapped to
   # $FZF_PREVIEW_COLUMNS, and fzf's own wrap is what used to cut words mid-syllable and stamp
   # a continuation glyph on every second line.
-  prev="$SELF --preview-md {2}"
+  prev="$SELF --preview-version {3} {2} {4} '$profile' '$name'"
   printf '%s\n' "$all" | fzf \
     --ansi --reverse --delimiter='\t' --with-nth=1 \
     --preview "$prev" --preview-window 'right:62%:border-left' \
     --prompt "$name > " \
-    --header 'enter: nvim   C-d/C-u: scroll   C-s: (re)generate   q/esc: back' \
+    --header 'enter: nvim   a: add to wave   N: plan a version   C-s: (re)generate   q/esc: back' \
     --bind 'enter:execute(nvim {2})' --bind 'q:abort' \
     --bind 'ctrl-d:preview-half-page-down' \
     --bind 'ctrl-u:preview-half-page-up' \
-    --bind "ctrl-s:execute(f={2}; if [ \"\$(basename \"\$f\" .md)\" = summary ]; then notes-version-summary --overview '$profile' '$name'; else notes-version-summary --force '$profile' '$name' \"\$f\"; fi)+refresh-preview"
+    --bind "a:execute($SELF --wave-add '$profile' '$name' {3} {4})+reload($SELF --wave-rows '$profile' '$name')+refresh-preview" \
+    --bind "N:execute($SELF --wave-plan '$profile' '$name')+reload($SELF --wave-rows '$profile' '$name')+refresh-preview" \
+    --bind "ctrl-s:execute(k={3}; f={2}; case \"\$k\" in overview) notes-version-summary --overview '$profile' '$name' ;; frozen) notes-version-summary --force '$profile' '$name' \"\$f\" ;; *) echo 'nothing to summarize until the version is rolled'; sleep 1 ;; esac)+refresh-preview"
   exec "$SELF" # versions fzf exited (q/esc) — relaunch the cockpit in the same window
+}
+
+# The preview pane for one browser row, dispatched on its KIND. An overview or a frozen
+# version note is a file, and renders as one; a WAVE is a section of the live sheet plus
+# the version's AI note, neither of which is a whole file.
+preview_version() { # $1=kind $2=path $3=version $4=profile $5=project
+  local kind="${1:-}" path="${2:-}" ver="${3:-}" profile="${4:-}" name="${5:-}" ai
+  case "$kind" in
+    wave) : ;;
+    *) md_render "${path:--}"; return $? ;;
+  esac
+  # The wave's own section of the sheet, heading included, up to the next `## `.
+  #
+  # The version is compared as a space-delimited SUBSTRING, not used as a regex. For a
+  # well-formed `vX.Y.Z` the two happen to agree - the `.` wildcards land on the literal
+  # dots - so this is not fixing a live bug, and there is no test that can prove it is:
+  # the equivalent regex was tried against a decoy heading in both directions and matched
+  # neither. It is here because that agreement is a coincidence of the format rather than
+  # a property of the match, and a heading that ever carries a suffix (`v1.14.0-rc1`) or a
+  # second version in its text breaks it silently, in a preview pane where a wrong answer
+  # looks exactly like a right one.
+  awk -v v=" $ver " '
+    /^## / {
+      if (inw) exit
+      if ($0 ~ /^## *Wave/ && index($0 " ", v) > 0) { inw = 1; print }
+      next
+    }
+    inw { print }
+  ' "$path" 2>/dev/null | md_render -
+  # then the version's AI note — the proof and the working log behind those checkboxes
+  ai="$(dirname "$path")/ai/${ver}.md"
+  if [ -f "$ai" ]; then
+    printf '\n'
+    md_render "$ai"
+  else
+    printf '\n(no AI notes for %s yet)\n' "$ver"
+  fi
+}
+
+# `a` in the version browser — add a task to the HIGHLIGHTED wave. On a non-wave row it
+# says so rather than guessing which version the human meant.
+wave_add() { # $1=profile $2=project $3=kind $4=version
+  local profile="$1" name="$2" kind="$3" ver="$4" text
+  [ "$kind" = wave ] || { echo "not a wave row — highlight the current or a planned version"; sleep 1.5; return 0; }
+  read -r -p "add to $ver: " text || return 0
+  [ -n "${text// /}" ] || return 0
+  notes --profile "$profile" ptask "$name" add --to "$ver" "$text" || sleep 2
+}
+
+# `N` in the version browser — open a PLANNED version on the roadmap. A version is opened
+# with its first task rather than empty: an empty planned wave is a heading that says
+# nothing, and `ptask add --to` mints the section anyway, so there is no second verb to keep
+# in sync.
+wave_plan() { # $1=profile $2=project
+  local profile="$1" name="$2" ver text
+  read -r -p "plan version (vX.Y.Z): " ver || return 0
+  [ -n "${ver// /}" ] || return 0
+  read -r -p "first task for $ver: " text || return 0
+  [ -n "${text// /}" ] || { echo "a version opens with its first task — nothing added"; sleep 1.5; return 0; }
+  notes --profile "$profile" ptask "$name" add --to "$ver" "$text" || sleep 2
 }
 
 # ── accept the overview's "Next up" suggestions (the `g` key) ────────
@@ -1919,7 +2027,6 @@ jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
 case "${1:-}" in
   --list) shift; list_section "${1:-}"; exit 0 ;;
   --rail) rail "${2:-}"; exit 0 ;;
-  --preview-md) md_render "${2:--}"; exit $? ;;
   --next-section) next_section; exit 0 ;;
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
@@ -1945,6 +2052,10 @@ case "${1:-}" in
   --roll-project) roll_project "${2:-}"; exit 0 ;;
   --roll-now) roll_now "${2:-}" "${3:-}" "${4:-patch}"; exit $? ;;  # headless: a merged wave rolls its own patch
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
+  --wave-rows) browse_rows "${2:-}" "${3:-}"; exit 0 ;;          # the `o` list, for reload
+  --preview-version) preview_version "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"; exit $? ;;
+  --wave-add) wave_add "${2:-}" "${3:-}" "${4:-}" "${5:-}"; exit 0 ;;
+  --wave-plan) wave_plan "${2:-}" "${3:-}"; exit 0 ;;
   --accept-next) accept_next "${2:-}"; exit 0 ;;
   --archive-project) archive_project "${2:-}"; exit 0 ;;
   --restore-project) restore_project "${2:-}"; exit 0 ;;
