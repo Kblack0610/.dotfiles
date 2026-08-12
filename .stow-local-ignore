@@ -22,6 +22,14 @@ target
 ^/\.config/systemd/user/sunshine\.service$
 ^/\.config/systemd/user/graphical-session\.target\.wants/app-dev\.lizardbyte\.app\.Sunshine\.service$
 ^/\.config/systemd/user/graphical-session\.target\.wants/waybar\.service$
+# skill-deploy owns ~/.claude/skills, not stow. stow mirrors the source path, so
+# the categorised layout .claude/skills/<category>/<name>/ would deploy as a
+# NESTED directory - and Claude Code reads personal skills one level down only,
+# at ~/.claude/skills/<name>/SKILL.md, so every skill would silently vanish.
+# skill-deploy flattens category -> name while linking. It is called from
+# apply_dotfiles (base_functions.sh), so removing this line does not "restore"
+# deployment, it creates a second, broken one.
+^/\.claude/skills$
 ^/\.claude/projects$
 ^/\.claude/sessions$
 ^/\.claude/paste-cache$

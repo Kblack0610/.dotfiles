@@ -29,7 +29,12 @@
 
 set -uo pipefail
 
-REGEN="$HOME/.dotfiles/.claude/skills/project-index/regen-anchor.sh"
+# The DEPLOYED path, not the repo path. ~/.claude/skills is flat and stable:
+# skill-deploy flattens <category>/<name> while linking, so this keeps resolving
+# across a re-categorisation and across a skill moving between the public and
+# private repos. The repo path did neither - it broke the moment project-index
+# moved into memory/.
+REGEN="$HOME/.claude/skills/project-index/regen-anchor.sh"
 [ -x "$REGEN" ] || exit 0
 
 # --- project ---

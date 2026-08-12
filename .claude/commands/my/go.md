@@ -42,7 +42,7 @@ Stop and surface a proposal **only** for irreversible or outward-facing actions:
   overwriting un-backed-up state), force-push or history rewrite.
 - Release tags, `deploy.sh`, widening a rollout, executing a rollback, satisfying any
   human approval gate — the release-coordinator **Hard constraints** apply verbatim
-  (`~/.dotfiles/.claude/skills/release-coordinator/SKILL.md`); do not restate or weaken them.
+  (`~/.claude/skills/release-coordinator/SKILL.md`); do not restate or weaken them.
 - Money, auth/secrets/tokens, anything sent to an external service or another person.
 
 For these: propose with a one-line rationale, then stop and wait. Everything reversible is

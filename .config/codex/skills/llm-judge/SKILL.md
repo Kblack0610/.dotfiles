@@ -1,4 +1,9 @@
-# LLM Judge — Session Compliance Check
+---
+name: llm-judge
+description: Evaluate the current session against the shared AI assistant rules and score it. Use when the user invokes /llm-judge or asks for a compliance check on how the session was conducted.
+---
+
+# LLM Judge - Session Compliance Check
 
 Evaluate this session against the shared AI assistant rules.
 
