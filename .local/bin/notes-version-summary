@@ -174,23 +174,26 @@ sanitize() {
 # transport error, a gateway/upstream error object, or empty content (so the caller falls back).
 # Reads .message.content — reasoning models return their thinking in a separate .reasoning_content
 # field the gateway keeps out of content, so no manual strip is needed for those.
-#
-# The prompt reaches jq and curl through FILES, never through argv. Both `jq --arg u
-# "$usr"` and `curl -d "$body"` are execve calls, so a big enough prompt dies with
-# `Argument list too long` — which is exactly what happened to `--overview` during the
-# v1.12.0 roll: it passes a whole project corpus, blew ARG_MAX at the jq line, and because
-# the summary is best-effort the roll reported success with no overview refreshed. Fixing
-# only the jq call would have moved the wall a few kilobytes down to the curl.
 _one_call() {
-  local key="$1" model="$2" maxtok="$3" sys="$4" usr="$5" resp content
-  local td; td="$(mktemp -d)" || return 1
-  # shellcheck disable=SC2064  # expand $td now: it must survive the function's locals
-  trap "rm -rf '$td'" RETURN
-  printf '%s' "$sys" > "$td/sys"
-  printf '%s' "$usr" > "$td/usr"
-  jq -n --arg m "$model" --rawfile s "$td/sys" --rawfile u "$td/usr" --argjson mt "$maxtok" \
+  local key="$1" model="$2" maxtok="$3" sys="$4" usr="$5" resp content tmp
+
+  # The prompt is UNBOUNDED — the overview pass feeds it a project's whole
+  # accumulated agent changelog — so it must never travel as a command-line
+  # ARGUMENT. Both jq's --arg and curl's -d are argv, and argv is capped at
+  # ARG_MAX (2 MiB here); past that the kernel refuses the exec and you get
+  # "Argument list too long", which names the shell rather than the prompt and
+  # reads like a broken script instead of an oversized input. Worse, the
+  # caller treats a summary failure as best-effort, so it degraded silently:
+  # the v1.12.0 roll froze its version note with no overview and nothing but a
+  # log line to say so. Both sides now go through a file, which has no ceiling.
+  tmp="$(mktemp -d)" || return 1
+  printf '%s' "$sys" >"$tmp/sys" || { rm -rf "$tmp"; return 1; }
+  printf '%s' "$usr" >"$tmp/usr" || { rm -rf "$tmp"; return 1; }
+  jq -n --arg m "$model" --argjson mt "$maxtok" \
+    --rawfile s "$tmp/sys" --rawfile u "$tmp/usr" \
     '{model:$m, temperature:0.2, max_tokens:$mt,
-      messages:[{role:"system",content:$s},{role:"user",content:$u}]}' > "$td/body" || return 1
+      messages:[{role:"system",content:$s},{role:"user",content:$u}]}' \
+    >"$tmp/body" || { rm -rf "$tmp"; return 1; }
   # Authorization only when a key exists. A personal-safe origin is reached
   # DIRECTLY (mlx-server has no router and no auth), and an empty Bearer there is
   # noise; on a gateway it is the difference between "unauthenticated" and
@@ -199,7 +202,8 @@ _one_call() {
   [ -n "$key" ] && auth=(-H "Authorization: Bearer $key")
   resp="$(curl -sS --max-time 240 "$LLM_BASE_URL/chat/completions" \
     "${auth[@]}" -H 'Content-Type: application/json' \
-    --data-binary "@$td/body" 2>/dev/null)" || return 1
+    --data-binary "@$tmp/body" 2>/dev/null)" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
   if printf '%s' "$resp" | jq -e '.error' >/dev/null 2>&1; then
     printf 'gateway error: %s\n' "$(printf '%s' "$resp" | jq -r '.error.message // .error')" >&2
     return 1
