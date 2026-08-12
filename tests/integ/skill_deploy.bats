@@ -216,6 +216,32 @@ mk_link_farm() {
   assert_equal "$(cat "$SKILLS/handmade/SKILL.md")" irreplaceable
 }
 
+# The shape left behind when a farm's target ALSO moved: the per-file link now
+# dangles. `readlink -f` fails on it, which made the neediest farms unadoptable.
+@test "--adopt handles a link farm whose target has since moved" {
+  mkskill "$PUB" ops/moved-farm
+  mkdir -p "$SKILLS/moved-farm"
+  ln -s "$PUB/.claude/skills/moved-farm/SKILL.md" "$SKILLS/moved-farm/SKILL.md"  # old flat path
+  assert [ ! -e "$SKILLS/moved-farm/SKILL.md" ]                                   # dangling
+
+  run "$SKILL_DEPLOY" --adopt
+  assert_success
+  assert [ -L "$SKILLS/moved-farm" ]
+  assert [ -f "$SKILLS/moved-farm/SKILL.md" ]
+}
+
+# Still narrow: a dangling link is only adoptable if it pointed into our repos.
+@test "--adopt REFUSES a farm whose dangling link pointed outside the repos" {
+  mkskill "$PUB" ops/stranger-farm
+  mkdir -p "$SKILLS/stranger-farm"
+  ln -s "$HOME/somewhere-else/SKILL.md" "$SKILLS/stranger-farm/SKILL.md"
+
+  run "$SKILL_DEPLOY" --adopt
+  assert_failure
+  assert_output --partial "CONFLICT"
+  assert [ ! -L "$SKILLS/stranger-farm" ]
+}
+
 @test "--adopt REFUSES a directory whose links point outside the repos" {
   mkskill "$PUB" ops/outsider
   mkdir -p "$SKILLS/outsider" "$HOME/elsewhere"

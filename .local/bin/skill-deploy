@@ -97,7 +97,14 @@ adoptable() {
   [ ${#entries[@]} -gt 0 ] || return 1        # empty dir: not provably ours
   for entry in "${entries[@]}"; do
     [ -L "$entry" ] || return 1
-    tgt=$(readlink -f "$entry" 2>/dev/null) || return 1
+    # -m, not -f. `readlink -f` requires every component but the last to exist,
+    # so it FAILS on a farm whose target moved - which is precisely the farm most
+    # in need of adopting. After the category migration all three surviving farms
+    # pointed at <repo>/.claude/skills/<name>/SKILL.md, a directory that no longer
+    # existed, and -f rejected them as unadoptable. -m canonicalises without
+    # requiring existence, so a farm is judged on WHERE it points, not on whether
+    # that still resolves. A dangling link has even less to lose than a live one.
+    tgt=$(readlink -m "$entry" 2>/dev/null) || return 1
     case "$tgt" in
       "$PUB"/*|"$PRIV"/*) found=1 ;;
       *) return 1 ;;
