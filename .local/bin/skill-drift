@@ -45,8 +45,8 @@
 #              so it is documented and unreachable.
 #   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
 #              advertised, so the agent tries to invoke it).
-#   UNLISTED   a skill is on disk but appears nowhere in CLAUDE.md, so nothing
-#              routes to it.
+#   (UNLISTED was retired: the auto-injected description listing is the index
+#    now, so CLAUDE.md carries only routing overrides. See check_registration.)
 #   STALE      metadata.reviewed is older than STALE_DAYS. Not "last edited",
 #              which git already answers - last VERIFIED against reality.
 #   UNUSED     never invoked in USAGE_DAYS of transcripts. A skill nothing calls
@@ -362,17 +362,37 @@ check_registration() {
   [ -f "$CLAUDE_MD" ] || { add DEADPATH CLAUDE.md "${CLAUDE_MD/#$HOME/\~}" "CLAUDE.md not found"; return 0; }
 
   # Bulleted in CLAUDE.md but absent from disk: the agent will try to invoke it.
+  #
+  # The "Retired" block is excluded, because naming a dead skill there is the
+  # entire point of it - it is what stops the agent reaching for a skill that
+  # used to exist. Flagging those would mean the only way to satisfy the check
+  # is to delete the warning, which is backwards.
   while IFS= read -r skill; do
     [ -n "$skill" ] || continue
     [ -e "$SKILLS/$skill" ] || add GHOST "$skill" CLAUDE.md "bulleted in CLAUDE.md but not on disk"
-  done < <(grep -oE '^- `[a-z][a-z0-9:-]*`' "$CLAUDE_MD" | sed 's/^- `//; s/`$//' | grep -v ':' | sort -u)
+  done < <(
+    awk '
+      /^\*\*Retired/        { skip=1; next }
+      /^\*\*/               { skip=0 }
+      /^##/                 { skip=0 }
+      !skip
+    ' "$CLAUDE_MD" \
+      | grep -oE '^- `[a-z][a-z0-9:-]*`' | sed 's/^- `//; s/`$//' | grep -v ':' | sort -u
+  )
 
-  # On disk but nowhere in CLAUDE.md: nothing routes to it.
-  for skill in "$SKILLS"/*/; do
-    [ -e "$skill" ] || continue
-    skill="$(basename "$skill")"
-    grep -qF "\`$skill\`" "$CLAUDE_MD" || add UNLISTED "$skill" CLAUDE.md "on disk but not mentioned in CLAUDE.md"
-  done
+  # There is deliberately no UNLISTED check any more.
+  #
+  # It existed when CLAUDE.md's skill section was the routing layer: a skill
+  # missing from it was a skill nothing could route to. That stopped being true.
+  # Every skill's `description` is injected into the context automatically, so
+  # the listing IS the index, and CLAUDE.md now carries only what a description
+  # cannot - which skill wins between two, what to prefer over an MCP, what is
+  # retired. Requiring all 60 names in prose as well made the section a ~5k-token
+  # duplicate of something already arriving, and it drifted anyway: 7 missing and
+  # 1 retired-but-listed when it was cut.
+  #
+  # GHOST stays, because a routing rule that names a skill which no longer exists
+  # is still a live bug - the agent will try to invoke it.
   return 0
 }
 
@@ -562,7 +582,6 @@ cat <<'EOF'
   NOCMD      -> the tool is not on PATH. Name its real location, or drop the step
   UNDEPLOYED -> link them all:  skill-deploy    (--dry-run to preview)
   GHOST      -> the skill is retired; remove the bullet from CLAUDE.md
-  UNLISTED   -> add a bullet under the right category (see the update-rules skill)
   BADNAME    -> rename the directory or the frontmatter so the two agree
   DUPNAME    -> one flat namespace across both repos; rename one of them
   BADMETA    -> fix the metadata block (see .claude/skills/SKILL-TEMPLATE.md)
