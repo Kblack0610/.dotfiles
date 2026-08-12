@@ -133,6 +133,24 @@ jobs:
       - name: Rust gate
         run: make -C tests test-rust
 
+  skills:
+    name: skill lint (frontmatter + house rules)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The STATIC subset only. A runner has no ~/.claude/skills, no private
+      # overlay and no CLAUDE.md, so DEADPATH/NOCMD/UNDEPLOYED/GHOST/UNLISTED
+      # cannot be attempted here - those stay on the 12h sentinel watch and the
+      # weekly skill-refine pass. What CI can decide, CI should decide: a
+      # SKILL.md has no compiler, so before this job the only thing standing
+      # between a broken skill and main was somebody reading the diff.
+      #
+      # Exits 2 if it finds no skills at all, so a path change that silently
+      # empties the input list fails the job instead of reporting success.
+      - name: Lint SKILL.md frontmatter
+        run: .local/bin/skill-drift --lint .
+
   lint:
     name: shellcheck + shfmt
     runs-on: ubuntu-24.04

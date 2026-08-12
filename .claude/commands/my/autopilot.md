@@ -25,7 +25,7 @@ patterns and utilities over net-new code — grep and reuse first. Don't gold-pl
 **Hard-stop boundary (the ONLY thing that pauses you)** — irreversible or outward-facing
 actions only: destructive/data-loss ops, force-push/history rewrite, release tags &
 `deploy.sh`, widening rollouts, rollbacks, any human approval gate (the release-coordinator
-**Hard constraints** apply verbatim — `~/.dotfiles/.claude/skills/release-coordinator/SKILL.md`),
+**Hard constraints** apply verbatim — `~/.claude/skills/release-coordinator/SKILL.md`),
 money, auth/secrets/tokens, external sends. Propose with rationale, then stop. Everything
 reversible is yours to decide.
 

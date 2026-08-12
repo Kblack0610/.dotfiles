@@ -4,7 +4,7 @@ description: Audit and polish the skill corpus itself - find skills that have go
 metadata:
   category: authoring
   tags: [skills, maintenance, drift]
-  reviewed: "2026-08-03"
+  reviewed: "2026-08-11"
 ---
 
 # skill-refine
@@ -34,9 +34,16 @@ Four layers, in order. The first is ground truth; the rest are judgment.
 skill-drift --json
 ```
 
-Types: `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `UNLISTED` (on disk, absent from CLAUDE.md), `NOFRONTMATTER`.
+**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `UNLISTED` (on disk, absent from CLAUDE.md), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts).
+
+**Static** (`skill-drift --lint .`, and CI already gates every PR on these, so a finding here means something landed before the gate existed): `NOFRONTMATTER`, `BADNAME`, `DUPNAME`, `BADMETA`, `CATCOLLIDE`, `LONGDESC`, `NONASCII`, plus the advisory `DESCNEAR`.
 
 `skill-drift` reports **all** findings and marks which are `new` relative to `~/.agent/skill-drift.baseline`. Read the whole set in an audit; the baseline exists so the *watch* only pages on new drift, not so old debt disappears.
+
+Two of these need judgment rather than a fix:
+
+- **`STALE` is not fixed by editing the date.** It says nobody has checked the skill against reality in six months. Re-verify the claims - open the paths, run the commands, confirm the hosts - and only then bump `metadata.reviewed`. Bumping it without checking converts an honest "unknown" into a false "verified", which is strictly worse.
+- **`UNUSED` is a signal, not a verdict.** A release runbook fires per release and is *supposed* to look idle; that is not the same as a skill the router never picks because a neighbour's description shadows it. Cross-reference against layer 3 (overlap) before proposing anything, and never propose deleting a skill on `UNUSED` alone.
 
 Do not accept a `DEADPATH` at face value - find where the file actually went (`fd`/`find` across **both** repos) before proposing a fix. Most of them are the public/private overlay migration: a path that reads `~/.dotfiles/...` now lives at `~/.dotfiles-private/...`.
 
@@ -86,8 +93,9 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 
 1. Name the evidence: which sessions/lessons show the repetition.
 2. Confirm scope and name with the user. **Never auto-create a skill file.**
-3. Write `~/.dotfiles/.claude/skills/{name}/SKILL.md` - public unless it carries infra detail or secrets, in which case `~/.dotfiles-private/`.
-4. Symlink it into `~/.claude/skills/`, and register it in CLAUDE.md via `update-rules`. A skill that is neither linked nor listed is invisible.
+3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. Which repo is decided by `.githooks/sensitive-tokens.txt`, not by taste: if the draft matches any of those patterns it goes in `~/.dotfiles-private`, otherwise public plus a `.gitignore` allowlist line.
+4. Run `skill-deploy` - never hand-write the symlink - then register it in CLAUDE.md via `update-rules`. A skill that is neither linked nor listed is invisible.
+5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.
 
 ## Hard rules
 

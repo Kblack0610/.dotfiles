@@ -13,7 +13,29 @@
 # overlay. Six workflows, all opening files that did not exist. Its own built-in
 # self-check had the same bug, so it could not report itself.
 #
-# Five checks, each a distinct failure mode:
+# The checks split into two families, and the split is what lets CI run this.
+#
+# STATIC - decidable from a repo checkout alone, so they gate every PR (--lint):
+#
+#   NOFRONTMATTER  no YAML frontmatter, or no name:/description:.
+#   BADNAME    name is not kebab-case, or does not match its directory. A
+#              mismatch is invisible until the wrong thing is invoked.
+#   DUPNAME    the same skill name defined twice. ~/.claude/skills is ONE flat
+#              namespace across both repos, so a duplicate is ambiguous.
+#   BADMETA    metadata.category / tags / reviewed missing or malformed, a
+#              category outside the known set, or a category that disagrees with
+#              the parent directory.
+#   CATCOLLIDE a category sharing a name with a skill. `comms/comms/` makes
+#              `git mv` refuse, and the first attempt at the category migration
+#              silently moved two sibling skills INSIDE the comms skill.
+#   LONGDESC   description + when_to_use over 1536 chars, the documented cap on
+#              the skill listing. Past it the trailing trigger phrases are
+#              truncated away, so the skill stops being found by the thing the
+#              description exists to do.
+#   NONASCII   the house plain-ASCII rule (em/en dash, arrows, >=, ellipsis...).
+#              Ratcheted against tests/skill-lint.baseline, not all-or-nothing.
+#
+# ENVIRONMENTAL - need a real machine, so they stay local (report/--quiet/--json):
 #
 #   DEADPATH   a ~/ or $HOME/ path named in a SKILL.md does not exist. This is
 #              the update-rules class and the reason this script exists.
@@ -25,6 +47,12 @@
 #              advertised, so the agent tries to invoke it).
 #   UNLISTED   a skill is on disk but appears nowhere in CLAUDE.md, so nothing
 #              routes to it.
+#   STALE      metadata.reviewed is older than STALE_DAYS. Not "last edited",
+#              which git already answers - last VERIFIED against reality.
+#   UNUSED     never invoked in USAGE_DAYS of transcripts. A skill nothing calls
+#              still spends its description tokens in every session. This is a
+#              SIGNAL, not a verdict: a release runbook fires per release and is
+#              supposed to look idle.
 #
 # Deliberately trivial and dependency-free: it is polled by a sentinel watch and
 # a checker that needs a working environment cannot report a broken one.
@@ -45,22 +73,45 @@
 #   skill-drift --json           machine-readable (everything, with "new": true|false)
 #   skill-drift --new            human-readable, NEW findings only
 #   skill-drift --write-baseline freeze current findings as accepted
+#   skill-drift --lint [DIR]     STATIC checks only, over DIR/.claude/skills.
+#                                What CI runs: no deployed tree, no private repo
+#                                and no CLAUDE.md exist on a runner, so the
+#                                environmental checks cannot even be attempted.
+#   skill-drift --write-lint-baseline [DIR]   freeze current NONASCII debt
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+CODEX="${CODEX_SKILLS:-$PUB/.config/codex/skills}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
+STALE_DAYS="${SKILL_STALE_DAYS:-180}"
+USAGE_DAYS="${SKILL_USAGE_DAYS:-90}"
+TRANSCRIPTS="${CLAUDE_TRANSCRIPTS:-$HOME/.claude/projects}"
 
-MODE=report
+# The known categories. A skill outside this set is a typo or a taxonomy that
+# grew without anyone deciding to grow it; either way it should be a review
+# conversation, not a silent new directory.
+CATEGORIES=" authoring memory messaging monitoring ops reference research tickets workstreams "
+
+# The listing cap. description + when_to_use are concatenated and truncated at
+# this many characters, so everything past it is invisible to skill selection.
+DESC_MAX=1536
+DESC_WARN=1200
+
+MODE=report LINT_DIR=""
 case "${1:-}" in
   --quiet)          MODE=quiet ;;
   --json)           MODE=json ;;
   --new)            MODE=new ;;
   --write-baseline) MODE=write_baseline ;;
-  -h|--help) sed -n '2,46p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  --lint)               MODE=lint;               LINT_DIR="${2:-$PWD}" ;;
+  --write-lint-baseline) MODE=write_lint_baseline; LINT_DIR="${2:-$PWD}" ;;
+  -h|--help) sed -n '2,78p' "$0" | sed 's/^# \?//'; exit 0 ;;
 esac
+
+LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
 
 FINDINGS=()   # "TYPE|skill|item|detail"
 add() { FINDINGS+=("$1|$2|$3|$4"); }
@@ -82,6 +133,91 @@ check_frontmatter() {
   head -1 "$f" | grep -q '^---$' || { add NOFRONTMATTER "$skill" SKILL.md "no YAML frontmatter"; return 0; }
   sed -n '2,/^---$/p' "$f" | grep -q '^name:'        || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing name:"
   sed -n '2,/^---$/p' "$f" | grep -q '^description:' || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing description:"
+  return 0
+}
+
+# --- static checks (also run in CI, where nothing else can) -------------------
+
+fm() { sed -n '2,/^---$/p' "$1"; }
+
+# The frontmatter `name` must be kebab-case AND equal the directory name. Claude
+# Code takes the command from the DIRECTORY for a personal skill and from `name`
+# for a plugin skill, so a mismatch means the two disagree about what this skill
+# is called - and which one wins depends on how it was installed.
+check_name() {
+  local skill="$1" f="$2" name
+  name=$(fm "$f" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//; s/[[:space:]]*$//')
+  [ -n "$name" ] || return 0
+  printf '%s' "$name" | grep -qE '^[a-z][a-z0-9]*(-[a-z0-9]+)*$' \
+    || add BADNAME "$skill" "$name" "name is not kebab-case"
+  [ "$name" = "$skill" ] \
+    || add BADNAME "$skill" "$name" "frontmatter name does not match the directory"
+  return 0
+}
+
+# category/tags/reviewed. `reviewed` is the one that decays: it records when the
+# skill's claims were last checked against reality, which is the question git
+# cannot answer.
+check_meta() {
+  local skill="$1" f="$2" parent="$3" cat tags rev
+  cat=$(fm "$f"  | sed -n 's/^  category:[[:space:]]*//p' | head -1 | tr -d ' ')
+  tags=$(fm "$f" | sed -n 's/^  tags:[[:space:]]*//p'     | head -1)
+  rev=$(fm "$f"  | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+
+  if [ -z "$cat" ]; then
+    add BADMETA "$skill" category "missing metadata.category"
+  else
+    case "$CATEGORIES" in
+      *" $cat "*) : ;;
+      *) add BADMETA "$skill" "$cat" "category is not one of:$CATEGORIES" ;;
+    esac
+    # The directory IS the category. Two places to read it means one can be wrong.
+    [ -z "$parent" ] || [ "$cat" = "$parent" ] \
+      || add BADMETA "$skill" "$cat" "category disagrees with the parent directory ($parent)"
+  fi
+
+  [ -n "$tags" ] || add BADMETA "$skill" tags "missing metadata.tags"
+  case "$tags" in
+    ""|\[*\]) : ;;
+    *) add BADMETA "$skill" tags "tags must be an inline list, e.g. [a, b]" ;;
+  esac
+
+  if [ -z "$rev" ]; then
+    add BADMETA "$skill" reviewed "missing metadata.reviewed"
+  elif ! printf '%s' "$rev" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+    add BADMETA "$skill" "$rev" "reviewed must be a quoted YYYY-MM-DD date"
+  fi
+  return 0
+}
+
+# description + when_to_use are concatenated into the skill listing and truncated
+# at DESC_MAX. Past that the trailing trigger phrases - the whole reason the
+# description is long in this corpus - are silently cut off.
+check_desc_len() {
+  local skill="$1" f="$2" n
+  n=$(fm "$f" | awk '
+    /^(description|when_to_use):/ { grab=1; sub(/^[a-z_]+:[[:space:]]*/, ""); }
+    /^[a-z_-]+:/ && !/^(description|when_to_use):/ { grab=0 }
+    grab { total += length($0) + 1 }
+    END { print total + 0 }')
+  if [ "$n" -gt "$DESC_MAX" ]; then
+    add LONGDESC "$skill" "${n}c" "over the ${DESC_MAX}-char listing cap - the tail is truncated away"
+  elif [ "$n" -gt "$DESC_WARN" ]; then
+    # Advisory. Failing a PR for a description that is merely LONG would train
+    # people to pad the limit down, and the limit is not the problem - silent
+    # truncation past it is.
+    add DESCNEAR "$skill" "${n}c" "within $((DESC_MAX - n)) chars of the ${DESC_MAX} cap"
+  fi
+  return 0
+}
+
+# The house plain-ASCII rule (see the Writing Style section of CLAUDE.md). One
+# finding per skill, not per character, so the baseline stays stable while a
+# skill is being cleaned up and disappears entirely once it is clean.
+check_ascii() {
+  local skill="$1" f="$2" n
+  n=$(grep -c -P '[\x{2014}\x{2013}\x{2192}\x{2190}\x{2265}\x{2264}\x{2026}\x{00A7}\x{00B7}]' "$f" 2>/dev/null || true)
+  [ "${n:-0}" -gt 0 ] && add NONASCII "$skill" SKILL.md "$n line(s) with non-ASCII punctuation (em dash, arrow, ellipsis...)"
   return 0
 }
 
@@ -159,14 +295,65 @@ check_cmds() {
 
 # A skill dir in either repo with no link in ~/.claude/skills is documented and
 # unreachable - the agent cannot invoke it however well it is described.
+# Discovery is by SKILL.md at any depth, matching skill-deploy, so this keeps
+# working across the flat -> <category>/<name>/ move. Globbing */ instead would
+# have "found" nine categories and reported all 60 real skills as undeployed.
+find_skills() {
+  local root="$1"
+  [ -d "$root" ] || return 0
+  find "$root" -mindepth 2 -maxdepth 3 -name SKILL.md -type f 2>/dev/null | sort
+}
+
 check_undeployed() {
-  local repo="$1" name="$2" d skill
+  local repo="$1" name="$2" m skill
   [ -d "$repo/.claude/skills" ] || return 0
-  for d in "$repo"/.claude/skills/*/; do
-    [ -d "$d" ] || continue
-    skill="$(basename "$d")"
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    skill="$(basename "$(dirname "$m")")"
     [ -e "$SKILLS/$skill" ] || add UNDEPLOYED "$skill" "$name" "in the $name repo but not linked into ~/.claude/skills"
-  done
+  done < <(find_skills "$repo/.claude/skills")
+  return 0
+}
+
+# reviewed is a claim about REALITY, and reality moves. Past STALE_DAYS the claim
+# is not false, it is unsupported - nobody has looked.
+check_stale() {
+  local skill="$1" f="$2" rev age
+  rev=$(fm "$f" | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+  [ -n "$rev" ] || return 0
+  age=$(( ( $(date +%s) - $(date -d "$rev" +%s 2>/dev/null || echo 0) ) / 86400 ))
+  [ "$age" -gt "$STALE_DAYS" ] && add STALE "$skill" "$rev" "${age}d since last verified (limit ${STALE_DAYS}d)"
+  return 0
+}
+
+# Every skill's description sits in the context window of every session whether
+# it fires or not, so a skill nothing calls is a standing cost. Counted from the
+# Skill tool calls recorded in transcripts.
+#
+# A SIGNAL, not a verdict. A release runbook is supposed to look idle between
+# releases; what this is for is finding the ones that are idle because the router
+# never picks them, which is the overlap problem skill-refine has had no data for.
+declare -A USED=()
+load_usage() {
+  [ -d "$TRANSCRIPTS" ] || return 0
+  local s
+  # -mtime, NOT -newermt '-90 days': the latter silently matches nothing here,
+  # and an empty input list would read as "no skill was ever used".
+  while IFS= read -r s; do
+    [ -n "$s" ] && USED[$s]=1
+  done < <(
+    find "$TRANSCRIPTS" -name '*.jsonl' -mtime "-$USAGE_DAYS" -print0 2>/dev/null \
+      | xargs -0 -r grep -hoE '"name": ?"Skill", ?"input": ?\{ ?"skill": ?"[^"]*"' 2>/dev/null \
+      | sed 's/.*"skill": \?"//; s/"$//' | sort -u
+  )
+  return 0
+}
+
+check_unused() {
+  local skill="$1"
+  # No transcripts at all means we cannot tell, which is not the same as unused.
+  [ ${#USED[@]} -gt 0 ] || return 0
+  [ -n "${USED[$skill]:-}" ] || add UNUSED "$skill" "${USAGE_DAYS}d" "never invoked in the last ${USAGE_DAYS}d of transcripts"
   return 0
 }
 
@@ -191,17 +378,80 @@ check_registration() {
 
 # --- run ---------------------------------------------------------------------
 
-for d in "$SKILLS"/*/; do
-  [ -e "$d/SKILL.md" ] || continue
-  s="$(basename "$d")"
-  check_frontmatter "$s" "$d/SKILL.md"
-  check_paths       "$s" "$d/SKILL.md"
-  check_cmds        "$s" "$d/SKILL.md"
-done
+# --- static pass, shared by --lint and the full local report ------------------
+#
+# Runs over SOURCE trees (a repo checkout), because that is all CI has and
+# because the parent directory - which check_meta compares the category against -
+# only exists there. The deployed tree is flat by design.
+# SEEN_NAME is scoped to ONE namespace per call, because uniqueness is a property
+# of the namespace and not of the filesystem. ~/.claude/skills is a single flat
+# tree fed by both dotfiles repos, so a name repeated across them is ambiguous.
+# .config/codex/skills is a DIFFERENT tool's corpus that happens to reuse names
+# (deep-research, security-engineer); flagging those would be noise.
+declare -A SEEN_NAME=()
+run_static() {
+  local root m d s parent c
+  SEEN_NAME=()
+  for root in "$@"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      d="$(dirname "$m")"; s="$(basename "$d")"
+      parent="$(basename "$(dirname "$d")")"
+      # A flat skill sits directly under skills/, so it has no category dir.
+      [ "$parent" = "skills" ] && parent=""
+      if [ -n "${SEEN_NAME[$s]:-}" ]; then
+        add DUPNAME "$s" "$d" "also defined at ${SEEN_NAME[$s]}"
+      else
+        SEEN_NAME[$s]="$d"
+      fi
+      check_frontmatter "$s" "$m"
+      check_name        "$s" "$m"
+      check_meta        "$s" "$m" "$parent"
+      check_desc_len    "$s" "$m"
+      check_ascii       "$s" "$m"
+    done < <(find_skills "$root")
+  done
+  # A category directory that shares a name with a skill: comms/comms/ makes
+  # `git mv` refuse, and it silently swallowed two sibling skills once already.
+  #
+  # A directory is a CATEGORY only if it does not itself hold a SKILL.md. Without
+  # that test every skill in the flat layout counts as a category colliding with
+  # itself, which reported 68 findings for a corpus that had none.
+  for root in "$@"; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      [ -f "$d/SKILL.md" ] && continue
+      c="$(basename "$d")"
+      [ -n "${SEEN_NAME[$c]:-}" ] && add CATCOLLIDE "$c" "$root/$c" "a category cannot share a name with a skill"
+    done
+  done
+  return 0
+}
 
-check_undeployed "$PUB"  public
-check_undeployed "$PRIV" private
-check_registration
+if [ "$MODE" = lint ] || [ "$MODE" = write_lint_baseline ]; then
+  run_static "$LINT_DIR/.claude/skills"
+else
+  # Two namespaces, two calls: the dotfiles pair feed one flat ~/.claude/skills,
+  # while the Codex corpus is a different tool's and legitimately reuses names.
+  run_static "$PUB/.claude/skills" "$PRIV/.claude/skills"
+  run_static "$CODEX"
+
+  load_usage
+  for d in "$SKILLS"/*/; do
+    [ -e "$d/SKILL.md" ] || continue
+    s="$(basename "$d")"
+    check_paths  "$s" "$d/SKILL.md"
+    check_cmds   "$s" "$d/SKILL.md"
+    check_stale  "$s" "$d/SKILL.md"
+    check_unused "$s"
+  done
+
+  check_undeployed "$PUB"  public
+  check_undeployed "$PRIV" private
+  check_registration
+fi
 
 # Sorting keeps the baseline file stable across runs, so `git diff` on it shows
 # real change instead of reordering noise. Guarded on non-empty: `printf '%s\n'`
@@ -216,6 +466,52 @@ if [ "$MODE" = write_baseline ]; then
   mkdir -p "$(dirname "$BASELINE")"
   [ "$n" -gt 0 ] && printf "%s\n" "${FINDINGS[@]}" > "$BASELINE" || : > "$BASELINE"
   echo "skill-drift: baselined $n finding(s) -> ${BASELINE/#$HOME/\~}"
+  exit 0
+fi
+
+# --- lint (what CI runs) ------------------------------------------------------
+#
+# Only NONASCII is ratcheted, and only because the corpus carries 1355 known
+# occurrences that predate the rule being enforced. Everything else is a hard
+# error from the first run: those checks were all clean when the gate landed, so
+# there is no debt to grandfather and no reason to allow any.
+if [ "$MODE" = write_lint_baseline ]; then
+  mkdir -p "$(dirname "$LINT_BASELINE")"
+  : > "$LINT_BASELINE"
+  for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+    case "$f" in NONASCII\|*) printf '%s\n' "${f%%|*}|$(printf '%s' "$f" | cut -d'|' -f2)" >> "$LINT_BASELINE" ;; esac
+  done
+  sort -u -o "$LINT_BASELINE" "$LINT_BASELINE"
+  echo "skill-lint: baselined $(wc -l < "$LINT_BASELINE") NONASCII skill(s) -> $LINT_BASELINE"
+  exit 0
+fi
+
+if [ "$MODE" = lint ]; then
+  errs=0 warns=0
+  for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+    IFS='|' read -r t s p d <<< "$f"
+    if [ "$t" = NONASCII ] && [ -f "$LINT_BASELINE" ] && grep -qxF "NONASCII|$s" "$LINT_BASELINE"; then
+      continue   # known debt, tracked in the baseline
+    fi
+    case "$t" in
+      DESCNEAR) printf '  warn  %-13s %-24s %-24s %s\n' "$t" "$s" "$p" "$d"; warns=$((warns + 1)); continue ;;
+    esac
+    printf '  FAIL  %-13s %-24s %-24s %s\n' "$t" "$s" "$p" "$d"
+    errs=$((errs + 1))
+  done
+  scanned=$(find_skills "$LINT_DIR/.claude/skills" | wc -l)
+  # An empty input list is a FAILURE, not a clean run. Every tooling failure in
+  # this repo has been a silent success, and a lint that scans nothing and says
+  # "all good" is the purest form of it.
+  if [ "$scanned" -eq 0 ]; then
+    echo "skill-lint: found NO skills under $LINT_DIR/.claude/skills - refusing to report success"
+    exit 2
+  fi
+  if [ "$errs" -gt 0 ]; then
+    printf '\nskill-lint: %d error(s), %d warning(s) across %d skill(s)\n' "$errs" "$warns" "$scanned"
+    exit 1
+  fi
+  printf 'skill-lint: %d skill(s) valid (%d warning(s))\n' "$scanned" "$warns"
   exit 0
 fi
 
@@ -267,6 +563,18 @@ cat <<'EOF'
   UNDEPLOYED -> link them all:  skill-deploy    (--dry-run to preview)
   GHOST      -> the skill is retired; remove the bullet from CLAUDE.md
   UNLISTED   -> add a bullet under the right category (see the update-rules skill)
+  BADNAME    -> rename the directory or the frontmatter so the two agree
+  DUPNAME    -> one flat namespace across both repos; rename one of them
+  BADMETA    -> fix the metadata block (see .claude/skills/SKILL-TEMPLATE.md)
+  CATCOLLIDE -> rename the category; it cannot share a name with a skill
+  LONGDESC   -> cut the description; past the cap the trigger phrases vanish
+  DESCNEAR   -> advisory only, but the cap is closer than it looks
+  NONASCII   -> plain ASCII (see the Writing Style rules); `--write-lint-baseline`
+                only freezes debt, it does not make the rule optional
+  STALE      -> re-verify the skill against reality, THEN bump metadata.reviewed.
+                Bumping the date without checking is worse than leaving it stale.
+  UNUSED     -> a signal, not a verdict. A release runbook is meant to look idle;
+                a skill the router never picks is the one to look at
 
   Reason about these with `/skill-refine audit` - it adds the lessons/mem0 layer
   and writes proposed diffs. Do NOT silence a finding by deleting the check.
