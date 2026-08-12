@@ -25,6 +25,7 @@ mod project_tasks;
 mod projects;
 mod summarize;
 mod tags;
+mod waves;
 mod zettel;
 
 use anyhow::{bail, Result};
@@ -200,9 +201,22 @@ enum Cmd {
         /// With --roll/--bump: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
         major: bool,
+        /// With --roll: close the version even though its wave still has open tasks
+        #[arg(long)]
+        force: bool,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
+        /// Print a project's roadmap - current wave then planned ones
+        /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
+        #[arg(long, value_name = "NAME")]
+        waves: Option<String>,
+        /// Print (creating if absent) the path to a version's AI note, `ai/<vX.Y.Z>.md`
+        #[arg(long, value_name = "NAME")]
+        ai_note: Option<String>,
+        /// With --ai-note: which version (defaults to the open one)
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
     },
     /// Surface multi-account email triage into the daily note's `## Comms` section.
     /// No subcommand = list the currently-surfaced items for the active profile.
@@ -302,15 +316,41 @@ enum FocusCmd {
 /// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Wave`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
-    /// List the project's open wave tasks (TSV: `path<TAB>line<TAB>key<TAB>text`)
-    List,
-    /// Add a task to the project's current wave
+    /// List the project's open wave tasks (TSV: `path<TAB>line<TAB>key<TAB>text`;
+    /// with --wave/--all a fifth `wave` column is appended)
+    List {
+        /// Only this wave (`vX.Y.Z`), current or planned
+        #[arg(long, value_name = "VERSION")]
+        wave: Option<String>,
+        /// Every wave on the sheet: the current one and the whole roadmap
+        #[arg(long)]
+        all: bool,
+    },
+    /// Add a task to the project's current wave, or to a planned one with --to
     Add {
+        /// Plan it into this version instead (`vX.Y.Z`); opens the wave if it is new
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Check off the first open wave task whose text matches
+    /// Move the first matching open task into another wave
+    Move {
+        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new
+        #[arg(long, value_name = "VERSION", required = true)]
+        to: String,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Check off the first open wave task whose text matches. Needs evidence: pass
+    /// --proof for something checkable, or --unverified to say out loud that there is none
     Done {
+        /// Something checkable later: `pr:1142`, `run:<id>`, a URL
+        #[arg(long, value_name = "REF")]
+        proof: Option<String>,
+        /// No checkable artifact exists, and this is why
+        #[arg(long, value_name = "WHY")]
+        unverified: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -482,13 +522,28 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Ptask { name, sub } => match sub {
-            None | Some(PtaskCmd::List) => project_tasks::list(&prof, &name)?,
-            Some(PtaskCmd::Add { text }) => {
-                project_tasks::add(&prof, &log, &name, &text.join(" "))?
+            None => project_tasks::list(&prof, &name, None, false)?,
+            Some(PtaskCmd::List { wave, all }) => {
+                project_tasks::list(&prof, &name, wave.as_deref(), all)?
             }
-            Some(PtaskCmd::Done { query }) => {
-                project_tasks::done(&prof, &log, &name, &query.join(" "))?
+            Some(PtaskCmd::Add { to, text }) => {
+                project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref())?
             }
+            Some(PtaskCmd::Move { to, query }) => {
+                project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to)?
+            }
+            Some(PtaskCmd::Done {
+                proof,
+                unverified,
+                query,
+            }) => project_tasks::done(
+                &prof,
+                &log,
+                &name,
+                &query.join(" "),
+                proof.as_deref(),
+                unverified.as_deref(),
+            )?,
             Some(PtaskCmd::Start { query }) => {
                 project_tasks::start(&prof, &log, &name, &query.join(" "))?
             }
@@ -549,7 +604,11 @@ fn main() -> Result<()> {
             bump,
             minor,
             major,
+            force,
             version_of,
+            waves,
+            ai_note,
+            version,
         } => {
             let level = if major {
                 projects::Bump::Major
@@ -560,17 +619,22 @@ fn main() -> Result<()> {
             };
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, bump, version_of, archived, name,
+                new, archive, restore, roll, migrate, bump, version_of, waves, ai_note, archived,
+                name,
             ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
-                (_, _, _, Some(n), ..) => projects::roll(&prof, &log, &n, level)?,
+                (_, _, _, Some(n), ..) => projects::roll(&prof, &log, &n, level, force)?,
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
                 (_, _, _, _, _, Some(n), ..) => projects::bump(&prof, &log, &n, level)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
-                (_, _, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
+                (_, _, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
+                (_, _, _, _, _, _, _, _, Some(n), ..) => {
+                    projects::show_ai_note(&prof, &n, version.as_deref())?
+                }
+                (_, _, _, _, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
+                (_, _, _, _, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
                 _ => projects::list(&prof)?,
             }
             0

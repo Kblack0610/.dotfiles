@@ -45,6 +45,8 @@ case "${1:-}" in
         printf 'rolled %s: v1.0.0 -> v1.0.1%s\n' "${3:-x}" "${froze:+ (froze $froze)}"
         ;;
       --version-of) emit "version-of.${3:-}" ;;
+      # `notes projects --waves <name>` -> version TAB state TAB open TAB done TAB heading
+      --waves) emit "waves.${3:-}" ;;
       # `notes --profile P projects` -> name TAB summary TAB status TAB version
       *) emit "projects.${profile:-personal}" ;;
     esac
