@@ -431,7 +431,34 @@ apply_dotfiles() {
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
 
+    deploy_skills
+
     log_info "Dotfiles applied"
+}
+
+# Link every skill in both repos into ~/.claude/skills.
+#
+# stow deliberately does NOT deploy .claude/skills (it is in .stow-local-ignore
+# on both sides). It cannot: stow mirrors the source path, so the categorised
+# layout .claude/skills/<category>/<name>/ would land as a nested directory, and
+# Claude Code only reads personal skills one level down, at
+# ~/.claude/skills/<name>/SKILL.md. skill-deploy flattens category -> name while
+# linking, which is the whole reason it owns this tree alone.
+#
+# Called from BOTH apply_dotfiles and setup_dotfiles_private on purpose. Only
+# install_wsl and the generic install_all call setup_dotfiles_private; arch, mac,
+# debian and android call apply_dotfiles only, so hooking just the private path
+# would leave those machines with no skills at all. The script is idempotent by
+# construction, so running it twice is a no-op, and it links whichever repos
+# exist - a public-only machine gets the public half and nothing dangles.
+deploy_skills() {
+    local sd="$HOME/.dotfiles/.local/bin/skill-deploy"
+    [ -x "$sd" ] || return 0
+    # --adopt replaces link farms left by older revisions of this repo, when stow
+    # still owned .claude/skills. It only ever touches a directory whose every
+    # entry is a symlink into one of the two repos; a real skill directory still
+    # reports CONFLICT. Non-fatal: a conflict must not abort an install.
+    "$sd" --adopt --quiet || log_warning "skill-deploy reported conflicts; run 'skill-deploy --dry-run' to inspect"
 }
 
 # Clone + stow the PRIVATE overlay (~/.dotfiles-private) on top of the public repo.
@@ -472,6 +499,10 @@ setup_dotfiles_private() {
     if [ -x "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" ]; then
         "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" || true
     fi
+
+    # Again, now that the private half exists: apply_dotfiles ran before the
+    # overlay was cloned, so its pass linked only the public skills.
+    deploy_skills
 }
 
 # Setup Claude plans directory symlink
@@ -579,6 +610,6 @@ export -f install_basics install_tools install_terminal install_gui install_runt
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private install_npm_packages setup_ai_memory
+export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
 export -f install_all
 export -f _resolve_pkg_name install_package_list

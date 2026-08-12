@@ -63,7 +63,7 @@ resolve_themes_dir() {
   local candidates=(
     "${DECK_THEMES_DIR:-}"
     "$HOME/.claude/skills/marp-slide/assets/themes"
-    "$SCRIPT_DIR/../../../.claude/skills/marp-slide/assets/themes"
+    "$SCRIPT_DIR/../../../.claude/skills/authoring/marp-slide/assets/themes"
   )
   local d
   for d in "${candidates[@]}"; do

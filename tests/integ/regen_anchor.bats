@@ -18,7 +18,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
 
-  REGEN="$REPO_ROOT/.claude/skills/project-index/regen-anchor.sh"
+  REGEN="$REPO_ROOT/.claude/skills/memory/project-index/regen-anchor.sh"
   HOOK="$REPO_ROOT/.claude/hooks/stop-post.d/87-regen-anchor.sh"
 
   # The script reads its libs from the STOWED path, which sandbox_init has rewritten.
@@ -156,8 +156,10 @@ seed_anchor() {
 @test "87-regen-anchor: refreshes the anchor for the session's project" {
   seed_anchor
   touch "$HOME/.agent/evals/proj/2026-08-10.md"
-  mkdir -p "$HOME/.dotfiles/.claude/skills/project-index"
-  cp "$REGEN" "$HOME/.dotfiles/.claude/skills/project-index/"
+  # The DEPLOYED path, which is what the hook reads. ~/.claude/skills stays flat
+  # however the repo is organised, and that stability is the point of it.
+  mkdir -p "$HOME/.claude/skills/project-index"
+  cp "$REGEN" "$HOME/.claude/skills/project-index/"
   mkdir -p "$HOME/proj"
 
   cat > "$MAP" <<EOF
@@ -173,8 +175,8 @@ EOF
 @test "87-regen-anchor: NEVER scaffolds an anchor for a project that has none" {
   # A Stop hook that mints project files for every directory anyone opens is how
   # ~/.agent filled with namespaces nobody reads.
-  mkdir -p "$HOME/.dotfiles/.claude/skills/project-index" "$HOME/stranger"
-  cp "$REGEN" "$HOME/.dotfiles/.claude/skills/project-index/"
+  mkdir -p "$HOME/.claude/skills/project-index" "$HOME/stranger"
+  cp "$REGEN" "$HOME/.claude/skills/project-index/"
 
   CLAUDE_PROJECT_DIR="$HOME/stranger" run bash "$HOOK" </dev/null
   assert_success
