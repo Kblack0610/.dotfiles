@@ -22,22 +22,38 @@
 # name present in BOTH repos: silently preferring one would create the second
 # source of truth this whole split exists to avoid.
 #
+# The ONE exception is --adopt, and only for a directory this system provably
+# created itself: see adoptable() below.
+#
+# Layout-agnostic. A skill is "a directory containing SKILL.md", found at any
+# depth under .claude/skills, so both the flat <name>/ and the categorised
+# <category>/<name>/ layouts deploy to the same flat ~/.claude/skills/<name>.
+# That flattening is required, not cosmetic: Claude Code reads personal skills
+# from ~/.claude/skills/<skill-name>/SKILL.md, one level only. It does follow a
+# symlink there to a directory anywhere on disk, which is what lets the REPO
+# organise into categories the deployed tree cannot have.
+#
 # Usage:
 #   skill-deploy              create missing links, report what changed
 #   skill-deploy --dry-run    report only, touch nothing
 #   skill-deploy --quiet      print only changes and conflicts (for provisioning)
+#   skill-deploy --adopt      also replace stow-made link farms (see adoptable)
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
 
-DRY=0 QUIET=0
-case "${1:-}" in
-  --dry-run) DRY=1 ;;
-  --quiet)   QUIET=1 ;;
-  -h|--help) sed -n '2,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
-esac
+DRY=0 QUIET=0 ADOPT=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY=1 ;;
+    --quiet)   QUIET=1 ;;
+    --adopt)   ADOPT=1 ;;
+    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *) printf 'skill-deploy: unknown option %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 say()  { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
 loud() { printf '%s\n' "$*"; }
@@ -52,7 +68,7 @@ mkdir -p "$SKILLS"
 # links that still reported success. Absolute is the fallback: an ugly link that
 # resolves beats a tidy one that does not.
 rel_target() {
-  local repo=$1 name=$2 abs="$repo/.claude/skills/$2"
+  local abs=$1
   if command -v realpath >/dev/null 2>&1; then
     realpath -m --relative-to="$SKILLS" "$abs" 2>/dev/null || printf '%s\n' "$abs"
   else
@@ -60,29 +76,65 @@ rel_target() {
   fi
 }
 
-linked=0 already=0 conflict=0
+# A real directory in $SKILLS is normally untouchable. The single exception is a
+# link farm: a directory whose every entry is a symlink resolving back into one
+# of the two repos. `stow --no-folding` produces exactly that shape when it
+# deploys .claude/skills - a real dir holding a per-file link - and it is a
+# strictly worse deployment than ours, because only the files that existed at
+# stow time are linked: add references/ to the source later and it never appears.
+#
+# Such a directory has no content of its own to lose, so replacing it with a
+# whole-directory symlink is information-preserving. Anything else - a real file,
+# a link pointing outside the repos, an empty dir - is NOT adoptable and still
+# reports CONFLICT. This is deliberately narrow: it exists to migrate a shape
+# this repo's own provisioning created, not to make --adopt a general override.
+adoptable() {
+  local d=$1 entry tgt found=0
+  [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  shopt -s nullglob dotglob
+  local entries=("$d"/*)
+  shopt -u nullglob dotglob
+  [ ${#entries[@]} -gt 0 ] || return 1        # empty dir: not provably ours
+  for entry in "${entries[@]}"; do
+    [ -L "$entry" ] || return 1
+    tgt=$(readlink -f "$entry" 2>/dev/null) || return 1
+    case "$tgt" in
+      "$PUB"/*|"$PRIV"/*) found=1 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$found" = 1 ]
+}
+
+linked=0 already=0 conflict=0 adopted=0
 
 # Collision guard: a skill name defined in both repos is ambiguous, not a race.
-declare -A OWNER=()
+# Discovery is by SKILL.md rather than by directory so the flat and categorised
+# layouts both work, and so a non-skill sibling (SKILL-TEMPLATE.md, a category
+# dir's own README) is never mistaken for a skill.
+declare -A OWNER=() SRC=()
 for repo in "$PUB" "$PRIV"; do
   [ -d "$repo/.claude/skills" ] || continue
-  for dir in "$repo"/.claude/skills/*/; do
-    [ -d "$dir" ] || continue
+  while IFS= read -r manifest; do
+    [ -n "$manifest" ] || continue
+    dir=$(dirname "$manifest")
     name=$(basename "$dir")
     if [ -n "${OWNER[$name]:-}" ]; then
-      loud "CONFLICT  $name  defined in BOTH ${OWNER[$name]} and $repo - skipped, resolve by hand"
+      loud "CONFLICT  $name  defined in BOTH ${SRC[$name]} and $dir - skipped, resolve by hand"
       OWNER[$name]="__ambiguous__"
       conflict=$((conflict + 1))
     else
       OWNER[$name]=$repo
+      SRC[$name]=$dir
     fi
-  done
+  done < <(find "$repo/.claude/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -type f 2>/dev/null | sort)
 done
 
 for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   repo=${OWNER[$name]}
   [ "$repo" = "__ambiguous__" ] && continue
-  want=$(rel_target "$repo" "$name")
+  src=${SRC[$name]}
+  want=$(rel_target "$src")
   link="$SKILLS/$name"
 
   if [ -L "$link" ]; then
@@ -91,7 +143,7 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
       already=$((already + 1)); continue
     fi
     # A link that resolves to the same place by another spelling is fine.
-    if [ -e "$link" ] && [ "$(cd "$(dirname "$link")" && readlink -f "$have")" = "$(readlink -f "$repo/.claude/skills/$name")" ]; then
+    if [ -e "$link" ] && [ "$(cd "$(dirname "$link")" && readlink -f "$have")" = "$(readlink -f "$src")" ]; then
       already=$((already + 1)); continue
     fi
     loud "CONFLICT  $name  links to '$have', expected '$want' - skipped"
@@ -99,8 +151,21 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   fi
 
   if [ -e "$link" ]; then
-    loud "CONFLICT  $name  exists as a real path in $SKILLS - skipped"
-    conflict=$((conflict + 1)); continue
+    if adoptable "$link"; then
+      if [ "$DRY" = 1 ]; then
+        loud "WOULD ADOPT $name  (stow link farm -> whole-directory symlink)"
+        adopted=$((adopted + 1)); continue
+      elif [ "$ADOPT" = 1 ]; then
+        rm -rf -- "$link" || { loud "FAILED    $name  could not remove link farm"; conflict=$((conflict + 1)); continue; }
+        adopted=$((adopted + 1))
+      else
+        loud "CONFLICT  $name  is a stow link farm - rerun with --adopt to replace it"
+        conflict=$((conflict + 1)); continue
+      fi
+    else
+      loud "CONFLICT  $name  exists as a real path in $SKILLS - skipped"
+      conflict=$((conflict + 1)); continue
+    fi
   fi
 
   if [ "$DRY" = 1 ]; then
@@ -116,6 +181,6 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   linked=$((linked + 1))
 done
 
-say "skill-deploy: $linked linked, $already already correct, $conflict conflict(s)"
+say "skill-deploy: $linked linked, $already already correct, $adopted adopted, $conflict conflict(s)"
 [ "$conflict" -gt 0 ] && exit 1
 exit 0

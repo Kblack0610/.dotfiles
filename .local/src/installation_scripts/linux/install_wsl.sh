@@ -220,6 +220,7 @@ apply_dotfiles() {
 ^/\.config/zoomus\.conf$
 ^/\.config/profile$
 ^/\.config/windows$
+^/\.claude/skills$
 EOF
 
     stow .
@@ -233,6 +234,8 @@ EOF
 
     git config core.hooksPath .githooks
     log_info "Git hooks configured"
+
+    deploy_skills
 
     log_info "Dotfiles applied"
 }
