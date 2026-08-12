@@ -32,6 +32,24 @@ setup() {
   # list cannot express such a path at all. The first draft of the script used spaces and this
   # fixture is what exposed it.
   export SESSIONIZER_ROOTS="$SANDBOX/roots/alpha:$SANDBOX/roots/beta:$SANDBOX/roots/nonexistent"
+
+  # Two worlds that DECLARE directories, which is the routing table. Written with `~` the
+  # way the real manifests are -- and necessarily so: $SANDBOX contains a space and the
+  # manifest format is whitespace-delimited, so a literal sandbox path could not be
+  # expressed here at all. That is the format's documented limitation, not a test dodge.
+  export TMUX_SERVERS_DIR="$SANDBOX/manifests"
+  mkdir -p "$TMUX_SERVERS_DIR"
+  mkdir -p "$HOME/declared-hub" "$HOME/declared-notes" "$HOME/dev/declared-lab" \
+    "$HOME/declared-hub/inside"
+  printf 'ownname ~/declared-hub\nhub ~/declared-notes  nvim\n' > "$TMUX_SERVERS_DIR/hub.conf"
+  printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"
+}
+
+# in_world <server> -- what the tmux stub reports for #{socket_path}. $TMUX has to be set
+# too: an unset $TMUX is the outside-tmux branch, which is a different case entirely.
+in_world() {
+  export TMUX=/tmp/fake,1,0
+  export STUB_SOCKET="/tmp/tmux-1000/$1"
 }
 
 # ── The name fold ────────────────────────────────────────────────────────────
@@ -162,6 +180,97 @@ setup() {
   assert_output --partial 'not a directory'
   assert_not_called 'new-session'
   assert_not_called 'switch-client'
+}
+
+# ── Which world a directory belongs to ───────────────────────────────────────
+#
+# The manifests in .config/tmux-servers/ already say where each declared directory lives.
+# Before this, the picker ignored them and created the session on whatever socket happened
+# to enclose it -- so Prefix+f on ~/dev/bnb/platform from hub built a SECOND `platform`
+# beside lab's. Same disease as the leading-dot fold above, one layer up.
+
+@test "--route reports the world that declares a directory" {
+  run "$SESSIONIZER" --route "$HOME/dev/declared-lab"
+  assert_success
+  assert_output 'lab platform'
+}
+
+@test "--route uses the MANIFEST's session name, not the basename" {
+  # hub.conf calls ~/declared-notes `hub`. Landing it as `declared-notes` would be a second
+  # session on a directory that already has one -- which is the real ~/.notes case.
+  run "$SESSIONIZER" --route "$HOME/declared-notes"
+  assert_success
+  assert_output 'hub hub'
+}
+
+@test "--route says here for a directory no manifest declares" {
+  run "$SESSIONIZER" --route "$SANDBOX/roots/alpha/proj-one"
+  assert_success
+  assert_output 'here proj-one'
+}
+
+@test "--route matches the declared directory EXACTLY, not its subdirectories" {
+  # A subdir of a declared repo is its own piece of work, and it is not what the manifest
+  # named. Routing it would drag you across worlds for a directory nobody registered.
+  run "$SESSIONIZER" --route "$HOME/declared-hub/inside"
+  assert_success
+  assert_output 'here inside'
+}
+
+@test "a declared directory in ANOTHER world is handed to tmx, not created here" {
+  # THE feature. Standing in lab, picking a hub-declared directory must hop, and must not
+  # quietly build a duplicate on lab's socket.
+  in_world lab
+  run "$SESSIONIZER" "$HOME/declared-hub"
+  assert_success
+  assert_called 'tmx goto hub ownname'
+  assert_not_called 'new-session'
+  assert_not_called 'switch-client'
+}
+
+@test "a declared directory in THIS world is entered locally, with no hop" {
+  # No detach for a session that is already right here -- that would be the jank with
+  # nothing to show for it.
+  in_world hub
+  run "$SESSIONIZER" "$HOME/declared-hub"
+  assert_success
+  assert_called 'switch-client -t ownname'
+  assert_not_called 'tmx goto'
+}
+
+@test "an UNdeclared directory still opens right here, whatever world that is" {
+  # The blast radius of the whole change: only declared directories behave differently.
+  in_world lab
+  run "$SESSIONIZER" "$SANDBOX/roots/alpha/proj-one"
+  assert_success
+  assert_called 'switch-client -t proj-one'
+  assert_not_called 'tmx goto'
+}
+
+@test "outside tmux, a declared directory still routes to its world" {
+  # No enclosing world means nothing to compare against, so the manifest is the only
+  # answer there is. tmx land attaches on the far side.
+  run "$SESSIONIZER" "$HOME/dev/declared-lab"
+  assert_success
+  assert_called 'tmx goto lab platform'
+  assert_not_called 'attach -t'
+}
+
+@test "a manifest that does not exist leaves every directory local" {
+  # The picker must not depend on the manifests being there: a fresh machine, or a
+  # TMUX_SERVERS_DIR typo, should degrade to the old behaviour rather than dying.
+  in_world lab
+  TMUX_SERVERS_DIR="$SANDBOX/no-such-manifests" run "$SESSIONIZER" "$HOME/declared-hub"
+  assert_success
+  assert_called 'switch-client -t declared-hub'
+  assert_not_called 'tmx goto'
+}
+
+@test "a commented-out manifest line does not declare anything" {
+  printf '# ownname ~/declared-hub\n' > "$TMUX_SERVERS_DIR/hub.conf"
+  run "$SESSIONIZER" --route "$HOME/declared-hub"
+  assert_success
+  assert_output 'here declared-hub'
 }
 
 # ── Conformance, exercised rather than grepped ───────────────────────────────

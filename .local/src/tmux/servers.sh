@@ -36,7 +36,8 @@
 # choose-tree is server-scoped by construction.
 #
 # Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · hop <name>
-#        · root <name> · land <name> <last|root|session[:window]> · pick-session · back
+#        · root <name> · goto <name> <session> · land <name> <last|root|session[:window]>
+#        · pick-session · back
 
 set -uo pipefail
 
@@ -427,6 +428,20 @@ cmd_land() {
 cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
 cmd_root() { _enter "${1:?root needs a server name}" root; }
 
+# goto <server> <session> -- hop to a world and land on a NAMED session.
+#
+# The third way to arrive, beside hop (resume) and root (landing page): "take me to THIS
+# session, wherever it lives". `pick-all` has always done it by calling _enter with an
+# explicit session; this only gives that a name so another surface can ask for it.
+# sessionizer.sh is the caller: a directory some manifest declares belongs in that
+# manifest's world, and creating it here instead would be a second session on one dir.
+#
+# Deliberately NOT a `land` call. land is the FAR side of the hop and never looks at
+# $TMUX, so calling it from inside a live client skips the detach entirely (see _enter).
+cmd_goto() {
+  _enter "${1:?goto needs a server name}" "${2:?goto needs a session name}"
+}
+
 # back -- return to wherever the last hop left from, and record this spot on the way, so
 # the key is a two-way flip rather than a one-way trip.
 #
@@ -586,6 +601,7 @@ main() {
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
     root)         shift; cmd_root "${1:-}" ;;
+    goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     back)         cmd_back ;;
     ensure)       shift; cmd_ensure "${1:-}" ;;

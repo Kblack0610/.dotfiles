@@ -86,6 +86,34 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
 }
 
+# ── goto: arriving at a NAMED session ────────────────────────────────────────
+#
+# The third arrival, beside hop (resume) and root (landing). sessionizer.sh asks for it when
+# a directory belongs to a world other than the one you are standing in.
+
+@test "goto detaches and lands on the named session of the other world" {
+  at lab work 4
+  run "$TMX" goto hub notes
+  assert_success
+  assert_called "detach-client -E"
+  assert_called "land hub notes"
+}
+
+@test "goto records where it left, so L comes back from it like any other hop" {
+  # It goes through _enter, which is the whole reason it is not a `land` call: a hop that
+  # skipped the recorder would be a one-way trip and Prefix+L would go dead on it.
+  at lab work 4
+  run "$TMX" goto hub notes
+  assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
+}
+
+@test "goto without a session name is refused rather than guessing one" {
+  at lab work 4
+  run "$TMX" goto hub
+  assert_failure
+  assert_not_called "detach-client"
+}
+
 # ── Going back ───────────────────────────────────────────────────────────────
 
 @test "back to another world detaches and lands on the recorded session and window" {
