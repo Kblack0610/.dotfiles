@@ -127,6 +127,7 @@ socket, and the blast radius of a kill is exactly one server.
 | `Prefix+C-s` | **compact**: just the worlds, sessions in the preview (also bare `tmx`) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
+| `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
 
 One letter per world, so the only thing the Ctrl changes is resume-vs-root:
 `n` = hub, `h` = lab. (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
@@ -184,9 +185,17 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
+| `hub` - personal | **hub**, dotfiles, home-config, procs | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
+
+`procs` is the parking lot for **long-running one-offs**: spawn the VDI, hold a
+port-forward, leave a sync running - one window each, none of it cluttering a project
+session it has nothing to do with. Rooted at `~` because it is about processes, not a
+repo. It is not called `scratch` on purpose: scratch is the commoner word but it means
+a throwaway shell you close, and the point of these is that they keep running. If a
+runaway one-off ever needs to be unable to take `hub` down with it, that same line in
+its own `procs.conf` makes it a world with its own socket - no code either way.
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
@@ -210,6 +219,32 @@ fallback that created a junk session rooted at home on every machine lacking the
 - which is why a `home-config` window used to open on the Mac. Skipping still never
 costs you the rest of the manifest, and the reported count is what keeps a mistyped
 path from vanishing silently.
+
+#### Which world a directory belongs to
+
+The manifests are also the **routing table**, and `Prefix+f` reads them. Pick a
+directory some `*.conf` declares and you land in the world that declares it, under
+the name that manifest gives it - hopping servers if that is where it lives:
+
+| Picked | Goes to | Because |
+|---|---|---|
+| `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
+| `~/dev/bnb/platform` | `lab`, session `platform` | lab.conf declares it |
+| `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
+| `~/dev/bnb/platform/apps/web` | wherever you are, session `web` | undeclared: **exact match only** |
+
+Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
+session on whatever socket happened to enclose it - `Prefix+f` on
+`~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
+directory, two worlds, and nothing looked wrong from either side.
+
+The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
+"take me to THIS session, wherever it lives". It goes through `_enter` like every
+other hop, so it records the back-crumb and `Prefix+L` returns from it. Crossing
+worlds from inside a popup is not new - `Prefix+A` has always done it.
+
+`sessionizer.sh --route <dir>` prints the decision (`hub dotfiles`, or `here <name>`
+for anything undeclared) without touching a server, which is how it is tested.
 
 The startup command is delivered with `send-keys` rather than as a
 `new-session <cmd>` argument, so quitting the editor drops you into a normal shell
@@ -235,7 +270,11 @@ same name. Note `-C` must precede the subcommand (`sesh -C f list` works,
 `sesh list -C f` errors).
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
-(`sessionizer.sh`) still fuzzy-finds every directory on the machine.
+(`sessionizer.sh`) still fuzzy-finds every directory on the machine - and it
+**routes by manifest**: a directory some `*.conf` declares lands in that world,
+under that manifest's name, hopping servers if that is where it lives. Everything
+undeclared opens right where you are, exactly as before. See "Which world a
+directory belongs to" below.
 
 Two things verified, both load-bearing:
 
@@ -359,9 +398,17 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
+| `hub` - personal | **hub**, dotfiles, home-config, procs | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
+
+`procs` is the parking lot for **long-running one-offs**: spawn the VDI, hold a
+port-forward, leave a sync running - one window each, none of it cluttering a project
+session it has nothing to do with. Rooted at `~` because it is about processes, not a
+repo. It is not called `scratch` on purpose: scratch is the commoner word but it means
+a throwaway shell you close, and the point of these is that they keep running. If a
+runaway one-off ever needs to be unable to take `hub` down with it, that same line in
+its own `procs.conf` makes it a world with its own socket - no code either way.
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the
 landing session**, so hopping to hub puts you in today's note rather than a bare shell.
@@ -394,7 +441,11 @@ Three things that are easy to get wrong, all found by testing:
   startup command silently no-ops.
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
-(`sessionizer.sh`) still fuzzy-finds every directory on the machine.
+(`sessionizer.sh`) still fuzzy-finds every directory on the machine - and it
+**routes by manifest**: a directory some `*.conf` declares lands in that world,
+under that manifest's name, hopping servers if that is where it lives. Everything
+undeclared opens right where you are, exactly as before. See "Which world a
+directory belongs to" below.
 
 ## Session Favourites
 

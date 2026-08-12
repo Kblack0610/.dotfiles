@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stub for `tmx` (servers.sh, on PATH via the bin symlink), used by the unit and integ tiers.
+#
+# One job: RECORD. sessionizer.sh hands a cross-world hop to `tmx goto <world> <session>`,
+# and what a test needs to assert is that it asked for the right world and the right session.
+# What happens on the far side -- detach-client -E, the back-crumb, ensure, attach -- is
+# servers.sh's own contract and is asserted against the tmux stub in tmx_back.bats. Running
+# the real tmx here would drive whatever server the runner happens to be attached to.
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'tmx %s\n' "$*" >> "$FIX/calls.log"
+exit 0
