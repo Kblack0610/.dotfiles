@@ -242,3 +242,54 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_failure
   assert_output --partial "BADNAME"
 }
+
+# ── the Codex corpus is held to a SMALLER contract ───────────────────────────
+#
+# .config/codex/skills is a different tool's corpus with a deliberately smaller
+# 2-key frontmatter contract. Holding it to the Claude one (category/tags/reviewed,
+# category directories, the house ASCII rule) produced 25 findings that could never
+# be actioned - which is how a report becomes something nobody reads. But the checks
+# that mean something anywhere still apply: llm-judge having NO frontmatter at all
+# was a real find.
+
+# The local report needs a whole machine, so point every input at an empty sandbox
+# and let only the codex corpus have content.
+codex_report() {
+  mkdir -p "$HOME/empty/skills" "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx"
+  : > "$HOME/empty/CLAUDE.md"
+  CLAUDE_SKILLS="$HOME/empty/skills" DOTFILES="$HOME/empty/pub" \
+  DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
+  CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
+  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" \
+    run "$DRIFT"
+}
+
+@test "codex: a skill with no category/tags/reviewed is NOT flagged" {
+  mkdir -p "$REPO/codex/plain"
+  printf -- '---\nname: plain\ndescription: a codex skill\n---\n\n# Plain\n' > "$REPO/codex/plain/SKILL.md"
+  codex_report
+  refute_output --partial "BADMETA"
+}
+
+@test "codex: an em dash is NOT flagged (different corpus, different rules)" {
+  mkdir -p "$REPO/codex/dashy"
+  printf -- '---\nname: dashy\ndescription: x\n---\n\nprose \xe2\x80\x94 here\n' > "$REPO/codex/dashy/SKILL.md"
+  codex_report
+  refute_output --partial "NONASCII"
+}
+
+# The checks that mean something anywhere still fire. This is the one that found
+# llm-judge, which had no frontmatter at all and had never been scanned.
+@test "codex: missing frontmatter IS still flagged" {
+  mkdir -p "$REPO/codex/nofm"
+  printf '# no frontmatter at all\n' > "$REPO/codex/nofm/SKILL.md"
+  codex_report
+  assert_output --partial "NOFRONTMATTER"
+}
+
+@test "codex: a name that disagrees with its directory IS still flagged" {
+  mkdir -p "$REPO/codex/realdir"
+  printf -- '---\nname: othername\ndescription: x\n---\n\n# x\n' > "$REPO/codex/realdir/SKILL.md"
+  codex_report
+  assert_output --partial "BADNAME"
+}

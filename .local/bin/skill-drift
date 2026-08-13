@@ -409,7 +409,22 @@ check_registration() {
 # .config/codex/skills is a DIFFERENT tool's corpus that happens to reuse names
 # (deep-research, security-engineer); flagging those would be noise.
 declare -A SEEN_NAME=()
+# run_static <contract> <root>...
+#
+# <contract> is `full` or `structural`.
+#
+#   full        the Claude corpus: category/tags/reviewed, the category directory
+#               layout, and the house ASCII rule.
+#   structural  only what is true of ANY skill file - it parses, it has a name and
+#               a description, the name matches its directory, no duplicates.
+#
+# The Codex corpus is `structural`. It is a different tool's skills, deployed by a
+# different mechanism, with a deliberately smaller 2-key contract; holding it to
+# the Claude one produced 25 findings that could never be actioned, which is how a
+# report becomes something nobody reads. NOFRONTMATTER there was a REAL find
+# (llm-judge had none), so it is not exempted from the checks that mean something.
 run_static() {
+  local contract="$1"; shift
   local root m d s parent c
   SEEN_NAME=()
   for root in "$@"; do
@@ -427,9 +442,11 @@ run_static() {
       fi
       check_frontmatter "$s" "$m"
       check_name        "$s" "$m"
-      check_meta        "$s" "$m" "$parent"
-      check_desc_len    "$s" "$m"
-      check_ascii       "$s" "$m"
+      if [ "$contract" = full ]; then
+        check_meta     "$s" "$m" "$parent"
+        check_desc_len "$s" "$m"
+        check_ascii    "$s" "$m"
+      fi
     done < <(find_skills "$root")
   done
   # A category directory that shares a name with a skill: comms/comms/ makes
@@ -438,6 +455,7 @@ run_static() {
   # A directory is a CATEGORY only if it does not itself hold a SKILL.md. Without
   # that test every skill in the flat layout counts as a category colliding with
   # itself, which reported 68 findings for a corpus that had none.
+  [ "$contract" = full ] || return 0
   for root in "$@"; do
     [ -d "$root" ] || continue
     for d in "$root"/*/; do
@@ -451,12 +469,12 @@ run_static() {
 }
 
 if [ "$MODE" = lint ] || [ "$MODE" = write_lint_baseline ]; then
-  run_static "$LINT_DIR/.claude/skills"
+  run_static full "$LINT_DIR/.claude/skills"
 else
   # Two namespaces, two calls: the dotfiles pair feed one flat ~/.claude/skills,
   # while the Codex corpus is a different tool's and legitimately reuses names.
-  run_static "$PUB/.claude/skills" "$PRIV/.claude/skills"
-  run_static "$CODEX"
+  run_static full "$PUB/.claude/skills" "$PRIV/.claude/skills"
+  run_static structural "$CODEX"
 
   load_usage
   for d in "$SKILLS"/*/; do
