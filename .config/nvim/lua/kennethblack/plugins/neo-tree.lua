@@ -114,6 +114,27 @@ return {
         end,
         desc = "Neo-tree toggle",
       },
+      {
+        -- Refresh from anywhere. Neo-tree's own `R` is bound to its BUFFER, so it only
+        -- works with the cursor already in the tree - from a file buffer `R` is just
+        -- vim's Replace mode. There is no `:Neotree refresh` either: the command parser
+        -- only accepts close/focus/show as actions, so the manager API is the only door.
+        "<leader>pr",
+        function()
+          -- manager.refresh re-scans every neo-tree state that has a window in this
+          -- tabpage (its `source_name` arg only labels the log line, so one call covers
+          -- filesystem + git_status + buffers). States with no window are merely flagged
+          -- dirty, which makes this a SILENT no-op when the tree is closed - say so
+          -- instead of leaving the keypress looking dead.
+          for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+            if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "neo-tree" then
+              return require("neo-tree.sources.manager").refresh "filesystem"
+            end
+          end
+          vim.notify("neo-tree: not open, nothing to refresh", vim.log.levels.WARN)
+        end,
+        desc = "Neo-tree refresh",
+      },
     }
   end,
 }

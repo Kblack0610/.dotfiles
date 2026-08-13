@@ -108,8 +108,13 @@ vim.keymap.set("n", "<leader>h", ":nohlsearch<CR>", { desc = "Clear search highl
 vim.keymap.set("n", "<leader>w", "<cmd>w<cr>", { desc = "Save" })
 vim.keymap.set("n", "<leader>W", "<cmd>wa<cr>", { desc = "Save All" })
 vim.keymap.set("n", "<leader>q", "<cmd>confirm q<cr>", { desc = "Quit" })
--- blackhole delete
-vim.keymap.set({ "n", "v" }, "<leader>p", '"_dP', { desc = "Paste over (keep register)" })
+-- Paste-over lives at line 25, VISUAL-mode only, and must stay that way. A normal-mode
+-- `<leader>p` is an exact match sitting on top of the whole `<leader>p…` pickers prefix
+-- (pf/pg/pw/pb/pt/pn/pi/pv), which costs twice: every picker waits out `timeoutlen` before
+-- firing, and any UNBOUND `<leader>p?` runs the exact match instead - `"_dP` is a `d`
+-- operator with no motion, so it aborts and leaves the trailing key pending as a bare
+-- normal command. That is the "`<leader>pr` just does a replace" bug: the `r` was landing
+-- as `r` (replace-a-character). Normal-mode `"_dP` was never meaningful anyway.
 -- Center text when moving with C-d and C-u
 vim.keymap.set("n", "<C-d>", "<C-d>zz", { desc = "Half-page down (center)" })
 vim.keymap.set("n", "<C-u>", "<C-u>zz", { desc = "Half-page up (center)" })
