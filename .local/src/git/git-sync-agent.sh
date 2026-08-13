@@ -51,6 +51,28 @@ fi
 
 cd "$AGENT_DIR" || { log "ERROR: Cannot cd to $AGENT_DIR"; exit 1; }
 
+# Append-only logs must UNION-merge, or the conflict path below eats one machine's half.
+#
+# The conflict resolver accepts remote wholesale (`git checkout --theirs .`) and saves the
+# local side to `<file>.conflict.<host>.<ts>` — a backup nobody reads. For a file where
+# both machines legitimately APPENDED different lines, that is silent data loss, and the
+# board event log is exactly that shape: two machines observing their own board edits.
+#
+# `merge=union` is git's built-in driver for this case (keep both sides' added lines, no
+# conflict markers, no custom driver to install), so these files never reach the resolver
+# at all. Written here rather than shipped as a dotfile because ~/.agent is runtime state
+# with its own git repo, not a stow target — and idempotently, so it self-heals on a fresh
+# clone or if someone deletes it.
+if [ ! -f .gitattributes ] || ! grep -q 'board-events.jsonl' .gitattributes 2>/dev/null; then
+    printf '%s\n' \
+      '# Append-only event logs: keep BOTH machines lines on divergence.' \
+      '# Without this, the conflict path in git-sync-agent.sh accepts remote and' \
+      '# strands the local side in a .conflict backup nobody reads.' \
+      '*board-events.jsonl merge=union' \
+      >> .gitattributes
+    log "SETUP: added merge=union for board-events.jsonl"
+fi
+
 # Check for network connectivity (quick test)
 if ! ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new git@github.com 2>&1 | grep -qi "successfully authenticated"; then
     log "SKIP: No network or GitHub unavailable"
