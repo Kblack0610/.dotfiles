@@ -119,7 +119,10 @@ return {
         -- works with the cursor already in the tree - from a file buffer `R` is just
         -- vim's Replace mode. There is no `:Neotree refresh` either: the command parser
         -- only accepts close/focus/show as actions, so the manager API is the only door.
-        "<leader>pr",
+        -- Deliberately NOT under the `<leader>p…` pickers group: nothing else lives
+        -- under `<leader>r`, so this fires immediately instead of waiting out
+        -- `timeoutlen`, and it cannot be shadowed by a future `p*` binding.
+        "<leader>r",
         function()
           -- manager.refresh re-scans every neo-tree state that has a window in this
           -- tabpage (its `source_name` arg only labels the log line, so one call covers
