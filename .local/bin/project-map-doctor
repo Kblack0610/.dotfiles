@@ -131,13 +131,15 @@ if [ -r "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}" ]; then
   . "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}"
 fi
 if declare -F lab_roots >/dev/null 2>&1; then
-  n=0; bad=0
+  n=0; bad=0; seen_names=""
   while IFS= read -r root; do
     [ -d "$root" ] || continue
     for d in "$root"/*/; do
       [ -d "$d" ] || continue
       name="$(basename "$d")"
       n=$((n + 1))
+      seen_names="$seen_names$name
+"
       if ! is_known "$name"; then
         fail "lab project \"$name\" names no registered project (it can only mint one)"
         bad=$((bad + 1))
@@ -151,6 +153,34 @@ if declare -F lab_roots >/dev/null 2>&1; then
   fi
 else
   skip "lab-roots.sh unavailable (private overlay); cannot check lab projects"
+fi
+
+# --- 6b. no lab project lives in TWO roots -------------------------------------------
+# A name is supposed to resolve to exactly one bus root. When it resolves to two, every
+# consumer picks whichever one its own lookup order reaches first, and they disagree
+# silently. 2026-08-11: an app had a dir in both `lab/projects/current` (a stub with an
+# empty wave) and a second root (the live sheet). lab-sync wrote the release feed to the
+# stub, `notes ptask` wrote tasks to the real one, `notes board` rendered the project
+# twice, and the human spent a week typing next-wave items into the copy nothing read.
+#
+# Check 6 could not see it: it asks whether each name is REGISTERED, and both copies of a
+# duplicate answer yes. This asks the different question - how many roots hold it.
+#
+# FAIL, not WARN: the two copies drift from the moment the second one exists, and which
+# one a given tool believes is not something the human can see from either file.
+if [ -n "${seen_names:-}" ]; then
+  dups="$(printf '%s' "$seen_names" | sort | uniq -d)"
+  if [ -n "$dups" ]; then
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      roots="$(while IFS= read -r root; do
+        [ -d "$root/$name" ] && printf '%s ' "$root"
+      done < <(lab_roots))"
+      fail "lab project \"$name\" lives in more than one root: $roots(delete the stale one)"
+    done <<<"$dups"
+  else
+    pass "no lab project name resolves in two roots"
+  fi
 fi
 
 # --- 7. archived lab projects that USED to resolve and now do not ---------------------
