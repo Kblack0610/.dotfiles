@@ -84,6 +84,7 @@ Media/Music
 .claude/skills/*/*
 !.claude/skills/authoring/figma-use/
 !.claude/skills/authoring/marp-slide/
+!.claude/skills/authoring/md-table/
 !.claude/skills/authoring/one-pager/
 !.claude/skills/authoring/shell-test-harness/
 !.claude/skills/authoring/skill-refine/
