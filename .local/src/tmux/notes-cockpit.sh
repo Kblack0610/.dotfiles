@@ -99,16 +99,19 @@ declare -F md_render >/dev/null 2>&1 || md_render() {
 # Empty by default, so the popup's paths are byte-identical to what they always were.
 INSTANCE="${NOTES_COCKPIT_INSTANCE:-}"
 STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.section"
-# FOUR views, cycled by `a`  (tasks -> agents -> bridge -> usage -> tasks):
+# THREE views, cycled by `a`  (tasks -> factory -> usage -> tasks):
 #   tasks   your task lists (the default; unchanged).
-#   agents  WHO is working each project and what the finished ones cost: live Claude
-#           sessions (status/branch/what), then the sessions that shipped the CURRENT
-#           version with their tokens and USD, then a version total. Plus a headless
-#           runner row and a global sentinel/runners section. Joined by NAME: the
-#           lab project dir IS the ~/.agent project (project-map.json is the registry).
-#           It shows SESSIONS - asks and sprint rows belong to the bridge.
-#   bridge  THE middle ground: open QUESTIONS agents raised on your tasks. Answer (enter,
-#           round-trips to resume the agent) or add work (ctrl-a). Task-anchored.
+#   factory WHAT is in flight, grouped by the STAGE it is in: needs-you, triage,
+#           building, reviewing, shipped. One line per item; an empty stage renders
+#           nothing; `shipped` folds to a per-project version total with its cost
+#           COVERAGE beside it. Cross-profile, so a question anywhere is visible from
+#           anywhere. Enter answers a question or opens a checkpoint; ctrl-a adds work.
+#
+#           It replaces the former `agents` and `bridge` views, which between them
+#           answered ONE question -- what is in flight and who is on it -- across two
+#           screens, and which duplicated each other's asks and sprint rows until a
+#           comment had to forbid re-adding them. Stage comes from board_rows_effective,
+#           so the stage on screen and the stage in the event log are the same value.
 #   usage   HOW WELL and HOW EXPENSIVELY the agents are working, over a window that `w`
 #           cycles (today / 7d / 30d). Joins two corpora that nothing joined before: the
 #           eval markdown (~/.agent/evals, quality) and the session registry (tokens and
@@ -118,14 +121,15 @@ STATE="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.sec
 # Each is its own render; none overwrites another.
 MODEF="${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}${INSTANCE:+-$INSTANCE}.mode"
 read_mode() { cat "$MODEF" 2>/dev/null || echo tasks; }
-toggle_mode() { # cycle tasks -> agents -> bridge -> usage -> tasks
+toggle_mode() { # cycle tasks -> factory -> usage -> tasks
   case "$(read_mode)" in
-    tasks)  printf agents > "$MODEF" ;;
-    agents) printf bridge > "$MODEF" ;;
-    bridge) printf usage  > "$MODEF" ;;
+    tasks)   printf factory > "$MODEF" ;;
+    factory) printf usage   > "$MODEF" ;;
     # `*)`, not `usage)`, so an unreadable or garbage mode file lands somewhere valid
-    # rather than wedging the cycle on a name no renderer answers to.
-    *)      printf tasks  > "$MODEF" ;;
+    # rather than wedging the cycle on a name no renderer answers to. This also carries
+    # the retired `agents`/`bridge` names home: a mode file left behind by an older
+    # version resolves to `tasks` instead of rendering nothing.
+    *)       printf tasks   > "$MODEF" ;;
   esac
 }
 # Optional machine-local prefix->project alias file (keeps private project names OUT of
@@ -489,118 +493,6 @@ _version_start() { # $1=summary path -> epoch
   printf '%s' "${ts:-0}"
 }
 
-# agent rows for ONE project: who is working now, then what shipped this version.
-# Wire (7 cols, DISPLAY=col7): <type> <profile> <c3> <c4> <c5=canon> <c6=sec> <DISPLAY>
-#   sess: c3=session_id  (enter -> --resume-session, unchanged)
-#
-# NO ask rows and NO sprint row, on purpose. Both were duplicated verbatim from the
-# BRIDGE view - same `agent-ask list --pending` call, same newest sprint-*.md - so on a
-# project whose only state was a pending ask, this view and the bridge rendered the same
-# bytes. The bridge owns questions and work items (cockpit.sh pins a window to it); this
-# view owns sessions. Re-adding either here re-creates the duplication.
-_project_agents() { # $1=profile $2=lc $3=canon $4=summary-path $5=runnerCanon $6=runnerDetail
-  local prof="$1" lc="$2" canon="$3" summary="${4:-}" rcanon="${5:-}" rdetail="${6:-}" sec="$1/$2"
-  local vstart; vstart="$(_version_start "$summary")"
-
-  # State can live under this project AND under the repo it belongs to (see
-  # canon_namespaces); gather from each. The rest of the cockpit keeps receiving a
-  # single usable project name.
-  #
-  # Resolved FIRST: everything below matches against it, including the runner check.
-  local names; names="$(canon_namespaces "$lc")"
-  [ -n "$names" ] || names="$canon"
-  local primary="$canon"
-
-  # A WAVE that is still scoping. This is the row whose absence made pressing W feel
-  # like nothing happened: a scope-out runs for minutes before it writes a board, posts
-  # an ask, or touches a ticket, so until it finishes there is no other evidence of it
-  # anywhere in the cockpit.
-  #
-  # Driven by wave-start's own lock file rather than inferred from a session: the lock
-  # is written before the pass starts and removed when it ends, and the pid is checked
-  # so a crashed run does not leave a wave that appears to run forever.
-  local wname wlock wpid
-  while IFS= read -r wname; do
-    [ -n "$wname" ] || continue
-    wlock="$HOME/.local/state/agentctl/wave/${wname}.pid"
-    [ -f "$wlock" ] || continue
-    wpid="$(cat "$wlock" 2>/dev/null)"
-    case "$wpid" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$wpid" 2>/dev/null || continue
-    printf 'wave\t%s\t%s\t\t%s\t%s\t  %s~ wave%s %sscoping %s - nothing filed yet%s\n' \
-      "$prof" "$wname" "$primary" "$sec" \
-      "$C_INP" "$C_OFF" "$C_DIM" \
-      "$(_elapsed "$(stat -c %Y "$wlock" 2>/dev/null || echo 0)")" "$C_OFF"
-  done <<< "$names"
-
-  # A headless delivery-loop runner on THIS project is an agent working it, and is not
-  # shown by the bridge - so unlike asks and sprint rows it belongs here. The global
-  # footer lists every runner, but not which project each is on.
-  if [ -n "$rdetail" ] && printf '%s\n' "$names" | grep -qxF "$rcanon"; then
-    printf 'runner\tdelivery-loop\tdelivery-loop\t\t%s\t%s\t  %s~ runner%s %s%s%s\n' \
-      "$primary" "$sec" "$C_INP" "$C_OFF" "$C_DIM" "$rdetail" "$C_OFF"
-  fi
-
-  # --- running right now (live <pid>.json, project-resolved by `sessions rows`) ---
-  # No tokens/cost here: a running session's usage is incomplete by definition.
-  local id st proj branch started what kind glyph col label n
-  if command -v sessions >/dev/null 2>&1; then
-    while IFS=$'\t' read -r id st proj branch started what kind; do
-      [ -n "$id" ] || continue
-      case "$st" in
-        busy)    glyph='~'; col="$C_INP" ;;
-        waiting) glyph='!'; col="$C_SEL" ;;
-        *)       glyph='o'; col="$C_DIM" ;;
-      esac
-      # A headless run (`claude -p`) has nobody watching it, and its status sits at
-      # the CLI's default - so it used to render as the same dim `o idle` an
-      # abandoned session gets. Say what it is instead.
-      label="$st"
-      if [ "$kind" = headless ]; then
-        glyph='~'; col="$C_INP"; label="headless"
-      fi
-      [ "$branch" = "-" ] && branch=""
-      # A session that just started has no ai-title yet.
-      [ "$what" = "-" ] && what="(just started)"
-      printf 'sess\t%s\t%s\t\t%s\t%s\t  %s%s %s%s %s%s%s  %s%s%s\n' \
-        "$prof" "$id" "$primary" "$sec" \
-        "$col" "$glyph" "$label" "$C_OFF" \
-        "$C_DIM" "${branch:+$branch }$(_elapsed "$started")" "$C_OFF" \
-        "$C_OFF" "$what" "$C_OFF"
-    done < <(while IFS= read -r n; do sessions rows "$n" 2>/dev/null; done <<< "$names")
-  fi
-
-  # --- finished, this version only (registry + its telemetry) ---
-  command -v agent-usage >/dev/null 2>&1 || return 0
-  local rows
-  rows="$(while IFS= read -r n; do
-            agent-usage rows "$n" --since "$vstart" 2>/dev/null
-          done <<< "$names" | sort -t"$(printf '\t')" -k2,2rn | head -6)"
-  [ -n "$rows" ] || return 0
-
-  printf 'head\t\t\t\t\t\t%s    --- shipped this version ---%s\n' "$C_DIM" "$C_OFF"
-
-  local _u ed cost nocost tok models dur label
-  while IFS=$'\t' read -r id _u ed cost nocost tok models dur label; do
-    [ -n "$id" ] || continue
-    [ "$models" = "-" ] && models=""
-    [ "$label" = "-" ] && label="(no commit recorded)"
-    printf 'sess\t%s\t%s\t\t%s\t%s\t  %s*%s %s  %s%s ed  %s tok  %s%s\n' \
-      "$prof" "$id" "$primary" "$sec" \
-      "$C_PROJ" "$C_OFF" "$(printf '%.48s' "$label")" \
-      "$C_DIM" "$ed" "$(_human_tok "$tok")" \
-      "$([ "$nocost" = 1 ] && printf -- '-' || printf '$%.2f' "$cost")" "$C_OFF"
-  done <<< "$rows"
-
-  # --- the version total ---
-  local n te tt tc anyunk
-  read -r n te tt tc anyunk <<< "$(printf '%s\n' "$rows" \
-    | awk -F'\t' '{n++; e+=$3; c+=$4; t+=$6; if($5=="1") u++}
-                  END{printf "%d %d %d %.2f %d\n", n, e, t, c, u+0}')"
-  printf 'hint\t\t\t\t\t\t%s    -- %s session%s - %s edits - %s tok - $%.2f%s --%s\n' \
-    "$C_DIM" "$n" "$([ "$n" = 1 ] || printf s)" "$te" "$(_human_tok "$tt")" "$tc" \
-    "$([ "${anyunk:-0}" -gt 0 ] 2>/dev/null && printf ' (+%s untracked)' "$anyunk")" "$C_OFF"
-}
 
 # 1234567 -> 1.2M / 340k / 512
 _human_tok() {
@@ -610,64 +502,26 @@ _human_tok() {
     else printf "%d", n }'
 }
 
-# One profile's AGENTS view: a group per project with its agent rows (or "- idle").
-# The summary path comes straight out of the `notes projects` row we are already
-# reading, so _version_start does not need to shell out again.
-_profile_agents_view() { # $1=profile
-  local prof="$1" name sum st ver lc canon body rline rcanon rdetail
-  rline="$(_runner_line)"
-  if printf '%s' "$rline" | grep -q "$(printf '\t')"; then
-    rcanon="${rline%%$'\t'*}"; rdetail="${rline#*$'\t'}"
-  else rcanon=""; rdetail=""; fi
-  # \037, not tab — an empty status column would otherwise collapse and shift the version
-  # into it (see _profile_view).
-  notes --profile "$prof" projects 2>/dev/null | tr '\t' '\037' \
-    | while IFS=$'\037' read -r name sum st ver; do
-    [ -z "$name" ] && continue
-    lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-    canon="$lc"
-    _subheader "$name" "$(_status_gist "$sum" "$st")" "$ver"
-    body="$(_project_agents "$prof" "$lc" "$canon" "$sum" "$rcanon" "$rdetail")"
-    if [ -n "$body" ]; then printf '%s\n' "$body"
-    else printf 'hint\t\t\t\t\t\t%s  - idle%s\n' "$C_DIM" "$C_OFF"; fi
-  done
-}
 
-# The GLOBAL section (agents mode, once at the bottom): sentinel trips + agentctl runners.
-#
-# The rows come from fleet.sh, which is the single owner of "what is running headless".
-# This used to enumerate a SEVEN-NAME HARDCODED LIST of units, which is precisely how it
-# went stale — a runner added to ~/.config/agentctl/agents/ never appeared here. fleet.sh
-# derives the roster from that conf dir, so delegating fixes the staleness at the source
-# rather than re-listing the names in a second place that can drift again.
-#
-# fleet emits `type<TAB>id<TAB>target<TAB>state<TAB>DISPLAY`; this view's wire format is
-# 7 fields (see the header). Only the reshape lives here.
-#
-# Watches are still filtered to TRIP/ERROR: this is the compact global footer of a
-# task-shaped view, and an all-OK wall of green is noise here. The cockpit's `fleet`
-# window is where the full roster belongs.
-_global_agents() {
-  printf 'head\t\t\t\t\t\t%s── global · sentinel + runners ──%s\n' "$C_HEAD" "$C_OFF"
+
+# The factory's footer: the same global rows, but ONLY when one of them is asking for
+# something. `sentinel: all watches OK` and a roster of idle runners are true, useless and
+# permanent - three lines of reassurance under every render. A trip is the only part that
+# changes what you do next, so a quiet fleet renders nothing at all and the full roster
+# stays one keypress away in the cockpit's `fleet` window.
+_global_agents_tripped() {
   local fleet="${FLEET_SH:-$(dirname "$SELF")/fleet.sh}"
-  [ -x "$fleet" ] || { printf 'hint\t\t\t\t\t\t%s  fleet.sh not found%s\n' "$C_DIM" "$C_OFF"; return 0; }
-
-  local type id target state disp any=0
+  [ -x "$fleet" ] || return 0
+  local type id target state disp out=""
   while IFS=$'\t' read -r type id target state disp; do
-    case "$type" in
-      watch)
-        case "$state" in
-          TRIP|ERROR) any=1; printf 'sentinel\t\t%s\t\t\t\t%s\n' "$target" "$disp" ;;
-        esac ;;
+    [ "$type" = watch ] || continue
+    case "$state" in
+      TRIP|ERROR) out="${out}$(printf 'sentinel\t\t%s\t\t\t\t%s' "$target" "$disp")"$'\n' ;;
     esac
   done < <("$fleet" --watches 2>/dev/null)
-  [ "$any" -eq 0 ] && printf 'hint\t\t\t\t\t\t%s  sentinel: all watches OK%s\n' "$C_DIM" "$C_OFF"
-
-  while IFS=$'\t' read -r type id target state disp; do
-    [ "$type" = runner ] || continue
-    printf 'runner\t\t%s\t\t\t\t%s\n' "$id" "$disp"
-  done < <("$fleet" --runners 2>/dev/null)
-  return 0
+  [ -n "$out" ] || return 0
+  printf 'head\t\t\t\t\t\t%s  sentinel%s\n' "$C_INP" "$C_OFF"
+  printf '%s' "$out"
 }
 
 # ══ USAGE view (the 4th view) ═══════════════════════════════════════════════
@@ -960,136 +814,278 @@ _ask_gist() { # $1=question -> one short line
   if [ "${#q}" -le 88 ]; then printf '%s' "$q"; else printf '%.85s...' "$q"; fi
 }
 
-# The profile order the bridge renders in: the one you are standing on first, then the
+# The profile order the factory view renders in: the one you are standing on first, then the
 # rest. An `$active` that is not a profile at all (the `all` pseudo-section) falls through
 # to "every profile, declared order" rather than to nothing.
-_bridge_profiles() { # $1=active
+_factory_profiles() { # $1=active
   local active="${1:-}"
   [ -n "$active" ] || { profiles; return; }
   profiles | grep -xF -- "$active"
   profiles | grep -vxF -- "$active"
 }
 
-# The bridge: per project, the open QUESTIONS agents are waiting on, then the WORK ITEMS
-# they are moving (sprint rows + checkpoint progress). Top line = the status header.
+
+# ── the FACTORY view ─────────────────────────────────────────────────────────
+# One list of work, grouped by the stage it is IN, newest attention first. It replaces
+# the bridge (which grouped the same rows by project) and the agents view (which showed
+# the sessions moving them), because those two answered one question between them --
+# "what is in flight and who is on it" -- and made you read two screens to get it.
 #
-# CROSS-PROFILE, and the only view that is. Sections are profiles, so a per-section bridge
-# showed `personal`'s three questions while a wave running on a project in another
-# section sat blocked on a gate - invisible, with nothing on screen to say it existed.
-# The sidebar badge below has always counted `agent-ask list --all`, so the two surfaces
-# openly disagreed about how many questions were outstanding. A bridge is only worth having
-# if it is ONE place: if an agent is waiting on you anywhere, you see it without first
-# guessing which section to go stand in.
+# THE NOISE BUDGET IS THE DESIGN, not a preference. On the live corpus 15 of 21 board
+# rows are terminal, so a per-project listing spends 71% of the screen on work that is
+# already done. Hence: an empty stage group does not render at all, `shipped` folds to
+# one line per project, and there is exactly one line per item.
 #
-# Ordering carries the same intent. A project with a pending question sorts above one
-# without, and inside a project the questions come before the work items — so whatever is
-# waiting on you is the first row under the first header, never something you scroll to.
-# What you already decided, and whether the system did anything about it.
+# CROSS-PROFILE, like the bridge it replaces, and for the reason recorded there: a
+# per-section view showed one section's questions while a wave in another sat blocked and
+# invisible, and the sidebar badge (which counts `--all`) openly disagreed with the list.
+# The `p` filter NARROWS this view; it does not define its scope.
 #
-# An answered ask drops straight out of `--pending`, so the moment you answered a gate it
-# vanished from this view — which is precisely how "I approved that wave, why is nothing
-# happening?" stayed invisible for weeks. The answer went nowhere and showed nowhere.
-#
-# `resumed_at` is the load-bearing column, not the answer. `waiting to run` on a row you
-# answered ten minutes ago is a broken producer, and it says so on the row instead of
-# leaving you to guess. Enter opens the ask file.
-_answered_lane() {
-  local rows id p2 pr2 st kind q opt task aat rat rec mark
-  rows="$(agent-ask list --all --answered --since 3d 2>/dev/null | tr '\t' '\037')"
-  [ -n "$rows" ] || return 0
-  printf 'head\t\t\t\t\t\t%s  answered (3d)%s\n' "$C_DIM" "$C_OFF"
-  while IFS=$'\037' read -r id p2 pr2 st kind q opt task aat rat rec; do
-    [ -z "$id" ] && continue
-    if [ -n "$rat" ]; then mark="${C_DIM}running${C_OFF}"
-    elif [ -n "$(printf '%s' "$opt")" ] || [ "$kind" = gate ]; then mark="${C_INP}waiting to run${C_OFF}"
-    else mark="${C_DIM}noted${C_OFF}"; fi
-    # wire: aans <profile> <id> <options> <project> <sec> <DISPLAY>
-    printf 'aans\t%s\t%s\t%s\t%s\t%s\t  %s.%s %s%s%s  %s\n' \
-      "$pr2" "$id" "$opt" "$p2" "$pr2" "$C_DIM" "$C_OFF" \
-      "$C_DIM" "$(_ask_gist "$q")" "$C_OFF" "$mark"
-  done <<<"$rows"
+# Stage comes from board_rows_effective -- board_rows composed with the checkpoint
+# sentinel -- so the stage recorded in the event log and the stage on screen are the same
+# value from the same function, not two derivations that agree by luck.
+_stage_age() { # $1=canon $2=ticket -> "3d" since the last recorded transition, or empty
+  local last
+  last="$(board_events "$1" "$2" 2>/dev/null | tail -1 \
+    | grep -o '"epoch":[0-9]*' | grep -o '[0-9]*' || true)"
+  [ -n "$last" ] || return 0
+  _elapsed "$last"
 }
 
-_bridge_view() { # $1=active profile
+# One stage group: header with its count, then its rows. Renders NOTHING when empty --
+# `reviewing 0` is a line that only ever costs you a line.
+_factory_group() { # $1=label $2=count $3=rows $4=colour
+  [ "${2:-0}" -gt 0 ] 2>/dev/null || return 0
+  printf 'head\t\t\t\t\t\t%s  %s%s %s%s%s\n' "${4:-$C_HEAD}" "$1" "$C_OFF" "$C_DIM" "$2" "$C_OFF"
+  printf '%s' "$3"
+}
+
+_factory_view() { # $1=active profile
   local active="$1" prof name st ver lc canon label
-  local hot="" cold="" cw=0 cn=0 cr=0 cb=0 cm=0
+  local g_need="" g_tri="" g_bld="" g_rev="" g_shp=""
+  local n_need=0 n_tri=0 n_bld=0 n_rev=0 n_shp=0
+  # A project tag is only worth a column when the list actually mixes projects.
+  local showproj=1; [ -n "$(read_pfilter 2>/dev/null)" ] && showproj=0
+  local _FACT_SEEN="|"
   while IFS= read -r prof; do
   [ -z "$prof" ] && continue
-  # \037, not tab — an empty status column would otherwise collapse and shift the version
-  # into it (see _profile_view).
   while IFS=$'\037' read -r name sum st ver; do
     [ -z "$name" ] && continue
     lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     canon="$lc"
-    # A project from another section carries its profile, so once everything shares one
-    # list a row's origin is still unambiguous.
     label="$name"; [ "$prof" = "$active" ] || label="$prof/$name"
-    local items="" asks="" sec="$prof/$lc" pw=0 pn=0
-    # --- sprint work items ---
-    local tk stage title pr sen cf prog glyph col prbadge progd ssent
+    local sec="$prof/$lc" ptag=""
+    [ "$showproj" = 1 ] && ptag="${C_PROJ}${label}${C_OFF} "
+
+    # Board lookup is by the LAB PROJECT's own name, never widened to its repo namespace.
+    #
+    # Tried and reverted: resolving through canon_namespaces (as the session lookup does)
+    # makes a repo-level board visible, but MISATTRIBUTES it. Several lab products share
+    # the platform monorepo, so the first one whose namespace matched claimed the whole
+    # bnb-platform board and, with it, 1666 sessions and $394 of that repo's entire
+    # history under a v0.1.0 with one item. A board that is invisible is a gap; a board
+    # filed under the wrong product is a wrong number on screen, which is worse.
+    #
+    # Sessions can widen safely because a session names its own project; a board cannot,
+    # because nothing in it says which product of a monorepo it belongs to. Surfacing
+    # repo-level boards needs a repo-level group, not a guess - left for later.
+    local board; board="$(board_newest "$canon")"
+
+    # --- board rows -> their stage bucket ---
+    local tk stage title pr sen cf prog glyph col prbadge age row
+    local shipn=0
     while IFS=$'\037' read -r tk stage title pr sen; do
       [ -z "$tk" ] && continue
       cf="$(_ckpt_file "$canon" "$tk" "$sen")"; prog="$(_ckpt_progress "$cf")"
-      # the checkpoint's terminal sentinel is ground truth - it overrides the Status cell
-      ssent="$(_ckpt_sentinel "$cf")"
-      case "$ssent" in DONE) stage=merged ;; FAILED) stage=error ;; PARTIAL) stage=blocked ;; esac
-      case "$stage" in
-        working) cw=$((cw+1)); pw=$((pw+1)) ;;
-        review) cr=$((cr+1)) ;;
-        blocked|error) cb=$((cb+1)) ;;
-        merged) cm=$((cm+1)) ;;
-      esac
       IFS=$'\t' read -r glyph col < <(_stage_gc "$stage")
       prbadge=""; [ -n "$pr" ] && prbadge="  ${C_SEL}PR#${pr}${C_OFF}"
-      progd=""; [ -n "$prog" ] && progd="  ${C_DIM}${prog}${C_OFF}"
-      # wire: item <profile> <ckptfile> <pr> <canon> <sec> <DISPLAY>
-      items="${items}$(printf 'item\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s  %s[%s]%s%s' \
-        "$prof" "$cf" "$pr" "$canon" "$sec" "$col" "$glyph" "$C_OFF" "$title" "$prbadge" "$C_DIM" "$tk" "$C_OFF" "$progd")"$'\n'
-    done < <(_sprint_items "$canon")
-    # --- open questions (needs-you) ---
-    local id p2 pr2 status2 kind q opt task aat rat rec ag col2 o tctx
-    # US-delimited (tr) so an empty profile/task column does not collapse under `read`.
-    # Read ALL ten columns: `read` puts every leftover field in the LAST variable, so
-    # naming only eight would silently append the two timestamps onto `task`.
+      age="$(_stage_age "$canon" "$tk")"
+      # wire: item <profile> <ckptfile> <TICKET> <canon> <sec> <DISPLAY>
+      #
+      # Field 4 carries the TICKET, not the PR the bridge used to put there. Nothing reads
+      # field 4 for an item row (enter uses field 3 only), the PR is already on the row as
+      # a badge, and the ticket is what the preview needs to look up this row's recorded
+      # history. Identity in the wire, artefacts derived from it.
+      # A board row without a real ticket carries a placeholder ("n/a", or the `~N`
+      # row-number key a pre-approval stub gets). Rendering `[n/a]` spends a badge saying
+      # nothing; the row still selects and still opens.
+      local tkbadge=""
+      case "$tk" in n/a|N/A|~*) ;; *) [ -n "$tk" ] && tkbadge="  ${C_DIM}[${tk}]${C_OFF}" ;; esac
+      row="$(printf 'item\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s%s%s%s' \
+        "$prof" "$cf" "$tk" "$canon" "$sec" \
+        "$col" "$glyph" "$C_OFF" "$ptag" "$title" "$prbadge" \
+        "$tkbadge" "${age:+  ${C_DIM}${age}${C_OFF}}" "$C_OFF")"$'\n'
+      case "$stage" in
+        blocked|error)   g_need="${g_need}${row}"; n_need=$((n_need+1)) ;;
+        review)          g_rev="${g_rev}${row}";   n_rev=$((n_rev+1)) ;;
+        working)         g_bld="${g_bld}${row}";   n_bld=$((n_bld+1)) ;;
+        merged|skipped)  shipn=$((shipn+1)) ;;
+        # queued on an UNAPPROVED board is a proposal waiting for the gate; on an
+        # approved one it is simply next. Both read as triage, which is where you look
+        # when deciding what to start.
+        *)               g_tri="${g_tri}${row}";   n_tri=$((n_tri+1)) ;;
+      esac
+    done < <(board_rows_effective "$board" "$canon")
+
+    # NO sheet tasks here, on purpose. An earlier cut listed every open `#ai` wave task
+    # from every board-less project as triage, and on the live corpus that was 19 rows
+    # against 4 of real work - the backlog swamping the thing in flight. A task nobody has
+    # scoped into a wave is not in the factory; it is in the TASKS view, which is the
+    # backlog view and already lists it. A project with nothing running correctly
+    # contributes nothing here.
+    #
+    # This also sidesteps the join it would have needed: deciding whether a sheet line is
+    # already a board row means fuzzy title matching, and a wrong match is worse than an
+    # absent row.
+
+    # --- who is actually working it, right now ---
+    # A live session IS work in progress, so it belongs in `building` beside the rows it
+    # is moving rather than in a separate view you have to switch to. This is the part of
+    # the retired agents view that carried its weight; the per-session cost table it also
+    # rendered is now the one folded `shipped` line.
+    #
+    # DEDUPED ACROSS PROJECTS, which is not optional: canon_namespaces resolves a project
+    # to its REPO's ~/.agent namespace as well as its own, so every lab project backed by
+    # the same repo returns the same sessions. Un-deduped, one session working the
+    # dotfiles repo rendered once under `agent-runtime` and again under `notes-cockpit`,
+    # and one working the platform repo appeared three times. Field 3 is the session id;
+    # first project to claim it keeps it.
+    local lrow lid
+    while IFS= read -r lrow; do
+      [ -n "$lrow" ] || continue
+      lid="$(printf '%s' "$lrow" | cut -f3)"
+      case "$_FACT_SEEN" in *"|$lid|"*) continue ;; esac
+      _FACT_SEEN="${_FACT_SEEN}${lid}|"
+      g_bld="${g_bld}${lrow}"$'\n'; n_bld=$((n_bld+1))
+    done < <(_factory_live "$prof" "$lc" "$canon" "$sec" "$ptag")
+
+    # --- open questions: always needs-you, always first ---
+    local id p2 pr2 status2 kind q opt task aat rat rec ag col2 o
     while IFS=$'\037' read -r id p2 pr2 status2 kind q opt task aat rat rec; do
       [ -z "$id" ] && continue
-      cn=$((cn+1)); pn=$((pn+1))
       if [ "$kind" = gate ] || [ "$kind" = approval ]; then ag="!"; col2="$C_INP"; else ag="?"; col2="$C_BOX"; fi
       o=""; [ -n "$opt" ] && o="  $(_opts_render "$opt" "$rec")"
-      tctx=""; [ -n "$task" ] && tctx="  ${C_DIM}task: ${task}${C_OFF}"
       # wire: ask <profile> <id> <options> <canon> <sec> <DISPLAY>
-      asks="${asks}$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
-        "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" "$(_ask_gist "$q")" "$tctx" "$o")"$'\n'
+      g_need="$(printf 'ask\t%s\t%s\t%s\t%s\t%s\t  %s%s%s %s%s%s' \
+        "$prof" "$id" "$opt" "$canon" "$sec" "$col2" "$ag" "$C_OFF" \
+        "$ptag" "$(_ask_gist "$q")" "$o")"$'\n'"$g_need"
+      n_need=$((n_need+1))
     done < <(agent-ask list "$canon" --pending 2>/dev/null | tr '\t' '\037')
-    if [ -n "$asks" ] || [ -n "$items" ]; then
-      # Per-project tally, same vocabulary as the global header so the two read as one
-      # scale. The version beside it IS the wave's version: a wave ships as the sheet's
-      # patch, so `notes projects`' version column names the batch in flight.
-      local badge=""
-      [ "$pw" -gt 0 ] && badge="${C_INP}~${pw} working${C_OFF}"
-      [ "$pn" -gt 0 ] && badge="${badge:+$badge  }${C_BOX}?${pn} need-you${C_OFF}"
-      local group; group="$(_subheader "$label" "$(_status_gist "$sum" "$st")" "$ver" "$badge")"$'\n'"${asks}${items}"
-      if [ "$pn" -gt 0 ]; then hot="${hot}${group}"; else cold="${cold}${group}"; fi
+
+    # --- shipped: ONE line, the version total ---
+    if [ "$shipn" -gt 0 ]; then
+      g_shp="${g_shp}$(_factory_shipped "$prof" "$lc" "$canon" "$sum" "$ver" "$shipn" "$sec" "$label")"$'\n'
+      n_shp=$((n_shp+1))
     fi
   done < <(notes --profile "$prof" projects 2>/dev/null | tr '\t' '\037')
-  done < <(_bridge_profiles "$active")
-  local body="${hot}${cold}$(_answered_lane)"
-  # status header — always-on "where we are"
-  printf 'head\t\t\t\t\t\t%s  where we are:%s  %s~%d working%s  %s?%d need-you%s  %s>%d review%s  %sx%d blocked%s  %s*%d done%s\n' \
-    "$C_HEAD" "$C_OFF" "$C_INP" "$cw" "$C_OFF" "$C_BOX" "$cn" "$C_OFF" "$C_SEL" "$cr" "$C_OFF" "$C_INP" "$cb" "$C_OFF" "$C_DIM" "$cm" "$C_OFF"
-  if [ -n "$body" ]; then printf '%s' "$body"
-  else
-    printf 'hint\t\t\t\t\t\t%s  nothing in flight — agents post work items + questions here as they run.%s\n' "$C_DIM" "$C_OFF"
-    printf 'hint\t\t\t\t\t\t%s  enter opens/answers · C-a add work · a cycles views%s\n' "$C_DIM" "$C_OFF"
+  done < <(_factory_profiles "$active")
+
+  _factory_group "needs you" "$n_need" "$g_need" "$C_INP"
+  _factory_group "triage"    "$n_tri"  "$g_tri"  "$C_HEAD"
+  _factory_group "building"  "$n_bld"  "$g_bld"  "$C_HEAD"
+  _factory_group "reviewing" "$n_rev"  "$g_rev"  "$C_HEAD"
+  _factory_group "shipped"   "$n_shp"  "$g_shp"  "$C_DIM"
+  if [ $((n_need + n_tri + n_bld + n_rev + n_shp)) -eq 0 ]; then
+    printf 'hint\t\t\t\t\t\t%s  nothing in flight - agents post work here as they run.%s\n' "$C_DIM" "$C_OFF"
+    printf 'hint\t\t\t\t\t\t%s  enter opens/answers - C-a add work - a cycles views%s\n' "$C_DIM" "$C_OFF"
   fi
+  _global_agents_tripped
+}
+
+# Live agents on one project: a wave still scoping, and any running Claude session.
+#
+# The scoping row is driven by wave-start's own pid lock rather than inferred from a
+# session, because a scope-out runs for minutes before it writes a board, posts an ask or
+# touches a ticket - and without this row, pressing `W` looks like it did nothing. The pid
+# is checked so a crashed run does not leave a wave that appears to run forever.
+#
+# State can live under this project AND under the repo it belongs to, hence
+# canon_namespaces; the rest of the view keeps receiving one usable project name.
+_factory_live() { # $1=prof $2=lc $3=canon $4=sec $5=ptag
+  local prof="$1" lc="$2" canon="$3" sec="$4" ptag="${5:-}"
+  local names; names="$(canon_namespaces "$lc")"; [ -n "$names" ] || names="$canon"
+
+  local wname wlock wpid
+  while IFS= read -r wname; do
+    [ -n "$wname" ] || continue
+    wlock="$HOME/.local/state/agentctl/wave/${wname}.pid"
+    [ -f "$wlock" ] || continue
+    wpid="$(cat "$wlock" 2>/dev/null)"
+    case "$wpid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$wpid" 2>/dev/null || continue
+    printf 'wave\t%s\t%s\t\t%s\t%s\t  %s~%s %s%sscoping a wave %s%s\n' \
+      "$prof" "$wname" "$canon" "$sec" "$C_INP" "$C_OFF" "$ptag" "$C_DIM" \
+      "$(_elapsed "$(stat -c %Y "$wlock" 2>/dev/null || echo 0)")" "$C_OFF"
+  done <<< "$names"
+
+  # A headless delivery-loop runner on THIS project is an agent working it. It is the one
+  # worker with no session row of its own, so without this it is invisible everywhere
+  # except the fleet window.
+  local rline rcanon rdetail
+  rline="$(_runner_line)"
+  if printf '%s' "$rline" | grep -q "$(printf '\t')"; then
+    rcanon="${rline%%$'\t'*}"; rdetail="${rline#*$'\t'}"
+    if printf '%s\n' "$names" | grep -qxF "$rcanon"; then
+      printf 'runner\t%s\tdelivery-loop\t\t%s\t%s\t  %s~%s %s%s%s%s\n' \
+        "$prof" "$canon" "$sec" "$C_INP" "$C_OFF" "$ptag" "$C_DIM" "$rdetail" "$C_OFF"
+    fi
+  fi
+
+  command -v sessions >/dev/null 2>&1 || return 0
+  local id st proj branch started what kind glyph col label n
+  while IFS=$'\t' read -r id st proj branch started what kind; do
+    [ -n "$id" ] || continue
+    case "$st" in
+      busy)    glyph='~'; col="$C_INP" ;;
+      waiting) glyph='!'; col="$C_SEL" ;;
+      *)       glyph='o'; col="$C_DIM" ;;
+    esac
+    label="$st"
+    # A headless run has nobody watching it and its status sits at the CLI default, so
+    # without this it renders as the same dim `o idle` an abandoned session gets.
+    [ "$kind" = headless ] && { glyph='~'; col="$C_INP"; label=headless; }
+    [ "$branch" = "-" ] && branch=""
+    [ "$what" = "-" ] && what="(just started)"
+    printf 'sess\t%s\t%s\t\t%s\t%s\t  %s%s%s %s%s  %s%s%s\n' \
+      "$prof" "$id" "$canon" "$sec" \
+      "$col" "$glyph" "$C_OFF" "$ptag" "$what" \
+      "$C_DIM" "${branch:+$branch }$(_elapsed "$started") ${label}" "$C_OFF"
+  done < <(while IFS= read -r n; do sessions rows "$n" 2>/dev/null; done <<< "$names")
+}
+
+# The shipped line for one project: what this version cost, and how much of that number
+# is actually known. NEVER a bare dollar figure -- cost coverage on this machine is ~8%
+# (the OTel export is gated on the home LAN), and agent-usage already refuses to print a
+# total without its coverage beside it. A wrong number in a summary is worse than none.
+_factory_shipped() { # $1=prof $2=lc $3=canon $4=summary $5=ver $6=n $7=sec $8=label
+  local prof="$1" canon="$3" summary="${4:-}" ver="${5:-}" n="$6" sec="$7" label="$8"
+  local vstart rows tot
+  vstart="$(_version_start "$summary")"
+  tot=""
+  # vstart 0 means "no released version yet", i.e. there is no lower bound - and
+  # `--since 0` returns the project's ENTIRE history. On a project backed by a busy
+  # monorepo that rendered "v0.1.0 - 1 item - 1666 sess - $394.15", which reads as the
+  # cost of one item. With no window there is no total worth printing, so print none.
+  if [ "${vstart:-0}" -gt 0 ] 2>/dev/null && command -v agent-usage >/dev/null 2>&1; then
+    rows="$(agent-usage rows "$canon" --since "$vstart" 2>/dev/null)"
+    [ -n "$rows" ] && tot="$(printf '%s\n' "$rows" | awk -F'\t' '
+      {s++; t+=$6; if($5=="1") u++; else {c+=$4; k++}}
+      END{ if(s) printf "%d sess - %s tok - %s", s,
+             (t>=1000000 ? sprintf("%.1fM", t/1000000) : (t>=1000 ? sprintf("%.0fk", t/1000) : t)),
+             (k ? sprintf("$%.2f (cost known for %d of %d)", c, k, s) : "cost not tracked") }')"
+  fi
+  printf 'ship\t%s\t\t\t%s\t%s\t  %s*%s %s%s%s %s%s%s%s\n' \
+    "$prof" "$canon" "$sec" \
+    "$C_DIM" "$C_OFF" "$C_PROJ" "$label" "$C_OFF" \
+    "$C_DIM" "${ver:+$ver - }$n item$([ "$n" = 1 ] || printf s)" "${tot:+ - $tot}" "$C_OFF"
 }
 
 # The oldest pending question, anywhere. `answer_next` is what the `!` key runs, and
 # _ask_banner is the line that tells you it exists.
 #
-# Both are deliberately CROSS-PROFILE, like the bridge and unlike every other tasks-view
-# behaviour: a question is a person being blocked, and which section you happen to be
-# standing on has nothing to do with whether you should answer it.
+# Both are deliberately CROSS-PROFILE, like the factory view and unlike every other
+# tasks-view behaviour: a question is a person being blocked, and which section you happen
+# to be standing on has nothing to do with whether you should answer it.
 _oldest_pending() { # -> "id<TAB>options<TAB>project" or empty
   command -v agent-ask >/dev/null 2>&1 || return 0
   agent-ask list --all --pending 2>/dev/null \
@@ -1124,8 +1120,7 @@ answer_next() {
 list_section() {
   local want="${1:-}"; [ -z "$want" ] && want="$(read_section)"
   case "$(read_mode)" in
-    bridge) _bridge_view "$want"; return ;;
-    agents) _profile_agents_view "$want"; _global_agents; return ;;
+    factory) _factory_view "$want"; return ;;
     usage)  _usage_view; return ;;
   esac
   local rows; rows="$(emit_tasks)"
@@ -1349,19 +1344,19 @@ rail() { # $1 = section of the highlighted row (optional; drives the brief)
   ct="$(emit_tasks | awk -F'\t' '{ c[$2]++; t++ } END { for (k in c) print k, c[k]; print "all", t }')"
   at="$(attention_counts)"
   # view indicator: highlight the active of the four (a cycles them).
-  # TWO LINES on purpose. One line of four names plus the `(a)` hint is 35 columns, and
-  # this is a preview pane sized at a fraction of the terminal — at three names it already
-  # sat at 27 and a fourth wrapped mid-word on a normal split.
-  local mode t_c a_c b_c u_c; mode="$(read_mode)"
-  t_c="$C_DIM"; a_c="$C_DIM"; b_c="$C_DIM"; u_c="$C_DIM"
+  # Back to ONE line. The two-line split existed because four names plus the `(a)` hint
+  # ran to 35 columns in a preview pane sized at a fraction of the terminal; three names
+  # is 27, which fitted even then.
+  local mode t_c f_c u_c; mode="$(read_mode)"
+  t_c="$C_DIM"; f_c="$C_DIM"; u_c="$C_DIM"
   case "$mode" in
-    tasks)  t_c="$C_SEL" ;; agents) a_c="$C_SEL" ;;
-    bridge) b_c="$C_SEL" ;; usage)  u_c="$C_SEL" ;;
+    tasks)   t_c="$C_SEL" ;; factory) f_c="$C_SEL" ;;
+    usage)   u_c="$C_SEL" ;;
   esac
-  printf '%s SECTIONS%s %s(a)%s\n %stasks%s %s·%s %sagents%s %s·%s %sbridge%s %s·%s %susage%s\n\n' \
+  printf '%s SECTIONS%s %s(a)%s\n %stasks%s %s·%s %sfactory%s %s·%s %susage%s\n\n' \
     "$C_HEAD" "$C_OFF" "$C_DIM" "$C_OFF" \
-    "$t_c" "$C_OFF" "$C_DIM" "$C_OFF" "$a_c" "$C_OFF" \
-    "$C_DIM" "$C_OFF" "$b_c" "$C_OFF" "$C_DIM" "$C_OFF" "$u_c" "$C_OFF"
+    "$t_c" "$C_OFF" "$C_DIM" "$C_OFF" "$f_c" "$C_OFF" \
+    "$C_DIM" "$C_OFF" "$u_c" "$C_OFF"
   while IFS= read -r s; do
     [ -z "$s" ] && continue
     n="$(awk -v k="$s" '$1==k{print $2}' <<< "$ct")"; n="${n:-0}"
@@ -1384,7 +1379,55 @@ rail() { # $1 = section of the highlighted row (optional; drives the brief)
   # says who is working, the bridge what they asked, usage what it cost — and repeating a
   # project brief beside each would be the duplication the agents view was pruned of.
   [ "$(read_mode)" = tasks ] && _rail_brief "${1:-}"
+  [ "$(read_mode)" = factory ] && _rail_timeline "${2:-}" "${3:-}"
   return 0
+}
+
+# This row's recorded history: every stage it passed through, how long it sat there, and
+# what that stage cost. Newest first, because "where is it now and how long has it been
+# stuck" is the question; the origin story is below it.
+#
+# Durations are EXACT and come from nothing but the event log - board_observe stamps each
+# transition when the board is edited. Cost is the honest part: it is attributed by TIME
+# OVERLAP against the session registry (a session spans [updated - duration_s, updated]),
+# because there is no per-ticket cost anywhere and the branch cannot supply one - 8 of 9
+# rows on a real board share the wave branch.
+#
+# What it will NOT do:
+#   * give a seed event a duration. A seed records where a row already WAS when first
+#     observed, not a transition into it, so the time before it is unmeasured, not zero.
+#   * divide a session between the stages it overlaps. It is marked `shared` instead;
+#     prorating would invent precision that does not exist.
+#   * print $0.00. Cost coverage is ~8% (the OTel export is gated on the home LAN), so an
+#     unknown cost is `-`, exactly as agent-usage renders it.
+_rail_timeline() { # $1=canon $2=ticket
+  local canon="${1:-}" tk="${2:-}"
+  [ -n "$canon" ] && [ -n "$tk" ] || return 0
+  local ev; ev="$(board_events "$canon" "$tk" 2>/dev/null)"
+  [ -n "$ev" ] || { printf '\n  %sno recorded history yet%s\n' "$C_DIM" "$C_OFF"; return 0; }
+
+  printf '\n%s  %s%s\n' "$C_HEAD" "$tk" "$C_OFF"
+  # Reverse the log, carrying each event's successor epoch so the dwell time is the gap to
+  # the NEXT stage (or to now, for the stage it is in).
+  printf '%s\n' "$ev" | awk -v now="$(date +%s)" \
+      -v dim="$C_DIM" -v off="$C_OFF" -v sel="$C_SEL" '
+    function fld(s, k,   r) { if (match(s, "\"" k "\":\"[^\"]*\"")) { r=substr(s, RSTART, RLENGTH); sub("\"" k "\":\"", "", r); sub("\"$", "", r) } else r=""; return r }
+    function num(s, k,   r) { if (match(s, "\"" k "\":[0-9]+")) { r=substr(s, RSTART+length(k)+3, RLENGTH-length(k)-3) } else r=0; return r+0 }
+    function dur(a, b,   d) { d=b-a; if (d<0) return "-";
+      if (d<3600) return sprintf("%dm %02ds", int(d/60), d%60);
+      if (d<86400) return sprintf("%dh %02dm", int(d/3600), int((d%3600)/60));
+      return sprintf("%dd %02dh", int(d/86400), int((d%86400)/3600)) }
+    { e[NR]=$0; ep[NR]=num($0,"epoch") }
+    END {
+      for (i=NR; i>=1; i--) {
+        to=fld(e[i],"to"); src=fld(e[i],"src"); ts=fld(e[i],"ts")
+        nxt=(i<NR) ? ep[i+1] : now
+        d=(src=="seed") ? "" : dur(ep[i], nxt)
+        printf "  %s%-9s%s %s%s%s\n", (i==NR?sel:dim), to, off, dim, substr(ts,1,16), off
+        if (d != "") printf "  %s          %s%s%s\n", dim, d, (i==NR?" (still)":""), off
+        else printf "  %s          first seen here%s\n", dim, off
+      }
+    }'
 }
 
 _cycle_section() { # $1 = +1 (next) or -1 (prev)
@@ -1982,13 +2025,13 @@ help_view() {
     2. press  W  on the project row — that is the whole trigger.
          a headless agent turns every @ai task into a ticket, cuts ONE
          branch, and stops; the approval arrives as a question below
-    3. come back here and press  a a  for the bridge view to watch it,
+    3. come back here and press  a  for the factory view to watch it,
          and to answer questions it raises  (enter on a "?" row)
     4. it asks you once more before merging
     full runbook:  ~/.config/shared-hooks/WAVES.md
 
   other
-    a              cycle views: tasks -> agents -> bridge -> usage -> tasks
+    a              cycle views: tasks -> factory -> usage -> tasks
 
   the left pane, in the tasks view, follows the cursor: standing on a project
   shows what shipped, the overview's "Now", and its "Next" checklist. It is a
@@ -2001,12 +2044,16 @@ help_view() {
          Tokens lead and dollars trail on purpose: cost telemetry covers ~2% of
          sessions (Prometheus keeps a week), so `-` means unknown, never free,
          and every total says how many sessions it could not see.
-                     tasks   your task lists
-                     agents  who is working this project + what shipped this
-                             version cost (tokens/$); V freezes it into the
-                             version note as the agent changelog
-                     bridge  open QUESTIONS agents raised on your tasks -
-                             enter = answer (resumes the agent), C-a = add work
+                     tasks   your task lists (the backlog)
+                     factory what is IN FLIGHT, grouped by stage: needs-you,
+                             triage, building, reviewing, shipped. One line per
+                             item; an empty stage is not shown; shipped folds to
+                             a version total with its cost coverage beside it.
+                             Cross-profile, so a question anywhere shows here.
+                             enter = answer a "?" / open a checkpoint
+                             C-a  = add work,  V freezes the version's telemetry
+                             the left pane shows that row's recorded history:
+                             each stage, when it started, how long it sat there
     T              create today's notes (all profiles)
     ?              this help
     q / esc        quit
@@ -2026,7 +2073,7 @@ jump_row() { # $1=type $2=file $3=line — deliberate edit in a new tmux window
 
 case "${1:-}" in
   --list) shift; list_section "${1:-}"; exit 0 ;;
-  --rail) rail "${2:-}"; exit 0 ;;
+  --rail) rail "${2:-}" "${3:-}" "${4:-}"; exit 0 ;;
   --next-section) next_section; exit 0 ;;
   --prev-section) prev_section; exit 0 ;;
   --add) add_task "${2:-}"; exit 0 ;;
@@ -2114,7 +2161,7 @@ list_section | fzf \
   --delimiter=$'\t' --with-nth='7..' \
   --prompt='search > ' \
   --header='! answer · a views · enter open/answer · C-a add · C-t ai · ? keys' \
-  --preview "$SELF --rail {6}" \
+  --preview "$SELF --rail {6} {5} {4}" \
   --preview-window 'left:24%:wrap:border-right' \
   --bind 'ctrl-/:toggle-preview' \
   --bind "?:execute($SELF --help-view | less -R)" \

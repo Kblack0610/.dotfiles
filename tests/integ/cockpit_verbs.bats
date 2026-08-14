@@ -176,14 +176,11 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
 
 # ── view mode ────────────────────────────────────────────────────────────────
 
-@test "--toggle-mode cycles tasks -> agents -> bridge -> usage -> tasks and persists it" {
+@test "--toggle-mode cycles tasks -> factory -> usage -> tasks and persists it" {
   run "$COCKPIT" --toggle-mode
   assert_success
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
-  assert_output 'agents'
-  "$COCKPIT" --toggle-mode
-  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
-  assert_output 'bridge'
+  assert_output 'factory'
   "$COCKPIT" --toggle-mode
   run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
   assert_output 'usage'
@@ -192,19 +189,28 @@ active_section() { cat "$TMPDIR"/notes-cockpit-*.section 2>/dev/null || echo per
   assert_output 'tasks'
 }
 
-@test "--list in agents mode still honours the 7-field wire format" {
+@test "a mode file left by an older version falls back to tasks, not to nothing" {
+  # `agents` and `bridge` were real modes until the factory view replaced them. A stale
+  # mode file must not leave the cycle pointing at a name no renderer answers to.
+  printf agents > "$TMPDIR/notes-cockpit-$(id -u).mode"
+  "$COCKPIT" --toggle-mode
+  run bash -c 'cat "$TMPDIR"/notes-cockpit-*.mode'
+  assert_output 'tasks'
+}
+
+@test "--list in factory mode still honours the 7-field wire format" {
   "$COCKPIT" --toggle-mode
   run bash -c '"$COCKPIT" --list personal | awk -F"\t" "NF != 7 { print NR\": \"NF; bad=1 } END { exit bad+0 }"'
   assert_success
   assert_output ''
 }
 
-@test "--list in agents mode renders a different body than tasks mode" {
-  local tasks_view agents_view
+@test "--list in factory mode renders a different body than tasks mode" {
+  local tasks_view factory_view
   tasks_view="$("$COCKPIT" --list personal)"
   "$COCKPIT" --toggle-mode
-  agents_view="$("$COCKPIT" --list personal)"
-  refute [ "$tasks_view" = "$agents_view" ]
+  factory_view="$("$COCKPIT" --list personal)"
+  refute [ "$tasks_view" = "$factory_view" ]
 }
 
 # ── --rail: the sidebar ──────────────────────────────────────────────────────

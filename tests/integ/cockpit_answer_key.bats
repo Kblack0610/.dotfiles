@@ -75,14 +75,15 @@ gate() { # $1=project
   assert_output --partial 'waiting on you'
 }
 
-@test "the banner does NOT appear in the bridge, which is already a question list" {
+@test "the banner does NOT appear in the factory view, which is already a question list" {
   gate alpha >/dev/null
-  run bash -c 'printf bridge > "${TMPDIR:-/tmp}/notes-cockpit-$(id -u).mode"; "$COCKPIT" --list personal | sed "s/\x1b\[[0-9;]*m//g"'
+  run bash -c 'printf factory > "${TMPDIR:-/tmp}/notes-cockpit-$(id -u).mode"; "$COCKPIT" --list personal | sed "s/\x1b\[[0-9;]*m//g"'
   refute_output --partial 'press ! to answer'
-  # Prove the bridge actually rendered, so the refute above is not passing on empty output.
-  # Anchored on the bridge's OWN header rather than on the ask: an ask is only rendered
-  # against a project that exists in the vault, and this fixture's projects are not `alpha`.
-  assert_output --partial 'where we are:'
+  # Prove the factory view actually rendered, so the refute above is not passing on empty
+  # output. Anchored on the view's OWN empty state rather than on the ask: an ask is only
+  # rendered against a project that exists in the vault, and this fixture's projects are
+  # not `alpha`, so the correct render here IS the empty state.
+  assert_output --partial 'nothing in flight'
 }
 
 # ── which one it opens ───────────────────────────────────────────────────────

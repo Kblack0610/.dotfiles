@@ -21,7 +21,7 @@ STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
 EDITOR_SH="$REPO_ROOT/.local/src/tmux/editor.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
 ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
-# NOTE: agent-bridge.sh was folded into notes-cockpit's bridge view (459519ad) and deleted;
+# NOTE: agent-bridge.sh was folded into notes-cockpit (459519ad) and deleted; that view is
 # its former $BRIDGE export is gone with it. fleet.sh is the headless-side surface now.
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
@@ -114,8 +114,8 @@ sandbox_init() {
   #
 # This existed as a FALSE PASS for as long as no test needed it. A developer's own
   # `~/.local/bin` is on PATH, so `agent-ask` resolved on a laptop and resolved NOWHERE on
-  # a clean runner -- the bridge's question rows simply vanished in CI while every local
-  # run stayed green. cockpit_bridge.bats opens with a guard against that coming back.
+  # a clean runner -- the factory view's question rows simply vanished in CI while every local
+  # run stayed green. cockpit_factory.bats opens with a guard against that coming back.
   #
   # COPIED, never symlinked. A symlink here points back into the working tree, and a test
   # that overrides one of these with `cat > "$SANDBOX/bin/<x>"` (wave_start.bats does,

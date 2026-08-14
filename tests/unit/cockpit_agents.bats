@@ -51,7 +51,12 @@ EOF
 # about the two-namespace case override that lookup rather than smuggling a list through
 # the argument - passing "a, b" there is exactly the bug the split fixed, because every
 # other consumer (agent-ask, sprint items, checkpoints) uses the name verbatim.
-render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}" "${3:-}"; }
+# _factory_live is the descendant of the retired _project_agents: same job (a scoping
+# wave, a headless runner, live sessions), now feeding the factory view's `building`
+# group instead of a view of its own. The shipped-telemetry half moved to
+# _factory_shipped, which the section below covers.
+render() { _factory_live personal demo "${1:-demo}" personal/demo ""; }
+ship()   { _factory_shipped personal demo "${1:-demo}" "$PROJ/README.md" v1.0 "${2:-3}" personal/demo Demo; }
 
 
 # ── the version boundary ─────────────────────────────────────────────────────
@@ -80,29 +85,32 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
 
 # ── no duplication of the bridge ─────────────────────────────────────────────
 
-@test "the agents view emits no ask rows - the bridge owns questions" {
+@test "_factory_live emits ONLY live-agent rows, never asks or board rows" {
+  # The factory view assembles its groups from several sources; each source must stay in
+  # its lane or a row renders twice. Asks come from agent-ask and board rows from
+  # board_rows_effective -- neither belongs to this function.
   run render
   refute_output --partial $'ask\t'
-}
-
-@test "the agents view emits no sprint row - the bridge owns work items" {
-  run render
   refute_output --partial $'sprint\t'
+  refute_output --partial $'item\t'
 }
 
 # ── live sessions ────────────────────────────────────────────────────────────
 
-@test "live sessions render with status, branch and what they are doing" {
+@test "live sessions render with what they are doing, then branch and status" {
+  # WHAT the agent is doing leads the row and the status trails it. The agents view had
+  # this the other way round (`~ busy  feat/x 10m  writing the thing`), which put the same
+  # six words at the head of every row and pushed the only distinguishing part to the end.
   run render
-  assert_output --partial 'writing the thing'
-  assert_output --partial '~ busy'
+  assert_output --partial '~ writing the thing'
   assert_output --partial 'feat/x'
+  assert_output --partial 'busy'
 }
 
 @test "a session waiting on the human is marked distinctly" {
   run render
-  assert_output --partial '! waiting'
-  assert_output --partial 'needs a decision'
+  assert_output --partial '! needs a decision'
+  assert_output --partial 'waiting'
 }
 
 @test "live rows carry no cost - a running session's usage is incomplete" {
@@ -112,21 +120,38 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
 
 # ── finished sessions, scoped to the current version ─────────────────────────
 
-@test "finished sessions from this version are shown with their telemetry" {
-  run render
-  assert_output --partial 'shipped in this version'
-  assert_output --partial '$3.25'
+# ── shipped: the folded line ─────────────────────────────────────────────────
+# The agents view listed one row per finished session. The factory view folds all of it
+# into ONE line per project, because 15 of 21 rows on the live corpus are terminal and
+# listing them spent most of the screen on work already done.
+
+@test "shipped folds this version's sessions into one line with their telemetry" {
+  run ship
+  assert_equal "$(printf '%s\n' "$output" | grep -c .)" 1
   assert_output --partial '1.5M tok'
+  assert_output --partial '$3.25'
 }
 
-@test "finished sessions from a previous version are excluded" {
-  run render
+@test "shipped excludes sessions from a previous version" {
+  run ship
   refute_output --partial 'PREVIOUS VERSION WORK'
 }
 
-@test "the footer totals only this version's sessions" {
-  run render
-  assert_output --partial '1 session - 9 edits'
+@test "shipped states its cost COVERAGE, never a bare dollar figure" {
+  # Cost is known for ~8% of sessions (the OTel export is gated on the home LAN), so a
+  # total without its coverage is a number that reads as complete and is not.
+  run ship
+  assert_output --partial 'cost known for'
+}
+
+@test "shipped prints no total at all when the version has no lower bound" {
+  # _version_start 0 means nothing has been released, and `--since 0` returns the
+  # project's ENTIRE history -- which rendered "v0.1.0 - 1 item - 1666 sess - \$394.15",
+  # i.e. a whole monorepo's spend attributed to one item.
+  rm -f "$PROJ"/versions/*.md 2>/dev/null || true
+  run ship
+  refute_output --partial 'tok'
+  refute_output --partial 'cost known for'
 }
 
 # ── the wire format ──────────────────────────────────────────────────────────
@@ -141,7 +166,7 @@ render() { _project_agents personal demo "${1:-demo}" "$PROJ/README.md" "${2:-}"
 @test "every row type is one _enter_action can dispatch" {
   local t
   for t in $(render | cut -f1 | sort -u); do
-    case "$t" in sess|head|hint|runner|wave) ;; *) fail "unknown row type '$t'" ;; esac
+    case "$t" in sess|head|hint|runner|wave|ship) ;; *) fail "unknown row type '$t'" ;; esac
   done
 }
 
@@ -206,8 +231,11 @@ J
 # ── the headless runner ──────────────────────────────────────────────────────
 
 @test "a delivery-loop runner on THIS project is shown" {
+  # _factory_live resolves the runner itself now (the retired view had it passed in), so
+  # the stub is delivery-loop rather than two extra positional args.
   canon_namespaces() { printf 'demo\n'; }
-  run render demo demo 'draining the queue'
+  _runner_line() { printf 'demo\tdraining the queue\n'; }
+  run render demo
   assert_output --partial 'draining the queue'
 }
 
@@ -232,17 +260,16 @@ teardown() { [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null; return 0; }
 
 @test "a headless run is not rendered as an idle session" {
   run render
-  assert_output --partial '~ headless'
+  assert_output --partial 'headless'
   # the giveaway of the old behaviour: a dim `o idle` with no other signal
-  refute_output --regexp 'o idle.*\(just started\)'
+  refute_output --regexp 'o .*\(just started\).*idle'
 }
 
 @test "a live wave lock puts a scoping row on the project" {
   sleep 60 & HOLDER=$!
   wave_lock demo "$HOLDER"
   run render
-  assert_output --partial '~ wave'
-  assert_output --partial 'nothing filed yet'
+  assert_output --partial 'scoping a wave'
 }
 
 @test "the scoping row disappears once the wave is gone" {

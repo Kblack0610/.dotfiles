@@ -62,7 +62,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_equal "$n" '3'
 }
 
-# ── list: the TSV the cockpit and bridge consume ─────────────────────────────
+# ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
 @test "list emits 11 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
@@ -70,7 +70,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output '11'
 }
 
-# The count is a contract, not trivia. `_bridge_view` reads these with a positional
+# The count is a contract, not trivia. `_factory_view` reads these with a positional
 # `read -r a b c ...`, and bash puts every UNNAMED trailing field into the LAST variable —
 # so adding a column without widening the reader does not error, it silently glues the new
 # data onto whatever the last named field was (here: the ask's task context).
