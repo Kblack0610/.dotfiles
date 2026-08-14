@@ -433,12 +433,21 @@ B
 
 # ── view mode ────────────────────────────────────────────────────────────────
 
-@test "read_mode defaults to tasks and toggle_mode cycles all four views" {
+@test "read_mode defaults to tasks and toggle_mode cycles all three views" {
   assert_equal "$(read_mode)" 'tasks'
-  toggle_mode; assert_equal "$(read_mode)" 'agents'
-  toggle_mode; assert_equal "$(read_mode)" 'bridge'
+  toggle_mode; assert_equal "$(read_mode)" 'factory'
   toggle_mode; assert_equal "$(read_mode)" 'usage'
   toggle_mode; assert_equal "$(read_mode)" 'tasks'
+}
+
+@test "a mode file naming a retired view falls back to tasks" {
+  # `agents` and `bridge` were real modes until the factory view replaced both. A mode
+  # file written by an older version must not leave `a` pressing against a dead name.
+  local m
+  for m in agents bridge; do
+    printf '%s' "$m" > "$MODEF"
+    toggle_mode; assert_equal "$(read_mode)" 'tasks'
+  done
 }
 
 @test "an unreadable mode file falls back to tasks rather than wedging the cycle" {

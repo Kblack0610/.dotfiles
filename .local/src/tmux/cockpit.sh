@@ -9,7 +9,7 @@
 # Windows:
 #   fleet   headless agents — agentctl runners, sentinel watches, pending asks,
 #           and Claude panes outside this session               (fleet.sh)
-#   bridge  the asks/gates queue, task-anchored               (notes-cockpit.sh, bridge view)
+#   factory what is in flight, grouped by stage + who is on it (notes-cockpit.sh, factory view)
 #   watch   live sentinel decisions as they happen             (tail -F activity.log)
 #   prs     open PRs across the configured repos               (pr-viewer.sh)
 #   notes   today's focus + per-project tasks                  (notes-cockpit.sh)
@@ -74,8 +74,8 @@ cmd_ensure() {
   # Both notes-cockpit windows carry a distinct NOTES_COCKPIT_INSTANCE: its section/mode/
   # filter state is a single UID-keyed file, so without this the two would overwrite each
   # other's view on every keypress. MODE pins which view each one opens on.
-  add_window bridge \
-    "$(_loop "NOTES_COCKPIT_INSTANCE=bridge NOTES_COCKPIT_MODE=bridge '$COCKPIT_SH'")"
+  add_window factory \
+    "$(_loop "NOTES_COCKPIT_INSTANCE=factory NOTES_COCKPIT_MODE=factory '$COCKPIT_SH'")"
   # -F follows the file across the rotation sentinel does on restart; without it the pane
   # silently stops updating and reads as "nothing is happening".
   add_window watch  "tail -F '$STATE_DIR/sentinel/activity.log' 2>/dev/null || exec \"\$SHELL\""
@@ -187,7 +187,7 @@ usage: cockpit.sh <verb>
   stale    list agent windows whose process already exited (reports only, never kills)
              --threshold SECONDS   idle cutoff, default ${STALE_THRESHOLD_DEFAULT}s
 
-Windows: fleet · bridge · watch · prs · notes
+Windows: fleet · factory · watch · prs · notes
 EOF
 }
 

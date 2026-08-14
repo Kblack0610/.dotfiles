@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # The link between the two views.
 #
-# `tasks` is your task sheet and `bridge` is the agent queue. They are SEPARATE surfaces on
+# `tasks` is your task sheet and `factory` is the agent queue. They are SEPARATE surfaces on
 # purpose — the human lane must stay usable without knowing anything about agents. But a
 # wave that stops to ask you something is genuinely both: an item on your list and a
 # question in the queue. A `<!-- ask:<id> -->` stamp on the sheet line is the join.

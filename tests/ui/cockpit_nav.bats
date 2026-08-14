@@ -134,27 +134,28 @@ start_cockpit() {
 
 # ── view mode: a ─────────────────────────────────────────────────────────────
 
-@test "a toggles from the tasks view into the agents view" {
+@test "a toggles from the tasks view into the factory view" {
   start_cockpit
   wait_until 'screen_has "fix the rail badge"'
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'
+  wait_until 'screen_has "factory"'   # and it is REALLY the factory view, not merely a
+                                      # render that happens to lack the task
 }
 
-@test "a cycles all four views and returns to tasks" {
-  # tasks -> agents -> bridge -> usage -> tasks (notes-cockpit.sh toggle_mode).
+@test "a cycles all three views and returns to tasks" {
+  # tasks -> factory -> usage -> tasks (notes-cockpit.sh toggle_mode).
   start_cockpit
   wait_until 'screen_has "fix the rail badge"'
   tmux_keys a
-  wait_until 'screen_lacks "fix the rail badge"'   # agents
-  tmux_keys a
-  wait_until 'screen_lacks "fix the rail badge"'   # bridge
+  wait_until 'screen_lacks "fix the rail badge"'   # factory
+  wait_until 'screen_has "factory"'
   tmux_keys a
   wait_until 'screen_lacks "fix the rail badge"'   # usage
   wait_until 'screen_has "usage ·"'                # ...and it is REALLY the usage view:
-                                                   # three `screen_lacks` in a row would
-                                                   # pass on any view that merely lacks
-                                                   # the task, including a broken render.
+                                                   # a bare `screen_lacks` would pass on
+                                                   # any view lacking the task, including
+                                                   # a broken render.
   tmux_keys a
   wait_until 'screen_has "fix the rail badge"'     # back to tasks
 }

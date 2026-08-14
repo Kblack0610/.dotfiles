@@ -55,18 +55,18 @@ body()   { mode usage; "$COCKPIT" --list 2>/dev/null | cut -f7-; }
 
 # ── the view is reachable and is its own render ─────────────────────────────
 
-@test "a cycles through four distinct views and returns to tasks" {
-  # Pairwise-distinct, not merely "tasks after 4 presses" — a toggle_mode that always
+@test "a cycles through three distinct views and returns to tasks" {
+  # Pairwise-distinct, not merely "tasks after 3 presses" — a toggle_mode that always
   # wrote `tasks` would satisfy the weaker assertion.
   mode tasks
   local seen=()
-  for _ in 1 2 3 4; do
+  for _ in 1 2 3; do
     seen+=("$(cat "${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}-$NOTES_COCKPIT_INSTANCE.mode")")
     "$COCKPIT" --toggle-mode
   done
-  assert_equal "${#seen[@]}" 4
+  assert_equal "${#seen[@]}" 3
   local uniq; uniq=$(printf '%s\n' "${seen[@]}" | sort -u | wc -l)
-  assert_equal "$uniq" 4
+  assert_equal "$uniq" 3
   assert_equal "$(cat "${TMPDIR:-/tmp}/notes-cockpit-${UID:-$(id -u)}-$NOTES_COCKPIT_INSTANCE.mode")" 'tasks'
 }
 

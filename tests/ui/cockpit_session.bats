@@ -65,7 +65,7 @@ boot() { tm new-session -d -s placeholder 2>/dev/null; }
   boot
   cockpit ensure
   local w; w="$(windows)"
-  for name in fleet bridge watch prs notes; do
+  for name in fleet factory watch prs notes; do
     grep -qx "$name" <<< "$w" || fail "missing window: $name (got: $(tr '\n' ' ' <<< "$w"))"
   done
 }
@@ -133,15 +133,15 @@ boot() { tm new-session -d -s placeholder 2>/dev/null; }
 }
 
 @test "the two notes-cockpit windows get distinct instance state" {
-  # Both `bridge` and `notes` run notes-cockpit.sh, whose section/mode/filter state is a
+  # Both `factory` and `notes` run notes-cockpit.sh, whose section/mode/filter state is a
   # single UID-keyed file. Without a distinct NOTES_COCKPIT_INSTANCE they overwrite each
   # other's view on every keypress.
   boot
   cockpit ensure
-  local bridge_cmd notes_cmd
-  bridge_cmd="$(tm list-windows -t "$COCKPIT_SESSION" -F '#{window_name} #{pane_start_command}' | grep '^bridge ')"
+  local factory_cmd notes_cmd
+  factory_cmd="$(tm list-windows -t "$COCKPIT_SESSION" -F '#{window_name} #{pane_start_command}' | grep '^factory ')"
   notes_cmd="$(tm list-windows -t "$COCKPIT_SESSION" -F '#{window_name} #{pane_start_command}' | grep '^notes ')"
-  [[ "$bridge_cmd" == *'NOTES_COCKPIT_INSTANCE=bridge'* ]] || fail "bridge lacks its instance: $bridge_cmd"
+  [[ "$factory_cmd" == *'NOTES_COCKPIT_INSTANCE=factory'* ]] || fail "factory lacks its instance: $factory_cmd"
   [[ "$notes_cmd"  == *'NOTES_COCKPIT_INSTANCE=notes'*  ]] || fail "notes lacks its instance: $notes_cmd"
-  [[ "$bridge_cmd" == *'NOTES_COCKPIT_MODE=bridge'* ]] || fail "bridge does not open on the ask queue: $bridge_cmd"
+  [[ "$factory_cmd" == *'NOTES_COCKPIT_MODE=factory'* ]] || fail "factory does not open on the stage list: $factory_cmd"
 }
