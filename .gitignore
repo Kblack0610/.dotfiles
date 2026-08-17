@@ -84,6 +84,9 @@ Media/Music
 .claude/commands/wave.md
 !.claude/hooks/
 !.claude/settings.json
+# settings.json names a custom theme by slug, so the theme file has to travel with
+# it or "custom:ember" resolves to nothing on every other machine.
+!.claude/themes/
 # .mcp.json (personal MCP endpoints) lives in the private overlay.
 # Skills: an ALLOWLIST. Everything under .claude/skills is ignored, then the generic
 # skills are named back in one at a time; anything client- or infra-specific lives in
