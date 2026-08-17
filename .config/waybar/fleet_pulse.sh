@@ -44,7 +44,14 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # The two personal CachyOS boxes lead: they were reporting fine but were named in
 # no token, so they rendered only in the tooltip - the bar showed work + k3s and
 # said nothing about the machine you were sitting at.
-: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap gp-mac=gp lazer-machine=lzr @k3s=k3s}"
+#
+# THIS LINE IS A FOURTH COPY OF THE ROSTER and the only one a human looks at all
+# day, so a name retired everywhere else rots here in silence. `lazer-machine=lzr`
+# (a retired work VDI) was dropped on 2026-08-17 when that contract ended; it had
+# been rendering a red `lzr○` that was indistinguishable from a machine that was
+# merely down. Hence the ghost check below: a token naming a host that is in
+# NEITHER the roster NOR the API is a config bug, and now says so.
+: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap gp-mac=gp @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
@@ -147,10 +154,17 @@ status_text() {
 }
 
 # state -> pango-colored dot. Filled ● when reporting, hollow ○ when not.
+#
+# `ghost` is NOT a fleet state, it is a CONFIG state: the token names a host or
+# group that exists nowhere - not on the roster, not in the API. Rendering it as
+# a red ○ like every other absence is what let a decommissioned machine sit on
+# the bar indefinitely looking like an outage nobody had got round to fixing. A
+# `?` reads as "this dot is lying to you", which is the actual situation.
 dot() {
     case "$1" in
         up)    printf "<span color='%s'>●</span>" "$C_GRN" ;;
         stale) printf "<span color='%s'>●</span>" "$C_YEL" ;;
+        ghost) printf "<span color='%s'>?</span>" "$C_YEL" ;;
         *)     printf "<span color='%s'>○</span>" "$C_RED" ;;
     esac
 }
@@ -176,13 +190,27 @@ done
 if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degraded"; icon_col="$C_YEL"; fi
 
 # --- bar text: the pulse icon, then one dot per FLEET_DISPLAY token -----------
+#
+# Every token is checked for EXISTENCE before it is checked for health, because
+# those two failures are visually identical otherwise (both were a red ○) and
+# only one of them is about a machine. A ghost token is collected so the tooltip
+# can name it - a `?` on the bar tells you something is wrong, the tooltip tells
+# you which line of FLEET_DISPLAY to go delete.
+ghosts=()
 text="$(printf "<span color='%s'>%s</span>" "$icon_col" "$ICON")"
 for tok in $FLEET_DISPLAY; do
     lbl="${tok#*=}"; key="${tok%%=*}"
     if [[ "$key" == @* ]]; then
         # collapse a group: worst of its API members that are also on the roster
-        mem=(); while IFS= read -r m; do [[ -n "${in_roster[$m]:-}" ]] && mem+=("$m"); done < <(members_of "${key#@}")
-        st="$(worst_of "${mem[@]}")"
+        grp="${key#@}"
+        mem=(); while IFS= read -r m; do [[ -n "${in_roster[$m]:-}" ]] && mem+=("$m"); done < <(members_of "$grp")
+        if [[ -z "$(members_of "$grp")" ]]; then
+            st=ghost; ghosts+=("$key")           # no such group anywhere in the API
+        else
+            st="$(worst_of "${mem[@]}")"
+        fi
+    elif [[ -z "${in_roster[$key]:-}" && -z "$(row_of "$key")" ]]; then
+        st=ghost; ghosts+=("$key")               # named by nothing: retired, or a typo
     else
         st="$(classify "$key")"
     fi
@@ -205,5 +233,11 @@ for m in $ROSTER; do
     [[ -z "$m" ]] && continue
     [[ -z "$(row_of "$m")" ]] && tooltip="${tooltip}\\n  ${m}: NEVER REPORTED"
 done
+# Display tokens that name nothing. Last, and labelled as config rather than
+# fleet, so it never reads as another machine being down.
+if ((${#ghosts[@]})); then
+    tooltip="${tooltip}\\nFLEET_DISPLAY names hosts that no longer exist:"
+    for g in "${ghosts[@]}"; do tooltip="${tooltip}\\n  ${g}: not on the roster, unknown to gatus"; done
+fi
 
 printf '{"text": "%s", "tooltip": "%s", "class": "%s"}\n' "$text" "${tooltip}${note}" "$cls"
