@@ -74,9 +74,7 @@ fi
 
 for required_file in \
     "$stage_dir/AGENTS.md" \
-    "$stage_dir/GEMINI.md" \
     "$stage_dir/.codex/config.toml" \
-    "$stage_dir/.gemini/settings.json" \
     "$stage_dir/opencode.jsonc"; do
     if [ ! -f "$required_file" ]; then
         echo "Missing expected Rulesync output: $required_file" >&2
@@ -84,12 +82,25 @@ for required_file in \
     fi
 done
 
+# Gemini is OPTIONAL, unlike the three above: rulesync 11.x reports geminicli as not
+# supporting the rules/mcp features and emits nothing for it, which made this script
+# exit 1 and sync NOTHING for codex or opencode either. Detect instead of require, and
+# leave $GEMINI_HOME untouched when there is no staged file — a merge against an absent
+# stage would write an empty mcpServers over the live one.
+gemini_rules=0; [ -f "$stage_dir/GEMINI.md" ] && gemini_rules=1
+gemini_mcp=0;   [ -f "$stage_dir/.gemini/settings.json" ] && gemini_mcp=1
+if [ "$gemini_rules" = 0 ] || [ "$gemini_mcp" = 0 ]; then
+    echo "note: rulesync emitted no Gemini output; leaving $GEMINI_HOME untouched" >&2
+fi
+
 mkdir -p "$CODEX_HOME" "$GEMINI_HOME" "$OPENCODE_HOME"
 
 # Claude Code's CLAUDE.md and .mcp.json are stow-managed from ~/.dotfiles/.claude/
 # — do NOT write them here; it would clobber the stow symlinks.
 cp "$stage_dir/AGENTS.md" "$CODEX_HOME/AGENTS.md"
-cp "$stage_dir/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
+if [ "$gemini_rules" = 1 ]; then
+    cp "$stage_dir/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
+fi
 cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 
 {
@@ -193,10 +204,13 @@ def write_json(path_str: str, data: dict) -> None:
 
 gemini_path = os.environ["GEMINI_SETTINGS_PATH"]
 gemini_stage_path = os.environ["GEMINI_STAGE_PATH"]
-gemini_current = read_json(gemini_path)
-gemini_stage = read_json(gemini_stage_path)
-gemini_current["mcpServers"] = gemini_stage.get("mcpServers", {})
-write_json(gemini_path, gemini_current)
+# read_json returns {} for an absent stage file, so merging unconditionally would
+# blank the live mcpServers rather than leave it alone.
+if Path(gemini_stage_path).exists():
+    gemini_current = read_json(gemini_path)
+    gemini_stage = read_json(gemini_stage_path)
+    gemini_current["mcpServers"] = gemini_stage.get("mcpServers", {})
+    write_json(gemini_path, gemini_current)
 
 opencode_path = os.environ["OPENCODE_CONFIG_PATH"]
 opencode_stage_path = os.environ["OPENCODE_STAGE_PATH"]
@@ -214,7 +228,11 @@ PY
 
 echo "Synced shared AI rules and MCP config (Claude owned by stow, not this script)"
 echo "  Codex:  $CODEX_HOME/AGENTS.md and $CODEX_HOME/config.toml"
-echo "  Gemini: $GEMINI_HOME/GEMINI.md and $GEMINI_HOME/settings.json"
+if [ "$gemini_rules" = 1 ] || [ "$gemini_mcp" = 1 ]; then
+    echo "  Gemini: $GEMINI_HOME/GEMINI.md and $GEMINI_HOME/settings.json"
+else
+    echo "  Gemini: skipped (rulesync target 'geminicli' emitted nothing)"
+fi
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
 
 # Mirror Claude agents + commands into OpenCode (skills/rules are read natively
