@@ -30,6 +30,24 @@ if [ ! -d "$CLAUDE_SRC" ]; then
     exit 1
 fi
 
+# Resolve the interpreter BEFORE the delete below. pyyaml is absent from the macOS
+# system python3 and always will be, and the delete is destructive: an import error
+# after it leaves OpenCode with no agents or commands at all.
+PYTHON=""
+for candidate in "${PYTHON3:-}" python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" -c 'import yaml' >/dev/null 2>&1; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "No python3 with pyyaml found (tried \$PYTHON3, python3, /opt/homebrew/bin/python3, /usr/local/bin/python3)." >&2
+    echo "  Install pyyaml for one of them, or set PYTHON3=/path/to/python3." >&2
+    exit 1
+fi
+
 mkdir -p "$OPENCODE_HOME/agents" "$OPENCODE_HOME/commands"
 
 # Remove previously generated files (manifest-tracked) so renames don't leave strays.
@@ -39,7 +57,7 @@ if [ -f "$MANIFEST" ]; then
     done < "$MANIFEST"
 fi
 
-CLAUDE_SRC="$CLAUDE_SRC" OPENCODE_HOME="$OPENCODE_HOME" MANIFEST="$MANIFEST" python3 - <<'PYEOF'
+CLAUDE_SRC="$CLAUDE_SRC" OPENCODE_HOME="$OPENCODE_HOME" MANIFEST="$MANIFEST" "$PYTHON" - <<'PYEOF'
 import os, sys, pathlib, yaml
 
 src = pathlib.Path(os.environ["CLAUDE_SRC"])
