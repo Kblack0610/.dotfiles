@@ -42,6 +42,11 @@ Media/Music
 # Unity3d - ignore all editor state
 .config/unity3d/
 
+# Karabiner writes a dated snapshot here every time the config changes. karabiner.json
+# itself is the tracked source of truth; the snapshots are its history, which git
+# already keeps. One was tracked, so each new snapshot showed up as untracked churn.
+.config/karabiner/automatic_backups/
+
 .config/nvim/lazy-lock.json
 
 .config/OrcaSlicer
