@@ -125,6 +125,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/board-observe.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/ai-comment-guard.sh"
           }
         ]
       }
