@@ -194,6 +194,7 @@
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
+  "theme": "custom:ember",
   "additionalDirectories": [
     "/root",
     "/mnt/c/Users/keblack",
