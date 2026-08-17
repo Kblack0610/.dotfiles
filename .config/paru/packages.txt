@@ -94,3 +94,4 @@ moonlight-qt
 # --- AUR Packages (require paru/yay) ---
 visual-studio-code-bin
 zulu-17-bin
+hunk
