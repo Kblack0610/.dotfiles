@@ -60,3 +60,16 @@ customCommands:
         initialValue: '../{{.SelectedLocalBranch.Name}}'
     command: 'git worktree add "{{.Form.Path}}" "{{.SelectedLocalBranch.Name}}" && cd "{{.Form.Path}}" && lazygit'
     output: terminal
+  # Review the working tree in hunk (multi-file review stream, agent annotations).
+  # X = eXamine; h/H/l/L are all taken by lazygit's block-nav and scroll bindings.
+  - key: 'X'
+    context: 'files'
+    description: 'Review working tree in hunk'
+    command: 'hunk diff --watch'
+    output: terminal
+  # Review a single commit in hunk.
+  - key: 'X'
+    context: 'commits, subCommits, reflogCommits'
+    description: 'Review this commit in hunk'
+    command: 'hunk show {{.SelectedCommit.Hash}}'
+    output: terminal
