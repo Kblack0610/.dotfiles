@@ -1,28 +1,23 @@
 ---
 name: ingest-worktree
-description: Land work correctly, two modes. LOCAL mode (default) ingests a dirty working tree - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob); it HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. REMOTE mode drains the open-PR queue - list every open PR, check each for mergeable/CI/conflicts, review the diff (the gate when no CI runs), then land the safe ones and sync local main. Use LOCAL when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles"; use REMOTE when the user says "land the open PRs", "drain the PR queue", "get our open PRs in", "we have N open PRs", or invokes this skill pointing at the remote rather than the local tree. Branch-first off the default branch. Differs from sc:git (single commit helper) and my:pr-merge-flow (drives ONE existing PR) - this FANS a dirty tree OUT into scoped PRs (local) or DRAINS many open PRs at once (remote). Do NOT `git add -A` a mixed tree, do NOT commit theme/ephemeral churn or unscanned untracked files, and do NOT merge a conflicted / failing-CI PR or `--delete-branch` an unmerged one.
+description: Land a dirty working tree correctly - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob). It HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. It also checks the checkout is not stale before landing, because a tree edited against an old base can silently revert work that has since landed on the default branch. Use when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles", or "what is all this uncommitted stuff". Branch-first off the default branch. Differs from sc:git (single commit helper), my:pr-merge-flow (drives ONE existing PR), and ingest-prs (drains the open-PR queue on the FORGE - use that one when the user points at open PRs rather than at their own dirty tree). Do NOT `git add -A` a mixed tree, and do NOT commit theme/ephemeral churn or unscanned untracked files.
 metadata:
   category: workstreams
   tags: [git, pull-requests, landing]
-  reviewed: "2026-08-09"
+  reviewed: "2026-08-17"
 ---
 
 # ingest-worktree
 
-Land work into landed, reviewable units - one concern per PR, nothing mixed, nothing unsafe. Two modes:
-
-- **LOCAL (default)** - ingest a dirty working tree, fanning it OUT into scoped PRs. Sections 1-5.
-- **REMOTE** - drain the open-PR queue that already exists on the forge. "Mode: REMOTE" below.
-
-Pick by what the user points at: their `git status` (local) vs "we have N open PRs / land them" (remote).
+Land a dirty working tree into landed, reviewable units - one concern per PR, nothing mixed, nothing unsafe.
 
 ```
-LOCAL:  dirty tree ->  survey  ->  classify by concern  ->  HOLD churn/secrets  ->  land each concern as a PR
-                                                                 |
-                                                     (theme state, caches, keys) -> surfaced, not committed
-
-REMOTE: open PRs   ->  list + status  ->  triage (mergeable/CI/conflict/draft)  ->  review diff  ->  land safe ones -> sync main
+dirty tree ->  survey  ->  classify by concern  ->  HOLD churn/secrets  ->  land each concern as a PR
+                                                          |
+                                              (theme state, caches, keys) -> surfaced, not committed
 ```
+
+**Pointed at the forge instead?** "we have N open PRs", "land the open PRs", "should I close all these" -> use **`ingest-prs`**. Draining an existing queue needs a per-PR definition table (what / who / why / where / tier / blocker) before any close-or-land verdict, which is a different shape of work than fanning a dirty tree out.
 
 ## 1. Survey
 ```bash
@@ -32,6 +27,19 @@ git diff --stat
 git ls-files --others --exclude-standard      # untracked
 ```
 Read the diffs. Never trust filenames alone; classify by what changed.
+
+**Then check the base, before planning anything.** A dirty tree says nothing about how old it is:
+```bash
+git fetch origin
+git rev-list --count HEAD..origin/main        # how far behind
+git log --oneline -1 $(git merge-base HEAD origin/main)
+```
+If that count is not 0, every pending edit was authored against a file that may since have changed, and reapplying it blind REVERTS whatever landed in between. For each modified file, compare against the current base rather than the diff you have:
+```bash
+git cat-file -e origin/main:<path> || echo "path no longer exists on main - find where it moved"
+diff <(git show origin/main:<path>) <path>
+```
+Three outcomes, and they are different concerns: **already landed** (drop it - do not re-land a duplicate), **landed differently / better** (keep the base version, re-derive only your delta on top), **still absent** (land it, but at the path the base uses now - a reorganized tree makes the old path a dead end that git will happily commit). Also check an unpushed local branch's PR state: a CLOSED-unmerged PR either means the work was superseded elsewhere or it is orphaned, and only reading the base settles which.
 
 ## 2. Classify by concern
 Bucket every changed file into exactly one concern (a file may only live in one PR, or branches collide on merge). Typical dotfiles concerns: a named feature/skill, lab/agent tooling, tracker/ticket, editor (nvim), shell/prompt, a new service. Write one conventional-commit subject per bucket (`feat(scope):`, `fix(scope):`, `chore(scope):` - match the repo's existing `git log` style).
@@ -63,55 +71,13 @@ If the user chose "leave PRs open," skip the merge + pull and just move to the n
 ## 5. Report
 Per concern: the PR link + merge state. Then the HELD items and why (so nothing is silently dropped - the churn is deferred to its timer; secrets need the user).
 
-## Mode: REMOTE (drain the open-PR queue)
-
-When the user points at the forge ("we have N open PRs", "land the open PRs", "drain the queue") rather than the local tree. Sections 1-5 above are the LOCAL mode; this is its mirror for PRs that already exist.
-
-### R1. List + status
-```bash
-gh pr list --state open --json number,title,headRefName,baseRefName,isDraft,mergeable,mergeStateStatus,reviewDecision
-```
-`mergeable`/`mergeStateStatus` often read `UNKNOWN` right after a push - GitHub computes them lazily. Viewing a PR forces the calc:
-```bash
-gh pr view <n> --json number,title,mergeable,mergeStateStatus,statusCheckRollup,files
-```
-Reconcile the count with reality: a PR you JUST merged is gone from the list; a PR you just opened may not be counted yet.
-
-### R2. Triage each PR
-Bucket by landability. Never merge blind - the diff review IS the gate on a repo with no CI.
-- **MERGEABLE / CLEAN + green (or no CI configured)** -> land. `CI:none` means no checks run, so YOU are the check: `gh pr diff <n>` and read it.
-- **CONFLICTING / DIRTY** -> HOLD (or rebase the branch onto the base first); do not force it.
-- **failing CI (`statusCheckRollup` has failure)** -> HOLD; fix or hand back.
-- **draft** -> skip.
-- **needs review / `reviewDecision: REVIEW_REQUIRED`** -> respect it unless the user owns the repo and waives it.
-Check file sets across the PRs you'll land: disjoint files merge in any order; overlapping files mean land one, then re-check the others' mergeability.
-
-### R3. Land
-Show the queue (per PR: number, title, mergeable/CI, the one-line what, land-vs-hold) as a **report**, then land - invoking the skill is the authorization, so do not stop for an OK (Landing rule, `CLAUDE.md`). The R2 gates above hold a bad PR on their own; the only thing that still needs an ask is a PR **another author** owns. Land each matching the repo's merge convention (check `git log`: "Merge pull request #NN" => merge commits; a flat history => squash):
-```bash
-gh pr merge <n> --merge --delete-branch      # or --squash to match a squash repo
-```
-`--delete-branch` is safe here because the branch is MERGED. NEVER `gh pr close --delete-branch` an UNMERGED PR - it orphans the only copy of that work (recover via `git log -g`).
-
-### R4. Sync local
-The merges advanced the remote base; bring local level and prune:
-```bash
-git stash push -- <machine-local churn>       # e.g. .config/nvim/lazy-lock.json, if dirty
-git switch main && git pull --ff-only
-git branch -d <merged-local-branches>          # -d (not -D): refuses if not merged, a safety net
-git stash pop
-```
-
-### R5. Report
-Per PR: landed (link + merge state) or HELD (why - conflict, red CI, draft, review gate). Then the synced main SHA and any branches pruned.
-
 ## Triggers
-- Manual: `/ingest-worktree` (or the phrases in the description). LOCAL typically at end of a work batch or when `git status` has sprawled; REMOTE when open PRs have piled up.
-- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). REMOTE overlaps `my:pr-merge-flow` (which drives ONE PR deeply) - use this to drain MANY at once, that to babysit one.
+- Manual: `/ingest-worktree` (or the phrases in the description). Typically at the end of a work batch or when `git status` has sprawled.
+- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). Hand off to `ingest-prs` when the queue on the forge is the problem, and to `my:pr-merge-flow` to babysit one PR deeply.
 
 ## Boundaries
 - Never `git add -A`/`git commit -am` a mixed tree; one concern per commit, one file per PR.
 - Never commit ephemeral/machine-local churn or unscanned untracked files - HOLD and surface.
 - Branch-first off the default branch, then push and merge without re-confirming; the skill invocation is the authorization. The two exceptions are an unclear secret scan and a HELD item you want to ship anyway.
-- REMOTE: never merge a CONFLICTING/DIRTY or failing-CI PR without resolving first; never `--delete-branch` an UNMERGED PR (it orphans the work); read every diff before merging when no CI gates it.
+- Never reapply a stale edit blind. If the checkout is behind the default branch, re-derive each change against the CURRENT file before committing - see Survey.
 - It lands changes; it does not author new feature work.
