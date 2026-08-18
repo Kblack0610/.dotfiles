@@ -185,17 +185,9 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config, procs | today's daily note |
+| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
-
-`procs` is the parking lot for **long-running one-offs**: spawn the VDI, hold a
-port-forward, leave a sync running - one window each, none of it cluttering a project
-session it has nothing to do with. Rooted at `~` because it is about processes, not a
-repo. It is not called `scratch` on purpose: scratch is the commoner word but it means
-a throwaway shell you close, and the point of these is that they keep running. If a
-runaway one-off ever needs to be unable to take `hub` down with it, that same line in
-its own `procs.conf` makes it a world with its own socket - no code either way.
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
@@ -398,17 +390,9 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config, procs | today's daily note |
+| `hub` - personal | **hub**, dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
-
-`procs` is the parking lot for **long-running one-offs**: spawn the VDI, hold a
-port-forward, leave a sync running - one window each, none of it cluttering a project
-session it has nothing to do with. Rooted at `~` because it is about processes, not a
-repo. It is not called `scratch` on purpose: scratch is the commoner word but it means
-a throwaway shell you close, and the point of these is that they keep running. If a
-runaway one-off ever needs to be unable to take `hub` down with it, that same line in
-its own `procs.conf` makes it a world with its own socket - no code either way.
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the
 landing session**, so hopping to hub puts you in today's note rather than a bare shell.
