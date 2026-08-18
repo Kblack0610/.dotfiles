@@ -23,6 +23,20 @@ struct RawConfig {
     hostname_map: HashMap<String, String>,
     #[serde(default)]
     profile: HashMap<String, RawProfile>,
+    /// The VAULT root — the one directory every org lives under. Top-level, because it belongs
+    /// to no org: it is what a cross-org artifact is addressed relative to, and what lets an
+    /// org's note link something outside itself.
+    ///
+    /// Without it the only anchor was "the active profile's root", and for `personal` that
+    /// happens to equal the vault. Cross-org state then silently acquired a personal address:
+    /// the board aggregates every org but was written wherever the ACTIVE profile pointed, and
+    /// every other org's daily note linked a `board.md` that had never been written there.
+    #[serde(default = "default_vault")]
+    vault: String,
+    /// The cross-org board, relative to `vault`. One file, one address, regardless of which org
+    /// is active when it is regenerated.
+    #[serde(default = "default_board")]
+    board: String,
     /// Multi-account email triage (`notes comms`). Global (spans profiles), so it lives at
     /// the top level rather than per-profile — each account names the profile whose daily
     /// note its critical items surface into. Optional: an empty `[comms]` means the feature
@@ -169,6 +183,17 @@ fn default_profile_name() -> String {
     "personal".to_string()
 }
 
+fn default_vault() -> String {
+    "~/.notes".to_string()
+}
+
+// Where the cross-org board has always physically lived. Keeping the location while moving its
+// OWNERSHIP off the active profile is deliberate: the address is referenced by existing notes,
+// and relocating it is a separate, link-rewriting change.
+fn default_board() -> String {
+    "lab/projects/board.md".to_string()
+}
+
 fn default_inbox() -> String {
     "inbox".to_string()
 }
@@ -265,6 +290,13 @@ pub struct Profile {
     /// destination rendered twice. Derived as the `index.md` sibling of the `projects`
     /// dir's parent; None when `projects` is unset.
     pub project_index: Option<PathBuf>,
+    /// The vault root — same value for every org, so a note can address something outside its
+    /// own org. `wikilink(&p.vault, target)` is the cross-org form; `wikilink(&p.root, target)`
+    /// stays the within-org form.
+    pub vault: PathBuf,
+    /// The cross-org board. Identical on every resolved profile, which is the point: it is not
+    /// the active org's board, it is THE board.
+    pub board: PathBuf,
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
@@ -370,6 +402,8 @@ fn builtin_default() -> RawConfig {
         default_profile: "personal".into(),
         hostname_map: HashMap::new(),
         profile,
+        vault: default_vault(),
+        board: default_board(),
         comms: RawComms::default(),
     }
 }
@@ -419,6 +453,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     })?;
 
     let root = expand(&rp.root);
+    let vault = expand(&raw.vault);
     let join = |s: &str| -> PathBuf {
         let p = expand(s);
         if p.is_absolute() {
@@ -553,6 +588,10 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
             .as_ref()
             .map(|s| join(s))
             .and_then(|d| d.parent().map(|p| p.join("index.md"))),
+        // Cross-org, so anchored to the vault rather than to this org's root. Every profile
+        // resolves the SAME two values.
+        vault: vault.clone(),
+        board: vault.join(&raw.board),
         inbox: join(&rp.inbox),
         tag_scan,
         state_dir,
@@ -662,6 +701,11 @@ pub fn print(p: &Profile) {
     println!("profile     {}", p.name);
     println!("resolved by {}", p.source);
     println!("root        {}", p.root.display());
+    // Cross-org, so identical on every profile. Printed next to `root` precisely so the two are
+    // easy to compare: for `personal` they coincide, and that coincidence is what let cross-org
+    // state quietly acquire a personal address.
+    println!("vault       {}", p.vault.display());
+    println!("board       {}", p.board.display());
     println!("daily       {}", p.daily.display());
     println!("refs        {}", p.refs.display());
     println!("fun         {}", p.fun.display());

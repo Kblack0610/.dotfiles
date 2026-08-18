@@ -457,13 +457,29 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     }
     // Board first, then the index. The board is the one the human opens daily (it carries
     // the live wave + agent lane); the index is the slower "what projects exist" page.
+    //
+    // The board is linked against the VAULT, not this org's root: it is one cross-org file, so
+    // an org-relative link would name a path inside that org that does not exist. That was the
+    // live bug -- bnb's note read `Board: [[projects/board]]`, i.e. lab/bnb/projects/board.md,
+    // which was never written. The editor puts both the org root and the vault on `path` (see
+    // notes.nvim's gf setup), so the vault-relative form resolves from inside any org.
     let board_link = crate::board::board_path(p)
-        .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.root, &b)))
+        .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.vault, &b)))
         .unwrap_or_default();
+    // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
+    // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
+    // as the complete list while showing only one org's, which is how projects in another org
+    // came to look missing.
     let projects_link = p
         .project_index
         .as_ref()
-        .map(|pi| format!(" · Projects: [[{}]]", config::wikilink(&p.root, pi)))
+        .map(|pi| {
+            format!(
+                " · {} projects: [[{}]]",
+                p.name,
+                config::wikilink(&p.root, pi)
+            )
+        })
         .unwrap_or_default();
     // Surface the inbox as a link + pending count when there's anything to triage.
     let (pending, _stale) = inbox::backlog_counts(p);
@@ -1125,6 +1141,8 @@ mod tests {
             index: r.join("journal/index"),
             projects: None,
             project_index: None,
+            vault: PathBuf::from(root),
+            board: PathBuf::from(root).join("lab/projects/board.md"),
             inbox: r.join("inbox"),
             tag_scan: Vec::new(),
             state_dir: r.join(".state"),
@@ -1195,9 +1213,12 @@ after
             !out.contains("myapp"),
             "the index lane must not be copied in:\n{out}"
         );
+        // The index link NAMES its org. Unqualified, "Projects:" sat beside the cross-org
+        // "Board:" and read as the complete list while showing one org's -- which is how
+        // projects living in another org came to look missing.
         assert!(
-            out.contains("Projects: [[lab/projects/index]]"),
-            "footer still links the index:\n{out}"
+            out.contains("test projects: [[lab/projects/index]]"),
+            "footer links the index, scoped to its org:\n{out}"
         );
         // The note opens straight into the human's own list.
         assert!(out.contains("## Focus"));
@@ -1395,6 +1416,39 @@ after
     fn resolve_unknown_is_none() {
         let p = profile("/vault");
         assert!(resolve_path(&p, "bogus").is_none());
+    }
+
+    /// The board is ONE file for every org, so an org whose root is not the vault must still
+    /// link a path that resolves. The live bug: bnb (root `lab/bnb`) wrote
+    /// `Board: [[projects/board]]`, i.e. `lab/bnb/projects/board.md`, which was never written --
+    /// only `lab/projects/board.md` ever existed. An org-relative link cannot name a file
+    /// outside its own org, so the board is addressed against the vault.
+    #[test]
+    fn the_board_link_resolves_from_an_org_that_is_not_the_vault_root() {
+        let mut p = profile("/vault");
+        p.root = PathBuf::from("/vault/lab/bnb"); // a nested org, like bnb
+        p.vault = PathBuf::from("/vault");
+        p.board = PathBuf::from("/vault/lab/projects/board.md");
+
+        let link = config::wikilink(&p.vault, &crate::board::board_path(&p).unwrap());
+        assert_eq!(link, "lab/projects/board");
+        // ...and specifically NOT the org-relative form, which named a file that never existed.
+        assert_ne!(link, "projects/board");
+    }
+
+    /// Every org resolves the SAME board. If this can differ per profile, `write()` and the
+    /// footer can disagree again -- which is exactly how one file came to exist while every
+    /// other org linked one that did not.
+    #[test]
+    fn the_board_is_one_address_for_every_org() {
+        let mut a = profile("/vault");
+        a.root = PathBuf::from("/vault/lab/bnb");
+        let mut b = profile("/vault");
+        b.root = PathBuf::from("/vault/employment/jobs/acme");
+        assert_eq!(board_path_of(&a), board_path_of(&b));
+        fn board_path_of(p: &Profile) -> PathBuf {
+            crate::board::board_path(p).unwrap()
+        }
     }
 
     /// `lab-roots.sh` builds the whole set of org bus roots out of this one target, so it is a
