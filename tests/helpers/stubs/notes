@@ -30,7 +30,17 @@ set -- "${args[@]+"${args[@]}"}"
 
 case "${1:-}" in
   config)
-    [ "${2:-}" = "--profiles" ] && emit profiles
+    if [ "${2:-}" = "--profiles" ]; then
+      emit profiles
+    else
+      # Bare `notes config` prints the resolved profile as `profile <name>`, which is how the
+      # cockpit learns which ORG is active (active_profile). Mirrors the real resolution order
+      # closely enough for tests: $NOTES_PROFILE wins, else the first configured profile.
+      # Without this the cockpit's active-org lookup returns empty and silently degrades to
+      # plain alphabetical order -- which is exactly the failure the sidebar test pins.
+      p="${NOTES_PROFILE:-$(emit profiles | head -1)}"
+      [ -n "$p" ] && printf 'profile     %s\n' "$p"
+    fi
     ;;
   projects)
     case "${2:-}" in
