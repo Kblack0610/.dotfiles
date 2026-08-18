@@ -93,12 +93,43 @@ EOF
   assert_output --partial "@nosuchgroup: not on the roster, unknown to gatus"
 }
 
-@test "a real group still collapses to its worst member" {
+@test "a real group is never a ghost, however unhealthy its members are" {
+  # The ghost check must key on "does this group exist", not "is it happy" - or an
+  # entirely-down group would be reported as a config typo and nobody would go look.
   FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
   assert_success
-  # pi4-worker4 is failing, so the group dot is red even though pi5-master is up.
-  assert_output --partial "k3s<span color='#ef5734'>○</span>"
   refute_output --partial "FLEET_DISPLAY names hosts"
+}
+
+# --- a group is not one machine -----------------------------------------------
+#
+# `k3s○` claimed the cluster was down while 8 of 9 nodes were healthy and the ninth
+# was a workstation somebody had switched off. worst_of() scored a GROUP the way it
+# scores a MACHINE, so one unhappy member painted the whole group red - which made
+# red mean "at least one of these is imperfect", i.e. red nearly always, i.e. nothing.
+
+@test "a group with one member down is amber, not red" {
+  # pi4-worker4 is failing; pi5-master is up. That is DEGRADED, not down.
+  FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
+  assert_success
+  assert_output --partial "k3s<span color='#ffcc2f'>●</span>"
+  refute_output --partial "k3s<span color='#ef5734'>○</span>"
+}
+
+@test "a group is green only when every member is up" {
+  FLEET_DISPLAY="@homelab=hl" run "$MODULE"
+  assert_success
+  assert_output --partial "hl<span color='#a6e34a'>●</span>"
+}
+
+# THE NEGATIVE CONTROL for the above: if amber were returned whenever ANYTHING was
+# wrong, a group that is entirely gone would also be amber and the bar could never
+# say "this whole thing is down". Red has to still be reachable.
+@test "...and a group with NO member up is still red" {
+  FLEET_ROSTER="pi4-worker4" FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
+  assert_success
+  assert_output --partial "k3s<span color='#ef5734'>○</span>"
+  refute_output --partial "k3s<span color='#ffcc2f'>●</span>"
 }
 
 # --- the shape the bar contract depends on -----------------------------------
