@@ -727,3 +727,35 @@ stub_asks() {
   assert_success
   refute_output --partial 'all'
 }
+
+# ── sections_list: the sidebar leads with the ACTIVE org ─────────────────────
+# It used to `grep -xF personal` for the head of the list. Naming an org here fails two ways,
+# both silent: rename or retire that org and the grep matches nothing, so the list quietly
+# drops to alphabetical with no error; and on a machine whose profile is a job, the sidebar
+# opened on an org that machine may not even use.
+
+@test "sections_list leads with the active org, not a hardcoded one" {
+  printf 'personal\nbnb\nacme\n' > "$NOTES_FIXTURE/profiles"
+  run bash -c 'NOTES_PROFILE=bnb; export NOTES_PROFILE; source "$COCKPIT"; sections_list'
+  assert_line --index 0 'bnb'
+  # ...and every other org is still present, exactly once
+  assert_line --index 1 'personal'
+  assert_line --index 2 'acme'
+}
+
+@test "sections_list leads with a job org too - no org is privileged" {
+  printf 'personal\nbnb\nacme\n' > "$NOTES_FIXTURE/profiles"
+  run bash -c 'NOTES_PROFILE=acme; export NOTES_PROFILE; source "$COCKPIT"; sections_list'
+  assert_line --index 0 'acme'
+}
+
+@test "sections_list still lists every org when the active one cannot be resolved" {
+  printf 'personal\nbnb\n' > "$NOTES_FIXTURE/profiles"
+  # Stub out the lookup rather than the whole environment: the branch under test is "active org
+  # unknown", and the sidebar must degrade to the FULL list -- never to empty, which would hide
+  # every org instead of just mis-ordering them.
+  run bash -c 'source "$COCKPIT"; active_profile() { :; }; sections_list'
+  assert_success
+  assert_line --index 0 'personal'
+  assert_line --index 1 'bnb'
+}

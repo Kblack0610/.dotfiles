@@ -154,7 +154,25 @@ C_SEL=$'\033[1;32m'  # active section (bold green)
 C_DIM=$'\033[90m'    # dim
 C_OFF=$'\033[0m'
 
-read_section() { cat "$STATE" 2>/dev/null || echo personal; }
+profiles() { notes config --profiles 2>/dev/null; }
+
+# active_profile -> the org this machine resolves to (--profile / $NOTES_PROFILE / hostname map
+# / default_profile). The one org the cockpit may treat specially, because it is the one the
+# human is actually in -- as opposed to a name compiled into the file.
+active_profile() { notes config 2>/dev/null | awk '$1=="profile"{print $2; exit}'; }
+
+# The org to fall back to when there is no saved/valid selection. Never a literal: the active
+# org, else the first configured one, else empty. A hardcoded `personal` here meant a machine
+# whose profile is a job opened the cockpit on an org it may not even use, and it broke silently
+# if that org were ever renamed.
+active_profile_or_first() {
+  local a
+  a="$(active_profile)"
+  [ -n "$a" ] || a="$(profiles | head -1)"
+  printf '%s' "$a"
+}
+
+read_section() { cat "$STATE" 2>/dev/null || active_profile_or_first; }
 
 # Priority filter: `p` cycles the view through #urgent -> #high -> #low -> (all).
 # Same levels as md::PRIORITIES / the nvim <leader>tp cycle (the shared source of truth).
@@ -231,11 +249,25 @@ _apply_pfilter() {
     }'
 }
 
-profiles() { notes config --profiles 2>/dev/null; }
-# the sidebar: one section per profile, personal first, then the rest
+# the sidebar: one section per profile, ACTIVE org first, then the rest.
+#
+# This used to `grep -xF personal` for the head of the list. Two things were wrong with naming
+# an org here. It is silent if that org is ever renamed or retired -- the grep matches nothing,
+# the list quietly falls back to alphabetical, and nothing reports it. And it is simply the
+# wrong org to lead with on a machine whose active profile is a job: the sidebar opened on
+# someone else's section.
+#
+# `_bridge_profiles` in this same file already did active-first-then-the-rest with no hardcoded
+# name; this is that pattern, applied to the sidebar it should always have matched.
 sections_list() {
-  profiles | grep -xF personal
-  profiles | grep -vxF personal
+  local active
+  active="$(active_profile)"
+  if [ -n "$active" ]; then
+    profiles | grep -xF -- "$active"
+    profiles | grep -vxF -- "$active"
+  else
+    profiles
+  fi
 }
 
 # projects_of <profile> -> space-separated lowercase project names
@@ -1460,7 +1492,8 @@ destinations() {
 add_task() {
   local section="${1:-}" profile proj text
   [ -z "$section" ] && section="$(read_section)"
-  [ "$section" = all ] && section=personal
+  # the `all` lane spans orgs, so it is not a write target: fall back to the ACTIVE org
+  [ "$section" = all ] && section="$(active_profile_or_first)"
   profile="${section%%/*}"
   read -r -p "add to ${section}: " text || return 0
   [ -n "${text// /}" ] || return 0
@@ -1630,7 +1663,8 @@ move_task() { # $1=row section  $2=row profile  $3=row key
 new_project() {
   local section="${1:-}" profile name
   [ -z "$section" ] && section="$(read_section)"
-  [ "$section" = all ] && section=personal
+  # the `all` lane spans orgs, so it is not a write target: fall back to the ACTIVE org
+  [ "$section" = all ] && section="$(active_profile_or_first)"
   profile="${section%%/*}"
   read -r -p "new project in ${profile}: " name || return 0
   [ -n "${name// /}" ] && notes --profile "$profile" projects --new "$name"
@@ -1969,7 +2003,8 @@ TAB mark · enter add selected · esc cancel")"
 restore_project() {
   local section="${1:-}" profile pick i
   [ -z "$section" ] && section="$(read_section)"
-  [ "$section" = all ] && section=personal
+  # the `all` lane spans orgs, so it is not a write target: fall back to the ACTIVE org
+  [ "$section" = all ] && section="$(active_profile_or_first)"
   profile="${section%%/*}"
   local -a names=()
   while IFS= read -r pick; do [ -n "$pick" ] && names+=("$pick"); done \
@@ -2139,7 +2174,7 @@ case "$_last" in
   ?*)  sections_list | grep -qxF "$_last" || _last="" ;;
   *)   _last="" ;;
 esac
-echo "${_last:-personal}" > "$STATE"
+echo "${_last:-$(active_profile_or_first)}" > "$STATE"
 : > "$PFILTER"           # ...and unfiltered (priority filter cleared)
 : > "$WINF"              # ...and the usage window back to its 7d default
 # ...in the tasks view (a cycles tasks -> agents -> bridge). NOTES_COCKPIT_MODE lets a
