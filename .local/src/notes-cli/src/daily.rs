@@ -65,6 +65,12 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
+        // The org's projects root. Added so `lab-roots.sh` can ASK for it rather than restating
+        // it: that file hardcoded all four roots and its own comments named config.toml as "the
+        // other place that has to know" — two declarations of one fact, where missing the second
+        // makes a project silently resolve to "" and vanish from its bus. `?` because an org may
+        // legitimately have no projects root, which is not the same as an unknown target.
+        "projects" => p.projects.clone()?,
         "inbox" => p.inbox.clone(),
         "inbox-today" => p.inbox.join(format!(
             "{}.md",
@@ -1389,6 +1395,32 @@ after
     fn resolve_unknown_is_none() {
         let p = profile("/vault");
         assert!(resolve_path(&p, "bogus").is_none());
+    }
+
+    /// `lab-roots.sh` builds the whole set of org bus roots out of this one target, so it is a
+    /// cross-repo contract, not an editor convenience. It used to hardcode the four roots itself
+    /// and admit in a comment that config.toml was "the other place that has to know"; if this
+    /// target regresses, that file has no way to ask and every org's bus goes quiet.
+    #[test]
+    fn resolve_projects_target_is_the_org_bus_root() {
+        let mut p = profile("/vault");
+        p.projects = Some(PathBuf::from("/vault/projects/current"));
+        assert_eq!(
+            resolve_path(&p, "projects").unwrap(),
+            PathBuf::from("/vault/projects/current")
+        );
+    }
+
+    /// An org with no projects root is a real state, and it must read as "no bus here" rather
+    /// than as an unknown target -- lab_roots skips it, instead of aborting the whole sweep.
+    #[test]
+    fn resolve_projects_is_none_when_the_org_has_no_projects_root() {
+        let mut p = profile("/vault");
+        p.projects = None;
+        assert!(resolve_path(&p, "projects").is_none());
+        // ...while a sibling target on the same profile still resolves, so this is proving the
+        // None comes from `projects` being unset and not from a broken fixture.
+        assert!(resolve_path(&p, "root").is_some());
     }
 
     fn d(s: &str) -> NaiveDate {
