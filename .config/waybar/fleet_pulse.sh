@@ -36,8 +36,9 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 #   <name>=<label>    expand ONE machine as its own labeled dot (gp-mac=gp).
 #                     Always drawn, so a box that stops reporting goes red here
 #                     instead of silently vanishing.
-#   @<group>=<label>  collapse a gatus group to a single dot colored by its
-#                     worst member (@k3s=k3s -> one dot for the pi cluster).
+#   @<group>=<label>  collapse a gatus group to a single dot: green when every
+#                     member is up, amber when some are, red only when NONE are
+#                     (@k3s=k3s -> one dot for the pi cluster).
 # Groups not named here stay in the tooltip only. Gatus group names are the key
 # (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
 # a future settings submenu just rewrites this line and signals the module.
@@ -162,10 +163,11 @@ status_text() {
 # `?` reads as "this dot is lying to you", which is the actual situation.
 dot() {
     case "$1" in
-        up)    printf "<span color='%s'>●</span>" "$C_GRN" ;;
-        stale) printf "<span color='%s'>●</span>" "$C_YEL" ;;
-        ghost) printf "<span color='%s'>?</span>" "$C_YEL" ;;
-        *)     printf "<span color='%s'>○</span>" "$C_RED" ;;
+        up)      printf "<span color='%s'>●</span>" "$C_GRN" ;;
+        stale)   printf "<span color='%s'>●</span>" "$C_YEL" ;;
+        partial) printf "<span color='%s'>●</span>" "$C_YEL" ;;
+        ghost)   printf "<span color='%s'>?</span>" "$C_YEL" ;;
+        *)       printf "<span color='%s'>○</span>" "$C_RED" ;;
     esac
 }
 rank() { case "$1" in up) echo 1 ;; stale) echo 2 ;; *) echo 3 ;; esac; }
@@ -173,6 +175,29 @@ worst_of() {  # names... -> worst state (down > stale > up); empty -> down
     local best=0 st=down s rk
     for s in "$@"; do local c; c="$(classify "$s")"; rk="$(rank "$c")"; ((rk > best)) && { best=$rk; st=$c; }; done
     echo "$st"
+}
+
+# A GROUP is not one machine and must not be scored like one. worst_of() was doing
+# exactly that: one member down painted the whole group red, so `k3s○` claimed the
+# cluster was down when 8 of 9 nodes were fine and the ninth was a workstation
+# somebody had switched off. Red then means "one or more of these is unhappy",
+# which is not information - it is red almost always, so it stops being read.
+#
+#   every member up      -> green ●
+#   some up, some not    -> amber ● (degraded: the tooltip says who)
+#   NONE up              -> red ○   (the group really is gone)
+#
+# Red is reserved for the case that actually warrants walking to the rack.
+group_state() {  # names... -> up | partial | down
+    local total=0 up=0 s
+    for s in "$@"; do
+        ((total++))
+        [[ "$(classify "$s")" == "up" ]] && ((up++))
+    done
+    ((total == 0)) && { echo down; return; }   # nothing rostered: no claim to make
+    ((up == total)) && { echo up; return; }
+    ((up == 0)) && { echo down; return; }
+    echo partial
 }
 
 # Roster membership set (the expected fleet), for filtering + the denominator.
@@ -207,7 +232,7 @@ for tok in $FLEET_DISPLAY; do
         if [[ -z "$(members_of "$grp")" ]]; then
             st=ghost; ghosts+=("$key")           # no such group anywhere in the API
         else
-            st="$(worst_of "${mem[@]}")"
+            st="$(group_state "${mem[@]}")"
         fi
     elif [[ -z "${in_roster[$key]:-}" && -z "$(row_of "$key")" ]]; then
         st=ghost; ghosts+=("$key")               # named by nothing: retired, or a typo
