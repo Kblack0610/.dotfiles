@@ -456,7 +456,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, scheduled, recurring, zettel, meetings, index, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
                 );
                 2
             }

@@ -77,12 +77,27 @@ fn default_surface_profile() -> String {
     "personal".to_string()
 }
 
+/// An ORG's layout, and the only thing a new org has to declare.
+///
+/// Every key below `root` defaults to the convention the non-personal orgs already share. That
+/// convention was not invented here: dumping every non-personal org side by side showed them
+/// BYTE-IDENTICAL on all ten non-root keys, each one restating the same layout because the layout
+/// had nowhere else to live. `personal` is the sole outlier, on every key, because its root IS the
+/// vault and its dirs predate the org model.
+///
+/// So the defaults make an org one line — `root = "…"` — and they make personal's specialness
+/// explicit and countable rather than structural: it is the org carrying an override block, and
+/// that block shrinking to nothing is exactly what "personal is just another org" means.
 #[derive(Debug, Deserialize, Clone)]
 struct RawProfile {
     root: String,
+    #[serde(default = "default_daily")]
     daily: String,
+    #[serde(default = "default_refs")]
     refs: String,
+    #[serde(default = "default_fun")]
     fun: String,
+    #[serde(default = "default_carryover")]
     carryover: String,
     /// Scheduled/deferred-task backlog (the holding pen for future-dated tasks).
     /// Optional so configs predating this field keep working — resolve() falls back
@@ -119,11 +134,18 @@ struct RawProfile {
     /// bridge is off (opt-in, per-profile: only the work profile sets it). An id, NOT a path.
     #[serde(default)]
     clickup_list: Option<String>,
+    #[serde(default = "default_summaries")]
     summaries: String,
+    #[serde(default = "default_archive")]
     archive: String,
+    #[serde(default = "default_zettel")]
     zettel: String,
+    #[serde(default = "default_index")]
     index: String,
-    #[serde(default)]
+    /// Defaults to `projects/current` — the same value the three non-personal orgs each spell out.
+    /// Still `Option` because "this org has no projects root" is a real state (resolve() maps None
+    /// through to `project_index`/`board_path` being None), distinct from "unset, so use default".
+    #[serde(default = "default_projects")]
     projects: Option<String>,
     /// Meeting logs (`notes meeting new`). Optional so configs predating this
     /// field keep working — resolve() falls back to `<root>/meetings`.
@@ -149,6 +171,45 @@ fn default_profile_name() -> String {
 
 fn default_inbox() -> String {
     "inbox".to_string()
+}
+
+// The org layout, as one place instead of once per org. Values are the ones `bnb`,
+// every non-personal org already agreed on independently; `personal` overrides all of them.
+// Changing one here changes it for every org that has not opted out.
+fn default_daily() -> String {
+    "log".to_string()
+}
+
+fn default_refs() -> String {
+    "refs".to_string()
+}
+
+fn default_fun() -> String {
+    "backlogs/fun.md".to_string()
+}
+
+fn default_carryover() -> String {
+    "backlogs/carryover.md".to_string()
+}
+
+fn default_summaries() -> String {
+    "summaries".to_string()
+}
+
+fn default_archive() -> String {
+    "log_archive".to_string()
+}
+
+fn default_zettel() -> String {
+    "permanent".to_string()
+}
+
+fn default_index() -> String {
+    "index".to_string()
+}
+
+fn default_projects() -> Option<String> {
+    Some("projects/current".to_string())
 }
 
 /// A fully-resolved profile with absolute paths.
@@ -692,5 +753,43 @@ mod tests {
         let root = Path::new("/home/test/.notes");
         let file = Path::new("/home/test/.notes/journal/backlogs/fun.md");
         assert_eq!(wikilink(root, file), "journal/backlogs/fun");
+    }
+
+    /// An org declares its root and nothing else. This is the whole point of the defaults:
+    /// every non-personal org was byte-identical on every one of these keys, each restating a
+    /// convention that had nowhere to live, and personal's divergence read as structure rather
+    /// than as the legacy override it is.
+    #[test]
+    fn an_org_is_one_line() {
+        let raw: RawProfile = toml::from_str(r#"root = "~/notes/orgs/newco""#).unwrap();
+        assert_eq!(raw.daily, "log");
+        assert_eq!(raw.refs, "refs");
+        assert_eq!(raw.fun, "backlogs/fun.md");
+        assert_eq!(raw.carryover, "backlogs/carryover.md");
+        assert_eq!(raw.summaries, "summaries");
+        assert_eq!(raw.archive, "log_archive");
+        assert_eq!(raw.zettel, "permanent");
+        assert_eq!(raw.index, "index");
+        assert_eq!(raw.inbox, "inbox");
+        assert_eq!(raw.projects.as_deref(), Some("projects/current"));
+    }
+
+    /// The defaults must not become a straitjacket: personal overrides all ten, and that
+    /// override block is what "personal is still special" now means — visible and countable
+    /// instead of baked into the code.
+    #[test]
+    fn an_explicit_key_still_beats_the_default() {
+        let raw: RawProfile = toml::from_str(
+            r#"
+            root = "~/.notes"
+            daily = "journal/daily"
+            projects = "lab/projects/current"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(raw.daily, "journal/daily");
+        assert_eq!(raw.projects.as_deref(), Some("lab/projects/current"));
+        // untouched keys still fall through to the convention
+        assert_eq!(raw.zettel, "permanent");
     }
 }
