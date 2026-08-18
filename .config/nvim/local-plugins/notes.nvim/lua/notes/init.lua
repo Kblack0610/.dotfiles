@@ -134,8 +134,13 @@ local function sync_notes_harpoon_slots()
   end, 100)
 end
 
+-- Profile-aware, like every other nav target. This alone was hardcoded to the personal
+-- vault's layout with no profile lookup at all, so opening projects from a note in any
+-- other org silently landed you in personal's — the editor equivalent of "where did my
+-- projects go". It could not ask before: `notes path` had no `projects` target until it
+-- gained one so lab-roots.sh could stop restating the same paths.
 local function get_projects_dir()
-  return vim.fn.expand("~/.notes/lab/projects/current")
+  return notes_path("projects", vim.fn.expand("~/.notes/lab/projects/current"))
 end
 
 -- The projects front door. ONE file, the same one `Prefix+H` opens and the same one
@@ -147,6 +152,13 @@ end
 -- being maintained while _index.md sat unchanged for months documenting a `dev/projects/`
 -- layout that no longer existed — and deleting it just made this function write it back.
 local function get_projects_anchor()
+  -- Derived from the resolved projects dir, the same way notes-cli does it
+  -- (`<projects-dir>/../index.md`), so it follows the org rather than naming one.
+  local dir = get_projects_dir()
+  local parent = vim.fn.fnamemodify(dir, ":h")
+  if parent ~= "" and parent ~= dir then
+    return parent .. "/index.md"
+  end
   return vim.fn.expand("~/.notes/lab/projects/index.md")
 end
 
