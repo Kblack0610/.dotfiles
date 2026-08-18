@@ -57,7 +57,12 @@ fn target_wave(content: &str, want: Option<&str>, mint: bool) -> Result<(String,
 }
 
 /// The project's TASK sheet: `README.md` then `tasks.md`, whichever carries a `## Wave`.
-fn task_sheet(dir: &Path) -> Option<PathBuf> {
+///
+/// `pub(crate)` because carrying a live sheet is also how cross-org name resolution picks
+/// between two orgs holding the same slug (`projects::project_dir`) — the same rule
+/// `lab_project_root` applies on the shell side, kept identical so both agree on which copy
+/// is the real one.
+pub(crate) fn task_sheet(dir: &Path) -> Option<PathBuf> {
     ["README.md", "tasks.md"].iter().find_map(|n| {
         let p = dir.join(n);
         fs::read_to_string(&p)
