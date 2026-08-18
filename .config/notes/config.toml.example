@@ -87,10 +87,22 @@ inbox     = "inbox"
 # llm_model    = "fast (Qwen3-4B)"              # tier-2 classify model
 # llm_key_rbw  = "litellm_comms_triage_key"     # rbw ITEM NAME, not the key itself
 #
-# Point llm_base_url at a GATEWAY, never at a model host by IP -- hardcoded
-# host:port is what rots when a backend is swapped. The key it names must be
-# scoped to local models only, so mail can never be routed to a paid/cloud
-# upstream by a typo in llm_model (the gateway rejects it server-side).
+# Inbox shape -- how much you are willing to look at, and when mail gives up:
+# surface_max        = 5      # max items in the daily note's `## Comms`, per profile
+# stale_days         = 14     # an ACTION older than this is filed + archived (0 = off)
+# category_min_purity = 0.90  # min learned-route purity before mail is auto-filed
+#
+# Age-out applies to ACTION only, never CRITICAL. Everything it archives keeps its
+# category label plus AI/Filed and AI/Stale, stays in All Mail, and is reversible.
+#
+# llm_base_url: prefer a GATEWAY over a model host by IP -- a hardcoded host:port
+# rots when a backend is swapped. ONE documented exception, and read it before
+# "fixing" an IP back to a gateway: if the gateway has router-level `fallbacks`,
+# they fire INSIDE the router AFTER the key check, so a key scoped to local models
+# does NOT stop a timed-out local model from failing over to a paid/cloud upstream
+# with your mail in the request body. A key allowlist governs what the CALLER may
+# ask for, not where the router sends it. Where that risk exists, point straight at
+# the local model host (no router, no edge to fire) and say so in a comment.
 #
 # One [[comms.account]] per mailbox. rbw_entry defaults to gmail_oauth_<name>.
 # [[comms.account]]
