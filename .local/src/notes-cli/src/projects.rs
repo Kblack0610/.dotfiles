@@ -11,6 +11,7 @@ use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
+use crate::project_tasks;
 use crate::waves;
 use anyhow::{bail, Result};
 use std::fs;
@@ -558,16 +559,96 @@ fn write_version_note(project_dir: &Path, ver: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Resolve a current project's directory by name (case-insensitive).
+/// That org's current project by name (case-insensitive), if it has one.
+fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
+    indexed(p)
+        .into_iter()
+        .find(|(n, _)| n.to_lowercase() == want)
+        .and_then(|(_, summary)| summary.parent().map(|d| d.to_path_buf()))
+}
+
+/// Resolve a current project's directory by name (case-insensitive), ACROSS ORGS.
+///
+/// A project name used to be resolvable only within the active org, so addressing a project
+/// required knowing which org it was in:
+///
+///   notes ptask <name> list                 -> no current project named '<name>'
+///   notes ptask --profile <org> <name> list  -> works
+///
+/// That does not scale with the number of orgs -- it is a flag whose correct value you memorise
+/// per project -- and a keybinding cannot supply it at all, which is how it surfaced. Names are
+/// unique across orgs (`project-map-doctor` fails when one resolves in two roots), so the org is
+/// derivable and should not have to be typed.
+///
+/// The active org still wins when it holds the name unambiguously, so explicit context is never
+/// overridden. When several orgs hold it, the one carrying a live `## Wave` sheet wins -- the
+/// same tiebreak `lab_project_root` uses, and for the same reason: a leftover stub in one org
+/// must not shadow the sheet someone is actually editing. Genuinely ambiguous stays an ERROR
+/// naming the orgs, because guessing which of two live sheets you meant is how edits land in the
+/// copy nothing reads.
 pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
     let want = name.trim().to_lowercase();
-    let Some((_, summary)) = indexed(p).into_iter().find(|(n, _)| n.to_lowercase() == want) else {
-        bail!("no current project named '{name}'");
-    };
-    summary
-        .parent()
-        .map(|d| d.to_path_buf())
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the project dir for '{name}'"))
+
+    // Fast path: the active org has it AND it is the real sheet. No other org is consulted, so
+    // the common case costs exactly what it did before.
+    let active = project_dir_in(p, &want);
+    if let Some(dir) = &active {
+        if project_tasks::task_sheet(dir).is_some() {
+            return Ok(dir.clone());
+        }
+    }
+
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(dir) = active {
+        found.push((p.name.clone(), dir));
+    }
+    for org in config::all_profile_names().unwrap_or_default() {
+        if org == p.name {
+            continue;
+        }
+        // A profile that fails to resolve is skipped, not fatal: one broken org must not make
+        // every other org's projects unaddressable.
+        let Ok(op) = config::resolve(Some(&org)) else {
+            continue;
+        };
+        if let Some(dir) = project_dir_in(&op, &want) {
+            found.push((org, dir));
+        }
+    }
+
+    let with_sheet: Vec<(String, PathBuf, bool)> = found
+        .into_iter()
+        .map(|(o, d)| {
+            let live = project_tasks::task_sheet(&d).is_some();
+            (o, d, live)
+        })
+        .collect();
+    choose_project_dir(name, with_sheet)
+}
+
+/// Pick between orgs that all hold the same project name. Split out from the directory walk so
+/// the POLICY is testable without a config file or a vault on disk — the walk is I/O, this is
+/// the decision, and the decision is the part that has been wrong before.
+fn choose_project_dir(name: &str, mut found: Vec<(String, PathBuf, bool)>) -> Result<PathBuf> {
+    match found.len() {
+        0 => bail!("no current project named '{name}' in any org"),
+        1 => Ok(found.remove(0).1),
+        _ => {
+            // Carrying a live `## Wave` sheet is what makes a copy the real one. 2026-08-11: a
+            // stub in the always-first personal root shadowed the live sheet held by another
+            // org, so writes went to the copy nothing read.
+            let live: Vec<&(String, PathBuf, bool)> = found.iter().filter(|(_, _, l)| *l).collect();
+            if live.len() == 1 {
+                return Ok(live[0].1.clone());
+            }
+            let orgs: Vec<&str> = found.iter().map(|(o, _, _)| o.as_str()).collect();
+            bail!(
+                "'{name}' exists in {} orgs ({}) — pass --profile to say which",
+                found.len(),
+                orgs.join(", ")
+            );
+        }
+    }
 }
 
 /// `notes projects --bump <name>` — start the next version's note so you can scope
@@ -1604,5 +1685,69 @@ _(nothing yet)_
         assert!(has_wave("# a\n\n## Waves\n"));
         assert!(!has_wave("# a\n\n### Wave: nested\n")); // H3 is not the wave section
         assert!(!has_wave("# a\n\nno headings here\n"));
+    }
+
+    // --- cross-org name resolution -------------------------------------------------------
+    // A project used to be addressable only inside the active org, so `notes ptask <name>`
+    // needed a --profile whose right value you memorised per project -- and a keybinding cannot
+    // supply one.
+
+    fn cand(org: &str, dir: &str, live: bool) -> (String, PathBuf, bool) {
+        (org.to_string(), PathBuf::from(dir), live)
+    }
+
+    #[test]
+    fn one_org_holds_it_so_no_flag_is_needed() {
+        let got = choose_project_dir("pmp", vec![cand("bnb", "/v/lab/bnb/projects/current/pmp", true)]);
+        assert_eq!(got.unwrap(), PathBuf::from("/v/lab/bnb/projects/current/pmp"));
+    }
+
+    /// The 2026-08-11 failure, as a test: a stub in one org must not shadow the sheet someone is
+    /// actually editing in another. Same tiebreak `lab_project_root` uses on the shell side.
+    #[test]
+    fn a_stub_never_shadows_the_org_carrying_the_live_sheet() {
+        let got = choose_project_dir(
+            "pmp",
+            vec![
+                cand("personal", "/v/lab/projects/current/pmp", false), // stub, no wave
+                cand("bnb", "/v/lab/bnb/projects/current/pmp", true),   // the real sheet
+            ],
+        );
+        assert_eq!(got.unwrap(), PathBuf::from("/v/lab/bnb/projects/current/pmp"));
+    }
+
+    /// Two live sheets is genuinely ambiguous, and guessing is how an edit lands in the copy
+    /// nothing reads. Refuse, and NAME the orgs so the fix is obvious.
+    #[test]
+    fn two_live_sheets_is_an_error_that_names_the_orgs() {
+        let err = choose_project_dir(
+            "pmp",
+            vec![
+                cand("personal", "/v/a/pmp", true),
+                cand("bnb", "/v/b/pmp", true),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("personal"), "names the orgs: {err}");
+        assert!(err.contains("bnb"), "names the orgs: {err}");
+        assert!(err.contains("--profile"), "says how to disambiguate: {err}");
+    }
+
+    /// Duplicated with NO live sheet anywhere is still ambiguous -- silently picking the first
+    /// would be the old first-root-wins bug with extra steps.
+    #[test]
+    fn duplicated_stubs_with_no_sheet_are_still_refused() {
+        assert!(choose_project_dir(
+            "pmp",
+            vec![cand("personal", "/v/a/pmp", false), cand("bnb", "/v/b/pmp", false)],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn no_org_holds_it_says_so() {
+        let err = choose_project_dir("ghost", vec![]).unwrap_err().to_string();
+        assert!(err.contains("ghost") && err.contains("any org"), "{err}");
     }
 }
