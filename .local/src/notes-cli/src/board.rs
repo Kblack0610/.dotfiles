@@ -33,14 +33,20 @@ use chrono::Local;
 use std::fs;
 use std::path::PathBuf;
 
-/// Where the board is written for a profile: alongside the project index it complements
-/// (`lab/projects/board.md`). `None` when the profile configures no projects dir, which is
-/// also what makes this a no-op on a profile that has no lab.
+/// THE board — one file, one address, the same for every org.
+///
+/// This used to derive from the profile's own `project_index`, which made a cross-org artifact
+/// have a per-org address. Two things went wrong at once and neither was visible: `write()`
+/// resolved the ACTIVE profile, so the aggregate landed wherever the current org happened to
+/// point (personal, in practice) and `notes --profile bnb today` silently rewrote personal's
+/// file; while `ensure_footer` used the PER-PROFILE address, so every non-active org's daily
+/// note linked a `board.md` that had never been written there. Verified on disk: one board
+/// existed, and bnb's note carried a dangling `Board: [[projects/board]]`.
+///
+/// Anchoring to the vault removes the disagreement by construction — there is no longer a
+/// per-profile answer for the two sides to differ on.
 pub fn board_path(p: &Profile) -> Option<PathBuf> {
-    p.project_index
-        .as_ref()
-        .and_then(|idx| idx.parent())
-        .map(|dir| dir.join("board.md"))
+    Some(p.board.clone())
 }
 
 /// One project's rendered block, or `None` when it has no task sheet.
