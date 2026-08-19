@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 1000" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <!-- ============================================================
+       KB INGESTION - SOURCES TO TAGGED VECTORS  (v2)
+       Broadened from the kb-ingest pod snake: adds the incoming
+       SOURCES (S3 = main now; customer doc library + other connectors
+       = future) and a corpus_ids EXPLAINER with a worked example, so
+       "how KB groups tie to corpus_ids" is concrete.
+       A KB group is just a corpus id: vector store stores ONE keyword
+       array per vector (corpus_ids); write folds base corpus + group
+       ids into it, read filters it with one terms query.
+       Exemplar for the process-flow + C4-chrome hybrid: numbered
+       sections, a focal pipeline, and a worked WRITE/READ example.
+       ============================================================ -->
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#667085"/></marker>
+    <marker id="amb" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#b9791f"/></marker>
+    <style>
+      .node   { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .node.focal  { fill:#fdf3e7; stroke:#b9791f; stroke-width:2.5; }
+      .src    { fill:#eef7ee; stroke:#2f7a3a; stroke-width:1.6; }
+      .future { fill:#fbfcfe; stroke:#8a8f99; stroke-width:1.3; stroke-dasharray:6 4; }
+      .store  { fill:#fff8ec; stroke:#b9791f; stroke-width:2; }
+      .band   { fill:#f7f9fc; stroke:#c9cdd6; stroke-width:1.2; }
+      .ex     { fill:#ffffff; stroke:#9fb2d4; stroke-width:1.2; }
+      .t      { font-size:12.5px; font-weight:700; fill:#1a2233; text-anchor:middle; }
+      .s      { font-size:10px; fill:#3a4457; text-anchor:middle; }
+      .mono   { font-family:monospace; font-size:9.6px; fill:#3a4457; text-anchor:middle; }
+      .accent { fill:#b9791f; font-weight:700; }
+      .green  { fill:#2f7a3a; font-weight:700; }
+      .edge   { fill:none; stroke:#667085; stroke-width:1.8; marker-end:url(#arrow); }
+      .elabel { font-size:10px; fill:#33415c; text-anchor:middle; }
+      .sect   { font-size:12px; font-weight:700; fill:#2f4d7a; }
+      .foot   { font-size:10px; fill:#8a8f99; }
+    </style>
+  </defs>
+
+  <text x="740" y="38" font-size="21" font-weight="700" fill="#16243f" text-anchor="middle">KB ingestion - sources to tagged vectors</text>
+  <text x="740" y="62" font-size="12.5" fill="#5a6478" text-anchor="middle">where documents come from, how the kb pod ingests them, and what corpus_ids means</text>
+
+  <!-- ===== SECTION 1: sources -> S3 -> event ===== -->
+  <text x="40" y="92" class="sect">1   SOURCES  -&gt;  S3  -&gt;  ingest event</text>
+
+  <rect class="src" x="40" y="100" width="250" height="44" rx="7"/>
+  <text class="t" x="165" y="121">Direct upload</text>
+  <text class="s" x="165" y="137">KB admin - Web UI   (LIVE)</text>
+  <rect class="future" x="40" y="150" width="250" height="40" rx="7"/>
+  <text class="t" x="165" y="168">Doc library</text>
+  <text class="s" x="165" y="183">external source   (FUTURE)</text>
+  <rect class="future" x="40" y="196" width="250" height="40" rx="7"/>
+  <text class="t" x="165" y="214">Other connectors</text>
+  <text class="s" x="165" y="229">SFTP / API / etc.   (FUTURE)</text>
+
+  <path class="edge" d="M292,122 C 314,150 316,165 336,168"/>
+  <path class="edge" d="M292,170 L336,171"/>
+  <path class="edge" d="M292,214 C 314,192 316,178 336,175"/>
+
+  <!-- S3 datastore (the main source the pod reads from) -->
+  <path class="store" d="M338,152 a92,13 0 0,1 184,0 v56 a92,13 0 0,1 -184,0 z"/>
+  <ellipse class="store" cx="430" cy="152" rx="92" ry="13"/>
+  <text x="430" y="180" font-size="12" font-weight="700" fill="#1a2233" text-anchor="middle">S3 (tenant bucket)</text>
+  <text x="430" y="196" font-size="10" text-anchor="middle" class="accent">the MAIN source now</text>
+
+  <path class="edge" d="M523,172 L600,172"/>
+  <text class="elabel" x="562" y="164">by s3Uri</text>
+
+  <rect class="node" x="600" y="136" width="410" height="76" rx="7"/>
+  <text class="t" x="805" y="160">Platform publishes  CORPUS_INSERT</text>
+  <text class="mono" x="805" y="180">.knowledgebase    ({tenant}_kb consumes)</text>
+  <text x="805" y="199" font-size="9.6" font-family="monospace" text-anchor="middle" class="accent">{ corpusId, kbGroupIds, s3Uri }</text>
+
+  <text class="foot" x="1030" y="160">one file entry carries</text>
+  <text class="foot" x="1030" y="174">the base corpusId (the</text>
+  <text class="foot" x="1030" y="188">tenant ALL group) AND</text>
+  <text class="foot" x="1030" y="202">the doc's kbGroupIds.</text>
+
+  <!-- ===== SECTION 2: the LLM ingest (kb-ingest pod) ===== -->
+  <text x="40" y="258" class="sect">2   THE LLM INGEST  -  kb-ingest pod   (the core; follow 1-8)</text>
+
+  <!-- feeders down into the pod -->
+  <path class="edge" d="M805,212 C 805,240 320,246 220,282"/>
+  <text class="elabel" x="470" y="250">consume event</text>
+  <path class="edge" d="M430,209 C 430,240 520,250 560,282"/>
+  <text class="elabel" x="520" y="268">read blob</text>
+
+  <!-- row 1: steps 1-4 -->
+  <rect class="node" x="60" y="284" width="320" height="86" rx="7"/>
+  <text class="t" x="220" y="308">consume .knowledgebase</text>
+  <text class="mono" x="220" y="329">{tenant}_kb  -  INSERT / UPSERT / DELETE</text>
+  <text class="s" x="220" y="347">parse payload: corpusId . kbGroupIds . s3Uri</text>
+  <text class="s" x="220" y="362">validate -&gt; in_progress()</text>
+
+  <rect class="node" x="400" y="284" width="320" height="86" rx="7"/>
+  <text class="t" x="560" y="308">persist doc_store  +  fetch file</text>
+  <text class="mono" x="560" y="329">corpus_id[] , kb_group_ids[]</text>
+  <text class="s" x="560" y="347">download the blob from S3 (s3Uri)</text>
+  <text class="s" x="560" y="362">batch ~30 / batch</text>
+
+  <rect class="node" x="740" y="284" width="320" height="86" rx="7"/>
+  <text class="t" x="900" y="308">parse  (document parser)</text>
+  <text class="s" x="900" y="329">extract text + layout</text>
+  <text class="s" x="900" y="347">images -&gt; captions</text>
+
+  <rect class="node" x="1080" y="284" width="320" height="86" rx="7"/>
+  <text class="t" x="1240" y="308">chunk</text>
+  <text class="s" x="1240" y="329">split into passages</text>
+  <text class="s" x="1240" y="347">per modality (text / image)</text>
+
+  <path class="edge" d="M380,327 L398,327"/>
+  <path class="edge" d="M720,327 L738,327"/>
+  <path class="edge" d="M1060,327 L1078,327"/>
+  <path class="edge" d="M1240,370 C 1240,404 1240,420 1240,450"/>
+  <text class="elabel" x="1266" y="412">embed</text>
+
+  <!-- row 2: steps 5-7 (right to left) + step 8 branch -->
+  <rect class="node" x="1080" y="452" width="320" height="86" rx="7"/>
+  <text class="t" x="1240" y="476">embed  (embedding model)</text>
+  <text class="s" x="1240" y="497">1024-dim vectors</text>
+  <text class="s" x="1240" y="515">text + multimodal (image)</text>
+
+  <rect class="node focal" x="740" y="452" width="320" height="86" rx="7"/>
+  <text class="t" x="900" y="474">tag  corpus_ids</text>
+  <text x="900" y="496" font-size="11" font-family="monospace" text-anchor="middle" class="accent">= corpus  U  kbGroupIds</text>
+  <text class="s" x="900" y="514">merge_corpus_and_group_ids - onto EVERY vector</text>
+
+  <rect class="node" x="400" y="452" width="320" height="86" rx="7"/>
+  <text class="t" x="560" y="476">bulk-index  -&gt;  vector store</text>
+  <text class="mono" x="560" y="497">{tenant}{env}knowledgebase</text>
+  <text class="s" x="560" y="515">is_synced = true</text>
+
+  <rect class="node" x="60" y="452" width="320" height="86" rx="7"/>
+  <text class="t" x="220" y="474">membership-only change</text>
+  <text x="220" y="495" font-size="10" text-anchor="middle" class="accent">re-tag corpus_ids, NO re-embed</text>
+  <text class="mono" x="220" y="513">check_corpus_ids_needs_update</text>
+  <text class="s" x="220" y="528">bulk update, skips parse/embed</text>
+
+  <path class="edge" d="M1078,495 L1062,495"/>
+  <path class="edge" d="M738,495 L722,495"/>
+  <path class="edge" d="M398,495 L382,495"/>
+  <text class="elabel" x="390" y="487">re-tag path</text>
+
+  <!-- stores -->
+  <path class="store" d="M435,590 a125,15 0 0,1 250,0 v52 a125,15 0 0,1 -250,0 z"/>
+  <ellipse class="store" cx="560" cy="590" rx="125" ry="15"/>
+  <text x="560" y="618" font-size="12" font-weight="700" fill="#1a2233" text-anchor="middle">Vector store</text>
+  <text x="560" y="635" font-size="9.6" font-family="monospace" text-anchor="middle" class="accent">vectors tagged corpus_ids</text>
+  <path class="edge" d="M560,538 L560,582" marker-end="url(#amb)" stroke="#b9791f"/>
+  <text class="elabel accent" x="605" y="565">write tagged vectors</text>
+  <!-- re-tag loops back onto the same vector store vectors -->
+  <path class="edge" d="M220,538 C 220,600 300,610 432,606" marker-end="url(#amb)" stroke="#b9791f" stroke-dasharray="5 4"/>
+  <text class="elabel accent" x="300" y="628">re-tag in place</text>
+
+  <rect class="store" x="1100" y="576" width="280" height="60" rx="10"/>
+  <text x="1240" y="602" font-size="12" font-weight="700" fill="#1a2233" text-anchor="middle">embed service</text>
+  <text x="1240" y="620" font-size="10" text-anchor="middle">embed model (1024d)</text>
+  <path class="edge" d="M1240,538 L1240,574"/>
+  <text class="elabel" x="1240" y="562">embed</text>
+
+  <!-- step badges -->
+  <circle cx="72" cy="296" r="11" fill="#2f4d7a"/><text x="72" y="300" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+  <circle cx="412" cy="296" r="11" fill="#2f4d7a"/><text x="412" y="300" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+  <circle cx="752" cy="296" r="11" fill="#2f4d7a"/><text x="752" y="300" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+  <circle cx="1092" cy="296" r="11" fill="#2f4d7a"/><text x="1092" y="300" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+  <circle cx="1092" cy="464" r="11" fill="#2f4d7a"/><text x="1092" y="468" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+  <circle cx="752" cy="464" r="11" fill="#b9791f"/><text x="752" y="468" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+  <circle cx="412" cy="464" r="11" fill="#2f4d7a"/><text x="412" y="468" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+  <circle cx="72" cy="464" r="11" fill="#8a6a2a"/><text x="72" y="468" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+
+  <!-- ===== SECTION 3: corpus_ids explainer ===== -->
+  <rect class="band" x="40" y="680" width="1400" height="288" rx="10"/>
+  <text x="60" y="710" font-size="15" font-weight="700" fill="#16243f">3   What corpus_ids means  -  why KB Groups tie to it</text>
+  <text x="60" y="734" font-size="12.5" fill="#33415c">A KB group is just a corpus id. the vector store keeps ONE keyword array per vector -  <tspan font-family="monospace" font-weight="700" fill="#b9791f">corpus_ids</tspan>  -  and scoping is array intersection.</text>
+
+  <rect class="ex" x="60" y="750" width="660" height="150" rx="8"/>
+  <text x="80" y="774" font-size="12" font-weight="700" class="green">WRITE  (ingest)</text>
+  <text x="80" y="795" font-size="11" fill="#3a4457">A doc is assigned to KB groups  app-a-all  +  finance.</text>
+  <text x="80" y="812" font-size="11" fill="#3a4457">Base corpus = corp_ALL (the tenant's ALL group).</text>
+  <text x="80" y="835" font-size="11" fill="#3a4457">Step 6 tags every vector of that doc:</text>
+  <text x="80" y="861" font-size="12" font-family="monospace" font-weight="700" fill="#b9791f">corpus_ids = [ corp_ALL, app-a-all, finance ]</text>
+  <text x="80" y="884" font-size="10.5" fill="#8a8f99">(base corpus id  U  the file's kbGroupIds, de-duplicated)</text>
+
+  <rect class="ex" x="740" y="750" width="680" height="150" rx="8"/>
+  <text x="760" y="774" font-size="12" font-weight="700" fill="#e2533f">READ  (retrieve)</text>
+  <text x="760" y="795" font-size="11" fill="#3a4457">A finance analyst asks a question. Her visible groups = [finance].</text>
+  <text x="760" y="818" font-size="12" font-family="monospace" font-weight="700" fill="#e2533f">filter:  terms { corpus_ids: [ finance ] }</text>
+  <text x="760" y="841" font-size="11" fill="#3a4457">The doc's tags contain  finance  -&gt;  they intersect  -&gt;  <tspan font-weight="700" fill="#2f7a3a">MATCH.</tspan></text>
+  <text x="760" y="864" font-size="10.5" fill="#8a8f99">A legal-only doc would not match. An UNBOUND user: Platform floors</text>
+  <text x="760" y="878" font-size="10.5" fill="#8a8f99">to [app-a-all] - so they see this app's docs, not everything.</text>
+
+  <text x="60" y="930" font-size="12" font-weight="700" fill="#b9791f">One field, one filter.</text>
+  <text x="222" y="930" font-size="11.5" fill="#33415c">Moving a doc between groups = rewrite its corpus_ids array in place (a metadata update) - NO re-embed.</text>
+  <text x="60" y="952" font-size="10.5" fill="#8a8f99">Postgres doc_store keeps corpus_id[] and kb_group_ids[] as two columns; the vector store folds them into the single corpus_ids array on each vector.</text>
+</svg>

@@ -30,6 +30,9 @@ Why hand-authored SVG over Mermaid/auto-layout: you control every coordinate, th
    - Layered architecture / C4 -> `assets/example-architecture-layers.svg`.
    - Option matrix (a decision) -> `assets/example-option-matrix.svg`.
    - Lane timeline (branches / releases) -> `assets/example-lane-timeline.svg`.
+   - A DENSE hero (process-flow + C4 chrome, see below) -> `assets/example-ingestion-architecture.svg`
+     (four columns, ownership-zoned) or `assets/example-ingestion-pipeline.svg` (numbered
+     sections + a worked example).
    Copy the file, keep its `<style>`/palette, replace the body.
 2. **Read the style doc** for the nuances: `references/style-process-flow.md`,
    `style-layered-c4.md`, `style-option-matrix.md`, or `style-lane-timeline.md`.
@@ -50,7 +53,18 @@ All four are plain hand-authored SVG (one `<style>` block, held shape vocabulary
 
 **Figure vs standalone explainer.** The first two are *figures*: no title in the SVG, sized and titled by the doc or slide that embeds them. The last two are *standalone explainers*: they carry their own title, sub-caption, and footer, and are read on their own in a doc, a ticket, or a Slack message. Do not embed an explainer in a deck - the slide already has a heading and the palettes fight. Conversely, do not try to make a figure carry a decision on its own; that is what the option matrix is for.
 
-Don't mix palettes in one diagram. Within a set, hold one style so it reads as one system. The palette below is the process/data-flow style; the others are in their own style docs (layered/C4 = INK/STRUCT/MUTED/CORAL/TEAL; option matrix = warm paper + one red; lane timeline = colour-by-branch-role).
+Don't mix palettes in one diagram, with ONE named exception (below). Within a set, hold one style so it reads as one system. The palette below is the process/data-flow style; the others are in their own style docs (layered/C4 = INK/STRUCT/MUTED/CORAL/TEAL; option matrix = warm paper + one red; lane timeline = colour-by-branch-role).
+
+### The dense hero: process-flow + C4 chrome
+
+The one sanctioned mix. When a process-flow diagram grows past roughly four subsystems it stops reading as a flow - a flat row of white boxes with no visual hierarchy reads as a feature list. At that size, keep the process-flow SEMANTICS (node/store/edge shapes, the amber through-line, write-green / read-coral routes) and borrow the layered/C4 CHROME on top: a coloured header bar over a light body for each column, `#3f6099` as the standard header, `#16243f` reserved for the one focal container.
+
+Both exemplars are this hybrid, at two different shapes:
+
+- `assets/example-ingestion-architecture.svg` - four ownership-zoned columns, left to right. Adds a fifth hue beyond the process-flow palette: violet `#efeaf7`/`#7a5ea8` = **out-of-repo / someone else owns this**, distinct from amber `#fffaf0`/`#b9791f` = external-to-the-company and dashed slate = platform/IaC hand-off. Zone by line style, and say so in the footer key.
+- `assets/example-ingestion-pipeline.svg` - numbered sections (`1 SOURCES`, `2 THE INGEST`, `3 WHAT IT MEANS`) with a worked WRITE/READ example in the last band. Reach for this when the reader needs the mechanism AND a concrete trace through it.
+
+Both carry a title, sub-caption and footer, so by the figure-vs-explainer rule above they are **standalone explainers** despite using figure semantics - read on their own in a doc or a ticket, not dropped on a slide. Earn the hybrid or don't use it: at three or four boxes the plain process-flow style is clearer, and the chrome is just noise.
 
 ### process/data-flow palette
 
