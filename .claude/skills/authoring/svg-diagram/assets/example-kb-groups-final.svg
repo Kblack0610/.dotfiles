@@ -48,7 +48,7 @@
     <text class="label" x="215" y="188">Upstream source</text>
     <text class="label sm" x="215" y="210">(admin upload; swappable)</text>
     <rect class="node" x="440" y="150" width="300" height="100" rx="7" filter="url(#soft)"/>
-    <text class="label" x="590" y="180">Healix API</text>
+    <text class="label" x="590" y="180">Platform API</text>
     <text class="label sm" x="590" y="201">create doc + group memberships</text>
     <text class="label sm" x="590" y="221">publish CORPUS_INSERT</text>
     <rect class="node" x="830" y="150" width="310" height="100" rx="7" filter="url(#soft)"/>
@@ -67,7 +67,7 @@
     <rect class="node" x="70" y="425" width="290" height="100" rx="7" filter="url(#soft)"/>
     <text class="label" x="215" y="475">User question</text>
     <rect class="node" x="440" y="425" width="300" height="100" rx="7" filter="url(#soft)"/>
-    <text class="label" x="590" y="455">Healix API</text>
+    <text class="label" x="590" y="455">Platform API</text>
     <text class="label sm" x="590" y="476">resolve visible kbGroupIds</text>
     <text class="label sm" x="590" y="496">publish PROMPT</text>
     <rect class="node" x="830" y="425" width="310" height="100" rx="7" filter="url(#soft)"/>
