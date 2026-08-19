@@ -1,0 +1,289 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1740 1140" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <!-- ============================================================
+       APP A INGESTION ARCHITECTURE (v7 - version shown only as a small footer-corner tag, never in the title)
+       Adopts the v13 system-context header-band swimlane theme:
+       mid-blue (#3f6099) header bands, cream page, nested light
+       boxes, numbered badges, coral READ (R) / green WRITE (I)
+       routes, footer style key.
+       Story reads LEFT -> RIGHT as four columns:
+         Customer  ->  Platform ingestion  ->  Associations (S3 tags)
+         ->  Agnostic model (agentic_model_svc)
+       Green I1-I3 = ingest write path; coral R1-R2 = retrieval read.
+       Zone by line style: solid = app code (this repo, blue),
+       dashed slate = platform / IaC hand-off, amber = external
+       (customer / doc library), violet = out-of-repo agentic.
+       ============================================================ -->
+  <defs>
+    <marker id="gry" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#667085"/></marker>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#25406b"/></marker>
+    <marker id="cor" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#e2533f"/></marker>
+    <marker id="grn" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#2f7a3a"/></marker>
+    <marker id="amb" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#b9791f"/></marker>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#1a2233" flood-opacity="0.12"/></filter>
+    <style>
+      .col   { fill:#ffffff; stroke:#c9cdd6; stroke-width:1.5; }
+      .ctitle{ font-size:14px; font-weight:700; fill:#ffffff; text-anchor:middle; }
+      .csub  { font-size:8.8px; fill:#dbe4f2; text-anchor:middle; }
+      .node  { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .plat  { fill:#eef1f5; stroke:#64748b; stroke-width:1.5; stroke-dasharray:6 4; }
+      .ext   { fill:#efeaf7; stroke:#7a5ea8; stroke-width:1.6; }
+      .amber { fill:#fffaf0; stroke:#b9791f; stroke-width:1.6; }
+      .amber.dash { stroke-dasharray:6 4; }
+      .io    { fill:#f4f6f9; stroke:#94a3b8; stroke-width:1.4; }
+      .store { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.6; }
+      .store.ext { fill:#efeaf7; stroke:#7a5ea8; stroke-width:1.8; }
+      .pillold { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.8; }
+      .t     { font-size:11px; fill:#16243f; text-anchor:middle; }
+      .tb    { font-weight:700; }
+      .ts    { font-size:9px; fill:#5a6478; text-anchor:middle; }
+      .txs   { font-size:8px; fill:#8a8f99; text-anchor:middle; }
+      .mono  { font-family:monospace; }
+      .acc   { fill:#b9791f; font-weight:700; }
+      .e     { fill:none; stroke:#667085; stroke-width:1.6; marker-end:url(#gry); }
+      .en    { fill:none; stroke:#25406b; stroke-width:1.5; marker-end:url(#arw); }
+      .eg    { fill:none; stroke:#2f7a3a; stroke-width:2; marker-end:url(#grn); }
+      .ec    { fill:none; stroke:#e2533f; stroke-width:2; marker-end:url(#cor); }
+      .ea    { fill:none; stroke:#b9791f; stroke-width:2; marker-end:url(#amb); }
+      .dash  { stroke-dasharray:6 4; }
+      .div   { stroke:#64748b; stroke-width:1.3; stroke-dasharray:4 4; fill:none; }
+      .el    { font-size:9px; fill:#5a6478; text-anchor:middle; }
+      .el.a  { fill:#b9791f; font-weight:600; }
+      .el.g  { fill:#2f7a3a; font-weight:600; }
+      .el.c  { fill:#e2533f; font-weight:600; }
+    </style>
+  </defs>
+
+  <!-- No background rect on purpose: the cream page is a RENDER flag, so the
+       same file still reads on a dark surface. Rasterize with:
+         rsvg-convert -b '#faf7f2' example-ingestion-architecture.svg -o out.png -->
+
+  <text x="870" y="42" font-size="23" font-weight="700" fill="#16243f" text-anchor="middle">Ingestion Architecture  -  customer sources  -&gt;  tags  -&gt;  agnostic model</text>
+  <text x="870" y="66" font-size="12.5" fill="#5a6478" text-anchor="middle">One OR the other source per tenant lands in one S3 bucket; both S3 tags fold into a single corpus_ids scope in Postgres; the model is source-independent, filtered by corpus_ids</text>
+
+  <!-- ============================ COLUMN BANDS ============================ -->
+  <rect class="col" x="24"   y="96" width="286" height="816" rx="12"/>
+  <rect class="col" x="332"  y="96" width="556" height="816" rx="12"/>
+  <rect class="col" x="910"  y="96" width="372" height="816" rx="12"/>
+  <rect class="col" x="1304" y="96" width="412" height="816" rx="12"/>
+
+  <path d="M24,138 L24,108 Q24,96 36,96 L298,96 Q310,96 310,108 L310,138 Z" fill="#3f6099"/>
+  <text class="ctitle" x="167" y="118">Customer</text>
+  <text class="csub"   x="167" y="132">the customer  -  feeds its documents</text>
+
+  <path d="M332,138 L332,108 Q332,96 344,96 L876,96 Q888,96 888,108 L888,138 Z" fill="#3f6099"/>
+  <text class="ctitle" x="610" y="118">Platform ingestion</text>
+  <text class="csub"   x="610" y="132">per-tenant, toggled by ingestionSource</text>
+
+  <path d="M910,138 L910,108 Q910,96 922,96 L1270,96 Q1282,96 1282,108 L1282,138 Z" fill="#3f6099"/>
+  <text class="ctitle" x="1096" y="118">Data model  -  tag fold</text>
+  <text class="csub"   x="1096" y="132">S3 tags declare  .  Postgres resolves  .  corpus_ids is the one output</text>
+
+  <path d="M1304,138 L1304,108 Q1304,96 1316,96 L1704,96 Q1716,96 1716,108 L1716,138 Z" fill="#3f6099"/>
+  <text class="ctitle" x="1510" y="118">Agnostic model</text>
+  <text class="csub"   x="1510" y="132">agentic_model_svc  -  source-independent</text>
+
+  <!-- ============================ COLUMN 1 - CUSTOMER ============================ -->
+  <text class="txs" x="167" y="170" style="fill:#5a6478">one OR the other  -  per-tenant choice</text>
+
+  <!-- Doc library (external, amber solid) -->
+  <rect class="amber" x="44" y="196" width="246" height="110" rx="8" filter="url(#soft)"/>
+  <text class="t tb" x="167" y="234">Doc library</text>
+  <text class="ts"   x="167" y="256">the customer's existing</text>
+  <text class="ts"   x="167" y="272">document library</text>
+  <text class="txs"  x="167" y="292" style="fill:#b9791f">external</text>
+
+  <text x="167" y="338" font-size="13" font-weight="700" fill="#5a6478" text-anchor="middle">OR</text>
+
+  <!-- SFTP / AWS Transfer Family (external, amber dashed = platform-provisioned) -->
+  <rect class="amber dash" x="44" y="352" width="246" height="110" rx="8" filter="url(#soft)"/>
+  <text class="t tb" x="167" y="386">SFTP / AWS</text>
+  <text class="t tb" x="167" y="404">Transfer Family</text>
+  <text class="ts"   x="167" y="426">the customer SFTPs files in</text>
+  <text class="txs"  x="167" y="446" style="fill:#b9791f">external  .  platform-provisioned</text>
+
+  <!-- ============================ COLUMN 2 - PLATFORM INGESTION ============================ -->
+  <!-- entry adapters -->
+  <rect class="node" x="344" y="221" width="250" height="60" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="469" y="247">Library puller</text>
+  <text class="ts"   x="469" y="266">document-service  .  vendor API</text>
+
+  <rect class="node" x="344" y="377" width="250" height="60" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="469" y="403">Direct-S3 adapter</text>
+  <text class="ts"   x="469" y="422">SFTP landing-zone</text>
+
+  <!-- per-tenant S3 bucket (prominent) -->
+  <path class="store" d="M616,286 a124,20 0 0,1 248,0 v94 a124,20 0 0,1 -248,0 z" filter="url(#soft)"/>
+  <ellipse class="store" cx="740" cy="286" rx="124" ry="20"/>
+  <text class="t tb" x="740" y="322" font-size="12">Per-tenant S3 bucket</text>
+  <text class="acc mono" x="740" y="344" font-size="11" text-anchor="middle">_inbound/&lt;tenantId&gt;/</text>
+  <text class="ts"   x="740" y="362">flat quarantine prefix  .  source S3</text>
+
+  <!-- platform plumbing collapsed to one dashed box (dropped clear of the S3 bucket) -->
+  <rect class="plat" x="560" y="456" width="300" height="48" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="710" y="478" font-size="10.5">S3 event  -&gt;  intake</text>
+  <text class="ts"   x="710" y="495">SQS / DLQ / Lambda  (platform / IaC)</text>
+
+  <!-- scan + promote -->
+  <rect class="node" x="560" y="524" width="300" height="64" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="710" y="550" font-size="11">malware scan  -&gt;  promote</text>
+  <text class="ts"   x="710" y="570">-&gt; managed key  .  <tspan class="acc" font-size="9">buildKey(...)</tspan></text>
+
+  <!-- shared seam chain -->
+  <rect class="node" x="344" y="636" width="168" height="64" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="428" y="662" font-size="10">POST /api/</text>
+  <text class="t tb" x="428" y="678" font-size="10">content-status</text>
+  <text class="ts"   x="428" y="694" font-size="8">:contentRefId</text>
+
+  <rect class="node" x="528" y="636" width="176" height="64" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="616" y="662" font-size="10">triggerDocument</text>
+  <text class="t tb" x="616" y="678" font-size="10">Ingestion</text>
+  <text class="ts"   x="616" y="694" font-size="8">emit contract</text>
+
+  <rect class="node" x="724" y="636" width="146" height="64" rx="7" fill="#eef7ee" stroke="#2f7a3a" stroke-width="1.6" filter="url(#soft)"/>
+  <text class="t tb mono" x="797" y="664" font-size="10.5">CORPUS_INSERT</text>
+  <text class="ts" x="797" y="682">NATS JetStream</text>
+
+  <!-- col2 internal connectors -->
+  <path class="eg" d="M594,251 Q612,270 626,296"/>
+  <path class="eg" d="M594,407 Q612,392 626,372"/>
+  <path class="eg" d="M740,402 C740,430 710,430 710,456"/>
+  <path class="eg" d="M710,504 V524"/>
+  <path class="eg" d="M710,588 V612 H428 V636"/>
+  <path class="eg" d="M512,668 H528"/>
+  <path class="eg" d="M704,668 H724"/>
+
+  <!-- I1 route badge: customer source -> S3 adapters -->
+  <path class="eg" d="M290,251 H344"/>
+  <path class="eg" d="M290,407 H344"/>
+  <circle cx="321" cy="329" r="11" fill="#2f7a3a"/><text x="321" y="333" font-size="9.5" font-weight="700" fill="#fff" text-anchor="middle">I1</text>
+
+  <!-- association write: S3 object tags declared at ingest -> col3 -->
+  <path class="eg" d="M864,300 Q888,252 910,216"/>
+  <text class="el g" x="888" y="242">object tags</text>
+
+  <!-- ============================ COLUMN 3 - DATA MODEL / TAG FOLD ============================ -->
+  <!-- clean linear fold: two S3 tag inputs -> Postgres data model -> ONE corpus_ids output -->
+  <text class="txs" x="1096" y="158">Two S3 object tags declare; the Postgres data model folds them into ONE scope:</text>
+  <text class="txs" x="1096" y="170">plan  -&gt;  routing (not a filter)   .   kbgroup  -&gt;  KB Groups   =&gt;   corpus_ids</text>
+
+  <!-- INPUTS: two S3 object tags (the declaration channel) -->
+  <rect class="io" x="924" y="188" width="158" height="56" rx="7"/>
+  <text class="ts" x="1003" y="210">S3 object tag  .  input</text>
+  <text class="acc mono" x="1003" y="229" font-size="9.5" text-anchor="middle">plan=&lt;ref&gt;</text>
+
+  <rect class="io" x="1110" y="188" width="158" height="56" rx="7"/>
+  <text class="ts" x="1189" y="210">S3 object tag  .  input</text>
+  <text class="mono" x="1189" y="229" font-size="9.5" fill="#5a6478" text-anchor="middle">kbgroup=&lt;csv&gt;</text>
+
+  <!-- DATA MODEL: plan ROUTES (amber), kbgroup -> KB Groups -->
+  <rect class="amber" x="924" y="292" width="158" height="94" rx="7" filter="url(#soft)"/>
+  <text class="txs" x="1003" y="311" style="fill:#b9791f;font-weight:700">ROUTING  -  not a filter</text>
+  <text class="t tb" x="1003" y="331" font-size="10.5">doc app / plan</text>
+  <text class="acc mono" x="1003" y="348" font-size="9.5" text-anchor="middle">templateName</text>
+  <text class="ts" x="1003" y="365">-&gt; app-scoped groups</text>
+  <text class="ts mono" x="1003" y="380" font-size="8.5">explicit groups only</text>
+
+  <rect class="node" x="1110" y="292" width="158" height="94" rx="7" filter="url(#soft)"/>
+  <text class="txs" x="1189" y="311" style="fill:#5a6478;font-weight:700">role / relationship scope</text>
+  <text class="t tb" x="1189" y="331" font-size="10.5">KBDocumentGroup</text>
+  <text class="ts"   x="1189" y="350">KB Groups: roles +</text>
+  <text class="ts"   x="1189" y="365">abstract relationships</text>
+  <text class="ts mono" x="1189" y="380" font-size="8.5">roles + relationships</text>
+
+  <!-- Postgres = source of truth: computes the scope ids -->
+  <path class="store" d="M1010,432 a86,18 0 0,1 172,0 v90 a86,18 0 0,1 -172,0 z" filter="url(#soft)"/>
+  <ellipse class="store" cx="1096" cy="432" rx="86" ry="18"/>
+  <text class="t tb" x="1096" y="474" font-size="12">Postgres</text>
+  <text class="acc"  x="1096" y="492" font-size="10" text-anchor="middle">source of truth</text>
+  <text class="txs"  x="1096" y="508">computes the scope ids</text>
+
+  <!-- ONE converged output pill -->
+  <rect class="pillold" x="1012" y="562" width="168" height="50" rx="25"/>
+  <text class="t tb" x="1096" y="585" font-size="12">corpus_ids</text>
+  <text class="txs" x="1096" y="602" style="fill:#5a6478">corpus + app-scoped scope ids</text>
+
+  <!-- col3 internal connectors: inputs -> data model -> Postgres -> corpus_ids -->
+  <path class="ea" d="M1003,244 V290"/>
+  <path class="e"  d="M1189,244 V290"/>
+  <path class="ea" d="M1003,386 C1003,410 1046,414 1064,431"/>
+  <path class="e"  d="M1189,386 C1189,410 1146,414 1128,431"/>
+  <path class="e"  d="M1096,542 V562"/>
+
+  <text class="txs" x="1096" y="644" style="font-style:italic;fill:#b9791f">plan is folded in (implicit via app-scoped group ids)</text>
+  <text class="txs" x="1096" y="658" style="font-style:italic;fill:#b9791f">one dimension, not a second filter</text>
+  <text class="txs" x="1096" y="700" style="font-style:italic">Postgres = source of truth  .  S3 tags = mirror + input declaration</text>
+
+  <!-- ============================ COLUMN 4 - AGNOSTIC MODEL ============================ -->
+  <rect class="node" x="1324" y="180" width="190" height="60" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="1419" y="206">Chat prompt</text>
+  <text class="ts"   x="1419" y="224">ChannelService</text>
+
+  <rect class="node" x="1324" y="300" width="372" height="84" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="1510" y="326" font-size="12">LLMServicePromptRequest</text>
+  <text class="ts"   x="1510" y="345">carries</text>
+  <text class="acc"  x="1510" y="366" font-size="12" text-anchor="middle">corpus_ids</text>
+
+  <rect class="ext" x="1324" y="436" width="372" height="72" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="1510" y="464">agentic  -  filter ALL by</text>
+  <text class="acc" x="1510" y="486" font-size="11" text-anchor="middle">corpus_ids</text>
+
+  <!-- ALL corpus (out-of-repo) -->
+  <path class="store ext" d="M1398,600 a112,20 0 0,1 224,0 v122 a112,20 0 0,1 -224,0 z" filter="url(#soft)"/>
+  <ellipse class="store ext" cx="1510" cy="600" rx="112" ry="20"/>
+  <text class="t tb" x="1510" y="650" font-size="12">ALL corpus</text>
+  <text class="ts"   x="1510" y="670">single physical corpus</text>
+  <text class="ts"   x="1510" y="688">(vectors)  .  source-independent</text>
+
+  <rect class="ext" x="1324" y="800" width="200" height="64" rx="7" filter="url(#soft)"/>
+  <text class="t tb" x="1424" y="826">agentic  -  embed</text>
+  <text class="ts"   x="1424" y="846">chunk + write vectors</text>
+
+  <!-- col4 internal connectors -->
+  <path class="ec" d="M1419,240 V300"/>
+  <path class="ec" d="M1510,384 V436"/>
+  <path class="ec" d="M1510,508 V598"/>
+  <text class="el c" x="1556" y="556">reads ALL</text>
+  <path class="eg" d="M1424,800 V724"/>
+  <text class="el g" x="1470" y="768">write vectors</text>
+  <text class="el c" x="1418" y="534">grounded answer -&gt; user</text>
+
+  <!-- ============================ CROSS-COLUMN ROUTES ============================ -->
+  <!-- R1: the single corpus_ids output -> retrieval request -->
+  <path class="ec" d="M1180,586 C1252,558 1286,398 1324,346"/>
+  <circle cx="1268" cy="466" r="10" fill="#e2533f"/><text x="1268" y="469.6" font-size="8.6" font-weight="700" fill="#fff" text-anchor="middle">R1</text>
+
+  <!-- I3: CORPUS_INSERT (cross-repo) -> agentic embed, routed in the lane below the columns -->
+  <path class="eg" d="M870,668 H899 V958 H1424 V866"/>
+  <line class="div" x1="1304" y1="936" x2="1304" y2="980"/>
+  <text class="el" x="1304" y="928">this repo | cross-repo</text>
+  <text class="el g" x="1080" y="948">CORPUS_INSERT  -&gt;  NATS JetStream  -&gt;  agentic embed</text>
+  <circle cx="1230" cy="958" r="10" fill="#2f7a3a"/><text x="1230" y="961.6" font-size="8.6" font-weight="700" fill="#fff" text-anchor="middle">I3</text>
+
+  <!-- I2 badge on the seam (ingest write inside Platform) -->
+  <circle cx="716" cy="618" r="10" fill="#2f7a3a"/><text x="716" y="621.6" font-size="8.6" font-weight="700" fill="#fff" text-anchor="middle">I2</text>
+
+  <!-- ============================ FOOTER ============================ -->
+  <rect x="24" y="1000" width="1692" height="108" rx="8" fill="#ffffff" stroke="#e3e7ee" stroke-width="1"/>
+  <text x="40" y="1022" font-size="12" font-weight="700" fill="#16243f">Ingestion Architecture  -  customer sources -&gt; tags -&gt; agnostic model</text>
+  <text x="560" y="1022" font-size="8.6" fill="#8a8f99">platform-monorepo (this repo) + agentic_model_svc (agnostic model)  .  one physical ALL corpus, filtered by corpus_ids</text>
+  <text x="1700" y="1022" font-size="8.6" fill="#b6bcc6" text-anchor="end">house style example</text>
+
+  <!-- zone swatches -->
+  <rect x="40" y="1034" width="18" height="13" rx="3" class="node"/>
+  <text x="64" y="1044" font-size="8.6" fill="#3a4457">app code (this repo)</text>
+  <rect x="196" y="1034" width="18" height="13" rx="3" class="plat"/>
+  <text x="220" y="1044" font-size="8.6" fill="#3a4457">platform / IaC hand-off (dashed)</text>
+  <rect x="420" y="1034" width="18" height="13" rx="3" class="amber"/>
+  <text x="444" y="1044" font-size="8.6" fill="#3a4457">external  -  customer / doc library</text>
+  <rect x="640" y="1034" width="18" height="13" rx="3" class="ext"/>
+  <text x="664" y="1044" font-size="8.6" fill="#3a4457">out-of-repo agentic + corpus</text>
+  <text x="856" y="1044" font-size="8.6" fill="#33415c"><tspan font-weight="700">style</tspan>  solid = live now  .  dashed = platform / future  .  amber = external  .  coral = READ  .  green = WRITE</text>
+
+  <text x="40" y="1066" font-size="8.8" font-weight="700" fill="#2f7a3a">WRITE  I1-I3</text>
+  <text x="120" y="1066" font-size="8.6" fill="#33415c"><tspan font-weight="700" fill="#2f7a3a">I1</tspan> customer source (doc library OR SFTP) -&gt; per-tenant S3 _inbound/&lt;tenantId&gt;/  -&gt;  <tspan font-weight="700" fill="#2f7a3a">I2</tspan> S3 event -&gt; intake -&gt; malware scan -&gt; promote -&gt; content-status -&gt; triggerDocumentIngestion -&gt; CORPUS_INSERT  -&gt;  <tspan font-weight="700" fill="#2f7a3a">I3</tspan> CORPUS_INSERT (cross-repo) -&gt; agentic embed -&gt; ALL corpus vectors</text>
+  <text x="40" y="1086" font-size="8.8" font-weight="700" fill="#e2533f">READ  R1-R2</text>
+  <text x="120" y="1086" font-size="8.6" fill="#33415c"><tspan font-weight="700" fill="#e2533f">R1</tspan> Chat prompt (ChannelService) -&gt; LLMServicePromptRequest carries corpus_ids (from Postgres)  -&gt;  <tspan font-weight="700" fill="#e2533f">R2</tspan> agentic filters the ALL corpus by corpus_ids -&gt; grounded answer</text>
+  <text x="40" y="1098" font-size="8.2" fill="#8a8f99">Both S3 tags fold into ONE dimension: plan=&lt;ref&gt; -&gt; ROUTING (doc app/plan templateName -&gt; app-scoped groups, explicitly created only) ; kbgroup=&lt;csv&gt; -&gt; KBDocumentGroup.</text>
+  <text x="40" y="1109" font-size="8.2" fill="#8a8f99">Both resolve in Postgres (source of truth) to a single corpus_ids = corpus + app-scoped scope ids; plan is folded in (implicit via the app-scoped group ids), not a second filter.</text>
+  <text x="40" y="1120" font-size="8.2" fill="#8a8f99">Strict fail-closed: no app-default group and no retrieval floor, so a doc with no kbgroup tag joins no group and is retrievable by nobody.</text>
+</svg>
