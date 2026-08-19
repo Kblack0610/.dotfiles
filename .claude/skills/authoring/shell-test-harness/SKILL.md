@@ -34,10 +34,16 @@ git fetch origin && git log --oneline HEAD..origin/main   # how stale are you?
 If the shared checkout is busy, or you are about to make a multi-step change, **take a worktree** (the convention other sessions already follow):
 
 ```bash
-git worktree add -b pr/<name> "$SCRATCH/wt-<name>" origin/main
+wt new                    # cuts it under ~/.worktrees/, opens a tmux session, lands you there
 ```
 
-`$SCRATCH` is this session's scratchpad dir. Restore anything you touched in the shared tree **before** leaving it. Re-`fetch` immediately before each landing step, not once at the start - `origin/main` moved three times during one session, and two planned PRs turned out to be work someone else had already landed.
+Every worktree lives flat under `~/.worktrees/<repo>-<slug>` - never in `$SCRATCH`, never nested in the repo. If you need raw git rather than `wt`, keep the location and fetch first:
+
+```bash
+git fetch origin && git worktree add ~/.worktrees/dotfiles-<name> -b pr/<name> origin/main
+```
+
+Restore anything you touched in the shared tree **before** leaving it. Re-`fetch` immediately before each landing step, not once at the start - `origin/main` moved three times during one session, and two planned PRs turned out to be work someone else had already landed. `wt done` from inside the worktree reaps it when the work has landed.
 
 Container caveat: inside a worktree `.git` is a *file* pointing at the main repo, so `tests/docker.sh` mounts the main `.git` read-only. That is already handled; do not fight it.
 
