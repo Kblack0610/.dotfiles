@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 972"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 972" data-render-bg="#f4f5f6"
      font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
   <!-- Exemplar for the LANE TIMELINE house style. See references/style-lane-timeline.md.
        X is time (left to right), Y is proximity to the customer (higher is closer).

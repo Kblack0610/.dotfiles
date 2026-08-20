@@ -15,10 +15,28 @@
 #                 per-file, so one command covers many topics (rbac/ system/ ...).
 #                 Non-svg files and folders with no *.svg produce nothing.
 #
+# Page tint: a diagram declares its own on the root <svg> element, e.g.
+#   <svg ... data-render-bg="#f4f5f6">
+# because the tint is a RENDER flag, not a baked <rect> (see SKILL.md). Files
+# with no declaration render on white. This is per-file, so --tree can publish
+# a mixed set and each diagram still gets the background its style calls for.
+#
+# Publishing needs $WIN_DOCS. Without a usable one (any non-WSL machine) the
+# PNGs are still rendered next to their SVGs and only the copy step is skipped.
+#
 # Deps: rsvg-convert (librsvg), inotifywait (inotify-tools).
 set -euo pipefail
 
 WIN_DOCS="${WIN_DOCS:-/mnt/c/Users/$USER/Documents/docs}"
+
+# Can we publish at all? Render-only is a valid mode, not an error - the PNG
+# next to the SVG is the useful half on a machine with no Windows docs home.
+CAN_PUBLISH=1
+if ! mkdir -p "$WIN_DOCS/diagrams" 2>/dev/null; then
+  CAN_PUBLISH=0
+  echo "note: \$WIN_DOCS is not writable ($WIN_DOCS) - rendering PNGs in place, not publishing."
+  echo "      Set WIN_DOCS to your docs home to publish as well."
+fi
 
 ONCE=0
 TREE=0
@@ -36,7 +54,7 @@ TOPIC_OVERRIDE="${2:-}"
 
 # publish <svgfile> -- topic/dest/png derived from the file's own path.
 publish() {
-  local f="$1" base dir topic dest png
+  local f="$1" base dir topic dest png bg
   base="$(basename "$f" .svg)"
   dir="$(dirname "$f")"
   if [ "$TREE" = 0 ] && [ -n "$TOPIC_OVERRIDE" ]; then
@@ -46,13 +64,24 @@ publish() {
   fi
   dest="$WIN_DOCS/diagrams/$topic"
   png="$dir/$base.png"
-  mkdir -p "$dest"
-  if rsvg-convert -b white -z 2 "$f" -o "$png" 2>/dev/null; then
-    cp "$f" "$png" "$dest/"
-    printf '[%s] published %-22s svg+png -> %s\n' "$(date +%H:%M:%S)" "$base" "$dest"
-  else
+
+  # The file declares its own page tint; default white. The `|| true` matters:
+  # most diagrams declare nothing, and under `set -e`/`pipefail` a no-match grep
+  # would abort the whole run on the first untinted file.
+  bg="$(grep -o 'data-render-bg="[^"]*"' "$f" 2>/dev/null | head -1 | cut -d'"' -f2 || true)"
+  bg="${bg:-white}"
+
+  if ! rsvg-convert -b "$bg" -z 2 "$f" -o "$png" 2>/dev/null; then
     printf '[%s] RENDER FAILED %-18s (invalid SVG) - not published\n' "$(date +%H:%M:%S)" "$base"
+    return
   fi
+  if [ "$CAN_PUBLISH" = 0 ]; then
+    printf '[%s] rendered  %-22s png (bg %s) -> %s\n' "$(date +%H:%M:%S)" "$base" "$bg" "$dir"
+    return
+  fi
+  mkdir -p "$dest"
+  cp "$f" "$png" "$dest/"
+  printf '[%s] published %-22s svg+png (bg %s) -> %s\n' "$(date +%H:%M:%S)" "$base" "$bg" "$dest"
 }
 
 publish_all() {
