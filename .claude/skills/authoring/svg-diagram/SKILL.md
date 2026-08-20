@@ -4,7 +4,7 @@ description: Author clean, hand-editable SVG diagrams in a shared house theme (f
 metadata:
   category: authoring
   tags: [diagrams, svg, docs]
-  reviewed: "2026-08-07"
+  reviewed: "2026-08-19"
 ---
 
 # SVG Diagram Creator (house theme)
@@ -37,7 +37,7 @@ Why hand-authored SVG over Mermaid/auto-layout: you control every coordinate, th
 2. **Read the style doc** for the nuances: `references/style-process-flow.md`,
    `style-layered-c4.md`, `style-option-matrix.md`, or `style-lane-timeline.md`.
 3. **Lay out by hand.** Pick a `viewBox`, place lanes, then nodes on a centerline, then edges. Keep labels to short noun phrases; push detail to edge labels or a caption.
-4. **Render + publish.** `svg-diagram-watch --once <dir> <topic>` rasterizes a PNG next to each SVG and copies both into `$WIN_DOCS/diagrams/<topic>/`. Drop `--once` to watch and republish on every save (live edit -> refresh the file on the desktop side). To live-view a whole tree of topic folders in one command, use `svg-diagram-watch --tree <root>` - each SVG publishes to `diagrams/<its-parent-folder-name>/`.
+4. **Render + publish.** `svg-diagram-watch --once <dir> <topic>` rasterizes a PNG next to each SVG and copies both into `$WIN_DOCS/diagrams/<topic>/`. Drop `--once` to watch and republish on every save (live edit -> refresh the file on the desktop side). To live-view a whole tree of topic folders in one command, use `svg-diagram-watch --tree <root>` - each SVG publishes to `diagrams/<its-parent-folder-name>/`. Each file is rendered on the tint it declares via `data-render-bg` (below), so a mixed `--tree` set still comes out right. **`$WIN_DOCS` is a WSL/work-laptop path**; on any machine without one the tool renders the PNGs in place and skips only the copy, so the same command works everywhere.
 5. **Verify visually.** Rasterize (`rsvg-convert -b white -z 1.3 x.svg -o x.png`) and actually look at the PNG - check nothing is clipped, no edges cross needlessly, labels fit.
 
 ## Four house styles
@@ -93,7 +93,7 @@ Full doctrine (clean-look rules, when to split, anti-patterns) in `references/st
 - **XML comments cannot contain `--`.** Reword (`--once` -> "the once flag") inside `<!-- -->`.
 - **Cylinder text must clear the lid:** place datastore labels below the top ellipse's lower arc or the amber/stroke rim cuts through the text.
 - **Verify by rendering, not by reading the XML.** Always rasterize and look.
-- **A tinted page is a render flag, not a `<rect>`.** The lane-timeline look wants light grey behind white panels: `rsvg-convert -b '#f4f5f6' ...`. Never bake a background rect - that breaks the transparent-canvas rule and the same file stops working on a dark surface.
+- **A tinted page is a render flag, not a `<rect>`.** Declare it on the root element - `<svg ... data-render-bg="#f4f5f6">` - and `svg-diagram-watch` renders it that way; by hand it is `rsvg-convert -b '#f4f5f6' ...`. The lane-timeline wants light grey behind white panels, the dense-hero architecture cream `#faf7f2`; anything undeclared renders on white. Never bake a background rect - that breaks the transparent-canvas rule and the same file stops working on a dark surface.
 - **Prose-heavy styles leak Unicode.** The two standalone explainers carry real sentences (headings, gutter notes, footers), which is exactly where a middot separator, an em dash, `>=`, `~`, or an arrow glyph sneaks in. Plain ASCII: `-`, `->`, `approx`.
 - **No text wrapping in SVG.** A paragraph is one `<text>` per line at an explicit `y`. Count characters against the column width before you place it (roughly 6px per char at 11.5px) or it runs past the card.
 
