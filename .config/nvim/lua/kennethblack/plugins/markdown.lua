@@ -363,14 +363,24 @@ return {
         end
       end
 
-      -- Open a fresh `- [ ] ` task below the cursor (indentation-matched) and drop
-      -- into insert mode at its end.
-      local function new_task_below()
+      -- Smart task line, for turning bullets/prose into tasks on the fly. If the
+      -- current line is NOT a task yet (plain text, a `-`/`*`/`+` bullet, or blank),
+      -- convert it in place into `- [ ] <text>`. If it's ALREADY a task, leave it
+      -- alone and open an indented subtask beneath it instead, so repeated presses
+      -- build a task/subtask tree rather than a flat list of siblings.
+      local function smart_task()
         local lnum = vim.api.nvim_win_get_cursor(0)[1]
-        local indent = vim.fn.getline(lnum):match "^%s*" or ""
-        vim.fn.append(lnum, indent .. "- [ ] ")
-        vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
-        vim.cmd "startinsert!"
+        local line = vim.fn.getline(lnum)
+        local indent, rest = line:match "^(%s*)(.-)%s*$"
+
+        if rest:match("^%- " .. STATUS_PAT) then
+          vim.fn.append(lnum, indent .. "  - [ ] ")
+          vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
+          vim.cmd "startinsert!"
+        else
+          local text = rest:gsub("^[-*+]%s*", "")
+          vim.fn.setline(lnum, indent .. "- [ ] " .. text)
+        end
       end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
@@ -426,7 +436,7 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
-          --   tt  new task below
+          --   tc  convert line to task, or add an indented subtask if already one
           --   tP  raise priority  none -> low -> high -> urgent -> none
           --   tp  lower priority  (the same ring, the other way)
           -- Current line (normal) / selection (visual).
@@ -440,8 +450,14 @@ return {
             cycle_status(vim.fn.line "'<", vim.fn.line "'>")
           end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
 
-          -- New task below the cursor.
-          vim.keymap.set("n", "<leader>tt", new_task_below, { buffer = buf, desc = "New task below", silent = true })
+          -- Convert current line to a task, or add an indented subtask if it's
+          -- already one.
+          vim.keymap.set(
+            "n",
+            "<leader>tc",
+            smart_task,
+            { buffer = buf, desc = "Convert line to task / add subtask", silent = true }
+          )
 
           -- Task priority cycle: tP raises toward urgent, tp lowers, through the ring
           -- none -> low -> high -> urgent -> none. Each press re-sweeps and follows the task
