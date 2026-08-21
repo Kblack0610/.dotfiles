@@ -136,6 +136,47 @@ check_frontmatter() {
   return 0
 }
 
+# Frontmatter that satisfies every grep above can still be invalid YAML. The
+# usual culprit is an unquoted description containing ": " (colon-space), which
+# YAML reads as a nested mapping key. Claude Code then drops EVERY field: the
+# name falls back to the directory, the description to the body's first line,
+# and allowed-tools/model/disable-model-invocation silently stop applying.
+# Nothing warns at any verbosity - which is how 19 skills sat broken while this
+# lint reported them valid. Grep cannot answer "is this YAML"; only a parser can.
+#
+# An unavailable parser is a FINDING, not a skip. A check that quietly passes
+# when it could not run is the failure mode this whole file is written against.
+check_yaml() {
+  local skill="$1" f="$2" out
+  out=$(fm "$f" | python3 -c '
+import sys
+try:
+    import yaml
+except ImportError:
+    print("NOPARSER"); sys.exit(0)
+# fm() emits the closing --- delimiter too; left in, YAML sees a second
+# document and every skill fails identically.
+lines = sys.stdin.read().split("\n")
+while lines and not lines[-1].strip():
+    lines.pop()
+if lines and lines[-1].strip() == "---":
+    lines.pop()
+try:
+    d = yaml.safe_load("\n".join(lines))
+except Exception as e:
+    print(" ".join(str(e).split())[:90]); sys.exit(0)
+if not isinstance(d, dict):
+    print("frontmatter is not a mapping")
+' 2>/dev/null) || { add BADYAML "$skill" SKILL.md "could not run the YAML parser"; return 0; }
+  [ -n "$out" ] || return 0
+  if [ "$out" = NOPARSER ]; then
+    add BADYAML "$skill" SKILL.md "PyYAML unavailable - frontmatter left unverified"
+  else
+    add BADYAML "$skill" SKILL.md "$out"
+  fi
+  return 0
+}
+
 # --- static checks (also run in CI, where nothing else can) -------------------
 
 fm() { sed -n '2,/^---$/p' "$1"; }
@@ -441,6 +482,7 @@ run_static() {
         SEEN_NAME[$s]="$d"
       fi
       check_frontmatter "$s" "$m"
+      check_yaml        "$s" "$m"
       check_name        "$s" "$m"
       if [ "$contract" = full ]; then
         check_meta     "$s" "$m" "$parent"

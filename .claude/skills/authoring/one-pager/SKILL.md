@@ -1,6 +1,10 @@
 ---
 name: one-pager
-description: Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~½ page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to ~/.notes/lab/briefs/.
+description: >-
+  Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~½
+  page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem +
+  appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full
+  PRD or tech spec. Saves to ~/.notes/lab/briefs/.
 metadata:
   category: authoring
   tags: [docs, briefs, writing]

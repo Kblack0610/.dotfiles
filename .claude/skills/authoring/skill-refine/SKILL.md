@@ -1,6 +1,18 @@
 ---
 name: skill-refine
-description: Audit and polish the skill corpus itself - find skills that have gone stale (a path that moved, a decommissioned host, a retired sibling still advertised), that contradict what the lessons/mem0 layers now know, or that overlap so badly the router picks the wrong one; and surface recurring manual workflows that should BE a skill. Use when the user says "fix/update my skills", "are my skills stale", "polish the skills", "audit the skills", "what skills am I missing", or "/skill-refine". Verbs: audit | apply | propose. The weekly agentctl@skill-refine run and the skill-drift sentinel watch both enter here. PROPOSE-ONLY in any headless run: it writes a report with proposed diffs and NEVER edits a SKILL.md unattended, because a skill is prose the agent obeys and a bad auto-rewrite silently changes every future session. Deterministic ground truth comes from the `skill-drift` script; this skill adds the judgment layer on top. Differs from update-rules (edits the RULE layer and registers a skill in CLAUDE.md - this one decides WHAT needs changing) and from dotfiles-land (lands the result).
+description: >-
+  Audit and polish the skill corpus itself - find skills that have gone stale (a path that moved, a
+  decommissioned host, a retired sibling still advertised), that contradict what the lessons/mem0
+  layers now know, or that overlap so badly the router picks the wrong one; and surface recurring
+  manual workflows that should BE a skill. Use when the user says "fix/update my skills", "are my
+  skills stale", "polish the skills", "audit the skills", "what skills am I missing", or
+  "/skill-refine". Verbs: audit | apply | propose. The weekly agentctl@skill-refine run and the
+  skill-drift sentinel watch both enter here. PROPOSE-ONLY in any headless run: it writes a report
+  with proposed diffs and NEVER edits a SKILL.md unattended, because a skill is prose the agent obeys
+  and a bad auto-rewrite silently changes every future session. Deterministic ground truth comes from
+  the `skill-drift` script; this skill adds the judgment layer on top. Differs from update-rules
+  (edits the RULE layer and registers a skill in CLAUDE.md - this one decides WHAT needs changing) and
+  from dotfiles-land (lands the result).
 metadata:
   category: authoring
   tags: [skills, maintenance, drift]
