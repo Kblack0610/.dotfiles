@@ -12,7 +12,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | Script | Keybinding | Description |
 |--------|------------|-------------|
 | `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted — no existing key was moved. |
-| `sessionizer.sh` | `Prefix+f` | Fast project directory switcher with fzf |
+| `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-n` / `C-h` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
@@ -35,7 +35,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Resume a world**: `Prefix+C-n` hub · `Prefix+C-h` lab (back where you left off)
 - **Root of a world**: `Prefix+N` hub · `Prefix+H` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
-- **Switch projects**: `Prefix+f` → fuzzy find directories
+- **Switch projects**: `Prefix+f` → fuzzy find a repo or a worktree
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows
@@ -262,10 +262,10 @@ same name. Note `-C` must precede the subcommand (`sesh -C f list` works,
 `sesh list -C f` errors).
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
-(`sessionizer.sh`) still fuzzy-finds every directory on the machine - and it
-**routes by manifest**: a directory some `*.conf` declares lands in that world,
-under that manifest's name, hopping servers if that is where it lives. Everything
-undeclared opens right where you are, exactly as before. See "Which world a
+(`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
+they belong to - and it **routes by manifest**: a directory some `*.conf` declares
+lands in that world, under that manifest's name, hopping servers if that is where
+it lives. Everything undeclared opens right where you are. See "Which world a
 directory belongs to" below.
 
 Two things verified, both load-bearing:
@@ -287,6 +287,34 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
 
+## Projects and worktrees (`Prefix+f`)
+
+`sessionizer.sh` builds its rows from three sources, in this order, deduped:
+
+| Source | What it contributes | Why it cannot be dropped |
+|---|---|---|
+| git repos under `SESSIONIZER_ROOTS` | the **outermost** repo only, `SESSIONIZER_DEPTH` deep | the actual projects. Outermost-wins is what keeps submodules and vendored checkouts (`tests/vendor/bats-core`, `.local/src/gungan`) out without naming any of them |
+| `.config/tmux-servers/*.conf` | every directory a manifest declares, if it exists here | a declared directory can sit *inside* a repo (`~/.notes/lab` is a subdirectory of the `~/.notes` repo), so no repo walk can produce it |
+| `$WT_ROOT` (`~/.worktrees`) | directories whose `.git` is a **file** | a linked worktree's `.git` is a file where a main checkout's is a directory. That test both finds worktrees and rejects whatever else got parked there |
+
+It used to be **every** directory to depth 4 under the roots: 1521 rows on the Mac, 1048 of
+them inside `~/.dotfiles` alone, and not one worktree. The volume was the least of it. A
+session name is the **basename** (`panel_session_name`), so 20+ names repeated - `src` x12,
+`docs` x12, `dotfiles` x5 - and picking `~/.agent/plans/dotfiles` opened a session called
+`dotfiles` that was not the dotfiles repo.
+
+`~/.agent` is not a root at all: it is the agent runtime axis, one directory per project per
+axis, so it contributed several colliding rows for every project it had ever seen.
+
+An **arbitrary** directory belongs to `Prefix+S`, whose sesh sources are zoxide frecency and
+the `[[session]]` entries in `../../.config/sesh/sesh.toml`. Passing one to `sessionizer.sh`
+as an argument still works; it is only the *list* that is opinionated.
+
+`SESSIONIZER_DEPTH` bounds how far below a root a repo may sit. The walk looks for `.git` one
+level deeper than that, and the `.git` clause comes first in the `find` expression so that
+`.git` being in `SESSIONIZER_PRUNE` - where it has to stay, to keep the descent out of it -
+cannot swallow the very thing being searched for.
+
 ## Worktrees (`Prefix+F`, `Prefix+X`, `wt`)
 
 **The worktree is the unit of work.** `Prefix+F` cuts a fresh worktree off the repo the
@@ -295,10 +323,13 @@ therefore never shares the first one's checkout, branch or dirty status - which 
 session with seven windows all named `main` actually was.
 
 **One key, one action.** `Prefix+F` opens no picker and asks nothing: the repo is the one
-the current pane is in, and the slot is the next free one. `Prefix+f` (the directory
-sessionizer) is untouched - same key, same list, same search roots as before. Worktrees are
-deliberately NOT added to its roots; a worktree is somewhere you are sent, not somewhere you
-go looking.
+the current pane is in, and the slot is the next free one.
+
+`Prefix+f` **does** list worktrees, which reverses the original call that "a worktree is
+somewhere you are sent, not somewhere you go looking". Being sent covers the first minute of
+a worktree's life; coming back to one an hour later, from another session, needs a list, and
+the only way to get there was to remember the path. `$WT_ROOT` only - a worktree parked
+somewhere else is not something to advertise as a session.
 
 `agent-N` is **not** a persistent workspace slot. It is the Nth worktree alive right now:
 allocated by `new`, freed by `reap`, and the number is reused once it is free. Nothing else
@@ -425,10 +456,10 @@ Three things that are easy to get wrong, all found by testing:
   startup command silently no-ops.
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
-(`sessionizer.sh`) still fuzzy-finds every directory on the machine - and it
-**routes by manifest**: a directory some `*.conf` declares lands in that world,
-under that manifest's name, hopping servers if that is where it lives. Everything
-undeclared opens right where you are, exactly as before. See "Which world a
+(`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
+they belong to - and it **routes by manifest**: a directory some `*.conf` declares
+lands in that world, under that manifest's name, hopping servers if that is where
+it lives. Everything undeclared opens right where you are. See "Which world a
 directory belongs to" below.
 
 ## Session Favourites

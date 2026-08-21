@@ -23,15 +23,32 @@ setup() {
 
   # A fixture tree with THREE candidate roots, so a test can tell "found the right one" from
   # "found the only one". One root deliberately does not exist, to cover the filter.
-  mkdir -p "$SANDBOX/roots/alpha/proj-one" \
-    "$SANDBOX/roots/alpha/node_modules/should-be-pruned" \
-    "$SANDBOX/roots/beta/my.dotted.project" \
-    "$SANDBOX/roots/beta/.dotted-root" \
-    "$SANDBOX/roots/beta/.git/hooks"
+  #
+  # The candidates are REPOS now, so every fixture that has to appear in --list carries a
+  # `.git`. A bare directory is no longer a row, which is the point of the change and is
+  # asserted below rather than assumed here.
+  mkdir -p "$SANDBOX/roots/alpha/proj-one/.git" \
+    "$SANDBOX/roots/alpha/not-a-repo/src" \
+    "$SANDBOX/roots/alpha/proj-one/vendored/.git" \
+    "$SANDBOX/roots/alpha/node_modules/should-be-pruned/.git" \
+    "$SANDBOX/roots/beta/my.dotted.project/.git" \
+    "$SANDBOX/roots/beta/.dotted-root/.git" \
+    "$SANDBOX/roots/selfrepo/.git/hooks" \
+    "$SANDBOX/roots/selfrepo/inner/deeper"
+
+  # Worktrees, read from $WT_ROOT's default ($HOME/.worktrees, and $HOME is the sandbox). A
+  # LINKED worktree's .git is a FILE; the plain directory beside it is the negative control.
+  mkdir -p "$HOME/.worktrees/proj-one-agent-1" "$HOME/.worktrees/not-a-worktree"
+  printf 'gitdir: /nowhere/.git/worktrees/proj-one-agent-1\n' > "$HOME/.worktrees/proj-one-agent-1/.git"
+
+  # A repo under ~/.agent, which is deliberately NOT a root: the agent runtime axis carries one
+  # directory per project per axis, so it used to contribute a colliding row for every project
+  # it had ever seen.
+  mkdir -p "$HOME/.agent/plans/proj-one/.git"
   # COLON-separated, like PATH: $SANDBOX contains a space by design, and a space-delimited
   # list cannot express such a path at all. The first draft of the script used spaces and this
   # fixture is what exposed it.
-  export SESSIONIZER_ROOTS="$SANDBOX/roots/alpha:$SANDBOX/roots/beta:$SANDBOX/roots/nonexistent"
+  export SESSIONIZER_ROOTS="$SANDBOX/roots/alpha:$SANDBOX/roots/beta:$SANDBOX/roots/selfrepo:$SANDBOX/roots/nonexistent"
 
   # Two worlds that DECLARE directories, which is the routing table. Written with `~` the
   # way the real manifests are -- and necessarily so: $SANDBOX contains a space and the
@@ -39,9 +56,12 @@ setup() {
   # expressed here at all. That is the format's documented limitation, not a test dodge.
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"
+  # A declared directory INSIDE a repo, which is the real ~/.notes/lab: a subdirectory of the
+  # ~/.notes repo, so no repo walk can ever produce it and only the manifest can.
   mkdir -p "$HOME/declared-hub" "$HOME/declared-notes" "$HOME/dev/declared-lab" \
-    "$HOME/declared-hub/inside"
-  printf 'ownname ~/declared-hub\nhub ~/declared-notes  nvim\n' > "$TMUX_SERVERS_DIR/hub.conf"
+    "$HOME/declared-hub/inside" "$HOME/host-repo/.git" "$HOME/host-repo/declared-sub"
+  printf 'ownname ~/declared-hub\nhub ~/declared-notes  nvim\nsub ~/host-repo/declared-sub\n' \
+    > "$TMUX_SERVERS_DIR/hub.conf"
   printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"
 }
 
@@ -85,11 +105,73 @@ in_world() {
 
 # ── The row source ───────────────────────────────────────────────────────────
 
-@test "--list finds the project directories under every existing root" {
+@test "--list finds the repos under every existing root" {
   run "$SESSIONIZER" --list
   assert_success
   assert_line --partial 'roots/alpha/proj-one'
   assert_line --partial 'roots/beta/my.dotted.project'
+}
+
+@test "--list leaves out a directory that is not a repo" {
+  # The whole change in one assertion. A deep walk listed every directory under every root:
+  # 1521 rows on the Mac, 1048 of them inside ~/.dotfiles, and 20+ of them sharing a basename
+  # with another row -- and a session name IS the basename.
+  run "$SESSIONIZER" --list
+  assert_success
+  refute_output --partial 'not-a-repo'
+}
+
+@test "--list keeps the OUTERMOST repo and drops the ones nested inside it" {
+  # Submodules and vendored checkouts (tests/vendor/bats-core, .local/src/gungan) are real
+  # repos that nobody opens a session on. Outermost-wins is what keeps them out without
+  # naming any of them in the prune list.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line --partial 'roots/alpha/proj-one'
+  refute_output --partial 'vendored'
+}
+
+@test "a root that is itself a repo collapses to exactly one row" {
+  # ~/.dotfiles is both a root and a repo, and it was 1048 of the 1521 rows on its own. One
+  # repo, one session, no matter how deep it goes.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line "$SANDBOX/roots/selfrepo"
+  refute_output --partial 'selfrepo/inner'
+}
+
+@test "--list carries the worktrees, which is the row source it used to miss entirely" {
+  # ~/.worktrees was never a root, so the one directory kind this setup creates on purpose
+  # (Prefix+F) was the one kind the picker could not reach.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line --partial '.worktrees/proj-one-agent-1'
+}
+
+@test "--list rejects a plain directory sitting in the worktree root" {
+  # A linked worktree's .git is a FILE. Listing whatever else got parked in $WT_ROOT would
+  # hand back a path `wt` does not consider a worktree at all.
+  run "$SESSIONIZER" --list
+  assert_success
+  refute_output --partial 'not-a-worktree'
+}
+
+@test "--list carries a declared directory that lives INSIDE a repo" {
+  # The real ~/.notes/lab: a subdirectory of the ~/.notes repo, and a row the repo walk can
+  # never produce. The manifest is the routing table, so what it names is a place to work.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line --partial 'host-repo/declared-sub'
+}
+
+@test "the default roots do not include ~/.agent, repo or not" {
+  # The agent runtime axis holds one directory per project per axis, so it produced several
+  # rows per project -- and `~/.agent/plans/dotfiles` named its session `dotfiles`, the same
+  # name as the dotfiles repo. Fixture is a REPO under ~/.agent, so exclusion is the root list
+  # doing it, not the repo test.
+  SESSIONIZER_ROOTS= run "$SESSIONIZER" --list
+  assert_success
+  refute_output --partial '.agent'
 }
 
 @test "--list prunes the directories it is configured to prune" {
@@ -101,13 +183,15 @@ in_world() {
 
 @test "SESSIONIZER_PRUNE is actually read" {
   # Prove the config key changes behaviour rather than merely existing. With the default prune
-  # list replaced by something irrelevant, node_modules must reappear.
+  # list replaced by something irrelevant, the repo hiding under node_modules must reappear.
   SESSIONIZER_PRUNE='nothing-matches-this' run "$SESSIONIZER" --list
-  assert_output --partial 'node_modules'
+  assert_output --partial 'node_modules/should-be-pruned'
 }
 
 @test "SESSIONIZER_DEPTH is actually read" {
-  mkdir -p "$SANDBOX/roots/alpha/a/b/c/d/deep-one"
+  # Depth now bounds how far down a REPO may sit, so the fixture is a repo rather than a bare
+  # directory. Its .git is one level deeper again, which the walk has to account for.
+  mkdir -p "$SANDBOX/roots/alpha/a/b/c/d/deep-one/.git"
   SESSIONIZER_DEPTH=9 run "$SESSIONIZER" --list
   assert_output --partial 'deep-one'
   SESSIONIZER_DEPTH=1 run "$SESSIONIZER" --list
@@ -303,7 +387,7 @@ in_world() {
 @test "it survives a sandbox path containing a space" {
   # $SANDBOX contains a space by design (sandbox.bash:32). This is the whole reason: the
   # pre-migration script built find arguments and a session name without strict quoting.
-  mkdir -p "$SANDBOX/roots/alpha/has space here"
+  mkdir -p "$SANDBOX/roots/alpha/has space here/.git"
   run "$SESSIONIZER" --list
   assert_output --partial 'has space here'
   TMUX=/tmp/fake,1,0 run "$SESSIONIZER" "$SANDBOX/roots/alpha/has space here"

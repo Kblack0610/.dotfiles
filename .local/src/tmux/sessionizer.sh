@@ -1,37 +1,22 @@
 #!/usr/bin/env bash
-# sessionizer.sh - fuzzy-find any project directory and land in a session named after it.
+# sessionizer.sh - pick a repo or a worktree and land in a session named after it.
 #
 # Usage: sessionizer.sh [dir | verb]
 #
-#   (no args)     pick a directory with fzf, then switch to (or create) its session
-#   <dir>         skip the picker and go straight there
-#   --list        the candidate directories, one per line. The data behind the picker,
-#                 split out so it is assertable without a terminal.
+#   (no args)     pick with fzf, then switch to (or create) that directory's session
+#   <dir>         skip the picker and go straight there -- ANY directory, listed or not
+#   --list        the candidate rows, one per line. Assertable without a terminal.
 #   --name <dir>  the session name that <dir> would produce
-#   --route <dir> "<world> <session>" if a manifest declares <dir>, else "here <name>".
-#                 The routing decision, split out so it is assertable without a server.
+#   --route <dir> "<world> <session>" if a manifest declares <dir>, else "here <name>"
 #   -h, --help    this text
 #
-# Reaches OUTSIDE the current tmux world on purpose: Prefix+w is server-scoped and Prefix+S
-# (sesh) follows $TMUX into one server, so this is the one picker that sees every directory
-# on the machine.
+# The list is repos + manifest-declared dirs + worktrees, NOT every directory under the roots:
+# a session name is a basename, so a deep walk produced colliding names (`dotfiles` x5) and
+# still never reached ~/.worktrees. An arbitrary path is Prefix+S's job (sesh + zoxide).
 #
-# WHICH WORLD a directory lands in, since it reaches across all of them:
-#
-# .config/tmux-servers/*.conf already says. hub.conf declares `dotfiles ~/.dotfiles` and
-# lab.conf declares `platform ~/dev/bnb/platform` -- that IS the routing table, and this
-# picker used to ignore it. Running plain `tmux`, it created the session on whatever socket
-# happened to be enclosing it, so Prefix+f on ~/dev/bnb/platform from hub built a SECOND
-# `platform` session beside lab's. Same directory, two worlds, and nothing looked wrong.
-#
-# So: a DECLARED directory goes to the world that declares it, under the name that manifest
-# gives it (~/.notes is `hub`, not `notes`), hopping servers if that is where it lives.
-# Everything else is unchanged -- created right here, named after its basename. The rule is
-# EXACT-MATCH on the directory: ~/dev/bnb/platform is lab's `platform`, while a subdirectory
-# of it is still its own session in the world you are standing in.
-#
-# Config: SESSIONIZER_ROOTS, SESSIONIZER_PRUNE (both COLON-separated, like PATH),
-# SESSIONIZER_DEPTH and TMUX_SERVERS_DIR (where the manifests live).
+# Row sources and the config keys (SESSIONIZER_ROOTS / _PRUNE / _DEPTH, WT_ROOT,
+# TMUX_SERVERS_DIR): README.md, "Projects and worktrees (Prefix+f)". The world-routing rule:
+# same file, "Which world a directory belongs to".
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
@@ -42,9 +27,14 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 # whitespace-delimited, so a session directory containing a space cannot be expressed there"),
 # and the first draft of this file reintroduced it. The test sandbox's path contains a space by
 # design, which is what caught it.
-IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$HOME/.agent:$HOME/.dotfiles:$HOME/.dotfiles-private:$HOME/.notes}"
+IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$HOME/.dotfiles:$HOME/.dotfiles-private:$HOME/.notes}"
 IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:node_modules:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
+# How deep to look FOR A REPO under a root, not how deep a row may be: the walk stops at the
+# outermost repo it finds either way.
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
+# Shared with worktree.sh, which owns worktrees and puts them here. Same env key, so pointing
+# one at a fixture points both.
+WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
 # The same default servers.sh uses, and overridable for the same reason: the tests point it
 # at a fixture directory.
 MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
@@ -53,7 +43,7 @@ MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 # (leading dot stripped, interior dots folded); this is the `--name` verb's front door.
 session_name() { panel_session_name "$1"; }
 
-# declared_by <dir> -- "<world> <session>" for a directory some manifest names, rc 1 if none.
+# manifest_rows -- "<world> <session> <dir>" for every session the manifests declare.
 #
 # Reads the manifests directly rather than asking tmux, because the question is "where does
 # this directory BELONG", not "what is running" -- and the answer must be the same whether
@@ -63,8 +53,11 @@ session_name() { panel_session_name "$1"; }
 # comments: two readers of one file that disagree about its format are a bug waiting for the
 # first unusual line. Same whitespace-delimited limitation, too -- a manifest cannot express a
 # directory containing a space, which is why nothing here tries to.
-declared_by() {
-  local dir="${1%/}" f world name mdir cmd
+#
+# ONE parse for two callers, which ask opposite questions of the same file: declared_by asks
+# who owns a directory, declared_dirs asks which directories are named at all.
+manifest_rows() {
+  local f world name mdir cmd
   for f in "$MANIFEST_DIR"/*.conf; do
     [ -r "$f" ] || continue # an unmatched glob stays literal; -r rejects it
     world="${f##*/}"
@@ -73,12 +66,35 @@ declared_by() {
       case "$name" in '' | '#'*) continue ;; esac
       [ -n "$mdir" ] || continue
       mdir="${mdir/#\~/$HOME}"
-      [ "${mdir%/}" = "$dir" ] || continue
-      printf '%s %s\n' "$world" "$name"
-      return 0
+      printf '%s %s %s\n' "$world" "$name" "${mdir%/}"
     done < "$f"
   done
+  return 0
+}
+
+# declared_by <dir> -- "<world> <session>" for a directory some manifest names, rc 1 if none.
+declared_by() {
+  local dir="${1%/}" world name mdir
+  while read -r world name mdir; do
+    [ "$mdir" = "$dir" ] || continue
+    printf '%s %s\n' "$world" "$name"
+    return 0
+  done < <(manifest_rows)
   return 1
+}
+
+# declared_dirs -- the manifests' own directories, when they exist on this machine.
+#
+# Not redundant with repo_roots: a declared directory can sit INSIDE a repo (~/.notes/lab is a
+# subdirectory of the ~/.notes repo, and had its own keybind before this picker existed), or be
+# a repo this machine has never cloned. The manifest is the routing table, so whatever it names
+# is by definition somewhere this setup expects to work.
+declared_dirs() {
+  local world name dir
+  while read -r world name dir; do
+    [ -d "$dir" ] && printf '%s\n' "$dir"
+  done < <(manifest_rows)
+  return 0
 }
 
 # current_world -- the socket this client is on (`hub`), or nothing outside tmux.
@@ -104,19 +120,72 @@ cmd_route() {
   fi
 }
 
+# repo_roots <root>... -- every git repo under these roots, OUTERMOST ONLY.
+#
+# Outermost is what makes the prune list short: submodules and vendored checkouts
+# (tests/vendor/bats-core, .local/src/gungan) are real repos that nobody opens a session on,
+# and they drop out because the repo above them was found first.
+#
+# The filter needs its input SORTED AFTER the /.git suffix is stripped, not before: a proper
+# prefix always sorts ahead of the longer string, so stripped paths put every parent before its
+# children. Sorting the `.git` paths instead breaks that (`/a/.config/x/.git` sorts before
+# `/a/.git`, so the inner repo is kept and the outer one survives beside it).
+repo_roots() {
+  local prune_expr=() p dir k keep=() nested
+  for p in "${PRUNE[@]}"; do prune_expr+=(-name "$p" -o); done
+  unset "prune_expr[${#prune_expr[@]}-1]"
+
+  # The `.git` clause comes FIRST and prunes itself: find takes the leftmost match, so a
+  # `.git` in the prune list (it is there, and has to stay there for the descent) can no
+  # longer swallow the very thing being searched for. Depth is +1 because a repo allowed to
+  # sit DEPTH below a root keeps its .git one level deeper still.
+  while IFS= read -r dir; do
+    nested=
+    for k in "${keep[@]}"; do
+      case "$dir" in "$k"/*) nested=1 && break ;; esac
+    done
+    [ -n "$nested" ] || keep+=("$dir")
+  done < <(find "$@" -maxdepth "$((SESSIONIZER_DEPTH + 1))" \
+    -name .git -print -prune -o \
+    \( "${prune_expr[@]}" \) -prune 2>/dev/null | sed 's|/\.git$||' | LC_ALL=C sort -u)
+
+  [ "${#keep[@]}" -eq 0 ] || printf '%s\n' "${keep[@]}"
+  return 0
+}
+
+# worktree_dirs -- the worktrees parked under $WT_ROOT.
+#
+# Reads the filesystem rather than shelling out to `wt --list`: a picker must not need another
+# panel on PATH, and that verb runs git per row to report branch and state, none of which a
+# path list uses. Only $WT_ROOT, deliberately -- worktrees belong in one place, and a stray
+# checkout elsewhere is not something to advertise as a session.
+#
+# A linked worktree's `.git` is a FILE (a gitdir: pointer) where a main checkout's is a
+# directory, so that one test both finds worktrees and rejects whatever else was parked here.
+# worktree.sh:wt_is_linked is the fuller version of the same rule.
+worktree_dirs() {
+  local d
+  for d in "$WT_ROOT"/*/; do
+    d="${d%/}"
+    [ -f "$d/.git" ] && printf '%s\n' "$d"
+  done
+  return 0
+}
+
 cmd_list() {
-  local roots=() r prune_expr=() p
+  local roots=() r
   for r in "${ROOTS[@]}"; do [ -d "$r" ] && roots+=("$r"); done
   # No existing root is not "no results" -- it means the config is wrong, and a picker that
   # opens empty looks identical to one whose search legitimately found nothing.
   [ "${#roots[@]}" -gt 0 ] || panel_fail "none of the configured roots exist: ${ROOTS[*]}" || return 1
 
-  for p in "${PRUNE[@]}"; do prune_expr+=(-name "$p" -o); done
-  unset "prune_expr[${#prune_expr[@]}-1]"
-
-  find "${roots[@]}" -maxdepth "$SESSIONIZER_DEPTH" \
-    \( "${prune_expr[@]}" \) -prune -o \
-    -type d -print 2>/dev/null
+  # A declared directory is usually a repo too, and a worktree of a repo under a root is not,
+  # so the sources overlap in one direction only. Dedupe keeps first-seen order.
+  {
+    repo_roots "${roots[@]}"
+    declared_dirs
+    worktree_dirs
+  } | awk '!seen[$0]++'
 }
 
 cmd_pick() {
