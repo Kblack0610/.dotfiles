@@ -1,6 +1,14 @@
 ---
 name: compact-prep
-description: Pre-flight for context compaction - before the window is summarized, prove that every load-bearing item (modified files, verification results, key decisions + why, task status, the single next step, active plan location, recurring error patterns) is captured in the durable memory layer, close the gaps, then hand the user a tailored `/compact <focus>` invocation. Use when the user says "should we compact", "compact first", "prep for compaction", "make sure everything's captured", "are we safe to compact", or "/compact-prep". Verbs: check | prep. Differs from wind-down (ends the session + closes the tmux window) and session-snapshot (host-reboot inventory) - compact-prep only guards the durable layer against the summarizer dropping in-flight work, and never issues `/compact` itself.
+description: >-
+  Pre-flight for context compaction - before the window is summarized, prove that every load-bearing
+  item (modified files, verification results, key decisions + why, task status, the single next step,
+  active plan location, recurring error patterns) is captured in the durable memory layer, close the
+  gaps, then hand the user a tailored `/compact <focus>` invocation. Use when the user says "should we
+  compact", "compact first", "prep for compaction", "make sure everything's captured", "are we safe to
+  compact", or "/compact-prep". Verbs: check | prep. Differs from wind-down (ends the session + closes
+  the tmux window) and session-snapshot (host-reboot inventory) - compact-prep only guards the durable
+  layer against the summarizer dropping in-flight work, and never issues `/compact` itself.
 metadata:
   category: memory
   tags: [context, compaction, session]
