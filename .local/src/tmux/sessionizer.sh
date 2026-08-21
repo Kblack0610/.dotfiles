@@ -73,13 +73,20 @@ manifest_rows() {
 }
 
 # declared_by <dir> -- "<world> <session>" for a directory some manifest names, rc 1 if none.
+#
+# Fed by `<<<` and NOT `< <(manifest_rows)`: this loop returns on the first match, and a
+# process substitution still writing when its reader leaves takes SIGPIPE -- which bash
+# reports as `printf: write error: Broken pipe` on stderr, landing in the caller's output.
+# It is a RACE, so it passed on macOS and failed in CI. A here-string has no concurrent
+# writer at all. The empty line an empty here-string produces is harmless: it matches no
+# directory.
 declared_by() {
   local dir="${1%/}" world name mdir
   while read -r world name mdir; do
     [ "$mdir" = "$dir" ] || continue
     printf '%s %s\n' "$world" "$name"
     return 0
-  done < <(manifest_rows)
+  done <<< "$(manifest_rows)"
   return 1
 }
 
@@ -93,7 +100,7 @@ declared_dirs() {
   local world name dir
   while read -r world name dir; do
     [ -d "$dir" ] && printf '%s\n' "$dir"
-  done < <(manifest_rows)
+  done <<< "$(manifest_rows)" # same reason as declared_by, kept identical on purpose
   return 0
 }
 
