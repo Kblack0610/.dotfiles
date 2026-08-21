@@ -14,6 +14,13 @@
 # plugin PID files. It also aborted on conflicts with the loose runtime JSON below.
 ^/tests$
 target
+# ~/.agent is the agent RUNTIME axis and must stay a real directory in $HOME. Stowed, it
+# becomes a link farm pointing back here, so every hook write lands inside this working
+# tree - where `git clean -xdf` erases the whole memory layer. Measured on the Mac before
+# this line existed: 1,035 symlinks, and lessons/plans/session registries living in the
+# repo. Anything that resolves the axis relative to $PWD recreates the directory, so the
+# ignore has to hold even when the path is absent from a fresh clone.
+^/\.agent$
 
 # systemd enablement links that point into /usr/lib/systemd (a distro-owned path, not
 # this repo). stow REFUSES to stow an absolute source symlink and aborts the entire run
