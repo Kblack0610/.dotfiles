@@ -293,7 +293,7 @@ alias would append `-L hub` to every call, including from inside `lab`, where
 
 | Source | What it contributes | Why it cannot be dropped |
 |---|---|---|
-| git repos under `SESSIONIZER_ROOTS` | the **outermost** repo only, `SESSIONIZER_DEPTH` deep | the actual projects. Outermost-wins is what keeps submodules and vendored checkouts (`tests/vendor/bats-core`, `.local/src/gungan`) out without naming any of them |
+| git repos under `SESSIONIZER_ROOTS` | every repo `SESSIONIZER_DEPTH` deep, **except** one its enclosing repo declares in `.gitmodules` | the actual projects. A declared submodule (`.local/src/gungan`) is a dependency pinned to somebody else's commit; an undeclared nested repo is a checkout parked there to work in |
 | `.config/tmux-servers/*.conf` | every directory a manifest declares, if it exists here | a declared directory can sit *inside* a repo (`~/.notes/lab` is a subdirectory of the `~/.notes` repo), so no repo walk can produce it |
 | `$WT_ROOT` (`~/.worktrees`) | directories whose `.git` is a **file** | a linked worktree's `.git` is a file where a main checkout's is a directory. That test both finds worktrees and rejects whatever else got parked there |
 
@@ -314,6 +314,23 @@ as an argument still works; it is only the *list* that is opinionated.
 level deeper than that, and the `.git` clause comes first in the `find` expression so that
 `.git` being in `SESSIONIZER_PRUNE` - where it has to stay, to keep the descent out of it -
 cannot swallow the very thing being searched for.
+
+### Why a nested repo is a row
+
+Nesting is not depth, it is **ownership**, and only `.gitmodules` records it.
+`~/dev/bnb/games/engine` is a repo holding `unity-core`, `unity-core-harness` and
+`unity-core-playground` as gitlinks with **no `.gitmodules` at all**, each sitting on its own
+feature branch. Listing only the outermost repo hid all three behind `engine`, on every
+machine, and the picker gave no sign it had done so.
+
+Excluding them by *position* was never the intent - excluding **dependencies** was. So the
+rule asks the enclosing repo whether it declares the thing, and everything vendored is
+excluded one step earlier by `SESSIONIZER_PRUNE`, which is why `vendor` and `.claude` are in
+that list beside `node_modules`: they hold real checkouts (`tests/vendor/bats-core`, the seven
+hash-named worktrees under `platform/.claude/worktrees/`) that no one opens a session on.
+
+A directory with **no** `.git` is still not a row, whatever it holds - `~/dev/adb-mcp` has to
+be `git init`-ed, declared in a manifest, or reached with `Prefix+S`.
 
 ## Worktrees (`Prefix+F`, `Prefix+X`, `wt`)
 
