@@ -30,11 +30,20 @@ setup() {
   mkdir -p "$SANDBOX/roots/alpha/proj-one/.git" \
     "$SANDBOX/roots/alpha/not-a-repo/src" \
     "$SANDBOX/roots/alpha/proj-one/vendored/.git" \
+    "$SANDBOX/roots/alpha/proj-one/parked-repo/.git" \
+    "$SANDBOX/roots/alpha/proj-one/vendor/third-party/.git" \
+    "$SANDBOX/roots/alpha/proj-one/.claude/worktrees/agent-abc123/.git" \
     "$SANDBOX/roots/alpha/node_modules/should-be-pruned/.git" \
     "$SANDBOX/roots/beta/my.dotted.project/.git" \
     "$SANDBOX/roots/beta/.dotted-root/.git" \
     "$SANDBOX/roots/selfrepo/.git/hooks" \
     "$SANDBOX/roots/selfrepo/inner/deeper"
+
+  # Two repos nested one level inside proj-one, identical on disk apart from this file. Only
+  # `vendored` is DECLARED, so the pair is the whole nesting rule and its negative control:
+  # whatever separates them cannot be depth, position, or the prune list.
+  printf '[submodule "vendored"]\n\tpath = vendored\n\turl = git@example.com:x/vendored.git\n' \
+    > "$SANDBOX/roots/alpha/proj-one/.gitmodules"
 
   # Worktrees, read from $WT_ROOT's default ($HOME/.worktrees, and $HOME is the sandbox). A
   # LINKED worktree's .git is a FILE; the plain directory beside it is the negative control.
@@ -121,14 +130,38 @@ in_world() {
   refute_output --partial 'not-a-repo'
 }
 
-@test "--list keeps the OUTERMOST repo and drops the ones nested inside it" {
-  # Submodules and vendored checkouts (tests/vendor/bats-core, .local/src/gungan) are real
-  # repos that nobody opens a session on. Outermost-wins is what keeps them out without
-  # naming any of them in the prune list.
+@test "--list drops a nested repo the one above it DECLARES as a submodule" {
+  # A declared submodule is a pinned dependency sitting at a commit somebody else chose
+  # (.dotfiles/.local/src/gungan). Nobody opens a session on one.
   run "$SESSIONIZER" --list
   assert_success
   assert_line --partial 'roots/alpha/proj-one'
   refute_output --partial 'vendored'
+}
+
+@test "--list keeps a nested repo NOBODY declared, which is where the work happens" {
+  # ~/dev/bnb/games/engine holds unity-core, unity-core-harness and unity-core-playground as
+  # gitlinks with no .gitmodules, each on its own feature branch. Dropping every nested repo
+  # hid all three behind `engine`, on every machine, with no way to tell from the picker.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line --partial 'proj-one/parked-repo'
+}
+
+@test "--list prunes a third-party checkout by its directory name" {
+  # Nesting is allowed now, so `vendor` has to earn its place in the prune list the way
+  # node_modules does -- tests/vendor/bats-core is a real repo the walk would otherwise reach.
+  run "$SESSIONIZER" --list
+  assert_success
+  refute_output --partial 'third-party'
+}
+
+@test "--list prunes the agent worktrees parked under .claude" {
+  # platform/.claude/worktrees holds seven hash-named checkouts. They are real repos one level
+  # inside a repo, so only the prune list keeps `agent-a19fdac4d8219d148` from being a session.
+  run "$SESSIONIZER" --list
+  assert_success
+  refute_output --partial 'agent-abc123'
 }
 
 @test "a root that is itself a repo collapses to exactly one row" {

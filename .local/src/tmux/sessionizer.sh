@@ -13,6 +13,8 @@
 # The list is repos + manifest-declared dirs + worktrees, NOT every directory under the roots:
 # a session name is a basename, so a deep walk produced colliding names (`dotfiles` x5) and
 # still never reached ~/.worktrees. An arbitrary path is Prefix+S's job (sesh + zoxide).
+# A repo nested inside another repo IS a row unless the outer one declares it in .gitmodules --
+# see repo_roots, and README.md, "Why a nested repo is a row".
 #
 # Row sources and the config keys (SESSIONIZER_ROOTS / _PRUNE / _DEPTH, WT_ROOT,
 # TMUX_SERVERS_DIR): README.md, "Projects and worktrees (Prefix+f)". The world-routing rule:
@@ -28,9 +30,11 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 # and the first draft of this file reintroduced it. The test sandbox's path contains a space by
 # design, which is what caught it.
 IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$HOME/.dotfiles:$HOME/.dotfiles-private:$HOME/.notes}"
-IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:node_modules:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
-# How deep to look FOR A REPO under a root, not how deep a row may be: the walk stops at the
-# outermost repo it finds either way.
+# `vendor` and `.claude` are here for the same reason `node_modules` is: they hold real git
+# checkouts that are somebody else's code or an agent's scratch, and nesting is now allowed
+# (see repo_roots), so the walk has to be told about them rather than being saved by accident.
+IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:.claude:node_modules:vendor:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
+# How deep to look FOR A REPO under a root, not how deep a row may be.
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 # Shared with worktree.sh, which owns worktrees and puts them here. Same env key, so pointing
 # one at a fixture points both.
@@ -127,18 +131,39 @@ cmd_route() {
   fi
 }
 
-# repo_roots <root>... -- every git repo under these roots, OUTERMOST ONLY.
+# declared_submodule <repo> <relpath> -- true if <repo>/.gitmodules declares <relpath>.
 #
-# Outermost is what makes the prune list short: submodules and vendored checkouts
-# (tests/vendor/bats-core, .local/src/gungan) are real repos that nobody opens a session on,
-# and they drop out because the repo above them was found first.
+# The parse is textual and never shells out to git, because this runs once per nested repo
+# inside a popup and because the test fixtures are `mkdir .git` trees, not real repos -- a
+# rule only assertable against a live clone is a rule the suite cannot hold.
 #
-# The filter needs its input SORTED AFTER the /.git suffix is stripped, not before: a proper
-# prefix always sorts ahead of the longer string, so stripped paths put every parent before its
-# children. Sorting the `.git` paths instead breaks that (`/a/.config/x/.git` sorts before
-# `/a/.git`, so the inner repo is kept and the outer one survives beside it).
+# `path` has to be anchored: a bare `path*` glob also matches `pathspec`, and .gitmodules is
+# ordinary git-config, so the key may be indented and spaced however the writer felt.
+declared_submodule() {
+  local gm="$1/.gitmodules" line
+  [ -r "$gm" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] || continue
+    [ "${BASH_REMATCH[1]}" = "$2" ] && return 0
+  done < "$gm"
+  return 1
+}
+
+# repo_roots <root>... -- every git repo under these roots, nested ones included.
+#
+# Nesting is not depth, it is ownership: a repo the one above it DECLARES in .gitmodules is a
+# pinned dependency parked at a commit somebody else chose, and drops out; an UNdeclared nested
+# repo is a checkout someone put there to work in, on its own branch, and is a row. Dropping
+# every nested repo instead hides `engine`'s three unity-core checkouts (gitlinks, no
+# .gitmodules, three live feature branches) behind `engine` on every machine. Vendored trees
+# need no rule here: `vendor` and `node_modules` stop the walk before it sees them.
+#
+# The input must be SORTED AFTER the /.git suffix is stripped, not before: a proper prefix
+# sorts ahead of the longer string, so stripped paths put every parent before its children
+# (`/a/.config/x/.git` sorts before `/a/.git`, which is the wrong order). Both loops below
+# depend on that -- an enclosing repo has to be seen before the repo inside it.
 repo_roots() {
-  local prune_expr=() p dir k keep=() nested
+  local prune_expr=() p dir k seen=() keep=() parent
   for p in "${PRUNE[@]}"; do prune_expr+=(-name "$p" -o); done
   unset "prune_expr[${#prune_expr[@]}-1]"
 
@@ -147,11 +172,16 @@ repo_roots() {
   # longer swallow the very thing being searched for. Depth is +1 because a repo allowed to
   # sit DEPTH below a root keeps its .git one level deeper still.
   while IFS= read -r dir; do
-    nested=
-    for k in "${keep[@]}"; do
-      case "$dir" in "$k"/*) nested=1 && break ;; esac
+    # The NEAREST enclosing repo, which is the last prefix to match: every prefix of $dir
+    # sorts before it, and among prefixes the longest sorts last. `seen` and not `keep` --
+    # a dropped submodule is still the parent of anything under it.
+    parent=
+    for k in "${seen[@]}"; do
+      case "$dir" in "$k"/*) parent="$k" ;; esac
     done
-    [ -n "$nested" ] || keep+=("$dir")
+    seen+=("$dir")
+    [ -n "$parent" ] && declared_submodule "$parent" "${dir#"$parent"/}" && continue
+    keep+=("$dir")
   done < <(find "$@" -maxdepth "$((SESSIONIZER_DEPTH + 1))" \
     -name .git -print -prune -o \
     \( "${prune_expr[@]}" \) -prune 2>/dev/null | sed 's|/\.git$||' | LC_ALL=C sort -u)
