@@ -38,11 +38,68 @@ struct RawConfig {
     #[serde(default = "default_board")]
     board: String,
     /// Multi-account email triage (`notes comms`). Global (spans profiles), so it lives at
-    /// the top level rather than per-profile — each account names the profile whose daily
+    /// the top level rather than per-profile - each account names the profile whose daily
     /// note its critical items surface into. Optional: an empty `[comms]` means the feature
     /// is off on this machine (so it never strips a `## Comms` another machine wrote).
     #[serde(default)]
     comms: RawComms,
+    /// How the cross-org board is laid out. Named `board_layout` and not `board` because
+    /// `board` above is already this file's key for the board's PATH.
+    #[serde(default)]
+    board_layout: RawBoardLayout,
+}
+
+/// Board layout: which org leads, and which orgs render in full.
+///
+/// Both fields are optional and both default to today's behaviour, so a machine that never
+/// sets `[board_layout]` sees no change. This is deliberately NOT on [`Profile`]: the board
+/// is one cross-org file with one address, the same reasoning `board::board_path` documents.
+#[derive(Debug, Deserialize, Default)]
+struct RawBoardLayout {
+    /// Profile order on the board. Any profile NOT named here still renders - appended after
+    /// the listed ones, alphabetically. An omission must not be able to hide an org's work,
+    /// which is the failure the previous plain `names.sort()` was one rename away from.
+    #[serde(default)]
+    order: Vec<String>,
+    /// Profiles that render full task lists. Every other profile folds to one line per
+    /// project. EMPTY MEANS EVERY PROFILE IS FULL - the pre-existing behaviour, so the
+    /// feature is opt-in rather than something an unconfigured machine has to undo.
+    #[serde(default)]
+    full: Vec<String>,
+}
+
+/// Resolved board layout. See [`RawBoardLayout`] for what the fields mean.
+#[derive(Debug, Default, Clone)]
+pub struct BoardLayout {
+    pub order: Vec<String>,
+    pub full: Vec<String>,
+}
+
+impl BoardLayout {
+    /// True when `name` renders its full task list. An empty `full` list means every profile
+    /// does, so an unconfigured machine keeps the old board.
+    pub fn is_full(&self, name: &str) -> bool {
+        self.full.is_empty() || self.full.iter().any(|f| f == name)
+    }
+
+    /// `names` reordered: those listed in `order` first and in that order, then everything
+    /// else in the order given (which `all_profile_names` has already sorted). A name in
+    /// `order` that is not a configured profile is skipped rather than fatal - the config is
+    /// machine-local and hand-edited, and a typo must not empty the board.
+    pub fn sort(&self, names: Vec<String>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::with_capacity(names.len());
+        for want in &self.order {
+            if let Some(n) = names.iter().find(|n| *n == want) {
+                out.push(n.clone());
+            }
+        }
+        for n in names {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
 }
 
 /// Global comms (email triage) config. Read independently of the active profile via
@@ -405,6 +462,7 @@ fn builtin_default() -> RawConfig {
         vault: default_vault(),
         board: default_board(),
         comms: RawComms::default(),
+        board_layout: RawBoardLayout::default(),
     }
 }
 
@@ -608,6 +666,17 @@ pub fn all_profile_names() -> Result<Vec<String>> {
     let mut names: Vec<String> = raw.profile.keys().cloned().collect();
     names.sort();
     Ok(names)
+}
+
+/// Resolve the board layout. Read independently of the active profile, like
+/// [`all_profile_names`] and [`comms_config`], because the board belongs to no one org.
+/// Both fields empty is the pre-existing board: alphabetical, every profile in full.
+pub fn board_layout() -> Result<BoardLayout> {
+    let (raw, _src) = load_raw()?;
+    Ok(BoardLayout {
+        order: raw.board_layout.order.clone(),
+        full: raw.board_layout.full.clone(),
+    })
 }
 
 /// Resolve the global comms config (defaults filled in). Read independently of the active

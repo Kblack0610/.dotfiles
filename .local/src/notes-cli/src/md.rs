@@ -774,8 +774,14 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
     }
 }
 
-/// Normalised core text of a task line, for de-duplication.
-pub fn task_key(line: &str) -> String {
+/// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, priority tag and
+/// trailing day-count stripped, case preserved.
+///
+/// Split out of [`task_key`] because the two jobs had been sharing one function and the
+/// de-duplication job won: `task_key` lower-cases, which is right for matching and wrong for
+/// anything shown to a human. The board rendered every row lower-cased for that reason, so
+/// `PR #423` read as `pr #423`. Display calls this; matching calls `task_key`.
+pub fn task_text(line: &str) -> String {
     let mut t = line.trim();
     if let Some(i) = t.find("<!--") {
         t = t[..i].trim_end();
@@ -785,7 +791,7 @@ pub fn task_key(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved.
     let (stripped, _) = split_priority(&stripped);
     let t = stripped.trim();
-    // Every checkbox state must strip, including the in-progress `[/]` — otherwise an
+    // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
     // in-progress task's key carries the checkbox and never matches its open counterpart.
     let t = t
         .strip_prefix("- [ ]")
@@ -793,7 +799,13 @@ pub fn task_key(line: &str) -> String {
         .or_else(|| t.strip_prefix("- [x]"))
         .or_else(|| t.strip_prefix("- [X]"))
         .unwrap_or(t);
-    t.trim().to_lowercase()
+    t.trim().to_string()
+}
+
+/// Normalised core text of a task line, for de-duplication. Case-folded [`task_text`];
+/// every matching path (`ptask done "<query>"`, carryover dedupe) depends on that folding.
+pub fn task_key(line: &str) -> String {
+    task_text(line).to_lowercase()
 }
 
 /// Insert `new_lines` directly under `## heading`. If the heading is absent,

@@ -12,6 +12,21 @@
 
 default_profile = "personal"
 
+# --- Board layout -------------------------------------------------------------
+# How `notes board` lays out the one cross-org board. Both keys are optional; with
+# neither set the board is alphabetical with every org in full, which is what it
+# has always been. Named `board_layout` because `board` is already the key for the
+# board's PATH.
+[board_layout]
+# Which org leads. Anything not named here still renders, appended alphabetically -
+# an omission must never be able to hide an org's work. Without this the lead org
+# was decided by `names.sort()`, i.e. by luck of the alphabet.
+# order = ["bnb", "personal", "AcmeCorp"]
+# Which orgs render their full task lists. Every other org folds to ONE line per
+# project (name, version, counts, next item), so the board holds every org without
+# one 47-item client project burying the rest. Empty/absent = everything full.
+# full  = ["bnb"]
+
 [hostname_map]
 # Map a machine's short hostname to a profile so corporate boxes auto-root into
 # the right directory. Find the name with `hostname -s`, then uncomment + set.
