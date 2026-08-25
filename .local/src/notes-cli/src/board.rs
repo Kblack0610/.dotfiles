@@ -75,7 +75,7 @@ fn project_block(name: &str, dir: &std::path::Path) -> Option<String> {
 
 /// True when the line carries the `#ai` LANE marker. Delimited deliberately: a bare
 /// `contains("#ai")` also matches `#aid`, the same trap notes-cockpit.sh:1367 documents.
-fn is_ai(line: &str) -> bool {
+pub(crate) fn is_ai(line: &str) -> bool {
     line.split_whitespace()
         .any(|w| w.trim_end_matches(',') == "#ai")
 }
