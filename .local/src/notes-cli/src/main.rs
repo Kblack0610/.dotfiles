@@ -188,17 +188,14 @@ enum Cmd {
         /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
         #[arg(long, value_name = "NAME")]
         roll: Option<String>,
-        /// Upgrade a legacy version-note project to the sheet model (highest note ->
-        /// README sheet, older -> versions/); no-op if already a sheet
+        /// Consolidate a project onto the one version layout: fold changelog/ into
+        /// versions/ and backfill each version's ai/ note. Idempotent.
         #[arg(long, value_name = "NAME")]
         migrate: Option<String>,
-        /// Start the next version's note for a legacy version-note project (seeds v0.0.1)
-        #[arg(long, value_name = "NAME")]
-        bump: Option<String>,
-        /// With --roll/--bump: step the minor (v0.1.2 -> v0.2.0)
+        /// With --roll: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
-        /// With --roll/--bump: step the major (v0.1.2 -> v1.0.0)
+        /// With --roll: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
         major: bool,
         /// With --roll: close the version even though its wave still has open tasks
@@ -601,7 +598,6 @@ fn main() -> Result<()> {
             archived,
             roll,
             migrate,
-            bump,
             minor,
             major,
             force,
@@ -619,7 +615,7 @@ fn main() -> Result<()> {
             };
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, bump, version_of, waves, ai_note, archived,
+                new, archive, restore, roll, migrate, version_of, waves, ai_note, archived,
                 name,
             ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
@@ -627,14 +623,13 @@ fn main() -> Result<()> {
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
                 (_, _, _, Some(n), ..) => projects::roll(&prof, &log, &n, level, force)?,
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
-                (_, _, _, _, _, Some(n), ..) => projects::bump(&prof, &log, &n, level)?,
-                (_, _, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
-                (_, _, _, _, _, _, _, _, Some(n), ..) => {
+                (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
+                (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
+                (_, _, _, _, _, _, _, Some(n), ..) => {
                     projects::show_ai_note(&prof, &n, version.as_deref())?
                 }
-                (_, _, _, _, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
-                (_, _, _, _, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
+                (_, _, _, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
+                (_, _, _, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,
                 _ => projects::list(&prof)?,
             }
             0

@@ -7,6 +7,7 @@
 //! is no index file to go stale. Discovery mirrors `notes today`'s precedence — the
 //! project index `## Current` lane, else the `projects` dir scan (`daily`).
 
+use crate::board;
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
@@ -483,9 +484,12 @@ pub(crate) fn sheet_path(dir: &Path) -> Option<PathBuf> {
     tasks.exists().then_some(tasks)
 }
 
-/// A project's current version: the sheet's `Version:` line is the source of truth;
-/// legacy projects with no sheet fall back to the highest `vX.Y.Z.md` note (root +
-/// `changelog/`).
+/// A project's current version. The sheet's `Version:` line is the source of truth; a sheet
+/// that has lost it falls back to the highest note in `versions/`.
+///
+/// `versions/` and nothing else. The fallback used to scan the project root and `changelog/`
+/// instead - the two places the frozen record is NOT kept - so the one directory holding
+/// frozen versions was invisible here while two legacy locations were authoritative.
 fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
     if let Some(sheet) = sheet_path(dir) {
         if let Some(v) = fs::read_to_string(&sheet).ok().and_then(|c| sheet_version(&c)) {
@@ -493,30 +497,28 @@ fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
         }
     }
     let mut best = None;
-    scan_versions(dir, &mut best);
-    scan_versions(&dir.join("changelog"), &mut best);
+    scan_versions(&dir.join("versions"), &mut best);
     best
 }
 
-/// The version currently OPEN — the one being worked on, which is what a wave ships as.
+/// The version currently OPEN - the one being worked on, which is what a wave ships as.
 /// Distinct from `current_version`, which is the highest version RECORDED.
 ///
-/// For a sheet-model project those coincide: the `Version:` line names the open version,
-/// and `roll` freezes the sheet under that name before advancing it. For a legacy project
-/// that records releases as `changelog/vX.Y.Z.md` notes and carries no `Version:` line they
-/// do NOT: the highest note is the last version SHIPPED, so the open one is the next patch.
+/// Normally they coincide: the `Version:` line names the open version, and `roll` freezes
+/// the sheet under that name before advancing it. They diverge only for a sheet with no
+/// `Version:` line, where everything in `versions/` has already been frozen, so the open
+/// version is the next patch after the highest of them.
 ///
-/// Conflating them is not cosmetic. A wave takes its entire identity from this number —
-/// branch, PR, blackboard, and the note it freezes on merge. Reading back a shipped version
-/// means a wave names itself after a release that is already tagged and in the CHANGELOG,
-/// then freezes a second, different note under that same name.
+/// Conflating them is not cosmetic: a wave takes its identity from this number - branch,
+/// PR, blackboard, and the note it freezes on merge. Reading back an already-frozen version
+/// makes a wave name itself after one, then freeze a second, different note under that name.
 fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
     if let Some(sheet) = sheet_path(dir) {
         if let Some(v) = fs::read_to_string(&sheet).ok().and_then(|c| sheet_version(&c)) {
             return Some(v);
         }
     }
-    // No `Version:` line: everything findable has already gone out, so open the next patch.
+    // No `Version:` line: everything in `versions/` is already frozen, so open the next patch.
     Some(next_version(current_version(dir), Bump::Patch))
 }
 
@@ -530,33 +532,6 @@ fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
             Bump::Major => (a + 1, 0, 0),
         },
     }
-}
-
-/// New version notes land in `changelog/` when the project keeps one, else at its root
-/// — so each project's existing layout is preserved.
-fn version_dir(project_dir: &Path) -> PathBuf {
-    let cl = project_dir.join("changelog");
-    if cl.is_dir() {
-        cl
-    } else {
-        project_dir.to_path_buf()
-    }
-}
-
-/// A version note: frontmatter + an open task line, matching the existing convention.
-fn version_template(ver: &str) -> String {
-    format!("---\nid: {ver}\naliases: []\ntags: []\n---\n\n- [ ] \n")
-}
-
-fn write_version_note(project_dir: &Path, ver: &str) -> Result<PathBuf> {
-    let dir = version_dir(project_dir);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{ver}.md"));
-    if path.exists() {
-        bail!("{} already exists", path.display());
-    }
-    fs::write(&path, version_template(ver))?;
-    Ok(path)
 }
 
 /// That org's current project by name (case-insensitive), if it has one.
@@ -651,30 +626,13 @@ fn choose_project_dir(name: &str, mut found: Vec<(String, PathBuf, bool)>) -> Re
     }
 }
 
-/// `notes projects --bump <name>` — start the next version's note so you can scope
-/// tasks into it. A project with no version yet is seeded at v0.0.1.
-///
-/// Legacy verb for the version-note projects (each `vX.Y.Z.md` is its own task list). New
-/// sheet-model projects use `--roll` instead, which freezes the whole sheet on rollover.
-pub fn bump(p: &Profile, log: &Logger, name: &str, level: Bump) -> Result<()> {
-    let dir = project_dir(p, name)?;
-    let ver = fmt_version(next_version(current_version(&dir), level));
-    let path = write_version_note(&dir, &ver)?;
-    log.info("projects", &format!("{name} -> {ver}"));
-    println!("{}", path.display());
-    Ok(())
-}
-
 /// The reset body of a freshly-rolled (or newly-created) sheet: title, the version line,
 /// and an empty current wave, NAMED for the version it will ship as.
 ///
-/// A wave IS the patch version: a batch of fixes ships as `x.x.+1`, a release is `x.+1.x`,
-/// a breaking change `+1.x.x`. Seeding the heading with the literal string `new` broke
-/// that at the only point it could have been established — the wave had no id of its own,
-/// so its branch, its blackboard and the note it freezes into all reached for a date
-/// instead, and a frozen `versions/vX.Y.Z.md` could not say which wave it had been. The
-/// version is already on the line above; this makes the wave carry it too, so one id runs
-/// from the sheet through the branch and PR to the frozen note.
+/// A wave IS the patch version: a batch of fixes ships as `x.x.+1`, a release `x.+1.x`, a
+/// breaking change `+1.x.x`. The heading must carry that version rather than a placeholder,
+/// so one id runs from the sheet through the branch and PR to the frozen note. A wave with
+/// no id of its own makes its branch, blackboard and frozen note each reach for a date.
 fn sheet_body(title: &str, ver: &str) -> String {
     format!(
         "{title}\nVersion: {ver}\n\n## {}\n- [ ] \n",
@@ -696,18 +654,14 @@ fn has_wave(content: &str) -> bool {
 
 /// The sheet to roll, ADOPTING a wave sheet that never got a `Version:` line.
 ///
-/// `sheet_path` accepts `README.md` only when it declares a version, so a project whose
-/// sheet grew organically — a `## Wave` the human has been adding tasks to, with no
-/// version line above it — fell through to the legacy branch of `roll`, which writes a
-/// changelog note and leaves the wave in place. That is the worst possible outcome: the
-/// roll reports success, freezes nothing, and the task list silently keeps growing.
+/// `sheet_path` accepts `README.md` only when it declares a version, so a sheet that grew
+/// organically - a `## Wave` with no version line above it - is not rollable until adopted.
 ///
-/// So adopt it. The version is not invented: `current_version` finds the highest version
-/// the project has already recorded in its `changelog/`, and the sheet opens at the NEXT
-/// PATCH after it. The distinction matters — a sheet's `Version:` line names the version
-/// currently OPEN, not the last one shipped (`roll` freezes the sheet UNDER that name and
-/// then advances it), so seeding at the changelog's max would re-open a version that has
-/// already gone out. Nothing is adopted that is not already being used as a wave sheet.
+/// The version is not invented: it opens at the next patch after the highest note in
+/// `versions/`. A `Version:` line names the version currently OPEN, not the last one
+/// frozen, so seeding at the max would re-open a version already frozen and the next roll
+/// would write a second, different note over it. Nothing is adopted that is not already
+/// being used as a wave sheet.
 fn sheet_to_roll(dir: &Path, log: &Logger) -> Result<Option<PathBuf>> {
     if let Some(s) = sheet_path(dir) {
         return Ok(Some(s));
@@ -833,7 +787,19 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
-/// A sheet's content with its title line and `Version:` line dropped — the part that gets
+/// Did this version actually have agent work? True when the frozen wave carries at least
+/// one COMPLETED `#ai` task.
+///
+/// The pairing invariant keys off this: `ai/<ver>.md` exists exactly when the version has
+/// agent evidence to hold. Creating one unconditionally would file an empty note for every
+/// human-only version and make an orphan report meaningless.
+fn has_done_ai_task(frozen_body: &str) -> bool {
+    frozen_body
+        .lines()
+        .any(|l| md::is_checked(l) && board::is_ai(l))
+}
+
+/// A sheet's content with its title line and `Version:` line dropped - the part that gets
 /// re-attached under a freshly written head.
 fn body_after_head(content: &str) -> Vec<String> {
     content
@@ -845,32 +811,25 @@ fn body_after_head(content: &str) -> Vec<String> {
         .collect()
 }
 
-/// `notes projects --roll <name> [--minor|--major] [--force]` — close the current version
+/// `notes projects --roll <name> [--minor|--major] [--force]` - close the current version
 /// and open the next on the working sheet.
 ///
-/// Three steps, and the first one is why this is not a one-liner:
-///
-/// 1. **Gate.** A version with open tasks does not roll. Rolling used to mean "we moved
-///    on": it froze the whole sheet and reset it to an empty wave, so anything still
-///    unchecked left the live sheet and survived only inside the frozen note. That is how
-///    `versions/v1.12.0.md` ended up holding six open items — a full-flow e2e, the
-///    database recovery runbook, an account reset — that are on no live list anywhere.
-///    A closed version now means the work is FINISHED, or a human explicitly moved it on
-///    with `notes ptask <name> move "<q>" --to <ver>`. `--force` is the deliberate override.
-/// 2. **Freeze.** Only the current wave goes into `versions/<vX.Y.Z>.md` (never
+/// 1. **Gate.** A version with open tasks does not roll: closing one means its work is
+///    finished, or a human moved it on with `notes ptask <name> move "<q>" --to <ver>`.
+///    Without this, unchecked tasks leave the live sheet and survive only inside the
+///    frozen note, on no list anyone reads. `--force` is the deliberate override.
+/// 2. **Freeze.** The current wave alone goes into `versions/<vX.Y.Z>.md` (never
 ///    overwriting a frozen one), stamped with the epoch that bounds this version's work.
-/// 3. **Promote.** A planned `## Wave: <next>` becomes the current wave, carrying its
-///    tasks; the rest of the roadmap carries over untouched.
+/// 3. **Pair.** The version's `ai/<vX.Y.Z>.md` is created if absent, so a frozen version
+///    always has its evidence note even when no AI task was tagged during it.
+/// 4. **Promote.** A planned `## Wave: <next>` becomes current, carrying its tasks; the
+///    rest of the roadmap carries over untouched.
+///
+/// No sheet means no roll: the `Version:` line is the only thing naming the open version.
 pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_roll(&dir, log)? else {
-        // No sheet (a legacy / changelog-only project): advance by writing the next version
-        // note, so the cockpit's roll shortcut still does something sensible everywhere.
-        let ver = fmt_version(next_version(current_version(&dir), level));
-        let path = write_version_note(&dir, &ver)?;
-        log.info("projects", &format!("{name} -> {ver} (version note)"));
-        println!("rolled {name}: -> {ver} ({})", path.display());
-        return Ok(());
+        bail!("{name} has no working sheet to roll (no README.md with a `Version: vX.Y.Z` line)");
     };
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
@@ -895,13 +854,10 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
-    // Stamp WHEN this version was frozen. That epoch is the boundary between one
-    // version's work and the next, and consumers (the cockpit's agents panel, the
-    // release agent-changelog) need it to scope "what happened this version".
-    //
-    // It has to be written here rather than inferred from the file's mtime: regenerating
-    // an old frozen note's summary (`C-s` in the version browser) rewrites the file and
-    // would silently drag the boundary forward by however long ago the release was.
+    // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
+    // work and the next, and consumers scope "what happened this version" by it. Written
+    // here rather than read from the file's mtime, because regenerating an old note's
+    // summary rewrites the file and would drag the boundary forward.
     let stamped = format!(
         "{frozen_body}\n<!-- rolled: {} -->\n",
         std::time::SystemTime::now()
@@ -911,7 +867,12 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     );
     fs::write(&frozen, &stamped)?;
 
-    // 3. the promote
+    // 3. the pair
+    if has_done_ai_task(&frozen_body) {
+        ensure_ai_note(&dir, name, &fmt_version(cur))?;
+    }
+
+    // 4. the promote
     md::write_atomic(&sheet, &new_sheet)?;
 
     let next_s = fmt_version(next);
@@ -931,140 +892,179 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     Ok(())
 }
 
-/// Root `vX.Y.Z.md` version notes (NOT `changelog/` — those are release history), sorted
-/// ascending. Each is `(version, path)`.
-fn root_version_notes(dir: &Path) -> Vec<((u32, u32, u32), PathBuf)> {
-    let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("md") {
-                continue;
+/// The proof text for a backfilled row: whatever the task's own marker comment recorded.
+///
+/// A task with no marker gets an explicit `unverified:` string rather than an empty cell,
+/// so a backfilled row can never be mistaken for evidence that was actually captured.
+fn backfilled_proof(line: &str) -> String {
+    let trimmed = line.trim_end();
+    match (trimmed.rfind("<!--"), trimmed.ends_with("-->")) {
+        (Some(i), true) => {
+            let inner = trimmed[i + 4..trimmed.len() - 3].trim();
+            if inner.is_empty() {
+                "unverified: pre-dates the proof gate".to_string()
+            } else {
+                inner.to_string()
             }
-            if let Some(v) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(parse_version)
-            {
-                out.push((v, path));
+        }
+        _ => "unverified: pre-dates the proof gate".to_string(),
+    }
+}
+
+/// The date a frozen version was rolled (`<!-- rolled: EPOCH -->`), as `YYYY-MM-DD`.
+/// `"-"` when the note carries no stamp, which every pre-consolidation note predates.
+fn rolled_on(content: &str) -> String {
+    content
+        .lines()
+        .rev()
+        .find_map(|l| {
+            let t = l.trim();
+            let inner = t.strip_prefix("<!--")?.strip_suffix("-->")?.trim();
+            let secs: i64 = inner.strip_prefix("rolled:")?.trim().parse().ok()?;
+            chrono::DateTime::from_timestamp(secs, 0)
+                .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// `notes projects --migrate <name>` - consolidate a project onto the one version layout.
+///
+/// Idempotent, so it is safe to re-run and safe on a project already consolidated:
+///
+/// 1. `changelog/<ver>.md` moves to `versions/<ver>.md`, never overwriting one that
+///    already exists - two records of the same version is the ambiguity being removed,
+///    so a collision is an error rather than a silent pick.
+/// 2. Every `versions/<ver>.md` holding completed `#ai` tasks gains its `ai/<ver>.md`,
+///    backfilled from each task's own marker comment.
+/// 3. An emptied `changelog/` is removed.
+pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let versions = dir.join("versions");
+    let changelog = dir.join("changelog");
+
+    let mut moved = 0usize;
+    if changelog.is_dir() {
+        fs::create_dir_all(&versions)?;
+        let mut srcs: Vec<PathBuf> = fs::read_dir(&changelog)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+            .collect();
+        srcs.sort();
+        for src in srcs {
+            let Some(fname) = src.file_name() else { continue };
+            let dest = versions.join(fname);
+            if dest.exists() {
+                bail!(
+                    "{} and {} both exist - refusing to overwrite a frozen version",
+                    src.display(),
+                    dest.display()
+                );
+            }
+            fs::rename(&src, &dest)?;
+            moved += 1;
+        }
+        if fs::read_dir(&changelog)?.next().is_none() {
+            fs::remove_dir(&changelog)?;
+        }
+    }
+
+    let mut backfilled = 0usize;
+    let mut notes: Vec<PathBuf> = fs::read_dir(&versions)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
+    notes.sort();
+    for note in notes {
+        let Some(ver) = note.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if parse_version(ver).is_none() || ai_note_path(&dir, ver).exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&note)?;
+        let when = rolled_on(&content);
+        let done: Vec<&str> = content
+            .lines()
+            .filter(|l| md::is_checked(l) && board::is_ai(l))
+            .collect();
+        if done.is_empty() {
+            continue;
+        }
+        for line in done {
+            append_proof(&dir, name, ver, &md::task_key(line), &backfilled_proof(line), &when)?;
+        }
+        backfilled += 1;
+    }
+
+    log.info(
+        "projects",
+        &format!("migrated {name}: moved {moved}, backfilled {backfilled}"),
+    );
+    if moved == 0 && backfilled == 0 {
+        println!("{name}: already consolidated - nothing to do");
+    } else {
+        println!("migrated {name}: {moved} note(s) -> versions/, {backfilled} ai note(s) backfilled");
+    }
+    Ok(())
+}
+
+/// Every violation of the version-pairing invariant, as `"<project> <detail>"` lines.
+///
+/// The invariant: `ai/<ver>.md` exists exactly when `versions/<ver>.md` records completed
+/// `#ai` work. Both directions are findings - a version with agent work and no evidence
+/// note, and an evidence note for a version that was never frozen. The OPEN version is
+/// exempt in the second direction: its human side is the live sheet, not a frozen note.
+pub fn pairing_findings(p: &Profile) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, summary) in indexed(p) {
+        let Some(dir) = summary.parent() else { continue };
+        let open = open_version(dir).map(fmt_version);
+
+        let mut frozen: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir.join("versions")) {
+            for e in entries.flatten() {
+                let path = e.path();
+                let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if parse_version(ver).is_none() {
+                    continue;
+                }
+                frozen.push(ver.to_string());
+                let has_ai_work = fs::read_to_string(&path)
+                    .map(|c| c.lines().any(|l| md::is_checked(l) && board::is_ai(l)))
+                    .unwrap_or(false);
+                if has_ai_work && !ai_note_path(dir, ver).exists() {
+                    out.push(format!("{name} {ver}: agent work frozen with no ai/ note"));
+                }
+            }
+        }
+
+        if let Ok(entries) = fs::read_dir(dir.join("ai")) {
+            for e in entries.flatten() {
+                let path = e.path();
+                let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if parse_version(ver).is_none()
+                    || frozen.iter().any(|f| f == ver)
+                    || open.as_deref() == Some(ver)
+                {
+                    continue;
+                }
+                out.push(format!("{name} {ver}: ai/ note for a version never frozen"));
             }
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort();
     out
 }
 
-/// The task body of a version note: drop its `---` frontmatter block and a leading `# …`
-/// title line, keep the rest (the `## Wave …` content), trimmed.
-fn note_body(content: &str) -> String {
-    let mut lines: Vec<&str> = content.lines().collect();
-    // strip a leading frontmatter block (--- … ---)
-    if lines.first().map(|l| l.trim()) == Some("---") {
-        if let Some(end) = lines.iter().skip(1).position(|l| l.trim() == "---") {
-            lines.drain(0..=end + 1);
-        }
-    }
-    // drop leading blanks, then a single leading `# …` H1 title
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.remove(0);
-    }
-    if lines.first().map(|l| l.starts_with("# ")).unwrap_or(false) {
-        lines.remove(0);
-    }
-    lines.join("\n").trim().to_string()
-}
-
-/// Ensure `summary.md` carries the `Working sheet: [[README]]` pointer (idempotent). Inserts
-/// it just before the first `## ` heading when absent, and appends when the file has none.
-///
-/// The template no longer scaffolds a heading above the STATUS marker (the retired
-/// `## → For the agents`), so a freshly scaffolded summary takes the append path. Both
-/// paths are exercised below; an EXISTING summary still has headings and takes the first.
-fn ensure_sheet_pointer(summary: &Path) -> Result<()> {
-    let content = fs::read_to_string(summary).unwrap_or_default();
-    if content.contains("Working sheet:") {
-        return Ok(());
-    }
-    let pointer = "Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.";
-    let mut out: Vec<String> = Vec::new();
-    let mut inserted = false;
-    for line in content.lines() {
-        if !inserted && line.starts_with("## ") {
-            out.push(pointer.to_string());
-            out.push(String::new());
-            inserted = true;
-        }
-        out.push(line.to_string());
-    }
-    if !inserted {
-        out.push(String::new());
-        out.push(pointer.to_string());
-    }
-    let mut joined = out.join("\n");
-    if !joined.ends_with('\n') {
-        joined.push('\n');
-    }
-    fs::write(summary, joined)?;
-    Ok(())
-}
-
-/// `notes projects --migrate <name>` — upgrade a legacy root-version-note project to the
-/// sheet model (idempotent): the highest `vX.Y.Z.md` becomes the `README.md` sheet (its
-/// tasks + a `Version:` line), lower notes move to `versions/`, `summary.md` gains the
-/// `[[README]]` pointer, and the hub `## Current` lane repoints at the sheet. Projects with
-/// a sheet already, or only `changelog/` notes (release-managed), are left untouched.
-pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
-    let dir = project_dir(p, name)?;
-    if sheet_path(&dir).is_some() {
-        println!("{name}: already sheet-model — nothing to migrate");
-        return Ok(());
-    }
-    let notes = root_version_notes(&dir);
-    let Some(((cur, cur_path), older)) = notes.split_last().map(|(l, r)| (l.clone(), r)) else {
-        println!("{name}: no root version note to migrate (changelog-only / release-managed) — skipped");
-        return Ok(());
-    };
-
-    // highest note -> README sheet (Version line + its task body), then drop the note
-    let body = note_body(&fs::read_to_string(&cur_path)?);
-    let readme = dir.join("README.md");
-    let title = format!("# {name}");
-    let sheet = if body.is_empty() {
-        sheet_body(&title, &fmt_version(cur))
-    } else {
-        format!("{title}\nVersion: {}\n\n{body}\n", fmt_version(cur))
-    };
-    fs::write(&readme, sheet)?;
-    fs::remove_file(&cur_path)?;
-
-    // older notes -> versions/
-    if !older.is_empty() {
-        let versions = dir.join("versions");
-        fs::create_dir_all(&versions)?;
-        for (v, path) in older {
-            let dest = versions.join(format!("{}.md", fmt_version(*v)));
-            if !dest.exists() {
-                fs::rename(path, &dest)?;
-            }
-        }
-    }
-
-    // summary pointer + repoint the hub lane at the sheet
-    ensure_sheet_pointer(&dir.join("summary.md"))?;
-    if let Some(idx) = &p.project_index {
-        let content = fs::read_to_string(idx).unwrap_or_default();
-        if let Some(removed) = remove_from_lane(&content, "Current", name) {
-            let with = md::insert_under_heading(&removed, "Current", &[lane_line(p, &readme, name)]);
-            fs::write(idx, with)?;
-        }
-    }
-
-    log.info("projects", &format!("migrated {name} to sheet model at {}", fmt_version(cur)));
-    println!("migrated {name}: {} -> README.md sheet (versions/ for older)", fmt_version(cur));
-    Ok(())
-}
-
-/// `notes projects --version-of <name>` — print the version currently OPEN: what the
+/// `notes projects --version-of <name>` - print the version currently OPEN: what the
 /// project is working towards, and what a wave started now will ship as. NOT the last
 /// version shipped.
 pub fn show_version(p: &Profile, name: &str) -> Result<()> {
@@ -1241,13 +1241,17 @@ fn collect_project_files(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name().and_then(|n| n.to_str()) == Some("changelog") {
+            // The version record lives in these. `changelog/` is the pre-consolidation
+            // location, listed while any project still has one; without `versions/` and
+            // `ai/` here the browser shows a project's whole version history as empty.
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(name, "versions" | "ai" | "changelog") {
                 if let Ok(sub) = fs::read_dir(&path) {
                     for e in sub.flatten() {
                         let sp = e.path();
                         if sp.extension().and_then(|x| x.to_str()) == Some("md") {
                             let stem = sp.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                            out.push((sp.clone(), format!("changelog/{stem}")));
+                            out.push((sp.clone(), format!("{name}/{stem}")));
                         }
                     }
                 }
@@ -1378,6 +1382,38 @@ Version: v1.13.0
     }
 
     #[test]
+    fn a_version_pairs_only_when_it_actually_closed_agent_work() {
+        // Completed and tagged: this version has evidence to hold.
+        assert!(has_done_ai_task("- [x] ship the thing #ai\n"));
+        // Tagged but not finished, and finished but not tagged: neither is agent evidence.
+        assert!(!has_done_ai_task("- [ ] ship the thing #ai\n"));
+        assert!(!has_done_ai_task("- [x] ship the thing\n"));
+        // A human-only version must NOT get an empty ai note, or an orphan report that
+        // reads "unpaired" stops meaning anything.
+        assert!(!has_done_ai_task("# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n"));
+        // The `#aid` trap: a substring match here would pair a version with no agent work.
+        assert!(!has_done_ai_task("- [x] fix the first-aid page #aid\n"));
+    }
+
+    #[test]
+    fn backfilled_proof_never_passes_itself_off_as_evidence() {
+        assert_eq!(backfilled_proof("- [x] a #ai <!-- pr:1149 -->"), "pr:1149");
+        assert_eq!(backfilled_proof("- [x] a #ai <!-- vk:634 pr:1159 -->"), "vk:634 pr:1159");
+        // No marker, and an empty one, are both stated as unverified rather than blank.
+        assert!(backfilled_proof("- [x] a #ai").starts_with("unverified:"));
+        assert!(backfilled_proof("- [x] a #ai <!--  -->").starts_with("unverified:"));
+    }
+
+    #[test]
+    fn a_frozen_notes_date_comes_from_its_roll_stamp() {
+        // 2026-08-11T00:00:00Z. Asserted on the year alone: the stamp is rendered in local
+        // time, so the day can legitimately differ by one from the UTC date.
+        assert!(rolled_on("body\n<!-- rolled: 1786492800 -->\n").starts_with("2026-"));
+        // A note frozen before the stamp existed has no date to claim.
+        assert_eq!(rolled_on("body with no stamp\n"), "-");
+    }
+
+    #[test]
     fn proof_rows_append_in_order_under_the_table_header() {
         let dir = std::env::temp_dir().join(format!("proj-proof-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -1487,13 +1523,6 @@ _(nothing yet)_
     }
 
     #[test]
-    fn version_note_is_scoped_as_a_task_list() {
-        let t = version_template("v0.0.1");
-        assert!(t.contains("id: v0.0.1"));
-        assert!(t.contains("- [ ]")); // an open task to scope into
-    }
-
-    #[test]
     fn template_carries_the_load_bearing_markers() {
         let t = summary_template("my-app");
         // lab-sync greps the AUTO/STATUS markers
@@ -1544,15 +1573,13 @@ _(nothing yet)_
 
     #[test]
     fn a_wave_sheet_with_no_version_line_is_adopted_at_the_next_open_version() {
-        // The organically-grown sheet: a `## Wave` the human has been adding to, no `Version:`
-        // line, releases recorded in `changelog/`. Before adopting, `roll` fell through to
-        // the legacy branch — it reported success, froze nothing, and left the wave in
-        // place while the sheet kept growing.
+        // The organically-grown sheet: a `## Wave` the human has been adding to, with no
+        // `Version:` line, on a project whose earlier versions are already frozen.
         let tmp = std::env::temp_dir().join(format!("notes-adopt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(tmp.join("changelog")).unwrap();
-        fs::write(tmp.join("changelog/v1.9.0.md"), "").unwrap();
-        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+        fs::create_dir_all(tmp.join("versions")).unwrap();
+        fs::write(tmp.join("versions/v1.9.0.md"), "").unwrap();
+        fs::write(tmp.join("versions/v1.10.0.md"), "").unwrap();
         let sheet = "# alpha\n\n## Wave: new (current)\n- [ ] a bug\n";
         fs::write(tmp.join("README.md"), sheet).unwrap();
 
@@ -1562,10 +1589,10 @@ _(nothing yet)_
         assert_eq!(got, Some(tmp.join("README.md")));
 
         let after = fs::read_to_string(tmp.join("README.md")).unwrap();
-        // The NEXT patch after the highest shipped release, not that release itself: a
+        // The NEXT patch after the highest frozen version, not that version itself: a
         // sheet's `Version:` names the version still open. Seeding at v1.10.0 would
-        // re-open a version already sitting in changelog/, and the next roll would freeze
-        // a second, different v1.10.0.
+        // re-open one already frozen, and the next roll would freeze a second, different
+        // v1.10.0 over it.
         assert_eq!(sheet_version(&after), Some((1, 10, 1)));
         assert!(after.starts_with("# alpha\nVersion: v1.10.1\n"));
         // the human's task survives adoption
@@ -1612,15 +1639,15 @@ _(nothing yet)_
 
     #[test]
     fn open_version_is_the_next_patch_when_every_recorded_version_has_shipped() {
-        // The live shape this was found in: releases recorded as `changelog/vX.Y.Z.md`, no
+        // The live shape this was found in: earlier versions frozen in `versions/`, no
         // `Version:` line, and v1.10.0 already TAGGED and in the app's CHANGELOG. A wave
         // reading that back would name its branch, board and frozen note after a release
         // that has already gone out, then freeze a second, different v1.10.0.
         let tmp = std::env::temp_dir().join(format!("notes-open-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(tmp.join("changelog")).unwrap();
-        fs::write(tmp.join("changelog/v1.9.0.md"), "").unwrap();
-        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+        fs::create_dir_all(tmp.join("versions")).unwrap();
+        fs::write(tmp.join("versions/v1.9.0.md"), "").unwrap();
+        fs::write(tmp.join("versions/v1.10.0.md"), "").unwrap();
 
         // the highest RECORDED version is still the shipped one - that gap is the point
         assert_eq!(current_version(&tmp), Some((1, 10, 0)));
@@ -1662,8 +1689,8 @@ _(nothing yet)_
         // under a name no other artifact used.
         let tmp = std::env::temp_dir().join(format!("notes-open-agree-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(tmp.join("changelog")).unwrap();
-        fs::write(tmp.join("changelog/v1.10.0.md"), "").unwrap();
+        fs::create_dir_all(tmp.join("versions")).unwrap();
+        fs::write(tmp.join("versions/v1.10.0.md"), "").unwrap();
         let sheet = "# alpha\n\n## Wave: new (current)\n- [ ] a bug\n";
         fs::write(tmp.join("README.md"), sheet).unwrap();
 

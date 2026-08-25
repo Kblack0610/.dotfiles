@@ -5,6 +5,7 @@
 
 use crate::config::Profile;
 use crate::index;
+use crate::projects;
 use crate::logging::Logger;
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDate};
@@ -117,6 +118,18 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
             }
         }
         Err(e) => r.add(Status::Warn, "zettel scan", &e.to_string()),
+    }
+
+    // 7. Version pairing: a frozen version and its ai/ evidence note travel together
+    let pairing = projects::pairing_findings(p);
+    if pairing.is_empty() {
+        r.add(Status::Pass, "version pairing", "every frozen version matches its ai note");
+    } else {
+        r.add(
+            Status::Warn,
+            "version pairing",
+            &format!("{} unpaired ({})", pairing.len(), pairing.join("; ")),
+        );
     }
 
     println!();
