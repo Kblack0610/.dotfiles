@@ -82,6 +82,10 @@ Media/Music
 .claude/commands/kb/
 .claude/commands/remember.md
 .claude/commands/wave.md
+# Names a client monorepo blocklisted in .githooks/sensitive-tokens.txt, so it
+# lives in the private overlay alongside the other product-specific skills.
+# The path here is a symlink into ~/.dotfiles-private.
+.claude/commands/sc/manual-test.md
 !.claude/hooks/
 !.claude/settings.json
 # settings.json names a custom theme by slug, so the theme file has to travel with
