@@ -35,6 +35,38 @@ rbw login
 rbw unlock
 ```
 
+## Troubleshooting: `rbw add` fails with "missing field `access_token`"
+
+Symptom, on any write:
+
+```
+rbw add: failed to parse JSON: missing field `access_token` at line 1 column 25
+```
+
+This means the login session expired. It does not mean rbw or Vaultwarden is broken. The refresh token Vaultwarden issues lasts 30 days; once it lapses, rbw's automatic refresh POST to `/identity/connect/token` gets a 400, and rbw then tries to deserialize that error body as a token response. The parse error is just rbw reporting the failure badly.
+
+Two things make this hard to recognize:
+
+1. Reads keep working, so nothing looks wrong. `rbw list` and `rbw get` are served from the local cache, frozen at the last successful sync. Anything added or rotated on another device since then is invisible here, and a rotated secret silently returns its old value. Only writes (`add`, `edit`) fail loudly.
+2. `rbw login` on its own is a silent no-op. rbw decides whether to log in by checking whether tokens are *present*, not whether they are *valid*. Expired tokens are still present, so login exits 0 with no password prompt and writes nothing. `rbw stop-agent` does not help either, because the stale tokens live on disk rather than in the agent.
+
+The fix, and `rbw purge` is the step that is easy to miss:
+
+```bash
+# Back up the local db first: purge deletes every cached entry, and
+# `rbw get` stays broken until login+sync succeeds.
+install -m 600 ~/.cache/rbw/*.json ~/rbw-db-backup-$(date +%F).json
+
+rbw stop-agent
+rbw purge
+rbw login        # now it actually prompts for the master password
+rbw sync
+```
+
+Confirm it took: the mtime on `~/.cache/rbw/*.json` should be current, and `rbw list` should return the full entry count again.
+
+If `rbw login` still returns silently, the account has 2FA and the device needs registering with a personal API key (web vault -> Settings -> Security -> Keys -> View API Key), then `rbw register`.
+
 ## Storing & sourcing the Cloudflare tokens
 
 ```bash
