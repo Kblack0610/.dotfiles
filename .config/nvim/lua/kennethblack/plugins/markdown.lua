@@ -436,9 +436,12 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
-          --   tc  convert line to task, or add an indented subtask if already one
+          --   tt  convert line to task, or add an indented subtask if already one
           --   tP  raise priority  none -> low -> high -> urgent -> none
           --   tp  lower priority  (the same ring, the other way)
+          -- `tt`, not `tc`: notes.nvim binds `<leader>tc` globally to the task cockpit,
+          -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
+          -- from every markdown buffer -- the one place you most want it.
           -- Current line (normal) / selection (visual).
           vim.keymap.set("n", "<leader>ts", function()
             local lnum = vim.api.nvim_win_get_cursor(0)[1]
@@ -454,7 +457,7 @@ return {
           -- already one.
           vim.keymap.set(
             "n",
-            "<leader>tc",
+            "<leader>tt",
             smart_task,
             { buffer = buf, desc = "Convert line to task / add subtask", silent = true }
           )
