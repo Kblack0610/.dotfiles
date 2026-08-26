@@ -205,22 +205,48 @@ _landing() {
   awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
 }
 
-# A landing session is long-lived, so whatever its editor opened on creation stays
-# open — which for a DATE-DERIVED page means `root` quietly hands you an old note.
-# That is exactly how a May-1st daily kept reappearing.
+# The manifest's startup command for one session, e.g. `nvim ~/.notes/lab/projects/index.md`.
+_startup_cmd() {
+  awk -v s="$2" \
+    '!/^[[:space:]]*#/ && $1 == s { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' \
+    "$MANIFEST_DIR/$1.conf" 2>/dev/null
+}
+
+# The FILE a world's startup command opens, resolved fresh right now, or "" when the
+# command opens no single file.
 #
-# `root` therefore restores the landing page in two cases:
+# Resolved rather than pattern-matched because the two worlds name their page in
+# different ways and both have to work: lab's is a literal path, hub's is
+# `nvim "$(notes path)"` - a DATE-DERIVED page that is only correct if it is
+# re-evaluated at press time. Expanding it is no more trust than this file already
+# places in the manifest: the shell case below sends the whole line to a shell.
+_startup_page() {
+  local startup arg
+  startup="$(_startup_cmd "$1" "$2")"
+  case "$startup" in *nvim\ *) ;; *) return 0 ;; esac
+  arg="${startup##*nvim }"
+  # A leading flag means this opens something other than one plain file (`nvim -p a b`).
+  # Everything else is expanded and then filtered by the caller's `-e` test, which is the
+  # honest check - rejecting on a SPACE would also reject a vault path that has one.
+  case "$arg" in -*) return 0 ;; esac
+  eval "printf '%s' $arg" 2>/dev/null
+}
+
+# A landing session is long-lived, so whatever its editor opened on creation stays open.
+# `root` means "take me to the top of this world", so it has to put that page back:
+# at a SHELL, re-run the startup command; under nvim, `:e` the world's own page.
 #
-#   1. The pane is back at a SHELL — you quit the editor. Re-run the manifest's
-#      startup command, so the root page is genuinely a page and not the shell you
-#      happen to have left behind.
-#   2. The pane is running nvim on a daily that is NOT today's — switch the buffer
-#      with `:e`. Escape first, in case the editor is in insert mode.
+# The page comes from the MANIFEST, not from a hardcoded shape. Keying on a
+# `journal/daily` title only ever worked for hub, and left every other world on the
+# leave-it-alone branch - which is why `tmx root lab` never restored index.md. Hub's
+# stale-daily swap now falls out of the same rule, since its page re-resolves to today.
 #
-# Anything else (nvim on some other file, nvim already on today's note) is left
-# alone: `root` restores the page, it does not hijack an editor you are using.
+# The `:e` is unconditional: `pane_title` is whatever plugin nvim is showing, and three
+# worlds' pages are all named `index.md`, so "are we already there" cannot be answered
+# reliably. Re-editing the current file is harmless, and nvim refuses `:e` on a modified
+# buffer, which is what stops this discarding unsaved work.
 _refresh_landing() {
-  local srv="$1" sess="$2" pane cmd title today startup
+  local srv="$1" sess="$2" pane cmd page startup
 
   pane="$(tmux -L "$srv" list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null | head -1)"
   [ -n "$pane" ] || return 0
@@ -229,26 +255,23 @@ _refresh_landing() {
   # Case 1: back at a shell -> re-run the manifest's startup command for this entry.
   case "$cmd" in
     sh|bash|zsh|fish)
-      startup="$(awk -v s="$sess" \
-        '!/^[[:space:]]*#/ && $1 == s { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' \
-        "$MANIFEST_DIR/$srv.conf" 2>/dev/null)"
+      startup="$(_startup_cmd "$srv" "$sess")"
       [ -n "$startup" ] || return 0
       tmux -L "$srv" send-keys -t "$sess:" "$startup" Enter
       return 0
       ;;
   esac
 
-  # Case 2: an editor sitting on a stale daily.
+  # Case 2: an editor sitting on something that is not this world's page.
   [ "$cmd" = "nvim" ] || return 0
-  title="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)"
-  case "$title" in *"journal/daily"*) ;; *) return 0 ;; esac
-
-  today="$(notes path daily 2>/dev/null)"
-  [ -n "$today" ] && [ -f "$today" ] || return 0
-  case "$title" in *"$(basename "$today")"*) return 0 ;; esac   # already today
+  page="$(_startup_page "$srv" "$sess")"
+  [ -n "$page" ] && [ -e "$page" ] || return 0
 
   tmux -L "$srv" send-keys -t "$sess:" Escape
-  tmux -L "$srv" send-keys -t "$sess:" ":e $today" Enter
+  # Backslash-escaped, not quoted: this is typed at vim's command line, where a bare
+  # space splits one path into two filenames and `:e "a b"` opens a file literally named
+  # with the quotes. A vault path with a space in it is ordinary.
+  tmux -L "$srv" send-keys -t "$sess:" ":e ${page// /\\ }" Enter
 }
 
 # ── The back-stack ───────────────────────────────────────────────────────────
