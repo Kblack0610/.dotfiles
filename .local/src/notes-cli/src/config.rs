@@ -796,6 +796,20 @@ pub fn print(p: &Profile) {
             p.rollup.join(", ")
         }
     );
+    // Cross-org, so identical on every profile - printed here because the board is not the
+    // only surface that lays orgs out in a row. The project index rolls up the same orgs and
+    // must lead with the same one; without this the shell that renders it would need its own
+    // copy of the order, and two lists that mean "which org leads" is one too many.
+    if let Ok(bl) = board_layout() {
+        println!(
+            "board-order {}",
+            if bl.order.is_empty() {
+                "(alphabetical)".to_string()
+            } else {
+                bl.order.join(", ")
+            }
+        );
+    }
     println!("continuous  {}", p.continuous.display());
     println!("monthly     {}", p.monthly.display());
     println!("archive     {}", p.archive.display());
