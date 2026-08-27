@@ -5,6 +5,7 @@
 //! Everything here is pure Rust (chrono for dates) so behaviour is identical on
 //! macOS and Linux — no GNU-vs-BSD `date`/`sed`/`stat` divergence.
 
+mod agent_sheet;
 mod archive;
 mod backlog;
 mod board;
