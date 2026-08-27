@@ -55,7 +55,7 @@ fi
 # Honour the theme this machine already chose; fall back to the daytime default
 # that theme-day.timer applies, matching setup_theme() in both installers.
 state="$HOME/.config/theme/current"
-theme="jackie-brown"
+theme="batman"
 [ -r "$state" ] && theme="$(cat "$state")"
 
 echo "post-merge: re-rendering ${#missing[@]} generated theme file(s) for '$theme'"
