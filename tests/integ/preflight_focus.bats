@@ -128,15 +128,15 @@ seed_focus() {
   refute_output --partial 'notes focus add'
 }
 
-# -- the @ai board lane: the channel that replaced "## -> For the agents" ------
+# -- the agent board lane: the channel that replaced "## -> For the agents" ------
 
-# seed_ai_stub -- a `notes` stub that emits <project>\t<text> rows for --ai, and records
+# seed_agent_stub -- a `notes` stub that emits <project>\t<text> rows for --agent, and records
 # the projects it was asked for so the JOIN can be asserted, not just the output.
-seed_ai_stub() {
+seed_agent_stub() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
-if [ "${1:-}" = "board" ] && [ "${2:-}" = "--ai" ]; then
+if [ "${1:-}" = "board" ] && [ "${2:-}" = "--agent" ]; then
   for a in "$@"; do
     case "$a" in
       notes-cockpit) printf 'notes-cockpit\tcockpit row one\n' ;;
@@ -168,27 +168,27 @@ seed_tracker_map() {
 EOF
 }
 
-@test "the @ai lane surfaces the board rows for THIS repo's lab projects" {
+@test "the agent lane surfaces the board rows for THIS repo's lab projects" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_ai_stub
+  seed_agent_stub
 
   run context
   assert_success
-  assert_output --partial '@ai board items'
+  assert_output --partial 'agent-board items'
   assert_output --partial '[notes-cockpit] cockpit row one'
   assert_output --partial '[agent-runtime] runtime row one'
 }
 
-@test "the @ai lane joins through trackers.repo, NOT the directory name" {
+@test "the agent lane joins through trackers.repo, NOT the directory name" {
   # The whole point. The project resolves to `toolrepo`; its board projects are named
   # something else entirely. A directory-name join asks for the wrong thing and finds
   # nothing -- which is what the replaced lab readback did for every real session.
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_ai_stub
+  seed_agent_stub
 
   context >/dev/null
   assert_called '--project notes-cockpit'
@@ -205,7 +205,7 @@ EOF
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_ai_stub
+  seed_agent_stub
 
   run context
   assert_success
@@ -218,14 +218,14 @@ EOF
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_ai_stub
+  seed_agent_stub
   run context
   assert_success
   refute_output --partial 'For the agents'
   refute_output --partial 'via lab'
 }
 
-@test "no notes binary means no @ai block, and the rest of the context survives" {
+@test "no notes binary means no agent block, and the rest of the context survives" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
@@ -234,7 +234,7 @@ EOF
   run context
   assert_success
   assert_output --partial 'Recent commits'
-  refute_output --partial '@ai board items'
+  refute_output --partial 'agent-board items'
 }
 
 @test "the injected context stays well under the old 28.5 KB" {
@@ -244,7 +244,7 @@ EOF
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_ai_stub
+  seed_agent_stub
 
   local n
   n=$(context | wc -c)
