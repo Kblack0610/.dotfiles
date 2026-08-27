@@ -790,7 +790,7 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
 /// Did this version actually have agent work? True when the frozen wave carries at least
 /// one COMPLETED `#ai` task.
 ///
-/// The pairing invariant keys off this: `ai/<ver>.md` exists exactly when the version has
+/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the version has
 /// agent evidence to hold. Creating one unconditionally would file an empty note for every
 /// human-only version and make an orphan report meaningless.
 fn has_done_ai_task(frozen_body: &str) -> bool {
@@ -820,7 +820,7 @@ fn body_after_head(content: &str) -> Vec<String> {
 ///    frozen note, on no list anyone reads. `--force` is the deliberate override.
 /// 2. **Freeze.** The current wave alone goes into `versions/<vX.Y.Z>.md` (never
 ///    overwriting a frozen one), stamped with the epoch that bounds this version's work.
-/// 3. **Pair.** The version's `ai/<vX.Y.Z>.md` is created if absent, so a frozen version
+/// 3. **Pair.** The version's `agent/versions/<vX.Y.Z>.md` is created if absent, so a frozen version
 ///    always has its evidence note even when no AI task was tagged during it.
 /// 4. **Promote.** A planned `## Wave: <next>` becomes current, carrying its tasks; the
 ///    rest of the roadmap carries over untouched.
@@ -869,7 +869,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
 
     // 3. the pair
     if has_done_ai_task(&frozen_body) {
-        ensure_ai_note(&dir, name, &fmt_version(cur))?;
+        ensure_agent_note(&dir, name, &fmt_version(cur))?;
     }
 
     // 4. the promote
@@ -931,16 +931,25 @@ fn rolled_on(content: &str) -> String {
 ///
 /// Idempotent, so it is safe to re-run and safe on a project already consolidated:
 ///
-/// 1. `changelog/<ver>.md` moves to `versions/<ver>.md`, never overwriting one that
+/// 1. `ai/<ver>.md` moves to `agent/versions/<ver>.md` - the agents' half of a project
+///    renamed from `ai` and given the same `README.md`-beside-`versions/` shape the
+///    human's half has.
+/// 2. `changelog/<ver>.md` moves to `versions/<ver>.md`, never overwriting one that
 ///    already exists - two records of the same version is the ambiguity being removed,
 ///    so a collision is an error rather than a silent pick.
-/// 2. Every `versions/<ver>.md` holding completed `#ai` tasks gains its `ai/<ver>.md`,
-///    backfilled from each task's own marker comment.
-/// 3. An emptied `changelog/` is removed.
+/// 3. Every `versions/<ver>.md` holding completed `#ai` tasks gains its
+///    `agent/versions/<ver>.md`, backfilled from each task's own marker comment.
+/// 4. An emptied `changelog/` or `ai/` is removed.
+///
+/// Step 1 runs BEFORE step 3 on purpose: the backfill skips a version whose agent note
+/// already exists, so relocating second would write a second copy of every note it had
+/// just orphaned.
 pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     let dir = project_dir(p, name)?;
     let versions = dir.join("versions");
     let changelog = dir.join("changelog");
+
+    let relocated = relocate_ai_dir(&dir)?;
 
     let mut moved = 0usize;
     if changelog.is_dir() {
@@ -982,7 +991,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         let Some(ver) = note.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if parse_version(ver).is_none() || ai_note_path(&dir, ver).exists() {
+        if parse_version(ver).is_none() || agent_note_path(&dir, ver).exists() {
             continue;
         }
         let content = fs::read_to_string(&note)?;
@@ -1002,19 +1011,65 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
 
     log.info(
         "projects",
-        &format!("migrated {name}: moved {moved}, backfilled {backfilled}"),
+        &format!(
+            "migrated {name}: relocated {relocated}, moved {moved}, backfilled {backfilled}"
+        ),
     );
-    if moved == 0 && backfilled == 0 {
+    if relocated == 0 && moved == 0 && backfilled == 0 {
         println!("{name}: already consolidated - nothing to do");
     } else {
-        println!("migrated {name}: {moved} note(s) -> versions/, {backfilled} ai note(s) backfilled");
+        println!(
+            "migrated {name}: {relocated} ai/ note(s) -> agent/versions/, \
+             {moved} note(s) -> versions/, {backfilled} agent note(s) backfilled"
+        );
     }
     Ok(())
 }
 
+/// Move a project's legacy `ai/<ver>.md` notes to `agent/versions/<ver>.md`. Returns how
+/// many moved; zero for the 10 of 16 projects that never had an `ai/` dir.
+///
+/// A collision is an error, not a silent pick: two records of one version's agent work is
+/// exactly the ambiguity this layout removes, and the old file is the one with the history.
+fn relocate_ai_dir(dir: &Path) -> Result<usize> {
+    let legacy = dir.join("ai");
+    if !legacy.is_dir() {
+        return Ok(0);
+    }
+    let dest_dir = agent_dir(dir).join("versions");
+    let mut srcs: Vec<PathBuf> = fs::read_dir(&legacy)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
+    srcs.sort();
+
+    let mut n = 0usize;
+    for src in srcs {
+        let Some(fname) = src.file_name() else { continue };
+        let dest = dest_dir.join(fname);
+        if dest.exists() {
+            bail!(
+                "{} and {} both exist - refusing to overwrite an agent note",
+                src.display(),
+                dest.display()
+            );
+        }
+        fs::create_dir_all(&dest_dir)?;
+        fs::rename(&src, &dest)?;
+        n += 1;
+    }
+    // Only when it is genuinely empty: a stray non-md file means something else lives here
+    // and deleting the dir would take it with them.
+    if fs::read_dir(&legacy)?.next().is_none() {
+        fs::remove_dir(&legacy)?;
+    }
+    Ok(n)
+}
+
 /// Every violation of the version-pairing invariant, as `"<project> <detail>"` lines.
 ///
-/// The invariant: `ai/<ver>.md` exists exactly when `versions/<ver>.md` records completed
+/// The invariant: `agent/versions/<ver>.md` exists exactly when `versions/<ver>.md` records completed
 /// `#ai` work. Both directions are findings - a version with agent work and no evidence
 /// note, and an evidence note for a version that was never frozen. The OPEN version is
 /// exempt in the second direction: its human side is the live sheet, not a frozen note.
@@ -1065,16 +1120,16 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                     continue;
                 }
                 frozen.push(ver.to_string());
-                let has_ai_work = fs::read_to_string(&path)
+                let has_agent_work = fs::read_to_string(&path)
                     .map(|c| c.lines().any(|l| md::is_checked(l) && board::is_ai(l)))
                     .unwrap_or(false);
-                if has_ai_work && !ai_note_path(dir, ver).exists() {
-                    out.push(format!("{name} {ver}: agent work frozen with no ai/ note"));
+                if has_agent_work && !agent_note_path(dir, ver).exists() {
+                    out.push(format!("{name} {ver}: agent work frozen with no agent/ note"));
                 }
             }
         }
 
-        if let Ok(entries) = fs::read_dir(dir.join("ai")) {
+        if let Ok(entries) = fs::read_dir(agent_dir(dir).join("versions")) {
             for e in entries.flatten() {
                 let path = e.path();
                 let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -1086,7 +1141,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 {
                     continue;
                 }
-                out.push(format!("{name} {ver}: ai/ note for a version never frozen"));
+                out.push(format!("{name} {ver}: agent/ note for a version never frozen"));
             }
         }
     }
@@ -1130,19 +1185,34 @@ pub fn show_waves(p: &Profile, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// A project's AI note for `ver`: `<project>/ai/<vX.Y.Z>.md`.
+/// The agents' half of a project: `<project>/agent/`.
+///
+/// ONE name for it, so no caller spells the directory itself. Named `agent` rather than `ai`
+/// because it holds the agents' WORK, not a category of technology, and because everything
+/// under it mirrors the human's side of the project one level down: a live sheet at
+/// `agent/README.md`, frozen waves in `agent/versions/`.
+pub(crate) fn agent_dir(dir: &Path) -> PathBuf {
+    dir.join("agent")
+}
+
+/// A project's frozen agent note for `ver`: `<project>/agent/versions/<vX.Y.Z>.md`.
 ///
 /// ONE resolver, so no writer guesses the path. The agents' evidence for a version used to
 /// live only on the runtime axis (`~/.agent/plans/<app>/wave-<ver>-report.md`), where the
 /// human never sees it and where it is eventually archived; this puts it in the lab dir
 /// beside the frozen version note it belongs to. Version-named, so a roll moves nothing.
-pub(crate) fn ai_note_path(dir: &Path, ver: &str) -> PathBuf {
-    dir.join("ai").join(format!("{ver}.md"))
+///
+/// Under `agent/versions/` rather than flat, because the live agent sheet moves in beside
+/// it next: a dir mixing one live file with N frozen ones can only tell them apart by
+/// parsing names. The human's side is already `README.md` beside `versions/`; this is that
+/// shape, not a second convention.
+pub(crate) fn agent_note_path(dir: &Path, ver: &str) -> PathBuf {
+    agent_dir(dir).join("versions").join(format!("{ver}.md"))
 }
 
-/// The AI note for `ver`, created (with its `## Proof` table and `## Notes` log) if absent.
-pub(crate) fn ensure_ai_note(dir: &Path, project: &str, ver: &str) -> Result<PathBuf> {
-    let path = ai_note_path(dir, ver);
+/// The agent note for `ver`, created (with its `## Proof` table and `## Notes` log) if absent.
+pub(crate) fn ensure_agent_note(dir: &Path, project: &str, ver: &str) -> Result<PathBuf> {
+    let path = agent_note_path(dir, ver);
     if path.exists() {
         return Ok(path);
     }
@@ -1152,7 +1222,7 @@ pub(crate) fn ensure_ai_note(dir: &Path, project: &str, ver: &str) -> Result<Pat
     fs::write(
         &path,
         format!(
-            "# {project} {ver} - AI notes\n\n\
+            "# {project} {ver} - agent notes\n\n\
              What the agents did for this version and the evidence behind it. The human's \
              task list is the sheet (`README.md`); this is the proof and the working log \
              underneath it. Rows are appended by `notes ptask <project> done`.\n\n\
@@ -1165,7 +1235,7 @@ pub(crate) fn ensure_ai_note(dir: &Path, project: &str, ver: &str) -> Result<Pat
     Ok(path)
 }
 
-/// Append a row to an AI note's `## Proof` table.
+/// Append a row to an agent note's `## Proof` table.
 ///
 /// Inserted after the LAST existing row rather than under the heading, so the table reads
 /// oldest-first and a new row can never land between the header and its `|---|` separator
@@ -1178,7 +1248,7 @@ pub(crate) fn append_proof(
     proof: &str,
     when: &str,
 ) -> Result<PathBuf> {
-    let path = ensure_ai_note(dir, project, ver)?;
+    let path = ensure_agent_note(dir, project, ver)?;
     let content = fs::read_to_string(&path)?;
     let lines: Vec<&str> = content.lines().collect();
     let row = format!("| {} | {} | {when} |", cell(task), cell(proof));
@@ -1205,10 +1275,10 @@ fn cell(s: &str) -> String {
     s.replace('|', "\\|").trim().to_string()
 }
 
-/// `notes projects --ai-note <name> [--version vX.Y.Z]` — print the path to a version's AI
-/// note, creating it if absent. The seam every other writer (the wave, the cockpit's roll)
-/// goes through instead of building the path themselves.
-pub fn show_ai_note(p: &Profile, name: &str, version: Option<&str>) -> Result<()> {
+/// `notes projects --agent-note <name> [--version vX.Y.Z]` - print the path to a version's
+/// agent note, creating it if absent. The seam every other writer (the wave, the cockpit's
+/// roll) goes through instead of building the path themselves.
+pub fn show_agent_note(p: &Profile, name: &str, version: Option<&str>) -> Result<()> {
     let dir = project_dir(p, name)?;
     let ver = match version {
         Some(v) => {
@@ -1218,7 +1288,7 @@ pub fn show_ai_note(p: &Profile, name: &str, version: Option<&str>) -> Result<()
         }
         None => fmt_version(open_version(&dir).unwrap_or((0, 0, 1))),
     };
-    let path = ensure_ai_note(&dir, name, &ver)?;
+    let path = ensure_agent_note(&dir, name, &ver)?;
     println!("{}", path.display());
     Ok(())
 }
@@ -1273,18 +1343,18 @@ fn collect_project_files(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
         if path.is_dir() {
             // The version record lives in these. `changelog/` is the pre-consolidation
             // location, listed while any project still has one; without `versions/` and
-            // `ai/` here the browser shows a project's whole version history as empty.
+            // `agent/` here the browser shows a project's whole version history as empty.
+            //
+            // `agent/` gets a second level because its frozen notes sit in
+            // `agent/versions/`, mirroring the human's side. Everything else is flat.
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if matches!(name, "versions" | "ai" | "changelog") {
-                if let Ok(sub) = fs::read_dir(&path) {
-                    for e in sub.flatten() {
-                        let sp = e.path();
-                        if sp.extension().and_then(|x| x.to_str()) == Some("md") {
-                            let stem = sp.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                            out.push((sp.clone(), format!("{name}/{stem}")));
-                        }
-                    }
+            match name {
+                "versions" | "changelog" => collect_md(&path, name, out),
+                "agent" => {
+                    collect_md(&path, name, out);
+                    collect_md(&path.join("versions"), "agent/versions", out);
                 }
+                _ => {}
             }
         } else if path.extension().and_then(|x| x.to_str()) == Some("md") {
             let stem = path
@@ -1293,6 +1363,21 @@ fn collect_project_files(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
                 .unwrap_or("")
                 .to_string();
             out.push((path, stem));
+        }
+    }
+}
+
+/// Every `.md` directly in `dir`, labelled `<prefix>/<stem>`. A missing dir is no files,
+/// not an error: most projects have neither `changelog/` nor a frozen agent wave yet.
+fn collect_md(dir: &Path, prefix: &str, out: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("md") {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            out.push((p.clone(), format!("{prefix}/{stem}")));
         }
     }
 }
@@ -1460,7 +1545,124 @@ Version: v1.13.0
         assert!(rows[1].contains("first task"), "oldest first:\n{body}");
         assert!(rows[2].contains("second \\| task"), "pipes escaped:\n{body}");
         assert!(body.contains("## Notes"), "the log section survives:\n{body}");
-        assert_eq!(path, ai_note_path(&dir, "v1.13.0"));
+        assert_eq!(path, agent_note_path(&dir, "v1.13.0"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch project dir, unique per test and per thread.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "proj-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_agent_note_lands_under_agent_versions_not_flat() {
+        // The shape the live agent sheet moves in beside: `agent/README.md` next to
+        // `agent/versions/`. A flat `agent/<ver>.md` would put them in one dir.
+        let dir = Path::new("/p");
+        assert_eq!(
+            agent_note_path(dir, "v1.13.0"),
+            Path::new("/p/agent/versions/v1.13.0.md")
+        );
+    }
+
+    #[test]
+    fn the_legacy_ai_dir_relocates_and_is_removed() {
+        let dir = scratch("reloc");
+        fs::create_dir_all(dir.join("ai")).unwrap();
+        fs::write(dir.join("ai/v1.0.0.md"), "# old note\n").unwrap();
+        fs::write(dir.join("ai/v1.1.0.md"), "# newer\n").unwrap();
+
+        assert_eq!(relocate_ai_dir(&dir).unwrap(), 2);
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v1.0.0.md")).unwrap(),
+            "# old note\n",
+            "content moves, not just the name"
+        );
+        assert!(dir.join("agent/versions/v1.1.0.md").exists());
+        assert!(!dir.join("ai").exists(), "the emptied dir is removed");
+
+        // Idempotent: a second run has nothing to do and must not fail.
+        assert_eq!(relocate_ai_dir(&dir).unwrap(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // THE NEGATIVE CONTROL. 10 of 16 live projects have no `ai/` dir at all, and the two
+    // Gigantic sheets are deliberately not on this model - a migration that touches them is
+    // a migration that ran on files it was never pointed at.
+    #[test]
+    fn a_project_with_no_ai_dir_is_left_completely_alone() {
+        let dir = scratch("noai");
+        fs::write(dir.join("README.md"), "# demo\nVersion: v0.1.0\n").unwrap();
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        fs::write(dir.join("versions/v0.0.1.md"), "# frozen\n").unwrap();
+
+        assert_eq!(relocate_ai_dir(&dir).unwrap(), 0);
+        assert!(!dir.join("agent").exists(), "no dir conjured out of nothing");
+        assert!(dir.join("versions/v0.0.1.md").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("README.md")).unwrap(),
+            "# demo\nVersion: v0.1.0\n",
+            "the human's sheet is not a migration target"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_md_file_keeps_the_legacy_dir_alive() {
+        // Removing the dir would take the stray file with it.
+        let dir = scratch("stray");
+        fs::create_dir_all(dir.join("ai")).unwrap();
+        fs::write(dir.join("ai/v1.0.0.md"), "# note\n").unwrap();
+        fs::write(dir.join("ai/scratch.txt"), "not mine to move\n").unwrap();
+
+        assert_eq!(relocate_ai_dir(&dir).unwrap(), 1);
+        assert!(dir.join("ai/scratch.txt").exists(), "stray file survives");
+        assert!(dir.join("agent/versions/v1.0.0.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_collision_is_an_error_rather_than_a_silent_overwrite() {
+        // The old file carries the history; picking one silently is how a version ends up
+        // with two disagreeing agent records, which is what this layout exists to prevent.
+        let dir = scratch("collide");
+        fs::create_dir_all(dir.join("ai")).unwrap();
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(dir.join("ai/v1.0.0.md"), "# the one with history\n").unwrap();
+        fs::write(dir.join("agent/versions/v1.0.0.md"), "# newer, empty\n").unwrap();
+
+        assert!(relocate_ai_dir(&dir).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.join("ai/v1.0.0.md")).unwrap(),
+            "# the one with history\n",
+            "nothing is moved on the failing path"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_browser_reaches_a_frozen_agent_note_two_levels_down() {
+        // `agent/versions/` is deeper than every other note dir; without the second hop the
+        // browser shows a project's agent history as empty.
+        let dir = scratch("browse");
+        fs::write(dir.join("README.md"), "# demo\n").unwrap();
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(dir.join("agent/README.md"), "# demo - agent board\n").unwrap();
+        fs::write(dir.join("agent/versions/v1.0.0.md"), "# frozen\n").unwrap();
+
+        let mut out = Vec::new();
+        collect_project_files(&dir, &mut out);
+        let labels: Vec<&str> = out.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(labels.contains(&"README"), "{labels:?}");
+        assert!(labels.contains(&"agent/README"), "{labels:?}");
+        assert!(labels.contains(&"agent/versions/v1.0.0"), "{labels:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

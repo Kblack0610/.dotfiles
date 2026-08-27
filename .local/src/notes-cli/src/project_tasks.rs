@@ -385,7 +385,7 @@ pub fn step(p: &Profile, log: &Logger, name: &str, query: &str, dir: i32) -> Res
 ///   leaving it blank until it means nothing. `/wave`'s report already had this instinct:
 ///   `n/a - <why>` mandatory rather than blank.
 ///
-/// Either way the row lands in the version's AI note (`ai/<vX.Y.Z>.md`), which is what
+/// Either way the row lands in the version's agent note (`agent/versions/<vX.Y.Z>.md`), which is what
 /// turns a pile of ticked boxes into an evidence trail somebody can audit.
 pub fn done(
     p: &Profile,
@@ -426,7 +426,7 @@ fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Result<String> 
     }
 }
 
-/// Append the proof row for the task just closed to the current version's AI note.
+/// Append the proof row for the task just closed to the current version's agent note.
 ///
 /// Best-effort by design: the checkbox is already written by the time this runs, and a
 /// vault that cannot take the note must not make `done` look like it failed. It says so

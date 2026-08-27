@@ -121,23 +121,23 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
-    /// Regenerate the project/AI board — every project's current `## Wave`, agent lane
+    /// Regenerate the project/agent board — every project's current `## Wave`, agent lane
     /// first, across every profile — and print its path. Also refreshed by `notes today`.
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
     Board {
-        /// Print the `#ai` rows as `<project>\t<text>` instead of writing the board.
+        /// Print the agent-lane rows as `<project>\t<text>` instead of writing the board.
         /// READ-ONLY: this path never touches board.md. Exits 0 even with no rows —
         /// "nothing queued for the agent" is a valid answer, not an error, and the
         /// session preflight that calls this must never be able to lose a turn over it.
         #[arg(long)]
-        ai: bool,
+        agent: bool,
         /// Limit to these projects (repeatable). Names are the LAB project names, which
         /// are not the same namespace as the agent-side project name: a session in
         /// ~/.dotfiles resolves to `dotfiles`, whose lab projects are `notes-cockpit` and
         /// `agent-runtime`. Callers join the two through project-map.json
         /// `trackers.<n>.repo` (see `project_lab_names` in project-name.sh) and pass the
-        /// results here. Ignored without --ai.
+        /// results here. Ignored without --agent.
         #[arg(long = "project")]
         projects: Vec<String>,
     },
@@ -210,10 +210,11 @@ enum Cmd {
         /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
         #[arg(long, value_name = "NAME")]
         waves: Option<String>,
-        /// Print (creating if absent) the path to a version's AI note, `ai/<vX.Y.Z>.md`
+        /// Print (creating if absent) the path to a version's agent note,
+        /// `agent/versions/<vX.Y.Z>.md`
         #[arg(long, value_name = "NAME")]
-        ai_note: Option<String>,
-        /// With --ai-note: which version (defaults to the open one)
+        agent_note: Option<String>,
+        /// With --agent-note: which version (defaults to the open one)
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
@@ -578,9 +579,9 @@ fn main() -> Result<()> {
                 project_tasks::sweep(&prof, &log, &name, dry_run)?
             }
         },
-        Cmd::Board { ai, projects } => {
-            if ai {
-                board::print_ai(&projects)?
+        Cmd::Board { agent, projects } => {
+            if agent {
+                board::print_agent(&projects)?
             } else {
                 board::run(&log)?
             }
@@ -633,7 +634,7 @@ fn main() -> Result<()> {
             force,
             version_of,
             waves,
-            ai_note,
+            agent_note,
             version,
         } => {
             let level = if major {
@@ -645,7 +646,7 @@ fn main() -> Result<()> {
             };
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, ai_note, archived,
+                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,
                 name,
             ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
@@ -656,7 +657,7 @@ fn main() -> Result<()> {
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
-                    projects::show_ai_note(&prof, &n, version.as_deref())?
+                    projects::show_agent_note(&prof, &n, version.as_deref())?
                 }
                 (_, _, _, _, _, _, _, _, true, _) => projects::list_archived(&prof)?,
                 (_, _, _, _, _, _, _, _, _, Some(n)) => projects::show(&prof, &n)?,

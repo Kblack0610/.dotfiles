@@ -175,17 +175,21 @@ The roll then freezes the current wave ALONE (the planned ones are not a release
 PROMOTES the planned wave named for the next version, tasks and all. So the loop is: plan into
 v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> `/wave` runs the promoted v1.14.0.
 
-### AI notes and the proof gate (`ai/<vX.Y.Z>.md`)
+### Agent notes and the proof gate (`agent/versions/<vX.Y.Z>.md`)
 
-Each version gets an AI note beside `versions/`:
+Each version gets an agent note. The agents' half of a project lives under `agent/`, the same
+shape as the human's half one level down:
 
 ```
 myapp/
-  README.md          the sheet: current wave + the roadmap
-  summary.md         the overview
-  versions/v1.12.0.md
-  ai/v1.13.0.md      what the agents did this version, and the evidence
+  README.md                      the sheet: current wave + the roadmap
+  summary.md                     the overview
+  versions/v1.12.0.md            the human's frozen waves
+  agent/
+    versions/v1.13.0.md          what the agents did this version, and the evidence
 ```
+
+`ai/<vX.Y.Z>.md` was the old location. `notes projects --migrate <project>` relocates it.
 
 `notes ptask <project> done` requires evidence and appends a row to it:
 
@@ -195,7 +199,7 @@ myapp/
 
 Both doors exist on purpose. The failure mode of a proof field is not people lying in it, it is
 people leaving it blank until it means nothing - and the roll gate above only means something if
-a ticked checkbox does. `notes projects --ai-note <project> [--version vX.Y.Z]` resolves (and
+a ticked checkbox does. `notes projects --agent-note <project> [--version vX.Y.Z]` resolves (and
 creates) the path, so no writer has to build it.
 
 ### Accepting suggestions (the `g` key)

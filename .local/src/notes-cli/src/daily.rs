@@ -19,7 +19,7 @@
 //!
 //! The note carries the human's own lists and the auto-rendered context sections
 //! (`## Work`, `## Watches`, `## Comms`, `## Inbox`). It deliberately does NOT render the
-//! project/AI board: that is regenerated as a FILE each run (`board.rs`) and reached from
+//! project/agent board: that is regenerated as a FILE each run (`board.rs`) and reached from
 //! the footer's `Board:` link. A `## Current Projects` block used to duplicate the lab
 //! index here every morning; it was removed because the note is the FOCUS surface, and
 //! anything pasted into it competes with the one list the human actually maintains — which
@@ -104,7 +104,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
     crate::comms::refresh(p, log, &note)?;
     refresh_inbox(p, log, &note)?;
-    // The project/AI board is regenerated as a FILE, not a section — the footer links it.
+    // The project/agent board is regenerated as a FILE, not a section — the footer links it.
     // Same "render an external source each run" pattern as the sections above; the target
     // differs precisely so the note stays the human's focus surface. A failure here must
     // not abort the note, so it is logged and swallowed like the sweep below.
@@ -187,7 +187,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // No `## Current Projects` block. It was a static link list re-derived from the lab
     // index every morning, and the footer already carries `Projects: [[…/index]]` — the
     // same destination, one line instead of a section. The daily note is the human's
-    // FOCUS surface; the project/AI board is a click away, not pasted in on top of it.
+    // FOCUS surface; the project/agent board is a click away, not pasted in on top of it.
     s.push_str("## Focus\n");
     for l in &focus_keep {
         s.push_str(l);
@@ -466,10 +466,10 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     let board_link = crate::board::board_path(p)
         .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.vault, &b)))
         .unwrap_or_default();
-    // The agent lane gets its own link, or `ai-board.md` would be written by every
+    // The agent lane gets its own link, or `agent-board.md` would be written by every
     // `notes today` and reachable from nothing.
-    let ai_board_link = crate::board::ai_board_path(p)
-        .map(|b| format!(" · AI board: [[{}]]", config::wikilink(&p.vault, &b)))
+    let agent_board_link = crate::board::agent_board_path(p)
+        .map(|b| format!(" · Agent board: [[{}]]", config::wikilink(&p.vault, &b)))
         .unwrap_or_default();
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
@@ -497,7 +497,7 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!(
-        "\n---\n{backlogs}{board_link}{ai_board_link}{projects_link}{inbox_link}\n"
+        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{inbox_link}\n"
     ));
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.

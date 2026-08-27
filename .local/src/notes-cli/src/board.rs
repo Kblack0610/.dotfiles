@@ -49,13 +49,13 @@ pub fn board_path(p: &Profile) -> Option<PathBuf> {
     Some(p.board.clone())
 }
 
-/// The AI board, DERIVED as a sibling of the board rather than configured separately.
+/// The agent board, DERIVED as a sibling of the board rather than configured separately.
 ///
 /// Same argument `board_path` makes above: one address, identical on every profile. A second
 /// config key would be a second thing to get wrong, and two surfaces that disagree about
 /// where the agent lane lives is exactly the bug that left orgs linking a board nobody wrote.
-pub fn ai_board_path(p: &Profile) -> Option<PathBuf> {
-    Some(p.board.with_file_name("ai-board.md"))
+pub fn agent_board_path(p: &Profile) -> Option<PathBuf> {
+    Some(p.board.with_file_name("agent-board.md"))
 }
 
 /// A project's name as a link to the SHEET the rows came from, so the board is a launchpad
@@ -122,7 +122,7 @@ fn lane_tasks(dir: &std::path::Path, lane: Lane) -> Option<(String, Vec<String>)
 
 /// The `N open` tail both renderers share, so the two counts cannot disagree.
 ///
-/// The `(M @ai)` half is dropped on the AI board: every row there is an agent row, so it
+/// The `(M @ai)` half is dropped on the agent board: every row there is an agent row, so it
 /// would only ever restate the first number.
 fn counts(open: &[String], lane: Lane) -> String {
     let ai = open.iter().filter(|l| is_ai(l)).count();
@@ -144,7 +144,7 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
     );
     if open.is_empty() {
         // On the HUMAN board an idle project is a fact worth rendering: omitting it would
-        // read as "not set up" rather than "nothing queued". On the AI board it is noise -
+        // read as "not set up" rather than "nothing queued". On the agent board it is noise -
         // most projects have no agent work and never will, and eight empty stanzas bury the
         // four real ones. Silence there means the same thing and says it in no lines.
         if lane == Lane::Ai {
@@ -226,7 +226,7 @@ fn render(line: &str, lane: Lane) -> String {
         .filter(|w| *w != "#ai")
         .collect::<Vec<_>>()
         .join(" ");
-    // On the AI board every row is an agent row, so an `@ai` prefix would say nothing. On the
+    // On the agent board every row is an agent row, so an `@ai` prefix would say nothing. On the
     // human board it still marks the lane, which matters wherever the two can share a surface.
     if lane != Lane::Ai && is_ai(line) {
         format!("@ai {body}")
@@ -243,8 +243,9 @@ fn render(line: &str, lane: Lane) -> String {
 pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     let active = config::resolve(None)?;
     let human = board_path(&active);
-    if let Some(p) = ai_board_path(&active) {
+    if let Some(p) = agent_board_path(&active) {
         write_one(log, &p, Lane::Ai)?;
+        retire_ai_board(log, &p);
     }
     match human {
         Some(p) => write_one(log, &p, Lane::Human).map(Some),
@@ -252,7 +253,30 @@ pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Render + write ONE board. Two lanes, one renderer, so `board.md` and `ai-board.md` cannot
+/// Delete the pre-rename `ai-board.md` once `agent-board.md` has been written in its place.
+///
+/// Without this the vault keeps a second board that nothing regenerates and nothing links: a
+/// stale copy of the agent lane, frozen at whatever the last old binary wrote, indistinguishable
+/// at a glance from the live one. That is the drift this whole layout exists to avoid.
+///
+/// Guarded on the `id: ai-board` line so it can only ever remove a file THIS code generated.
+/// A best-effort cleanup, never fatal: a board that wrote fine must not fail the run (and
+/// `notes today` calls this) because an old sibling could not be unlinked.
+fn retire_ai_board(log: &Logger, agent_board: &std::path::Path) {
+    let legacy = agent_board.with_file_name("ai-board.md");
+    let Ok(content) = fs::read_to_string(&legacy) else {
+        return;
+    };
+    if !content.lines().any(|l| l.trim() == "id: ai-board") {
+        return;
+    }
+    match fs::remove_file(&legacy) {
+        Ok(()) => log.info("board", &format!("retired {}", legacy.display())),
+        Err(e) => log.info("board", &format!("could not retire {}: {e}", legacy.display())),
+    }
+}
+
+/// Render + write ONE board. Two lanes, one renderer, so `board.md` and `agent-board.md` cannot
 /// disagree about what a project's wave holds.
 fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf> {
     let today = Local::now().date_naive().format("%Y-%m-%d");
@@ -260,14 +284,14 @@ fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf
         Lane::Human => (
             "board",
             "Board",
-            "_Every project's current `## Wave`, the human lane. The agent's half is on the \
-             [[lab/projects/ai-board|AI board]]. Generated by `notes board` (and each \
+            "_Every project's current `## Wave`, the human lane. The agents' half is on the \
+             [[lab/projects/agent-board|agent board]]. Generated by `notes board` (and each \
              `notes today`) from the same sheets the cockpit reads — edit a task on its \
              project sheet or in the cockpit, never here._",
         ),
         Lane::Ai => (
-            "ai-board",
-            "AI board",
+            "agent-board",
+            "Agent board",
             "_Every project's current `## Wave`, the `#ai` lane only — the work the agents \
              own. The human's half is on the [[lab/projects/board|board]]. Generated by \
              `notes board` from the same sheets; edit a task on its project sheet, never \
@@ -349,7 +373,7 @@ fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf
     Ok(path.to_path_buf())
 }
 
-/// `notes board --ai [--project N]...` — print the agent lane as `<project>\t<text>`.
+/// `notes board --agent [--project N]...` — print the agent lane as `<project>\t<text>`.
 ///
 /// The READ side of the board, for the session preflight. It exists because the board was
 /// the human's channel to the agent and had ZERO automated readers: 41 open items, 21 of
@@ -371,7 +395,7 @@ fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf
 ///
 /// An empty `projects` filter means every project, so a caller that cannot resolve the
 /// join still gets the whole lane rather than silence.
-pub fn print_ai(projects: &[String]) -> Result<i32> {
+pub fn print_agent(projects: &[String]) -> Result<i32> {
     let wanted: Vec<String> = projects.iter().map(|p| p.to_lowercase()).collect();
 
     for name in config::all_profile_names()? {
@@ -385,7 +409,7 @@ pub fn print_ai(projects: &[String]) -> Result<i32> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
-            for row in ai_rows_for_dir(&proj, dir) {
+            for row in agent_rows_for_dir(&proj, dir) {
                 println!("{row}");
             }
         }
@@ -393,13 +417,13 @@ pub fn print_ai(projects: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// The per-project half of `print_ai`, split out so it is testable without a configured
+/// The per-project half of `print_agent`, split out so it is testable without a configured
 /// profile tree. Returns `<project>\t<text>` rows for the `#ai` lane of the current wave.
-fn ai_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
+fn agent_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
     let Some((_version, open)) = lane_tasks(dir, Lane::Ai) else {
         return Vec::new();
     };
-    // Rendered through `Lane::Ai` like the AI board itself, so this wire format and that file
+    // Rendered through `Lane::Ai` like the agent board itself, so this wire format and that file
     // cannot disagree about a row's text. The preflight parses these positionally on a tab.
     open.iter()
         .map(|line| format!("{proj}\t{}", render(line, Lane::Ai)))
@@ -444,7 +468,7 @@ mod tests {
             "@ai agentctl roles"
         );
         assert_eq!(render("- [ ] plain one", Lane::Human), "plain one");
-        // On the AI board the prefix says nothing: every row there is an agent row.
+        // On the agent board the prefix says nothing: every row there is an agent row.
         assert_eq!(
             render("- [ ] agentctl roles #ai", Lane::Ai),
             "agentctl roles"
@@ -494,11 +518,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // The human board says "nothing queued" because an idle project is a fact. The AI board
+    // The human board says "nothing queued" because an idle project is a fact. The agent board
     // says nothing at all: most projects have no agent lane, and the empty stanzas buried the
     // real rows 2:1 on the live vault.
     #[test]
-    fn an_idle_project_is_dropped_from_the_ai_board_but_kept_on_the_human_one() {
+    fn an_idle_project_is_dropped_from_the_agent_board_but_kept_on_the_human_one() {
         let dir = sheet(
             "idlebot",
             "# idlebot\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] mine only\n",
@@ -548,20 +572,20 @@ mod tests {
     }
 
     #[test]
-    fn ai_rows_emit_project_tab_text_for_the_agent_lane_only() {
+    fn agent_rows_emit_project_tab_text_for_the_agent_lane_only() {
         let dir = sheet(
             "airows",
             "# demo\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
              - [ ] human task\n- [ ] agent task #ai\n- [x] done one #ai\n",
         );
-        let rows = ai_rows_for_dir("demo", &dir);
+        let rows = agent_rows_for_dir("demo", &dir);
         // Exactly the ai lane: not the human's row, not the checked one.
         assert_eq!(rows, vec!["demo\tagent task".to_string()], "{rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ai_rows_do_not_re_prefix_the_at_ai_marker() {
+    fn agent_rows_do_not_re_prefix_the_at_ai_marker() {
         // The board renders `@ai <text>` because it mixes both lanes in one list. This
         // path is already ai-only and tab-joined, so a repeated marker is just noise the
         // consumer would have to strip.
@@ -569,14 +593,14 @@ mod tests {
             "noprefix",
             "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] a thing #ai\n",
         );
-        let rows = ai_rows_for_dir("d", &dir);
+        let rows = agent_rows_for_dir("d", &dir);
         assert_eq!(rows, vec!["d\ta thing".to_string()]);
         assert!(!rows[0].contains("@ai"), "{rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ai_rows_still_exclude_the_aid_substring_trap() {
+    fn agent_rows_still_exclude_the_aid_substring_trap() {
         // The SAME trap `is_ai` guards, asserted on this path too: it is a new consumer of
         // the lane rule, and the failure would be a first-aid task silently claimed as
         // agent work at turn 1.
@@ -585,29 +609,29 @@ mod tests {
             "# d\nVersion: v1\n\n## Wave: v1 (current)\n\
              - [ ] restock the first #aid kit\n- [ ] real one #ai\n",
         );
-        let rows = ai_rows_for_dir("d", &dir);
+        let rows = agent_rows_for_dir("d", &dir);
         assert_eq!(rows, vec!["d\treal one".to_string()], "{rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ai_rows_are_empty_for_a_project_with_no_agent_work() {
+    fn agent_rows_are_empty_for_a_project_with_no_agent_work() {
         // Empty is a valid answer, and must be empty rather than absent-or-error: the
         // preflight prints nothing and moves on.
         let dir = sheet(
             "quiet",
             "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] only mine\n",
         );
-        assert!(ai_rows_for_dir("d", &dir).is_empty());
+        assert!(agent_rows_for_dir("d", &dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ai_rows_are_empty_for_a_dir_with_no_sheet_at_all() {
+    fn agent_rows_are_empty_for_a_dir_with_no_sheet_at_all() {
         let dir = sheet("nosheet", "# prose only\n");
         std::fs::remove_file(dir.join("README.md")).unwrap();
         std::fs::write(dir.join("summary.md"), "# prose only, no wave\n").unwrap();
-        assert!(ai_rows_for_dir("d", &dir).is_empty());
+        assert!(agent_rows_for_dir("d", &dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -700,7 +724,7 @@ mod tests {
             "agent work is not on this board:\n{l}"
         );
 
-        // and the same project on the AI board shows the other half
+        // and the same project on the agent board shows the other half
         let a = project_rollup_line("folded", &dir, Lane::Ai).unwrap();
         assert!(a.contains("v0.0.1 - 1 open"), "{a}");
         assert!(!a.contains("@ai"), "{a}");
@@ -758,6 +782,48 @@ mod tests {
         let got = truncate_words(&"x".repeat(200), 10);
         assert!(got.starts_with("xxxxxxxxxx"), "{got}");
         assert!(got.ends_with("..."), "{got}");
+    }
+
+    #[test]
+    fn the_pre_rename_board_is_retired_once_its_replacement_exists() {
+        let dir = sheet("retire", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let agent = dir.join("agent-board.md");
+        let legacy = dir.join("ai-board.md");
+        std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
+        std::fs::write(&legacy, "---\nid: ai-board\ntags: [board]\n---\n\n# AI board\n").unwrap();
+
+        retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent);
+        assert!(!legacy.exists(), "the stale board is gone");
+        assert!(agent.exists(), "its replacement is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // THE NEGATIVE CONTROL. `ai-board.md` is a plausible name for something the human wrote
+    // by hand; only a file carrying the generator's own `id:` may be removed.
+    #[test]
+    fn a_hand_written_file_of_the_same_name_is_never_removed() {
+        let dir = sheet("keep", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let agent = dir.join("agent-board.md");
+        let mine = dir.join("ai-board.md");
+        std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
+        std::fs::write(&mine, "# my notes on the ai board idea\nkeep me\n").unwrap();
+
+        retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent);
+        assert_eq!(
+            std::fs::read_to_string(&mine).unwrap(),
+            "# my notes on the ai board idea\nkeep me\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retiring_is_a_no_op_when_there_is_nothing_to_retire() {
+        let dir = sheet("noop", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let agent = dir.join("agent-board.md");
+        std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
+        retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent); // must not panic on a missing file
+        assert!(agent.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -202,21 +202,21 @@ CONTEXT=$(
   #
   # Three independent reasons this cannot lose a turn, which is the bar this file sets:
   # `command -v notes` guards the call, `timeout` bounds it, and `|| true` swallows any
-  # nonzero. `notes board --ai` is read-only and never rewrites board.md.
+  # nonzero. `notes board --agent` is read-only and never rewrites board.md.
   if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2>&1; then
-    AI_ARGS=()
+    AGENT_ARGS=()
     while IFS= read -r lab_name; do
-      [ -n "$lab_name" ] && AI_ARGS+=(--project "$lab_name")
+      [ -n "$lab_name" ] && AGENT_ARGS+=(--project "$lab_name")
     done < <(project_lab_names "$PROJECT_NAME" 2>/dev/null || true)
-    if [ "${#AI_ARGS[@]}" -gt 0 ]; then
-      AI_ALL=$(timeout 5 notes board --ai "${AI_ARGS[@]}" 2>/dev/null || true)
-      if [ -n "$AI_ALL" ]; then
-        ai_total=$(printf '%s\n' "$AI_ALL" | grep -c . || true)
-        echo "📥 Your @ai board items for this repo:"
-        printf '%s\n' "$AI_ALL" | head -15 | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+    if [ "${#AGENT_ARGS[@]}" -gt 0 ]; then
+      AGENT_ALL=$(timeout 5 notes board --agent "${AGENT_ARGS[@]}" 2>/dev/null || true)
+      if [ -n "$AGENT_ALL" ]; then
+        agent_total=$(printf '%s\n' "$AGENT_ALL" | grep -c . || true)
+        echo "📥 Your agent-board items for this repo:"
+        printf '%s\n' "$AGENT_ALL" | head -15 | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
-        [ "${ai_total:-0}" -gt 15 ] && echo "  … +$((ai_total - 15)) more — \`notes board\` for the rest"
+        [ "${agent_total:-0}" -gt 15 ] && echo "  … +$((agent_total - 15)) more — \`notes board\` for the rest"
         echo "  (yours to queue: \`notes ptask <project> add \"...\" #ai\`; mark started/done the same way.)"
         echo
       fi
