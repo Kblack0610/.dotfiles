@@ -143,8 +143,13 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
         counts(&open, lane)
     );
     if open.is_empty() {
-        // An empty board is a fact worth rendering. Omitting the project entirely would
-        // read as "not set up" rather than "nothing queued".
+        // On the HUMAN board an idle project is a fact worth rendering: omitting it would
+        // read as "not set up" rather than "nothing queued". On the AI board it is noise -
+        // most projects have no agent work and never will, and eight empty stanzas bury the
+        // four real ones. Silence there means the same thing and says it in no lines.
+        if lane == Lane::Ai {
+            return None;
+        }
         s.push_str("_(nothing queued)_\n");
         return Some(s);
     }
@@ -162,6 +167,9 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
 /// still exact and the name is still a link to the full list.
 fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String> {
     let (version, open) = lane_tasks(dir, lane)?;
+    if open.is_empty() && lane == Lane::Ai {
+        return None; // same rule folded: an idle agent lane is not worth a row
+    }
     let mut s = format!(
         "- {} {version} - {}",
         linked_name(name, dir),
@@ -483,6 +491,22 @@ mod tests {
             "{ai}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The human board says "nothing queued" because an idle project is a fact. The AI board
+    // says nothing at all: most projects have no agent lane, and the empty stanzas buried the
+    // real rows 2:1 on the live vault.
+    #[test]
+    fn an_idle_project_is_dropped_from_the_ai_board_but_kept_on_the_human_one() {
+        let dir = sheet(
+            "idlebot",
+            "# idlebot\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] mine only\n",
+        );
+        assert!(project_block("idlebot", &dir, Lane::Ai).is_none());
+        assert!(project_rollup_line("idlebot", &dir, Lane::Ai).is_none());
+        let h = project_block("idlebot", &dir, Lane::Human).unwrap();
+        assert!(h.contains("mine only"), "{h}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
