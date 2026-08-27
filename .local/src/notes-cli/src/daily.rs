@@ -466,6 +466,11 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     let board_link = crate::board::board_path(p)
         .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.vault, &b)))
         .unwrap_or_default();
+    // The agent lane gets its own link, or `ai-board.md` would be written by every
+    // `notes today` and reachable from nothing.
+    let ai_board_link = crate::board::ai_board_path(p)
+        .map(|b| format!(" · AI board: [[{}]]", config::wikilink(&p.vault, &b)))
+        .unwrap_or_default();
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
     // as the complete list while showing only one org's, which is how projects in another org
@@ -492,7 +497,7 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         String::new()
     };
     content.push_str(&format!(
-        "\n---\n{backlogs}{board_link}{projects_link}{inbox_link}\n"
+        "\n---\n{backlogs}{board_link}{ai_board_link}{projects_link}{inbox_link}\n"
     ));
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.
