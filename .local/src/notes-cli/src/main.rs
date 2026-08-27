@@ -24,6 +24,7 @@ mod meeting;
 mod project_tasks;
 mod projects;
 mod summarize;
+mod sweep;
 mod tags;
 mod waves;
 mod zettel;

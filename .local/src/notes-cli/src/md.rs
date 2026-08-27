@@ -232,6 +232,27 @@ pub fn add_marker(line: &str, token: &str) -> String {
     }
 }
 
+/// Append `tag` (a bare `#hashtag`) to a task line, BEFORE any trailing marker comment.
+///
+/// Position is not cosmetic. [`task_text`] truncates at the first `<!--` and only then
+/// strips tags, so a tag written past the marker is invisible to every display path: it
+/// would survive into board rows, cockpit lines and summaries as raw `#high` text. On the
+/// daily note this almost never fires, because few Focus tasks carry a marker. On a project
+/// sheet, where every closed row carries `<!-- pr:NNN -->`, it would fire constantly.
+///
+/// No-op when the line already carries the tag, so a re-sweep cannot double-tag a line.
+pub fn add_tag(line: &str, tag: &str) -> String {
+    let tag = tag.trim();
+    if tag.is_empty() || line.split_whitespace().any(|w| w == tag) {
+        return line.to_string();
+    }
+    let trimmed = line.trim_end();
+    match (trimmed.rfind("<!--"), trimmed.ends_with("-->")) {
+        (Some(i), true) => format!("{} {tag} {}", trimmed[..i].trim_end(), &trimmed[i..]),
+        _ => format!("{trimmed} {tag}"),
+    }
+}
+
 /// Remove a `<!-- cu:ID -->` bridge marker from a line, collapsing the space it leaves behind.
 /// No-op when absent. Keeps the ClickUp bridge's machine marker out of human-facing text
 /// (summaries) - it is not a comment-ONLY line, so the section-text filter alone would keep it.
