@@ -390,7 +390,12 @@ EOF
 }
 
 apply_hyprland() {
-    local file="$DOTFILES/.config/hypr/hyprland.conf"
+    # The colors live in the conf.d/ split, not the top-level hyprland.conf,
+    # which is now nothing but `source =` lines. Aiming the sed at it made every
+    # switch a silent no-op that still printed success, so hyprland sat frozen
+    # on whichever theme was current when the config was split. Hence the match
+    # count below: a patch that matches nothing must say so.
+    local file="$DOTFILES/.config/hypr/conf.d/look-and-feel.conf"
 
     if [[ ! -f "$file" ]]; then
         warn "hyprland: config not found: $file"
@@ -402,6 +407,9 @@ apply_hyprland() {
         return
     fi
 
+    local before after
+    before="$(grep -cE 'col\.(in)?active_border = rgba\(|^[[:space:]]*color = rgba\(' "$file" || true)"
+
     # col.active_border = rgba(XXXXXXee) rgba(YYYYYYee) 45deg
     sedi "s/col\.active_border = rgba([0-9a-fA-F]\{8\}) rgba([0-9a-fA-F]\{8\}) 45deg/col.active_border = rgba(${THEME_HYPR_ACTIVE1}) rgba(${THEME_HYPR_ACTIVE2}) 45deg/" "$file"
 
@@ -411,6 +419,11 @@ apply_hyprland() {
     # Shadow color
     sedi "s/color = rgba([0-9a-fA-F]\{8\})/color = rgba(${THEME_HYPR_SHADOW})/" "$file"
 
+    after="$(grep -cE "rgba\((${THEME_HYPR_ACTIVE1}|${THEME_HYPR_ACTIVE2}|${THEME_HYPR_INACTIVE}|${THEME_HYPR_SHADOW})\)" "$file" || true)"
+    if (( after == 0 )); then
+        warn "hyprland: no color lines matched in $file (found $before candidate line(s)) - nothing changed"
+        return
+    fi
     info "hyprland: updated border + shadow colors"
 
     # Live reload

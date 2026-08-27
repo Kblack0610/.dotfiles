@@ -42,6 +42,12 @@ write_targets() {
 # Fails loudly rather than vacuously when git cannot answer at all: a check-ignore
 # that errors looks exactly like "not ignored" to a naive `if`, and this suite has
 # already been bitten once by a git call failing silently inside a container.
+# The file apply_hyprland actually patches, as the function itself declares it.
+hypr_target() {
+  sed -n '/^apply_hyprland()/,/^}/p' "$THEME_SWITCH" \
+    | grep -o 'DOTFILES/[^"]*' | head -1 | sed 's|^DOTFILES/||'
+}
+
 is_ignored() {
   cd "$REPO_ROOT" || return 2
   git rev-parse --git-dir >/dev/null 2>&1 || {
@@ -96,7 +102,7 @@ is_ignored() {
   # LG_CONFIG_FILE, an nvim palette module) is the unfinished half of the job.
   local expected
   expected="$(printf '%s\n' \
-    .config/hypr/hyprland.conf \
+    .config/hypr/conf.d/look-and-feel.conf \
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \
     .config/nvim/lua/kennethblack/init.lua \
@@ -122,4 +128,33 @@ is_ignored() {
     diff <(printf '%s\n' "$expected") <(printf '%s\n' "$output") >&2 || true
     return 1
   fi
+}
+
+# --- a write target must still contain what the patch matches ----------------
+
+@test "hyprland's color target still contains the lines theme-switch patches" {
+  # The canary above proves the PATH is classified; it cannot prove the path still
+  # holds the pattern. hyprland.conf was split into conf.d/ and left holding only
+  # `source =` lines, so theme-switch's sed matched nothing while still printing
+  # "updated border + shadow colors" -- hyprland stayed on whichever theme was
+  # current at the split, through every timer flip, with no error anywhere.
+  # Existence is not identity, so the target is read back out of apply_hyprland
+  # rather than hardcoded here: a test that names the right file on its own would
+  # keep passing while the script pointed somewhere useless.
+  local target file
+  target="$(hypr_target)"
+  [ -n "$target" ]
+  file="$REPO_ROOT/$target"
+  [ -f "$file" ]
+  grep -qE 'col\.active_border = rgba\([0-9a-fA-F]{8}\) rgba\([0-9a-fA-F]{8}\) 45deg' "$file"
+  grep -qE 'col\.inactive_border = rgba\([0-9a-fA-F]{8}\)' "$file"
+  grep -qE '^[[:space:]]*color = rgba\([0-9a-fA-F]{8}\)' "$file"
+}
+
+@test "the old monolithic hyprland.conf is no longer a color target" {
+  # Negative control for the test above: if look-and-feel.conf were reverted to a
+  # source-only stub the same way, the assertions would need to move again. This
+  # pins the fact that the top-level file is now purely an include list.
+  run grep -qE 'col\.(in)?active_border' "$REPO_ROOT/.config/hypr/hyprland.conf"
+  assert_failure
 }
