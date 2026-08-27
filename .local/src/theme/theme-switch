@@ -21,7 +21,7 @@
 # State is tracked in ~/.config/theme/current (single-line file).
 #
 # Examples:
-#   theme-switch jackie-brown
+#   theme-switch batman
 #   theme-switch tokyonight --only kitty,starship
 #   theme-switch tokyonight --dry-run
 #
@@ -51,8 +51,8 @@ MACOS_ONLY_TOOLS=(sketchybar)
 LINUX_ONLY_TOOLS=(waybar hyprland wallpaper)
 
 # Day/night auto-pick window (used by --auto)
-AUTO_DAY_THEME="jackie-brown"
-AUTO_NIGHT_THEME="ayaka"
+AUTO_DAY_THEME="batman"
+AUTO_NIGHT_THEME="arthur"
 AUTO_DAY_START=7    # inclusive — 07:00
 AUTO_NIGHT_START=19 # exclusive — 19:00
 
@@ -358,12 +358,17 @@ export ITEM_BG_COLOR=$(sb_color "$THEME_BG_LIGHT" 66)
 export ACCENT_BG_COLOR=$(sb_color "$THEME_FG_DIM" 33)
 export ACTIVE_BG_COLOR=$(sb_color "$THEME_FG" 4d)
 
-# Foreground / accents
+# Foreground / accents. RED is the ALARM role, so it reads THEME_ERROR rather than
+# THEME_RED: \$RED drives the low-battery icon and the calendar's "happening now"
+# marker, and a palette whose ANSI red is not red would render both as decoration.
+# Batman is exactly that - its color1 is gold - so with THEME_RED the Mac's dead
+# battery looked identical to every other item on the bar. For every other theme
+# ERROR and RED are the same value and nothing changes.
 export WHITE=$(sb_color "$THEME_WHITE")
 export DIM=$(sb_color "$THEME_BRIGHT_BLACK")
 export GOLD=$(sb_color "$THEME_FG")
 export GREEN=$(sb_color "$THEME_BRIGHT_GREEN")
-export RED=$(sb_color "$THEME_RED")
+export RED=$(sb_color "$THEME_ERROR")
 export BLUE=$(sb_color "$THEME_BLUE")
 export CYAN=$(sb_color "$THEME_CYAN")
 export MAGENTA=$(sb_color "$THEME_MAGENTA")
