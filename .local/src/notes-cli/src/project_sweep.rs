@@ -273,7 +273,8 @@ Version: v0.12.1
     fn tasks_get_their_section_version_as_a_tag() {
         let out = sweep(SHEET);
         assert!(out.contains("- [ ] live one #high #v0.12.1"), "{out}");
-        assert!(out.contains("- [ ] next one #v0.12.2"), "{out}");
+        // and an untagged one picks up the default on its way into a wave
+        assert!(out.contains("- [ ] next one #high #v0.12.2"), "{out}");
     }
 
     // The tag must land before the marker or it leaks onto every board row.
@@ -339,7 +340,7 @@ Version: v0.12.1
     fn a_tag_naming_a_rolled_version_is_pulled_forward_not_opened_above() {
         let stale = "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] stale #v0.11.0\n";
         let (out, report) = sweep_sheet(stale).unwrap();
-        assert!(out.contains("- [ ] stale #v0.12.1"), "{out}");
+        assert!(out.contains("- [ ] stale #high #v0.12.1"), "{out}");
         assert_eq!(
             waves::sections(&out).len(),
             1,
@@ -394,13 +395,13 @@ Version: v0.12.1
 - [ ] live one #high\n- [x] done one <!-- pr:307 -->\n- [ ] fire #urgent\n\
 - [ ] wrapped task here\n      a continuation line\n- [ ] pushed out #v0.12.2\n\n\
 ## Wave: v0.12.2 (planned)\n- [ ] next one\n";
-        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
-- [ ] wrapped task here #v0.12.1\n      a continuation line\n- [ ] \n\n\
+        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] \n\n\
 ### Urgent\n- [ ] fire #urgent #v0.12.1\n\n\
-### High\n- [ ] live one #high #v0.12.1\n\n\
+### High\n- [ ] live one #high #v0.12.1\n- [ ] wrapped task here #high #v0.12.1\n      a continuation line\n\n\
 ### Low\n\n---\n### Done\n- [x] done one #v0.12.1 <!-- pr:307 -->\n\n\
-## Wave: v0.12.2 (planned)\n- [ ] pushed out #v0.12.2\n- [ ] next one #v0.12.2\n- [ ] \n\n\
-### High\n\n### Low\n\n---\n### Done\n";
+## Wave: v0.12.2 (planned)\n- [ ] \n\n\
+### High\n- [ ] pushed out #high #v0.12.2\n- [ ] next one #high #v0.12.2\n\n\
+### Low\n\n---\n### Done\n";
         assert_eq!(sweep(note), expected);
     }
 

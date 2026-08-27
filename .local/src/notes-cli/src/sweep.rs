@@ -36,6 +36,17 @@ fn lane_of(line: &str, lanes: &[Lane]) -> usize {
     }
 }
 
+/// Index of the default lane within `lanes`, falling back to the most urgent one offered.
+///
+/// `lanes` can be a sub-slice - a planned wave offers no Urgent lane - so the default has to
+/// be located by name rather than by the index it holds in `md::PRIORITIES`.
+fn default_lane(lanes: &[Lane]) -> usize {
+    lanes
+        .iter()
+        .position(|(_, hash, _)| *hash == md::default_priority())
+        .unwrap_or(0)
+}
+
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
 /// puts it and an authored heading elsewhere survives as content.
 ///
@@ -126,15 +137,16 @@ fn rebuild_inner(body: &[&str], lanes: &[Lane], force: bool) -> Option<Vec<Strin
         } else if md::is_task(l) {
             let i = match md::task_priority(l) {
                 Some(_) => lane_of(l, lanes), // the tag is the source of truth
-                None => match cur_lane {
-                    // an untagged task under a lane header inherits that lane's tag
-                    Some(i) => {
-                        open[i].push(md::add_tag(l, lanes[i].1));
-                        last = Some(Bucket::Open(i));
-                        continue;
-                    }
-                    None => lanes.len(),
-                },
+                None => {
+                    // Untagged: inherit the lane it was dropped under, else take the
+                    // default. Either way it leaves here TAGGED - an open task with no
+                    // stated priority used to sort above `### Urgent`, so a task nobody had
+                    // thought about outranked one explicitly marked urgent.
+                    let i = cur_lane.unwrap_or_else(|| default_lane(lanes));
+                    open[i].push(md::add_tag(l, lanes[i].1));
+                    last = Some(Bucket::Open(i));
+                    continue;
+                }
             };
             open[i].push((*l).to_string());
             last = Some(Bucket::Open(i));

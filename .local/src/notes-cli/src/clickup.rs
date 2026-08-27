@@ -55,16 +55,19 @@ struct Ticket {
     title: String,
 }
 
-/// Map a ClickUp priority word to the note's priority hashtag. The note model has three
-/// levels (`md::PRIORITIES`: urgent/high/low); ClickUp's "normal" (its default) has no
-/// lane, so it maps to `""` (no tag) like "none" — the task sweeps into the untagged top
-/// bucket rather than a lane.
+/// Map a ClickUp priority word to the note's priority hashtag.
+///
+/// ClickUp's default is `normal`, and ours is `#high` (`md::DEFAULT_PRIORITY`), so `normal`
+/// maps to the default rather than to no tag. The two defaults have to agree: ClickUp is by
+/// far the biggest producer of tickets nobody has prioritized, and mapping them to nothing
+/// would leave the note's largest population of tasks outside the ordering the default exists
+/// to give them.
 fn priority_tag(word: &str) -> &'static str {
     match word.trim().to_lowercase().as_str() {
         "urgent" => "#urgent",
         "high" => "#high",
         "low" => "#low",
-        _ => "", // "normal" / "none" / unknown -> untagged
+        _ => md::default_priority(), // "normal" / "none" / unknown
     }
 }
 
@@ -462,10 +465,14 @@ mod tests {
     fn priority_tag_maps_clickup_words() {
         assert_eq!(priority_tag("urgent"), "#urgent");
         assert_eq!(priority_tag("High"), "#high");
-        assert_eq!(priority_tag("normal"), ""); // "normal" has no lane in the 3-level model
+        // ClickUp's default and ours have to agree, or the biggest population of
+        // unprioritized tickets lands outside the ordering the default exists to give them.
+        assert_eq!(priority_tag("normal"), "#high");
+        assert_eq!(priority_tag("none"), "#high");
         assert_eq!(priority_tag("low"), "#low");
-        assert_eq!(priority_tag(""), "");
-        assert_eq!(priority_tag("bogus"), "");
+        // an absent priority is the same case: unknown means unprioritized means default
+        assert_eq!(priority_tag(""), "#high");
+        assert_eq!(priority_tag("bogus"), "#high");
     }
 
     #[test]
@@ -494,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn new_focus_line_without_priority_has_no_tag() {
+    fn new_focus_line_without_priority_takes_the_default() {
         let t = Ticket {
             id: "z9".into(),
             priority: "".into(),
@@ -504,8 +511,8 @@ mod tests {
         let line = new_focus_line(&t, d("2026-07-22"));
         assert_eq!(
             line,
-            "- [/] loose task (0d) <!-- since:2026-07-22 --> <!-- cu:z9 -->"
+            "- [/] loose task (0d) <!-- since:2026-07-22 --> #high <!-- cu:z9 -->"
         );
-        assert_eq!(md::task_priority(&line), None);
+        assert_eq!(md::task_priority(&line), Some("#high"));
     }
 }

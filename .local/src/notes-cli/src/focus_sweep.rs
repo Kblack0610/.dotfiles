@@ -127,13 +127,15 @@ after
 ";
         let out = sweep_content(note).unwrap();
         let focus = out.split("## Notes").next().unwrap();
-        // untagged stays on top; lanes descend urgent -> high -> low; done at the foot
-        let untagged = focus.find("untagged one").unwrap();
+        // lanes descend urgent -> high -> low; done at the foot
         let urgent = focus.find("### Urgent").unwrap();
         let high = focus.find("### High").unwrap();
         let low = focus.find("### Low").unwrap();
         let done = focus.find("### Done").unwrap();
-        assert!(untagged < urgent, "untagged above the priority lanes");
+        // an untagged task takes the default and lands in High, not above the lanes
+        let untagged = focus.find("untagged one").unwrap();
+        assert!(out.contains("- [ ] untagged one #high"), "defaulted:\n{out}");
+        assert!(untagged > high && untagged < low, "in the High lane:\n{out}");
         assert!(urgent < high && high < low, "lanes ordered urgent > high > low");
         assert!(focus.find("fire").unwrap() > urgent && focus.find("fire").unwrap() < high);
         assert!(low < done, "Done is last");
@@ -176,11 +178,24 @@ after
         assert!(out.contains(&format!("{}\n### somejob\n- [ ] theirs", md::ROLLUP_START)));
     }
 
+    // A note holding nothing but the placeholder still sweeps to nothing, so a fresh daily
+    // note is not born full of empty lane headers. The placeholder is the one task line that
+    // never takes the default - it is scaffold the sweep re-emits, and tagging it would make
+    // every sweep differ from the one before it.
     #[test]
-    fn no_change_when_only_untagged_todos() {
-        // nothing to organize: no priority tags, no done, no scaffold
+    fn a_note_with_only_the_placeholder_is_left_alone() {
+        let note = "## Focus\n- [ ] \n\n## Notes\n";
+        assert!(sweep_content(note).is_none(), "nothing to organize");
+    }
+
+    // But a real untagged task IS something to organize now: it takes the default and the
+    // lanes appear around it.
+    #[test]
+    fn untagged_todos_take_the_default_and_open_the_lanes() {
         let note = "## Focus\n- [ ] a\n- [ ] b\n- [ ] \n\n## Notes\n";
-        assert!(sweep_content(note).is_none());
+        let out = sweep_content(note).expect("defaulting is a change");
+        assert!(out.contains("- [ ] a #high") && out.contains("- [ ] b #high"), "{out}");
+        assert!(out.contains("### High"), "{out}");
     }
 
     #[test]
@@ -197,7 +212,7 @@ after
         // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
         // (markdown.lua rebuild_focus_body), locking the two surfaces in parity.
         let note = "## Focus\n- [ ] plain top\n- [ ] task #high\n### Urgent\n- [ ] dropped\n- [ ] \n\n## Notes\nafter\n";
-        let expected = "## Focus\n- [ ] plain top\n- [ ] \n\n### Urgent\n- [ ] dropped #urgent\n\n### High\n- [ ] task #high\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n- [ ] \n\n### Urgent\n- [ ] dropped #urgent\n\n### High\n- [ ] plain top #high\n- [ ] task #high\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(sweep_content(note).unwrap(), expected);
     }
 

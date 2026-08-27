@@ -730,16 +730,41 @@ fn strip_trailing_day(s: &str) -> String {
     t.to_string()
 }
 
-/// The priority levels, most-urgent first — `(bare-word, #hashtag, lane-heading)`. The
-/// SINGLE source of truth, shared by tag detection here and the Focus/Wave lane sweep
-/// (`focus_sweep::PRIORITIES`). Matches the nvim priority set-keys (<leader>tu/th/tl).
-/// A task carries at most one; it rides at the very end of the line, after the
-/// `(Nd) <!-- since -->` stamp, so it stays visible and never gets a stale duplicate.
+/// The priority levels, most-urgent first: `(bare-word, #hashtag, lane-heading)`. The SINGLE
+/// source of truth, shared by tag detection here, the Focus lane sweep, and the nvim mirror
+/// (markdown.lua LANES / PRIORITIES).
 pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
     ("urgent", "#urgent", "### Urgent"),
     ("high", "#high", "### High"),
     ("low", "#low", "### Low"),
 ];
+
+/// The level a task has when nobody has said otherwise, as an index into [`PRIORITIES`].
+///
+/// Every task carries a priority. Before this, an untagged task meant "unranked" and the
+/// sweep floated it ABOVE `### Urgent` - so a task nobody had thought about outranked one
+/// explicitly marked urgent. A default in the middle of the range fixes the ordering and
+/// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
+pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
+
+/// The default priority hashtag (`"#high"`).
+pub fn default_priority() -> &'static str {
+    PRIORITIES[DEFAULT_PRIORITY].1
+}
+
+/// Give a task line the default priority when it carries none. Non-tasks, and the empty
+/// `- [ ] ` placeholder, are returned untouched.
+///
+/// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
+/// tagging it would make each sweep differ from the one before it and the file would churn
+/// forever. Prose is excluded for a simpler reason - it is not a task and cannot have a
+/// priority - which is what keeps the untagged bucket alive for the lines that belong there.
+pub fn with_default_priority(line: &str) -> String {
+    if !is_task(line) || is_empty_unchecked(line) || task_priority(line).is_some() {
+        return line.to_string();
+    }
+    normalize_tags(&add_tag(line, default_priority()))
+}
 
 /// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
 /// from `line`, collapsing the space each one leaves behind, and return the cleaned line
@@ -790,6 +815,13 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
         cleaned.trim_end().to_string(),
         best.map(|r| PRIORITIES[r].1),
     )
+}
+
+/// [`split_priority`] for callers outside this module: the cleaned line plus its most-urgent
+/// tag. Exposed because an end-anchored re-implementation elsewhere silently dropped a tag
+/// once a wave tag started following it.
+pub fn split_priority_pub(line: &str) -> (String, Option<&'static str>) {
+    split_priority(line)
 }
 
 /// The line with every priority tag removed. Pair with [`add_tag`] to change a task's
@@ -1242,6 +1274,45 @@ after
         let (core, w) = split_wave("- [x] done #v0.0.2 <!-- pr:307 -->");
         assert_eq!(core, "- [x] done <!-- pr:307 -->");
         assert_eq!(w.as_deref(), Some("#v0.0.2"));
+    }
+
+    // Every task carries a priority. The two exclusions are what keep the sweep stable and
+    // the untagged bucket alive for lines that cannot have one.
+    #[test]
+    fn the_default_applies_to_untagged_tasks_only() {
+        assert_eq!(
+            with_default_priority("- [ ] a thing"),
+            "- [ ] a thing #high"
+        );
+        // an explicit tag is never overwritten, at either end of the range
+        assert_eq!(
+            with_default_priority("- [ ] fire #urgent"),
+            "- [ ] fire #urgent"
+        );
+        assert_eq!(
+            with_default_priority("- [ ] someday #low"),
+            "- [ ] someday #low"
+        );
+        // the placeholder the sweep re-emits: tagging it would churn the file every run
+        assert_eq!(with_default_priority("- [ ] "), "- [ ] ");
+        assert_eq!(with_default_priority("    - [ ] "), "    - [ ] ");
+        // prose is not a task and cannot carry a priority
+        assert_eq!(with_default_priority("just a line"), "just a line");
+        assert_eq!(with_default_priority("## Wave: v1.0.0"), "## Wave: v1.0.0");
+    }
+
+    // The tag lands in canonical position, before the marker and before the wave tag, so a
+    // defaulted line is spelled exactly like a hand-tagged one.
+    #[test]
+    fn a_defaulted_tag_lands_where_a_typed_one_would() {
+        assert_eq!(
+            with_default_priority("- [x] shipped <!-- pr:307 -->"),
+            "- [x] shipped #high <!-- pr:307 -->"
+        );
+        assert_eq!(
+            with_default_priority("- [ ] a thing #v0.12.1"),
+            "- [ ] a thing #high #v0.12.1"
+        );
     }
 
     #[test]
