@@ -378,6 +378,124 @@ fn tag_span(bytes: &[u8], tag_start: usize) -> (usize, usize) {
     (k, end)
 }
 
+/// Where tag scanning starts: past a leading `##`-style markdown heading marker, so the
+/// heading's own `#`s are not read as a tag. `0` when the line has no heading marker.
+fn scan_start(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let indent_end = line.len() - line.trim_start().len();
+    let mut j = indent_end;
+    while j < bytes.len() && bytes[j] == b'#' {
+        j += 1;
+    }
+    if j > indent_end && bytes.get(j) == Some(&b' ') {
+        j + 1
+    } else {
+        0
+    }
+}
+
+/// Walk every inline hashtag on `line`, calling `f(hash_at, tag_start, scan_end, text_end)`.
+///
+/// THE one tag walker, so the glue rule and the code-span rule have a single definition. Three
+/// readers need it (`find_hashtags`, `split_priority`, `split_wave`) and a rule applied to two
+/// of them would put the third quietly out of step.
+fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
+    let bytes = line.as_bytes();
+    let start = scan_start(line);
+    let mut in_code = false;
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'#' && !in_code {
+            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+            let glued = matches!(prev, Some(p)
+                if p.is_ascii_alphanumeric() || matches!(p, b'_' | b'/' | b'.' | b'[' | b'#'));
+            let tag_start = i + 1;
+            if !glued
+                && bytes
+                    .get(tag_start)
+                    .is_some_and(|c| c.is_ascii_alphabetic())
+            {
+                let (k, end) = tag_span(bytes, tag_start);
+                f(i, tag_start, k, end);
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// True when `tag` (bare, no `#`) names a version: `v` then three dot-separated numbers.
+/// This is what makes a hashtag a WAVE tag rather than an ordinary one.
+pub fn is_wave_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
+        return false;
+    };
+    let mut parts = 0;
+    for p in rest.split('.') {
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        parts += 1;
+    }
+    parts == 3
+}
+
+/// Strip every wave tag from `line`, collapsing the space each leaves behind, and return the
+/// cleaned line plus the FIRST one found (as `#v0.12.1`), or `None`.
+///
+/// Mirrors [`split_priority`], and for the same reason: a task's identity must not depend on
+/// which wave it sits in, or `ptask done "<query>"` stops matching a task the moment it moves.
+pub fn split_wave(line: &str) -> (String, Option<String>) {
+    let bytes = line.as_bytes();
+    let start = scan_start(line);
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut found: Option<String> = None;
+    for_each_tag(line, |hash_at, tag_start, k, end| {
+        if !is_wave_tag(&line[tag_start..end]) {
+            return;
+        }
+        if found.is_none() {
+            found = Some(format!("#{}", &line[tag_start..end]));
+        }
+        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
+        // is given back for the same reason `split_priority` gives it back: it is the
+        // human's punctuation, not part of the tag.
+        let mut cut_e = k;
+        while cut_e > end && bytes[cut_e - 1] == b'.' {
+            cut_e -= 1;
+        }
+        let mut cut_s = hash_at;
+        if cut_s > start && bytes[cut_s - 1] == b' ' {
+            cut_s -= 1;
+        } else if bytes.get(cut_e) == Some(&b' ') {
+            cut_e += 1;
+        }
+        spans.push((cut_s, cut_e));
+    });
+    if spans.is_empty() {
+        return (line.to_string(), None);
+    }
+    let mut cleaned = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for (s, e) in &spans {
+        cleaned.push_str(&line[cursor..*s]);
+        cursor = *e;
+    }
+    cleaned.push_str(&line[cursor..]);
+    (cleaned.trim_end().to_string(), found)
+}
+
+/// The wave tag on a line (`"#v0.12.1"`), or `None`.
+pub fn wave_tag(line: &str) -> Option<String> {
+    split_wave(line).1
+}
+
 /// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
 /// then `[A-Za-z0-9_/.-]*`, so `#wedding`, nested `#wedding/venue` and the dotted
 /// `#v0.12.1` wave tag all parse. Deliberately skips (mirroring the care
@@ -391,48 +509,10 @@ fn tag_span(bytes: &[u8], tag_start: usize) -> (usize, usize) {
 ///
 /// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
-    let bytes = line.as_bytes();
-
-    // Skip a leading heading marker: optional indent, a run of '#', then a space.
-    let indent_end = line.len() - line.trim_start().len();
-    let mut j = indent_end;
-    while j < bytes.len() && bytes[j] == b'#' {
-        j += 1;
-    }
-    let start = if j > indent_end && bytes.get(j) == Some(&b' ') {
-        j + 1
-    } else {
-        0
-    };
-
     let mut out = Vec::new();
-    let mut in_code = false;
-    let mut i = start;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'`' {
-            in_code = !in_code;
-            i += 1;
-            continue;
-        }
-        if b == b'#' && !in_code {
-            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
-            let glued = matches!(prev, Some(p)
-                if p.is_ascii_alphanumeric() || matches!(p, b'_' | b'/' | b'.' | b'[' | b'#'));
-            let tag_start = i + 1;
-            if !glued
-                && bytes
-                    .get(tag_start)
-                    .is_some_and(|c| c.is_ascii_alphabetic())
-            {
-                let (k, end) = tag_span(bytes, tag_start);
-                out.push(line[tag_start..end].to_lowercase());
-                i = k;
-                continue;
-            }
-        }
-        i += 1;
-    }
+    for_each_tag(line, |_, tag_start, _, end| {
+        out.push(line[tag_start..end].to_lowercase());
+    });
     out
 }
 
@@ -644,69 +724,34 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 /// Tag detection mirrors [`find_hashtags`] (heading marker, glued `#`, and code spans skipped).
 fn split_priority(line: &str) -> (String, Option<&'static str>) {
     let bytes = line.as_bytes();
-
-    // Skip a leading heading marker: optional indent, a run of '#', then a space.
-    let indent_end = line.len() - line.trim_start().len();
-    let mut j = indent_end;
-    while j < bytes.len() && bytes[j] == b'#' {
-        j += 1;
-    }
-    let start = if j > indent_end && bytes.get(j) == Some(&b' ') {
-        j + 1
-    } else {
-        0
-    };
-
+    let start = scan_start(line);
     // Byte ranges to cut, each already extended to swallow one adjacent space.
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut best: Option<usize> = None; // index into PRIORITIES (lower = more urgent)
-    let mut in_code = false;
-    let mut i = start;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'`' {
-            in_code = !in_code;
-            i += 1;
-            continue;
+    for_each_tag(line, |hash_at, tag_start, k, end| {
+        let Some(rank) = PRIORITIES
+            .iter()
+            .position(|(t, _, _)| *t == line[tag_start..end].to_lowercase())
+        else {
+            return;
+        };
+        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
+        // is given back: `-` and `/` are tag noise and are cut with the tag, but a
+        // sentence-final `#high.` must keep its full stop or stripping the tag silently
+        // rewrites the human's prose.
+        let mut cut_e = k;
+        while cut_e > end && bytes[cut_e - 1] == b'.' {
+            cut_e -= 1;
         }
-        if b == b'#' && !in_code {
-            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
-            let glued = matches!(prev, Some(p)
-                if p.is_ascii_alphanumeric() || matches!(p, b'_' | b'/' | b'.' | b'[' | b'#'));
-            let tag_start = i + 1;
-            if !glued
-                && bytes
-                    .get(tag_start)
-                    .is_some_and(|c| c.is_ascii_alphabetic())
-            {
-                let (k, end) = tag_span(bytes, tag_start);
-                if let Some(rank) = PRIORITIES
-                    .iter()
-                    .position(|(t, _, _)| *t == line[tag_start..end].to_lowercase())
-                {
-                    // Cut `#tag` plus one neighbouring space so no double space is left.
-                    // A trailing `.` is given back: `-` and `/` are tag noise and are cut
-                    // with the tag, but a sentence-final `#high.` must keep its full stop
-                    // or stripping the tag silently rewrites the human's prose.
-                    let mut cut_e = k;
-                    while cut_e > end && bytes[cut_e - 1] == b'.' {
-                        cut_e -= 1;
-                    }
-                    let mut cut_s = i;
-                    if cut_s > start && bytes[cut_s - 1] == b' ' {
-                        cut_s -= 1;
-                    } else if bytes.get(cut_e) == Some(&b' ') {
-                        cut_e += 1;
-                    }
-                    spans.push((cut_s, cut_e));
-                    best = Some(best.map_or(rank, |b| b.min(rank)));
-                    i = k;
-                    continue;
-                }
-            }
+        let mut cut_s = hash_at;
+        if cut_s > start && bytes[cut_s - 1] == b' ' {
+            cut_s -= 1;
+        } else if bytes.get(cut_e) == Some(&b' ') {
+            cut_e += 1;
         }
-        i += 1;
-    }
+        spans.push((cut_s, cut_e));
+        best = Some(best.map_or(rank, |b| b.min(rank)));
+    });
 
     if spans.is_empty() {
         return (line.to_string(), None);
@@ -722,6 +767,13 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
         cleaned.trim_end().to_string(),
         best.map(|r| PRIORITIES[r].1),
     )
+}
+
+/// The line with every priority tag removed. Pair with [`add_tag`] to change a task's
+/// priority: strip, then add, so the new tag lands in the canonical place rather than
+/// wherever the old one happened to sit.
+pub fn strip_priority_tag(line: &str) -> String {
+    split_priority(line).0
 }
 
 /// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#low"`), or
@@ -826,8 +878,12 @@ pub fn task_text(line: &str) -> String {
     }
     let stripped = strip_trailing_day(t);
     // A task's identity is independent of its priority tag (and where it sits), so
-    // carried/promoted copies dedupe even if the tag was added or moved.
+    // carried/promoted copies dedupe even if the tag was added or moved. The wave tag goes
+    // for the same reason and it matters more: without this, `ptask done "<query>"` stops
+    // matching a task the moment it is pushed to another wave, and the cockpit's
+    // done/start/rm silently no-op on it.
     let (stripped, _) = split_priority(&stripped);
+    let (stripped, _) = split_wave(&stripped);
     let t = stripped.trim();
     // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
     // in-progress task's key carries the checkbox and never matches its open counterpart.
@@ -1121,6 +1177,47 @@ after
 
     // A wave tag is content as far as priority is concerned: it must survive the split
     // intact, or the sweep would strip the very tag it buckets by.
+    // A task's identity must not depend on which wave it is in: `ptask done "<query>"`
+    // matches on the key, so a task that moved wave would stop matching and the cockpit's
+    // done/start/rm would silently no-op on it.
+    #[test]
+    fn task_key_is_invariant_under_wave_and_priority_tags() {
+        assert_eq!(task_key("- [ ] a thing #v0.12.1 #high"), task_key("- [ ] a thing"));
+        assert_eq!(task_key("- [ ] a thing #v0.12.1"), "a thing");
+        assert_eq!(
+            task_text("- [x] shipped it #v0.0.2 #high <!-- pr:307 -->"),
+            "shipped it"
+        );
+    }
+
+    #[test]
+    fn a_wave_tag_is_a_version_and_nothing_else_is() {
+        assert!(is_wave_tag("v0.12.1"));
+        assert!(is_wave_tag("v10.0.99"));
+        // the shapes that must NOT be mistaken for one
+        assert!(!is_wave_tag("v0.12"), "two parts is not a version");
+        assert!(!is_wave_tag("v0.12.1.2"), "four parts is not a version");
+        assert!(!is_wave_tag("0.12.1"), "no leading v");
+        assert!(!is_wave_tag("v0.12.x"), "not all digits");
+        assert!(!is_wave_tag("venue"), "an ordinary tag starting with v");
+        assert!(!is_wave_tag("v"), "bare v");
+    }
+
+    #[test]
+    fn split_wave_takes_the_tag_and_leaves_the_rest() {
+        let (core, w) = split_wave("- [ ] a thing #v0.12.1 #high");
+        assert_eq!(core, "- [ ] a thing #high");
+        assert_eq!(w.as_deref(), Some("#v0.12.1"));
+        // an ordinary tag that merely starts with `v` is untouched
+        let (core, w) = split_wave("- [ ] book the #venue");
+        assert_eq!(core, "- [ ] book the #venue");
+        assert_eq!(w, None);
+        // and it survives a trailing marker
+        let (core, w) = split_wave("- [x] done #v0.0.2 <!-- pr:307 -->");
+        assert_eq!(core, "- [x] done <!-- pr:307 -->");
+        assert_eq!(w.as_deref(), Some("#v0.0.2"));
+    }
+
     #[test]
     fn split_priority_leaves_a_wave_tag_alone() {
         let (core, prio) = split_priority("- [ ] a thing #v0.12.1 #high");

@@ -74,6 +74,20 @@ fn scaffold_lane(line: &str, lanes: &[Lane]) -> Option<usize> {
 /// `None` when there is nothing to organize (only untagged todos, no done task, no leftover
 /// scaffold) - that shape is already the sorted form, and rewriting it would churn the file.
 pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
+    rebuild_inner(body, lanes, false)
+}
+
+/// Like [`rebuild`], but always emits the scaffold, even for a body with nothing to organize.
+///
+/// A wave section's lanes have to exist from the moment the wave does: they are where you
+/// drop a task to prioritize it, and a wave that renders as a flat list offers nowhere to
+/// drop. `## Focus` is the other way round - it stays unstyled until you first tag something,
+/// so a brand new daily note is not born full of empty headers.
+pub(crate) fn rebuild_scaffolded(body: &[&str], lanes: &[Lane]) -> Vec<String> {
+    rebuild_inner(body, lanes, true).expect("forced rebuild always produces a body")
+}
+
+fn rebuild_inner(body: &[&str], lanes: &[Lane], force: bool) -> Option<Vec<String>> {
     let mut open: Vec<Vec<String>> = vec![Vec::new(); lanes.len() + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
@@ -132,7 +146,7 @@ pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
     }
 
     let tagged = open[..lanes.len()].iter().any(|b| !b.is_empty());
-    if !tagged && done.is_empty() && !had_scaffold {
+    if !force && !tagged && done.is_empty() && !had_scaffold {
         return None;
     }
 
@@ -162,9 +176,11 @@ pub(crate) fn sweep_section(
     lanes: &[Lane],
 ) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| l.strip_prefix("## ").map(|r| pred(r.trim())).unwrap_or(false))?;
+    let start = lines.iter().position(|l| {
+        l.strip_prefix("## ")
+            .map(|r| pred(r.trim()))
+            .unwrap_or(false)
+    })?;
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(start + 1) {
         if l.starts_with("## ") || l.trim() == md::ROLLUP_START {
@@ -208,9 +224,15 @@ mod tests {
             out.contains("- [ ] dropped #urgent <!-- pr:307 -->"),
             "tag belongs before the marker:\n{out}"
         );
-        assert!(!out.contains("--> #urgent"), "never past the marker:\n{out}");
+        assert!(
+            !out.contains("--> #urgent"),
+            "never past the marker:\n{out}"
+        );
         // and the display path agrees: no tag survives into the rendered text
-        assert_eq!(md::task_text("- [ ] dropped #urgent <!-- pr:307 -->"), "dropped");
+        assert_eq!(
+            md::task_text("- [ ] dropped #urgent <!-- pr:307 -->"),
+            "dropped"
+        );
     }
 
     // Re-tagging an already-tagged line would double it on every sweep.
@@ -235,20 +257,28 @@ mod tests {
             "continuation stays attached:\n{out}"
         );
         let high = out.find("### High").unwrap();
-        assert!(out.find("needs OAuth2").unwrap() > high, "and inside the lane:\n{out}");
+        assert!(
+            out.find("needs OAuth2").unwrap() > high,
+            "and inside the lane:\n{out}"
+        );
     }
 
     // Same rule for a nested subtask, which `is_task` would otherwise bucket on its own.
     #[test]
     fn a_nested_subtask_stays_under_its_parent() {
-        let out = focus("## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n\n## Notes\n");
+        let out = focus(
+            "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n\n## Notes\n",
+        );
         assert!(
             out.contains("- [ ] parent #urgent\n    - [ ] child\n    - [x] done child"),
             "the block stays contiguous:\n{out}"
         );
         // the done CHILD is not promoted into the Done list away from its parent
         let done = out.find("### Done").unwrap();
-        assert!(out.find("done child").unwrap() < done, "child stays put:\n{out}");
+        assert!(
+            out.find("done child").unwrap() < done,
+            "child stays put:\n{out}"
+        );
     }
 
     // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
@@ -273,7 +303,10 @@ mod tests {
         )
         .unwrap();
         let body = out.split("## Notes").next().unwrap();
-        assert!(!body.contains("### Urgent"), "no illegal drop target:\n{out}");
+        assert!(
+            !body.contains("### Urgent"),
+            "no illegal drop target:\n{out}"
+        );
         assert!(body.contains("### High") && body.contains("### Low"));
     }
 

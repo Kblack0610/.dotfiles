@@ -22,6 +22,7 @@ mod logging;
 mod md;
 mod meeting;
 mod project_tasks;
+mod project_sweep;
 mod projects;
 mod summarize;
 mod sweep;
@@ -362,6 +363,13 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Re-lane the sheet: group tasks into waves by their `#vX.Y.Z` tag (current wave
+    /// first, roadmap ascending), then by priority inside each wave, done at the foot
+    Sweep {
+        /// Print what would change and leave the sheet alone
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -547,6 +555,9 @@ fn main() -> Result<()> {
             }
             Some(PtaskCmd::Rm { query }) => {
                 project_tasks::rm(&prof, &log, &name, &query.join(" "))?
+            }
+            Some(PtaskCmd::Sweep { dry_run }) => {
+                project_tasks::sweep(&prof, &log, &name, dry_run)?
             }
         },
         Cmd::Board { ai, projects } => {

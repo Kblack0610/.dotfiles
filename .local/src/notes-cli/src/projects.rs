@@ -461,7 +461,7 @@ fn scan_versions(dir: &Path, best: &mut Option<(u32, u32, u32)>) {
 
 /// The `Version: vX.Y.Z` declared on a working sheet (first such line), parsed. `None`
 /// when the sheet has no version line.
-fn sheet_version(content: &str) -> Option<(u32, u32, u32)> {
+pub(crate) fn sheet_version(content: &str) -> Option<(u32, u32, u32)> {
     content
         .lines()
         .find_map(|l| parse_version(l.trim().strip_prefix("Version:")?.trim()))
@@ -1018,6 +1018,36 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
 /// `#ai` work. Both directions are findings - a version with agent work and no evidence
 /// note, and an evidence note for a version that was never frozen. The OPEN version is
 /// exempt in the second direction: its human side is the live sheet, not a frozen note.
+/// Sheets where the roadmap's first `## Wave` does NOT name the declared `Version:`.
+///
+/// This is the invariant every reader leans on without checking: `project_tasks::current_wave`,
+/// `board`, `/wave` and `roll_blocker` all take `sections()[0]` as the current wave. If a
+/// planned section ever sorts above it, all four silently switch to work that has not started,
+/// and nothing else in the system would say so.
+pub fn wave_order_findings(p: &Profile) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, summary) in indexed(p) {
+        let Some(dir) = summary.parent() else { continue };
+        let Some(sheet) = sheet_path(dir) else { continue };
+        let Ok(content) = fs::read_to_string(&sheet) else {
+            continue;
+        };
+        let Some(declared) = sheet_version(&content) else {
+            continue;
+        };
+        match crate::waves::sections(&content).first() {
+            Some(first) if first.version == Some(declared) => {}
+            Some(first) => out.push(format!(
+                "{name}: sheet declares {} but the roadmap opens with {}",
+                fmt_version(declared),
+                first.label()
+            )),
+            None => {}
+        }
+    }
+    out
+}
+
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     for (name, summary) in indexed(p) {

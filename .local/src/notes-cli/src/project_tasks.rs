@@ -12,6 +12,7 @@
 use crate::config::Profile;
 use crate::logging::Logger;
 use crate::md;
+use crate::project_sweep;
 use crate::projects;
 use crate::waves;
 use anyhow::{bail, Result};
@@ -369,6 +370,34 @@ pub fn start(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> 
         Some(md::set_checkbox(l, mark))
     })?
     .0)
+}
+
+/// `notes ptask <name> sweep [--dry-run]` - reorganize the sheet's wave roadmap.
+///
+/// Logs under `ptask:` like every other verb here, because the Stop gate greps the notes log
+/// for `(focus|ptask):` to decide a turn made progress; a verb logged under anything else is
+/// invisible to it and the session gets blocked for work it did.
+pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool) -> Result<i32> {
+    let dir = projects::project_dir(p, name)?;
+    let Some(sheet) = task_sheet(&dir) else {
+        bail!("{name} has no task sheet with a `## Wave` section");
+    };
+    let content = fs::read_to_string(&sheet)?;
+    let Some((new, report)) = project_sweep::sweep_sheet(&content) else {
+        println!("{}: already swept (or no `Version:` / an unversioned wave heading)", name);
+        return Ok(0);
+    };
+    for r in &report {
+        println!("{r}");
+    }
+    if dry_run {
+        println!("--dry-run: {} would change", sheet.display());
+        return Ok(0);
+    }
+    md::write_atomic(&sheet, &new)?;
+    log.info("ptask", &format!("swept {name}'s waves"));
+    println!("{}", sheet.display());
+    Ok(0)
 }
 
 /// Shared body for `done`/`rm`/`start`: apply `f` to the first open wave task matching
