@@ -142,6 +142,22 @@ pub(crate) fn find(content: &str, ver: (u32, u32, u32)) -> Option<Section> {
     sections(content).into_iter().find(|s| s.version == Some(ver))
 }
 
+/// The CURRENT wave: the section naming the sheet's declared `Version:`, falling back to the
+/// first section when the sheet declares none (a `tasks.md` sheet).
+///
+/// A sweep that reorders sections cannot use position to decide which section goes first
+/// without arguing in a circle, so it sorts by `Version:` instead - the sheet's own
+/// declaration of the open version, and already what `roll` reads.
+///
+/// Invariant the two definitions share, restored by the sweep and checked by `doctor`:
+/// `sections(content)[0].version == sheet_version(content)`. Readers keep using position.
+pub(crate) fn current_of(content: &str, declared: Option<(u32, u32, u32)>) -> Option<Section> {
+    match declared {
+        Some(v) => find(content, v).or_else(|| sections(content).into_iter().next()),
+        None => sections(content).into_iter().next(),
+    }
+}
+
 /// Insert an empty PLANNED wave for `ver`, in ascending version order among the planned
 /// sections and always BELOW the current wave. Returns the new content.
 ///
