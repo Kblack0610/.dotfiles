@@ -49,6 +49,15 @@ pub fn board_path(p: &Profile) -> Option<PathBuf> {
     Some(p.board.clone())
 }
 
+/// The AI board, DERIVED as a sibling of the board rather than configured separately.
+///
+/// Same argument `board_path` makes above: one address, identical on every profile. A second
+/// config key would be a second thing to get wrong, and two surfaces that disagree about
+/// where the agent lane lives is exactly the bug that left orgs linking a board nobody wrote.
+pub fn ai_board_path(p: &Profile) -> Option<PathBuf> {
+    Some(p.board.with_file_name("ai-board.md"))
+}
+
 /// A project's name as a link to the SHEET the rows came from, so the board is a launchpad
 /// and not just a readout: the whole point of seeing "14 open" is getting to the file where
 /// you fill the next one in.
@@ -84,24 +93,54 @@ fn link_for(name: &str, vault: &std::path::Path, sheet: Option<&std::path::Path>
     format!("[[{target}|{name}]]")
 }
 
-/// The `N open (M @ai)` tail both renderers share, so the two counts cannot disagree.
-fn counts(open: &[String]) -> String {
+/// Which half of a sheet a board is showing.
+///
+/// The `#ai` tag on a task line is what routes it. Keeping ONE tag on ONE sheet and deriving
+/// two views from it is what stops a task existing in two places: a per-project agent FILE
+/// would be a second home for a row, and the two would drift the first time anything wrote
+/// to one of them and not the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Human,
+    Ai,
+}
+
+impl Lane {
+    fn keeps(self, line: &str) -> bool {
+        is_ai(line) == (self == Lane::Ai)
+    }
+}
+
+/// The open tasks of `dir`'s current wave that belong to `lane`.
+fn lane_tasks(dir: &std::path::Path, lane: Lane) -> Option<(String, Vec<String>)> {
+    let (version, open) = project_tasks::open_wave_for_dir(dir)?;
+    Some((
+        version,
+        open.into_iter().filter(|l| lane.keeps(l)).collect(),
+    ))
+}
+
+/// The `N open` tail both renderers share, so the two counts cannot disagree.
+///
+/// The `(M @ai)` half is dropped on the AI board: every row there is an agent row, so it
+/// would only ever restate the first number.
+fn counts(open: &[String], lane: Lane) -> String {
     let ai = open.iter().filter(|l| is_ai(l)).count();
     let mut s = format!("{} open", open.len());
-    if ai > 0 {
+    if ai > 0 && lane != Lane::Ai {
         s.push_str(&format!(" ({ai} @ai)"));
     }
     s
 }
 
 /// One project's rendered block, or `None` when it has no task sheet.
-fn project_block(name: &str, dir: &std::path::Path) -> Option<String> {
-    let (version, open) = project_tasks::open_wave_for_dir(dir)?;
+fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String> {
+    let (version, open) = lane_tasks(dir, lane)?;
 
     let mut s = format!(
         "## {} · {version} — {}\n",
         linked_name(name, dir),
-        counts(&open)
+        counts(&open, lane)
     );
     if open.is_empty() {
         // An empty board is a fact worth rendering. Omitting the project entirely would
@@ -109,10 +148,8 @@ fn project_block(name: &str, dir: &std::path::Path) -> Option<String> {
         s.push_str("_(nothing queued)_\n");
         return Some(s);
     }
-    // `#ai` first: the agent lane is the half the human is not holding in their head.
-    let (ai_lines, mine): (Vec<_>, Vec<_>) = open.iter().partition(|l| is_ai(l));
-    for l in ai_lines.iter().chain(mine.iter()) {
-        s.push_str(&format!("- [ ] {}\n", render(l)));
+    for l in &open {
+        s.push_str(&format!("- [ ] {}\n", render(l, lane)));
     }
     Some(s)
 }
@@ -123,20 +160,14 @@ fn project_block(name: &str, dir: &std::path::Path) -> Option<String> {
 /// opens it. One client project contributing 47 multi-sentence rows made the two goals fight;
 /// folding the orgs you are not in settles it without hiding anything, because the count is
 /// still exact and the name is still a link to the full list.
-fn project_rollup_line(name: &str, dir: &std::path::Path) -> Option<String> {
-    let (version, open) = project_tasks::open_wave_for_dir(dir)?;
+fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String> {
+    let (version, open) = lane_tasks(dir, lane)?;
     let mut s = format!(
         "- {} {version} - {}",
         linked_name(name, dir),
-        counts(&open)
+        counts(&open, lane)
     );
-    // The agent lane first, matching `project_block`: one line has room for one task, and
-    // the `#ai` half is the one the human is not already holding in their head.
-    let next = open
-        .iter()
-        .find(|l| is_ai(l))
-        .or_else(|| open.first())
-        .map(|l| render(l));
+    let next = open.first().map(|l| render(l, lane));
     if let Some(next) = next {
         s.push_str(&format!(" - next: {}", truncate_words(&next, 60)));
     }
@@ -178,7 +209,7 @@ pub(crate) fn is_ai(line: &str) -> bool {
 /// A wave line as the board shows it: checkbox and `#ai` stripped (the lane is already in
 /// the `@ai` prefix and the section header), HTML comments dropped. Keeps the text the
 /// human typed, so a board row is greppable back to its sheet.
-fn render(line: &str) -> String {
+fn render(line: &str, lane: Lane) -> String {
     // `task_text`, not `task_key`: the latter lower-cases because it is a de-duplication
     // key, which turned every board row into `pr #423`.
     let body = md::task_text(line);
@@ -187,7 +218,9 @@ fn render(line: &str) -> String {
         .filter(|w| *w != "#ai")
         .collect::<Vec<_>>()
         .join(" ");
-    if is_ai(line) {
+    // On the AI board every row is an agent row, so an `@ai` prefix would say nothing. On the
+    // human board it still marks the lane, which matters wherever the two can share a surface.
+    if lane != Lane::Ai && is_ai(line) {
         format!("@ai {body}")
     } else {
         body
@@ -201,16 +234,40 @@ fn render(line: &str) -> String {
 /// rule `focus::list_all` follows for the cockpit.
 pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     let active = config::resolve(None)?;
-    let Some(path) = board_path(&active) else {
-        return Ok(None);
-    };
+    let human = board_path(&active);
+    if let Some(p) = ai_board_path(&active) {
+        write_one(log, &p, Lane::Ai)?;
+    }
+    match human {
+        Some(p) => write_one(log, &p, Lane::Human).map(Some),
+        None => Ok(None),
+    }
+}
 
+/// Render + write ONE board. Two lanes, one renderer, so `board.md` and `ai-board.md` cannot
+/// disagree about what a project's wave holds.
+fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf> {
     let today = Local::now().date_naive().format("%Y-%m-%d");
+    let (id, title, blurb) = match lane {
+        Lane::Human => (
+            "board",
+            "Board",
+            "_Every project's current `## Wave`, the human lane. The agent's half is on the \
+             [[lab/projects/ai-board|AI board]]. Generated by `notes board` (and each \
+             `notes today`) from the same sheets the cockpit reads — edit a task on its \
+             project sheet or in the cockpit, never here._",
+        ),
+        Lane::Ai => (
+            "ai-board",
+            "AI board",
+            "_Every project's current `## Wave`, the `#ai` lane only — the work the agents \
+             own. The human's half is on the [[lab/projects/board|board]]. Generated by \
+             `notes board` from the same sheets; edit a task on its project sheet, never \
+             here. Hand a task over by tagging it `#ai`._",
+        ),
+    };
     let mut s = format!(
-        "---\nid: board\ntags: [board, projects]\n---\n\n# Board — {today}\n\n\
-         _Every project's current `## Wave`, agent lane first. Generated by `notes board` \
-         (and each `notes today`) from the same sheets the cockpit reads — edit a task on \
-         its project sheet or in the cockpit, never here._\n\n"
+        "---\nid: {id}\ntags: [board, projects]\n---\n\n# {title} — {today}\n\n{blurb}\n\n"
     );
 
     // Order and fold are read from config, not decided here. A board whose lead org depends
@@ -229,11 +286,13 @@ pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
         let full = layout.is_full(&name);
         let mut profile_blocks: Vec<String> = Vec::new();
         for (proj, summary) in &dirs {
-            let Some(dir) = summary.parent() else { continue };
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
             let rendered = if full {
-                project_block(proj, dir)
+                project_block(proj, dir, lane)
             } else {
-                project_rollup_line(proj, dir)
+                project_rollup_line(proj, dir, lane)
             };
             if let Some(b) = rendered {
                 profile_blocks.push(b);
@@ -274,9 +333,12 @@ pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating board dir {}", parent.display()))?;
     }
-    md::write_atomic(&path, &s).with_context(|| format!("writing {}", path.display()))?;
-    log.info("board", &format!("wrote {blocks} project(s) to {}", path.display()));
-    Ok(Some(path))
+    md::write_atomic(path, &s).with_context(|| format!("writing {}", path.display()))?;
+    log.info(
+        "board",
+        &format!("wrote {blocks} project(s) to {}", path.display()),
+    );
+    Ok(path.to_path_buf())
 }
 
 /// `notes board --ai [--project N]...` — print the agent lane as `<project>\t<text>`.
@@ -312,7 +374,9 @@ pub fn print_ai(projects: &[String]) -> Result<i32> {
             if !wanted.is_empty() && !wanted.contains(&proj.to_lowercase()) {
                 continue;
             }
-            let Some(dir) = summary.parent() else { continue };
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
             for row in ai_rows_for_dir(&proj, dir) {
                 println!("{row}");
             }
@@ -324,18 +388,13 @@ pub fn print_ai(projects: &[String]) -> Result<i32> {
 /// The per-project half of `print_ai`, split out so it is testable without a configured
 /// profile tree. Returns `<project>\t<text>` rows for the `#ai` lane of the current wave.
 fn ai_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
-    let Some((_version, open)) = project_tasks::open_wave_for_dir(dir) else {
+    let Some((_version, open)) = lane_tasks(dir, Lane::Ai) else {
         return Vec::new();
     };
+    // Rendered through `Lane::Ai` like the AI board itself, so this wire format and that file
+    // cannot disagree about a row's text. The preflight parses these positionally on a tab.
     open.iter()
-        .filter(|l| is_ai(l))
-        .map(|line| {
-            // `render` prefixes `@ai`, which is redundant once the caller has asked for
-            // only the ai lane and is joining on a tab.
-            let text = render(line);
-            let text = text.strip_prefix("@ai ").unwrap_or(&text).to_string();
-            format!("{proj}\t{text}")
-        })
+        .map(|line| format!("{proj}\t{}", render(line, Lane::Ai)))
         .collect()
 }
 
@@ -370,17 +429,22 @@ mod tests {
     #[test]
     fn render_strips_the_checkbox_and_the_tag_but_keeps_the_words() {
         assert_eq!(
-            render("- [ ] agentctl roles #ai (0d) <!-- since:2026-08-05 -->"),
+            render(
+                "- [ ] agentctl roles #ai (0d) <!-- since:2026-08-05 -->",
+                Lane::Human
+            ),
             "@ai agentctl roles"
         );
-        assert_eq!(render("- [ ] plain one"), "plain one");
-        // A non-ai row must not gain the prefix — that would mislabel the human's own work
-        // as agent work on the one surface built to tell them apart.
-        assert!(!render("- [ ] mine").starts_with("@ai"));
+        assert_eq!(render("- [ ] plain one", Lane::Human), "plain one");
+        // On the AI board the prefix says nothing: every row there is an agent row.
+        assert_eq!(
+            render("- [ ] agentctl roles #ai", Lane::Ai),
+            "agentctl roles"
+        );
     }
 
     #[test]
-    fn a_project_block_counts_open_and_ai_and_puts_the_agent_lane_first() {
+    fn each_board_shows_only_its_own_lane() {
         let dir = std::env::temp_dir().join(format!("notes-board-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -391,14 +455,33 @@ mod tests {
         )
         .unwrap();
 
-        let b = project_block("demo", &dir).unwrap();
-        // the checked item counts for neither total
-        assert!(b.contains("## demo · v0.3.0 — 2 open (1 @ai)"), "{b}");
-        // agent lane first, regardless of sheet order
-        let ai_at = b.find("@ai agent task").unwrap();
-        let human_at = b.find("human task").unwrap();
-        assert!(ai_at < human_at, "agent lane must sort first:\n{b}");
-        assert!(!b.contains("done one"), "checked items are not open:\n{b}");
+        // The two boards partition the wave: every open task is on exactly one of them.
+        let human = project_block("demo", &dir, Lane::Human).unwrap();
+        assert!(human.contains("## demo · v0.3.0 — 1 open"), "{human}");
+        assert!(human.contains("human task"), "{human}");
+        assert!(
+            !human.contains("agent task"),
+            "agent work is not here:\n{human}"
+        );
+
+        let ai = project_block("demo", &dir, Lane::Ai).unwrap();
+        // no `(N @ai)` restating the count, and no `@ai` prefix: this board IS that lane
+        assert!(ai.contains("## demo · v0.3.0 — 1 open\n"), "{ai}");
+        assert!(ai.contains("- [ ] agent task"), "{ai}");
+        assert!(
+            !ai.contains("human task"),
+            "the human's work is not here:\n{ai}"
+        );
+        assert!(
+            !ai.contains("@ai"),
+            "nothing on this board needs the marker:\n{ai}"
+        );
+
+        // the checked item counts for neither
+        assert!(
+            !human.contains("done one") && !ai.contains("done one"),
+            "{ai}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -415,11 +498,14 @@ mod tests {
         )
         .unwrap();
 
-        let b = project_block("quiet", &dir).unwrap();
+        let b = project_block("quiet", &dir, Lane::Human).unwrap();
         // Dropping the project entirely would read as "not set up" rather than "idle".
         assert!(b.contains("## quiet · v0.1.0 — 0 open"), "{b}");
         assert!(b.contains("nothing queued"), "{b}");
-        assert!(!b.contains("(0 @ai)"), "no lane count when there is none:\n{b}");
+        assert!(
+            !b.contains("(0 @ai)"),
+            "no lane count when there is none:\n{b}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -507,7 +593,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("summary.md"), "# prose only, no wave\n").unwrap();
-        assert!(project_block("nosheet", &dir).is_none());
+        assert!(project_block("nosheet", &dir, Lane::Human).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -536,7 +622,11 @@ mod tests {
             full: vec![],
         };
         assert_eq!(
-            layout.sort(vec!["aaa".to_string(), "biz".to_string(), "zzz".to_string()]),
+            layout.sort(vec![
+                "aaa".to_string(),
+                "biz".to_string(),
+                "zzz".to_string()
+            ]),
             vec!["biz", "aaa", "zzz"]
         );
     }
@@ -575,16 +665,22 @@ mod tests {
             "# folded\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n\
              - [ ] a human item\n- [ ] push nightly-sync dedup fix #ai\n- [x] shipped\n",
         );
-        let l = project_rollup_line("folded", &dir).unwrap();
+        let l = project_rollup_line("folded", &dir, Lane::Human).unwrap();
 
         assert_eq!(l.lines().count(), 1, "a rollup must stay one line:\n{l}");
         assert!(!l.contains("- [ ]"), "no checkboxes in a rollup:\n{l}");
-        assert!(l.contains("v0.0.1 - 2 open (1 @ai)"), "{l}");
-        // `#ai` wins over sheet order, matching `project_block`'s lane-first rule. The `@ai`
-        // prefix stays: a folded line shows exactly one task, so which lane it is in is not
-        // recoverable from the count the way it is in a full block.
-        assert!(l.contains("next: @ai push nightly-sync dedup fix"), "{l}");
-        assert!(!l.contains("a human item"), "{l}");
+        assert!(l.contains("v0.0.1 - 1 open"), "{l}");
+        assert!(l.contains("next: a human item"), "{l}");
+        assert!(
+            !l.contains("nightly-sync"),
+            "agent work is not on this board:\n{l}"
+        );
+
+        // and the same project on the AI board shows the other half
+        let a = project_rollup_line("folded", &dir, Lane::Ai).unwrap();
+        assert!(a.contains("v0.0.1 - 1 open"), "{a}");
+        assert!(!a.contains("@ai"), "{a}");
+        assert!(a.contains("next: push nightly-sync dedup fix"), "{a}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -595,7 +691,7 @@ mod tests {
             "humanonly",
             "# humanonly\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] only mine\n",
         );
-        let l = project_rollup_line("humanonly", &dir).unwrap();
+        let l = project_rollup_line("humanonly", &dir, Lane::Human).unwrap();
         assert!(l.contains("next: only mine"), "{l}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -606,7 +702,7 @@ mod tests {
             "idle",
             "# idle\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n",
         );
-        let l = project_rollup_line("idle", &dir).unwrap();
+        let l = project_rollup_line("idle", &dir, Lane::Human).unwrap();
         assert!(l.contains("0 open"), "{l}");
         assert!(!l.contains("next:"), "nothing to point at:\n{l}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -615,7 +711,7 @@ mod tests {
     #[test]
     fn a_rollup_needs_a_sheet_like_a_block_does() {
         let dir = sheet("nowave", "# prose\n");
-        assert!(project_rollup_line("nowave", &dir).is_none());
+        assert!(project_rollup_line("nowave", &dir, Lane::Human).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -643,9 +739,12 @@ mod tests {
     #[test]
     fn a_board_row_keeps_the_case_the_human_typed() {
         // `task_key` lower-cases because it is a de-dup key; a display row must not.
-        assert_eq!(render("- [ ] Fix PR #423 on Staging"), "Fix PR #423 on Staging");
         assert_eq!(
-            render("- [ ] Ship WidgetCo v1.13.0 #ai"),
+            render("- [ ] Fix PR #423 on Staging", Lane::Human),
+            "Fix PR #423 on Staging"
+        );
+        assert_eq!(
+            render("- [ ] Ship WidgetCo v1.13.0 #ai", Lane::Human),
             "@ai Ship WidgetCo v1.13.0"
         );
     }
@@ -654,7 +753,10 @@ mod tests {
     fn task_key_still_folds_case_for_matching() {
         // `ptask done "<query>"` resolves through `task_key`; case-folding it is the point.
         assert_eq!(md::task_key("- [ ] Fix PR #423"), "fix pr #423");
-        assert_eq!(md::task_key("- [x] Fix PR #423"), md::task_key("- [ ] fix pr #423"));
+        assert_eq!(
+            md::task_key("- [x] Fix PR #423"),
+            md::task_key("- [ ] fix pr #423")
+        );
     }
 
     #[test]
@@ -703,7 +805,11 @@ mod tests {
         // A dangling wikilink is worse than a plain heading, so the guard fails closed.
         let vault = std::path::Path::new("/vault");
         assert_eq!(
-            link_for("stray", vault, Some(std::path::Path::new("/tmp/x/README.md"))),
+            link_for(
+                "stray",
+                vault,
+                Some(std::path::Path::new("/tmp/x/README.md"))
+            ),
             "stray"
         );
         assert_eq!(link_for("nosheet", vault, None), "nosheet");
