@@ -274,6 +274,90 @@ pub fn move_task(p: &Profile, log: &Logger, name: &str, query: &str, to: &str) -
     Ok(0)
 }
 
+/// `notes ptask <name> promote|demote <query>` - step the first matching task one wave
+/// sooner or later, the way `<leader>tP`/`tp` steps a priority.
+///
+/// This is the verb the roadmap was missing. `move --to vX.Y.Z` needs an absolute version
+/// typed out, so in practice nothing ever left the current wave and 13 of 14 sheets have no
+/// planned wave at all. A relative step costs nothing to reach for, which is what makes
+/// splitting a pile into small waves something you actually do.
+///
+/// `promote` clamps at the current wave and exits NON-ZERO there: the cockpit drives these
+/// through fzf `execute-silent`, which discards stdout, so a zero exit would render "there is
+/// nothing sooner" as silence.
+pub fn step(p: &Profile, log: &Logger, name: &str, query: &str, dir: i32) -> Result<i32> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        bail!("which one? (provide a word from the task)");
+    }
+    let dir_word = if dir < 0 { "promote" } else { "demote" };
+    let dir_proj = projects::project_dir(p, name)?;
+    let Some(sheet) = task_sheet(&dir_proj) else {
+        bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
+    };
+    let content = fs::read_to_string(&sheet)?;
+    let secs = waves::sections(&content);
+    let cur = waves::current_of(&content, projects::sheet_version(&content))
+        .and_then(|s| s.version)
+        .ok_or_else(|| anyhow::anyhow!("{name}'s sheet has no versioned `## Wave` section"))?;
+    let ladder: Vec<(u32, u32, u32)> = secs.iter().filter_map(|s| s.version).collect();
+
+    // Which wave holds it now: the tag if it has one, else the section it sits in.
+    let mut at: Option<((u32, u32, u32), String, String)> = None; // (version, heading, line)
+    for s in &secs {
+        let Some(sv) = s.version else { continue };
+        if let Some((_, l)) = md::section_numbered(&content, &s.heading)
+            .into_iter()
+            .find(|(_, l)| is_match(l, &q))
+        {
+            let tagged = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
+            at = Some((tagged.unwrap_or(sv), s.heading.clone(), l.trim_end().to_string()));
+            break;
+        }
+    }
+    let Some((at_v, from, line)) = at else {
+        eprintln!("no open task matches '{query}' in {name}");
+        return Ok(1);
+    };
+
+    let to = match project_sweep::step_wave(cur, &ladder, at_v, dir) {
+        Ok(v) => v,
+        Err(project_sweep::StepEnd::AtCurrent) => {
+            eprintln!(
+                "'{}' is already in {} - nothing sooner than the current wave",
+                md::task_text(&line),
+                waves::fmt(cur)
+            );
+            return Ok(1);
+        }
+    };
+
+    let (retagged, note) = project_sweep::retag_wave(&line, to, to == cur);
+    let heading = waves::heading_current(&waves::fmt(to));
+    let (content, heading) = match waves::find(&content, to) {
+        Some(s) => (content, s.heading),
+        // The wave does not exist yet: open it as PLANNED, below the current one.
+        None => (waves::insert_planned(&content, to), {
+            let _ = heading;
+            waves::heading_planned(&waves::fmt(to))
+        }),
+    };
+    let Some((cut, _)) =
+        md::edit_first_in_section(&content, &from, |l| is_match(l, &q), |_| None)
+    else {
+        bail!("could not lift '{query}' out of {from}");
+    };
+    let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&retagged));
+    md::write_atomic(&sheet, &new)?;
+    log.info("ptask", &format!("{dir_word}d to {heading} in {} ({name})", sheet.display()));
+    println!("{} {}", dir_word, md::task_text(&line));
+    println!("  {} -> {}", waves::fmt(at_v), waves::fmt(to));
+    if let Some(n) = note {
+        println!("  {n}");
+    }
+    Ok(0)
+}
+
 /// `notes ptask <name> done <query> (--proof <ref> | --unverified "<why>")` — check off the
 /// first open wave task matching `<query>`, and record WHY it counts as done.
 ///

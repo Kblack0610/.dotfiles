@@ -27,6 +27,44 @@ fn lanes_for(is_current: bool) -> &'static [sweep::Lane] {
     }
 }
 
+/// One rung of the wave ladder from `at`, in `dir` (`-1` sooner, `+1` later).
+///
+/// A ladder, not a ring. `PRIORITY_RING` wraps through the no-tag slot because every priority
+/// is legal; wave steps are bounded on one side and open on the other. Going sooner CLAMPS at
+/// `cur`, because a wave before the current one is the thing every reader would mistake for
+/// the current one. Going later MINTS the next patch past the end, because the roadmap is
+/// supposed to grow: that is how a pile becomes small waves.
+pub(crate) fn step_wave(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, StepEnd> {
+    if dir < 0 {
+        if at <= cur {
+            return Err(StepEnd::AtCurrent);
+        }
+        Ok(ladder
+            .iter()
+            .copied()
+            .filter(|v| *v < at && *v >= cur)
+            .max()
+            .unwrap_or(cur))
+    } else {
+        match ladder.iter().copied().filter(|v| *v > at).min() {
+            Some(v) => Ok(v),
+            // Past the last planned wave: open the next patch above the highest wave on the
+            // sheet, so `demote` on the last one still has somewhere to put the task.
+            None => {
+                let top = ladder.iter().copied().max().unwrap_or(cur).max(at);
+                Ok((top.0, top.1, top.2 + 1))
+            }
+        }
+    }
+}
+
+/// Why a wave step could not happen. Only one direction can fail.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StepEnd {
+    /// Already in the current wave; there is nothing sooner.
+    AtCurrent,
+}
+
 /// Retag `line` for wave `to`, returning the new line and a report when something was
 /// rewritten beyond the tag itself.
 pub(crate) fn retag_wave(line: &str, to: V, to_is_current: bool) -> (String, Option<String>) {
@@ -180,6 +218,48 @@ Version: v0.12.1
 
     fn sweep(c: &str) -> String {
         sweep_sheet(c).expect("sheet reorganizes").0
+    }
+
+    const CUR: V = (0, 12, 1);
+    const LADDER: [V; 3] = [(0, 12, 1), (0, 12, 2), (0, 12, 4)];
+
+    #[test]
+    fn stepping_later_walks_the_ladder_it_finds_not_the_next_number() {
+        // v0.12.3 does not exist on the sheet, so v0.12.2 steps to v0.12.4.
+        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 2), 1), Ok((0, 12, 4)));
+        assert_eq!(step_wave(CUR, &LADDER, CUR, 1), Ok((0, 12, 2)));
+    }
+
+    #[test]
+    fn stepping_later_past_the_last_wave_opens_the_next_patch() {
+        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 4), 1), Ok((0, 12, 5)));
+        // and from a lone current wave, so a sheet with no roadmap can still grow one
+        assert_eq!(step_wave(CUR, &[CUR], CUR, 1), Ok((0, 12, 2)));
+    }
+
+    #[test]
+    fn stepping_sooner_walks_back_down_the_ladder() {
+        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 4), -1), Ok((0, 12, 2)));
+        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 2), -1), Ok(CUR));
+    }
+
+    // The clamp. A wave before the current one is exactly what every reader would mistake
+    // for the current one, so the ladder is bounded on this side and says so.
+    #[test]
+    fn stepping_sooner_clamps_at_the_current_wave() {
+        assert_eq!(step_wave(CUR, &LADDER, CUR, -1), Err(StepEnd::AtCurrent));
+        // and a task somehow BELOW current cannot be walked further down either
+        assert_eq!(
+            step_wave(CUR, &LADDER, (0, 11, 0), -1),
+            Err(StepEnd::AtCurrent)
+        );
+    }
+
+    // A step never lands on a rolled version even if one is somehow still on the ladder.
+    #[test]
+    fn a_step_never_lands_before_the_current_wave() {
+        let stale = [(0, 11, 0), (0, 12, 1), (0, 12, 2)];
+        assert_eq!(step_wave(CUR, &stale, (0, 12, 2), -1), Ok(CUR));
     }
 
     #[test]
