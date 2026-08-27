@@ -214,7 +214,10 @@ pub fn add(p: &Profile, log: &Logger, name: &str, text: &str, to: Option<&str>) 
     let content = fs::read_to_string(&sheet)?;
     let (heading, grown) = target_wave(&content, to, true)?;
     let base = grown.unwrap_or(content);
-    let line = format!("- [ ] {text}");
+    // Wave tasks are not day-stamped (see the doc above), so `stamp_line` never runs here
+    // and the default has to be applied directly or every project-sheet task is born
+    // untagged.
+    let line = md::with_default_priority(&format!("- [ ] {text}"));
     let new = md::insert_under_heading(&base, &heading, std::slice::from_ref(&line));
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("added to {} ({name})", sheet.display()));
@@ -263,13 +266,17 @@ pub fn move_task(p: &Profile, log: &Logger, name: &str, query: &str, to: &str) -
         eprintln!("no open task matches '{query}' outside {heading} in {name}");
         return Ok(1);
     };
-    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| is_match(l, &query), |_| None)
+    let Some((cut, _)) =
+        md::edit_first_in_section(&content, &from, |l| is_match(l, &query), |_| None)
     else {
         bail!("could not lift '{query}' out of {from}");
     };
     let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&line));
     md::write_atomic(&sheet, &new)?;
-    log.info("ptask", &format!("moved to {heading} in {} ({name})", sheet.display()));
+    log.info(
+        "ptask",
+        &format!("moved to {heading} in {} ({name})", sheet.display()),
+    );
     println!("moved {}\n  {from} -> {heading}", line.trim());
     Ok(0)
 }
@@ -311,7 +318,11 @@ pub fn step(p: &Profile, log: &Logger, name: &str, query: &str, dir: i32) -> Res
             .find(|(_, l)| is_match(l, &q))
         {
             let tagged = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
-            at = Some((tagged.unwrap_or(sv), s.heading.clone(), l.trim_end().to_string()));
+            at = Some((
+                tagged.unwrap_or(sv),
+                s.heading.clone(),
+                l.trim_end().to_string(),
+            ));
             break;
         }
     }
@@ -342,14 +353,16 @@ pub fn step(p: &Profile, log: &Logger, name: &str, query: &str, dir: i32) -> Res
             waves::heading_planned(&waves::fmt(to))
         }),
     };
-    let Some((cut, _)) =
-        md::edit_first_in_section(&content, &from, |l| is_match(l, &q), |_| None)
+    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| is_match(l, &q), |_| None)
     else {
         bail!("could not lift '{query}' out of {from}");
     };
     let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&retagged));
     md::write_atomic(&sheet, &new)?;
-    log.info("ptask", &format!("{dir_word}d to {heading} in {} ({name})", sheet.display()));
+    log.info(
+        "ptask",
+        &format!("{dir_word}d to {heading} in {} ({name})", sheet.display()),
+    );
     println!("{} {}", dir_word, md::task_text(&line));
     println!("  {} -> {}", waves::fmt(at_v), waves::fmt(to));
     if let Some(n) = note {
@@ -468,7 +481,10 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool) -> Result<i32
     };
     let content = fs::read_to_string(&sheet)?;
     let Some((new, report)) = project_sweep::sweep_sheet(&content) else {
-        println!("{}: already swept (or no `Version:` / an unversioned wave heading)", name);
+        println!(
+            "{}: already swept (or no `Version:` / an unversioned wave heading)",
+            name
+        );
         return Ok(0);
     };
     for r in &report {
@@ -577,7 +593,10 @@ Version: v0.1.0
         let sheet = ensure_task_sheet(&dir, "demo").unwrap();
         let body = fs::read_to_string(&sheet).unwrap();
 
-        assert_eq!(current_wave(&body).as_deref(), Some("Wave: v0.0.1 (current)"));
+        assert_eq!(
+            current_wave(&body).as_deref(),
+            Some("Wave: v0.0.1 (current)")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -602,11 +621,13 @@ Version: v0.1.0
     #[test]
     fn edit_first_ticks_only_the_matching_wave_task() {
         let h = current_wave(SHEET).unwrap();
-        let (out, matched) =
-            md::edit_first_in_section(SHEET, &h, |l| is_match(l, "second"), |l| {
-                Some(md::set_checkbox(l, 'x'))
-            })
-            .unwrap();
+        let (out, matched) = md::edit_first_in_section(
+            SHEET,
+            &h,
+            |l| is_match(l, "second"),
+            |l| Some(md::set_checkbox(l, 'x')),
+        )
+        .unwrap();
         assert!(matched.contains("second task"));
         assert!(out.contains("- [x] second task"));
         // the backlog task in the next section is untouched
@@ -641,7 +662,11 @@ Version: v1.13.0
 
         let (ver, open) = open_wave_for_dir(&dir).unwrap();
         assert_eq!(ver, "v1.13.0");
-        assert_eq!(open, vec!["- [ ] live one"], "planned work is not on the board");
+        assert_eq!(
+            open,
+            vec!["- [ ] live one"],
+            "planned work is not on the board"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -682,7 +707,9 @@ Version: v1.13.0
     // `move` without a mint (the read-only path) must refuse rather than invent a wave.
     #[test]
     fn target_wave_without_mint_refuses_an_unknown_version() {
-        let e = target_wave(ROADMAP, Some("v9.9.9"), false).unwrap_err().to_string();
+        let e = target_wave(ROADMAP, Some("v9.9.9"), false)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("no wave v9.9.9"), "{e}");
     }
 

@@ -27,18 +27,17 @@ use std::fs;
 fn task_text(line: &str) -> (String, Option<String>) {
     let mut t = line.trim().to_string();
 
-    // Priority FIRST: `stamp_line` pins it after the comment (`… <!-- since --> #high`),
-    // so truncating at `<!--` before lifting it would silently drop the tag. The priority
-    // hashtags are `md::PRIORITIES` (shared source of truth).
-    let mut prio = None;
-    for (_, p, _) in md::PRIORITIES {
-        if t.ends_with(p) {
-            prio = Some(p.to_string());
-            t.truncate(t.len() - p.len());
-            t = t.trim_end().to_string();
-            break;
-        }
-    }
+    // Priority FIRST: `stamp_line` pins it after the comment (`... <!-- since --> #high`),
+    // so truncating at `<!--` before lifting it would silently drop the tag.
+    //
+    // Through `md::split_priority`, NOT an end-anchored match. This used to test
+    // `t.ends_with(p)`, which was true while a priority tag was always last - but a wave tag
+    // now follows it (`#high #v0.0.2`), and an anchored match reads such a line as untagged
+    // and drops the tag on the way through `mv`. The same trap the nvim `strip_priority`
+    // already had to be un-anchored for.
+    let (cleaned, prio) = md::split_priority_pub(&t);
+    let prio = prio.map(str::to_string);
+    let mut t = cleaned;
 
     if let Some(i) = t.find("<!--") {
         t.truncate(i);
@@ -211,6 +210,29 @@ pub fn mv(
 mod tests {
     use super::*;
 
+    // The bug this parser had: it matched a priority tag only at END of line, which was true
+    // while a priority tag was always last. A wave tag now follows it, and an anchored match
+    // read such a line as untagged and dropped the tag on the way through `mv`.
+    #[test]
+    fn a_priority_tag_survives_a_wave_tag_following_it() {
+        let (text, prio) = task_text("- [ ] a thing #high #v0.12.1");
+        assert_eq!(prio.as_deref(), Some("#high"), "tag found, not dropped");
+        assert!(
+            !text.contains("#high"),
+            "and lifted out of the text: {text}"
+        );
+        // still works in the old position, and with a marker after it
+        assert_eq!(task_text("- [ ] a thing #high").1.as_deref(), Some("#high"));
+        assert_eq!(
+            task_text("- [ ] a thing (2d) <!-- since:2026-01-01 --> #urgent")
+                .1
+                .as_deref(),
+            Some("#urgent")
+        );
+        // and a task with no priority still reports none
+        assert_eq!(task_text("- [ ] plain").1, None);
+    }
+
     const NOTE: &str = "\
 ## Focus
 - [ ] pmp: ship the thing (3d) <!-- since:2026-07-18 --> #high
@@ -296,7 +318,11 @@ after
         let (text, prio) = task_text(&line);
         let core = format!("- [ ] {} {}", retag(&text, None), prio.unwrap());
         // re-stamped from the ORIGINAL origin, so the since-date survives the move
-        let out = md::stamp_line(&core, chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap(), origin);
+        let out = md::stamp_line(
+            &core,
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap(),
+            origin,
+        );
         assert!(out.contains("<!-- since:2026-07-18 -->"));
         assert!(out.contains("(3d)"));
         assert!(out.contains("#high"));

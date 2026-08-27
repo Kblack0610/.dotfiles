@@ -143,7 +143,9 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
         );
     }
     let today = Local::now().date_naive();
-    let line = md::stamp_line(&format!("- [ ] {text}"), today, today);
+    // Born with a priority, so it is never briefly unranked. A task the user typed a tag
+    // into keeps that tag; only an untagged one takes the default.
+    let line = md::with_default_priority(&md::stamp_line(&format!("- [ ] {text}"), today, today));
     let new_content = md::insert_under_heading(&content, "Focus", std::slice::from_ref(&line));
     md::write_atomic(&note, &new_content)?;
     log.info("focus", &format!("added to {}", note.display()));

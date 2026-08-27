@@ -110,20 +110,37 @@ return {
         end
       end
 
-      -- Ring of priority levels, least -> most urgent; `false` stands in for "no tag".
-      -- `step_priority` walks one slot in `dir` (+1 raise toward urgent, -1 lower), wrapping
-      -- through the no-tag slot, and returns the next level (nil = clear the tag).
-      local PRIORITY_RING = { false, "low", "high", "urgent" }
+      -- The level a task has when nobody has said otherwise. Mirrors md::DEFAULT_PRIORITY.
+      -- Every task carries a priority, so there is no "no tag" state to cycle through.
+      local DEFAULT_PRIORITY = "high"
+
+      -- Ladder of priority levels, least -> most urgent. `step_priority` walks one rung in
+      -- `dir` (+1 toward urgent, -1 toward low) and CLAMPS at either end rather than
+      -- wrapping: one press too many should not flip a task from most-urgent to least. The
+      -- old ring had a `false` slot for "clear the tag"; clearing now means "default", which
+      -- is a real level, so the slot is gone. Matches the tW/tw wave ladder.
+      local PRIORITY_RING = { "low", "high", "urgent" }
       local function step_priority(current, dir)
-        local idx = 1
+        local idx
         for i, lvl in ipairs(PRIORITY_RING) do
-          if lvl == (current or false) then
+          if lvl == current then
             idx = i
             break
           end
         end
-        local nxt = PRIORITY_RING[((idx - 1 + dir) % #PRIORITY_RING) + 1]
-        return nxt or nil
+        idx = idx or (function()
+          for i, lvl in ipairs(PRIORITY_RING) do
+            if lvl == DEFAULT_PRIORITY then
+              return i
+            end
+          end
+          return 1
+        end)()
+        local nxt = idx + dir
+        if nxt < 1 or nxt > #PRIORITY_RING then
+          return current or DEFAULT_PRIORITY -- clamped: stay put
+        end
+        return PRIORITY_RING[nxt]
       end
 
       -- Overlay colors for the priority tags (matchadd draws above treesitter).
@@ -195,6 +212,18 @@ return {
         return (line:gsub("%s+$", "")) .. " " .. tag
       end
 
+      -- Index of the default lane within `lanes`, falling back to the most urgent offered.
+      -- `lanes` can be a sub-slice (a planned wave offers no Urgent lane), so the default is
+      -- located by name rather than by its index in the full table. Mirrors sweep::default_lane.
+      local function default_lane(lanes)
+        for i, lane in ipairs(lanes) do
+          if lane[1] == DEFAULT_PRIORITY then
+            return i
+          end
+        end
+        return 1
+      end
+
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
       -- (`---`, `### Done`, `### In progress`) that closes the priority region.
       local function scaffold_lane(l)
@@ -253,13 +282,13 @@ return {
               local i = task_lane(l)
               table.insert(open[i], l) -- tag is the source of truth
               last = i
-            elseif inherit and cur_lane then
-              -- untagged under a lane -> inherit its tag
-              table.insert(open[cur_lane], add_tag(l, "#" .. lanes[cur_lane][1]))
-              last = cur_lane
             else
-              table.insert(open[#lanes + 1], l) -- untagged (or no inherit) -> top bucket
-              last = #lanes + 1
+              -- Untagged: inherit the lane it was dropped under, else take the default.
+              -- Either way it leaves here TAGGED - an open task with no stated priority used
+              -- to sort above `### Urgent`, outranking one explicitly marked urgent.
+              local i = (inherit and cur_lane) or default_lane(lanes)
+              table.insert(open[i], add_tag(l, "#" .. lanes[i][1]))
+              last = i
             end
           elseif l:match "%S" then
             table.insert(open[#lanes + 1], l)
