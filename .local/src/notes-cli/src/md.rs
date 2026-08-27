@@ -491,6 +491,29 @@ pub fn split_wave(line: &str) -> (String, Option<String>) {
     (cleaned.trim_end().to_string(), found)
 }
 
+/// Put a task line's tags in canonical order: text, priority, wave, then the marker.
+///
+/// Both tags are found anywhere on the line, so order is not needed for correctness - it is
+/// needed for STABILITY. Two paths add tags (a wave retag, and a lane inheriting its tag) and
+/// they run at different points, so without one canonical order the same task ends up spelled
+/// `#high #v0.0.2` or `#v0.0.2 #high` depending on how it got there. That is enough to make
+/// the editor and the CLI produce different bytes for the same sheet.
+pub fn normalize_tags(line: &str) -> String {
+    if !is_task(line) {
+        return line.to_string();
+    }
+    let (no_wave, wave) = split_wave(line);
+    let (no_prio, prio) = split_priority(&no_wave);
+    let mut out = no_prio;
+    if let Some(p) = prio {
+        out = add_tag(&out, p);
+    }
+    if let Some(w) = wave {
+        out = add_tag(&out, &w);
+    }
+    out
+}
+
 /// The wave tag on a line (`"#v0.12.1"`), or `None`.
 pub fn wave_tag(line: &str) -> Option<String> {
     split_wave(line).1
@@ -1182,7 +1205,10 @@ after
     // done/start/rm would silently no-op on it.
     #[test]
     fn task_key_is_invariant_under_wave_and_priority_tags() {
-        assert_eq!(task_key("- [ ] a thing #v0.12.1 #high"), task_key("- [ ] a thing"));
+        assert_eq!(
+            task_key("- [ ] a thing #v0.12.1 #high"),
+            task_key("- [ ] a thing")
+        );
         assert_eq!(task_key("- [ ] a thing #v0.12.1"), "a thing");
         assert_eq!(
             task_text("- [x] shipped it #v0.0.2 #high <!-- pr:307 -->"),
@@ -1549,7 +1575,10 @@ after
             Some("literal one literal two")
         );
         // The key after a block is still reachable: the block stops at the dedent.
-        assert_eq!(parse_yaml_scalar(y, "plain").as_deref(), Some("still a scalar"));
+        assert_eq!(
+            parse_yaml_scalar(y, "plain").as_deref(),
+            Some("still a scalar")
+        );
     }
 
     #[test]
@@ -1565,7 +1594,10 @@ after
         }
         // A blank line inside a folded block is a paragraph break, collapsed to a space.
         let y = "k: >-\n  para one\n\n  para two\nnext: x\n";
-        assert_eq!(parse_yaml_scalar(y, "k").as_deref(), Some("para one para two"));
+        assert_eq!(
+            parse_yaml_scalar(y, "k").as_deref(),
+            Some("para one para two")
+        );
         // An empty block yields None rather than an empty bullet.
         assert_eq!(parse_yaml_scalar("k: >-\nnext: x\n", "k"), None);
         // NEGATIVE CONTROL: a value that merely starts with '>' is a scalar, not a block.
