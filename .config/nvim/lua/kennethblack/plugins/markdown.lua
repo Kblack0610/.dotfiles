@@ -172,6 +172,24 @@ return {
         return false
       end
 
+      -- Append `tag` to a task line, BEFORE any trailing `<!-- ... -->` marker. Mirrors
+      -- md::add_tag in the notes CLI, and the position is not cosmetic: the display path
+      -- truncates at the first `<!--` and only then strips tags, so a tag written past the
+      -- marker survives as raw text onto board rows and cockpit lines. No-op when the line
+      -- already carries the tag, so a re-sweep cannot double it.
+      local function add_tag(line, tag)
+        for w in line:gmatch "%S+" do
+          if w == tag then
+            return line
+          end
+        end
+        local head, marker = line:match "^(.-)%s*(<!%-%-.*%-%->)%s*$"
+        if head then
+          return head .. " " .. tag .. " " .. marker
+        end
+        return (line:gsub("%s+$", "")) .. " " .. tag
+      end
+
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
       -- (`---`, `### Done`, `### In progress`) that closes the priority region.
       local function scaffold_lane(l)
@@ -200,26 +218,46 @@ return {
           open[#open + 1] = {}
         end
         local cur_lane = nil -- LANES index of the header we're under, else nil
+        -- Which bucket the last top-level line went to, so its indented children follow it.
+        -- `last` is a LANES index, or 0 meaning the done bucket.
+        local last = nil
         for _, l in ipairs(body) do
           if is_scaffold(l) then
             had_scaffold = true
             cur_lane = scaffold_lane(l)
+            last = nil
+          elseif l:match "^%s" and l:match "%S" and last then
+            -- An indented line belongs to the task above it: a wrapped continuation, or a
+            -- subtask. Bucketing it alone would tear it off its parent and float it to the
+            -- top of the list.
+            if last == 0 then
+              done[#done + 1] = l
+            else
+              table.insert(open[last], l)
+            end
           elseif l:match "^%s*%- %[[xX]%]" then
             done[#done + 1] = l
+            last = 0
           elseif l:match "^%s*%- %[ %]%s*$" then
             placeholder = l
+            last = nil
           elseif l:match "^%s*%- %[" then
             local _, lvl = strip_priority(l)
             if lvl then
-              table.insert(open[task_lane(l)], l) -- tag is the source of truth
+              local i = task_lane(l)
+              table.insert(open[i], l) -- tag is the source of truth
+              last = i
             elseif inherit and cur_lane then
-              local base = strip_priority(l) -- untagged under a lane -> inherit its tag
-              table.insert(open[cur_lane], base .. " #" .. LANES[cur_lane][1])
+              -- untagged under a lane -> inherit its tag
+              table.insert(open[cur_lane], add_tag(l, "#" .. LANES[cur_lane][1]))
+              last = cur_lane
             else
               table.insert(open[#LANES + 1], l) -- untagged (or no inherit) -> top bucket
+              last = #LANES + 1
             end
           elseif l:match "%S" then
             table.insert(open[#LANES + 1], l)
+            last = #LANES + 1
           end
         end
         local tagged = false

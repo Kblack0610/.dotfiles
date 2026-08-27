@@ -18,6 +18,7 @@ use crate::config::Profile;
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
+use crate::sweep;
 use anyhow::{bail, Result};
 use std::fs;
 
@@ -26,124 +27,17 @@ use std::fs;
 // top; checked tasks go under ### Done; each open task otherwise buckets by its tag. The
 // nvim sweep (markdown.lua LANES) mirrors the same set.
 
-/// Lane index for an open task: 0..PRIORITIES.len() by priority tag, else PRIORITIES.len()
-/// (untagged).
-fn lane_of(line: &str) -> usize {
-    match md::task_priority(line) {
-        Some(tag) => md::PRIORITIES
-            .iter()
-            .position(|(_, hash, _)| *hash == tag)
-            .unwrap_or(md::PRIORITIES.len()),
-        None => md::PRIORITIES.len(),
-    }
-}
-
-/// A ### -heading or `---` rule this sweep owns — stripped so it can be re-emitted only
-/// where a lane is non-empty (an authored heading elsewhere is preserved as content).
-fn is_scaffold(line: &str) -> bool {
-    let t = line.trim();
-    t == "---"
-        || t.eq_ignore_ascii_case("### Done")
-        || t.eq_ignore_ascii_case("### In progress")
-        || md::PRIORITIES
-            .iter()
-            .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
-}
-
-/// Rebuild the authored ## Focus body grouped by priority lane + a trailing `### Done`.
-/// Once the section is active, ALL lane headers and Done are emitted even when empty, so the
-/// columns persist as stable drop targets. A task's tag is the source of truth, but an
-/// untagged task under a lane header inherits that lane's tag (drop-to-tag). None when there
-/// is nothing to organize (only untagged todos, no done, no scaffold — already the sorted form).
-fn rebuild(body: &[&str]) -> Option<Vec<String>> {
-    // one open-task bucket per lane + a trailing untagged bucket, then the done bucket
-    let mut open: Vec<Vec<String>> = vec![Vec::new(); md::PRIORITIES.len() + 1];
-    let mut done: Vec<String> = Vec::new();
-    let mut placeholder: Option<String> = None;
-    let mut had_scaffold = false;
-    let mut cur_lane: Option<usize> = None; // lane header we're under, else None
-    for l in body {
-        let t = l.trim();
-        if is_scaffold(l) {
-            had_scaffold = true;
-            cur_lane = md::PRIORITIES
-                .iter()
-                .position(|(_, _, h)| t.eq_ignore_ascii_case(h));
-        } else if md::is_checked(l) {
-            done.push((*l).to_string());
-        } else if md::is_empty_unchecked(l) {
-            placeholder = Some((*l).to_string());
-        } else if md::is_task(l) {
-            match md::task_priority(l) {
-                Some(_) => open[lane_of(l)].push((*l).to_string()), // tag is the source of truth
-                None => match cur_lane {
-                    // untagged task under a lane header inherits that lane's tag
-                    Some(i) => open[i].push(format!("{} {}", l.trim_end(), md::PRIORITIES[i].1)),
-                    None => open[md::PRIORITIES.len()].push((*l).to_string()),
-                },
-            }
-        } else if !t.is_empty() {
-            // a stray prose line — keep it with the untagged top bucket
-            open[md::PRIORITIES.len()].push((*l).to_string());
-        }
-    }
-    let tagged = open[..md::PRIORITIES.len()].iter().any(|b| !b.is_empty());
-    // Nothing to reorganize: no priority tags, no done tasks, no leftover scaffold.
-    if !tagged && done.is_empty() && !had_scaffold {
-        return None;
-    }
-    let mut out: Vec<String> = Vec::new();
-    // untagged open tasks stay on top, unheaded, followed by the empty-task placeholder
-    out.extend(open[md::PRIORITIES.len()].drain(..));
-    out.push(placeholder.unwrap_or_else(|| "- [ ] ".to_string()));
-    // every lane header, even when empty, so the columns stay put as drop targets
-    for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
-        out.push(String::new());
-        out.push((*heading).to_string());
-        out.extend(open[i].drain(..));
-    }
-    // Done placeholder is always present too
-    out.push(String::new());
-    out.push("---".to_string());
-    out.push("### Done".to_string());
-    out.extend(done);
-    Some(out)
-}
-
 /// Pure core: reorganize the ## Focus section of `content` by status. `None` when the
 /// section is absent or already organized (no change).
+///
+/// The lane model itself lives in `sweep`, shared with the project-sheet wave sweep. Focus
+/// offers all three lanes.
 fn sweep_content(content: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.iter().position(|l| {
-        l.strip_prefix("## ")
-            .map(|r| r.trim().eq_ignore_ascii_case("Focus"))
-            .unwrap_or(false)
-    })?;
-    // The section ends at the next H2, OR the rollup sentinel — the mirrored block after
-    // it is generated, not authored, so it is left in place.
-    let mut end = lines.len();
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        if l.starts_with("## ") || l.trim() == md::ROLLUP_START {
-            end = i;
-            break;
-        }
-    }
-    let mut body: Vec<&str> = lines[start + 1..end].to_vec();
-    while body.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        body.pop();
-    }
-    let rebuilt = rebuild(&body)?;
-
-    let mut out: Vec<String> = lines[..=start].iter().map(|s| s.to_string()).collect();
-    out.extend(rebuilt);
-    out.push(String::new()); // one blank before the next section / rollup block
-    out.extend(lines[end..].iter().map(|s| s.to_string()));
-
-    let mut joined = out.join("\n");
-    if content.ends_with('\n') && !joined.ends_with('\n') {
-        joined.push('\n');
-    }
-    (joined != content).then_some(joined)
+    sweep::sweep_section(
+        content,
+        |h| h.eq_ignore_ascii_case("Focus"),
+        &md::PRIORITIES,
+    )
 }
 
 /// notes focus start <query> — toggle the first matching authored `## Focus` task
