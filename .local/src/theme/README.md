@@ -136,7 +136,7 @@ systemd unit files live at `~/.dotfiles/.config/systemd/user/theme-*.{service,ti
 | neo-tree   | `NeoTreeModified` highlight patched                               | tracked  |
 | starship   | 7 color values patched in `starship.toml`                         | tracked  |
 | lazygit    | 11 color values patched in `config.yml` (restart lazygit to see)  | tracked  |
-| hyprland   | active/inactive border + shadow rgba patched + `hyprctl reload`   | tracked  |
+| hyprland   | border + shadow rgba patched in `conf.d/look-and-feel.conf`, then `hyprctl reload` | tracked  |
 | wallpaper  | random pick matching prefix; backend: hyprpaper > swww > swaybg   | n/a      |
 
 ## Tracked vs generated
