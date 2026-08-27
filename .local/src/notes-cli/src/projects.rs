@@ -435,7 +435,7 @@ fn parse_version(stem: &str) -> Option<(u32, u32, u32)> {
     Some(v)
 }
 
-fn fmt_version(v: (u32, u32, u32)) -> String {
+pub(crate) fn fmt_version(v: (u32, u32, u32)) -> String {
     format!("v{}.{}.{}", v.0, v.1, v.2)
 }
 
@@ -512,7 +512,7 @@ fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
 /// Conflating them is not cosmetic: a wave takes its identity from this number - branch,
 /// PR, blackboard, and the note it freezes on merge. Reading back an already-frozen version
 /// makes a wave name itself after one, then freeze a second, different note under that name.
-fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
+pub(crate) fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
     if let Some(sheet) = sheet_path(dir) {
         if let Some(v) = fs::read_to_string(&sheet).ok().and_then(|c| sheet_version(&c)) {
             return Some(v);
@@ -805,7 +805,13 @@ fn body_after_head(content: &str) -> Vec<String> {
     content
         .lines()
         .skip(1) // the title
-        .filter(|l| !l.trim_start().starts_with("Version:"))
+        .filter(|l| {
+            let t = l.trim_start();
+            // Both are HEAD lines the roll rebuilds. Carrying them into the body would
+            // strand them under the promoted wave: `Version:` as a second, stale version
+            // line, and `Agents:` as a link naming the version that just closed.
+            !t.starts_with("Version:") && !t.starts_with("Agents: ")
+        })
         .map(|l| l.trim_end().to_string())
         .skip_while(|l| l.trim().is_empty())
         .collect()
@@ -1191,7 +1197,7 @@ pub fn show_waves(p: &Profile, name: &str) -> Result<()> {
 /// because it holds the agents' WORK, not a category of technology, and because everything
 /// under it mirrors the human's side of the project one level down: a live sheet at
 /// `agent/README.md`, frozen waves in `agent/versions/`.
-pub(crate) fn agent_dir(dir: &Path) -> PathBuf {
+pub fn agent_dir(dir: &Path) -> PathBuf {
     dir.join("agent")
 }
 
@@ -1782,6 +1788,38 @@ _(nothing yet)_
         assert_eq!(sheet_version("# My App\n\nsome docs\n"), None);
         // a non-semver version line does not parse (the roll math needs vX.Y.Z)
         assert_eq!(sheet_version("Version: v1\n"), None);
+    }
+
+    #[test]
+    fn a_roll_does_not_strand_the_agents_link_under_the_new_wave() {
+        // `Agents:` is a HEAD line, derived from `Version:`. Carried into the body it would
+        // sit below the promoted wave naming the version that just closed - wrong, and in
+        // the wrong place. `agent_sheet::with_link` re-stamps the correct one afterwards.
+        let sheet = "\
+# demo
+Version: v1.13.0
+Agents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all projects]]
+
+## Wave: v1.13.0 (current)
+- [x] shipped
+
+## Wave: v1.14.0 (planned)
+- [ ] next thing
+";
+        let (frozen, rolled) = rebuild_sheet(sheet, (1, 13, 0), (1, 14, 0));
+        assert_eq!(
+            rolled.matches("Agents: ").count(),
+            0,
+            "the stale link is dropped, not relocated:\n{rolled}"
+        );
+        assert!(rolled.contains("Version: v1.14.0"), "{rolled}");
+        assert!(rolled.contains("## Wave: v1.14.0 (current)"), "{rolled}");
+        assert!(rolled.contains("next thing"), "the promoted wave survives:\n{rolled}");
+        assert_eq!(
+            frozen.matches("Agents: ").count(),
+            0,
+            "nor does it land in the release record:\n{frozen}"
+        );
     }
 
     #[test]

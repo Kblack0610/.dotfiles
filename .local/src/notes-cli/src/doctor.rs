@@ -123,7 +123,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // 7. Version pairing: a frozen version and its ai/ evidence note travel together
     let pairing = projects::pairing_findings(p);
     if pairing.is_empty() {
-        r.add(Status::Pass, "version pairing", "every frozen version matches its ai note");
+        r.add(Status::Pass, "version pairing", "every frozen version matches its agent note");
     } else {
         r.add(
             Status::Warn,

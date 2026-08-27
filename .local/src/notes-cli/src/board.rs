@@ -242,6 +242,11 @@ fn render(line: &str, lane: Lane) -> String {
 /// rule `focus::list_all` follows for the cockpit.
 pub fn write(log: &Logger) -> Result<Option<PathBuf>> {
     let active = config::resolve(None)?;
+    // Before rendering: every project has an agent sheet, and its human sheet links there.
+    // Here rather than in `write_one` because that runs once per LANE and this is per
+    // project - and because a board that renders a link to a file nobody created is the
+    // dangling-wikilink failure `link_for` exists to prevent.
+    let _ = crate::agent_sheet::ensure_all(log);
     let human = board_path(&active);
     if let Some(p) = agent_board_path(&active) {
         write_one(log, &p, Lane::Ai)?;
