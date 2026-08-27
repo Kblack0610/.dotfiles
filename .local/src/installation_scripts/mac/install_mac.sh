@@ -405,7 +405,7 @@ setup_theme() {
     fi
 
     local state="$HOME/.config/theme/current"
-    local theme="jackie-brown"
+    local theme="batman"
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"

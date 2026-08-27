@@ -1,8 +1,8 @@
 [Unit]
-Description=Apply night theme (ayaka)
+Description=Apply night theme (arthur)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/theme-switch ayaka
+ExecStart=%h/.local/bin/theme-switch arthur
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1

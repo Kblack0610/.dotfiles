@@ -1,8 +1,8 @@
 [Unit]
-Description=Apply day theme (jackie-brown)
+Description=Apply day theme (batman)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/theme-switch jackie-brown
+ExecStart=%h/.local/bin/theme-switch batman
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1

@@ -7,16 +7,16 @@ Eight themes ship:
 
 | Theme            | Feel                                          | Day/night |
 | ---------------- | --------------------------------------------- | --------- |
-| `jackie-brown`   | warm browns and gold                          | day       |
-| `ayaka`          | soft pink-purple                              | night     |
+| `jackie-brown`   | warm browns and gold                          | -         |
+| `ayaka`          | soft pink-purple                              | -         |
 | `tokyonight`     | cool blue-violet                              | -         |
 | `dark-one-nuanced` | muted Atom One dark                         | -         |
-| `arthur`         | earth browns, cornflower blue                 | -         |
+| `arthur`         | earth browns, cornflower blue                 | night     |
 | `1984-orwellian` | ration-brown ground, telescreen cyan          | -         |
-| `batman`         | Gotham greys, bat-signal gold                 | -         |
+| `batman`         | Gotham greys, bat-signal gold                 | day       |
 | `cyberpunk-neon` | neon navy, cyan and magenta                   | -         |
 
-Only `jackie-brown` and `ayaka` are wired to the day/night timers; the rest are
+Only `batman` and `arthur` are wired to the day/night timers; the rest are
 manual (`theme-switch <name>`). The last four are ports of the corresponding
 [kitty-themes](https://github.com/dexpota/kitty-themes) entries - see
 "Porting a kitty theme" below for what is and is not carried over verbatim.
@@ -24,8 +24,8 @@ manual (`theme-switch <name>`). The last four are ports of the corresponding
 ## Usage
 
 ```bash
-theme-switch jackie-brown        # apply day theme
-theme-switch tokyonight          # apply night theme
+theme-switch batman              # apply day theme
+theme-switch arthur              # apply night theme
 theme-switch --auto              # pick day/night based on current hour
 theme-switch --current           # show active theme
 theme-switch --list              # list available themes
@@ -71,19 +71,26 @@ runs:
 
 | Timer                | Fires        | ExecStart                          |
 | -------------------- | ------------ | ---------------------------------- |
-| `theme-day.timer`    | `07:00` daily | `theme-switch jackie-brown`        |
-| `theme-night.timer`  | `19:00` daily | `theme-switch tokyonight`          |
+| `theme-day.timer`    | `07:00` daily | `theme-switch batman`              |
+| `theme-night.timer`  | `19:00` daily | `theme-switch arthur`              |
 
 Both are `Persistent=true`, so a missed run (laptop closed, machine off)
 is caught up at next user-manager start.
+
+**Linux only.** These are systemd user units, and there is no launchd
+equivalent in `.config/launchd/`, so a Mac never flips on a schedule - it
+keeps whatever theme was last applied there until someone runs `theme-switch`
+by hand. The day/night *defaults* below are still the fallback a fresh install
+picks (`setup_theme` in both installers), so a new Mac starts on `batman`; it
+just never moves off it on its own.
 
 The clock-based picker (`theme-switch --auto`) is for **manual** invocation
 only — it picks based on the hour at the moment you run it. The window
 is hardcoded in `theme-switch` near the top:
 
 ```bash
-AUTO_DAY_THEME="jackie-brown"
-AUTO_NIGHT_THEME="tokyonight"
+AUTO_DAY_THEME="batman"
+AUTO_NIGHT_THEME="arthur"
 AUTO_DAY_START=7    # inclusive — 07:00
 AUTO_NIGHT_START=19 # exclusive — 19:00
 ```

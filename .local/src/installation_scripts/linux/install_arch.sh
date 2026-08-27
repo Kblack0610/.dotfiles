@@ -572,7 +572,7 @@ setup_theme() {
     # Honour a theme already chosen on this machine; otherwise the daytime
     # default, matching what theme-day.timer applies at 07:00.
     local state="$HOME/.config/theme/current"
-    local theme="jackie-brown"
+    local theme="batman"
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
