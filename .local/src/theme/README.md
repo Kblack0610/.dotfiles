@@ -1,8 +1,25 @@
 # theme — unified dotfiles theme switcher
 
 Single-command color theme switcher across kitty, nvim, lualine, neo-tree,
-starship, lazygit, waybar, hyprland, and wallpaper. Two themes ship by
-default: `jackie-brown` (warm/day) and `tokyonight` (cool/night).
+starship, lazygit, waybar, hyprland, and wallpaper.
+
+Eight themes ship:
+
+| Theme            | Feel                                          | Day/night |
+| ---------------- | --------------------------------------------- | --------- |
+| `jackie-brown`   | warm browns and gold                          | day       |
+| `ayaka`          | soft pink-purple                              | night     |
+| `tokyonight`     | cool blue-violet                              | -         |
+| `dark-one-nuanced` | muted Atom One dark                         | -         |
+| `arthur`         | earth browns, cornflower blue                 | -         |
+| `1984-orwellian` | ration-brown ground, telescreen cyan          | -         |
+| `batman`         | Gotham greys, bat-signal gold                 | -         |
+| `cyberpunk-neon` | neon navy, cyan and magenta                   | -         |
+
+Only `jackie-brown` and `ayaka` are wired to the day/night timers; the rest are
+manual (`theme-switch <name>`). The last four are ports of the corresponding
+[kitty-themes](https://github.com/dexpota/kitty-themes) entries - see
+"Porting a kitty theme" below for what is and is not carried over verbatim.
 
 ## Usage
 
@@ -119,10 +136,44 @@ systemd unit files live at `~/.dotfiles/.config/systemd/user/theme-*.{service,ti
 1. `cp palettes/tokyonight.sh palettes/<name>.sh` and edit the colors.
 2. `cp templates/kitty/tokyonight.conf templates/kitty/<name>.conf` and edit.
 3. `cp templates/waybar/tokyonight.css templates/waybar/<name>.css` and edit.
-4. Drop matching wallpapers in `wallpapers/<name>-1.jpg`, `<name>-2.jpg`, …
+   Its structure is identical across every theme; only the nine colors it uses
+   (background, panel background, text, accent, alert, dim, ok, warn, info)
+   differ, so a hex-for-hex substitution is the whole job.
+4. Either point `THEME_NVIM_COLORSCHEME` at an already-installed colorscheme, or
+   write `~/.dotfiles/.config/nvim/colors/<name>.lua` and name that. The existing
+   hand-written ones (`arthur`, `1984-orwellian`, `batman`, `cyberpunk-neon`,
+   `jackie-brown`) are one `local p = { ... }` palette block followed by an
+   identical body of `hi()` calls - copy one and replace the block.
+5. Drop matching wallpapers in `wallpapers/<name>-1.jpg`, `<name>-2.jpg`, ...
    (or set `THEME_WALLPAPER_PREFIX=other-prefix` in the palette file to
-   reuse an existing wallpaper set).
-5. `theme-switch <name>` to apply.
+   reuse an existing wallpaper set). Without any, the wallpaper step warns and
+   every other tool still applies.
+6. `theme-switch <name> --dry-run` to check every tool resolves, then
+   `theme-switch <name>` to apply.
+
+## Porting a kitty theme
+
+`arthur`, `1984-orwellian`, `batman` and `cyberpunk-neon` came from
+[kitty-themes](https://github.com/dexpota/kitty-themes) (`kitten themes` reads
+the same set). A kitty theme is only 16 ANSI colors plus a background,
+foreground and cursor, which is a fraction of what a palette here has to fill,
+so the port follows one rule:
+
+- **ANSI colors are carried over verbatim.** Whatever the upstream theme says
+  color0-15 are, that is what kitty, nvim's terminal colors and the ANSI-driven
+  tools get. Quirks included: Batman genuinely has no red (its color1 is gold),
+  and Cyberpunk Neon's ramp is deliberately scrambled (color2 is magenta).
+- **UI-role colors are chosen for legibility, and the deviation is written down
+  in the palette file's header.** These are roles kitty has no opinion about
+  (panel background, dim text, the starship/lazygit/hyprland accents) or where
+  the upstream value is unusable in the role - 1984's bright-black is pure
+  black, which erases every dim-text element; Batman's #6e6e6e foreground is too
+  faint for body text; Cyberpunk Neon leaves selection as `none` and gives the
+  active tab a background indistinguishable from the window.
+
+The second rule needs the first to stay honest: if the ANSI ramp drifts too, the
+theme stops being the theme it claims to be. Every deviation is a comment in
+`palettes/<name>.sh` saying which role and why.
 
 ## What each tool gets
 

@@ -1,0 +1,220 @@
+/* Waybar Style Configuration - Arthur Theme */
+
+* {
+    font-family: "JetBrainsMono Nerd Font", "Font Awesome 6 Free", monospace;
+    font-size: 15px;
+}
+
+window#waybar {
+    background-color: rgba(28, 28, 28, 0.9);
+    color: #bbaa99;
+    border-bottom: 2px solid rgba(100, 149, 237, 0.3);
+}
+
+window#waybar.hidden {
+    opacity: 0.2;
+}
+
+/* Default button styling */
+button {
+    box-shadow: inset 0 -3px transparent;
+    border: none;
+    border-radius: 0;
+}
+
+button:hover {
+    background: inherit;
+    box-shadow: inset 0 -3px #bbaa99;
+}
+
+/* Workspaces */
+#workspaces button {
+    padding: 2px 10px;
+    color: #bbaa99;
+    background-color: transparent;
+}
+
+#workspaces button:hover {
+    background: rgba(100, 149, 237, 0.2);
+}
+
+#workspaces button.active {
+    background-color: rgba(100, 149, 237, 0.3);
+    color: #6495ed;
+    box-shadow: inset 0 -3px #6495ed;
+}
+
+#workspaces button.urgent {
+    background-color: rgba(205, 92, 92, 0.3);
+    color: #cd5c5c;
+}
+
+/* Claude Agents Module - The star of the show */
+#custom-claude-agents {
+    padding: 2px 16px;
+    margin: 4px 6px;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 16px;
+    transition: all 0.3s ease;
+}
+
+/* Inactive state - subtle gray */
+#custom-claude-agents.inactive {
+    background-color: rgba(85, 68, 68, 0.3);
+    color: #554444;
+}
+
+/* Ready/Idle state - calm green */
+#custom-claude-agents.ready {
+    background-color: rgba(134, 175, 128, 0.2);
+    color: #86af80;
+}
+
+/* Working state - blue with border accent */
+#custom-claude-agents.working {
+    background-color: rgba(100, 149, 237, 0.3);
+    color: #6495ed;
+    border-left: 3px solid #6495ed;
+}
+
+/* Urgent state - attention-grabbing red */
+#custom-claude-agents.urgent {
+    background-color: rgba(205, 92, 92, 0.4);
+    color: #cd5c5c;
+    border-left: 3px solid #cd5c5c;
+    font-weight: bold;
+}
+
+/* Common module styling for right-side modules */
+#clock,
+#battery,
+#cpu,
+#memory,
+#disk,
+#temperature,
+#backlight,
+#network,
+#pulseaudio,
+#custom-media,
+#tray,
+#mode,
+#idle_inhibitor,
+#scratchpad,
+#power-profiles-daemon,
+#custom-power,
+#custom-bluetooth,
+#mpd {
+    padding: 2px 12px;
+    margin: 5px 3px;
+    border-radius: 6px;
+    background-color: rgba(43, 39, 36, 0.4);
+    color: #bbaa99;
+}
+
+#clock {
+    background-color: rgba(100, 149, 237, 0.2);
+    color: #6495ed;
+}
+
+#battery {
+    background-color: rgba(134, 175, 128, 0.2);
+    color: #86af80;
+}
+
+#battery.charging, #battery.plugged {
+    color: #86af80;
+    background-color: rgba(134, 175, 128, 0.25);
+}
+
+#battery.critical:not(.charging) {
+    background-color: rgba(205, 92, 92, 0.4);
+    color: #cd5c5c;
+    border-left: 3px solid #cd5c5c;
+}
+
+#cpu {
+    background-color: rgba(100, 149, 237, 0.2);
+    color: #6495ed;
+}
+
+#memory {
+    background-color: rgba(222, 184, 135, 0.2);
+    color: #deb887;
+}
+
+#temperature {
+    background-color: rgba(232, 174, 91, 0.2);
+    color: #e8ae5b;
+}
+
+#temperature.critical {
+    background-color: rgba(205, 92, 92, 0.3);
+    color: #cd5c5c;
+}
+
+#network {
+    background-color: rgba(176, 196, 222, 0.2);
+    color: #b0c4de;
+}
+
+#network.disconnected {
+    background-color: rgba(205, 92, 92, 0.2);
+    color: #cd5c5c;
+}
+
+#pulseaudio {
+    background-color: rgba(222, 184, 135, 0.2);
+    color: #deb887;
+}
+
+#pulseaudio.muted {
+    background-color: rgba(85, 68, 68, 0.3);
+    color: #554444;
+}
+
+#custom-bluetooth {
+    background-color: rgba(176, 196, 222, 0.2);
+    color: #b0c4de;
+}
+
+#custom-power {
+    background-color: rgba(205, 92, 92, 0.2);
+    color: #cd5c5c;
+    margin-right: 4px;
+}
+
+#idle_inhibitor {
+    background-color: rgba(232, 174, 91, 0.2);
+    color: #e8ae5b;
+}
+
+#idle_inhibitor.activated {
+    background-color: rgba(134, 175, 128, 0.2);
+    color: #86af80;
+}
+
+#tray {
+    background-color: rgba(43, 39, 36, 0.3);
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: rgba(205, 92, 92, 0.2);
+}
+
+/* Tooltip styling */
+tooltip {
+    background-color: rgba(28, 28, 28, 0.95);
+    border: 1px solid rgba(100, 149, 237, 0.4);
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #bbaa99;
+    padding: 4px;
+}

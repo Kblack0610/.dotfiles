@@ -25,11 +25,8 @@
 #   theme-switch tokyonight --only kitty,starship
 #   theme-switch tokyonight --dry-run
 #
-# Adding a new theme:
-#   1. Create palettes/<name>.sh  (copy an existing one, change values)
-#   2. Create templates/kitty/<name>.conf
-#   3. Create templates/waybar/<name>.css
-#   4. Run: theme-switch <name>
+# Adding a new theme: see --help, or README.md for the full walkthrough
+# (including "Porting a kitty theme" for kitten-themes imports).
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -658,8 +655,11 @@ ADDING A NEW THEME
   1. Create palettes/<name>.sh   (copy existing, change values)
   2. Create templates/kitty/<name>.conf
   3. Create templates/waybar/<name>.css
-  4. Add wallpapers as wallpapers/<name>-1.jpg, <name>-2.jpg, etc.
-  5. Run: theme-switch <name>
+  4. Point THEME_NVIM_COLORSCHEME at an installed colorscheme, or write
+     ~/.dotfiles/.config/nvim/colors/<name>.lua and name that
+  5. Add wallpapers as wallpapers/<name>-1.jpg, <name>-2.jpg, etc.
+  6. Run: theme-switch <name> --dry-run, then theme-switch <name>
+  See README.md, including "Porting a kitty theme" for kitten-themes imports.
 
 WALLPAPERS
   Stored in:  ~/.dotfiles/.local/src/theme/wallpapers/
