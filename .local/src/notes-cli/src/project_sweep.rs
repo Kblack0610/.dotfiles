@@ -183,7 +183,14 @@ pub(crate) fn sweep_sheet(content: &str) -> Option<(String, Vec<String>)> {
             .map(|(_, b)| b.clone())
             .unwrap_or_default();
         let refs: Vec<&str> = body.iter().map(String::as_str).collect();
-        out.extend(sweep::rebuild_scaffolded(&refs, lanes_for(is_current)));
+        // Canonical tag order, applied once at the end: the wave retag above and the lane
+        // inherit inside `rebuild` add tags at different points, so this is what stops the
+        // same task being spelled two ways depending on how it got here.
+        out.extend(
+            sweep::rebuild_scaffolded(&refs, lanes_for(is_current))
+                .iter()
+                .map(|l| md::normalize_tags(l)),
+        );
     }
     out.push(String::new());
     out.extend(lines[end..].iter().map(|l| (*l).to_string()));
@@ -375,6 +382,26 @@ Version: v0.12.1
     fn a_sheet_with_no_version_line_is_refused() {
         let no_ver = "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a\n";
         assert!(sweep_sheet(no_ver).is_none());
+    }
+
+    // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
+    // (markdown.lua sweep_waves), captured from a real headless run. The wave sweep exists
+    // twice - once here, once in the editor - and this is the only thing that can catch them
+    // drifting apart. Its sibling in `sweep` pins the `## Focus` half.
+    #[test]
+    fn golden_matches_the_nvim_wave_sweep() {
+        let note = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+- [ ] live one #high\n- [x] done one <!-- pr:307 -->\n- [ ] fire #urgent\n\
+- [ ] wrapped task here\n      a continuation line\n- [ ] pushed out #v0.12.2\n\n\
+## Wave: v0.12.2 (planned)\n- [ ] next one\n";
+        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+- [ ] wrapped task here #v0.12.1\n      a continuation line\n- [ ] \n\n\
+### Urgent\n- [ ] fire #urgent #v0.12.1\n\n\
+### High\n- [ ] live one #high #v0.12.1\n\n\
+### Low\n\n---\n### Done\n- [x] done one #v0.12.1 <!-- pr:307 -->\n\n\
+## Wave: v0.12.2 (planned)\n- [ ] pushed out #v0.12.2\n- [ ] next one #v0.12.2\n- [ ] \n\n\
+### High\n\n### Low\n\n---\n### Done\n";
+        assert_eq!(sweep(note), expected);
     }
 
     #[test]
