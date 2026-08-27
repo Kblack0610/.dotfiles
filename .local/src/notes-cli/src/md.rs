@@ -329,9 +329,38 @@ pub fn find_due(line: &str) -> Option<NaiveDate> {
     find_due_span(line).map(|(_, _, d)| d)
 }
 
+/// Scan one tag body, starting at `tag_start`: the byte just past the `#`.
+///
+/// Returns `(scan_end, text_end)`. `scan_end` is where the caller's scanner resumes;
+/// `text_end` is where the tag TEXT ends once trailing separators are dropped, so
+/// `#wedding/` and `#wedding-` both name `wedding`.
+///
+/// THE one definition of the tag charset, called by both `find_hashtags` and
+/// `split_priority`. Widening it in one and not the other would make `notes tags` and the
+/// priority lanes disagree about where a tag ends, silently.
+///
+/// `.` is in the body set so a wave tag can name a version verbatim (`#v0.12.1`): one
+/// spelling of one id, the same string that runs from `Version:` through the `## Wave:`
+/// heading to `versions/v0.12.1.md` and the git tag. It is in the trailing-trim set too,
+/// so a sentence-final `#urgent.` still names `urgent`.
+fn tag_span(bytes: &[u8], tag_start: usize) -> (usize, usize) {
+    let mut k = tag_start;
+    while k < bytes.len()
+        && (bytes[k].is_ascii_alphanumeric() || matches!(bytes[k], b'_' | b'-' | b'/' | b'.'))
+    {
+        k += 1;
+    }
+    let mut end = k;
+    while end > tag_start && matches!(bytes[end - 1], b'/' | b'-' | b'.') {
+        end -= 1;
+    }
+    (k, end)
+}
+
 /// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
-/// then `[A-Za-z0-9_/-]*`, so `#wedding` and nested `#wedding/venue` both parse.
-/// Deliberately skips (mirroring the care `find_due_span` takes with brackets):
+/// then `[A-Za-z0-9_/.-]*`, so `#wedding`, nested `#wedding/venue` and the dotted
+/// `#v0.12.1` wave tag all parse. Deliberately skips (mirroring the care
+/// `find_due_span` takes with brackets):
 ///
 /// - the leading `##`-style markdown **heading marker** (its text is still scanned);
 /// - a `#` glued to the end of a word/number, `_`, `/`, `.`, `[`, or another `#`
@@ -375,17 +404,7 @@ pub fn find_hashtags(line: &str) -> Vec<String> {
                     .get(tag_start)
                     .is_some_and(|c| c.is_ascii_alphabetic())
             {
-                let mut k = tag_start;
-                while k < bytes.len()
-                    && (bytes[k].is_ascii_alphanumeric() || matches!(bytes[k], b'_' | b'-' | b'/'))
-                {
-                    k += 1;
-                }
-                // Trim a trailing separator so `#wedding/` / `#wedding-` → the bare stem.
-                let mut end = k;
-                while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
-                    end -= 1;
-                }
+                let (k, end) = tag_span(bytes, tag_start);
                 out.push(line[tag_start..end].to_lowercase());
                 i = k;
                 continue;
@@ -639,22 +658,20 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
                     .get(tag_start)
                     .is_some_and(|c| c.is_ascii_alphabetic())
             {
-                let mut k = tag_start;
-                while k < bytes.len()
-                    && (bytes[k].is_ascii_alphanumeric() || matches!(bytes[k], b'_' | b'-' | b'/'))
-                {
-                    k += 1;
-                }
-                let mut end = k;
-                while end > tag_start && matches!(bytes[end - 1], b'/' | b'-') {
-                    end -= 1;
-                }
+                let (k, end) = tag_span(bytes, tag_start);
                 if let Some(rank) = PRIORITIES
                     .iter()
                     .position(|(t, _, _)| *t == line[tag_start..end].to_lowercase())
                 {
                     // Cut `#tag` plus one neighbouring space so no double space is left.
-                    let (mut cut_s, mut cut_e) = (i, k);
+                    // A trailing `.` is given back: `-` and `/` are tag noise and are cut
+                    // with the tag, but a sentence-final `#high.` must keep its full stop
+                    // or stripping the tag silently rewrites the human's prose.
+                    let mut cut_e = k;
+                    while cut_e > end && bytes[cut_e - 1] == b'.' {
+                        cut_e -= 1;
+                    }
+                    let mut cut_s = i;
                     if cut_s > start && bytes[cut_s - 1] == b' ' {
                         cut_s -= 1;
                     } else if bytes.get(cut_e) == Some(&b' ') {
@@ -1081,6 +1098,29 @@ after
         assert_eq!(prio, None);
     }
 
+    // A wave tag is content as far as priority is concerned: it must survive the split
+    // intact, or the sweep would strip the very tag it buckets by.
+    #[test]
+    fn split_priority_leaves_a_wave_tag_alone() {
+        let (core, prio) = split_priority("- [ ] a thing #v0.12.1 #high");
+        assert_eq!(core, "- [ ] a thing #v0.12.1");
+        assert_eq!(prio, Some("#high"));
+    }
+
+    // Cutting the tag must not rewrite the human's prose. `-` and `/` are tag noise and go
+    // with it; a full stop is punctuation and stays.
+    #[test]
+    fn split_priority_gives_back_a_sentence_final_dot() {
+        // The cut swallows the space BEFORE the tag, so the full stop closes the sentence
+        // exactly where it would have without the tag.
+        let (core, prio) = split_priority("- [ ] ship it #high.");
+        assert_eq!(core, "- [ ] ship it.");
+        assert_eq!(prio, Some("#high"));
+        // the pre-existing behaviour for the other two separators is unchanged
+        let (core, _) = split_priority("- [ ] ship it #high-");
+        assert_eq!(core, "- [ ] ship it");
+    }
+
     #[test]
     fn stamp_moves_priority_tag_last() {
         // New item: tag ends up after the stamp, not before it.
@@ -1222,6 +1262,50 @@ after
             find_hashtags("plan #wedding/venue now"),
             vec!["wedding/venue"]
         );
+    }
+
+    // A wave tag names its version verbatim, so the dot has to survive mid-tag.
+    #[test]
+    fn a_dotted_tag_names_the_whole_version() {
+        assert_eq!(find_hashtags("- [ ] a thing #v0.12.1"), vec!["v0.12.1"]);
+        assert_eq!(
+            find_hashtags("- [ ] a thing #v0.12.1 #high"),
+            vec!["v0.12.1", "high"]
+        );
+        // and it is still one tag when a marker follows it
+        assert_eq!(
+            find_hashtags("- [x] shipped #v0.0.2 <!-- pr:307 -->"),
+            vec!["v0.0.2"]
+        );
+    }
+
+    // The negative control for widening the charset: every dotted-hashtag string that
+    // actually occurs in the vault today is sentence-final, and must keep resolving to
+    // exactly the tag it resolved to before `.` entered the body set.
+    #[test]
+    fn a_sentence_final_dot_is_not_part_of_the_tag() {
+        assert_eq!(find_hashtags("shipped it #v0."), vec!["v0"]);
+        assert_eq!(
+            find_hashtags("see #alerts-pre-prod."),
+            vec!["alerts-pre-prod"]
+        );
+        assert_eq!(find_hashtags("the colour is #a16207."), vec!["a16207"]);
+        assert_eq!(find_hashtags("press #submit."), vec!["submit"]);
+        assert_eq!(
+            find_hashtags("ping #alerts-deployments."),
+            vec!["alerts-deployments"]
+        );
+        // ellipsis and repeated dots trim all the way back too
+        assert_eq!(find_hashtags("wait for it #soon..."), vec!["soon"]);
+    }
+
+    // The guards that must NOT have moved: a `#` glued to a dot is still not a tag, so a
+    // URL fragment stays invisible, and a code span still swallows the whole thing.
+    #[test]
+    fn widening_the_charset_left_the_glue_and_code_guards_alone() {
+        assert!(find_hashtags("visit https://site.com/#top now").is_empty());
+        assert!(find_hashtags("run `deploy #v1.2.3` now").is_empty());
+        assert!(find_hashtags("see file.md#anchor").is_empty());
     }
 
     #[test]
