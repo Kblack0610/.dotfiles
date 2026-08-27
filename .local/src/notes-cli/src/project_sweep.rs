@@ -16,9 +16,14 @@ use crate::waves;
 
 type V = (u32, u32, u32);
 
-/// The lanes a wave offers. The current wave offers all three; a planned wave offers
-/// everything below Urgent, because an Urgent lane there would be a drop target it is
-/// illegal to drop into.
+/// The priority levels legal in a wave. The current wave allows all three; a planned wave
+/// allows everything below Urgent, because only the wave in flight can hold urgent work.
+///
+/// This used to also decide which headings rendered. With waves sorted rather than bucketed
+/// there is nothing to render, so it is purely a legality rule now - and the rule is enforced
+/// at tag level anyway by `retag_wave`, which rewrites `#urgent` to `#high` on the way out of
+/// the current wave. This keeps a hand-typed `#urgent` on a planned wave from sorting to the
+/// top of it.
 fn lanes_for(is_current: bool) -> &'static [sweep::Lane] {
     if is_current {
         &md::PRIORITIES
@@ -187,7 +192,7 @@ pub(crate) fn sweep_sheet(content: &str) -> Option<(String, Vec<String>)> {
         // inherit inside `rebuild` add tags at different points, so this is what stops the
         // same task being spelled two ways depending on how it got here.
         out.extend(
-            sweep::rebuild_scaffolded(&refs, lanes_for(is_current))
+            sweep::rebuild_sorted(&refs, lanes_for(is_current))
                 .iter()
                 .map(|l| md::normalize_tags(l)),
         );
@@ -287,28 +292,56 @@ Version: v0.12.1
         );
     }
 
+    // Sorted, not bucketed: no urgency headings, most urgent first, done at the foot.
     #[test]
-    fn each_wave_gets_its_own_lanes_and_done_list() {
-        let out = sweep(SHEET);
-        let cur = out.split("## Wave: v0.12.2").next().unwrap();
-        assert!(cur.contains("### Urgent") && cur.contains("### High"));
-        assert!(cur.contains("### Done"), "done collects per wave:\n{out}");
+    fn a_wave_sorts_by_priority_and_keeps_its_own_done_list() {
+        let s = "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+- [ ] middle #high\n- [ ] last #low\n- [ ] first #urgent\n- [x] shipped <!-- pr:1 -->\n";
+        let out = sweep(s);
+        assert!(!out.contains("### Urgent"), "no lane headings:\n{out}");
         assert!(
-            cur.find("done one").unwrap() > cur.find("### Done").unwrap(),
+            !out.contains("### High") && !out.contains("### Low"),
             "{out}"
+        );
+        let (f, m, l) = (
+            out.find("first").unwrap(),
+            out.find("middle").unwrap(),
+            out.find("last").unwrap(),
+        );
+        assert!(f < m && m < l, "urgent -> high -> low:\n{out}");
+        let done = out.find("### Done").unwrap();
+        assert!(l < done, "open work above the rule:\n{out}");
+        assert!(
+            out.find("shipped").unwrap() > done,
+            "done at the foot:\n{out}"
         );
     }
 
-    // A planned wave has no legal Urgent lane, so it must not render one.
+    // Equal priority keeps the order the human wrote, so a sweep never reshuffles a list.
     #[test]
-    fn a_planned_wave_renders_no_urgent_lane() {
-        let out = sweep(SHEET);
-        let planned = out.split("## Wave: v0.12.2").nth(1).unwrap();
-        assert!(!planned.contains("### Urgent"), "{out}");
-        assert!(
-            planned.contains("### High") && planned.contains("### Low"),
-            "{out}"
+    fn tasks_of_equal_priority_keep_their_file_order() {
+        let s = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n\
+- [ ] alpha #high\n- [ ] beta #high\n- [ ] gamma #high\n";
+        let out = sweep(s);
+        let (a, b, g) = (
+            out.find("alpha").unwrap(),
+            out.find("beta").unwrap(),
+            out.find("gamma").unwrap(),
         );
+        assert!(a < b && b < g, "stable:\n{out}");
+    }
+
+    // Only the wave in flight may hold urgent work. With no headings to withhold, the rule
+    // lives entirely at tag level: a hand-typed `#urgent` on a planned wave is rewritten so
+    // it cannot sort to the top of work that has not started.
+    #[test]
+    fn a_planned_wave_cannot_hold_urgent_work() {
+        let s = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] now #high\n\n\
+## Wave: v0.2.0 (planned)\n- [ ] later #urgent\n";
+        let out = sweep(s);
+        let planned = out.split("## Wave: v0.2.0").nth(1).unwrap();
+        assert!(planned.contains("- [ ] later #high"), "demoted:\n{out}");
+        assert!(!planned.contains("#urgent"), "{out}");
     }
 
     // THE catastrophic one: if the sweep leaves a section above the current wave, every
@@ -395,14 +428,40 @@ Version: v0.12.1
 - [ ] live one #high\n- [x] done one <!-- pr:307 -->\n- [ ] fire #urgent\n\
 - [ ] wrapped task here\n      a continuation line\n- [ ] pushed out #v0.12.2\n\n\
 ## Wave: v0.12.2 (planned)\n- [ ] next one\n";
-        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] \n\n\
-### Urgent\n- [ ] fire #urgent #v0.12.1\n\n\
-### High\n- [ ] live one #high #v0.12.1\n- [ ] wrapped task here #high #v0.12.1\n      a continuation line\n\n\
-### Low\n\n---\n### Done\n- [x] done one #v0.12.1 <!-- pr:307 -->\n\n\
-## Wave: v0.12.2 (planned)\n- [ ] \n\n\
-### High\n- [ ] pushed out #high #v0.12.2\n- [ ] next one #high #v0.12.2\n\n\
-### Low\n\n---\n### Done\n";
+        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+- [ ] fire #urgent #v0.12.1\n- [ ] live one #high #v0.12.1\n\
+- [ ] wrapped task here #high #v0.12.1\n      a continuation line\n- [ ] \n\n\
+---\n### Done\n- [x] done one #v0.12.1 <!-- pr:307 -->\n\n\
+## Wave: v0.12.2 (planned)\n- [ ] pushed out #high #v0.12.2\n- [ ] next one #high #v0.12.2\n- [ ] \n\n\
+---\n### Done\n";
         assert_eq!(sweep(note), expected);
+    }
+
+    // The migration case. Nothing emits `### Urgent`/`### High`/`### Low` any more, but
+    // `is_scaffold` must keep RECOGNISING them or every sheet written by the previous layout
+    // has its leftover headings reclassified as stray prose and shoved into the task list.
+    #[test]
+    fn leftover_lane_headings_from_the_old_layout_are_removed_not_read_as_prose() {
+        let old_layout = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] \n\n\
+### Urgent\n- [ ] fire #urgent #v0.1.0\n\n### High\n- [ ] steady #high #v0.1.0\n\n\
+### Low\n\n---\n### Done\n- [x] shipped #v0.1.0 <!-- pr:1 -->\n";
+        let out = sweep(old_layout);
+        assert!(!out.contains("### Urgent"), "removed:\n{out}");
+        assert!(
+            !out.contains("### High") && !out.contains("### Low"),
+            "{out}"
+        );
+        // and not turned into tasks or prose
+        assert!(!out.contains("- [ ] ### "), "{out}");
+        assert!(out.contains("- [ ] fire #urgent #v0.1.0"), "{out}");
+        assert!(out.contains("- [ ] steady #high #v0.1.0"), "{out}");
+        assert!(out.contains("- [x] shipped #v0.1.0 <!-- pr:1 -->"), "{out}");
+        assert!(
+            out.find("fire").unwrap() < out.find("steady").unwrap(),
+            "still sorted:\n{out}"
+        );
+        // and it settles in one pass
+        assert!(sweep_sheet(&out).is_none(), "idempotent:\n{out}");
     }
 
     #[test]
