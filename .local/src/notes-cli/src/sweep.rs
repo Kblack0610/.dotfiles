@@ -80,25 +80,82 @@ fn scaffold_lane(line: &str, lanes: &[Lane]) -> Option<usize> {
     )
 }
 
-/// Rebuild one list body, grouped by priority lane with a trailing `### Done`.
+/// Everything one list body holds, sorted into buckets. The two layouts below differ only
+/// in how they EMIT this - the bucketing rule is shared so they cannot disagree about which
+/// lane a task is in.
+struct Buckets {
+    /// One per lane, plus a trailing bucket for prose (and anything untagged that the
+    /// default could not apply to).
+    open: Vec<Vec<String>>,
+    done: Vec<String>,
+    placeholder: Option<String>,
+    had_scaffold: bool,
+}
+
+impl Buckets {
+    fn any_tagged(&self, lanes: usize) -> bool {
+        self.open[..lanes].iter().any(|b| !b.is_empty())
+    }
+}
+
+/// Rebuild one list body, grouped under a `### <Lane>` heading each, with a trailing
+/// `### Done`. This is the `## Focus` layout: the headings are drop targets, so they are
+/// emitted even when empty.
 ///
-/// `None` when there is nothing to organize (only untagged todos, no done task, no leftover
-/// scaffold) - that shape is already the sorted form, and rewriting it would churn the file.
+/// `None` when there is nothing to organize - that shape is already the sorted form, and
+/// rewriting it would churn the file. It is what keeps a fresh daily note from being born
+/// full of empty headers.
 pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
-    rebuild_inner(body, lanes, false)
+    let mut b = bucket(body, lanes);
+    if !b.any_tagged(lanes.len()) && b.done.is_empty() && !b.had_scaffold {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::new();
+    out.extend(b.open[lanes.len()].drain(..));
+    out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
+    for (i, (_, _, heading)) in lanes.iter().enumerate() {
+        out.push(String::new());
+        out.push((*heading).to_string());
+        out.extend(b.open[i].drain(..));
+    }
+    out.push(String::new());
+    out.push("---".to_string());
+    out.push("### Done".to_string());
+    out.extend(b.done);
+    Some(out)
 }
 
-/// Like [`rebuild`], but always emits the scaffold, even for a body with nothing to organize.
+/// Rebuild one list body as a single list SORTED by priority, with a trailing `### Done`.
+/// This is the `## Wave` layout.
 ///
-/// A wave section's lanes have to exist from the moment the wave does: they are where you
-/// drop a task to prioritize it, and a wave that renders as a flat list offers nowhere to
-/// drop. `## Focus` is the other way round - it stays unstyled until you first tag something,
-/// so a brand new daily note is not born full of empty headers.
-pub(crate) fn rebuild_scaffolded(body: &[&str], lanes: &[Lane]) -> Vec<String> {
-    rebuild_inner(body, lanes, true).expect("forced rebuild always produces a body")
+/// A project sheet does not earn the headings. Measured on the live vault before this
+/// landed: 84 open tasks across 15 sheets, 16 of them tagged - so three headings and a rule
+/// were scaffolding two real groups, and notes-cockpit rendered 13 tasks above an empty
+/// `### Urgent`. The daily note is the opposite shape (16 of 17 tagged, every lane full),
+/// which is why it keeps them.
+///
+/// Always emits: a wave's `### Done` is part of the wave, not something that appears once
+/// there is enough to organize.
+pub(crate) fn rebuild_sorted(body: &[&str], lanes: &[Lane]) -> Vec<String> {
+    let mut b = bucket(body, lanes);
+    let mut out: Vec<String> = Vec::new();
+    // Prose first, above the task list, where it reads as a note about the wave.
+    out.extend(b.open[lanes.len()].drain(..));
+    // Then every open task, most urgent first. `drain` in lane order preserves file order
+    // within a lane, so a sort never reshuffles two tasks of equal priority.
+    for i in 0..lanes.len() {
+        out.extend(b.open[i].drain(..));
+    }
+    out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
+    out.push(String::new());
+    out.push("---".to_string());
+    out.push("### Done".to_string());
+    out.extend(b.done);
+    out
 }
 
-fn rebuild_inner(body: &[&str], lanes: &[Lane], force: bool) -> Option<Vec<String>> {
+/// Sort one list body into buckets. Shared by both layouts.
+fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
     let mut open: Vec<Vec<String>> = vec![Vec::new(); lanes.len() + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
@@ -117,8 +174,7 @@ fn rebuild_inner(body: &[&str], lanes: &[Lane], force: bool) -> Option<Vec<Strin
         }
         // An indented line belongs to the task above it: a wrapped continuation, or a
         // subtask. Bucketing it on its own would tear it off its parent and float it to the
-        // top of the list. Focus tasks are short enough that this rarely fires; a project
-        // sheet with wrapped task text hits it on the first sweep.
+        // top of the list.
         if !t.is_empty() && l.starts_with(char::is_whitespace) {
             if let Some(b) = last {
                 match b {
@@ -151,30 +207,17 @@ fn rebuild_inner(body: &[&str], lanes: &[Lane], force: bool) -> Option<Vec<Strin
             open[i].push((*l).to_string());
             last = Some(Bucket::Open(i));
         } else if !t.is_empty() {
-            // a stray prose line stays with the untagged top bucket
+            // a stray prose line stays with the untagged bucket
             open[lanes.len()].push((*l).to_string());
             last = Some(Bucket::Open(lanes.len()));
         }
     }
-
-    let tagged = open[..lanes.len()].iter().any(|b| !b.is_empty());
-    if !force && !tagged && done.is_empty() && !had_scaffold {
-        return None;
+    Buckets {
+        open,
+        done,
+        placeholder,
+        had_scaffold,
     }
-
-    let mut out: Vec<String> = Vec::new();
-    out.extend(open[lanes.len()].drain(..));
-    out.push(placeholder.unwrap_or_else(|| "- [ ] ".to_string()));
-    for (i, (_, _, heading)) in lanes.iter().enumerate() {
-        out.push(String::new());
-        out.push((*heading).to_string());
-        out.extend(open[i].drain(..));
-    }
-    out.push(String::new());
-    out.push("---".to_string());
-    out.push("### Done".to_string());
-    out.extend(done);
-    Some(out)
 }
 
 /// Sweep the one `## <heading>` section `pred` accepts, leaving the rest of `content` alone.

@@ -325,6 +325,47 @@ return {
         return out
       end
 
+      -- Rebuild one wave body as a single list SORTED by priority, with a trailing
+      -- `### Done`. Mirrors sweep::rebuild_sorted.
+      --
+      -- A project sheet does not earn the lane headings the daily note gets: measured before
+      -- this landed, 84 open tasks across 15 sheets with 16 tagged, so three headings and a
+      -- rule were scaffolding two real groups. Always emits - a wave's Done is part of the
+      -- wave, not something that shows up once there is enough to organize.
+      local function rebuild_wave_body(body, inherit, lanes)
+        lanes = lanes or LANES
+        local grouped = rebuild_focus_body(body, inherit, lanes, true)
+        -- Re-read the lane-grouped output back into one sorted list: drop the scaffold, keep
+        -- the order the lanes already put things in. Reusing the bucketing this way is what
+        -- keeps the two layouts from disagreeing about which lane a task is in.
+        local open, done, placeholder, in_done = {}, {}, nil, false
+        for _, l in ipairs(grouped) do
+          if l:match "^###%s+Done%s*$" then
+            in_done = true
+          elseif not (is_scaffold(l) or l:match "^%s*$") then
+            if in_done then
+              done[#done + 1] = l
+            elseif l:match "^%s*%- %[ %]%s*$" then
+              placeholder = l
+            else
+              open[#open + 1] = l
+            end
+          end
+        end
+        local out = {}
+        for _, l in ipairs(open) do
+          out[#out + 1] = l
+        end
+        out[#out + 1] = placeholder or "- [ ] "
+        out[#out + 1] = ""
+        out[#out + 1] = "---"
+        out[#out + 1] = "### Done"
+        for _, l in ipairs(done) do
+          out[#out + 1] = l
+        end
+        return out
+      end
+
       -- ---- waves -------------------------------------------------------------------
       -- A project sheet groups tasks into `## Wave: vX.Y.Z` sections the same way the daily
       -- note groups them into priority lanes, and by the same rule: the `#vX.Y.Z` tag on the
@@ -497,10 +538,10 @@ return {
           local is_cur = ver_cmp(v, cur) == 0
           out[#out + 1] = "## Wave: " .. ver_str(v) .. (is_cur and " (current)" or " (planned)")
           local lanes = LANES
-          if not is_cur then -- a planned wave has no legal Urgent lane, so it renders none
+          if not is_cur then -- only the wave in flight may hold urgent work
             lanes = { LANES[2], LANES[3] }
           end
-          for _, l in ipairs(rebuild_focus_body(buckets[ver_str(v)], inherit, lanes, true)) do
+          for _, l in ipairs(rebuild_wave_body(buckets[ver_str(v)], inherit, lanes)) do
             out[#out + 1] = normalize_tags(l)
           end
         end
