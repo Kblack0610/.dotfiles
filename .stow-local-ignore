@@ -61,6 +61,10 @@ target
 ^/\.claude/\.last-cleanup$
 ^/\.claude/\.last-update-result\.json$
 ^/etc$
+# ~/.termux only means something inside the Termux app on Android, where stow
+# never runs. `termux-style` links it on the phone; stowing it into a desktop
+# $HOME would only create a directory nothing reads.
+^/\.termux$
 ^/\.fonts$
 ^/\.config/hypr$
 ^/\.config/waybar$

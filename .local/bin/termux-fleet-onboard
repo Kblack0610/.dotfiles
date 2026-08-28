@@ -1,10 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # termux-fleet-onboard - put an Android phone on the fleet, from Termux, in one run.
 #
-# Tier A (light touch, NO Headwind MDM). Chains three opt-in pieces:
+# Tier A (light touch, NO Headwind MDM). Chains four opt-in pieces:
 #   1. fleet-pulse heartbeat  -> the phone shows on your gatus fleet board (Termux:Boot + cron)
 #   2. sshd over the tailnet   -> `ssh -p 8022 <phone>` from any fleet machine (key-based)
 #   3. notes-on-phone          -> the notes CLI + sync + widget (delegates to notes-bootstrap)
+#   4. terminal profile        -> theme + row-saving layout (delegates to termux-style)
 #
 # Prereqs on the phone (the irreducible manual bit):
 #   - Termux + Termux:Boot installed from the SAME source (F-Droid).
@@ -137,6 +138,23 @@ case "${NOTES_ANS:-N}" in
         fi
         ;;
     *) say "skipping notes" ;;
+esac
+
+# --- optional: terminal profile --------------------------------------------
+printf '\nApply the Termux terminal profile (theme + row-saving layout)? [y/N]: ' >&2
+ask STYLE_ANS
+case "${STYLE_ANS:-N}" in
+    [yY]*)
+        # Deliberately no curl fallback: termux-style LINKS the repo copies so a
+        # later `git pull` retheme reaches the phone. Copying the two files in
+        # would deploy a second source of truth that silently stops updating.
+        if [ -x "$HOME/.dotfiles/.local/bin/termux-style" ]; then
+            "$HOME/.dotfiles/.local/bin/termux-style"
+        else
+            say "needs the dotfiles clone: git clone --depth 1 https://github.com/Kblack0610/.dotfiles ~/.dotfiles && ~/.dotfiles/.local/bin/termux-style"
+        fi
+        ;;
+    *) say "skipping terminal profile" ;;
 esac
 
 printf '\n\033[32mDone.\033[0m This phone is on the fleet (%s). Termux:Boot keeps it wired across reboots.\n' "$GATUS"
