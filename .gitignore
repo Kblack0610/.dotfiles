@@ -245,6 +245,7 @@ test_notifications.sh
 .local/bin/agentctl-project-index
 .local/bin/audio-stream
 .local/bin/binks
+.local/bin/board-runner
 .local/bin/captain-watchdog
 .local/bin/delivery-loop
 .local/bin/wave-watchdog
