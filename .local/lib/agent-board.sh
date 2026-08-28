@@ -79,6 +79,46 @@ board_newest() { # $1=project
   board_list "${1:-}" | head -1
 }
 
+# board_list_all -> every project's boards, newest first ACROSS all projects.
+#
+# Resolving "which project am I" from a checkout fails silently: a wave board is named
+# for the project its BRANCH names, while the reference checkout sits on develop, so the
+# two names differ and the lookup matches nothing. Same rule board_project_of already
+# encodes for attribution - identity comes from the PATH - applied to discovery.
+#
+# `_`-prefixed dirs are skipped: `_archive` holds retired boards, and a reader that
+# resurrects them is the archive-convention trap board_list warns about.
+board_list_all() {
+  local _d _p _f _all=()
+  for _d in "${AGENT_PLANS_DIR:-$HOME/.agent/plans}"/*/; do
+    [ -d "$_d" ] || continue
+    _p="${_d%/}"; _p="${_p##*/}"
+    case "$_p" in _*) continue ;; esac
+    while IFS= read -r _f; do
+      [ -n "$_f" ] && _all+=("$_f")
+    done < <(board_list "$_p")
+  done
+  # Empty is the answer, not a failure - same contract as board_list, and these run on
+  # timers where a non-zero status is noise.
+  [ ${#_all[@]} -gt 0 ] || return 0
+  # Re-sorted globally: each board_list is ordered within its project, but a caller
+  # wanting "the newest live wave anywhere" needs one order across all of them.
+  ls -1t "${_all[@]}" 2>/dev/null || true
+}
+
+# board_find_all PREDICATE -> newest board ACROSS ALL PROJECTS satisfying PREDICATE.
+#
+# The fleet-wide sibling of board_find. Same empty-is-normal contract.
+board_find_all() { # $1=predicate fn
+  local _f
+  [ -n "${1:-}" ] || return 0
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    if "$1" "$_f"; then printf '%s\n' "$_f"; return 0; fi
+  done < <(board_list_all)
+  return 0
+}
+
 # board_find PROJECT PREDICATE -> newest board satisfying PREDICATE, or nothing.
 #
 # PREDICATE is the NAME of a function taking a board path (board_needs_eyes,
@@ -329,6 +369,22 @@ board_rows_effective() { # $1=board file $2=project
 board_project_of() { # $1=board file
   local d; d="$(dirname "${1:-}")"
   printf '%s' "${d##*/}"
+}
+
+# board_repo_of FILE -> the checkout a board's work happens in, from its `## Meta`.
+#
+# The project half comes from the path (above); the board carries the repo half itself as
+# `- Repo: <abs path>`. Nothing read it before, so three drivers resolved it three ways
+# and none asked the board.
+#
+# Anchored `^- *Repo:` for the reason board_is_wave is anchored: a `## Run log` sentence
+# mentioning a repo describes one, it does not declare one. Empty when the board has no
+# Meta block (legacy boards have none) so the caller can fall back to project_repo_path.
+board_repo_of() { # $1=board file
+  local r
+  r="$(sed -n 's/^- *Repo: *//p' "${1:-/dev/null}" 2>/dev/null | head -1)"
+  r="${r%"${r##*[![:space:]]}"}"
+  printf '%s' "$r"
 }
 
 # Where the derived snapshot lives. NOT beside the board, deliberately.
