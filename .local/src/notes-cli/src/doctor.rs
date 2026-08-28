@@ -65,7 +65,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     dir_check(&mut r, "refs", &p.refs, true);
     dir_check(&mut r, "continuous", &p.continuous, true);
     file_check(&mut r, "fun backlog", &p.fun);
-    file_check(&mut r, "scheduled backlog", &p.scheduled);
+    // The schedule, not its pre-merge `scheduled.md` ancestor: that file was folded into
+    // `schedule.md` and renamed aside, so checking it reported a healthy vault as broken.
+    file_check(&mut r, "schedule", &p.schedule);
 
     // Inbox backlog — pending captures awaiting triage; warn if any are stale
     let (pending, stale) = crate::inbox::backlog_counts(p);
@@ -146,6 +148,12 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         );
     }
 
+    // 9. A binary older than its own source silently writes the previous note format, and
+    // nothing else here would catch it: every path resolves, every heading parses, the notes
+    // are simply the wrong shape. That is exactly how one machine's dailies drifted a month
+    // behind another's while both looked healthy.
+    check_build(&mut r);
+
     println!();
     let code = if r.fails > 0 { 1 } else { 0 };
     let summary = format!("{} fail, {} warn", r.fails, r.warns);
@@ -156,6 +164,47 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         log.info("doctor", &summary);
     }
     Ok(code)
+}
+
+/// Compare the running executable against the newest file in the source tree it was compiled
+/// from. `CARGO_MANIFEST_DIR` is baked in at build time, so this needs no config and no build
+/// script; a checkout that has since moved or been deleted cannot be compared and passes.
+fn check_build(r: &mut Report) {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(built) = mtime(&exe) else {
+        return;
+    };
+    if !src.is_dir() {
+        r.add(Status::Pass, "build", "source tree not present, cannot compare");
+        return;
+    }
+    let newest = fs::read_dir(&src)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter_map(|p| mtime(&p).map(|t| (t, p)))
+        .max();
+    match newest {
+        Some((t, p)) if t > built => r.add(
+            Status::Warn,
+            "build",
+            &format!(
+                "binary is stale ({} is newer) - run `cargo build --release` in {}",
+                p.file_name().unwrap_or_default().to_string_lossy(),
+                src.parent().unwrap_or(&src).display()
+            ),
+        ),
+        _ => r.add(Status::Pass, "build", "binary is current with its source"),
+    }
+}
+
+fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
 }
 
 fn dir_check(r: &mut Report, label: &str, path: &Path, warn_only: bool) {
@@ -258,22 +307,23 @@ fn check_headings(r: &mut Report, p: &Profile) {
                 continue;
             }
             let content = fs::read_to_string(&path).unwrap_or_default();
-            // `## Due` is the current section; `## Priority` satisfies legacy notes.
-            let has_ondeck = content.contains("## Due") || content.contains("## Priority");
-            if !content.contains("## Focus") || !has_ondeck {
+            // `## Focus` is the whole contract. Requiring `## Due` too outlived the section
+            // itself: the engine stopped writing it (one list, not two), so demanding it
+            // failed every correctly-generated note and passed the stale ones.
+            if !content.contains("## Focus") {
                 bad.push(stem);
             }
         }
     }
     if bad.is_empty() {
-        r.add(Status::Pass, "daily headings", "all notes have Focus + Due");
+        r.add(Status::Pass, "daily headings", "every note has Focus");
     } else {
         bad.sort();
         r.add(
             Status::Warn,
             "daily headings",
             &format!(
-                "{} note(s) missing Focus/Due: {}",
+                "{} note(s) missing Focus: {}",
                 bad.len(),
                 bad.join(", ")
             ),

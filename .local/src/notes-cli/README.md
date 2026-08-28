@@ -35,11 +35,19 @@ Active profile resolves: `--profile` → `$NOTES_PROFILE` → `[hostname_map]` (
 daily notes inside `employment/jobs/<job>/` while a personal machine uses
 `journal/daily` — same git repo, different active location.
 
+**A job is one line.** Every path key defaults to the org convention (`daily/`, `refs/`,
+`backlogs/fun.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
+`inbox/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
+differs. `personal` is the sole profile that overrides them all, because its root IS the
+vault. An org that still holds a `log/` from before the directory was renamed is migrated
+to `daily/` on the next `notes today`; a profile that explicitly pins `daily = "log"`
+keeps it.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `notes today` | Idempotent daily note. Carries **Priority** forward (day-stamped); rolls unfinished **Focus** into the carryover backlog; links refs; footer links to backlogs. |
+| `notes today` | Idempotent daily note. Carries unfinished **Focus** forward (day-stamped), surfaces anything the schedule fires, links refs, regenerates the footer, and conforms a note an older build left behind. |
 | `notes path` | Print today's note path (for `nvim "$(notes path)"`). |
 | `notes link-refs` | Link today's `refs/<date>/*.md` into the note's `## Refs`. |
 | `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
@@ -55,31 +63,33 @@ daily notes inside `employment/jobs/<job>/` while a personal machine uses
 | `notes seed-backlogs [--from N] [--force]` | One-time migration: lift `## Fun` + `## Carry Over` out of a daily note into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<id>-<slug>.md` (id = `YYYYMMDDThhmm`). |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or rebuild `index/` backlinks + MOC. |
-| `notes doctor` | Diagnose: config/profile, dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. |
+| `notes doctor` | Diagnose: config/profile, dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans, and whether the **binary is stale** against its own source. |
 | `notes config` | Print the resolved profile + all paths. |
 
 `--verbose` echoes the structured log (also written to `~/.local/state/notes/journal.log`).
 
 ## Daily-note model
 
-Lean by design — only fresh **Focus** + **Priority** live inline. **Fun** and
-**Carry Over** are standing backlog files (`journal/backlogs/`) linked at the bottom.
-Completed backlog items move to a `## Done` section in the same file (history via git +
+Lean by design: **ONE** task list, `## Focus`, swept into `### Urgent` / `### High` /
+`### Low` / `### Done` lanes. There is no second inline list. `## Due` (and its `## Priority`
+ancestor) was removed because two lists in one note make every glance a merge, and anything a
+schedule surfaces IS today's work; a note left over from an older build has its Due items
+folded into Focus on the next run. **Fun** is a standing backlog file linked in the footer.
+Completed items move to a `## Done` section in the same file (history via git +
 `daily_archive/`), so there's no separate done log.
 
-**Recurring tasks** live in `journal/backlogs/recurring.md`. A master line carries an
-`(every:…)` cadence token; on each matching day `notes today` emits a fresh unchecked
-copy into the note's **Due** (token stripped, `since:` stamped, deduped). The master is
-never consumed, so the habit returns every cycle — and missed days are simply skipped
-(no stale pile-up). Cadences: `every:fri`, comma lists `every:mon,thu`, `every:weekday`
-(Mon–Fri), `every:day`, and day-of-month `every:1st` / `every:15th` / `every:last`.
-Contrast **scheduled** (`journal/backlogs/scheduled.md`), which is one-shot future
-`[dates]`. Both `scheduled` and `recurring` resolve via a built-in path fallback, so no
-`config.toml` change is needed.
+**Time-triggered tasks** all live in one `schedule.md` (its `scheduled.md` + `recurring.md`
+ancestors were merged and renamed aside). What a line does is decided by its TOKEN, not by
+which file it sits in: `[YYYY-MM-DD]` fires ONCE within the lead window and the master line is
+consumed; `(every:…)` fires each matching day and the master is kept, so the habit returns
+every cycle and missed days are simply skipped. Cadences: `every:fri`, comma lists
+`every:mon,thu`, `every:weekday` (Mon-Fri), `every:day`, and day-of-month `every:1st` /
+`every:15th` / `every:last`. Tagging a surfaced task with a far-future date pushes it back out
+to the schedule, which is what makes the date a two-way verb.
 
-Which backlogs the footer links is config-driven via `footer_backlogs` (names: `fun` |
-`scheduled` | `recurring`, or a vault-relative path; default `["fun", "scheduled"]`) —
-edit that list in `config.toml`, no recompile.
+Which backlogs the footer links is config-driven via `footer_links` (names: `backlog`/`fun` |
+`schedule`, or a vault-relative path; default `["backlog", "schedule"]`) - edit that list in
+`config.toml`, no recompile. `footer_backlogs` is the old key name, still read as an alias.
 
 **Inbox** is surfaced two ways: a footer `Inbox (N): [[inbox]]` link when there are
 pending captures (N = capture files awaiting triage, same count as `notes inbox`), and a

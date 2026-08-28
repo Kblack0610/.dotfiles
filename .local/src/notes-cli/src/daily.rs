@@ -82,6 +82,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
 
 pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     let today = Local::now().date_naive();
+    migrate_log_to_daily(p, log)?;
     fs::create_dir_all(&p.daily)
         .with_context(|| format!("creating daily dir {}", p.daily.display()))?;
     ensure_backlogs(p, log)?;
@@ -93,6 +94,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
         create_note(p, log, today, &note)?;
         log.info("today", &format!("created {}", note.display()));
     }
+    conform_legacy_sections(&note, log)?;
 
     link_refs(p, log)?;
     ensure_footer(p, &note)?;
@@ -1090,6 +1092,110 @@ fn migrate_to_schedule(p: &Profile, log: &Logger) -> Result<()> {
     Ok(())
 }
 
+/// Conform an EXISTING note to the current shape: fold legacy `## Due` / `## Priority` items
+/// into `## Focus`, then drop the sections an older build wrote.
+///
+/// `create_note` already does this, but only for a note it writes itself. A note created
+/// earlier the same day by a stale binary never passes through it, so the note the human
+/// actually opens keeps `## Current Projects` and an empty `## Due` no matter how current the
+/// engine is. That gap is why a machine one build behind produced a visibly different daily.
+///
+/// Idempotent, and a no-op on a note that is already clean.
+fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
+    let original = fs::read_to_string(note)
+        .with_context(|| format!("reading {}", note.display()))?;
+
+    let mut folded: Vec<String> = Vec::new();
+    for heading in ["Due", "Priority"] {
+        if let Some(lines) = md::section_lines(&original, heading) {
+            folded.extend(lines.into_iter().filter(|l| md::is_open_task(l)));
+        }
+    }
+    // With nowhere to fold to, leave the note alone rather than delete the human's tasks.
+    if !folded.is_empty() && !original.lines().any(|l| l.trim() == "## Focus") {
+        return Ok(());
+    }
+
+    let mut content = original.clone();
+    for heading in ["Current Projects", "Due", "Priority"] {
+        content = remove_section(&content, heading);
+    }
+    if !folded.is_empty() {
+        content = insert_into_focus(&content, &folded);
+    }
+    if content == original {
+        return Ok(());
+    }
+    md::write_atomic(note, &content)?;
+    log.info(
+        "today",
+        &format!("conformed legacy sections ({} item(s) folded into Focus)", folded.len()),
+    );
+    Ok(())
+}
+
+/// Put lines directly under the `## Focus` heading. The priority sweep at the end of `run`
+/// buckets them into their lanes afterwards, so no ordering is decided here.
+fn insert_into_focus(content: &str, lines: &[String]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut placed = false;
+    for l in content.lines() {
+        out.push(l.to_string());
+        if !placed && l.trim() == "## Focus" {
+            out.extend(lines.iter().cloned());
+            placed = true;
+        }
+    }
+    if !placed {
+        return content.to_string();
+    }
+    let mut s = out.join("\n");
+    if content.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// One-time migration: `log/` -> `daily/`, and `log_archive/` -> `daily_archive/`.
+///
+/// One engine writes one shape of note, but the org default named its directory `log/` while
+/// personal named the same thing `daily/`. A job vault therefore never looked like the journal
+/// it was generated from, and every doc had to say "log (daily)". The org default is now
+/// `daily`; this carries an existing directory across so the flip does not leave a fresh empty
+/// dir sitting beside the full one.
+///
+/// Must run before `run` creates `p.daily`: that call would plant the very directory whose
+/// absence is the guard here.
+fn migrate_log_to_daily(p: &Profile, log: &Logger) -> Result<()> {
+    migrate_legacy_dir(&p.daily, "daily", "log", log)?;
+    migrate_legacy_dir(&p.archive, "daily_archive", "log_archive", log)?;
+    Ok(())
+}
+
+/// Rename `<parent>/<legacy>` to `dest`, but only when `dest` is on the new default name,
+/// does not exist yet, and the legacy sibling does. Every other shape is left alone, which is
+/// what makes this safe on a machine whose config still pins the old name: a profile with
+/// `daily = "log"` keeps its `log/`, and one already migrated is a no-op.
+fn migrate_legacy_dir(dest: &Path, expected: &str, legacy: &str, log: &Logger) -> Result<()> {
+    if dest.file_name().and_then(|s| s.to_str()) != Some(expected) || dest.exists() {
+        return Ok(());
+    }
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    let src = parent.join(legacy);
+    if !src.is_dir() {
+        return Ok(());
+    }
+    fs::rename(&src, dest)
+        .with_context(|| format!("renaming {} -> {}", src.display(), dest.display()))?;
+    log.info(
+        "migrate",
+        &format!("{} -> {}", src.display(), dest.display()),
+    );
+    Ok(())
+}
+
 fn ensure_backlog_file(
     path: &Path,
     title: &str,
@@ -1153,6 +1259,133 @@ mod tests {
             state_dir: r.join(".state"),
             log_file: r.join(".state/journal.log"),
         }
+    }
+
+    /// A note left behind by an older build: the dead headings go, the human's Due items
+    /// survive by folding into Focus, and a second pass changes nothing.
+    #[test]
+    fn a_stale_note_is_conformed_and_its_due_items_survive() {
+        let dir = std::env::temp_dir().join(format!("notes-conform-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("2026-08-28.md");
+        fs::write(
+            &note,
+            "# 2026-08-28\n\n## Current Projects\n- [[projects/current/x|x]]\n\n\
+             ## Focus\n- [ ] already here\n\n## Notes\n\n## Due\n- [ ] carried from due\n- [x] finished\n\n\
+             ---\nSchedule: [[schedule]]\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        conform_legacy_sections(&note, &log).unwrap();
+        let out = fs::read_to_string(&note).unwrap();
+
+        assert!(!out.contains("## Current Projects"), "static link list dropped");
+        assert!(!out.contains("## Due"), "second list dropped");
+        assert!(out.contains("- [ ] carried from due"), "open item folded, not deleted");
+        assert!(!out.contains("- [x] finished"), "completed item not resurrected");
+        assert!(out.contains("- [ ] already here"), "existing focus kept");
+        assert!(out.contains("Schedule: [[schedule]]"), "footer intact");
+
+        conform_legacy_sections(&note, &log).unwrap();
+        assert_eq!(fs::read_to_string(&note).unwrap(), out, "idempotent");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Nowhere to fold to means leave it alone. Removing `## Due` here would silently eat
+    /// the only copy of those tasks.
+    #[test]
+    fn a_note_without_focus_is_left_untouched() {
+        let dir = std::env::temp_dir().join(format!("notes-conform-b-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("2026-08-28.md");
+        let body = "# 2026-08-28\n\n## Due\n- [ ] the only copy\n";
+        fs::write(&note, body).unwrap();
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        conform_legacy_sections(&note, &log).unwrap();
+
+        assert_eq!(fs::read_to_string(&note).unwrap(), body);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An org profile on the new default: `log/` carries across to `daily/`, notes and all.
+    #[test]
+    fn a_legacy_log_dir_migrates_to_daily() {
+        let dir = std::env::temp_dir().join(format!("notes-mig-a-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut p = profile(dir.to_str().unwrap());
+        p.daily = dir.join("daily");
+        p.archive = dir.join("daily_archive");
+        fs::create_dir_all(dir.join("log")).unwrap();
+        fs::write(dir.join("log/2026-06-18.md"), "# 2026-06-18\n").unwrap();
+        fs::create_dir_all(dir.join("log_archive/2026")).unwrap();
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        migrate_log_to_daily(&p, &log).unwrap();
+
+        assert!(dir.join("daily/2026-06-18.md").exists(), "note carried over");
+        assert!(!dir.join("log").exists(), "legacy dir is gone, not copied");
+        assert!(dir.join("daily_archive/2026").is_dir(), "archive migrated too");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A profile that still pins `daily = "log"` keeps its `log/`. This is what makes the
+    /// default flip safe on a machine whose gitignored config has not been collapsed yet.
+    #[test]
+    fn a_pinned_log_dir_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("notes-mig-b-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut p = profile(dir.to_str().unwrap());
+        p.daily = dir.join("log");
+        fs::create_dir_all(dir.join("log")).unwrap();
+        fs::write(dir.join("log/2026-06-18.md"), "x").unwrap();
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        migrate_log_to_daily(&p, &log).unwrap();
+
+        assert!(dir.join("log/2026-06-18.md").exists(), "pinned dir untouched");
+        assert!(!dir.join("daily").exists(), "no daily dir invented");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Already migrated, or a personal-shaped vault where both names happen to exist: the
+    /// destination wins and the legacy dir is left for the human, never merged or clobbered.
+    #[test]
+    fn an_existing_daily_dir_is_never_clobbered() {
+        let dir = std::env::temp_dir().join(format!("notes-mig-c-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut p = profile(dir.to_str().unwrap());
+        p.daily = dir.join("daily");
+        fs::create_dir_all(dir.join("daily")).unwrap();
+        fs::write(dir.join("daily/keep.md"), "keep").unwrap();
+        fs::create_dir_all(dir.join("log")).unwrap();
+        fs::write(dir.join("log/old.md"), "old").unwrap();
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        migrate_log_to_daily(&p, &log).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("daily/keep.md")).unwrap(), "keep");
+        assert!(dir.join("log/old.md").exists(), "legacy left for the human");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The personal profile pins `journal/daily`, whose sibling `journal/log` never existed.
+    #[test]
+    fn the_personal_profile_is_a_no_op() {
+        let dir = std::env::temp_dir().join(format!("notes-mig-d-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = profile(dir.to_str().unwrap()); // daily = journal/daily, archive = journal/daily_archive
+        fs::create_dir_all(dir.join("log")).unwrap(); // a decoy at the ROOT, not the parent
+        let log = Logger::new(dir.join("log.txt"), false);
+
+        migrate_log_to_daily(&p, &log).unwrap();
+
+        assert!(!dir.join("journal/daily").exists(), "nothing created");
+        assert!(dir.join("log").is_dir(), "root-level decoy untouched");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The real `## Focus` shape from a job-profile note (2026-07-15): a pasted

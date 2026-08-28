@@ -255,11 +255,14 @@ fn default_inbox() -> String {
     "inbox".to_string()
 }
 
-// The org layout, as one place instead of once per org. Values are the ones `bnb`,
-// every non-personal org already agreed on independently; `personal` overrides all of them.
+// The org layout, as one place instead of once per org; `personal` overrides all of them.
 // Changing one here changes it for every org that has not opted out.
+//
+// The leaf names match personal's on purpose: one engine writes one shape of note, so a job
+// vault should read like the journal. A vault still holding the older `log/` is carried across
+// by `daily::migrate_log_to_daily`, which is why this can change without a per-machine edit.
 fn default_daily() -> String {
-    "log".to_string()
+    "daily".to_string()
 }
 
 fn default_refs() -> String {
@@ -279,7 +282,7 @@ fn default_summaries() -> String {
 }
 
 fn default_archive() -> String {
-    "log_archive".to_string()
+    "daily_archive".to_string()
 }
 
 fn default_zettel() -> String {
@@ -889,12 +892,12 @@ mod tests {
     #[test]
     fn an_org_is_one_line() {
         let raw: RawProfile = toml::from_str(r#"root = "~/notes/orgs/newco""#).unwrap();
-        assert_eq!(raw.daily, "log");
+        assert_eq!(raw.daily, "daily");
         assert_eq!(raw.refs, "refs");
         assert_eq!(raw.fun, "backlogs/fun.md");
         assert_eq!(raw.carryover, "backlogs/carryover.md");
         assert_eq!(raw.summaries, "summaries");
-        assert_eq!(raw.archive, "log_archive");
+        assert_eq!(raw.archive, "daily_archive");
         assert_eq!(raw.zettel, "permanent");
         assert_eq!(raw.index, "index");
         assert_eq!(raw.inbox, "inbox");
