@@ -609,6 +609,31 @@ board_drainable() { board_approved "${1:-}" && board_has_stage "${1:-}" open; }
 # not self-disarm.
 board_needs_eyes() { board_has_stage "${1:-}" eyes; }
 
+# How long a board may go without a recorded stage TRANSITION before a scheduled runner
+# stops paying for a pass on it. Humans are never filtered by this (see below).
+BOARD_EYES_MAX_AGE_DAYS="${BOARD_EYES_MAX_AGE_DAYS:-14}"
+
+# board_eyes_fresh FILE -> 0 when the board has moved recently, or when we cannot tell.
+#
+# TRANSITIONS, never the board's own mtime: a watcher that appends a run-log line every
+# pass refreshes the file it is watching, so mtime measures the watcher not the work. The
+# event log is written only on a real stage change, so looking at a board cannot refresh
+# it. A MISSING log reads as fresh - unknown must not silence the runner, because
+# "absence reported as fine" is the bug family this library exists to end.
+board_eyes_fresh() { # $1=board file
+  local _ev
+  _ev="$(board_events_file "$(board_project_of "${1:-}")")"
+  [ -f "$_ev" ] || return 0
+  find "$_ev" -mtime "-${BOARD_EYES_MAX_AGE_DAYS}" 2>/dev/null | grep -q .
+}
+
+# The scheduled runner's predicate: needs eyes AND has moved lately.
+#
+# Separate from board_needs_eyes on purpose. session-preflight and the cockpit keep using
+# the unbounded one, because a human SHOULD still be nagged about a row blocked for 50
+# days. It is only the pass that spends tokens that should stop re-reading it.
+board_needs_eyes_fresh() { board_needs_eyes "${1:-}" && board_eyes_fresh "${1:-}"; }
+
 # ── checkpoint sentinel ──────────────────────────────────────────────────────
 # The dispatcher/overseer trust the SENTINEL, never an Agent "completed" event: a
 # "completed" with no STATUS: DONE is a false-completion (the agent died mid-run).

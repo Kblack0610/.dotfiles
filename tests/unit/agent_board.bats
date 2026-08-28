@@ -667,3 +667,63 @@ EOF
   # The fleet-wide question: finds it regardless of which checkout is asking.
   assert_equal "$(board_find_all board_is_wave)" "$P/otherapp/sprint-v1.13.0.md"
 }
+
+# -- the staleness damper: transitions, never the board's own mtime --------------------
+
+setup_eyes_board() {  # $1=project
+  local P="$HOME/.agent/plans/$1"
+  mkdir -p "$P"
+  printf '## Queue\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | blocked |\n' \
+    > "$P/sprint-x.md"
+  printf '%s\n' "$P/sprint-x.md"
+}
+
+@test "board_needs_eyes_fresh keeps a board whose transitions are recent" {
+  local bb; bb="$(setup_eyes_board live)"
+  : > "$HOME/.agent/plans/live/board-events.jsonl"
+  run board_needs_eyes_fresh "$bb"
+  assert_success
+}
+
+@test "board_needs_eyes_fresh drops a board whose last transition is past the bound" {
+  local bb; bb="$(setup_eyes_board stale)"
+  local ev="$HOME/.agent/plans/stale/board-events.jsonl"
+  : > "$ev"
+  touch -d '60 days ago' "$ev"
+
+  # Still needs eyes in the unbounded sense - the human surfaces must keep nagging.
+  run board_needs_eyes "$bb"; assert_success
+  # But the token-spending runner stops re-reading it.
+  run board_needs_eyes_fresh "$bb"; assert_failure
+}
+
+@test "a board the watcher keeps touching is still stale: mtime is not the signal" {
+  # THE 2026-08-28 finding. captain-watchdog appended a run-log paragraph every 12
+  # minutes, so the board's mtime was always minutes old while its actionable state had
+  # not moved in 50 days -- 1029 full agent passes on frozen state. Only the event log,
+  # which is written on a real stage change, can tell those apart.
+  local bb; bb="$(setup_eyes_board touched)"
+  local ev="$HOME/.agent/plans/touched/board-events.jsonl"
+  : > "$ev"; touch -d '60 days ago' "$ev"
+  touch "$bb"   # the watcher, refreshing the file it watches
+
+  run board_needs_eyes_fresh "$bb"
+  assert_failure
+}
+
+@test "a board with NO event log reads as fresh, because unknown must not silence" {
+  # Absence is not staleness. A board whose transitions were never recorded is unknown,
+  # and this library exists to stop 'absence reported as fine'.
+  local bb; bb="$(setup_eyes_board unrecorded)"
+  [ ! -f "$HOME/.agent/plans/unrecorded/board-events.jsonl" ]
+  run board_needs_eyes_fresh "$bb"
+  assert_success
+}
+
+@test "the damper never revives a board that has nothing needing eyes" {
+  local P="$HOME/.agent/plans/donebrd"; mkdir -p "$P"
+  printf '## Queue\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | merged |\n' \
+    > "$P/sprint-x.md"
+  run board_needs_eyes_fresh "$P/sprint-x.md"
+  assert_failure
+}
