@@ -31,6 +31,7 @@ mod tags;
 mod waves;
 mod zettel;
 
+use agent_sheet::Lane;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
@@ -119,6 +120,10 @@ enum Cmd {
     Ptask {
         /// Project name (case-insensitive)
         name: String,
+        /// Act on the project's AGENT sheet (`agent/README.md`) - the working board where
+        /// subtasks and in-flight state live - instead of the queue on its own README.
+        #[arg(long)]
+        agent: bool,
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
@@ -541,45 +546,49 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Ptask { name, sub } => match sub {
-            None => project_tasks::list(&prof, &name, None, false)?,
-            Some(PtaskCmd::List { wave, all }) => {
-                project_tasks::list(&prof, &name, wave.as_deref(), all)?
+        Cmd::Ptask { name, agent, sub } => {
+            let lane = if agent { Lane::Agent } else { Lane::Human };
+            match sub {
+                None => project_tasks::list(&prof, &name, None, false, lane)?,
+                Some(PtaskCmd::List { wave, all }) => {
+                    project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
+                }
+                Some(PtaskCmd::Add { to, text }) => {
+                    project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
+                }
+                Some(PtaskCmd::Move { to, query }) => {
+                    project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
+                }
+                Some(PtaskCmd::Done {
+                    proof,
+                    unverified,
+                    query,
+                }) => project_tasks::done(
+                    &prof,
+                    &log,
+                    &name,
+                    &query.join(" "),
+                    proof.as_deref(),
+                    unverified.as_deref(),
+                    lane,
+                )?,
+                Some(PtaskCmd::Start { query }) => {
+                    project_tasks::start(&prof, &log, &name, &query.join(" "), lane)?
+                }
+                Some(PtaskCmd::Rm { query }) => {
+                    project_tasks::rm(&prof, &log, &name, &query.join(" "), lane)?
+                }
+                Some(PtaskCmd::Promote { query }) => {
+                    project_tasks::step(&prof, &log, &name, &query.join(" "), -1, lane)?
+                }
+                Some(PtaskCmd::Demote { query }) => {
+                    project_tasks::step(&prof, &log, &name, &query.join(" "), 1, lane)?
+                }
+                Some(PtaskCmd::Sweep { dry_run }) => {
+                    project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
+                }
             }
-            Some(PtaskCmd::Add { to, text }) => {
-                project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref())?
-            }
-            Some(PtaskCmd::Move { to, query }) => {
-                project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to)?
-            }
-            Some(PtaskCmd::Done {
-                proof,
-                unverified,
-                query,
-            }) => project_tasks::done(
-                &prof,
-                &log,
-                &name,
-                &query.join(" "),
-                proof.as_deref(),
-                unverified.as_deref(),
-            )?,
-            Some(PtaskCmd::Start { query }) => {
-                project_tasks::start(&prof, &log, &name, &query.join(" "))?
-            }
-            Some(PtaskCmd::Rm { query }) => {
-                project_tasks::rm(&prof, &log, &name, &query.join(" "))?
-            }
-            Some(PtaskCmd::Promote { query }) => {
-                project_tasks::step(&prof, &log, &name, &query.join(" "), -1)?
-            }
-            Some(PtaskCmd::Demote { query }) => {
-                project_tasks::step(&prof, &log, &name, &query.join(" "), 1)?
-            }
-            Some(PtaskCmd::Sweep { dry_run }) => {
-                project_tasks::sweep(&prof, &log, &name, dry_run)?
-            }
-        },
+        }
         Cmd::Board { agent, projects } => {
             if agent {
                 board::print_agent(&projects)?

@@ -9,6 +9,7 @@
 //! that carries a `## Wave` — decoupled from the `Version:` line, so a release-managed
 //! project (version in `changelog/`) can hold a task sheet without owning its version there.
 
+use crate::agent_sheet::Lane;
 use crate::config::Profile;
 use crate::logging::Logger;
 use crate::md;
@@ -123,10 +124,22 @@ pub(crate) fn open_wave_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
     Some((projects::wave_version_of(&content), open))
 }
 
+/// The directory a verb acts in: the project's own, or its agent board's.
+///
+/// Every verb resolves through here so `--agent` is one decision made once, rather than a
+/// path choice repeated at eight call sites that can each get it wrong.
+fn lane_dir(p: &Profile, name: &str, lane: Lane) -> Result<PathBuf> {
+    Ok(lane.dir(&projects::project_dir(p, name)?))
+}
+
 /// The sheet + its resolved current-wave heading, for a named project. `None` when the
 /// project has no task sheet yet (a read verb then lists nothing).
-fn sheet_and_wave(p: &Profile, name: &str) -> Result<Option<(PathBuf, String, String)>> {
-    let dir = projects::project_dir(p, name)?;
+fn sheet_and_wave(
+    p: &Profile,
+    name: &str,
+    lane: Lane,
+) -> Result<Option<(PathBuf, String, String)>> {
+    let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         return Ok(None);
     };
@@ -149,8 +162,8 @@ fn is_match(line: &str, query: &str) -> bool {
 /// `path<TAB>line<TAB>key<TAB>text` — because the cockpit and `/wave` both parse it. A
 /// wave SELECTOR adds a fifth column (the wave's version) rather than changing the first
 /// four, so a reader that only wants `$1..$4` is unaffected either way.
-pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool) -> Result<i32> {
-    let dir = projects::project_dir(p, name)?;
+pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool, lane: Lane) -> Result<i32> {
+    let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         return Ok(0);
     };
@@ -204,13 +217,24 @@ pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool) -> Result<i3
 ///
 /// Unlike daily `focus add`, wave tasks are NOT day-stamped (they live in the version's
 /// wave until done or rolled, not carried forward).
-pub fn add(p: &Profile, log: &Logger, name: &str, text: &str, to: Option<&str>) -> Result<i32> {
+pub fn add(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    text: &str,
+    to: Option<&str>,
+    lane: Lane,
+) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
-    let dir = projects::project_dir(p, name)?;
-    let sheet = ensure_task_sheet(&dir, name)?;
+    let proj_dir = projects::project_dir(p, name)?;
+    let sheet = match lane {
+        Lane::Human => ensure_task_sheet(&proj_dir, name)?,
+        Lane::Agent => crate::agent_sheet::ensure_for(p, &proj_dir, name)?,
+    };
+    let dir = lane.dir(&proj_dir);
     let content = fs::read_to_string(&sheet)?;
     let (heading, grown) = target_wave(&content, to, true)?;
     let base = grown.unwrap_or(content);
@@ -234,12 +258,19 @@ pub fn add(p: &Profile, log: &Logger, name: &str, text: &str, to: Option<&str>) 
 /// The verb that splits a pile into a roadmap, and the one the roll gate points at: a
 /// version that still has open work does not close, so either finish the task or say
 /// explicitly which version it belongs to instead.
-pub fn move_task(p: &Profile, log: &Logger, name: &str, query: &str, to: &str) -> Result<i32> {
+pub fn move_task(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    query: &str,
+    to: &str,
+    lane: Lane,
+) -> Result<i32> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         bail!("which one? (provide a word from the task)");
     }
-    let dir = projects::project_dir(p, name)?;
+    let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
@@ -292,13 +323,20 @@ pub fn move_task(p: &Profile, log: &Logger, name: &str, query: &str, to: &str) -
 /// `promote` clamps at the current wave and exits NON-ZERO there: the cockpit drives these
 /// through fzf `execute-silent`, which discards stdout, so a zero exit would render "there is
 /// nothing sooner" as silence.
-pub fn step(p: &Profile, log: &Logger, name: &str, query: &str, dir: i32) -> Result<i32> {
+pub fn step(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    query: &str,
+    dir: i32,
+    lane: Lane,
+) -> Result<i32> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         bail!("which one? (provide a word from the task)");
     }
     let dir_word = if dir < 0 { "promote" } else { "demote" };
-    let dir_proj = projects::project_dir(p, name)?;
+    let dir_proj = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir_proj) else {
         bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
     };
@@ -394,10 +432,11 @@ pub fn done(
     query: &str,
     proof: Option<&str>,
     unverified: Option<&str>,
+    lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
     let marker = stamp.clone();
-    let (code, matched) = edit(p, log, name, query, "done", move |l| {
+    let (code, matched) = edit(p, log, name, query, "done", lane, move |l| {
         Some(md::add_marker(&md::set_checkbox(l, 'x'), &marker))
     })?;
     let Some(matched) = matched.filter(|_| code == 0) else {
@@ -451,14 +490,14 @@ fn record_proof(p: &Profile, name: &str, query: &str, stamp: &str) -> Result<()>
 }
 
 /// `notes ptask <name> rm <query>` — delete the first open wave task matching `<query>`.
-pub fn rm(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> {
-    Ok(edit(p, log, name, query, "removed", |_| None)?.0)
+pub fn rm(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Result<i32> {
+    Ok(edit(p, log, name, query, "removed", lane, |_| None)?.0)
 }
 
 /// `notes ptask <name> start <query>` — toggle the first matching wave task between todo
 /// (`[ ]`) and in-progress (`[/]`).
-pub fn start(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> {
-    Ok(edit(p, log, name, query, "toggled", |l| {
+pub fn start(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Result<i32> {
+    Ok(edit(p, log, name, query, "toggled", lane, |l| {
         let mark = if l.trim_start().starts_with("- [/]") {
             ' '
         } else {
@@ -474,8 +513,8 @@ pub fn start(p: &Profile, log: &Logger, name: &str, query: &str) -> Result<i32> 
 /// Logs under `ptask:` like every other verb here, because the Stop gate greps the notes log
 /// for `(focus|ptask):` to decide a turn made progress; a verb logged under anything else is
 /// invisible to it and the session gets blocked for work it did.
-pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool) -> Result<i32> {
-    let dir = projects::project_dir(p, name)?;
+pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
+    let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         bail!("{name} has no task sheet with a `## Wave` section");
     };
@@ -510,6 +549,7 @@ fn edit<F>(
     name: &str,
     query: &str,
     verb: &str,
+    lane: Lane,
     f: F,
 ) -> Result<(i32, Option<String>)>
 where
@@ -519,7 +559,7 @@ where
     if query.is_empty() {
         bail!("which one? (provide a word from the task)");
     }
-    let Some((sheet, heading, content)) = sheet_and_wave(p, name)? else {
+    let Some((sheet, heading, content)) = sheet_and_wave(p, name, lane)? else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
     match md::edit_first_in_section(&content, &heading, |l| is_match(l, &query), f) {

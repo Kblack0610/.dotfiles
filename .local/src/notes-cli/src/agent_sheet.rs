@@ -179,6 +179,21 @@ fn vault_rel(vault: &Path, file: &Path) -> String {
     t
 }
 
+/// One project's agent sheet, created if absent, with the same version and home link
+/// `ensure_all` would give it.
+///
+/// The on-demand path for `ptask --agent`, and it goes through `ensure` rather than
+/// `project_tasks::ensure_task_sheet`: that one scaffolds a bare sheet with no `Version:`
+/// and no link home, which is a sheet the board can read but nothing can re-seed.
+pub fn ensure_for(p: &crate::config::Profile, dir: &Path, project: &str) -> Result<PathBuf> {
+    let ver = projects::fmt_version(projects::open_version(dir).unwrap_or((0, 0, 1)));
+    let home = crate::project_tasks::task_sheet(dir)
+        .map(|s| vault_rel(&p.vault, &s))
+        .unwrap_or_default();
+    ensure(dir, project, &ver, &home)?;
+    Ok(sheet_path(dir))
+}
+
 /// Give every project in every profile its agent sheet, and its human sheet the link.
 ///
 /// Runs from `notes board` (so also from every `notes today`) rather than a one-off
@@ -217,6 +232,16 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lane_resolves_to_a_directory_one_level_apart() {
+        let p = Path::new("/v/projects/current/demo");
+        assert_eq!(Lane::Human.dir(p), p);
+        assert_eq!(Lane::Agent.dir(p), p.join("agent"));
+        // The agent sheet sits where `sheet_path` puts it, so the board and `ptask --agent`
+        // cannot disagree about which file the lane is.
+        assert_eq!(Lane::Agent.dir(p).join("README.md"), sheet_path(p));
+    }
 
     #[test]
     fn a_fresh_sheet_is_the_same_skeleton_the_human_gets() {
