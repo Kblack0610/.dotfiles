@@ -200,6 +200,14 @@ enum Cmd {
         /// versions/ and backfill each version's ai/ note. Idempotent.
         #[arg(long, value_name = "NAME")]
         migrate: Option<String>,
+        /// Remove the retired `#ai` tag from live project sheets (the lane is the agent
+        /// sheet now). Bare = every project in the profile; with a NAME = just that one.
+        /// Frozen versions/ notes keep their tags as history. Idempotent.
+        #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+        retire_ai_tag: Option<String>,
+        /// With --retire-ai-tag: report what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
         /// With --roll: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
@@ -639,6 +647,8 @@ fn main() -> Result<()> {
             archived,
             roll,
             migrate,
+            retire_ai_tag,
+            dry_run,
             minor,
             major,
             force,
@@ -654,6 +664,13 @@ fn main() -> Result<()> {
             } else {
                 projects::Bump::Patch
             };
+            // A whole-vault sweep, so it is handled before the name-keyed match below:
+            // an empty NAME means "every project" and must not fall through as a lookup.
+            if let Some(n) = retire_ai_tag {
+                let which = if n.is_empty() { None } else { Some(n.as_str()) };
+                projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
             // lifecycle/version flags take precedence over the read paths
             match (
                 new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,

@@ -234,7 +234,6 @@ pub fn add(
         Lane::Human => ensure_task_sheet(&proj_dir, name)?,
         Lane::Agent => crate::agent_sheet::ensure_for(p, &proj_dir, name)?,
     };
-    let dir = lane.dir(&proj_dir);
     let content = fs::read_to_string(&sheet)?;
     let (heading, grown) = target_wave(&content, to, true)?;
     let base = grown.unwrap_or(content);

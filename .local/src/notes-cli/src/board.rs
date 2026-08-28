@@ -325,7 +325,12 @@ fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf
     }
 
     if blocks == 0 {
-        s.push_str("_(no project has a task sheet yet)_\n");
+        // Two different facts, and saying the wrong one sends you looking for a setup
+        // problem that is not there. An idle agent board is the normal resting state.
+        s.push_str(match lane {
+            Lane::Human => "_(no project has a task sheet yet)_\n",
+            Lane::Agent => "_(nothing in flight - no project has agent work open)_\n",
+        });
     }
 
     if let Some(parent) = path.parent() {
