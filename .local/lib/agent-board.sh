@@ -79,6 +79,46 @@ board_newest() { # $1=project
   board_list "${1:-}" | head -1
 }
 
+# board_list_all -> every project's boards, newest first ACROSS all projects.
+#
+# Resolving "which project am I" from a checkout fails silently: a wave board is named
+# for the project its BRANCH names, while the reference checkout sits on develop, so the
+# two names differ and the lookup matches nothing. Same rule board_project_of already
+# encodes for attribution - identity comes from the PATH - applied to discovery.
+#
+# `_`-prefixed dirs are skipped: `_archive` holds retired boards, and a reader that
+# resurrects them is the archive-convention trap board_list warns about.
+board_list_all() {
+  local _d _p _f _all=()
+  for _d in "${AGENT_PLANS_DIR:-$HOME/.agent/plans}"/*/; do
+    [ -d "$_d" ] || continue
+    _p="${_d%/}"; _p="${_p##*/}"
+    case "$_p" in _*) continue ;; esac
+    while IFS= read -r _f; do
+      [ -n "$_f" ] && _all+=("$_f")
+    done < <(board_list "$_p")
+  done
+  # Empty is the answer, not a failure - same contract as board_list, and these run on
+  # timers where a non-zero status is noise.
+  [ ${#_all[@]} -gt 0 ] || return 0
+  # Re-sorted globally: each board_list is ordered within its project, but a caller
+  # wanting "the newest live wave anywhere" needs one order across all of them.
+  ls -1t "${_all[@]}" 2>/dev/null || true
+}
+
+# board_find_all PREDICATE -> newest board ACROSS ALL PROJECTS satisfying PREDICATE.
+#
+# The fleet-wide sibling of board_find. Same empty-is-normal contract.
+board_find_all() { # $1=predicate fn
+  local _f
+  [ -n "${1:-}" ] || return 0
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    if "$1" "$_f"; then printf '%s\n' "$_f"; return 0; fi
+  done < <(board_list_all)
+  return 0
+}
+
 # board_find PROJECT PREDICATE -> newest board satisfying PREDICATE, or nothing.
 #
 # PREDICATE is the NAME of a function taking a board path (board_needs_eyes,
@@ -331,6 +371,22 @@ board_project_of() { # $1=board file
   printf '%s' "${d##*/}"
 }
 
+# board_repo_of FILE -> the checkout a board's work happens in, from its `## Meta`.
+#
+# The project half comes from the path (above); the board carries the repo half itself as
+# `- Repo: <abs path>`. Nothing read it before, so three drivers resolved it three ways
+# and none asked the board.
+#
+# Anchored `^- *Repo:` for the reason board_is_wave is anchored: a `## Run log` sentence
+# mentioning a repo describes one, it does not declare one. Empty when the board has no
+# Meta block (legacy boards have none) so the caller can fall back to project_repo_path.
+board_repo_of() { # $1=board file
+  local r
+  r="$(sed -n 's/^- *Repo: *//p' "${1:-/dev/null}" 2>/dev/null | head -1)"
+  r="${r%"${r##*[![:space:]]}"}"
+  printf '%s' "$r"
+}
+
 # Where the derived snapshot lives. NOT beside the board, deliberately.
 #
 # ~/.agent is `git add .`-committed every 15 minutes and synced between machines. An
@@ -552,6 +608,31 @@ board_drainable() { board_approved "${1:-}" && board_has_stage "${1:-}" open; }
 # ATTENTION — a board whose every row is `blocked` is exactly when the watchdog must
 # not self-disarm.
 board_needs_eyes() { board_has_stage "${1:-}" eyes; }
+
+# How long a board may go without a recorded stage TRANSITION before a scheduled runner
+# stops paying for a pass on it. Humans are never filtered by this (see below).
+BOARD_EYES_MAX_AGE_DAYS="${BOARD_EYES_MAX_AGE_DAYS:-14}"
+
+# board_eyes_fresh FILE -> 0 when the board has moved recently, or when we cannot tell.
+#
+# TRANSITIONS, never the board's own mtime: a watcher that appends a run-log line every
+# pass refreshes the file it is watching, so mtime measures the watcher not the work. The
+# event log is written only on a real stage change, so looking at a board cannot refresh
+# it. A MISSING log reads as fresh - unknown must not silence the runner, because
+# "absence reported as fine" is the bug family this library exists to end.
+board_eyes_fresh() { # $1=board file
+  local _ev
+  _ev="$(board_events_file "$(board_project_of "${1:-}")")"
+  [ -f "$_ev" ] || return 0
+  find "$_ev" -mtime "-${BOARD_EYES_MAX_AGE_DAYS}" 2>/dev/null | grep -q .
+}
+
+# The scheduled runner's predicate: needs eyes AND has moved lately.
+#
+# Separate from board_needs_eyes on purpose. session-preflight and the cockpit keep using
+# the unbounded one, because a human SHOULD still be nagged about a row blocked for 50
+# days. It is only the pass that spends tokens that should stop re-reading it.
+board_needs_eyes_fresh() { board_needs_eyes "${1:-}" && board_eyes_fresh "${1:-}"; }
 
 # ── checkpoint sentinel ──────────────────────────────────────────────────────
 # The dispatcher/overseer trust the SENTINEL, never an Agent "completed" event: a

@@ -587,3 +587,143 @@ EOF
     fi
   done
 }
+
+# -- board_repo_of / board_list_all: identity from the board, not from a checkout -------
+
+@test "board_repo_of reads the repo the board declares in its Meta block" {
+  write_bb <<'EOF'
+# Sprint - demoapp - v1.13.0 - wave
+
+## Meta
+- Repo: /home/x/dev/bnb/platform
+- Mode: wave:1
+EOF
+  assert_equal "$(board_repo_of "$BB")" '/home/x/dev/bnb/platform'
+}
+
+@test "board_repo_of is empty on a legacy board with no Meta, so the caller can fall back" {
+  # Two of the five real boards predate the Meta convention. Empty is an ANSWER here
+  # (fall back to project_repo_path), not an error, so it must not fail or emit noise.
+  write_bb <<'EOF'
+# Sprint 2026-07-15 - prod-smoke audit follow-through
+
+## Rows
+| Ticket | Title | Status |
+|---|---|---|
+| 558 | consolidate backups | blocked |
+EOF
+  assert_equal "$(board_repo_of "$BB")" ''
+}
+
+@test "board_repo_of ignores a Run log sentence that merely mentions a repo" {
+  # The anchor is the whole point, exactly as for board_is_wave: a `## Run log` line
+  # DESCRIBING a repo is not the board DECLARING one. Without `^- *Repo:` this board
+  # would hand a driver a path lifted out of prose.
+  write_bb <<'EOF'
+# Sprint - demoapp - v1.0.0
+
+## Run log
+- 2026-08-28T01:00Z - cloned into - Repo: /tmp/not-the-repo and rebuilt.
+- refused: board declares - Repo: /tmp/also-not-it
+EOF
+  assert_equal "$(board_repo_of "$BB")" ''
+}
+
+@test "board_list_all spans every project and skips _-prefixed dirs" {
+  local P="$HOME/.agent/plans"
+  mkdir -p "$P"/{alpha,beta,_archive}
+  : > "$P/alpha/sprint-a.md"
+  : > "$P/beta/sprint-b.md"
+  : > "$P/_archive/sprint-retired.md"
+
+  run board_list_all
+  assert_success
+  assert_output --partial 'alpha/sprint-a.md'
+  assert_output --partial 'beta/sprint-b.md'
+  refute_output --partial '_archive'
+}
+
+@test "board_list_all is empty and succeeds when no project has a board" {
+  mkdir -p "$HOME/.agent/plans/quiet"
+  run board_list_all
+  assert_success
+  assert_output ''
+}
+
+@test "board_find_all finds a wave filed under a project no checkout resolves to" {
+  # THE regression, 2026-08-28. A watchdog resolved its project from one fixed checkout
+  # sitting on develop, while the live wave board was filed under the project its BRANCH
+  # named. Those two names differ, so the project-scoped lookup matched nothing and the
+  # runner reported "no live wave" for ~16 hours, with no error anywhere.
+  local P="$HOME/.agent/plans"
+  mkdir -p "$P/refrepo" "$P/otherapp"
+  printf '## Rows\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | blocked |\n' \
+    > "$P/refrepo/sprint-legacy.md"
+  printf '## Meta\n- Repo: /home/x/dev/bnb/platform\n- Mode: wave:1\n' \
+    > "$P/otherapp/sprint-v1.13.0.md"
+
+  # The old, project-scoped question: asked of the checkout's name, finds nothing.
+  assert_equal "$(board_find refrepo board_is_wave)" ''
+  # The fleet-wide question: finds it regardless of which checkout is asking.
+  assert_equal "$(board_find_all board_is_wave)" "$P/otherapp/sprint-v1.13.0.md"
+}
+
+# -- the staleness damper: transitions, never the board's own mtime --------------------
+
+setup_eyes_board() {  # $1=project
+  local P="$HOME/.agent/plans/$1"
+  mkdir -p "$P"
+  printf '## Queue\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | blocked |\n' \
+    > "$P/sprint-x.md"
+  printf '%s\n' "$P/sprint-x.md"
+}
+
+@test "board_needs_eyes_fresh keeps a board whose transitions are recent" {
+  local bb; bb="$(setup_eyes_board live)"
+  : > "$HOME/.agent/plans/live/board-events.jsonl"
+  run board_needs_eyes_fresh "$bb"
+  assert_success
+}
+
+@test "board_needs_eyes_fresh drops a board whose last transition is past the bound" {
+  local bb; bb="$(setup_eyes_board stale)"
+  local ev="$HOME/.agent/plans/stale/board-events.jsonl"
+  : > "$ev"
+  touch -d '60 days ago' "$ev"
+
+  # Still needs eyes in the unbounded sense - the human surfaces must keep nagging.
+  run board_needs_eyes "$bb"; assert_success
+  # But the token-spending runner stops re-reading it.
+  run board_needs_eyes_fresh "$bb"; assert_failure
+}
+
+@test "a board the watcher keeps touching is still stale: mtime is not the signal" {
+  # THE 2026-08-28 finding. captain-watchdog appended a run-log paragraph every 12
+  # minutes, so the board's mtime was always minutes old while its actionable state had
+  # not moved in 50 days -- 1029 full agent passes on frozen state. Only the event log,
+  # which is written on a real stage change, can tell those apart.
+  local bb; bb="$(setup_eyes_board touched)"
+  local ev="$HOME/.agent/plans/touched/board-events.jsonl"
+  : > "$ev"; touch -d '60 days ago' "$ev"
+  touch "$bb"   # the watcher, refreshing the file it watches
+
+  run board_needs_eyes_fresh "$bb"
+  assert_failure
+}
+
+@test "a board with NO event log reads as fresh, because unknown must not silence" {
+  # Absence is not staleness. A board whose transitions were never recorded is unknown,
+  # and this library exists to stop 'absence reported as fine'.
+  local bb; bb="$(setup_eyes_board unrecorded)"
+  [ ! -f "$HOME/.agent/plans/unrecorded/board-events.jsonl" ]
+  run board_needs_eyes_fresh "$bb"
+  assert_success
+}
+
+@test "the damper never revives a board that has nothing needing eyes" {
+  local P="$HOME/.agent/plans/donebrd"; mkdir -p "$P"
+  printf '## Queue\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | merged |\n' \
+    > "$P/sprint-x.md"
+  run board_needs_eyes_fresh "$P/sprint-x.md"
+  assert_failure
+}
