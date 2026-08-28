@@ -174,7 +174,7 @@ enum Cmd {
         /// Tag to show hits for (leading `#` optional). Omit to list all tags.
         name: Option<String>,
     },
-    /// List the indexed projects behind the daily note's `## Current Projects` block.
+    /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
     /// project's note files as `path<TAB>label` (summary first).
     Projects {

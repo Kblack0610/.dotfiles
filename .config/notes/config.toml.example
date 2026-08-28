@@ -59,36 +59,25 @@ projects  = "lab/projects/current"   # `notes projects`; the daily note links th
 
 # --- Corporate machine: root daily notes + refs inside the job's dir ----------
 # On a machine set to this profile (via $NOTES_PROFILE or [hostname_map]), `notes
-# today` writes into employment/jobs/AcmeCorp/ instead of the personal
-# journal. Same git repo — only the active location changes.
+# today` writes into employment/jobs/AcmeCorp/ instead of the personal journal.
+# Same git repo, same note shape, same engine: only the root changes.
+#
+# A JOB IS ONE LINE. Every path key below the root defaults to the org convention
+# (daily/, refs/, backlogs/fun.md, summaries/, daily_archive/, permanent/,
+# meetings/, index/, inbox/, projects/current), so restating them buys nothing and
+# drifts. Add a key only where this job genuinely differs. `personal` above is the
+# sole profile that overrides them all, because its root IS the vault.
 [profile.AcmeCorp]
-root      = "~/.notes/employment/jobs/AcmeCorp"
-daily     = "log"
-refs      = "refs"
-fun       = "backlogs/fun.md"
-carryover = "backlogs/carryover.md"
-summaries = "summaries"
-archive   = "log_archive"
-zettel    = "permanent"
-meetings  = "meetings"
-index     = "index"
-inbox     = "inbox"
+root = "~/.notes/employment/jobs/AcmeCorp"
+# Work notes link only the schedule in their footer: the personal `fun` backlog is
+# a life thing and does not belong in work notes.
+footer_links = ["schedule"]
 
-# --- Lazer (edubot) — Client engagement -------------------------------------
-# Same pattern as AcmeCorp: a corporate job profile that roots daily
-# notes inside the Client engagement dir under jobs/lazer/.
+# --- Lazer (edubot): client engagement ---------------------------------------
+# Same pattern, rooted in the client dir under jobs/lazer/.
 [profile.lazer]
-root      = "~/.notes/employment/jobs/lazer/client"
-daily     = "log"
-refs      = "refs"
-fun       = "backlogs/fun.md"
-carryover = "backlogs/carryover.md"
-summaries = "summaries"
-archive   = "log_archive"
-zettel    = "permanent"
-meetings  = "meetings"
-index     = "index"
-inbox     = "inbox"
+root = "~/.notes/employment/jobs/lazer/client"
+footer_links = ["schedule"]
 
 # --- comms: multi-account email triage (`notes comms`) ------------------------
 # Global (spans profiles): each account names the profile whose daily note its
