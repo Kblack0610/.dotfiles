@@ -156,7 +156,7 @@ lab_feed_fields() {
   if [ -z "$next" ] && [ -n "$sheet" ]; then
     next="$(sed -n 's/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/\1/p' "$sheet" 2>/dev/null | head -1)"
   fi
-  # trailing `#ai` / `#high` tags are routing for the sheet, noise on an overview row
+  # trailing tags (`#high`, a legacy `#ai`) are sheet routing, noise on an overview row
   next="$(printf '%s' "$next" | sed -E 's/([[:space:]]+#[A-Za-z0-9_-]+)+[[:space:]]*$//')"
   next="$(_lf_trunc "$(_lf_clean "$next")" 48)"
 

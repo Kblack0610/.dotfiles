@@ -55,7 +55,7 @@ mkdir -p "$STATE_DIR"
 command -v agentctl-run >/dev/null 2>&1 || { echo "wave-start: agentctl-run not on PATH" >&2; exit 1; }
 
 # One wave per app at a time. Pressing W twice because the first press looked like it
-# did nothing starts a second scope-out over the SAME `#ai` items, and both then file
+# did nothing starts a second scope-out over the SAME wave items, and both then file
 # tickets, cut branches and open PRs for the same work. That happened: three concurrent# waves on one app from three presses.
 #
 # The pid is checked, not merely recorded - a stale file from a killed run must not lock

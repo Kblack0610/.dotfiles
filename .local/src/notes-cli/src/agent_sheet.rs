@@ -1,16 +1,21 @@
 //! `<project>/agent/README.md` - the agents' own task sheet, and the link that reaches it.
 //!
-//! A SECOND SHEET, NOT A SECOND TAG. `#ai` on the human's sheet was right while only a
-//! rendering was at stake. It could not fix WRITES: every agent `ptask` rewrote the human's
-//! `README.md` (239 writes in four weeks against 43 to the agents' own notes), so the file
-//! the human keeps open was the file the agents edited all day. A separate sheet fixes that
-//! without reintroducing drift, because handing work over is a MOVE, not a copy: a row is
-//! still in exactly one file, and which file IS the lane. Nothing here copies.
+//! A WORKING BOARD, NOT A SECOND QUEUE. The project's own `README.md` is the queue - every
+//! open item, whoever does it, and where done-ness is recorded. This is what the agents
+//! write underneath it: the subtasks and in-flight state below a queue row, so a wave
+//! interrupted halfway can be picked up by a session that was not there for the first half.
 //!
-//! STATIC, for every project, agent-touched or not. The old `ai/<ver>.md` was created
-//! lazily and the cost was lost evidence: `gsuite-comms` finished an `#ai` task with no
-//! note to record the proof in, so the proof is gone. A surface that exists only once it
-//! is needed is not there when it is needed.
+//! Nothing is handed over and nothing is filtered. A row is not routed here; it is either
+//! work the human wants (the queue) or an agent's own breakdown of it (this). That is why
+//! there is no tag: the file a row lives in IS what it is, so there is nothing to classify
+//! and nothing that can disagree.
+//!
+//! It also settles WRITES, which a marker on one sheet could not: every agent `ptask` used
+//! to rewrite the human's `README.md`, so the file the human keeps open was the file the
+//! agents edited all day.
+//!
+//! STATIC, for every project, agent-touched or not. Created lazily, the cost was lost
+//! evidence: work finished with no note to record the proof in, so the proof is gone.
 
 use crate::logging::Logger;
 use crate::md;

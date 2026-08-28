@@ -109,7 +109,8 @@ owns only its marker block; STATUS (lab-status) and the AUTO feed (lab-sync) are
 
 There is no longer a `## → For the agents` section. It was the human's channel TO the agent and was
 read by the preflight while sitting empty in every live project, so wants now go on the BOARD
-(`notes ptask <project> add "..." #ai`), whose `#ai` lane the preflight injects at turn 1.
+(`notes ptask <project> add "..."`). The agents' own working board is `<project>/agent/README.md`
+(`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
 
 Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
 browser (the whole `summary.md` in the preview) above the roadmap; `C-s` on that row regenerates
@@ -141,10 +142,10 @@ On the sheet these are just more `## Wave:` sections below the current one:
 Version: v1.13.0
 
 ## Wave: v1.13.0 (current)
-- [ ] full flow e2e #ai
+- [ ] full flow e2e
 
 ## Wave: v1.14.0 (planned)
-- [ ] android: sweep remaining screens #ai
+- [ ] android: sweep remaining screens
 ```
 
 The FIRST `## Wave` is the current one, always - `notes ptask`, `notes board`, `/wave` and the

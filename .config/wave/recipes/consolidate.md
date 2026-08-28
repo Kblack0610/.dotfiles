@@ -58,18 +58,18 @@ Name what is duplicated, how many copies, and where it should live. The destinat
 Good:
 
 ```
-move the PR-merged check into lib/agent-merge-proof.sh; 4 call sites disagree today #ai
-route the 3 hand-rolled vikunja curls through the ticket CLI #ai
-fold the stall threshold constant into one place; it is 30min in one file and 45 in another #ai
-make wave-overseer inherit sprint-overseer instead of restating 130 lines #ai
+move the PR-merged check into lib/agent-merge-proof.sh; 4 call sites disagree today
+route the 3 hand-rolled vikunja curls through the ticket CLI
+fold the stall threshold constant into one place; it is 30min in one file and 45 in another
+make wave-overseer inherit sprint-overseer instead of restating 130 lines
 ```
 
 Bad:
 
 ```
-reduce duplication #ai                        <- no target, no destination
-extract a shared util #ai                     <- which logic, into where
-dedupe the tests #ai                          <- test scaffolding SHOULD repeat
+reduce duplication                        <- no target, no destination
+extract a shared util                     <- which logic, into where
+dedupe the tests                          <- test scaffolding SHOULD repeat
 ```
 
 **What not to propose.** Test setup, fixtures and config literals are allowed to repeat - forcing them behind a helper makes tests read worse and couples cases that should stay independent. Two things that look alike but change for different reasons are not duplication, and merging them is the mistake this recipe would otherwise cause. If you cannot name the single rule both copies encode, leave it.

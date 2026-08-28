@@ -51,18 +51,18 @@ Name the surface and the specific case, not a coverage number. Done means the te
 Good:
 
 ```
-test the three failure paths of the release preflight; today only the happy path is covered #ai
-give the board reader a negative control; the cyclic test passes on a 1-element fixture #ai
-handle the swallowed catch in api/src/jobs/fanout.ts and cover the retry #ai
-make the lint gate refuse an empty file list instead of reporting pass #ai
+test the three failure paths of the release preflight; today only the happy path is covered
+give the board reader a negative control; the cyclic test passes on a 1-element fixture
+handle the swallowed catch in api/src/jobs/fanout.ts and cover the retry
+make the lint gate refuse an empty file list instead of reporting pass
 ```
 
 Bad:
 
 ```
-increase test coverage to 80% #ai        <- a number, not a behaviour
-add tests #ai                            <- unbounded
-write e2e for the app #ai                <- a project, not a wave item
+increase test coverage to 80%        <- a number, not a behaviour
+add tests                            <- unbounded
+write e2e for the app                <- a project, not a wave item
 ```
 
 **Every item on this recipe carries the negative-control requirement**: a new test is not done until it has been observed failing against the unfixed code. A test that cannot fail is not a test, and this recipe is the one most able to mass-produce them.

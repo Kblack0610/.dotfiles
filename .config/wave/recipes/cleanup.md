@@ -67,18 +67,18 @@ One line, imperative, naming the place and the count. Group by location so a wav
 Good:
 
 ```
-drop 4 unused exports from packages/ui/src/index.ts #ai
-align the two react versions in apps/web and packages/ui #ai
-fix 6 dead paths in docs/operations/ runbooks #ai
-delete the commented-out legacy auth block in api/src/middleware/session.ts #ai
+drop 4 unused exports from packages/ui/src/index.ts
+align the two react versions in apps/web and packages/ui
+fix 6 dead paths in docs/operations/ runbooks
+delete the commented-out legacy auth block in api/src/middleware/session.ts
 ```
 
 Bad:
 
 ```
-remove dead code #ai                 <- no location, no scope, never done
-clean up TODOs #ai                   <- unbounded
-upgrade react to 19 #ai              <- a major bump, not maintenance; out of scope
+remove dead code                 <- no location, no scope, never done
+clean up TODOs                   <- unbounded
+upgrade react to 19              <- a major bump, not maintenance; out of scope
 ```
 
 Grouping rule: one item per **file or package**, not one per symbol. Four unused exports in one file is one item; four unused exports across four packages is four items, and probably too many for one wave - take the two worst and say so.
