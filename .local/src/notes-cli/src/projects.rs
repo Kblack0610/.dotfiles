@@ -7,7 +7,6 @@
 //! is no index file to go stale. Discovery mirrors `notes today`'s precedence — the
 //! project index `## Current` lane, else the `projects` dir scan (`daily`).
 
-use crate::board;
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
@@ -787,16 +786,29 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
-/// Did this version actually have agent work? True when the frozen wave carries at least
-/// one COMPLETED `#ai` task.
+/// Did this version actually have agent work? Two sources, because the lane moved.
 ///
-/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the version has
-/// agent evidence to hold. Creating one unconditionally would file an empty note for every
-/// human-only version and make an orphan report meaningless.
-fn has_done_ai_task(frozen_body: &str) -> bool {
-    frozen_body
+/// The agent SHEET holding any real row is the live answer: that is where an agent's working
+/// state lives now. A completed legacy `#ai` row in the frozen human wave is the historical
+/// one, and it stays load-bearing - versions opened before the move carry their evidence
+/// only as that tag.
+///
+/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the
+/// version has agent evidence to hold. Creating one unconditionally would file an empty note
+/// for every human-only version and make an orphan report meaningless.
+fn version_had_agent_work(frozen_body: &str, dir: &Path) -> bool {
+    if frozen_body
         .lines()
-        .any(|l| md::is_checked(l) && board::is_ai(l))
+        .any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
+    {
+        return true;
+    }
+    fs::read_to_string(crate::agent_sheet::sheet_path(dir))
+        .map(|c| {
+            c.lines()
+                .any(|l| md::is_task(l) && !md::task_text(l).trim().is_empty())
+        })
+        .unwrap_or(false)
 }
 
 /// A sheet's content with its title line and `Version:` line dropped - the part that gets
@@ -874,7 +886,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     fs::write(&frozen, &stamped)?;
 
     // 3. the pair
-    if has_done_ai_task(&frozen_body) {
+    if version_had_agent_work(&frozen_body, &dir) {
         ensure_agent_note(&dir, name, &fmt_version(cur))?;
     }
 
@@ -950,6 +962,93 @@ fn rolled_on(content: &str) -> String {
 /// Step 1 runs BEFORE step 3 on purpose: the backfill skips a version whose agent note
 /// already exists, so relocating second would write a second copy of every note it had
 /// just orphaned.
+/// Strip the retired `#ai` tag from one sheet. Returns `(new_content, rows_touched)`.
+///
+/// Rows do NOT move. The tag stopped routing when the lane became a file, so every row is
+/// already in the right place and this only removes a marker that now means nothing.
+///
+/// Every task line in the file, open and closed, in every wave - current and planned. The
+/// boards render only the current wave, so sizing this off what a board shows would leave
+/// the planned waves tagged and no surface would say so.
+fn strip_ai_tags(content: &str) -> (String, usize) {
+    let mut n = 0usize;
+    let out: Vec<String> = content
+        .lines()
+        .map(|l| {
+            if md::is_task(l) && md::has_legacy_ai_tag(l) {
+                n += 1;
+                md::drop_tag(l, "#ai")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    (format!("{}\n", out.join("\n")), n)
+}
+
+/// `notes projects --retire-ai-tag [NAME] [--dry-run]` - remove the dead `#ai` tag from
+/// live project sheets.
+///
+/// Frozen `versions/*.md` and `agent/versions/*.md` are deliberately untouched: they are
+/// the evidence trail, and rewriting a record to satisfy a cosmetic rule is the opposite
+/// of what it is for.
+pub fn retire_ai_tag(p: &Profile, log: &Logger, name: Option<&str>, dry_run: bool) -> Result<()> {
+    let dirs: Vec<(String, PathBuf)> = match name {
+        Some(n) => vec![(n.to_string(), project_dir(p, n)?)],
+        None => indexed(p)
+            .into_iter()
+            .filter_map(|(n, s)| s.parent().map(|d| (n, d.to_path_buf())))
+            .collect(),
+    };
+
+    let (mut sheets, mut rows) = (0usize, 0usize);
+    for (proj, dir) in dirs {
+        let Some(sheet) = crate::project_tasks::task_sheet(&dir) else {
+            continue;
+        };
+        let Ok(content) = fs::read_to_string(&sheet) else {
+            continue;
+        };
+        let (new, n) = strip_ai_tags(&content);
+        if n == 0 {
+            continue;
+        }
+        // Rows never move, so the task-line count is invariant. Assert it rather than
+        // trust it: a mangled line that stopped parsing as a task would otherwise vanish
+        // from every board silently.
+        let before = content.lines().filter(|l| md::is_task(l)).count();
+        let after = new.lines().filter(|l| md::is_task(l)).count();
+        if before != after {
+            bail!(
+                "{proj}: {} would change the task count ({before} -> {after}) - refusing",
+                sheet.display()
+            );
+        }
+        for l in content.lines().filter(|l| md::is_task(l) && md::has_legacy_ai_tag(l)) {
+            println!("{proj}\t{}", md::task_text(l));
+        }
+        sheets += 1;
+        rows += n;
+        if !dry_run {
+            md::write_atomic(&sheet, &new)?;
+            log.info(
+                "projects",
+                &format!("retired {n} #ai tag(s) in {}", sheet.display()),
+            );
+        }
+    }
+
+    if rows == 0 {
+        println!("no `#ai` tags on any live sheet - nothing to do");
+        return Ok(());
+    }
+    println!("{rows} tag(s) across {sheets} sheet(s); frozen versions/ left as history");
+    if dry_run {
+        println!("--dry-run: nothing written");
+    }
+    Ok(())
+}
+
 pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     let dir = project_dir(p, name)?;
     let versions = dir.join("versions");
@@ -1004,7 +1103,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         let when = rolled_on(&content);
         let done: Vec<&str> = content
             .lines()
-            .filter(|l| md::is_checked(l) && board::is_ai(l))
+            .filter(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
             .collect();
         if done.is_empty() {
             continue;
@@ -1127,7 +1226,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 }
                 frozen.push(ver.to_string());
                 let has_agent_work = fs::read_to_string(&path)
-                    .map(|c| c.lines().any(|l| md::is_checked(l) && board::is_ai(l)))
+                    .map(|c| c.lines().any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l)))
                     .unwrap_or(false);
                 if has_agent_work && !agent_note_path(dir, ver).exists() {
                     out.push(format!("{name} {ver}: agent work frozen with no agent/ note"));
@@ -1502,18 +1601,120 @@ Version: v1.13.0
         assert!(!sheet.contains("- [x] a"), "the closed work does not come back:\n{sheet}");
     }
 
+    /// A scratch project dir with no agent sheet, so `version_had_agent_work` is deciding on
+    /// the frozen body alone.
+    fn no_agent_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("notes-pair-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    // The boards render only the CURRENT wave, so sizing this off what a board shows would
+    // leave every planned wave tagged with nothing to say so. On the live vault that is 14
+    // of 34 open rows.
+    #[test]
+    fn the_tag_is_stripped_from_every_wave_not_just_the_current_one() {
+        let sheet = "# d\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n\
+                     - [ ] stale preview #ai #high\n\n---\n### Done\n\
+                     - [x] upload 403 #ai #urgent <!-- pr:1149 -->\n\n\
+                     ## Wave: v1.13.1 (planned)\n\
+                     - [ ] 413 path unreachable #ai #high\n";
+        let (out, n) = strip_ai_tags(sheet);
+        assert_eq!(n, 3, "current + done + planned:\n{out}");
+        assert!(!out.contains("#ai"), "{out}");
+        // Everything else on the row survives: priority, wave position, proof stamp.
+        assert!(out.contains("- [ ] stale preview #high"), "{out}");
+        assert!(
+            out.contains("- [x] upload 403 #urgent <!-- pr:1149 -->"),
+            "{out}"
+        );
+        assert!(out.contains("- [ ] 413 path unreachable #high"), "{out}");
+        assert!(out.contains("## Wave: v1.13.1 (planned)"), "{out}");
+    }
+
+    // NEGATIVE CONTROL: 13 of 16 live sheets carry no tag at all and must not be rewritten.
+    #[test]
+    fn a_sheet_with_no_ai_rows_is_reported_as_untouched() {
+        let sheet = "# d\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] plain #high\n";
+        let (out, n) = strip_ai_tags(sheet);
+        assert_eq!(n, 0);
+        assert_eq!(out, sheet, "an untagged sheet must come back byte-identical");
+    }
+
+    // NEGATIVE CONTROL: the trap that makes this a token match and not a substring one.
+    #[test]
+    fn the_aid_trap_survives_the_sweep() {
+        let sheet = "# d\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n\
+                     - [ ] restock the first #aid kit\n";
+        let (out, n) = strip_ai_tags(sheet);
+        assert_eq!(n, 0);
+        assert_eq!(out, sheet);
+    }
+
+    // NEGATIVE CONTROL: prose is not a task. Only checkbox rows are rewritten, so a
+    // heading or a paragraph naming the tag is left exactly as written.
+    #[test]
+    fn prose_naming_the_tag_is_not_a_task_and_is_left_alone() {
+        let sheet = "# d\nVersion: v1.0.0\nThe #ai lane is retired.\n\n\
+                     ## Wave: v1.0.0 (current)\n- [ ] real row #ai\n";
+        let (out, n) = strip_ai_tags(sheet);
+        assert_eq!(n, 1);
+        assert!(out.contains("The #ai lane is retired."), "{out}");
+        assert!(out.contains("- [ ] real row\n"), "{out}");
+    }
+
+    #[test]
+    fn the_sweep_is_idempotent() {
+        let sheet = "# d\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] a #ai #high\n";
+        let (once, n1) = strip_ai_tags(sheet);
+        let (twice, n2) = strip_ai_tags(&once);
+        assert_eq!((n1, n2), (1, 0));
+        assert_eq!(once, twice);
+    }
+
     #[test]
     fn a_version_pairs_only_when_it_actually_closed_agent_work() {
-        // Completed and tagged: this version has evidence to hold.
-        assert!(has_done_ai_task("- [x] ship the thing #ai\n"));
+        let d = no_agent_dir("legacy");
+        // Completed and tagged: a version opened before the lane moved has evidence to hold.
+        assert!(version_had_agent_work("- [x] ship the thing #ai\n", &d));
         // Tagged but not finished, and finished but not tagged: neither is agent evidence.
-        assert!(!has_done_ai_task("- [ ] ship the thing #ai\n"));
-        assert!(!has_done_ai_task("- [x] ship the thing\n"));
-        // A human-only version must NOT get an empty ai note, or an orphan report that
+        assert!(!version_had_agent_work("- [ ] ship the thing #ai\n", &d));
+        assert!(!version_had_agent_work("- [x] ship the thing\n", &d));
+        // A human-only version must NOT get an empty agent note, or an orphan report that
         // reads "unpaired" stops meaning anything.
-        assert!(!has_done_ai_task("# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n"));
+        assert!(!version_had_agent_work(
+            "# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n",
+            &d
+        ));
         // The `#aid` trap: a substring match here would pair a version with no agent work.
-        assert!(!has_done_ai_task("- [x] fix the first-aid page #aid\n"));
+        assert!(!version_had_agent_work(
+            "- [x] fix the first-aid page #aid\n",
+            &d
+        ));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_agent_sheet_with_real_work_pairs_a_version_that_carries_no_tag() {
+        let d = no_agent_dir("sheet");
+        fs::create_dir_all(d.join("agent")).unwrap();
+        // The scaffold's empty placeholder is not work, so it must not pair a version.
+        fs::write(
+            d.join("agent/README.md"),
+            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] \n",
+        )
+        .unwrap();
+        assert!(!version_had_agent_work("- [x] a human row\n", &d));
+
+        fs::write(
+            d.join("agent/README.md"),
+            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n\
+             - [x] broke the 413 path into three cases\n",
+        )
+        .unwrap();
+        assert!(version_had_agent_work("- [x] a human row\n", &d));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

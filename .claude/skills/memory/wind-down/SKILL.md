@@ -98,7 +98,7 @@ triage view) and `notes today` (which links the inbox into the daily note) surfa
 it for a concrete next action or a blocked-on-X follow-up - one line, pointing back at the wrap-up
 note or plan for detail. Skip it when the session has no meaningful next step. For work that
 belongs on a tracked board instead, prefer a Vikunja ticket (the repo tracker) or the project board
-(`notes ptask <project> add "..." #ai`) over the inbox.
+(`notes ptask <project> add "..."`) over the inbox.
 
 Do NOT auto-write to the daily `## Focus` cockpit here - that lane is for tasks you deliberately
 choose to surface every session, so multiple wind-downs don't flood it. The cockpit's write path

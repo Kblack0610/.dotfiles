@@ -10,10 +10,10 @@
 //! Version: v1.13.0
 //!
 //! ## Wave: v1.13.0 (current)
-//! - [ ] full flow e2e #ai
+//! - [ ] full flow e2e
 //!
 //! ## Wave: v1.14.0 (planned)
-//! - [ ] android: sweep remaining screens #ai
+//! - [ ] android: sweep remaining screens
 //! ```
 //!
 //! Planned waves are structurally invisible to every reader that predates them.

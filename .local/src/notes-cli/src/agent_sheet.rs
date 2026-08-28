@@ -1,16 +1,21 @@
 //! `<project>/agent/README.md` - the agents' own task sheet, and the link that reaches it.
 //!
-//! A SECOND SHEET, NOT A SECOND TAG. `#ai` on the human's sheet was right while only a
-//! rendering was at stake. It could not fix WRITES: every agent `ptask` rewrote the human's
-//! `README.md` (239 writes in four weeks against 43 to the agents' own notes), so the file
-//! the human keeps open was the file the agents edited all day. A separate sheet fixes that
-//! without reintroducing drift, because handing work over is a MOVE, not a copy: a row is
-//! still in exactly one file, and which file IS the lane. Nothing here copies.
+//! A WORKING BOARD, NOT A SECOND QUEUE. The project's own `README.md` is the queue - every
+//! open item, whoever does it, and where done-ness is recorded. This is what the agents
+//! write underneath it: the subtasks and in-flight state below a queue row, so a wave
+//! interrupted halfway can be picked up by a session that was not there for the first half.
 //!
-//! STATIC, for every project, agent-touched or not. The old `ai/<ver>.md` was created
-//! lazily and the cost was lost evidence: `gsuite-comms` finished an `#ai` task with no
-//! note to record the proof in, so the proof is gone. A surface that exists only once it
-//! is needed is not there when it is needed.
+//! Nothing is handed over and nothing is filtered. A row is not routed here; it is either
+//! work the human wants (the queue) or an agent's own breakdown of it (this). That is why
+//! there is no tag: the file a row lives in IS what it is, so there is nothing to classify
+//! and nothing that can disagree.
+//!
+//! It also settles WRITES, which a marker on one sheet could not: every agent `ptask` used
+//! to rewrite the human's `README.md`, so the file the human keeps open was the file the
+//! agents edited all day.
+//!
+//! STATIC, for every project, agent-touched or not. Created lazily, the cost was lost
+//! evidence: work finished with no note to record the proof in, so the proof is gone.
 
 use crate::logging::Logger;
 use crate::md;
@@ -25,6 +30,31 @@ use std::path::{Path, PathBuf};
 /// one level down - a sheet beside its `versions/`. One pattern, learned once.
 pub fn sheet_path(dir: &Path) -> PathBuf {
     projects::agent_dir(dir).join("README.md")
+}
+
+/// Which sheet a reader or writer is acting on: a directory, never a predicate. A row
+/// belongs to whichever file it is written in, so there is nothing to classify.
+///
+/// The two are not symmetric. `Human` is the QUEUE - every open item, whoever does it, and
+/// where done-ness is recorded. `Agent` is the WORKING board - subtasks and state under a
+/// queue row, so an interrupted wave can be resumed. Neither is a filtered view of the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Human,
+    Agent,
+}
+
+impl Lane {
+    /// The directory whose task sheet this lane reads and writes.
+    ///
+    /// One parser, two paths: `project_tasks::task_sheet` resolves any dir carrying a
+    /// `## Wave`, and the agent scaffold carries one deliberately for this reason.
+    pub(crate) fn dir(self, project: &Path) -> PathBuf {
+        match self {
+            Lane::Human => project.to_path_buf(),
+            Lane::Agent => projects::agent_dir(project),
+        }
+    }
 }
 
 /// The body a fresh agent sheet starts with: title, the version it tracks, a link home, and
@@ -154,6 +184,21 @@ fn vault_rel(vault: &Path, file: &Path) -> String {
     t
 }
 
+/// One project's agent sheet, created if absent, with the same version and home link
+/// `ensure_all` would give it.
+///
+/// The on-demand path for `ptask --agent`, and it goes through `ensure` rather than
+/// `project_tasks::ensure_task_sheet`: that one scaffolds a bare sheet with no `Version:`
+/// and no link home, which is a sheet the board can read but nothing can re-seed.
+pub fn ensure_for(p: &crate::config::Profile, dir: &Path, project: &str) -> Result<PathBuf> {
+    let ver = projects::fmt_version(projects::open_version(dir).unwrap_or((0, 0, 1)));
+    let home = crate::project_tasks::task_sheet(dir)
+        .map(|s| vault_rel(&p.vault, &s))
+        .unwrap_or_default();
+    ensure(dir, project, &ver, &home)?;
+    Ok(sheet_path(dir))
+}
+
 /// Give every project in every profile its agent sheet, and its human sheet the link.
 ///
 /// Runs from `notes board` (so also from every `notes today`) rather than a one-off
@@ -192,6 +237,16 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lane_resolves_to_a_directory_one_level_apart() {
+        let p = Path::new("/v/projects/current/demo");
+        assert_eq!(Lane::Human.dir(p), p);
+        assert_eq!(Lane::Agent.dir(p), p.join("agent"));
+        // The agent sheet sits where `sheet_path` puts it, so the board and `ptask --agent`
+        // cannot disagree about which file the lane is.
+        assert_eq!(Lane::Agent.dir(p).join("README.md"), sheet_path(p));
+    }
 
     #[test]
     fn a_fresh_sheet_is_the_same_skeleton_the_human_gets() {

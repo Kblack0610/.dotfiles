@@ -351,9 +351,6 @@ _line_ask_at() { # $1=file $2=line -> "id<TAB>options<TAB>recommended" or empty
 # an untagged/main task, `<profile>/<project>` for a project task.
 _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
   local clean glyph lane="" tid="" gate="" aid="" aopt="" arec=""
-  # `#ai` is the LANE marker: this item belongs to the agents (a `/wave` picks these up),
-  # everything untagged is the human's. Show it, so one list reads as two lanes.
-  case "$6" in *'#ai'*) lane="${C_PROJ}@ai${C_OFF} " ;; esac
   # A stamped ticket id means the wave has already scoped this one — surface it dimly so
   # the burn-down is visible without opening the sheet.
   tid="$(printf '%s' "$6" | grep -oE '<!--[[:space:]]*(vk|cu):[0-9]+' | grep -oE '[0-9]+' | head -1)"
@@ -361,7 +358,7 @@ _task_row() { # $1=profile $2=file $3=line $4=key $5=section $6=rawtext
   # A pending gate on this line outranks the checkbox: the item is not "not started", it
   # is stopped ON you. Enter answers it here rather than opening the file (_enter_action).
   IFS=$'\t' read -r aid aopt arec < <(_line_ask "$6")
-  clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //; s/[[:space:]]*#ai\b//')"
+  clean="$(printf '%s' "$6" | sed -E 's/ *<!--[^>]*-->//; s/^[[:space:]]*- \[[ /xX]\] //')"
   if [ -n "$aid" ]; then
     glyph="${C_INP}[!]${C_OFF}"
     gate=" ${C_INP}needs you${C_OFF}${aopt:+ $(_opts_render "$aopt" "$arec")}"
@@ -959,7 +956,7 @@ _factory_view() { # $1=active profile
       esac
     done < <(board_rows_effective "$board" "$canon")
 
-    # NO sheet tasks here, on purpose. An earlier cut listed every open `#ai` wave task
+    # NO sheet tasks here, on purpose. An earlier cut listed every open wave task
     # from every board-less project as triage, and on the live corpus that was 19 rows
     # against 4 of real work - the backlog swamping the thing in flight. A task nobody has
     # scoped into a wave is not in the factory; it is in the TASKS view, which is the
@@ -1506,34 +1503,10 @@ add_task() {
 # Route a task op (done|start|rm) to the right store based on the row's SECTION: a project
 # row edits the project sheet's `## Wave` (`ptask`); an untagged/profile row edits the daily
 # `## Focus` (`focus`, then a sweep to re-lane it). Called from the fzf key binds.
-# Toggle the `#ai` LANE on the highlighted task: hand it to the agents, or take it back.
-# One list, two lanes — `/wave <app>` picks up exactly the `#ai` items and never touches
-# the rest. Done in place with a line edit rather than a CLI verb because the notes CLI has
-# no ptask tag/untag (focus has `mv --tag`, ptask never got one), and rm+add would lose the
-# item's position and its `<!-- vk:ID -->` stamp.
-toggle_ai() { # $1=file $2=line
-  local file="${1:-}" line="${2:-}"
-  [ -f "$file" ] || return 0
-  [[ "$line" =~ ^[0-9]+$ ]] || return 0
-  # The delimiters matter: a bare /#ai/ would also match `#aid`, and `\>` is a GNU-awk
-  # extension this must not depend on.
-  awk -v n="$line" '
-    NR==n {
-      if ($0 ~ /(^|[[:space:]])#ai([[:space:]]|$)/) {
-        sub(/[[:space:]]*#ai([[:space:]]|$)/, " ")
-      } else {
-        $0 = $0 " #ai"
-      }
-      sub(/[[:space:]]+$/, "")
-    }
-    { print }
-  ' "$file" > "$file.tmp$$" && mv "$file.tmp$$" "$file"
-}
-
 # Start a wave for the project the highlighted row belongs to, WITHOUT leaving the
-# cockpit. Capture already lived here (C-a, C-t); starting was the one step that made you
-# open a Claude session. `wave-start` backgrounds a headless pass that scopes the `#ai`
-# lane into tickets, cuts the branch and writes the board as `Approval: PENDING` — then
+# cockpit. Capture already lived here (C-a); starting was the one step that made you open
+# a Claude session. `wave-start` backgrounds a headless pass that scopes the current wave
+# into tickets, cuts the branch and writes the board as `Approval: PENDING` — then
 # posts the approval as an ask you answer in the bridge (a a). It never delivers anything
 # on its own; delivery-loop refuses to drain an unapproved board.
 start_wave() { # $1=section (<profile>/<project>)
@@ -1543,13 +1516,15 @@ start_wave() { # $1=section (<profile>/<project>)
     *)   echo "wave: highlight a PROJECT row (this is the '$section' lane)"; sleep 2; return 0 ;;
   esac
   command -v wave-start >/dev/null 2>&1 || { echo "wave: wave-start not on PATH"; sleep 2; return 0; }
+  # Every open row on the wave is the wave's work. Counting a tag here is what made this
+  # refuse on a full board: the lane is the agent SHEET now, not a marker on this one.
   local n
-  n="$(notes --profile "${section%%/*}" ptask "$proj" list 2>/dev/null | grep -cF '#ai' || true)"
+  n="$(notes --profile "${section%%/*}" ptask "$proj" list 2>/dev/null | grep -c . || true)"
   if [ "${n:-0}" -eq 0 ]; then
-    echo "wave: no @ai tasks on ${proj}'s wave — press C-t on the ones you want the agents to do."
+    echo "wave: ${proj}'s current wave has no open tasks — add one with C-a."
     sleep 3; return 0
   fi
-  echo "starting a wave for ${proj} (${n} @ai task(s))…"
+  echo "starting a wave for ${proj} (${n} open task(s))…"
   wave-start "$proj"
   sleep 3
 }
@@ -2039,8 +2014,7 @@ help_view() {
     s              toggle in-progress  ( [ ] <-> [/] )
     C-x            mark done
     C-a            add a task to the section
-    C-t            hand the task to the AI  (toggles the @ai lane)
-    W              start a wave on this project's @ai tasks  (no session needed)
+    W              start a wave on this project's open tasks  (no session needed)
     d              delete the task  (asks first)
     u              undo the last delete
     m              move to another section / project
@@ -2056,13 +2030,12 @@ help_view() {
     R              restore an archived project
 
   waves  (hand a batch of work to the agents)
-    1. C-t on each task you want the agents to do  ->  it shows @ai
-    2. press  W  on the project row — that is the whole trigger.
-         a headless agent turns every @ai task into a ticket, cuts ONE
-         branch, and stops; the approval arrives as a question below
-    3. come back here and press  a  for the factory view to watch it,
+    1. press  W  on the project row — that is the whole trigger.
+         a headless agent turns every open task on the wave into a ticket,
+         cuts ONE branch, and stops; the approval arrives as a question below
+    2. come back here and press  a  for the factory view to watch it,
          and to answer questions it raises  (enter on a "?" row)
-    4. it asks you once more before merging
+    3. it asks you once more before merging
     full runbook:  ~/.config/shared-hooks/WAVES.md
 
   other
@@ -2115,7 +2088,6 @@ case "${1:-}" in
   --task-op) shift; task_op "$@"; exit 0 ;;
   --delete-task) shift; confirm_delete "$@"; exit 0 ;;
   --undo-delete) shift; undo_delete; exit 0 ;;
-  --toggle-ai) shift; toggle_ai "$@"; exit 0 ;;
   --start-wave) shift; start_wave "${1:-}"; exit 0 ;;
   --move) shift; move_task "$@"; exit 0 ;;
   --jump) shift; jump_row "$@"; exit 0 ;;
@@ -2221,7 +2193,6 @@ list_section | fzf \
   --bind 'ctrl-d:preview-half-page-down' \
   --bind 'ctrl-u:preview-half-page-up' \
   --bind "ctrl-a:execute($SELF --add {6})+reload($SELF --list)+refresh-preview" \
-  --bind "ctrl-t:execute-silent($SELF --toggle-ai {3} {4})+reload($SELF --list)+refresh-preview" \
   --bind "W:execute($SELF --start-wave {6})+reload($SELF --list)+refresh-preview" \
   --bind "m:execute($SELF --move {6} {2} {5})+reload($SELF --list)+refresh-preview" \
   --bind "n:execute($SELF --new-project {6})+reload($SELF --list)+refresh-preview" \

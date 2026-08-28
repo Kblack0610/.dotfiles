@@ -31,6 +31,7 @@ mod tags;
 mod waves;
 mod zettel;
 
+use agent_sheet::Lane;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
@@ -119,6 +120,10 @@ enum Cmd {
     Ptask {
         /// Project name (case-insensitive)
         name: String,
+        /// Act on the project's AGENT sheet (`agent/README.md`) - the working board where
+        /// subtasks and in-flight state live - instead of the queue on its own README.
+        #[arg(long)]
+        agent: bool,
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
@@ -195,6 +200,14 @@ enum Cmd {
         /// versions/ and backfill each version's ai/ note. Idempotent.
         #[arg(long, value_name = "NAME")]
         migrate: Option<String>,
+        /// Remove the retired `#ai` tag from live project sheets (the lane is the agent
+        /// sheet now). Bare = every project in the profile; with a NAME = just that one.
+        /// Frozen versions/ notes keep their tags as history. Idempotent.
+        #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+        retire_ai_tag: Option<String>,
+        /// With --retire-ai-tag: report what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
         /// With --roll: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
@@ -541,45 +554,49 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Ptask { name, sub } => match sub {
-            None => project_tasks::list(&prof, &name, None, false)?,
-            Some(PtaskCmd::List { wave, all }) => {
-                project_tasks::list(&prof, &name, wave.as_deref(), all)?
+        Cmd::Ptask { name, agent, sub } => {
+            let lane = if agent { Lane::Agent } else { Lane::Human };
+            match sub {
+                None => project_tasks::list(&prof, &name, None, false, lane)?,
+                Some(PtaskCmd::List { wave, all }) => {
+                    project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
+                }
+                Some(PtaskCmd::Add { to, text }) => {
+                    project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
+                }
+                Some(PtaskCmd::Move { to, query }) => {
+                    project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
+                }
+                Some(PtaskCmd::Done {
+                    proof,
+                    unverified,
+                    query,
+                }) => project_tasks::done(
+                    &prof,
+                    &log,
+                    &name,
+                    &query.join(" "),
+                    proof.as_deref(),
+                    unverified.as_deref(),
+                    lane,
+                )?,
+                Some(PtaskCmd::Start { query }) => {
+                    project_tasks::start(&prof, &log, &name, &query.join(" "), lane)?
+                }
+                Some(PtaskCmd::Rm { query }) => {
+                    project_tasks::rm(&prof, &log, &name, &query.join(" "), lane)?
+                }
+                Some(PtaskCmd::Promote { query }) => {
+                    project_tasks::step(&prof, &log, &name, &query.join(" "), -1, lane)?
+                }
+                Some(PtaskCmd::Demote { query }) => {
+                    project_tasks::step(&prof, &log, &name, &query.join(" "), 1, lane)?
+                }
+                Some(PtaskCmd::Sweep { dry_run }) => {
+                    project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
+                }
             }
-            Some(PtaskCmd::Add { to, text }) => {
-                project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref())?
-            }
-            Some(PtaskCmd::Move { to, query }) => {
-                project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to)?
-            }
-            Some(PtaskCmd::Done {
-                proof,
-                unverified,
-                query,
-            }) => project_tasks::done(
-                &prof,
-                &log,
-                &name,
-                &query.join(" "),
-                proof.as_deref(),
-                unverified.as_deref(),
-            )?,
-            Some(PtaskCmd::Start { query }) => {
-                project_tasks::start(&prof, &log, &name, &query.join(" "))?
-            }
-            Some(PtaskCmd::Rm { query }) => {
-                project_tasks::rm(&prof, &log, &name, &query.join(" "))?
-            }
-            Some(PtaskCmd::Promote { query }) => {
-                project_tasks::step(&prof, &log, &name, &query.join(" "), -1)?
-            }
-            Some(PtaskCmd::Demote { query }) => {
-                project_tasks::step(&prof, &log, &name, &query.join(" "), 1)?
-            }
-            Some(PtaskCmd::Sweep { dry_run }) => {
-                project_tasks::sweep(&prof, &log, &name, dry_run)?
-            }
-        },
+        }
         Cmd::Board { agent, projects } => {
             if agent {
                 board::print_agent(&projects)?
@@ -630,6 +647,8 @@ fn main() -> Result<()> {
             archived,
             roll,
             migrate,
+            retire_ai_tag,
+            dry_run,
             minor,
             major,
             force,
@@ -645,6 +664,13 @@ fn main() -> Result<()> {
             } else {
                 projects::Bump::Patch
             };
+            // A whole-vault sweep, so it is handled before the name-keyed match below:
+            // an empty NAME means "every project" and must not fall through as a lookup.
+            if let Some(n) = retire_ai_tag {
+                let which = if n.is_empty() { None } else { Some(n.as_str()) };
+                projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
             // lifecycle/version flags take precedence over the read paths
             match (
                 new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,

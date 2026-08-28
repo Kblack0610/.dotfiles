@@ -204,109 +204,53 @@ nfields() { awk -F'\t' '{print NF; exit}'; }
   assert_equal "$out" 'k1 k2 '
 }
 
-# ── the #ai lane ───────────────────────────────────────────────────────────
+# ── the lane is a file, not a badge ─────────────────────────────────────────
 
-# One list, two lanes: `#ai` marks an item a `/wave` may pick up, everything untagged is
-# the human's and no agent touches it. If the marker stops rendering, the two lanes become
-# indistinguishable in the cockpit and the human cannot see what they handed over.
+# A row's lane is the SHEET it lives on: the project's own README is the queue, its
+# agent/README.md is the agents' working board. The cockpit renders one sheet at a time,
+# so there is no badge to draw and nothing on a row to classify.
 
-@test "_task_row marks an #ai item with the lane badge" {
-  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai'
-  assert_output --partial '@ai'
-}
-
-@test "_task_row leaves an untagged (human-lane) item unmarked" {
+@test "_task_row renders a row with no lane badge to draw" {
   run _task_row bnb /f.md 6 k3 bnb/pmp '- [ ] call the attorney re the BAA'
   refute_output --partial '@ai'
 }
 
-@test "_task_row does not leave the raw #ai tag in the display" {
-  # The badge replaces it; showing both is noise on every agent-lane row.
+# A tag that routes nothing must not be hidden. Stripping it would render a tagged row
+# identically to an untagged one, leaving whoever typed it waiting on an agent nothing
+# ever told. `notes doctor` reports it; the cockpit shows it.
+@test "_task_row shows a stray #ai as the raw text it now is" {
   run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai'
-  refute_output --partial '#ai '
+  assert_output --partial '#ai'
+  refute_output --partial '@ai'
 }
 
 @test "_task_row surfaces a stamped ticket id so the wave burns down visibly" {
-  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished #ai <!-- vk:601 -->'
+  run _task_row bnb /f.md 4 k1 bnb/pmp '- [ ] thumbnail squished <!-- vk:601 -->'
   assert_output --partial '#601'
 }
 
 @test "_task_row shows no ticket id when the item has not been scoped yet" {
-  run _task_row bnb /f.md 5 k2 bnb/pmp '- [ ] provider cannot remove a resident #ai'
+  run _task_row bnb /f.md 5 k2 bnb/pmp '- [ ] provider cannot remove a resident'
   refute_output --partial '#'
 }
 
-@test "an #ai item still renders its in-progress glyph" {
-  run _task_row bnb /f.md 5 k2 bnb/pmp '- [/] provider cannot remove a resident #ai'
+@test "a row still renders its in-progress glyph" {
+  run _task_row bnb /f.md 5 k2 bnb/pmp '- [/] provider cannot remove a resident'
   assert_output --partial '[/]'
 }
 
-@test "the lane badge does not disturb the 7-field wire format" {
-  run bash -c 'source "$COCKPIT"; _task_row bnb /f.md 4 k1 bnb/pmp "- [ ] x #ai <!-- vk:601 -->" | awk -F"\t" "{print NF}"'
+@test "a row keeps the 7-field wire format" {
+  run bash -c 'source "$COCKPIT"; _task_row bnb /f.md 4 k1 bnb/pmp "- [ ] x <!-- vk:601 -->" | awk -F"\t" "{print NF}"'
   assert_output '7'
 }
 
-# ── toggle_ai (C-i) ─────────────────────────────────────────────────────────
-
-# Handing a task to the agents is a LINE EDIT, not a CLI call: the notes CLI has no
-# ptask tag/untag (focus has `mv --tag`, ptask never got one), and rm+add would lose the
-# item's position and its `<!-- vk:ID -->` stamp. So these pin the edit itself.
-
-setup_sheet() {
-  SHEET="$BATS_TEST_TMPDIR/sheet.md"
-  cat > "$SHEET" <<'SHEET'
-- [ ] plain task
-- [ ] tagged already #ai
-- [ ] with priority #high
-- [ ] a false friend #aid
-SHEET
-}
-
-@test "toggle_ai hands an untagged task to the agents" {
-  setup_sheet; toggle_ai "$SHEET" 1
-  run sed -n '1p' "$SHEET"
-  assert_output '- [ ] plain task #ai'
-}
-
-@test "toggle_ai takes a tagged task back" {
-  setup_sheet; toggle_ai "$SHEET" 2
-  run sed -n '2p' "$SHEET"
-  assert_output '- [ ] tagged already'
-}
-
-@test "toggle_ai round-trips to the original line" {
-  setup_sheet; toggle_ai "$SHEET" 1; toggle_ai "$SHEET" 1
-  run sed -n '1p' "$SHEET"
-  assert_output '- [ ] plain task'
-}
-
-@test "toggle_ai keeps a priority tag" {
-  setup_sheet; toggle_ai "$SHEET" 3
-  run sed -n '3p' "$SHEET"
-  assert_output '- [ ] with priority #high #ai'
-}
-
-@test "toggle_ai does not treat #aid as the lane tag" {
-  # A bare /#ai/ match would strip the tag off `#aid` and silently corrupt the line.
-  setup_sheet; toggle_ai "$SHEET" 4
-  run sed -n '4p' "$SHEET"
-  assert_output '- [ ] a false friend #aid #ai'
-}
-
-@test "toggle_ai leaves every other line untouched" {
-  setup_sheet; toggle_ai "$SHEET" 1
-  run sed -n '2,4p' "$SHEET"
-  assert_line --index 0 '- [ ] tagged already #ai'
-  assert_line --index 2 '- [ ] a false friend #aid'
-}
-
-@test "toggle_ai is a no-op on a missing file or a non-numeric line" {
-  setup_sheet
-  run toggle_ai "$BATS_TEST_TMPDIR/nope.md" 1
-  assert_success
-  toggle_ai "$SHEET" ""
-  run sed -n '1p' "$SHEET"
-  assert_output '- [ ] plain task'
+# NEGATIVE CONTROL for the removal itself: the toggle and its dispatch verb are gone, so
+# nothing in the cockpit can write a tag back onto a sheet.
+@test "the cockpit has no lane toggle left to write the tag" {
+  run bash -c 'source "$COCKPIT"; declare -F toggle_ai'
+  assert_failure
+  run grep -c -e "--toggle-ai" -e "ctrl-t:" "$COCKPIT"
+  assert_output '0'
 }
 
 # ── _sprint_items: the blackboard parser ────────────────────────────────────

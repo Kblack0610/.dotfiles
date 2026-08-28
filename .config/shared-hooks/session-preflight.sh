@@ -182,14 +182,11 @@ CONTEXT=$(
     fi
   fi
 
-  # The agent lane — the human's `#ai` items from the PROJECT BOARD, at turn 1.
+  # The agent board - what a previous session left IN FLIGHT on this repo, at turn 1.
   #
-  # This replaces a readback of the lab summary's `## → For the agents` section, which was
-  # the wrong channel in the most complete way available: it was an untouched placeholder
-  # in all four lab projects, while the board it ignored held 41 open items, 21 of them
-  # `#ai`, and had ZERO automated readers. The human wrote where nothing read; the agent
-  # read where nothing wrote. The preflight even pushed work toward the dead end, telling
-  # every agent that project work belongs on the board it then never looked at.
+  # Not the queue. The queue is the project's own sheet and `/wave` reads all of it; this
+  # is `<project>/agent/README.md`, the subtasks and state under a queue row, so a fresh
+  # session can resume a wave instead of restarting it.
   #
   # THE JOIN IS `trackers.<project>.repo`, NOT THE DIRECTORY NAME. The two namespaces are
   # deliberately different and only agreed by coincidence: a session in ~/.dotfiles
@@ -209,17 +206,28 @@ CONTEXT=$(
       [ -n "$lab_name" ] && AGENT_ARGS+=(--project "$lab_name")
     done < <(project_lab_names "$PROJECT_NAME" 2>/dev/null || true)
     if [ "${#AGENT_ARGS[@]}" -gt 0 ]; then
-      AGENT_ALL=$(timeout 5 notes board --agent "${AGENT_ARGS[@]}" 2>/dev/null || true)
+      # Keep the exit status. Three outcomes that must NOT render alike: rows, a clean
+      # empty board, and a query that failed. Collapsing the last two would let "the
+      # tooling is broken" print as "nothing to do", which is the failure this block is
+      # here to avoid, not commit.
+      AGENT_RC=0
+      AGENT_ALL=$(timeout 5 notes board --agent "${AGENT_ARGS[@]}" 2>/dev/null) || AGENT_RC=$?
       if [ -n "$AGENT_ALL" ]; then
         agent_total=$(printf '%s\n' "$AGENT_ALL" | grep -c . || true)
-        echo "📥 Your agent-board items for this repo:"
+        echo "📥 Left in flight on this repo's agent board:"
         printf '%s\n' "$AGENT_ALL" | head -15 | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         [ "${agent_total:-0}" -gt 15 ] && echo "  … +$((agent_total - 15)) more — \`notes board\` for the rest"
-        echo "  (yours to queue: \`notes ptask <project> add \"...\" #ai\`; mark started/done the same way.)"
-        echo
+        echo "  (your working board: \`notes ptask <project> --agent add|start|done \"<title>\"\`)"
+      elif [ "$AGENT_RC" -eq 0 ]; then
+        echo "📥 Agent board clear for this repo — nothing left in flight."
+        echo "  (the QUEUE is the project sheet: \`notes ptask <project> list\`)"
+      else
+        echo "📥 Agent board unavailable (\`notes board --agent\` exited $AGENT_RC)."
+        echo "  Nothing is known about what is in flight — this is not \"nothing to do\"."
       fi
+      echo
     fi
   fi
 
@@ -259,11 +267,11 @@ CONTEXT=$(
       # Two lines, not ten. Turn 1 needs the POINTER; the argument for why the two lanes
       # are separate lives in CLAUDE.md, which is already loaded, and repeating it here
       # cost ~10 lines of every session to re-litigate a settled rule.
-      echo "  → the HUMAN's list, not your queue. Yours: \`notes ptask <project> add|start|done \"<title>\" #ai\` (\`notes board\`)"
+      echo "  → the HUMAN's list, not your queue. Project work: \`notes ptask <project> add|start|done \"<title>\"\` (\`notes board\`)"
       echo
     else
       echo "🎯 Focus: none set today — that is the human's list, not yours."
-      echo "  → yours: \`notes ptask <project> add|start|done \"<title>\" #ai\`"
+      echo "  → project work: \`notes ptask <project> add|start|done \"<title>\"\`"
       echo
     fi
   fi

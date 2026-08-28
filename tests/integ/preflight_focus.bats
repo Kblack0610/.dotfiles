@@ -168,7 +168,7 @@ seed_tracker_map() {
 EOF
 }
 
-@test "the agent lane surfaces the board rows for THIS repo's lab projects" {
+@test "the agent board surfaces the in-flight rows for THIS repo's lab projects" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
@@ -176,7 +176,7 @@ EOF
 
   run context
   assert_success
-  assert_output --partial 'agent-board items'
+  assert_output --partial 'Left in flight'
   assert_output --partial '[notes-cockpit] cockpit row one'
   assert_output --partial '[agent-runtime] runtime row one'
 }
@@ -229,12 +229,36 @@ EOF
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
+  # Removing the stub is not enough: sandbox.bash PREPENDS $SANDBOX/bin to the real PATH,
+  # so the hook fell through to the machine's own `notes`. That made this test pass on the
+  # real binary erroring against the sandboxed HOME rather than on the binary being gone.
   rm -f "$SANDBOX/bin/notes"
+  PATH="$SANDBOX/bin:/usr/bin:/bin"
 
   run context
   assert_success
   assert_output --partial 'Recent commits'
-  refute_output --partial 'agent-board items'
+  refute_output --partial 'Left in flight'
+  refute_output --partial 'Agent board clear'
+  refute_output --partial 'Agent board unavailable'
+}
+
+# The third outcome, and the reason the exit status is kept: a notes that FAILS must not
+# render as a clean board. "Nothing to do" and "I could not find out" are different facts.
+@test "a failing notes reports the query failed, not that the board is clear" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+exit 3
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+
+  run context
+  assert_success
+  assert_output --partial 'Agent board unavailable'
+  refute_output --partial 'Agent board clear'
 }
 
 @test "the injected context stays well under the old 28.5 KB" {

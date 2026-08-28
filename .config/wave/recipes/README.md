@@ -1,14 +1,14 @@
 # Wave recipes
 
-A **recipe** is a prepared maintenance wave: an audit plus a proposal step. `/wave <app> propose <recipe>` runs the recipe's discovery against the repo, turns what it finds into concrete `#ai` items on the project's sheet, and stops. The normal `/wave <app> start` gate then approves them like any other wave.
+A **recipe** is a prepared maintenance wave: an audit plus a proposal step. `/wave <app> propose <recipe>` runs the recipe's discovery against the repo, turns what it finds into concrete items on the project's sheet, and stops. The normal `/wave <app> start` gate then approves them like any other wave.
 
 ## Why these exist
 
-A wave's work has only ever come from `#ai`-tagged lines a human wrote under `## Wave: <ver>` on the project sheet. That is right for bugs: a human found it, a human describes it. But it means the standing maintenance every project accumulates - dead code, logic implemented four ways, a module nothing tests - only ever happens if someone sits down and types the items out. The batch machinery was built; the ability to stock it was not. A recipe stocks it.
+A wave's work comes from the open lines under `## Wave: <ver>` on the project sheet, written by a human. That is right for bugs: a human found it, a human describes it. But it means the standing maintenance every project accumulates - dead code, logic implemented four ways, a module nothing tests - only ever happens if someone sits down and types the items out. The batch machinery was built; the ability to stock it was not. A recipe stocks it.
 
 ## The one rule: a recipe feeds the front door, it is not a second door
 
-Discovery writes its findings to the **sheet**, through `notes ptask <app> add`, tagged `#ai`. It does not write a board, create a ticket, or cut a branch. Everything downstream - the scope gate, the blackboard, the branch, the draft PR, the roll - is the existing `/wave start` path, unchanged and unaware a recipe was involved.
+Discovery writes its findings to the **sheet**, through `notes ptask <app> add`. It does not write a board, create a ticket, or cut a branch. Everything downstream - the scope gate, the blackboard, the branch, the draft PR, the roll - is the existing `/wave start` path, unchanged and unaware a recipe was involved.
 
 This is deliberate. A recipe that wrote its own board would be a second source of work with its own half-copy of the wave lifecycle, and the two would drift. The sheet is the front door; a recipe is a way of stocking it, not a way around it.
 
@@ -54,4 +54,4 @@ Then two sections:
 
 ## Adding one
 
-Copy the closest existing recipe. A new recipe earns its place when its findings are things a human keeps re-noticing by hand - if you have written the same kind of `#ai` item on three projects, that is the recipe. Keep the probes cheap enough to run on every project without thinking about it.
+Copy the closest existing recipe. A new recipe earns its place when its findings are things a human keeps re-noticing by hand - if you have written the same kind of item on three projects, that is the recipe. Keep the probes cheap enough to run on every project without thinking about it.
