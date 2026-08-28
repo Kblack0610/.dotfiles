@@ -27,6 +27,31 @@ pub fn sheet_path(dir: &Path) -> PathBuf {
     projects::agent_dir(dir).join("README.md")
 }
 
+/// Which sheet a reader or writer is acting on: a directory, never a predicate. A row
+/// belongs to whichever file it is written in, so there is nothing to classify.
+///
+/// The two are not symmetric. `Human` is the QUEUE - every open item, whoever does it, and
+/// where done-ness is recorded. `Agent` is the WORKING board - subtasks and state under a
+/// queue row, so an interrupted wave can be resumed. Neither is a filtered view of the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Human,
+    Agent,
+}
+
+impl Lane {
+    /// The directory whose task sheet this lane reads and writes.
+    ///
+    /// One parser, two paths: `project_tasks::task_sheet` resolves any dir carrying a
+    /// `## Wave`, and the agent scaffold carries one deliberately for this reason.
+    pub(crate) fn dir(self, project: &Path) -> PathBuf {
+        match self {
+            Lane::Human => project.to_path_buf(),
+            Lane::Agent => projects::agent_dir(project),
+        }
+    }
+}
+
 /// The body a fresh agent sheet starts with: title, the version it tracks, a link home, and
 /// an empty current wave named for that version.
 ///

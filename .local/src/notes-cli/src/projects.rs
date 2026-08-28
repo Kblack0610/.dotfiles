@@ -7,7 +7,6 @@
 //! is no index file to go stale. Discovery mirrors `notes today`'s precedence — the
 //! project index `## Current` lane, else the `projects` dir scan (`daily`).
 
-use crate::board;
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
@@ -787,16 +786,29 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
-/// Did this version actually have agent work? True when the frozen wave carries at least
-/// one COMPLETED `#ai` task.
+/// Did this version actually have agent work? Two sources, because the lane moved.
 ///
-/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the version has
-/// agent evidence to hold. Creating one unconditionally would file an empty note for every
-/// human-only version and make an orphan report meaningless.
-fn has_done_ai_task(frozen_body: &str) -> bool {
-    frozen_body
+/// The agent SHEET holding any real row is the live answer: that is where an agent's working
+/// state lives now. A completed legacy `#ai` row in the frozen human wave is the historical
+/// one, and it stays load-bearing - versions opened before the move carry their evidence
+/// only as that tag.
+///
+/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the
+/// version has agent evidence to hold. Creating one unconditionally would file an empty note
+/// for every human-only version and make an orphan report meaningless.
+fn version_had_agent_work(frozen_body: &str, dir: &Path) -> bool {
+    if frozen_body
         .lines()
-        .any(|l| md::is_checked(l) && board::is_ai(l))
+        .any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
+    {
+        return true;
+    }
+    fs::read_to_string(crate::agent_sheet::sheet_path(dir))
+        .map(|c| {
+            c.lines()
+                .any(|l| md::is_task(l) && !md::task_text(l).trim().is_empty())
+        })
+        .unwrap_or(false)
 }
 
 /// A sheet's content with its title line and `Version:` line dropped - the part that gets
@@ -874,7 +886,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     fs::write(&frozen, &stamped)?;
 
     // 3. the pair
-    if has_done_ai_task(&frozen_body) {
+    if version_had_agent_work(&frozen_body, &dir) {
         ensure_agent_note(&dir, name, &fmt_version(cur))?;
     }
 
@@ -1004,7 +1016,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         let when = rolled_on(&content);
         let done: Vec<&str> = content
             .lines()
-            .filter(|l| md::is_checked(l) && board::is_ai(l))
+            .filter(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
             .collect();
         if done.is_empty() {
             continue;
@@ -1127,7 +1139,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 }
                 frozen.push(ver.to_string());
                 let has_agent_work = fs::read_to_string(&path)
-                    .map(|c| c.lines().any(|l| md::is_checked(l) && board::is_ai(l)))
+                    .map(|c| c.lines().any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l)))
                     .unwrap_or(false);
                 if has_agent_work && !agent_note_path(dir, ver).exists() {
                     out.push(format!("{name} {ver}: agent work frozen with no agent/ note"));
@@ -1502,18 +1514,57 @@ Version: v1.13.0
         assert!(!sheet.contains("- [x] a"), "the closed work does not come back:\n{sheet}");
     }
 
+    /// A scratch project dir with no agent sheet, so `version_had_agent_work` is deciding on
+    /// the frozen body alone.
+    fn no_agent_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("notes-pair-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
     #[test]
     fn a_version_pairs_only_when_it_actually_closed_agent_work() {
-        // Completed and tagged: this version has evidence to hold.
-        assert!(has_done_ai_task("- [x] ship the thing #ai\n"));
+        let d = no_agent_dir("legacy");
+        // Completed and tagged: a version opened before the lane moved has evidence to hold.
+        assert!(version_had_agent_work("- [x] ship the thing #ai\n", &d));
         // Tagged but not finished, and finished but not tagged: neither is agent evidence.
-        assert!(!has_done_ai_task("- [ ] ship the thing #ai\n"));
-        assert!(!has_done_ai_task("- [x] ship the thing\n"));
-        // A human-only version must NOT get an empty ai note, or an orphan report that
+        assert!(!version_had_agent_work("- [ ] ship the thing #ai\n", &d));
+        assert!(!version_had_agent_work("- [x] ship the thing\n", &d));
+        // A human-only version must NOT get an empty agent note, or an orphan report that
         // reads "unpaired" stops meaning anything.
-        assert!(!has_done_ai_task("# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n"));
+        assert!(!version_had_agent_work(
+            "# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n",
+            &d
+        ));
         // The `#aid` trap: a substring match here would pair a version with no agent work.
-        assert!(!has_done_ai_task("- [x] fix the first-aid page #aid\n"));
+        assert!(!version_had_agent_work(
+            "- [x] fix the first-aid page #aid\n",
+            &d
+        ));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_agent_sheet_with_real_work_pairs_a_version_that_carries_no_tag() {
+        let d = no_agent_dir("sheet");
+        fs::create_dir_all(d.join("agent")).unwrap();
+        // The scaffold's empty placeholder is not work, so it must not pair a version.
+        fs::write(
+            d.join("agent/README.md"),
+            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] \n",
+        )
+        .unwrap();
+        assert!(!version_had_agent_work("- [x] a human row\n", &d));
+
+        fs::write(
+            d.join("agent/README.md"),
+            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n\
+             - [x] broke the 413 path into three cases\n",
+        )
+        .unwrap();
+        assert!(version_had_agent_work("- [x] a human row\n", &d));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

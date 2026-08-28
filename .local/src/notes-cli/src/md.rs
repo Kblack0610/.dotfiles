@@ -253,6 +253,49 @@ pub fn add_tag(line: &str, tag: &str) -> String {
     }
 }
 
+/// Remove `tag` from a line if it carries it. The inverse of [`add_tag`].
+///
+/// Whole-token and comma-tolerant, matching [`has_legacy_ai_tag`]'s rule, so `#ai` never
+/// takes `#aid` with it. Only the text BEFORE a `<!-- ... -->` marker is considered: a tag
+/// inside a proof stamp is evidence someone wrote, not routing, and rewriting it would edit
+/// the record to satisfy a cosmetic rule.
+pub fn drop_tag(line: &str, tag: &str) -> String {
+    let trimmed = line.trim_end();
+    let (body, marker) = match (trimmed.rfind("<!--"), trimmed.ends_with("-->")) {
+        (Some(i), true) => (&trimmed[..i], &trimmed[i..]),
+        _ => (trimmed, ""),
+    };
+    let kept: Vec<&str> = body
+        .split_whitespace()
+        .filter(|w| w.trim_end_matches(',') != tag)
+        .collect();
+    if kept.len() == body.split_whitespace().count() {
+        return line.to_string();
+    }
+    // The leading `- [ ]` is whitespace-split like everything else, so rejoining is safe:
+    // the indent is not meaningful on a wave row and every writer here emits none.
+    let rebuilt = kept.join(" ");
+    if marker.is_empty() {
+        rebuilt
+    } else {
+        format!("{rebuilt} {marker}")
+    }
+}
+
+/// True when the line carries a legacy `#ai` tag.
+///
+/// NOT A LANE SELECTOR. The lane is the FILE a row lives in (`<project>/agent/README.md`);
+/// nothing may route on this tag. It exists for two readers only: frozen `versions/*.md`
+/// notes, which carry the tag permanently as part of the record, and `--retire-ai-tag`,
+/// which needs to find it on the live sheets one last time.
+///
+/// Delimited deliberately: a bare `contains("#ai")` also matches `#aid`, the trap
+/// `notes-cockpit.sh` documented and then fell into anyway with its substring badge.
+pub fn has_legacy_ai_tag(line: &str) -> bool {
+    line.split_whitespace()
+        .any(|w| w.trim_end_matches(',') == "#ai")
+}
+
 /// Remove a `<!-- cu:ID -->` bridge marker from a line, collapsing the space it leaves behind.
 /// No-op when absent. Keeps the ClickUp bridge's machine marker out of human-facing text
 /// (summaries) - it is not a comment-ONLY line, so the section-text filter alone would keep it.
@@ -986,6 +1029,40 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn the_legacy_ai_tag_is_matched_as_a_whole_token() {
+        assert!(has_legacy_ai_tag("- [ ] do the thing #ai"));
+        assert!(has_legacy_ai_tag("- [ ] #ai leading"));
+        assert!(has_legacy_ai_tag("- [ ] trailing comma #ai, then more"));
+        // The trap a substring match falls into, and the reason this is not `contains`.
+        assert!(!has_legacy_ai_tag("- [ ] restock the first #aid kit"));
+        assert!(!has_legacy_ai_tag("- [ ] plain task"));
+        assert!(!has_legacy_ai_tag("- [ ] mentions ai but no tag"));
+    }
+
+    #[test]
+    fn drop_tag_removes_only_the_whole_token() {
+        assert_eq!(drop_tag("- [ ] a thing #ai #high", "#ai"), "- [ ] a thing #high");
+        assert_eq!(drop_tag("- [ ] #ai leading", "#ai"), "- [ ] leading");
+        // NEGATIVE CONTROL: `#aid` is a different tag and must survive untouched.
+        assert_eq!(
+            drop_tag("- [ ] restock the first #aid kit", "#ai"),
+            "- [ ] restock the first #aid kit"
+        );
+        // A line without the tag is returned unchanged, byte for byte.
+        assert_eq!(drop_tag("- [ ] plain task", "#ai"), "- [ ] plain task");
+    }
+
+    #[test]
+    fn drop_tag_never_edits_the_proof_stamp() {
+        // The marker is the evidence trail. A `#ai` inside it is something someone wrote
+        // down, not routing, so the sweep must leave it exactly where it is.
+        assert_eq!(
+            drop_tag("- [x] a thing #ai <!-- pr:1218 fixed the #ai path -->", "#ai"),
+            "- [x] a thing <!-- pr:1218 fixed the #ai path -->"
+        );
     }
 
     #[test]
