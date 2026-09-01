@@ -672,11 +672,8 @@ fn strip_legacy_rollup(content: &str, names: &[String]) -> String {
 /// you below).
 ///
 /// Read-only — never writes. ASCII state markers (OK / TRIP / ERROR / paused / -).
-/// One watch, as read off the registry.
-///
-/// `line` is the daily-note rendering, kept here so the note and the status page cannot
-/// disagree about what a watch is called or how stale it is. The status page uses the
-/// component fields instead, because it has room for the sub-bullets the one-liner folds.
+/// One watch, as read off the registry. The status page composes its own line from these
+/// fields, so they stay separate rather than pre-joined.
 pub(crate) struct WatchRow {
     /// Unhealthy first (0), healthy/unknown next (1), paused last (2).
     pub rank: u8,
@@ -686,7 +683,6 @@ pub(crate) struct WatchRow {
     pub probe: String,
     pub interval: String,
     pub state: String,
-    pub line: String,
 }
 
 /// Read the Sentinel registry. Sorted, and ALL ranks kept - the caller decides what to drop.
@@ -744,11 +740,6 @@ pub(crate) fn watch_rows(p: &Profile) -> Vec<WatchRow> {
         // dropped here: on a line you only see because something is WRONG, the standing
         // assertion is the least useful part -- you want the name, the system, and how
         // stale the signal is.
-        let mut line = format!("- {state} {name}");
-        if !wher.is_empty() {
-            line.push_str(&format!(" - at: {wher}"));
-        }
-        line.push_str(&format!(" ({probe}, {interval})"));
         rows.push(WatchRow {
             rank,
             name,
@@ -757,7 +748,6 @@ pub(crate) fn watch_rows(p: &Profile) -> Vec<WatchRow> {
             probe,
             interval,
             state,
-            line,
         });
     }
     rows.sort_by(|a, b| a.rank.cmp(&b.rank).then(a.name.cmp(&b.name)));
