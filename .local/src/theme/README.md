@@ -195,6 +195,7 @@ theme stops being the theme it claims to be. Every deviation is a comment in
 | starship   | 7 color values patched in `starship.toml`                         | tracked  |
 | lazygit    | 11 color values patched in `config.yml` (restart lazygit to see)  | tracked  |
 | hyprland   | border + shadow rgba patched in `conf.d/look-and-feel.conf`, then `hyprctl reload` | tracked  |
+| termux     | `colors.properties` rebuilt from the palette (no per-theme template) | tracked, see below |
 | wallpaper  | random pick matching prefix; backend: hyprpaper > swww > swaybg   | n/a      |
 
 ## Tracked vs generated
@@ -219,3 +220,22 @@ The remaining `tracked` rows are hand-authored config with a few values patched
 in place, so they still churn on a theme switch. Converting each to its tool's
 native include (hyprland `source =`, lazygit `LG_CONFIG_FILE`, an nvim palette
 module) is the follow-up that finishes the job.
+
+### termux: generated, and tracked anyway
+
+`.termux/colors.properties` is the one target that is written in full from the
+palette and still tracked. That is deliberate, and it is not the loop above
+being restored by accident.
+
+The phone never runs `theme-switch`. A desktop generates the file and commits
+it, and Android picks it up on `git pull` + `termux-style`, which is why
+`termux` is absent from both OS gates rather than fenced behind an Android one.
+Git is the delivery mechanism. Gitignoring it would mean the phone never
+receives a palette change at all -- the file would exist only on whichever
+desktop last ran the switcher.
+
+The cost is real and accepted: the day/night timers regenerate it at 07:00 and
+19:00, so this single file dirties the tree twice a day. If that becomes
+annoying before the phone can run the generator itself, drop `termux` from the
+timers' `--only` set rather than gitignoring it -- the phone reads whatever was
+last committed either way, and an explicit theme switch still refreshes it.
