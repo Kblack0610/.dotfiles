@@ -225,6 +225,17 @@ enum Cmd {
         /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
         #[arg(long, value_name = "NAME")]
         waves: Option<String>,
+        /// Print a project's maturity stage; with --set, declare it.
+        /// One of: draft, alpha, beta, prod
+        #[arg(long, value_name = "NAME")]
+        stage: Option<String>,
+        /// Print a project's index group; with --set, declare it. Unset means the
+        /// project's own profile (bnb, personal); `dev` is the tooling lane.
+        #[arg(long, value_name = "NAME")]
+        group: Option<String>,
+        /// The value to write, for --stage / --group. Omit to read.
+        #[arg(long, value_name = "VALUE")]
+        set: Option<String>,
         /// Print (creating if absent) the path to a version's agent note,
         /// `agent/versions/<vX.Y.Z>.md`
         #[arg(long, value_name = "NAME")]
@@ -657,6 +668,9 @@ fn main() -> Result<()> {
             waves,
             agent_note,
             version,
+            stage,
+            group,
+            set,
         } => {
             let level = if major {
                 projects::Bump::Major
@@ -670,6 +684,16 @@ fn main() -> Result<()> {
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            // Handled before the match below because both take a VALUE (`--set`), which the
+            // name-keyed tuple has no room for.
+            if let Some(n) = stage {
+                projects::stage(&prof, &log, &n, set.as_deref())?;
+                std::process::exit(0);
+            }
+            if let Some(n) = group {
+                projects::group(&prof, &log, &n, set.as_deref())?;
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths

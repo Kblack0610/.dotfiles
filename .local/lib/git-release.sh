@@ -130,10 +130,27 @@ git_latest_tag() {
 #   <product>-*-v*      anything else product-scoped (mobile-only, etc.)
 # The primary/web line wins over a platform line deliberately: web ships more often
 # than mobile here, so it is the line that tracks "what version is this product on".
+#
+# An explicit `<!-- tagglob: -->` in `summary` wins over all three, because a product whose
+# tag prefix is not its project name cannot be reached by any of them: the portfolio ships
+# `portfolio-v*` while the project is `kenneth-black-portfolio`, so every glob below misses
+# and the honest-but-wrong answer is "never shipped". The declaration is already there and
+# `git_latest_tag` already honours it; reading it here too keeps ONE source for the fact
+# rather than adding a second one to the registry. It is safe against the hazard this
+# function exists for, because a tagglob is explicit and product-scoped by construction --
+# it is the bare `v*` FALLBACK that is dangerous, not a declared glob.
 git_product_tag() {
-  local repo="$1" product="$2" glob t=""
+  local repo="$1" product="$2" summary="${3:-}" glob t=""
   [ -n "$repo" ] && [ -n "$product" ] && [ -d "$repo/.git" ] \
     && command -v git >/dev/null 2>&1 || return 0
+  if [ -f "$summary" ]; then
+    glob=$(grep -oE '<!--[[:space:]]*tagglob:[[:space:]]*[^ ]+[[:space:]]*-->' "$summary" 2>/dev/null \
+      | head -1 | sed -E 's/.*tagglob:[[:space:]]*([^ ]+)[[:space:]]*-->/\1/' || true)
+    if [ -n "$glob" ]; then
+      _gr_highest "$repo" "$glob"
+      return 0
+    fi
+  fi
   for glob in "${product}-v*" "${product}-web-v*" "${product}-*-v*"; do
     t=$(_gr_highest "$repo" "$glob")
     [ -n "$t" ] && break

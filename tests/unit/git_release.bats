@@ -107,6 +107,40 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output 'mine-v1.2.3'
 }
 
+@test "git_product_tag: a tagglob reaches a product whose tag prefix is not its name" {
+  # The portfolio case: the project is `kenneth-black-portfolio`, the tags are
+  # `portfolio-v*`. All three product globs miss, so without the tagglob this
+  # answers "never shipped" about a product that has shipped seven times.
+  commit one; tag 'portfolio-v1.6.4'
+  local summary="$BATS_TEST_TMPDIR/summary.md"
+  printf '# p\n<!-- tagglob: portfolio-v* -->\n' > "$summary"
+  run git_product_tag "$REPO" kenneth-black-portfolio "$summary"
+  assert_success
+  assert_output 'portfolio-v1.6.4'
+}
+
+@test "git_product_tag: a tagglob is authoritative and never falls through to a sibling" {
+  # NEGATIVE CONTROL, and the reason the tagglob is checked BEFORE the product
+  # globs rather than after: `mine-v*` matches nothing here, and a copy that fell
+  # through would hand back this product's own stale `mine-v0.0.1`-shaped sibling.
+  commit one; tag 'mine-v9.9.9'
+  local summary="$BATS_TEST_TMPDIR/summary.md"
+  printf '# p\n<!-- tagglob: absent-v* -->\n' > "$summary"
+  run git_product_tag "$REPO" mine "$summary"
+  assert_success
+  assert_output ''
+}
+
+@test "git_product_tag: with no summary, the product globs are unchanged" {
+  # Guards the monorepo behaviour the summary argument was threaded through:
+  # adding the parameter must not alter a caller that does not pass one.
+  commit one; tag 'other-v9.9.9'
+  commit two; tag 'mine-v1.2.3'
+  run git_product_tag "$REPO" mine
+  assert_success
+  assert_output 'mine-v1.2.3'
+}
+
 @test "git_latest_tag: no tags at all is empty and successful" {
   commit one
   run git_latest_tag "$REPO" proj

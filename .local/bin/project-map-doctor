@@ -28,6 +28,8 @@ fails=0
 pass() { printf 'PASS  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 skip() { printf 'SKIP  %s\n' "$*"; }
+warn() { printf 'WARN  %s\n' "$*"; warns=$((warns + 1)); }
+warns=0
 
 command -v jq >/dev/null 2>&1 || { printf 'FAIL  jq is not installed; cannot read the map\n'; exit 1; }
 [ -f "$MAP_FILE" ] || { printf 'FAIL  no project map at %s\n' "$MAP_FILE"; exit 1; }
@@ -183,6 +185,72 @@ if [ -n "${seen_names:-}" ]; then
   fi
 fi
 
+# --- 6c. every lab project declares a stage, and a `prod` claim is backed by a tag ----
+# `stage=` in the summary's `<!-- cockpit: ... -->` marker is a DECLARED fact: no tool can
+# derive it: a toy app and a load-bearing one both ship real git tags at similar version
+# numbers, and only a human knows breaking one is a shrug and the other an incident.
+#
+# A declared field with nothing checking it is exactly what `<!-- canonical: NAME -->`
+# was, and checks 6/6b exist because that drifted. So the vocabulary is closed and
+# enforced here, and the one half that IS derivable -- whether anything shipped at all --
+# is checked against git rather than taken on trust.
+#
+# `prod` with a repo and no tag is a FAIL: the claim is refutable and refuted. `prod` with
+# no repo at all is a WARN, because agent-runtime and notes-cockpit are notes-only by
+# design and have no product tag to find.
+STAGE_VOCAB="draft alpha beta prod"
+if declare -F lab_roots >/dev/null 2>&1; then
+  # Overridable like LAB_ROOTS_LIB above, and for a reason this check cannot do without:
+  # the deployed copy is a stow symlink into ~/.dotfiles, so a worktree editing these
+  # libraries cannot verify its own change without pointing the doctor at it.
+  # shellcheck source=/dev/null
+  [ -r "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" ] \
+    && . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+  n=0; bad=0; stage_warns=0
+  while IFS= read -r root; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+      [ -f "$d/summary.md" ] || continue
+      name="$(basename "$d")"
+      n=$((n + 1))
+      marker="$(grep -o '<!-- cockpit:[^>]*-->' "$d/summary.md" 2>/dev/null | head -1)"
+      stage="$(sed -n 's/.*[[:space:]]stage=\([a-z]*\).*/\1/p' <<<"$marker")"
+
+      if [ -z "$stage" ]; then
+        warn "lab project \"$name\" declares no stage (notes projects --stage $name --set draft)"
+        stage_warns=$((stage_warns + 1))
+        continue
+      fi
+      if ! grep -qw -- "$stage" <<<"$STAGE_VOCAB"; then
+        fail "lab project \"$name\" has stage=\"$stage\", which is not one of: $STAGE_VOCAB"
+        bad=$((bad + 1))
+        continue
+      fi
+      [ "$stage" = prod ] || continue
+
+      if ! declare -F project_release_version >/dev/null 2>&1; then
+        skip "project-name.sh unavailable; cannot verify \"$name\" ships what prod claims"
+        continue
+      fi
+      repo="$(project_repo_path "$name" 2>/dev/null || true)"
+      if [ -z "$repo" ]; then
+        warn "lab project \"$name\" claims prod but resolves no repo - nothing can verify it"
+        stage_warns=$((stage_warns + 1))
+      elif [ -z "$(project_release_version "$name" "$d/summary.md" 2>/dev/null || true)" ]; then
+        fail "lab project \"$name\" claims prod but $repo has shipped no tag for it"
+        bad=$((bad + 1))
+      fi
+    done
+  done < <(lab_roots)
+  if [ "$n" -eq 0 ]; then
+    skip "lab roots present but empty; no stages to check"
+  elif [ "$bad" -eq 0 ] && [ "$stage_warns" -eq 0 ]; then
+    pass "all $n lab projects declare a valid stage, and every prod claim ships a tag"
+  fi
+else
+  skip "lab-roots.sh unavailable (private overlay); cannot check project stages"
+fi
+
 # --- 7. archived lab projects that USED to resolve and now do not ---------------------
 # lab_roots yields only `current/` roots, by design -- that is where active work lives.
 # But `projects/archived/` is still READ: regen-project-index.sh renders an "archived"
@@ -199,7 +267,6 @@ fi
 # deserve to break a gate. The signal worth having is the DELTA -- a name that resolves
 # to nothing while its summary still claims a repo.
 warns=0
-warn() { printf 'WARN  %s\n' "$*"; warns=$((warns + 1)); }
 archived_root="$HOME/.notes/lab/projects/archived"
 if [ -d "$archived_root" ]; then
   n=0
