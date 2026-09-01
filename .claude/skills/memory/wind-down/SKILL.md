@@ -173,9 +173,12 @@ thing shown before the window closes.
 
 ## Notes
 
-- Sentinel lives at `~/.agent/spin-down/<project>.request` (per project). A sentinel left armed
- by a deferred run is intentional - it fires on the next clean Stop. If the user changes their
-  mind, `rm` that file to cancel.
+- Sentinel lives at `~/.agent/spin-down/<project>__<session-id>.request` - one per SESSION, not
+  per project, so several armed sessions in the same repo do not clobber each other. A sentinel
+  left armed by a deferred run is intentional - it fires on the next clean Stop. If the user
+  changes their mind, cancel with `rm ~/.agent/spin-down/<project>__*.request` (or list the
+  directory and remove the one whose mtime matches this session) - a bare `<project>.request`
+  does not exist and `rm`-ing it silently no-ops.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
 - Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.
