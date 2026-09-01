@@ -234,6 +234,14 @@ struct RawProfile {
     /// as `### <name>` subsections (`rollup = ["acmecorp"]`). Empty = off.
     #[serde(default)]
     rollup: Vec<String>,
+    /// Orgs this profile's project INDEX rolls up. Unset falls back to `rollup`.
+    ///
+    /// Separate from `rollup` because the two answer different questions and one list
+    /// cannot answer both: the daily note wants every org whose work you might touch
+    /// today, while the index is a page about what you are building. A job belongs on the
+    /// first and not the second, and it keeps its own index either way.
+    #[serde(default, rename = "index-orgs")]
+    index_orgs: Vec<String>,
 }
 
 fn default_profile_name() -> String {
@@ -336,6 +344,8 @@ pub struct Profile {
     /// recurse forever on a config cycle (personal -> job -> personal). `daily::rollup_entries`
     /// resolves each name lazily instead, and tolerates one that does not resolve.
     pub rollup: Vec<String>,
+    /// Orgs this profile's project index rolls up; falls back to `rollup` when unset.
+    pub index_orgs: Vec<String>,
     pub summaries: PathBuf,
     pub continuous: PathBuf,
     pub monthly: PathBuf,
@@ -456,6 +466,7 @@ fn builtin_default() -> RawConfig {
             inbox: "inbox".into(),
             tag_dirs: Vec::new(),
             rollup: Vec::new(),
+            index_orgs: Vec::new(),
         },
     );
     RawConfig {
@@ -631,6 +642,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         // A list id (not a path) — carried through verbatim; `None` keeps the bridge off.
         clickup_list: rp.clickup_list.clone(),
         rollup: rp.rollup.clone(),
+        index_orgs: rp.index_orgs.clone(),
         continuous: summaries.join("continuous"),
         monthly: summaries.join("monthly"),
         summaries,
@@ -797,6 +809,17 @@ pub fn print(p: &Profile) {
             "(off)".to_string()
         } else {
             p.rollup.join(", ")
+        }
+    );
+    // Prints `(rollup)` rather than the fallback's contents, so the reader can tell a
+    // profile that CHOSE its index orgs from one that inherits them. The shell applies the
+    // fallback itself; a placeholder here would look like an org named `(rollup)`.
+    println!(
+        "index-orgs  {}",
+        if p.index_orgs.is_empty() {
+            "(rollup)".to_string()
+        } else {
+            p.index_orgs.join(", ")
         }
     );
     // Cross-org, so identical on every profile - printed here because the board is not the

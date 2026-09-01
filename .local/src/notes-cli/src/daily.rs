@@ -1332,6 +1332,7 @@ mod tests {
             watches_state: r.join("state/watch-companion"),
             clickup_list: None,
             rollup: Vec::new(),
+            index_orgs: Vec::new(),
             summaries: r.join("journal/summaries"),
             continuous: r.join("journal/summaries/continuous"),
             monthly: r.join("journal/summaries/monthly"),

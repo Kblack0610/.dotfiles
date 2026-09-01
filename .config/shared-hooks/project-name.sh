@@ -143,8 +143,10 @@ project_release_version() {
   else
     # An app inside a monorepo. git_latest_tag would fall through to bare `v*` and
     # hand back a SIBLING's tag - measured: `time-tangle` resolved to a different app's
-    # mobile tag entirely. Product-scoped globs only.
-    tag="$(git_product_tag "$repo" "$proj")"
+    # mobile tag entirely. Product-scoped globs only, plus the summary's explicit
+    # `<!-- tagglob: -->` when the caller supplied one: a product whose tag prefix is not
+    # its project name (portfolio ships `portfolio-v*`) is unreachable without it.
+    tag="$(git_product_tag "$repo" "$proj" "$summary")"
   fi
 
   [ -n "$tag" ] || return 0

@@ -138,6 +138,120 @@ fn is_placeholder(t: &str) -> bool {
     t.starts_with('_') && t.ends_with('_')
 }
 
+// -- the cockpit marker: declared per-project facts -------------------------
+//
+// `<!-- cockpit: vikunja=3 stage=prod pathfilter=apps/x -->` in `summary.md` is the one
+// place a project declares a fact no tool can derive. Three consumers already grep it
+// (regen-project-index.sh's `resolve_canonical`, regen-lab-feed.sh, notes-cockpit.sh's
+// `epic_of`), so keys go HERE rather than into a second file.
+//
+// Every key below is written only through `set_marker_key`, against a closed vocabulary.
+// That is the whole lesson of `<!-- canonical: NAME -->` (see `summary_template`): a
+// hand-editable declaration drifts from the registry, and four projects ended up naming
+// projects nothing had heard of. A field worth trusting is a field one verb owns.
+
+/// The maturity ladder, least to most real. A project's `stage=` must be one of these.
+///
+/// This is a JUDGEMENT, not a derivation: a toy app and a load-bearing one both ship real
+/// git tags at similar version numbers, and only a human knows that breaking one is a
+/// shrug and breaking the other is an incident. What IS checkable is the floor: a project
+/// claiming the top rung while nothing has ever shipped. `project-map-doctor` checks that
+/// against git, and leaves the ranking alone.
+pub(crate) const STAGES: [&str; 4] = ["draft", "alpha", "beta", "prod"];
+
+/// The value of `key` in the summary's `<!-- cockpit: ... -->` marker.
+///
+/// `None` when there is no marker or the key is absent; `Some("")` when the key is
+/// present but unset, which is what the scaffold writes and is a different fact from
+/// "never declared".
+pub(crate) fn marker_key(content: &str, key: &str) -> Option<String> {
+    let line = content.lines().find(|l| l.contains("<!-- cockpit:"))?;
+    let inner = line.split("<!-- cockpit:").nth(1)?.split("-->").next()?;
+    inner
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(key)?.strip_prefix('=').map(str::to_string))
+}
+
+/// Rewrite `key` in the summary's cockpit marker, preserving every other key and their
+/// order. An absent key is appended at the end of the marker.
+///
+/// `Err` when the file carries no cockpit marker at all. That is deliberate: a silent
+/// no-op would report success while writing nothing, and the caller would have no way to
+/// tell a set-to-empty from a project the scaffold never gave a marker.
+fn set_marker_key(content: &str, key: &str, value: &str) -> Result<String> {
+    let Some(idx) = content.lines().position(|l| l.contains("<!-- cockpit:")) else {
+        bail!("summary has no `<!-- cockpit: … -->` marker to write into");
+    };
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let line = &lines[idx];
+    let (head, rest) = line.split_once("<!-- cockpit:").unwrap();
+    let (inner, tail) = rest.split_once("-->").unwrap();
+
+    let mut toks: Vec<String> = inner.split_whitespace().map(str::to_string).collect();
+    let pair = format!("{key}={value}");
+    match toks
+        .iter()
+        .position(|t| t.split_once('=').map(|(k, _)| k) == Some(key))
+    {
+        Some(i) => toks[i] = pair,
+        None => toks.push(pair),
+    }
+    lines[idx] = format!("{head}<!-- cockpit: {} -->{tail}", toks.join(" "));
+
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Read or write one cockpit-marker key on a project, resolving the name across orgs.
+/// `value` of `None` prints the current value (an empty line when unset).
+fn marker_verb(p: &Profile, log: &Logger, name: &str, key: &str, value: Option<&str>) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let summary = dir.join("summary.md");
+    let content = fs::read_to_string(&summary)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", summary.display()))?;
+
+    let Some(value) = value else {
+        println!("{}", marker_key(&content, key).unwrap_or_default());
+        return Ok(());
+    };
+
+    let updated = set_marker_key(&content, key, value)?;
+    if updated != content {
+        fs::write(&summary, &updated)?;
+        log.info("projects", &format!("{name}: {key}={value}"));
+    }
+    println!("{} {key}={value}", summary.display());
+    Ok(())
+}
+
+/// `notes projects --stage <name> [--set <value>]`: read or declare a project's maturity.
+pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    if let Some(v) = value {
+        if !STAGES.contains(&v) {
+            bail!("unknown stage '{v}' (want: {})", STAGES.join(", "));
+        }
+    }
+    marker_verb(p, log, name, "stage", value)
+}
+
+/// `notes projects --group <name> [--set <value>]`: read or declare a project's index
+/// group (`bnb`, `personal`, `dev`, ...).
+///
+/// Validated as a slug rather than against a fixed list, because a new group is a lane on
+/// one page, not a code change. The index appends a group it does not know about instead
+/// of dropping it, so a typo shows up as its own heading rather than as a missing project.
+pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    if let Some(v) = value {
+        if !v.is_empty() && !v.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            bail!("group '{v}' must be lowercase letters and hyphens");
+        }
+    }
+    marker_verb(p, log, name, "group", value)
+}
+
 /// `notes projects <name>` — print `"<path>\t<label>"` for each note file in the
 /// project (summary first, then version notes / changelog / others by label). The
 /// name match is case-insensitive.
@@ -305,10 +419,16 @@ fn check_name(name: &str) -> Result<()> {
 /// here is what created the problem it was meant to solve -- every new project got a
 /// second, hand-editable place to declare its name, and four of them ended up naming
 /// projects the registry had never heard of.
+///
+/// `stage=draft` IS scaffolded, and the distinction from `canonical:` is that one verb
+/// owns it (`--stage`, closed vocabulary) and `notes doctor` checks it. A new project is
+/// a draft by definition, so the scaffolded value is the true one rather than a prompt to
+/// go and type something. `group=` is left empty: unset means "this project's own
+/// profile", which is right for all but the handful that want a lane of their own.
 fn summary_template(name: &str) -> String {
     format!(
         "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
-<!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
+<!-- cockpit: vikunja= release-epic= stage=draft group= pathfilter= branch= prfilter= -->\n\n\
 Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
 Wants for the agents go on the BOARD, not here: `notes ptask {name} add \"<title>\" #ai` (the session preflight injects that lane at turn 1).\n\n\
 <!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
@@ -1871,6 +1991,68 @@ Version: v1.13.0
         assert!(labels.contains(&"agent/README"), "{labels:?}");
         assert!(labels.contains(&"agent/versions/v1.0.0"), "{labels:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    const SUMMARY: &str = "---\nid: summary\n---\n\n# demo\n\
+<!-- cockpit: repo=bnb-platform vikunja=3 pathfilter=apps/demo branch=develop -->\n\n\
+body\n";
+
+    #[test]
+    fn reads_a_key_and_distinguishes_absent_from_empty() {
+        assert_eq!(marker_key(SUMMARY, "repo").as_deref(), Some("bnb-platform"));
+        assert_eq!(marker_key(SUMMARY, "stage"), None);
+        let empty = SUMMARY.replace("vikunja=3", "vikunja=");
+        assert_eq!(marker_key(&empty, "vikunja").as_deref(), Some(""));
+    }
+
+    /// A prefix must not match: reading `repo` from a marker carrying only `release-epic`
+    /// would otherwise invent a value.
+    #[test]
+    fn does_not_match_a_key_that_merely_contains_the_name() {
+        let m = "<!-- cockpit: release-epic=29 prfilter=demo -->";
+        assert_eq!(marker_key(m, "epic"), None);
+        assert_eq!(marker_key(m, "filter"), None);
+        assert_eq!(marker_key(m, "release-epic").as_deref(), Some("29"));
+    }
+
+    #[test]
+    fn appends_an_absent_key_and_keeps_every_sibling_in_order() {
+        let out = set_marker_key(SUMMARY, "stage", "prod").unwrap();
+        let line = out.lines().find(|l| l.contains("cockpit:")).unwrap();
+        assert_eq!(
+            line,
+            "<!-- cockpit: repo=bnb-platform vikunja=3 pathfilter=apps/demo branch=develop stage=prod -->"
+        );
+        assert!(out.starts_with("---\nid: summary\n"));
+        assert!(out.ends_with("body\n"), "trailing newline preserved");
+    }
+
+    #[test]
+    fn rewrites_an_existing_key_in_place() {
+        let once = set_marker_key(SUMMARY, "stage", "draft").unwrap();
+        let twice = set_marker_key(&once, "stage", "beta").unwrap();
+        assert_eq!(marker_key(&twice, "stage").as_deref(), Some("beta"));
+        assert_eq!(twice.matches("stage=").count(), 1, "no duplicate key");
+        assert_eq!(marker_key(&twice, "repo").as_deref(), Some("bnb-platform"));
+    }
+
+    /// Writing the same value twice must produce byte-identical output, or the index
+    /// watcher (which fires on a changed file) would retrigger on every sync.
+    #[test]
+    fn setting_the_same_value_is_a_no_op() {
+        let once = set_marker_key(SUMMARY, "stage", "alpha").unwrap();
+        assert_eq!(set_marker_key(&once, "stage", "alpha").unwrap(), once);
+    }
+
+    #[test]
+    fn a_summary_with_no_marker_is_an_error_not_a_silent_no_op() {
+        let err = set_marker_key("# demo\n\nno marker here\n", "stage", "prod").unwrap_err();
+        assert!(err.to_string().contains("cockpit"), "{err}");
     }
 }
 
