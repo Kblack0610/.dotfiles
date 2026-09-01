@@ -29,6 +29,7 @@ use crate::config::{self, Profile};
 use crate::inbox;
 use crate::logging::Logger;
 use crate::md;
+use crate::status;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
 use std::fs;
@@ -102,6 +103,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // `## Watches`. Running every `notes today` keeps the counts current as job notes sync in.
     refresh_work(p, log, &note)?;
     refresh_watches(p, log, &note)?;
+    // The watches page, written beside the note rather than into it. Swallowed like the board
+    // below: a page that cannot be written must never abort the note.
+    if let Err(e) = status::publish(p, log, &watches_page(p), watches_present(p)) {
+        log.warn("today", &format!("watches page skipped: {e}"));
+    }
     // Renders the `## Comms` section from the triage poller's per-profile surface file,
     // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
     crate::comms::refresh(p, log, &note)?;
@@ -656,7 +662,25 @@ fn strip_legacy_rollup(content: &str, names: &[String]) -> String {
 /// you below).
 ///
 /// Read-only — never writes. ASCII state markers (OK / TRIP / ERROR / paused / -).
-fn discover_watches(p: &Profile) -> Vec<String> {
+/// One watch, as read off the registry.
+///
+/// `line` is the daily-note rendering, kept here so the note and the status page cannot
+/// disagree about what a watch is called or how stale it is. The status page uses the
+/// component fields instead, because it has room for the sub-bullets the one-liner folds.
+pub(crate) struct WatchRow {
+    /// Unhealthy first (0), healthy/unknown next (1), paused last (2).
+    pub rank: u8,
+    pub name: String,
+    pub wher: String,
+    pub action: String,
+    pub probe: String,
+    pub interval: String,
+    pub state: String,
+    pub line: String,
+}
+
+/// Read the Sentinel registry. Sorted, and ALL ranks kept - the caller decides what to drop.
+pub(crate) fn watch_rows(p: &Profile) -> Vec<WatchRow> {
     let Some(dir) = p.watches.as_ref() else {
         return Vec::new();
     };
@@ -666,7 +690,7 @@ fn discover_watches(p: &Profile) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut rows: Vec<(u8, String, String)> = Vec::new();
+    let mut rows: Vec<WatchRow> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
@@ -685,6 +709,9 @@ fn discover_watches(p: &Profile) -> Vec<String> {
         // watches are `probe: command`, which has no `target`, so without `where` the
         // line cannot say which system it is even about.
         let wher = md::parse_yaml_scalar(&content, "where").unwrap_or_default();
+        // Only the status page has room for this: the remedy the manifest already states, so
+        // a trip does not send you back to the yaml to find out what to run.
+        let action = md::parse_yaml_scalar(&content, "action").unwrap_or_default();
         let probe = md::parse_yaml_scalar(&content, "probe").unwrap_or_else(|| "?".into());
         let interval = md::parse_yaml_scalar(&content, "interval").unwrap_or_else(|| "?".into());
         let state = if paused {
@@ -712,18 +739,27 @@ fn discover_watches(p: &Profile) -> Vec<String> {
             line.push_str(&format!(" - at: {wher}"));
         }
         line.push_str(&format!(" ({probe}, {interval})"));
-        rows.push((rank, name, line));
+        rows.push(WatchRow {
+            rank,
+            name,
+            wher,
+            action,
+            probe,
+            interval,
+            state,
+            line,
+        });
     }
-    if rows.is_empty() {
-        return Vec::new();
-    }
-    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows.sort_by(|a, b| a.rank.cmp(&b.rank).then(a.name.cmp(&b.name)));
+    rows
+}
 
-    // Counts come from the RANKS, not from re-reading state, so the summary can never
-    // disagree with the lines under it.
+/// The roster summary line, counted from the RANKS rather than by re-reading state, so it
+/// can never disagree with the rows beneath it.
+pub(crate) fn watch_summary(rows: &[WatchRow]) -> String {
     let total = rows.len();
-    let bad = rows.iter().filter(|r| r.0 == 0).count();
-    let paused = rows.iter().filter(|r| r.0 == 2).count();
+    let bad = rows.iter().filter(|r| r.rank == 0).count();
+    let paused = rows.iter().filter(|r| r.rank == 2).count();
     let healthy = total - bad - paused;
 
     let mut parts = vec![format!("{healthy} OK")];
@@ -733,12 +769,82 @@ fn discover_watches(p: &Profile) -> Vec<String> {
     if paused > 0 {
         parts.push(format!("{paused} paused"));
     }
-    let summary = parts.join(", ");
-    let mut out = vec![format!("_{total} watches - {summary}_")];
+    format!("{total} watches - {}", parts.join(", "))
+}
+
+fn discover_watches(p: &Profile) -> Vec<String> {
+    let rows = watch_rows(p);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![format!("_{}_", watch_summary(&rows))];
     // Only what needs the human. A healthy watch is accounted for in the count above and
     // says the rest of itself in `watch-companion-loop list`.
-    out.extend(rows.into_iter().filter(|r| r.0 != 1).map(|(_, _, l)| l));
+    out.extend(rows.into_iter().filter(|r| r.rank != 1).map(|r| r.line));
     out
+}
+
+/// Is the watch registry actually on THIS machine?
+///
+/// Stronger than `p.watches.is_some()` on purpose. The notes config is gitignored and copied
+/// between machines by hand, so a second machine can easily have the key set while
+/// `~/.agent/watches` does not exist there - at which point the registry reads empty and a
+/// page written elsewhere looks stale rather than absent.
+fn watches_present(p: &Profile) -> bool {
+    p.watches.as_ref().is_some_and(|d| d.is_dir())
+}
+
+/// When the watch picture last CHANGED, from the `.since` epochs the watch loop writes only
+/// on a state transition.
+///
+/// Deliberately not `.lastrun`, which every probe touches: with a 5m watch in the registry
+/// that would rewrite the page 288 times a day, which is worse than the note this page exists
+/// to quiet. `None` when no watch has ever transitioned, so the clause is omitted rather than
+/// rendering the epoch.
+fn watch_stamp(p: &Profile) -> Option<String> {
+    let newest = fs::read_dir(&p.watches_state)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "since"))
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .max()?;
+    let dt = chrono::DateTime::from_timestamp(newest, 0)?.with_timezone(&Local);
+    Some(dt.format("%m-%d %H:%M").to_string())
+}
+
+/// A manifest `action` is a paragraph; a sub-bullet has room for the instruction.
+fn first_sentence(s: &str) -> String {
+    let head = s.split_once(". ").map(|(a, _)| a).unwrap_or(s).trim();
+    if head.chars().count() <= 120 {
+        return head.to_string();
+    }
+    let cut: String = head.chars().take(117).collect();
+    format!("{cut}...")
+}
+
+pub(crate) fn watches_page(p: &Profile) -> status::Page {
+    let rows = watch_rows(p);
+    let stat = (!rows.is_empty()).then(|| match watch_stamp(p) {
+        Some(t) => format!("{} - as of {t}", watch_summary(&rows)),
+        None => watch_summary(&rows),
+    });
+    status::Page {
+        feed: status::Feed::Watches,
+        stat,
+        rows: rows
+            .into_iter()
+            .map(|r| status::Row {
+                attention: r.rank != 1,
+                sort: (r.rank, r.name.clone()),
+                head: format!("{} {} ({}, {})", r.state, r.name, r.probe, r.interval),
+                detail: vec![
+                    ("at".to_string(), r.wher),
+                    ("do".to_string(), first_sentence(&r.action)),
+                ],
+            })
+            .collect(),
+    }
 }
 
 /// Refresh the daily note's `## Inbox` section with today's quick-captures (the bullet

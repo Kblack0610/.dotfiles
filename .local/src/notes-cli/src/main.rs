@@ -25,6 +25,7 @@ mod meeting;
 mod project_tasks;
 mod project_sweep;
 mod projects;
+mod status;
 mod summarize;
 mod sweep;
 mod tags;
