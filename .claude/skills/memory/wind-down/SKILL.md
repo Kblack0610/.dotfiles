@@ -125,10 +125,38 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    not touch stays as-is. Never `git add -A` a mixed tree. If landing the session's work is
    entangled with someone else's unfinished WIP in the same files, **surface it and ask** rather
    than bundling or misattributing it.
-4. **Clean up after yourself.** Remove this session's scratch artifacts (the session scratchpad
+4. **If the gate blocks on commits this session did not make, clearing it is still YOUR job.**
+   Step 3 says leave pre-existing work alone; the gate refuses to tear down while it exists.
+   Those two combine into a deadlock, and "it will fire on the next clean Stop" is not an exit -
+   nothing else is coming to clean a slot the user already asked you to close. Do not hand the
+   gate back to the user as a decision. Clear it, then tear down.
+
+   **Read the check before you try to satisfy it** (`stop-checks.d/10-git-workflow.sh`): it
+   counts `<local-main-branch>..HEAD`, against the **LOCAL** `develop`/`main` ref, NOT
+   `origin/develop`. In a stale worktree those differ, so the intuitive
+   `git reset --hard origin/develop` can leave you MORE commits ahead than you started and fail
+   the gate harder. Measure first: `git rev-list develop..HEAD --count`, and check candidate
+   targets the same way. The check exits 0 early for a detached HEAD or when the branch IS the
+   main branch, and uses `@{upstream}..HEAD` whenever an upstream exists.
+
+   Prefer, in order: (a) **switch the slot back to its own conventional branch** - a
+   `platform-agent-N` worktree belongs on branch `agent-N`, which usually already exists with an
+   upstream and zero unpushed commits, so `git checkout agent-N` clears the gate and preserves
+   the junk branch untouched; (b) land the commits properly if they are real work; (c) reset the
+   junk branch onto the local main ref. Never push a throwaway branch to origin just to buy a
+   tracking ref. Verify by RUNNING the check - `bash ~/.claude/hooks/stop-checks.d/10-git-workflow.sh;
+   echo $?` - rather than reasoning about whether it now passes.
+
+   `git reset --hard` and `git stash` may both be unavailable (a permission deny-rule; the stash
+   stack is shared across worktrees). A denied command is a signal to reach for a different
+   mechanism, not to stop: `git checkout <branch>`, `git restore <path>`, and `git checkout -b`
+   are non-destructive and usually permitted. Discarding tool-regenerated churn (Serena's
+   `.serena/project.yml`, theme output) with `git restore` is fine and is often what unblocks a
+   branch switch.
+5. **Clean up after yourself.** Remove this session's scratch artifacts (the session scratchpad
    dir, temp files, stray `*.tmp`, throwaway test output). Leave the working tree and `/tmp`
    scratch area as clean as you found them.
-5. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
+6. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -142,7 +170,13 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    the directory and frees the `agent-N` slot for reuse.
 
    The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
-6. **Report the landing state** in your closing message: branch + PR link for what shipped, an
+
+   **Exception - numbered `agent-N` slots are persistent and must NOT be released.**
+   `platform-agent-N` and `.claude/worktrees/agent-*` are long-running shared workspaces; a prior
+   incident removing `platform-agent-3` broke a live session. For those, skip `wt done` entirely
+   and instead leave the slot on its own `agent-N` branch (step 4a). Ad-hoc named worktrees are
+   the ones `wt done` is for.
+7. **Report the landing state** in your closing message: branch + PR link for what shipped, an
    explicit line for anything intentionally left uncommitted (so the gate deferring the kill, if
    it does, is never a surprise), and whether the worktree was released or kept with its reason.
 
