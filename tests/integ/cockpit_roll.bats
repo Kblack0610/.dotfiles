@@ -156,3 +156,95 @@ EOF
   run notes_calls
   refute_output --partial '--roll cockpit'
 }
+
+# ── the tag guard ────────────────────────────────────────────────────────────
+#
+# A roll freezes a version note. On a SHIPPING app that number must already be a git
+# tag: the app owns the version and the sheet only tracks it. Nothing linked the two
+# before, so a sheet reached v1.11.2 while the newest tag was v1.11.0.
+#
+# The guard VERIFIES and never tags - creating one would make an agent able to ship.
+#
+# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only
+# the project -> repo mapping is stubbed. Stubbing the predicate would leave the tag
+# shapes (`<product>-v*`, bare `v*`) untested, which is the half most likely to rot.
+
+# $1=project $2=the wave version the sheet would freeze, $3.. = tags that exist
+with_shipping_project() {
+  local proj="$1" ver="$2" repo t; shift 2
+  repo="$SANDBOX/repos/$proj"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  for t in "$@"; do git -C "$repo" tag "$t"; done
+  printf '%s' "$ver" > "$NOTES_FIXTURE/version-of.$proj"
+  cat > "$SANDBOX/pn-lib.sh" <<LIB
+project_release_version() { printf 'v1.0.0'; }
+project_repo_path() { printf '%s' '$repo'; }
+LIB
+  export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
+}
+
+@test "a shipping app rolls when a tag ships that exact version" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.13.0
+  run "$COCKPIT" --roll-now personal cockpit minor
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --roll cockpit'
+}
+
+@test "a shipping app REFUSES to freeze a version no tag ships" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.12.2
+  run "$COCKPIT" --roll-now personal cockpit minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+  assert_output --partial 'v1.13.0'
+  # and the sheet is untouched: the refusal happens BEFORE notes is asked to roll
+  run notes_calls
+  refute_output --partial 'projects --roll cockpit'
+}
+
+@test "the newest tag being higher does not stand in for the one being rolled" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.14.0
+  run "$COCKPIT" --roll-now personal cockpit minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+}
+
+@test "a prerelease of the version does not count as shipping it" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.13.0-rc1
+  run "$COCKPIT" --roll-now personal cockpit minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+}
+
+@test "ROLL_TAG_CHECK=off is the escape, and it is the only one" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.12.2
+  ROLL_TAG_CHECK=off run "$COCKPIT" --roll-now personal cockpit minor
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --roll cockpit'
+}
+
+@test "a NOTES-ONLY project is skipped, not refused for lacking tags it can never have" {
+  with_frozen
+  # no PROJECT_NAME_LIB: project_release_version is undefined, which IS the
+  # notes-only signal. This is the pre-existing behaviour and must not regress.
+  run "$COCKPIT" --roll-now personal cockpit
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --roll cockpit'
+}
+
+@test "a guard that cannot run REFUSES rather than waving the roll through" {
+  with_frozen
+  with_shipping_project cockpit v1.13.0 cockpit-v1.13.0
+  GIT_RELEASE_LIB="$SANDBOX/no-such-lib.sh" run "$COCKPIT" --roll-now personal cockpit minor
+  assert_failure
+  assert_output --partial 'cannot verify'
+}
