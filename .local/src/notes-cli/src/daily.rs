@@ -26,7 +26,6 @@
 //! is exactly why the board is a link and not a section.
 
 use crate::config::{self, Profile};
-use crate::inbox;
 use crate::logging::Logger;
 use crate::md;
 use crate::status;
@@ -102,10 +101,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     // Renders the `## Work` roster (job link + open-count), like refresh_watches renders
     // `## Watches`. Running every `notes today` keeps the counts current as job notes sync in.
     refresh_work(p, log, &note)?;
-    refresh_watches(p, log, &note)?;
-    // The watches page, written beside the note rather than into it. Swallowed like the board
-    // below: a page that cannot be written must never abort the note.
-    if let Err(e) = status::publish(p, log, &watches_page(p), watches_present(p)) {
+    // Writes the watches page, then strips the note's section. Swallowed like the board below:
+    // a page that cannot be written must never abort the note.
+    if let Err(e) = refresh_watches(p, log, &note) {
         log.warn("today", &format!("watches page skipped: {e}"));
     }
     // Renders the `## Comms` section from the triage poller's per-profile surface file,
@@ -494,18 +492,30 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
             )
         })
         .unwrap_or_default();
-    // Surface the inbox as a link + pending count when there's anything to triage.
-    let (pending, _stale) = inbox::backlog_counts(p);
-    let inbox_link = if pending > 0 {
-        format!(
-            " · Inbox ({pending}): [[{}]]",
-            config::wikilink(&p.root, &p.inbox)
-        )
-    } else {
+    // The generated feeds, as links to their own pages.
+    //
+    // Unconditional and count-free, and both halves are load-bearing. This fragment used to
+    // read `Inbox ({pending})`, which rewrote the note every time the count moved AND flipped
+    // in and out of existence as it crossed zero - in the one line the status pages depend on
+    // holding still. Rendering all three regardless of whether the page exists yet also keeps
+    // the footer identical on every machine, so the note never becomes machine-dependent; an
+    // unfollowed wikilink is normal in a vault.
+    let status_links = status::Feed::ALL
+        .iter()
+        .filter_map(|f| {
+            let t = config::wikilink(&p.root, &status::page_path(&p.root, *f));
+            (!t.is_empty() && !t.starts_with("..") && !t.starts_with('/'))
+                .then(|| format!("[[{t}|{}]]", f.title()))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let status_link = if status_links.is_empty() {
         String::new()
+    } else {
+        format!(" · Status: {status_links}")
     };
     content.push_str(&format!(
-        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{inbox_link}\n"
+        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{status_link}\n"
     ));
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.
@@ -772,17 +782,6 @@ pub(crate) fn watch_summary(rows: &[WatchRow]) -> String {
     format!("{total} watches - {}", parts.join(", "))
 }
 
-fn discover_watches(p: &Profile) -> Vec<String> {
-    let rows = watch_rows(p);
-    if rows.is_empty() {
-        return Vec::new();
-    }
-    let mut out = vec![format!("_{}_", watch_summary(&rows))];
-    // Only what needs the human. A healthy watch is accounted for in the count above and
-    // says the rest of itself in `watch-companion-loop list`.
-    out.extend(rows.into_iter().filter(|r| r.rank != 1).map(|r| r.line));
-    out
-}
 
 /// Is the watch registry actually on THIS machine?
 ///
@@ -947,7 +946,7 @@ fn inbox_session(line: &str) -> Option<String> {
 
 /// Collect each rollup profile's open Focus tasks.
 ///
-/// Infallible by construction, like `discover_watches`. `config::resolve` returns `Err`
+/// Infallible by construction, like `watch_rows`. `config::resolve` returns `Err`
 /// for a name that is not defined, and `notes today` runs from the shell rc on every new
 /// shell - so a single typo in `rollup` must not be able to take the command down. An
 /// unresolvable entry is warned (Logger::warn always reaches stderr, so a genuine
@@ -988,7 +987,7 @@ fn rollup_source(p: &Profile, log: &Logger, name: &str) -> Option<(PathBuf, Opti
 /// job's latest note plus its open-task count - a glance-value pointer, not the tasks
 /// themselves (those live in the job note, reached with `gf` on the link). Every configured
 /// job is listed even at zero open (a stable roster for now); a job with no note yet is
-/// listed link-less. Infallible like `discover_watches`: a resolve/read failure degrades one
+/// listed link-less. Infallible like `watch_rows`: a resolve/read failure degrades one
 /// line, never aborts `notes today`.
 fn work_lines(p: &Profile, log: &Logger) -> Vec<String> {
     let mut out = Vec::new();
@@ -1049,32 +1048,26 @@ fn refresh_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Refresh the daily note's `## Watches` section from the live Sentinel registry. Runs
-/// every `notes today` (like `link_refs`) so state stays current. No-op when `watches`
-/// is unset. Replaces any existing section in place, kept above the footer.
+/// Publish the watches page, then take `## Watches` out of the note - in that order, and only
+/// once the page is actually on disk.
+///
+/// The ordering is the whole safety argument. Stripping a section whose replacement was not
+/// written would destroy the only copy, and on a machine that does not host the registry it
+/// would strip a section another machine wrote and synced in. Both are refused here, so a
+/// machine mid-rollout converges instead of fighting: it never removes what it did not write.
 fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    if p.watches.is_none() {
+    let present = watches_present(p);
+    let outcome = status::publish(&p.root, &p.daily, log, &watches_page(p), present)?;
+    if matches!(outcome, status::Outcome::Skipped(_))
+        || !status::page_path(&p.root, status::Feed::Watches).exists()
+    {
         return Ok(());
     }
     let content = fs::read_to_string(note)?;
-    let lines = discover_watches(p);
     let stripped = remove_section(&content, "Watches");
-    let new_content = if lines.is_empty() {
-        stripped
-    } else {
-        let mut block = String::from("\n\n## Watches\n");
-        for l in &lines {
-            block.push_str(l);
-            block.push('\n');
-        }
-        insert_before_footer(&stripped, &block)
-    };
-    if new_content != content {
-        md::write_atomic(note, &new_content)?;
-        log.info(
-            "today",
-            &format!("refreshed {} watch(es) in ## Watches", lines.len()),
-        );
+    if stripped != content {
+        md::write_atomic(note, &stripped)?;
+        log.info("today", "moved ## Watches to the status page");
     }
     Ok(())
 }
@@ -2060,8 +2053,55 @@ after
         assert_eq!(remove_section(c, "Nope"), c);
     }
 
+    /// The premise of the whole change: nothing generated may move the daily note's footer.
+    ///
+    /// The footer used to carry `Inbox ({pending})`, so it was rewritten every time a capture
+    /// landed AND it appeared and vanished as the count crossed zero - in the one line the
+    /// status pages depend on holding still. Without this test the feature can ship looking
+    /// correct and still rewrite the note every time mail arrives.
     #[test]
-    fn discover_watches_renders_and_sorts() {
+    fn the_footer_carries_no_counts_and_survives_a_changed_inbox() {
+        let dir = std::env::temp_dir().join(format!("notes-footer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daily = dir.join("journal/daily");
+        let inbox = dir.join("inbox");
+        std::fs::create_dir_all(&daily).unwrap();
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let p = profile(dir.to_str().unwrap());
+        let today = Local::now().date_naive();
+        let note = daily.join(format!("{}.md", today.format("%Y-%m-%d")));
+        let log = Logger::new(dir.join("log"), false);
+        create_note(&p, &log, today, &note).unwrap();
+        ensure_footer(&p, &note).unwrap();
+        let before = std::fs::read_to_string(&note).unwrap();
+
+        // A capture arrives: exactly what used to move the footer.
+        std::fs::write(
+            inbox.join(format!("{}.md", today.format("%Y-%m-%d"))),
+            "- a captured thing\n- another\n",
+        )
+        .unwrap();
+        ensure_footer(&p, &note).unwrap();
+        let after = std::fs::read_to_string(&note).unwrap();
+
+        assert_eq!(before, after, "a new capture must not touch the note");
+
+        let footer = after.rsplit("\n---\n").next().unwrap();
+        assert!(
+            !footer.chars().any(|c| c.is_ascii_digit()),
+            "the footer must carry no counts:\n{footer}"
+        );
+        assert!(
+            footer.contains("Status:") && footer.contains("[[status/watches|Watches]]"),
+            "the footer must reach the status pages:\n{footer}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_rows_rank_sort_and_bucket() {
         let dir = std::env::temp_dir().join(format!("notes-watch-{}", std::process::id()));
         let wdir = dir.join("watches");
         let sdir = dir.join("state");
@@ -2089,25 +2129,39 @@ after
         p.watches = Some(wdir.clone());
         p.watches_state = sdir.clone();
 
-        let lines = discover_watches(&p);
-        // Summary, then only what needs the human: the TRIP and the paused one. The
-        // healthy `api` watch is a number in the summary, not a line -- ten healthy
-        // watches printing their full assertion is what made this section unreadable.
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "_3 watches - 1 OK, 1 tripped, 1 paused_");
-        assert_eq!(lines[1], "- TRIP router (command, 15m)"); // unhealthy first
-        assert_eq!(lines[2], "- paused parked (metric, 5m)"); // paused last
-        assert!(!lines.iter().any(|l| l.contains("- OK api")));
+        let rows = watch_rows(&p);
+        // Every watch survives now, healthy ones included -- the page has a `## Quiet` to put
+        // them in, where the note's one-glance section could only afford the exceptions.
+        assert_eq!(rows.len(), 3);
+        assert_eq!(watch_summary(&rows), "3 watches - 1 OK, 1 tripped, 1 paused");
+        assert_eq!(rows[0].name, "router"); // unhealthy first
+        assert_eq!(rows[1].name, "api"); // healthy next
+        assert_eq!(rows[2].name, "parked"); // paused last
 
-        // unset → empty (opt-in gate)
+        // A paused watch needs you too: it is silently not watching. Same rule the note's
+        // section used (`rank != 1`), so the page inherits it rather than reinventing it.
+        let page = watches_page(&p);
+        let attention: Vec<&str> = page
+            .rows
+            .iter()
+            .filter(|r| r.attention)
+            .map(|r| r.head.as_str())
+            .collect();
+        assert_eq!(
+            attention,
+            vec!["TRIP router (command, 15m)", "paused parked (metric, 5m)"]
+        );
+
+        // watches unset is the opt-in gate: no rows, and no stat line to render.
         p.watches = None;
-        assert!(discover_watches(&p).is_empty());
+        assert!(watch_rows(&p).is_empty());
+        assert!(watches_page(&p).stat.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn discover_watches_folds_block_scalars_and_surfaces_only_the_unhealthy() {
+    fn a_yaml_block_marker_never_reaches_the_page() {
         // The regression this pins: every fixture above uses a plain one-line
         // `description:`, and real manifests overwhelmingly do not — a long description
         // is exactly when you reach for `>-`. So the daily note rendered
@@ -2143,20 +2197,22 @@ after
         p.watches = Some(wdir.clone());
         p.watches_state = sdir.clone();
 
-        let lines = discover_watches(&p);
-        // Summary + the one tripped watch; the healthy legacy one is just a count.
-        assert_eq!(lines.len(), 2);
+        let out = status::render(&p.root, &p.daily, &watches_page(&p));
 
-        // The marker must never reach the note. This is the assertion that fails on the
-        // old parser, and the only one that really matters.
-        assert!(!lines.iter().any(|l| l.contains(">-") || l.contains("|-")));
+        // The marker must never reach the page. This is the assertion that fails on the old
+        // parser, and the only one that really matters.
+        assert!(
+            !out.contains(">-") && !out.contains("|-"),
+            "a YAML block marker leaked into the page:\n{out}"
+        );
 
-        assert_eq!(lines[0], "_2 watches - 1 OK, 1 tripped_");
-        // `where` rides along as `at:` -- for a `probe: command` watch it is the only
+        assert!(out.contains("_2 watches - 1 OK, 1 tripped"), "{out}");
+        // `where` becomes the `at:` sub-bullet -- for a `probe: command` watch it is the only
         // thing naming the system, since a command watch carries no `target`.
-        assert_eq!(
-            lines[1],
-            "- TRIP drift - at: ~/.dotfiles and the private overlay (command, 6h)"
+        assert!(
+            out.contains("- TRIP drift (command, 6h)")
+                && out.contains("  - at: ~/.dotfiles and the private overlay"),
+            "{out}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

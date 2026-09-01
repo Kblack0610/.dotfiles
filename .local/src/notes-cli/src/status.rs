@@ -14,7 +14,7 @@
 //! SOURCE, never `Local::now()`: the page is compared before writing, so a wall-clock stamp
 //! would defeat that. Today's date is the one exception, costing one write per page per day.
 
-use crate::config::{self, Profile};
+use crate::config;
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{Context, Result};
@@ -188,11 +188,17 @@ pub enum Outcome {
 ///
 /// Two invariants hold structurally, surviving a caller that forgets the guard: nothing here
 /// deletes a page, and an empty render never truncates a page that already has content.
-pub fn publish(p: &Profile, log: &Logger, page: &Page, source_present: bool) -> Result<Outcome> {
+pub fn publish(
+    root: &Path,
+    daily_dir: &Path,
+    log: &Logger,
+    page: &Page,
+    source_present: bool,
+) -> Result<Outcome> {
     if !source_present {
         return Ok(Outcome::Skipped("source not on this machine"));
     }
-    let path = page_path(&p.root, page.feed);
+    let path = page_path(root, page.feed);
     let existing = fs::read_to_string(&path).ok();
 
     if page.rows.is_empty()
@@ -202,7 +208,7 @@ pub fn publish(p: &Profile, log: &Logger, page: &Page, source_present: bool) -> 
         return Ok(Outcome::Skipped("empty render, page has content"));
     }
 
-    let rendered = render(&p.root, &p.daily, page);
+    let rendered = render(root, daily_dir, page);
     if existing.as_deref() == Some(rendered.as_str()) {
         return Ok(Outcome::Unchanged);
     }
@@ -322,7 +328,10 @@ mod tests {
             rows,
         };
         let out = render(&root(), &daily(), &page);
-        assert!(out.contains("- ... and 5 more"), "cap of 10 applies:\n{out}");
+        assert!(
+            out.contains("- ... and 5 more"),
+            "cap of 10 applies:\n{out}"
+        );
     }
 
     /// A link out of the vault must not become a dangling wikilink.
@@ -333,5 +342,96 @@ mod tests {
             "",
             "a target outside root must not be linked"
         );
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("notes-status-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn logger(d: &Path) -> Logger {
+        Logger::new(d.join("log"), false)
+    }
+
+    fn watches(stat: Option<&str>, rows: Vec<Row>) -> Page {
+        Page {
+            feed: Feed::Watches,
+            stat: stat.map(str::to_string),
+            rows,
+        }
+    }
+
+    /// Compare-then-write, which is the entire reason these pages exist. `board::write_one`
+    /// writes unconditionally; copying that here would move the churn instead of ending it.
+    #[test]
+    fn publish_writes_once_then_declines() {
+        let d = scratch("once");
+        let log = logger(&d);
+        let page = watches(Some("1 watch - 1 OK"), vec![row(false, 1, "a", "OK a")]);
+
+        assert_eq!(
+            publish(&d, &d.join("journal/daily"), &log, &page, true).unwrap(),
+            Outcome::Written
+        );
+        assert_eq!(
+            publish(&d, &d.join("journal/daily"), &log, &page, true).unwrap(),
+            Outcome::Unchanged,
+            "unchanged source must not rewrite the page"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The cross-machine guard. The vault git-syncs on a 30s timer and the sync script aborts
+    /// its rebase and exits on conflict, so a machine that does not host the source must not
+    /// touch the page at all - not write it, and above all not blank it.
+    #[test]
+    fn publish_leaves_the_page_alone_when_the_source_is_absent() {
+        let d = scratch("guard");
+        let log = logger(&d);
+        let path = page_path(&d, Feed::Watches);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "written by another machine\n").unwrap();
+
+        let out = publish(
+            &d,
+            &d.join("journal/daily"),
+            &log,
+            &watches(None, vec![]),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(out, Outcome::Skipped(_)), "got {out:?}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "written by another machine\n",
+            "a machine without the source must not touch the page"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Belt to the guard's braces: even WITH the source present, an empty render must not
+    /// truncate a page that already says something. This holds structurally, so it survives a
+    /// caller that forgets the guard entirely.
+    #[test]
+    fn publish_never_blanks_a_page_that_has_content() {
+        let d = scratch("blank");
+        let log = logger(&d);
+        let path = page_path(&d, Feed::Watches);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "real content\n").unwrap();
+
+        let out = publish(
+            &d,
+            &d.join("journal/daily"),
+            &log,
+            &watches(None, vec![]),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(out, Outcome::Skipped(_)), "got {out:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "real content\n");
+        let _ = fs::remove_dir_all(&d);
     }
 }
