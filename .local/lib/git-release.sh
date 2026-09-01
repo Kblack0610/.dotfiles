@@ -141,6 +141,32 @@ git_product_tag() {
   printf '%s' "$t"
 }
 
+# git_tag_for_version <repo> <product> <version> -> the tag that SHIPPED this exact
+# version, or "" if none did. `version` is the bare `v1.13.0`.
+#
+# The asymmetry with git_product_tag is the point: that one answers "what is the
+# newest thing shipped", this one answers "was THIS number shipped". A roll needs
+# the second, and `newest == v1.12.2` tells you nothing about whether v1.13.0 exists.
+#
+# Shares git_product_tag's glob ladder on purpose - a second list would drift from
+# it silently, and that failure refuses a version that really did ship. Exact match
+# only: `v1.13.0-rc1` is not `v1.13.0` shipping.
+git_tag_for_version() {
+  local repo="$1" product="$2" version="$3" glob
+  [ -n "$repo" ] && [ -n "$product" ] && [ -n "$version" ] && [ -d "$repo/.git" ] \
+    && command -v git >/dev/null 2>&1 || return 0
+  for glob in "${product}-${version}" "${product}-web-${version}" "${version}"; do
+    if git -C "$repo" rev-parse -q --verify "refs/tags/${glob}" >/dev/null 2>&1; then
+      printf '%s' "$glob"
+      return 0
+    fi
+  done
+  # `<product>-*-v*` is a pattern, not a literal, so it needs a listing rather than
+  # a ref lookup -- an anchored grep so `-v1.13.0` cannot match `-v1.13.0-rc1`.
+  git -C "$repo" tag --list "${product}-*-${version}" 2>/dev/null \
+    | grep -xE ".*-${version//./\\.}" | head -1 || true
+}
+
 # git_shipping_next <repo> <tag> <branch> [pathfilter] [limit] — merged since the
 # last tag, i.e. the built-but-unshipped scope.
 #

@@ -1686,8 +1686,65 @@ roll_project() { # $1 = section of the highlighted row (<profile>/<project>)
 # way into this code used to be through roll_project's `read -p`, which a headless run
 # cannot answer. The wave would have frozen a version note with no agent changelog and no
 # summary inside it — a release record that recorded nothing.
+# roll_tag_guard <profile> <project> -> 0 proceed, 1 refuse.
+#
+# A roll freezes a version note. On a SHIPPING app that number must already be a
+# git tag, because the app owns the version and the sheet only tracks it. Nothing
+# linked the two before: the roll never read git, so a sheet reached v1.11.2 while
+# the newest tag was v1.11.0 - two counters in one namespace, drifting silently.
+#
+# This VERIFIES, it never tags. Creating one here would make an agent able to ship.
+#
+# `project_release_version` empty means a NOTES-ONLY project (no repo artifact, no
+# tags), where the sheet counter is the only counter and is already correct - those
+# skip entirely rather than being refused for lacking tags they can never have.
+roll_tag_guard() { # $1=profile $2=project
+  local profile="$1" name="$2" target shipped repo tag
+  [ "${ROLL_TAG_CHECK:-on}" = off ] && return 0
+  command -v project_release_version >/dev/null 2>&1 || return 0
+
+  shipped="$(project_release_version "$name" 2>/dev/null)"
+  [ -n "$shipped" ] || return 0
+
+  target="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+  [ -n "$target" ] || return 0
+
+  # Source the predicate HERE. project_release_version also sources git-release.sh,
+  # but only inside a command substitution - a subshell, whose function definitions
+  # die with it. Relying on that side effect left git_tag_for_version undefined and
+  # the guard passing everything, which a negative control caught and nothing else
+  # would have.
+  if ! command -v git_tag_for_version >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}" 2>/dev/null || true
+  fi
+  # Fail CLOSED. We already know this is a shipping app, so a missing predicate means
+  # the check cannot run - and a guard that cannot run must say so, not wave things by.
+  if ! command -v git_tag_for_version >/dev/null 2>&1; then
+    printf 'roll: refusing - git_tag_for_version unavailable, cannot verify %s.\n' "$target" >&2
+    printf '  expected lib: %s\n' "${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}" >&2
+    printf '  to override: ROLL_TAG_CHECK=off\n' >&2
+    return 1
+  fi
+
+  repo="$(project_repo_path "$name" 2>/dev/null)"
+  if [ -z "$repo" ]; then
+    printf 'roll: refusing - no repo path for %s, cannot verify %s.\n' "$name" "$target" >&2
+    printf '  to override: ROLL_TAG_CHECK=off\n' >&2
+    return 1
+  fi
+  tag="$(git_tag_for_version "$repo" "$name" "$target" 2>/dev/null)"
+  [ -n "$tag" ] && return 0
+
+  printf 'roll: refusing to freeze %s - no git tag ships it.\n' "$target" >&2
+  printf '  newest shipped tag: %s\n' "$shipped" >&2
+  printf '  push the release tag first, then roll. To override: ROLL_TAG_CHECK=off\n' >&2
+  return 1
+}
+
 roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
   local profile="$1" name="$2" flag="${3:-}" out frozen
+  roll_tag_guard "$profile" "$name" || return 1
   # shellcheck disable=SC2086  # $flag is one optional word, deliberately unquoted
   out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
     || { echo "$out"; echo "roll failed"; return 1; }
