@@ -96,10 +96,16 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the nine that were classified" {
+@test "theme-switch's write targets are still the ten that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
   # switch; converting each to its tool's native include (hyprland `source =`, lazygit
   # LG_CONFIG_FILE, an nvim palette module) is the unfinished half of the job.
+  #
+  # .termux/colors.properties is the exception to the binary below: it is generated in
+  # full, yet must stay TRACKED. The phone never runs the switcher, so a desktop
+  # generates the file and commits it and the phone picks it up on `git pull` --
+  # git is the transport, and an ignored file would never arrive. It is the one
+  # target that pays the twice-daily churn on purpose.
   local expected
   expected="$(printf '%s\n' \
     .config/hypr/conf.d/look-and-feel.conf \
@@ -110,7 +116,8 @@ is_ignored() {
     .config/nvim/lua/kennethblack/plugins/neo-tree.lua \
     .config/sketchybar/colors.sh \
     .config/starship.toml \
-    .config/waybar/style.css | sort -u)"
+    .config/waybar/style.css \
+    .termux/colors.properties | sort -u)"
 
   run write_targets
   assert_success
@@ -118,12 +125,18 @@ is_ignored() {
   if [ "$output" != "$expected" ]; then
     echo "theme-switch's set of write targets changed." >&2
     echo "" >&2
-    echo "Answer one question, then update this test:" >&2
-    echo "  Is the new target GENERATED in full from the palette/template?" >&2
-    echo "    yes -> add it to .gitignore, and to the generated cases above," >&2
-    echo "           and to the installers' setup_theme --only list." >&2
-    echo "    no  -> it is tracked config patched in place; add it to the" >&2
-    echo "           expected list here and to the README's tracked column." >&2
+    echo "Answer two questions, then update this test:" >&2
+    echo "  1. Is the new target GENERATED in full from the palette/template?" >&2
+    echo "     no  -> it is tracked config patched in place; add it to the" >&2
+    echo "            expected list here and to the README's tracked column." >&2
+    echo "  2. If generated: does anything read it that CANNOT run theme-switch," >&2
+    echo "     reaching it over git rather than off this disk?" >&2
+    echo "     no  -> add it to .gitignore, and to the generated cases above," >&2
+    echo "            and to the installers' setup_theme --only list." >&2
+    echo "     yes -> it must stay tracked or it never reaches that consumer" >&2
+    echo "            (this is .termux/colors.properties and the phone). Add it" >&2
+    echo "            to the expected list here and to the README, and say in" >&2
+    echo "            both WHY it is tracked despite being generated." >&2
     echo "" >&2
     diff <(printf '%s\n' "$expected") <(printf '%s\n' "$output") >&2 || true
     return 1

@@ -14,19 +14,35 @@ set -uo pipefail
 
 THRESHOLD="${TMUX_STATUS_MIN_HEIGHT:-20}"
 
-command -v tmux >/dev/null 2>&1 || exit 0
+# The whole body lives in a function so the source guard below has something to
+# guard. A flat script cannot honour that seam: sourcing it would run the sweep
+# against the developer's live tmux server, which is exactly what the seam
+# exists to prevent.
+#
+# `command -v tmux` moved in here with it, because an `exit 0` at top level
+# would take the sourcing shell down with it.
+autohide_apply() {
+    command -v tmux >/dev/null 2>&1 || return 0
 
-declare -A min=()
-while IFS='|' read -r session height; do
-    [ -n "$session" ] && [ -n "$height" ] || continue
-    current="${min[$session]:-999999}"
-    [ "$height" -lt "$current" ] && min["$session"]="$height"
-done < <(tmux list-clients -F '#{client_session}|#{client_height}' 2>/dev/null)
+    local -A min=()
+    local session height current
 
-for session in "${!min[@]}"; do
-    if [ "${min[$session]}" -lt "$THRESHOLD" ]; then
-        tmux set-option -t "$session" status off 2>/dev/null || true
-    else
-        tmux set-option -t "$session" status on 2>/dev/null || true
-    fi
-done
+    while IFS='|' read -r session height; do
+        [ -n "$session" ] && [ -n "$height" ] || continue
+        current="${min[$session]:-999999}"
+        [ "$height" -lt "$current" ] && min["$session"]="$height"
+    done < <(tmux list-clients -F '#{client_session}|#{client_height}' 2>/dev/null)
+
+    for session in "${!min[@]}"; do
+        if [ "${min[$session]}" -lt "$THRESHOLD" ]; then
+            tmux set-option -t "$session" status off 2>/dev/null || true
+        else
+            tmux set-option -t "$session" status on 2>/dev/null || true
+        fi
+    done
+}
+
+# --- The test seam ----------------------------------------------------------
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
+autohide_apply
