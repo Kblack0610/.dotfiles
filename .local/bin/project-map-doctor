@@ -186,14 +186,16 @@ if [ -n "${seen_names:-}" ]; then
 fi
 
 # --- 6c. every lab project declares a stage, and a `prod` claim is backed by a tag ----
-# `stage=` in the summary's `<!-- cockpit: ... -->` marker is a DECLARED fact: no tool can
-# derive it: a toy app and a load-bearing one both ship real git tags at similar version
-# numbers, and only a human knows breaking one is a shrug and the other an incident.
+# The `#prod` / `#alpha` hashtag in a project's HEAD (above its first `##`) is a DECLARED
+# fact no tool can derive: a toy app and a load-bearing one both ship real git tags at
+# similar version numbers, and only a human knows breaking one is a shrug and the other an
+# incident.
 #
-# A declared field with nothing checking it is exactly what `<!-- canonical: NAME -->`
-# was, and checks 6/6b exist because that drifted. So the vocabulary is closed and
-# enforced here, and the one half that IS derivable -- whether anything shipped at all --
-# is checked against git rather than taken on trust.
+# It is hand-editable on purpose - it is the thing you change, and it sits with the `#high`
+# tags already on every wave row. `<!-- canonical: NAME -->` drifted because NOTHING
+# checked it, not because a person could type it, so THIS is the check that makes the tag
+# safe to type: closed vocabulary, and the one half that IS derivable -- whether anything
+# shipped at all -- verified against git rather than taken on trust.
 #
 # `prod` with a repo and no tag is a FAIL: the claim is refutable and refuted. `prod` with
 # no repo at all is a WARN, because agent-runtime and notes-cockpit are notes-only by
@@ -206,6 +208,9 @@ if declare -F lab_roots >/dev/null 2>&1; then
   # shellcheck source=/dev/null
   [ -r "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" ] \
     && . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+  # shellcheck source=/dev/null
+  [ -r "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}" ] \
+    && . "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}"
   n=0; bad=0; stage_warns=0
   while IFS= read -r root; do
     [ -d "$root" ] || continue
@@ -213,19 +218,23 @@ if declare -F lab_roots >/dev/null 2>&1; then
       [ -f "$d/summary.md" ] || continue
       name="$(basename "$d")"
       n=$((n + 1))
-      marker="$(grep -o '<!-- cockpit:[^>]*-->' "$d/summary.md" 2>/dev/null | head -1)"
-      stage="$(sed -n 's/.*[[:space:]]stage=\([a-z]*\).*/\1/p' <<<"$marker")"
+      if declare -F lab_head_tag >/dev/null 2>&1; then
+        stage="$(lab_head_tag "$(lab_front_page "$d")" $STAGE_VOCAB)"
+      else
+        skip "lab-feed.sh unavailable; cannot read \"$name\" stage tag"
+        continue
+      fi
 
       if [ -z "$stage" ]; then
-        warn "lab project \"$name\" declares no stage (notes projects --stage $name --set draft)"
+        warn "lab project \"$name\" declares no stage (tag its sheet #draft, or: notes projects --stage $name --set draft)"
         stage_warns=$((stage_warns + 1))
         continue
       fi
-      if ! grep -qw -- "$stage" <<<"$STAGE_VOCAB"; then
-        fail "lab project \"$name\" has stage=\"$stage\", which is not one of: $STAGE_VOCAB"
-        bad=$((bad + 1))
-        continue
-      fi
+      # No "invalid value" branch, because there cannot be one: `lab_head_tag` only ever
+      # returns a member of the vocabulary, so a mistyped `#prd` is not a bad stage - it is
+      # no stage, and the WARN above already says exactly that and names the fix. A tag the
+      # vocabulary does not know has to be ignorable, or a `#urgent` in a project's prose
+      # would fail this gate.
       [ "$stage" = prod ] || continue
 
       if ! declare -F project_release_version >/dev/null 2>&1; then
