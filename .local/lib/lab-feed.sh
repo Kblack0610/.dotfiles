@@ -220,3 +220,43 @@ lab_feed_gist() {
   [ "${prs:-0}" -gt 0 ] && out="${out:+$out, }${prs} PR${plural}"
   printf '%s' "$out"
 }
+
+# lab_front_page <project-dir> -> the file the project declares ITSELF on.
+#
+# The working sheet when there is one, else the summary. Same precedence
+# `projects.rs::front_page` uses, and the pair must agree: `notes projects --stage` writes
+# to whichever file this names, and a reader looking at the other one would report a stage
+# nobody set.
+lab_front_page() {
+  local d="${1%/}" f
+  for f in README.md tasks.md; do
+    [ -f "$d/$f" ] && grep -q '^Version:' "$d/$f" 2>/dev/null && { printf '%s' "$d/$f"; return 0; }
+  done
+  printf '%s' "$d/summary.md"
+}
+
+# lab_head_tag <file> <vocab...> -> the first hashtag from `vocab` in the file's HEAD.
+#
+# The head is everything above the first `## ` heading. That boundary is the whole point:
+# below it are the wave rows, and their `#high` / `#v0.0.2` / `#draft` tags are facts about
+# individual TASKS. Scanning the whole file would let one task's tag silently restage the
+# project it lives in.
+#
+# A hashtag outside the vocabulary is ignored rather than guessed at, so `#urgent` written
+# in the prose cannot invent a stage or a section on the index.
+lab_head_tag() {
+  local f="${1:-}"; shift
+  [ -f "$f" ] || return 0
+  awk -v vocab=" $* " '
+    /^## / { exit }
+    {
+      for (i = 1; i <= NF; i++) {
+        if (substr($i, 1, 1) == "#") {
+          t = tolower(substr($i, 2))
+          gsub(/[^a-z0-9_-]/, "", t)
+          if (t != "" && index(vocab, " " t " ")) { print t; exit }
+        }
+      }
+    }
+  ' "$f"
+}

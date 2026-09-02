@@ -140,15 +140,13 @@ fn is_placeholder(t: &str) -> bool {
 
 // -- the cockpit marker: declared per-project facts -------------------------
 //
-// `<!-- cockpit: vikunja=3 stage=prod pathfilter=apps/x -->` in `summary.md` is the one
-// place a project declares a fact no tool can derive. Three consumers already grep it
-// (regen-project-index.sh's `resolve_canonical`, regen-lab-feed.sh, notes-cockpit.sh's
-// `epic_of`), so keys go HERE rather than into a second file.
+// `<!-- cockpit: vikunja=3 pathfilter=apps/x -->` in `summary.md` carries the WIRING a
+// project needs (repo, tracker ids, path filters) - facts a person sets once and never
+// looks at again. Three consumers grep it, so those keys live there rather than in a
+// second file.
 //
-// Every key below is written only through `set_marker_key`, against a closed vocabulary.
-// That is the whole lesson of `<!-- canonical: NAME -->` (see `summary_template`): a
-// hand-editable declaration drifts from the registry, and four projects ended up naming
-// projects nothing had heard of. A field worth trusting is a field one verb owns.
+// What a person CHANGES does not belong in an HTML comment. See the stage/group section
+// below: that is a hashtag on the sheet, where every other per-project fact already is.
 
 /// The maturity ladder, least to most real. A project's `stage=` must be one of these.
 ///
@@ -159,44 +157,92 @@ fn is_placeholder(t: &str) -> bool {
 /// against git, and leaves the ranking alone.
 pub(crate) const STAGES: [&str; 4] = ["draft", "alpha", "beta", "prod"];
 
-/// The value of `key` in the summary's `<!-- cockpit: ... -->` marker.
-///
-/// `None` when there is no marker or the key is absent; `Some("")` when the key is
-/// present but unset, which is what the scaffold writes and is a different fact from
-/// "never declared".
-pub(crate) fn marker_key(content: &str, key: &str) -> Option<String> {
-    let line = content.lines().find(|l| l.contains("<!-- cockpit:"))?;
-    let inner = line.split("<!-- cockpit:").nth(1)?.split("-->").next()?;
-    inner
-        .split_whitespace()
-        .find_map(|tok| tok.strip_prefix(key)?.strip_prefix('=').map(str::to_string))
+// -- stage and group: hashtags on the project's front page --------------------
+//
+// A project's maturity is a HASHTAG on its sheet (`#prod`, `#alpha`), in the head above
+// the first `##` heading, exactly like the `#high` / `#v0.0.2` tags already on every wave
+// row. Editing the tag moves the project between lanes on the index; there is nothing else
+// to run.
+//
+// This is not the `<!-- canonical: NAME -->` mistake repeated. That field drifted because
+// NOTHING checked it, not because a human could type it. `project-map-doctor` checks this
+// one against a closed vocabulary and refuses a `prod` claim no git tag backs, so the
+// checker is the safeguard and the CLI does not also have to be a gatekeeper.
+
+/// The lines above the first `##` heading: a project's front page, where a fact about the
+/// project as a whole belongs. Scanning the whole file would pick up a `#prod` written
+/// inside a wave row, which is a fact about that TASK.
+fn head_lines(content: &str) -> impl Iterator<Item = &str> {
+    content.lines().take_while(|l| !l.trim_start().starts_with("## "))
 }
 
-/// Rewrite `key` in the summary's cockpit marker, preserving every other key and their
-/// order. An absent key is appended at the end of the marker.
-///
-/// `Err` when the file carries no cockpit marker at all. That is deliberate: a silent
-/// no-op would report success while writing nothing, and the caller would have no way to
-/// tell a set-to-empty from a project the scaffold never gave a marker.
-fn set_marker_key(content: &str, key: &str, value: &str) -> Result<String> {
-    let Some(idx) = content.lines().position(|l| l.contains("<!-- cockpit:")) else {
-        bail!("summary has no `<!-- cockpit: … -->` marker to write into");
-    };
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-    let line = &lines[idx];
-    let (head, rest) = line.split_once("<!-- cockpit:").unwrap();
-    let (inner, tail) = rest.split_once("-->").unwrap();
+/// The first head hashtag drawn from `vocab`, without its `#`. `None` when none is present.
+fn head_tag(content: &str, vocab: &[&str]) -> Option<String> {
+    head_lines(content).find_map(|line| {
+        md::find_hashtags(line)
+            .into_iter()
+            .map(|t| t.trim_start_matches('#').to_string())
+            .find(|t| vocab.contains(&t.as_str()))
+    })
+}
 
-    let mut toks: Vec<String> = inner.split_whitespace().map(str::to_string).collect();
-    let pair = format!("{key}={value}");
-    match toks
-        .iter()
-        .position(|t| t.split_once('=').map(|(k, _)| k) == Some(key))
-    {
-        Some(i) => toks[i] = pair,
-        None => toks.push(pair),
+/// The file a project declares itself on: its working sheet, else its summary. A
+/// summary-only project (a prose brief, an archived stub) still gets to carry a tag.
+fn front_page(dir: &Path) -> PathBuf {
+    sheet_path(dir).unwrap_or_else(|| dir.join("summary.md"))
+}
+
+/// A project's declared maturity, or `None` when it has not declared one.
+pub(crate) fn stage_of(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(front_page(dir)).ok()?;
+    head_tag(&content, &STAGES)
+}
+
+/// Replace (or add) the vocabulary tag in the head, keeping every other tag on the line.
+///
+/// The tag lands on the `Version:` line when there is one, because that is already the
+/// head's machine-read line and it puts the two facts you scan for side by side. Otherwise
+/// it goes on the title.
+fn set_head_tag(content: &str, vocab: &[&str], value: &str) -> Result<String> {
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let head_len = head_lines(content).count();
+
+    // Drop any existing tag from this vocabulary, wherever in the head it sits, so a move
+    // can never leave the project declaring two stages at once.
+    //
+    // Filters whole TOKENS rather than doing a substring replace: `find_hashtags` yields a
+    // tag without its `#`, so replacing the name alone leaves a bare `#` behind and the
+    // line grows one every time the stage is changed. Only a line that actually carries
+    // such a tag is rebuilt, so prose spacing elsewhere in the head is left alone.
+    let is_vocab_tag = |t: &str| {
+        t.strip_prefix('#')
+            .is_some_and(|n| vocab.contains(&n.to_lowercase().as_str()))
+    };
+    for line in lines.iter_mut().take(head_len) {
+        if !line.split_whitespace().any(is_vocab_tag) {
+            continue;
+        }
+        *line = line
+            .split_whitespace()
+            .filter(|t| !is_vocab_tag(t))
+            .collect::<Vec<_>>()
+            .join(" ");
     }
-    lines[idx] = format!("{head}<!-- cockpit: {} -->{tail}", toks.join(" "));
+
+    let target = lines
+        .iter()
+        .take(head_len)
+        .position(|l| l.trim_start().starts_with("Version:"))
+        .or_else(|| {
+            lines
+                .iter()
+                .take(head_len)
+                .position(|l| l.trim_start().starts_with("# "))
+        });
+    let Some(i) = target else {
+        bail!("no `Version:` or `# title` line to tag in the project's head");
+    };
+    lines[i] = format!("{} #{value}", lines[i].trim_end());
 
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -205,51 +251,77 @@ fn set_marker_key(content: &str, key: &str, value: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Read or write one cockpit-marker key on a project, resolving the name across orgs.
-/// `value` of `None` prints the current value (an empty line when unset).
-fn marker_verb(p: &Profile, log: &Logger, name: &str, key: &str, value: Option<&str>) -> Result<()> {
+/// Read or write a head tag on a project, resolving the name across orgs.
+fn tag_verb(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    vocab: &[&str],
+    value: Option<&str>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
-    let summary = dir.join("summary.md");
-    let content = fs::read_to_string(&summary)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", summary.display()))?;
+    let page = front_page(&dir);
+    let content =
+        fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
 
     let Some(value) = value else {
-        println!("{}", marker_key(&content, key).unwrap_or_default());
+        println!("{}", head_tag(&content, vocab).unwrap_or_default());
         return Ok(());
     };
 
-    let updated = set_marker_key(&content, key, value)?;
+    let updated = set_head_tag(&content, vocab, value)?;
     if updated != content {
-        fs::write(&summary, &updated)?;
-        log.info("projects", &format!("{name}: {key}={value}"));
+        fs::write(&page, &updated)?;
+        log.info("projects", &format!("{name}: #{value}"));
     }
-    println!("{} {key}={value}", summary.display());
+    println!("{} #{value}", page.display());
     Ok(())
 }
 
-/// `notes projects --stage <name> [--set <value>]`: read or declare a project's maturity.
+/// `notes projects --stage <name> [--set <value>]`: read a project's maturity, or move it.
+///
+/// Editing the `#prod` / `#alpha` tag on the sheet by hand does exactly the same thing;
+/// this is the scriptable spelling, not a required one.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     if let Some(v) = value {
         if !STAGES.contains(&v) {
             bail!("unknown stage '{v}' (want: {})", STAGES.join(", "));
         }
     }
-    marker_verb(p, log, name, "stage", value)
+    tag_verb(p, log, name, &STAGES, value)
 }
 
-/// `notes projects --group <name> [--set <value>]`: read or declare a project's index
-/// group (`bnb`, `personal`, `dev`, ...).
+/// `notes projects --group <name> [--set <value>]`: read or set a project's index group.
 ///
-/// Validated as a slug rather than against a fixed list, because a new group is a lane on
-/// one page, not a code change. The index appends a group it does not know about instead
-/// of dropping it, so a typo shows up as its own heading rather than as a missing project.
+/// The vocabulary is the configured profile names plus `dev`, so a bare `#dev` in the head
+/// is unambiguous against a stage tag. An unrecognised hashtag in the head is ignored
+/// rather than guessed at, which is what keeps a `#urgent` in the prose from inventing a
+/// section on the index.
 pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    let vocab = group_vocab();
+    let refs: Vec<&str> = vocab.iter().map(String::as_str).collect();
     if let Some(v) = value {
-        if !v.is_empty() && !v.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
-            bail!("group '{v}' must be lowercase letters and hyphens");
+        if !refs.contains(&v) {
+            bail!("unknown group '{v}' (want: {})", refs.join(", "));
         }
     }
-    marker_verb(p, log, name, "group", value)
+    tag_verb(p, log, name, &refs, value)
+}
+
+/// Every name that may act as an index group: the configured orgs, plus the `dev` lane for
+/// tooling that belongs to no org.
+pub(crate) fn group_vocab() -> Vec<String> {
+    let mut v = config::all_profile_names().unwrap_or_default();
+    v.push("dev".to_string());
+    v
+}
+
+/// A project's declared index group, or `None` to mean "its own org".
+pub(crate) fn group_of(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(front_page(dir)).ok()?;
+    let vocab = group_vocab();
+    let refs: Vec<&str> = vocab.iter().map(String::as_str).collect();
+    head_tag(&content, &refs)
 }
 
 /// `notes projects <name>` — print `"<path>\t<label>"` for each note file in the
@@ -420,15 +492,13 @@ fn check_name(name: &str) -> Result<()> {
 /// second, hand-editable place to declare its name, and four of them ended up naming
 /// projects the registry had never heard of.
 ///
-/// `stage=draft` IS scaffolded, and the distinction from `canonical:` is that one verb
-/// owns it (`--stage`, closed vocabulary) and `notes doctor` checks it. A new project is
-/// a draft by definition, so the scaffolded value is the true one rather than a prompt to
-/// go and type something. `group=` is left empty: unset means "this project's own
-/// profile", which is right for all but the handful that want a lane of their own.
+/// The maturity tag is NOT here: it is `#draft` on the sheet's `Version:` line, where a
+/// person can see and change it. See the stage/group section above. This file keeps only
+/// wiring nobody edits by hand.
 fn summary_template(name: &str) -> String {
     format!(
         "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
-<!-- cockpit: vikunja= release-epic= stage=draft group= pathfilter= branch= prfilter= -->\n\n\
+<!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
 Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
 Wants for the agents go on the BOARD, not here: `notes ptask {name} add \"<title>\" #ai` (the session preflight injects that lane at turn 1).\n\n\
 <!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
@@ -581,9 +651,14 @@ fn scan_versions(dir: &Path, best: &mut Option<(u32, u32, u32)>) {
 /// The `Version: vX.Y.Z` declared on a working sheet (first such line), parsed. `None`
 /// when the sheet has no version line.
 pub(crate) fn sheet_version(content: &str) -> Option<(u32, u32, u32)> {
-    content
-        .lines()
-        .find_map(|l| parse_version(l.trim().strip_prefix("Version:")?.trim()))
+    content.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix("Version:")?;
+        // The stage tag shares this line (`Version: v1.7.0 #prod`), so stop at the first
+        // `#`. Without this a tagged sheet parses as having no version at all, which reads
+        // downstream as "not a sheet" and takes the project off the board.
+        let v = rest.split('#').next().unwrap_or(rest);
+        parse_version(v.trim())
+    })
 }
 
 /// A project's working SHEET — the human-edited task list (title + `Version: vX.Y.Z` +
@@ -754,7 +829,7 @@ fn choose_project_dir(name: &str, mut found: Vec<(String, PathBuf, bool)>) -> Re
 /// no id of its own makes its branch, blackboard and frozen note each reach for a date.
 fn sheet_body(title: &str, ver: &str) -> String {
     format!(
-        "{title}\nVersion: {ver}\n\n## {}\n- [ ] \n",
+        "{title}\nVersion: {ver} #draft\n\n## {}\n- [ ] \n",
         waves::heading_current(ver)
     )
 }
@@ -1995,64 +2070,84 @@ Version: v1.13.0
 }
 
 #[cfg(test)]
-mod marker_tests {
+mod stage_tag_tests {
     use super::*;
 
-    const SUMMARY: &str = "---\nid: summary\n---\n\n# demo\n\
-<!-- cockpit: repo=bnb-platform vikunja=3 pathfilter=apps/demo branch=develop -->\n\n\
-body\n";
+    const SHEET: &str = "# demo\nVersion: v1.2.0 #prod\nAgents: [[x|y]]\n\nprose\n\n## Wave: v1.2.0 (current)\n- [ ] a task #high #draft\n";
 
     #[test]
-    fn reads_a_key_and_distinguishes_absent_from_empty() {
-        assert_eq!(marker_key(SUMMARY, "repo").as_deref(), Some("bnb-platform"));
-        assert_eq!(marker_key(SUMMARY, "stage"), None);
-        let empty = SUMMARY.replace("vikunja=3", "vikunja=");
-        assert_eq!(marker_key(&empty, "vikunja").as_deref(), Some(""));
+    fn reads_the_stage_from_the_head() {
+        assert_eq!(stage_of_str(SHEET).as_deref(), Some("prod"));
     }
 
-    /// A prefix must not match: reading `repo` from a marker carrying only `release-epic`
-    /// would otherwise invent a value.
+    /// A `#draft` on a WAVE ROW is a fact about that task. Reading it as the project's
+    /// stage would let any task silently demote its whole project.
     #[test]
-    fn does_not_match_a_key_that_merely_contains_the_name() {
-        let m = "<!-- cockpit: release-epic=29 prfilter=demo -->";
-        assert_eq!(marker_key(m, "epic"), None);
-        assert_eq!(marker_key(m, "filter"), None);
-        assert_eq!(marker_key(m, "release-epic").as_deref(), Some("29"));
+    fn a_tag_below_the_first_heading_is_not_the_project_stage() {
+        let s = "# demo\nVersion: v1.2.0\n\n## Wave: v1.2.0 (current)\n- [ ] x #prod\n";
+        assert_eq!(stage_of_str(s), None);
     }
 
     #[test]
-    fn appends_an_absent_key_and_keeps_every_sibling_in_order() {
-        let out = set_marker_key(SUMMARY, "stage", "prod").unwrap();
-        let line = out.lines().find(|l| l.contains("cockpit:")).unwrap();
-        assert_eq!(
-            line,
-            "<!-- cockpit: repo=bnb-platform vikunja=3 pathfilter=apps/demo branch=develop stage=prod -->"
-        );
-        assert!(out.starts_with("---\nid: summary\n"));
-        assert!(out.ends_with("body\n"), "trailing newline preserved");
+    fn an_untagged_sheet_declares_nothing() {
+        assert_eq!(stage_of_str("# demo\nVersion: v0.1.0\n"), None);
+    }
+
+    /// The tag shares the `Version:` line, so the version parser must stop at the `#`.
+    /// Getting this wrong reads as "not a sheet" and takes the project off the board.
+    #[test]
+    fn the_version_still_parses_with_a_tag_beside_it() {
+        assert_eq!(sheet_version(SHEET), Some((1, 2, 0)));
+        assert_eq!(sheet_version("Version: v0.3.1 #alpha\n"), Some((0, 3, 1)));
     }
 
     #[test]
-    fn rewrites_an_existing_key_in_place() {
-        let once = set_marker_key(SUMMARY, "stage", "draft").unwrap();
-        let twice = set_marker_key(&once, "stage", "beta").unwrap();
-        assert_eq!(marker_key(&twice, "stage").as_deref(), Some("beta"));
-        assert_eq!(twice.matches("stage=").count(), 1, "no duplicate key");
-        assert_eq!(marker_key(&twice, "repo").as_deref(), Some("bnb-platform"));
-    }
-
-    /// Writing the same value twice must produce byte-identical output, or the index
-    /// watcher (which fires on a changed file) would retrigger on every sync.
-    #[test]
-    fn setting_the_same_value_is_a_no_op() {
-        let once = set_marker_key(SUMMARY, "stage", "alpha").unwrap();
-        assert_eq!(set_marker_key(&once, "stage", "alpha").unwrap(), once);
+    fn setting_a_stage_replaces_the_old_one_rather_than_adding_a_second() {
+        let out = set_head_tag(SHEET, &STAGES, "alpha").unwrap();
+        assert_eq!(stage_of_str(&out).as_deref(), Some("alpha"));
+        assert!(!out.contains("#prod"), "old tag survived: {out}");
+        assert_eq!(out.matches("#alpha").count(), 1);
+        // the wave row's own tags are untouched
+        assert!(out.contains("- [ ] a task #high #draft"));
     }
 
     #[test]
-    fn a_summary_with_no_marker_is_an_error_not_a_silent_no_op() {
-        let err = set_marker_key("# demo\n\nno marker here\n", "stage", "prod").unwrap_err();
-        assert!(err.to_string().contains("cockpit"), "{err}");
+    fn the_tag_lands_on_the_version_line_and_keeps_the_version() {
+        let out = set_head_tag("# demo\nVersion: v1.0.0\n", &STAGES, "beta").unwrap();
+        assert!(out.contains("Version: v1.0.0 #beta"), "{out}");
+        assert_eq!(sheet_version(&out), Some((1, 0, 0)));
+    }
+
+    /// A prose brief with no `Version:` line still has to be taggable.
+    #[test]
+    fn a_sheetless_project_gets_the_tag_on_its_title() {
+        let out = set_head_tag("# demo\n\nsome prose\n", &STAGES, "draft").unwrap();
+        assert!(out.starts_with("# demo #draft"), "{out}");
+    }
+
+    #[test]
+    fn writing_the_same_stage_twice_is_byte_identical() {
+        let once = set_head_tag(SHEET, &STAGES, "beta").unwrap();
+        assert_eq!(set_head_tag(&once, &STAGES, "beta").unwrap(), once);
+    }
+
+    #[test]
+    fn a_group_tag_and_a_stage_tag_coexist_without_reading_each_other() {
+        let s = "# demo\nVersion: v1.0.0 #alpha #dev\n";
+        assert_eq!(head_tag(s, &STAGES).as_deref(), Some("alpha"));
+        assert_eq!(head_tag(s, &["dev", "bnb"]).as_deref(), Some("dev"));
+    }
+
+    /// An unrecognised hashtag in the prose must not invent a stage or a section.
+    #[test]
+    fn an_unknown_head_tag_is_ignored() {
+        let s = "# demo\nVersion: v1.0.0\n\nblocked on #urgent review\n";
+        assert_eq!(head_tag(s, &STAGES), None);
+        assert_eq!(head_tag(s, &["dev", "bnb"]), None);
+    }
+
+    fn stage_of_str(content: &str) -> Option<String> {
+        head_tag(content, &STAGES)
     }
 }
 
