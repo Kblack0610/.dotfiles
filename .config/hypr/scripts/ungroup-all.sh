@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ungroup every grouped window on the active workspace.
-# Bound to $mainMod ALT, G in hyprland.conf.
+# Bound to $mainMod ALT, G in conf.d/keybindings.conf.
 # Targets any window whose .grouped array is non-empty (including stale
 # 1-window groups left behind by an earlier togglegroup press).
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Group all tiled windows on the active workspace into a single tab group.
-# Bound to $mainMod CTRL, G in hyprland.conf.
+# Bound to $mainMod, G in conf.d/keybindings.conf.
 # Floating windows are excluded (grouping floaters under dwindle is messy).
 
 set -eu
