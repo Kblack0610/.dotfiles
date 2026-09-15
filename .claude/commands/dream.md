@@ -76,10 +76,25 @@ Three phases, in order. See `~/.local/bin/agentctl-dream` for the canonical prom
    +light/REM boosts), gate on `minScore 0.8 ∧ recurrence ≥ 3 ∧ distinct-sources ≥ 3`,
    cap 10 promotions. Route survivors:
    - project correction/pattern → append to `~/.agent/lessons/{project}.md`
-   - durable project fact → new `memory/` file (frontmatter schema) + `MEMORY.md` line
+   - durable project fact → new `memory/` file (frontmatter schema) + **one** `MEMORY.md`
+     pointer line under an existing thematic section (see the index budget below)
    - cross-project/user fact → **staged** to `~/.agent/dreams/{project}/mem0-queue.md`
      with a ready-to-run `curl` (NEVER auto-posted to mem0)
    - always: append an 80–180-word `## Light/REM/Deep Sleep` entry to `DREAMS.md`.
+
+**The `MEMORY.md` index budget.** The index is pointers, never content, and it is read
+with a hard size cap - past ~24KB the tail is dropped silently, so the oldest entries stop
+existing without anything going red. Three rules, all of which this sweep broke between
+2026-08-11 and 2026-09-15 until the index reached 51KB with 70 lines invisible:
+
+  1. **One line per memory file**, `- [Short label](file.md) - one clause`, under an existing
+     thematic heading. Never open a `## Added <date>` section, and never paste the sweep's
+     paragraph - that prose is what the memory file is for.
+  2. **A corroboration or correction edits the existing line and the existing file.** It does
+     not append a second line for the same file. Four files had four lines each this way.
+  3. **Check the size before writing.** If `MEMORY.md` is over 16KB, prune it in the same
+     sweep before adding: shorten hooks, merge sibling entries, retire superseded ones. An
+     index that cannot be read in full is worse than a short one.
 
 **Safety:** append-only, never destructive; dedupe before every write; mem0 stays
 human-gated. After reviewing `mem0-queue.md`, the user (or you, on explicit request)
