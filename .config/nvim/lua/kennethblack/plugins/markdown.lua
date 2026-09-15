@@ -429,11 +429,20 @@ return {
 
       -- The current wave: the version the sheet's own `Version:` line declares. Position
       -- cannot define it in a sweep that reorders sections, so the declaration does.
+      --
+      -- The stage tag shares this line (`Version: v1.7.0 #prod`), so stop at the first `#`.
+      -- Mirrors projects::sheet_version. Anchoring the match at end-of-line instead read
+      -- every tagged sheet as having no version, and both callers treat that as "not a
+      -- sheet" and return silently - so the save sweep and the tW/tw ladder were dead on
+      -- every sheet at once, with nothing said.
       local function sheet_version(lines)
         for _, l in ipairs(lines) do
-          local v = l:match "^Version:%s+(v%d+%.%d+%.%d+)%s*$"
-          if v then
-            return parse_ver(v)
+          local rest = l:match "^%s*Version:%s*([^#]*)"
+          if rest then
+            local v = parse_ver(vim.trim(rest))
+            if v then
+              return v
+            end
           end
         end
         return nil
