@@ -463,12 +463,14 @@ apply_hyprland() {
     fi
 
     if $DRY_RUN; then
-        dry "hyprland: would update 3 border colors + shadow in $file"
+        dry "hyprland: would update 3 window colors + 4 group colors + shadow in $file"
         return
     fi
 
     local before after
-    before="$(grep -cE 'col\.(in)?active_border = rgba\(|^[[:space:]]*color = rgba\(' "$file" || true)"
+    before="$(grep -cE 'col\.(in)?active_border = rgba\(|col\.border_(in)?active = rgba\(|col\.(in)?active = rgba\(|^[[:space:]]*color = rgba\(' "$file" || true)"
+
+    # --- window borders, general{} ---
 
     # col.active_border = rgba(XXXXXXee) rgba(YYYYYYee) 45deg
     sedi "s/col\.active_border = rgba([0-9a-fA-F]\{8\}) rgba([0-9a-fA-F]\{8\}) 45deg/col.active_border = rgba(${THEME_HYPR_ACTIVE1}) rgba(${THEME_HYPR_ACTIVE2}) 45deg/" "$file"
@@ -476,8 +478,34 @@ apply_hyprland() {
     # col.inactive_border = rgba(XXXXXXaa)
     sedi "s/col\.inactive_border = rgba([0-9a-fA-F]\{8\})/col.inactive_border = rgba(${THEME_HYPR_INACTIVE})/" "$file"
 
-    # Shadow color
-    sedi "s/color = rgba([0-9a-fA-F]\{8\})/color = rgba(${THEME_HYPR_SHADOW})/" "$file"
+    # --- group + groupbar colors, group{} ---
+    # These reuse the window palette rather than adding THEME_HYPR_GROUP_* to all
+    # eight palettes: a group IS the active window, just stacked. The group border
+    # runs the active gradient in REVERSE so a stacked tile is distinguishable from
+    # a plain focused one at a glance, while still being obviously the same theme.
+    #
+    # The four patterns below are disjoint from the two above by construction -
+    # `col.active_border` / `col.inactive_border` vs `col.border_active` /
+    # `col.border_inactive` vs bare `col.active` / `col.inactive`. Each requires
+    # " = " immediately after its own key, so none is a prefix of another.
+
+    # group { col.border_active = rgba(YYYYYYee) rgba(XXXXXXee) 45deg }  (reversed)
+    sedi "s/col\.border_active = rgba([0-9a-fA-F]\{8\}) rgba([0-9a-fA-F]\{8\}) 45deg/col.border_active = rgba(${THEME_HYPR_ACTIVE2}) rgba(${THEME_HYPR_ACTIVE1}) 45deg/" "$file"
+
+    # group { col.border_inactive = rgba(XXXXXXaa) }
+    sedi "s/col\.border_inactive = rgba([0-9a-fA-F]\{8\})/col.border_inactive = rgba(${THEME_HYPR_INACTIVE})/" "$file"
+
+    # group:groupbar { col.active = rgba(XXXXXXee) rgba(YYYYYYee) 45deg }
+    sedi "s/col\.active = rgba([0-9a-fA-F]\{8\}) rgba([0-9a-fA-F]\{8\}) 45deg/col.active = rgba(${THEME_HYPR_ACTIVE1}) rgba(${THEME_HYPR_ACTIVE2}) 45deg/" "$file"
+
+    # group:groupbar { col.inactive = rgba(XXXXXXaa) }
+    sedi "s/col\.inactive = rgba([0-9a-fA-F]\{8\})/col.inactive = rgba(${THEME_HYPR_INACTIVE})/" "$file"
+
+    # Shadow color. ANCHORED: unanchored, this also matched `text_color = rgba(...)`
+    # in the groupbar block (the substring `color = rgba(` is right there inside
+    # `text_color`), which rewrote the tab label colour to the shadow colour on
+    # every switch. `text_color_inactive` escaped it, so the pair silently drifted.
+    sedi "s/^\([[:space:]]*\)color = rgba([0-9a-fA-F]\{8\})/\1color = rgba(${THEME_HYPR_SHADOW})/" "$file"
 
     after="$(grep -cE "rgba\((${THEME_HYPR_ACTIVE1}|${THEME_HYPR_ACTIVE2}|${THEME_HYPR_INACTIVE}|${THEME_HYPR_SHADOW})\)" "$file" || true)"
     if (( after == 0 )); then
