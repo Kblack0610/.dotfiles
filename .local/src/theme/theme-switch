@@ -368,13 +368,9 @@ apply_waybar() {
     fi
 
     cp "$src" "$dst"
-    info "waybar: applied template"
-
-    # Live reload: SIGUSR2 tells waybar to reload CSS
-    if pgrep -x waybar &>/dev/null; then
-        killall -SIGUSR2 waybar 2>/dev/null || true
-        info "waybar: sent SIGUSR2 (live reload)"
-    fi
+    # No signal: config.base sets reload_style_on_change, so waybar picks the new CSS
+    # up itself. SIGUSR2 is a full reload of every bar and has crashed the main one.
+    info "waybar: applied template (reloads on file change)"
 }
 
 apply_sketchybar() {
@@ -732,7 +728,7 @@ TOOLS MANAGED
   neo-tree   NeoTreeModified highlight color in neo-tree.lua
   starship   7 color values across prompt sections
   lazygit    11 theme color values in config.yml
-  waybar     Full CSS replacement + SIGUSR2 reload          (Linux only)
+  waybar     Full CSS replacement, reloads on file change   (Linux only)
   sketchybar macOS menu bar — colors.sh generated from palette (macOS only)
   hyprland   Border + shadow rgba colors + hyprctl reload    (Linux only)
   wallpaper  Random wallpaper from wallpapers/<theme>-*.{jpg,png,webp}
