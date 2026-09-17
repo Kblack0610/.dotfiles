@@ -14,7 +14,6 @@ fleet|Fleet health|custom/fleet
 timebox|Timebox|custom/timebox
 machines|Machines (pin only)|custom/machines
 
-# Not listed: the custom/act-* pin buttons. Their "format" is an empty string in
-# config.pin-full, so they render nothing today and there is no view to toggle.
-# Fix those icons first, then add:
-#   buttons|Pin action buttons|custom/act-sync custom/act-pull custom/act-panel custom/act-ssh
+# Not listed: the custom/act-* pin buttons. They are static icons with no exec, and
+# the toggle works by gating an exec, so there is nothing to hide without spawning a
+# process per button per interval.

@@ -23,8 +23,11 @@
     ],
     "modules-right": [],
 
+    // Icons are \u escapes, not literal glyphs: the literal Nerd Font characters were
+    // stripped from this file before it was ever committed and the button rendered
+    // empty (the same loss #23 fixed in fleet_pulse.sh). An escape cannot vanish silently.
     "custom/pin-size": {
-        "format": "",
+        "format": " \uf065 ",
         "tooltip": "Expand the pin",
         "on-click": "$HOME/.config/waybar/pin.sh size"
     }
