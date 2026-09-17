@@ -336,8 +336,12 @@ asks() {
 agents() {
   head_row 'agents · other sessions'
   command -v agent-panel >/dev/null 2>&1 || { hint_row 'agent-panel not built'; return 0; }
-  local here rows target glyph project summary col any=0
+  local here sock rows target glyph project summary col any=0
+  # agent-panel targets are <server>/<session>:<window>, so "here" carries the server
+  # too: a `platform` session on lab is not the `platform` session on hub.
+  sock="$(tmux display-message -p '#{socket_path}' 2>/dev/null)"
   here="$(tmux display-message -p '#{session_name}' 2>/dev/null)"
+  [ -n "$sock" ] && [ -n "$here" ] && here="${sock##*/}/$here"
   rows="$(agent-panel list 2>/dev/null)"
   [ -z "$rows" ] && { hint_row 'no live agent panes'; return 0; }
   # agent-panel list is TSV: target glyph project summary
@@ -406,7 +410,7 @@ enter_action() { # $1=type $2=id $3=target — what Enter means for each row kin
     watch)  [ -f "$target" ] && tmux new-window "nvim '$target'" 2>/dev/null ;;
     runner) journal "$id" ;;
     run)    [ -f "$target/output.log" ] && tmux new-window "less -R '$target/output.log'" 2>/dev/null ;;
-    agent)  tmux switch-client -t "$target" 2>/dev/null || tmux attach -t "$target" 2>/dev/null ;;
+    agent)  agent-panel jump "$target" ;;   # it owns the cross-server hop
   esac
 }
 

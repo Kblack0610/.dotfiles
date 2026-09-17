@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -40,7 +41,7 @@ fn collect() -> Vec<Agent> {
     let mut seen = HashSet::new();
     let mut agents = Vec::new();
     for pane in panes {
-        let target = format!("{}:{}", pane.session, pane.window_index);
+        let target = tmux::qualify(&pane.server, &pane.session, &pane.window_index);
         if !seen.insert(target.clone()) {
             continue;
         }
@@ -93,6 +94,12 @@ pub fn run_interactive() -> Result<()> {
     let agents = collect();
     if agents.is_empty() {
         println!("No claude agents running");
+        // Launched in its own terminal (the pin, a popup), the window closes the moment
+        // we exit, so the message would never be read. Hold it until a key.
+        if std::io::stdin().is_terminal() {
+            println!("(press enter)");
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
         return Ok(());
     }
 
@@ -130,7 +137,15 @@ pub fn run_interactive() -> Result<()> {
     Ok(())
 }
 
-/// Plain TSV of every live agent: `target \t glyph \t project \t summary`.
+/// Jump to one `<server>/<session>:<window>` target, for surfaces that list agents
+/// themselves (fleet.sh) and should not re-implement the cross-server hop.
+pub fn run_jump(target: &str) -> Result<()> {
+    tmux::jump(target);
+    Ok(())
+}
+
+/// Plain TSV of every live agent: `target \t glyph \t project \t summary`, where
+/// target is `<server>/<session>:<window>`.
 ///
 /// Exists so other surfaces (fleet.sh in the cockpit) can reuse the pane x
 /// `~/.claude/sessions` join instead of reimplementing it in bash and drifting.
@@ -182,7 +197,7 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(()); // header row, no preview
     }
     let mut target = row.split('\t').next().unwrap_or("").to_string();
-    // Fallback: dig a session:window token out of the visible text.
+    // Fallback: dig a [server/]session:window token out of the visible text.
     if !target.contains(':') {
         target = extract_target(row).unwrap_or_default();
     }
@@ -201,12 +216,12 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
     Ok(())
 }
 
-/// Find a `session:window` token in arbitrary row text.
+/// Find a `[server/]session:window` token in arbitrary row text.
 fn extract_target(row: &str) -> Option<String> {
     for tok in row.split_whitespace() {
         if let Some((a, b)) = tok.split_once(':') {
             if !a.is_empty()
-                && a.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                && a.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '/')
                 && !b.is_empty()
                 && b.chars().all(|c| c.is_ascii_digit())
             {
@@ -247,6 +262,10 @@ mod tests {
         assert_eq!(
             extract_target(" ✓ agent-2:1 some summary"),
             Some("agent-2:1".to_string())
+        );
+        assert_eq!(
+            extract_target(" ~ lab/platform-agent-5:2 summary"),
+            Some("lab/platform-agent-5:2".to_string())
         );
         assert_eq!(extract_target("no target here"), None);
     }

@@ -220,17 +220,20 @@ setup() {
 
 @test "--agents hides agents that live in the session you are already attached to" {
   # Prefix+g already reaches those; the cockpit section is for the ones you cannot see.
-  printf 'here:1\t~\tproj\tin my session\nelsewhere:2\t✓\tproj\tsomewhere else\n' \
+  # A same-named session on ANOTHER server is somewhere else, so it stays.
+  printf 'hub/here:1\t~\tproj\tin my session\nhub/elsewhere:2\t✓\tproj\tsomewhere else\nlab/here:3\t✓\tproj\tother server\n' \
     > "$NOTES_FIXTURE/agent-panel.list"
   printf 'here' > "$NOTES_FIXTURE/tmux.session"
+  export STUB_SOCKET=/tmp/tmux-1000/hub
   run bash -c '"$FLEET" --agents | awk -F"\t" "\$1==\"agent\" { print \$2 }"'
   assert_success
-  assert_output 'elsewhere:2'
+  assert_output $'hub/elsewhere:2\nlab/here:3'
 }
 
 @test "--agents renders a hint when every live agent is in this session" {
-  printf 'here:1\t~\tproj\tonly one\n' > "$NOTES_FIXTURE/agent-panel.list"
+  printf 'hub/here:1\t~\tproj\tonly one\n' > "$NOTES_FIXTURE/agent-panel.list"
   printf 'here' > "$NOTES_FIXTURE/tmux.session"
+  export STUB_SOCKET=/tmp/tmux-1000/hub
   run bash -c '"$FLEET" --agents | cut -f1'
   assert_success
   assert_output --partial 'hint'
@@ -295,10 +298,13 @@ setup() {
   assert_called 'nvim'
 }
 
-@test "--enter on an agent row switches to that pane" {
-  run "$FLEET" --enter agent 'other:3' 'other:3'
+@test "--enter on an agent row hands the qualified target to agent-panel jump" {
+  # agent-panel owns the same-server switch and the cross-server hop; fleet must not
+  # fall back to a bare switch-client, which cannot reach another server.
+  run "$FLEET" --enter agent 'lab/other:3' 'lab/other:3'
   assert_success
-  assert_called 'switch-client'
+  assert_called 'agent-panel jump lab/other:3'
+  assert_not_called 'switch-client'
 }
 
 @test "--enter on a head row does nothing at all" {

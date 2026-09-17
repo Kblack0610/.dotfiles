@@ -33,12 +33,24 @@ string rather than `claude` (observed on macOS).
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
 | `agent-panel next` | Cycle to the next attention-needed agent (else next in list) |
+| `agent-panel list` | One TSV row per agent: `target glyph project summary` |
+| `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
+
+## Multiple tmux servers
+
+Sessions are split across tmux servers, one per socket (`hub`, `lab`, ... see
+`../tmux/servers.sh`). A bare `tmux` only reaches the server `$TMUX` points at, or the
+`default` socket from outside tmux, which is not used here. So agent-panel lists every
+live socket in the tmux socket dir, calls each with `tmux -L <server>`, and names a
+target `<server>/<session>:<window>`. A jump inside the current server is a
+`switch-client`; anything else goes through `tmx goto <server> <session:window>`,
+which owns the detach-and-attach hop and the Prefix+L way back.
 
 ## Layout
 
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
-- `tmux.rs` — `tmux` CLI wrappers (list-panes, capture-pane, switch-client)
+- `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; JSONL path
 - `jsonl.rs` — tail the transcript; row summary + recent-events for the preview
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
