@@ -44,28 +44,31 @@
         "hide-empty-text": true,
         "tooltip": true
     },
+    // Icons are \u escapes, not literal glyphs: the literal Nerd Font characters were
+    // stripped from this file before it was ever committed and every button rendered
+    // empty (the same loss #23 fixed in fleet_pulse.sh). An escape cannot vanish silently.
     "custom/act-sync": {
-        "format": "",
+        "format": " \uf021 ",
         "tooltip": "Restow dotfiles (stow .)",
         "on-click": "kitty --class floating-term -e sh -c 'cd $HOME/.dotfiles && stow -v . ; echo ; echo [done] ; read -r _'"
     },
     "custom/act-pull": {
-        "format": "",
+        "format": " \uf019 ",
         "tooltip": "git pull --ff-only in ~/.dotfiles and ~/.notes",
         "on-click": "kitty --class floating-term -e sh -c 'for d in $HOME/.dotfiles $HOME/.notes ; do echo \"== $d ==\" ; git -C \"$d\" pull --ff-only ; done ; echo ; read -r _'"
     },
     "custom/act-panel": {
-        "format": "",
+        "format": " \uf0c0 ",
         "tooltip": "Open the agent panel",
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel"
     },
     "custom/act-ssh": {
-        "format": "",
+        "format": " \uf120 ",
         "tooltip": "SSH into a fleet host",
         "on-click": "kitty --class floating-term -e $HOME/.config/waybar/machines.sh pick"
     },
     "custom/pin-size": {
-        "format": "",
+        "format": " \uf066 ",
         "tooltip": "Collapse the pin",
         "on-click": "$HOME/.config/waybar/pin.sh size"
     }
