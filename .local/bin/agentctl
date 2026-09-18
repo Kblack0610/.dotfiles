@@ -209,6 +209,13 @@ status_write_dir() {
         printf '%s=%s\n' "$k" "${merged[$k]-}" >> "$tmp"
     done
     mv -f "$tmp" "$f"
+
+    # Mirror the change into Home Assistant. Synchronous on purpose: from ExecStopPost a
+    # backgrounded child is killed with the unit's cgroup. The publisher bounds itself
+    # (short broker timeout, no-op when unconfigured), and nothing it does can fail a write.
+    if command -v agent-mqtt-publish >/dev/null 2>&1; then
+        AGENT_MQTT_TIMEOUT=2 agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
+    fi
 }
 
 # The proof contract's engine half. The file itself is written by

@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# agent-mqtt-publish - mirror the agent fleet's status into Home Assistant over MQTT.
+#
+#   agent-mqtt-publish            publish what changed since the last run
+#   agent-mqtt-publish --full     republish everything (the timer; refreshes expire_after)
+#   agent-mqtt-publish --dry-run  print `topic<TAB>payload` lines, touch nothing
+#
+# Entities use HA MQTT discovery: runners, watches, open asks and live sessions appear as
+# sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
+# Triggers: agentctl after every status write, sentinel on a watch state change, and
+# agent-mqtt-publish.timer (--full) for the sources with no event (asks, sessions).
+# Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
+set -uo pipefail
+
+CONF="${AGENT_MQTT_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-mqtt.env}"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+# Same env names as fleet.sh, the other reader of these roots.
+CONFIG_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
+STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
+WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
+WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
+CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
+MQTT_HOST="${AGENT_MQTT_HOST:-}"
+MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
+# Per-message guard on the broker call. The agentctl hook runs synchronously inside a
+# runner's lifecycle, so this bounds the worst case a dead broker can add to a runner.
+PUB_TIMEOUT="${AGENT_MQTT_TIMEOUT:-3}"
+# 3x the timer cadence (agent-mqtt-publish.timer, 5 min): a workstation that is off or
+# asleep turns its sensors `unavailable` instead of leaving them stale-but-green.
+EXPIRE_AFTER=900
+
+mode=diff quiet=0
+for a in "$@"; do
+    case "$a" in
+        --full) mode=full ;;
+        --dry-run) mode=dry ;;
+        --quiet) quiet=1 ;;
+        -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) printf 'agent-mqtt-publish: unknown arg %s\n' "$a" >&2; exit 2 ;;
+    esac
+done
+
+[ "$mode" = dry ] || [ -n "$MQTT_HOST" ] || exit 0
+
+say() { [ "$quiet" = 1 ] || printf 'agent-mqtt-publish: %s\n' "$*" >&2; }
+
+# Topic-safe id: lowercase, [a-z0-9_] only.
+slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n' '_'; }
+
+HOST_NAME="${AGENT_MQTT_HOST_ID:-$(hostname -s 2>/dev/null || uname -n)}"
+HOST_ID="$(slug "$HOST_NAME")"
+
+# epoch -> ISO 8601, or empty for anything that is not a positive integer.
+iso() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] && date -d "@$1" -Iseconds 2>/dev/null; }
+
+# systemd's human timestamp ("Thu 2026-09-17 20:30:00 PDT") -> ISO 8601, or empty.
+iso_ts() { [ -n "${1:-}" ] && [ "$1" != n/a ] && date -d "$1" -Iseconds 2>/dev/null; }
+
+kv() { awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$1" 2>/dev/null; }
+
+unit_prop() { systemctl --user show "$1" -p "$2" --value 2>/dev/null; }
+
+# emit <kind> <name> <icon> <state-json> [extra-discovery-json]
+# Prints the discovery message then the state message, as `topic<TAB>payload`.
+emit() {
+    local kind="$1" name="$2" icon="$3" state="$4" extra="${5:-{\}}"
+    local id eid uid base label="$name"
+    id="$(slug "$name")"
+    case "$kind" in
+        runner)  eid="agent_$id" ;;
+        watch)   eid="agent_watch_$id" ;;
+        *)       eid="agent_$id"
+                 case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;; esac ;;
+    esac
+    uid="agent_${HOST_ID}_${kind}_${id}"
+    base="agents/$HOST_ID/$kind/$id"
+    jq -cn --arg name "$label" --arg uid "$uid" --arg eid "sensor.$eid" --arg t "$base" \
+        --arg icon "$icon" --arg host "$HOST_ID" --arg hostname "$HOST_NAME" --argjson exp "$EXPIRE_AFTER" \
+        --argjson extra "$extra" '{
+            name: $name, unique_id: $uid, default_entity_id: $eid,
+            state_topic: $t, value_template: "{{ value_json.state }}",
+            json_attributes_topic: $t, expire_after: $exp, icon: $icon,
+            device: {identifiers: ["agent_fleet_\($host)"], name: "Agent fleet (\($hostname))",
+                     manufacturer: "agentctl", model: "agent-mqtt-publish"}
+        } + $extra' | sed "s|^|homeassistant/sensor/$uid/config\t|"
+    printf '%s\t%s\n' "$base" "$state"
+}
+
+snapshot() {
+    local f name st
+
+    # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
+    for f in "$CONFIG_DIR"/*.conf; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f" .conf)"
+        st="$STATE_DIR/$name/status"
+        local state; state="$(kv "$st" state)"
+        emit runner "$name" mdi:robot "$(jq -cn \
+            --arg state "${state:-unknown}" \
+            --arg project "$(kv "$st" project)" \
+            --arg item "$(kv "$st" item)" \
+            --arg detail "$(kv "$st" detail)" \
+            --arg updated "$(iso "$(kv "$st" updated)")" \
+            --arg outcome "$(cat "$STATE_DIR/$name/last-outcome" 2>/dev/null)" \
+            --arg active "$(unit_prop "agentctl@$name.service" ActiveState)" \
+            --arg next "$(iso_ts "$(unit_prop "agentctl-$name.timer" NextElapseUSecRealtime)")" \
+            '{state: $state, project: $project, item: $item, detail: $detail,
+              updated: (if $updated == "" then null else $updated end),
+              last_outcome: $outcome, unit: $active,
+              next_run: (if $next == "" then null else $next end)}')"
+    done
+
+    # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
+    for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
+        local ws paused=false
+        ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
+        case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
+        emit watch "$name" mdi:eye "$(jq -cn \
+            --arg state "${ws:-NEW}" --argjson paused "$paused" \
+            --arg since "$(iso "$(cat "$WSTATE/$name.since" 2>/dev/null)")" \
+            --arg lastrun "$(iso "$(cat "$WSTATE/$name.lastrun" 2>/dev/null)")" \
+            '{state: $state, paused: $paused,
+              since: (if $since == "" then null else $since end),
+              last_run: (if $lastrun == "" then null else $lastrun end)}')"
+    done
+
+    # Open asks: questions an agent is blocked on until the human answers.
+    if command -v agent-ask >/dev/null 2>&1; then
+        local count
+        count="$(agent-ask count --all 2>/dev/null)"
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        emit summary asks_open mdi:account-question "$(agent-ask list --all --pending 2>/dev/null |
+            jq -cR --argjson n "$count" -s '
+              {state: $n, asks: [split("\n")[] | select(length > 0) | split("\t")
+                | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160])}]}')" \
+            '{"state_class":"measurement"}'
+    fi
+
+    # Interactive sessions: live Claude panes. Glyphs are agent-panel's own:
+    # `~` working, `!` needs you, anything else idle/done.
+    if command -v agent-panel >/dev/null 2>&1; then
+        emit summary sessions mdi:console "$(agent-panel list 2>/dev/null | jq -cR -s '
+            [split("\n")[] | select(length > 0) | split("\t")
+             | {project: .[2], title: .[3],
+                status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end)}]
+            | {state: length, working: map(select(.status == "working")) | length,
+               attention: map(select(.status == "attention")) | length, sessions: .}')" \
+            '{"state_class":"measurement"}'
+    fi
+}
+
+# Cache: one file per topic holding the last payload the broker accepted. It decides what
+# a diff run sends, and it is the record of what exists in HA, so an entity whose topic is
+# no longer in the snapshot can be deleted. Filenames are the topic with / -> %.
+tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
+
+publish() {
+    timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
+        -t "$1" -m "$2" 2>/dev/null
+}
+
+main() {
+    local snap topic payload f
+
+    if [ "$mode" = dry ]; then
+        snapshot
+        return 0
+    fi
+
+    command -v mosquitto_pub >/dev/null 2>&1 || { say "mosquitto_pub not installed"; return 1; }
+    mkdir -p "$CACHE/sent"
+
+    # One run at a time, so two hooks firing together cannot interleave cache writes. Each
+    # waiter re-reads the state after it gets the lock, so the last writer always wins.
+    exec 9>"$CACHE/lock"
+    flock -w 30 9 || { say "lock busy"; return 0; }
+    snap="$(snapshot)"
+
+    local -A want=()
+    local sent=0 reloaded=0
+    while IFS=$'\t' read -r topic payload; do
+        [ -n "$topic" ] || continue
+        want["$topic"]=1
+        f="$(tfile "$topic")"
+        # emit() prints each entity's config line right before its state line. A config
+        # (re)send makes HA reload the entity, and with expire_after set it ignores the
+        # retained state, so the state is always resent after a config.
+        if [ "$mode" = diff ] && [ "$reloaded" = 0 ] && [ -f "$f" ] && [ "$(cat "$f")" = "$payload" ]; then
+            continue
+        fi
+        case "$topic" in */config) reloaded=1 ;; *) reloaded=0 ;; esac
+        # Stop at the first failure: a dead broker would otherwise cost PUB_TIMEOUT per topic.
+        publish "$topic" "$payload" || { say "publish failed ($MQTT_HOST:$MQTT_PORT)"; return 1; }
+        printf '%s' "$payload" > "$f"
+        sent=$((sent + 1))
+    done <<< "$snap"
+
+    # Deletions: an empty retained payload removes both the HA entity (config topic) and
+    # the broker's retained state.
+    for f in "$CACHE/sent/"*; do
+        [ -f "$f" ] || continue
+        topic="$(basename "$f")"; topic="${topic//%//}"
+        [ -n "${want[$topic]:-}" ] && continue
+        publish "$topic" "" || { say "publish failed ($MQTT_HOST:$MQTT_PORT)"; return 1; }
+        rm -f "$f"
+        sent=$((sent + 1))
+    done
+
+    say "$mode: $sent message(s) sent"
+}
+
+main
