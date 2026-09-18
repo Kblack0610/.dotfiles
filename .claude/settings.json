@@ -185,6 +185,26 @@
           }
         ]
       }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/worktree-create.sh"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/worktree-remove.sh"
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {

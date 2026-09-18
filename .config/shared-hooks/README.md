@@ -7,6 +7,7 @@ The cross-tool session hooks. Claude Code is the main consumer, but nothing here
 | `session-preflight.sh` | SessionStart | The turn-1 context injection: anchor, stranded sprints, plans, lessons, last night's dream digest, the lab bus readback, today's `## Focus`, recent commits and PRs. Non-blocking. |
 | `focus-lib.sh` | sourced | The one parser for the daily note's `## Focus` section. Shared by the preflight and the reconcile gate. Read-only by contract. |
 | `project-name.sh` | sourced | Resolves a directory to its canonical project name via `project-map.json`. |
+| `worktree-create.sh` / `worktree-remove.sh` | WorktreeCreate / WorktreeRemove | Put harness-made worktrees (Agent `isolation: "worktree"`, `--worktree`, background sessions) at `~/.worktrees/<repo>-<name>` instead of `<repo>/.claude/worktrees/`. Remove never forces, so a dirty tree survives. |
 | `compact-prep.sh` | PreCompact | Archives the transcript and drops the pending marker the `/compact-prep` skill reconciles against. |
 | `eval-report.sh` | manual | Reads the eval corpus. |
 | `archive-stale-plans.sh` | manual | Archives stale per-project plan dirs. |
