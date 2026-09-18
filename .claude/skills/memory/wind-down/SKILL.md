@@ -171,11 +171,11 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
 
-   **Exception - numbered `agent-N` slots are persistent and must NOT be released.**
-   `platform-agent-N` and `.claude/worktrees/agent-*` are long-running shared workspaces; a prior
-   incident removing `platform-agent-3` broke a live session. For those, skip `wt done` entirely
-   and instead leave the slot on its own `agent-N` branch (step 4a). Ad-hoc named worktrees are
-   the ones `wt done` is for.
+   **Only release the worktree this session is in.** Never reap one another live session is
+   rooted in (a prior incident removing `platform-agent-3` broke a live session); if another
+   tmux session is attached there, leave it on its own `agent-N` branch (step 4a). Every
+   worktree lives under `~/.worktrees/<repo>-<slug>`; the legacy `~/dev/<repo>-*` siblings and
+   `<repo>/.claude/worktrees/` were retired 2026-09-18.
 7. **Report the landing state** in your closing message: branch + PR link for what shipped, an
    explicit line for anything intentionally left uncommitted (so the gate deferring the kill, if
    it does, is never a surprise), and whether the worktree was released or kept with its reason.
