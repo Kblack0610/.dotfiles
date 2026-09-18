@@ -86,6 +86,31 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .attention <<< "$p")" 1
 }
 
+@test "sessions are grouped per project like the waybar module, most urgent status wins" {
+  printf 'a:1\t~\tplatform\tt1\na:2\t!\tplatform\tt2\nb:1\t\xe2\x9c\x93\tdotfiles\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/sessions/platform)"
+  assert_equal "$(jq -r .state <<< "$p")" attention
+  assert_equal "$(jq -r .glyphs <<< "$p")" '~!'
+  assert_equal "$(jq -r .count <<< "$p")" 2
+  assert_equal "$(jq -r .state <<< "$(payload agents/testhost/sessions/dotfiles)")" idle
+  c="$(payload homeassistant/sensor/agent_testhost_sessions_platform/config)"
+  assert_equal "$(jq -r .default_entity_id <<< "$c")" sensor.agent_sessions_platform
+}
+
+@test "a project whose last session closed is deleted from HA" {
+  printf 'a:1\t~\tplatform\tt1\nb:1\t~\tdotfiles\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
+  "$PUB" --quiet
+  : > "$PUBLOG"
+  printf 'b:1\t~\tdotfiles\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
+  run "$PUB" --quiet
+  assert_success
+  grep -qxF "homeassistant/sensor/agent_testhost_sessions_platform/config"$'\t' "$PUBLOG"
+  run grep -qxF "homeassistant/sensor/agent_testhost_sessions_dotfiles/config"$'\t' "$PUBLOG"
+  assert_failure
+}
+
 @test "diff: a second run with nothing changed sends nothing" {
   "$PUB" --quiet
   [ -s "$PUBLOG" ]
