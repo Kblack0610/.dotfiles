@@ -39,26 +39,27 @@ os:
   editCommand: 'nvim'
   openCommand: 'kitty nvim .'
 customCommands:
-  # Create worktree and open new terminal there
+  # Create worktree and open new terminal there. Path is always ~/.worktrees/<repo>-<slug>, the
+  # layout wt uses; the old ../<branch> default scattered checkouts beside the repo.
   - key: 'W'
     context: 'localBranches'
     description: 'Create worktree from branch and open terminal there'
     prompts:
       - type: 'input'
-        title: 'Worktree path:'
-        key: 'Path'
-        initialValue: '../{{.SelectedLocalBranch.Name}}'
-    command: 'git worktree add "{{.Form.Path}}" "{{.SelectedLocalBranch.Name}}" && kitty --detach --directory "$(realpath {{.Form.Path}})"'
+        title: 'Worktree slug (created at ~/.worktrees/<repo>-<slug>):'
+        key: 'Slug'
+        initialValue: '{{.SelectedLocalBranch.Name}}'
+    command: 'p="$HOME/.worktrees/$(r=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"); echo "${r#.}")-$(echo "{{.Form.Slug}}" | tr / -)"; git worktree add "$p" "{{.SelectedLocalBranch.Name}}" && kitty --detach --directory "$p"'
   # Create worktree and switch lazygit to it (replaces current session)
   - key: '<c-w>'
     context: 'localBranches'
     description: 'Create worktree and switch to it (replaces lazygit)'
     prompts:
       - type: 'input'
-        title: 'Worktree path:'
-        key: 'Path'
-        initialValue: '../{{.SelectedLocalBranch.Name}}'
-    command: 'git worktree add "{{.Form.Path}}" "{{.SelectedLocalBranch.Name}}" && cd "{{.Form.Path}}" && lazygit'
+        title: 'Worktree slug (created at ~/.worktrees/<repo>-<slug>):'
+        key: 'Slug'
+        initialValue: '{{.SelectedLocalBranch.Name}}'
+    command: 'p="$HOME/.worktrees/$(r=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"); echo "${r#.}")-$(echo "{{.Form.Slug}}" | tr / -)"; git worktree add "$p" "{{.SelectedLocalBranch.Name}}" && cd "$p" && lazygit'
     output: terminal
   # Review the working tree in hunk (multi-file review stream, agent annotations).
   # X = eXamine; h/H/l/L are all taken by lazygit's block-nav and scroll bindings.

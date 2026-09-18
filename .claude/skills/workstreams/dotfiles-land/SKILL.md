@@ -73,7 +73,7 @@ branch is never touched:
 
 ```bash
 cd ~/.dotfiles-private && git fetch -q origin
-WT="$SCRATCH/dotfiles-private-<slug>"          # scratchpad dir, not /tmp
+WT=~/.worktrees/dotfiles-private-<slug>        # flat ~/.worktrees layout, never scratch or /tmp
 git worktree add -b feat/<slug> "$WT" origin/main
 # apply the change in $WT (a private file's pre-edit content == its public mirror, so a
 # `cp` of the already-edited public mirror yields exactly your intended hunks - verify with diff)
