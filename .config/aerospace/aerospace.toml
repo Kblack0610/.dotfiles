@@ -113,9 +113,9 @@ cmd-3 = 'workspace 3' # browser(work)
 cmd-4 = 'workspace 4' # db tool
 cmd-5 = 'workspace 5' # postman
 cmd-6 = 'workspace 6' # fun
-cmd-7 = 'workspace 7' # fun
-cmd-8 = 'workspace 8' # misc(finder/vpn/docker)
-cmd-9 = 'workspace 9' # misc(finder/vpn/docker)
+cmd-7 = 'workspace 7' # teams/chrome/finder
+cmd-8 = 'workspace 8' # misc(vpn/docker)
+cmd-9 = 'workspace 9' # misc(vpn/docker)
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
 shift-cmd-1 = 'move-node-to-workspace 1'
@@ -166,6 +166,12 @@ shift-cmd-9 = 'move-node-to-workspace 9'
 #Communication
 [[on-window-detected]]
     if.app-id = 'com.microsoft.teams2'
+    run = 'move-node-to-workspace 7'
+
+# Finder opens from anywhere (a Save panel, a "Reveal in Finder", the Dock), so
+# without a rule its windows land on whatever workspace had focus.
+[[on-window-detected]]
+    if.app-id = 'com.apple.finder'
     run = 'move-node-to-workspace 7'
 
 
