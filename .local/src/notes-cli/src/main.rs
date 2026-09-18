@@ -218,6 +218,16 @@ enum Cmd {
         /// With --roll: close the version even though its wave still has open tasks
         #[arg(long)]
         force: bool,
+        /// With --roll: move every open task into the next wave (retagged, `carried:N`
+        /// counted) before closing, and append to an existing versions/ note rather than
+        /// refusing. What a release tag does to its sheet (`agentctl-wave-roll`)
+        #[arg(long)]
+        carry: bool,
+        /// With --roll: open exactly this version next (vX.Y.Z, above the current one)
+        /// instead of stepping. For a sheet a release tag has already passed, so it lands
+        /// after the tag in one roll rather than creeping up a patch per roll
+        #[arg(long, value_name = "VERSION")]
+        next: Option<String>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -664,6 +674,8 @@ fn main() -> Result<()> {
             minor,
             major,
             force,
+            carry,
+            next,
             version_of,
             waves,
             agent_note,
@@ -704,7 +716,9 @@ fn main() -> Result<()> {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
-                (_, _, _, Some(n), ..) => projects::roll(&prof, &log, &n, level, force)?,
+                (_, _, _, Some(n), ..) => {
+                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref())?
+                },
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
