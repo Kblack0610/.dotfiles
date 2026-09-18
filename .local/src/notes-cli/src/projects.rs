@@ -913,6 +913,93 @@ fn roll_blocker(
     ))
 }
 
+/// A row carried this many times is flagged as stale on the roll: work that slides release after
+/// release is work nobody is doing, and the answer is to cut it or re-plan it, not to carry it
+/// forever.
+const STALE_CARRIES: u32 = 3;
+
+/// Bump the `carried:N` counter in a task line's marker comment, opening it at 1 when the line
+/// has none. Returns the new line and N. Lives in the one marker comment the line already
+/// carries (`vk:`, `ask:`, `pr:`), so readers of those keys keep working.
+fn bump_carried(line: &str) -> (String, u32) {
+    let t = line.trim_end();
+    if let (Some(i), true) = (t.rfind("<!--"), t.ends_with("-->")) {
+        let mut n = None;
+        let toks: Vec<String> = t[i + 4..t.len() - 3]
+            .split_whitespace()
+            .map(|tok| {
+                match tok
+                    .strip_prefix("carried:")
+                    .and_then(|v| v.parse::<u32>().ok())
+                {
+                    Some(k) if n.is_none() => {
+                        n = Some(k + 1);
+                        format!("carried:{}", k + 1)
+                    }
+                    _ => tok.to_string(),
+                }
+            })
+            .collect();
+        if let Some(n) = n {
+            return (format!("{}<!-- {} -->", &t[..i], toks.join(" ")), n);
+        }
+    }
+    (md::add_marker(t, "carried:1"), 1)
+}
+
+/// Lift every open row (`[ ]` and `[/]`) out of the CURRENT wave into the wave for `next`,
+/// retagged `#<next>` and with its carry counter bumped, minting that wave as planned when the
+/// sheet has none. Returns the new content and the carried lines with their counts.
+///
+/// This is what lets a tagged version close without eating its unfinished work: `--force`
+/// seals open rows inside the frozen note, where no live list reads them; this moves them
+/// first, so the roll gate then passes honestly. Retagging is not optional - `ptask sweep`
+/// buckets by tag, so a row keeping its old `#v` would be dragged straight back.
+fn carry_open(content: &str, next: (u32, u32, u32)) -> (String, Vec<(String, u32)>) {
+    let Some(cur) = waves::sections(content).into_iter().next() else {
+        return (content.to_string(), Vec::new());
+    };
+    let mut kept: Vec<&str> = Vec::new();
+    let mut moved: Vec<(String, u32)> = Vec::new();
+    for (i, l) in content.lines().enumerate() {
+        if i > cur.start && i < cur.end && md::is_open_task(l) {
+            // `next` becomes the current wave on this roll, so #urgent is still legal there.
+            let (retagged, _) = crate::project_sweep::retag_wave(l.trim_end(), next, true);
+            moved.push(bump_carried(&retagged));
+        } else {
+            kept.push(l);
+        }
+    }
+    if moved.is_empty() {
+        return (content.to_string(), moved);
+    }
+    let mut out = format!("{}\n", kept.join("\n"));
+    let heading = match waves::find(&out, next) {
+        Some(s) => s.heading,
+        None => {
+            out = waves::insert_planned(&out, next);
+            waves::heading_planned(&fmt_version(next))
+        }
+    };
+    let lines: Vec<String> = moved.iter().map(|(l, _)| l.clone()).collect();
+    (md::insert_under_heading(&out, &heading, &lines), moved)
+}
+
+/// An existing frozen note with this close-out appended below it. Only the wave onward is
+/// kept from `stamped`: the note already carries its own title and version head, and a second
+/// `Version:` line inside it would be read as the note's version by anything scanning for one.
+fn append_closeout(prior: &str, stamped: &str, date: &str) -> String {
+    let wave = stamped
+        .lines()
+        .skip_while(|l| !l.starts_with("## "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{}\n\n## Wave close-out {date}\n\n{wave}\n",
+        prior.trim_end()
+    )
+}
+
 /// Rebuild a sheet for the next version: freeze the CURRENT wave, promote the planned
 /// wave named `next` if there is one, and carry the rest of the roadmap over untouched.
 /// Returns `(frozen_note_body, new_sheet_body)`.
@@ -950,7 +1037,18 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
     let rest_secs = waves::sections(&rest);
     let promoted = rest_secs.iter().find(|s| s.version == Some(next)).cloned();
 
-    let mut out: Vec<String> = vec![title, format!("Version: {next_s}"), String::new()];
+    // The stage tag (`#alpha`, `#prod`) rides on the `Version:` line and is a fact about the
+    // project, not the version, so it survives the roll. Dropping it demoted a `#prod` app to
+    // untagged on every release.
+    let stage = head_lines(content)
+        .find_map(|l| l.trim_start().strip_prefix("Version:"))
+        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
+        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    let mut out: Vec<String> = vec![
+        title,
+        format!("Version: {next_s}{stage}"),
+        String::new(),
+    ];
     match promoted {
         Some(s) => {
             // Re-title it `(current)` and lift it to the top; everything else keeps its order.
@@ -1039,7 +1137,15 @@ fn body_after_head(content: &str) -> Vec<String> {
 ///    rest of the roadmap carries over untouched.
 ///
 /// No sheet means no roll: the `Version:` line is the only thing naming the open version.
-pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> Result<()> {
+pub fn roll(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    level: Bump,
+    force: bool,
+    carry: bool,
+    next_at: Option<&str>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_roll(&dir, log)? else {
         bail!("{name} has no working sheet to roll (no README.md with a `Version: vX.Y.Z` line)");
@@ -1047,7 +1153,29 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
-    let next = next_version(Some(cur), level);
+    let next = match next_at {
+        None => next_version(Some(cur), level),
+        Some(v) => {
+            let v = parse_version(v.trim())
+                .ok_or_else(|| anyhow::anyhow!("--next wants vX.Y.Z, got '{v}'"))?;
+            if v <= cur {
+                bail!(
+                    "--next {} is not above the open version {}",
+                    fmt_version(v),
+                    fmt_version(cur)
+                );
+            }
+            v
+        }
+    };
+
+    // 0. the carry: move unfinished work forward first, so the gate below passes on an
+    // empty wave instead of being overridden.
+    let (content, carried) = if carry {
+        carry_open(&content, next)
+    } else {
+        (content, Vec::new())
+    };
 
     // 1. the gate
     if !force {
@@ -1060,13 +1188,31 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
     let frozen = versions.join(format!("{}.md", fmt_version(cur)));
-    if frozen.exists() {
+    // A plain roll never touches an existing note. A carry-roll is the release tag closing
+    // the version, and a note already there (a migrated changelog) must not block that
+    // forever, so it appends the close-out below what is there instead of overwriting it.
+    let append = frozen.exists();
+    if append && !carry {
         bail!(
             "{} already exists — refusing to overwrite a frozen version",
             frozen.display()
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    let frozen_body = if carried.is_empty() {
+        frozen_body
+    } else {
+        let list = carried
+            .iter()
+            .map(|(l, _)| format!("- {}", md::task_text(l).trim()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "{}\n\nCarried to {}:\n{list}\n",
+            frozen_body.trim_end(),
+            fmt_version(next)
+        )
+    };
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -1078,7 +1224,13 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
             .map(|d| d.as_secs())
             .unwrap_or(0)
     );
-    fs::write(&frozen, &stamped)?;
+    if append {
+        let prior = fs::read_to_string(&frozen)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        md::write_atomic(&frozen, &append_closeout(&prior, &stamped, &date))?;
+    } else {
+        fs::write(&frozen, &stamped)?;
+    }
 
     // 3. the pair
     if version_had_agent_work(&frozen_body, &dir) {
@@ -1089,7 +1241,7 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
     md::write_atomic(&sheet, &new_sheet)?;
 
     let next_s = fmt_version(next);
-    let carried = waves::find(&content, next).is_some();
+    let promoted = waves::find(&content, next).is_some();
     log.info(
         "projects",
         &format!("{name} {} -> {next_s} (froze {})", fmt_version(cur), frozen.display()),
@@ -1099,8 +1251,18 @@ pub fn roll(p: &Profile, log: &Logger, name: &str, level: Bump, force: bool) -> 
         fmt_version(cur),
         frozen.display()
     );
-    if carried {
+    if promoted {
         println!("promoted the planned wave {next_s} to current");
+    }
+    if !carried.is_empty() {
+        println!("carried {} open task(s) to {next_s}", carried.len());
+        log.info(
+            "projects",
+            &format!("{name} carried {} to {next_s}", carried.len()),
+        );
+        for (l, n) in carried.iter().filter(|(_, n)| *n >= STALE_CARRIES) {
+            println!("  stale (carried {n}x): {}", md::task_text(l).trim());
+        }
     }
     Ok(())
 }
@@ -1710,6 +1872,98 @@ Version: v1.13.0
         SHEET.replace("- [ ] still open\n", "")
     }
 
+    // THE carry. Open and in-progress rows leave the closing wave for the next one, retagged,
+    // so the gate then passes on an empty wave instead of being forced past.
+    #[test]
+    fn carry_moves_open_and_in_progress_rows_forward_retagged() {
+        let s = SHEET.replace(
+            "- [ ] still open",
+            "- [ ] still open #v1.13.0\n- [/] half done",
+        );
+        let (out, moved) = carry_open(&s, (1, 14, 0));
+        assert_eq!(moved.len(), 2, "{out}");
+        assert!(
+            roll_blocker(&out, "demo", (1, 13, 0), (1, 14, 0)).is_none(),
+            "{out}"
+        );
+        let next = waves::find(&out, (1, 14, 0)).unwrap();
+        let body = out
+            .lines()
+            .skip(next.start)
+            .take(next.end - next.start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("- [ ] still open #v1.14.0 <!-- carried:1 -->"),
+            "{body}"
+        );
+        assert!(
+            body.contains("- [/] half done #v1.14.0 <!-- carried:1 -->"),
+            "{body}"
+        );
+        assert!(body.contains("planned thing"), "the planned work stays: {body}");
+        assert!(
+            !out.contains("#v1.13.0"),
+            "the old tag must go or sweep drags it back:\n{out}"
+        );
+        // the done row stays behind for the freeze
+        let cur = waves::sections(&out)[0].clone();
+        assert_eq!(cur.version, Some((1, 13, 0)));
+        assert!(out.lines().nth(cur.start + 1).unwrap().contains("shipped thing"));
+    }
+
+    // A roll with no planned wave for `next` mints one, and the roll then promotes it with the
+    // carried rows in it rather than opening an empty wave beside them.
+    #[test]
+    fn carry_into_an_unplanned_version_opens_it_and_the_roll_promotes_it() {
+        let (out, moved) = carry_open(SHEET, (1, 13, 1));
+        assert_eq!(moved.len(), 1);
+        let (frozen, sheet) = rebuild_sheet(&out, (1, 13, 0), (1, 13, 1));
+        assert!(
+            !frozen.contains("still open"),
+            "carried work is not sealed in the note:\n{frozen}"
+        );
+        let cur = waves::sections(&sheet)[0].clone();
+        assert_eq!(cur.version, Some((1, 13, 1)), "{sheet}");
+        assert!(
+            sheet.contains("- [ ] still open #v1.13.1 <!-- carried:1 -->"),
+            "{sheet}"
+        );
+        assert_eq!(sheet.matches("v1.13.1 (current)").count(), 1, "{sheet}");
+    }
+
+    #[test]
+    fn carry_counts_up_inside_the_existing_marker() {
+        let (l, n) = bump_carried("- [ ] x #v1.2.0 <!-- vk:9 carried:2 -->");
+        assert_eq!(
+            (l.as_str(), n),
+            ("- [ ] x #v1.2.0 <!-- vk:9 carried:3 -->", 3)
+        );
+        let (l, n) = bump_carried("- [ ] x <!-- vk:9 -->");
+        assert_eq!((l.as_str(), n), ("- [ ] x <!-- vk:9 carried:1 -->", 1));
+    }
+
+    #[test]
+    fn carry_on_a_finished_wave_changes_nothing() {
+        let f = finished();
+        let (out, moved) = carry_open(&f, (1, 14, 0));
+        assert!(moved.is_empty());
+        assert_eq!(out, f);
+    }
+
+    // A migrated changelog already sitting at versions/<cur>.md must survive the close-out.
+    #[test]
+    fn closeout_appends_below_an_existing_note_without_a_second_head() {
+        let prior = "# demo\n\n## [1.13.0] - 2026-07-17\n- changelog line\n";
+        let stamped =
+            "# demo\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n- [x] shipped\n";
+        let out = append_closeout(prior, stamped, "2026-09-17");
+        assert!(out.starts_with(prior.trim_end()), "{out}");
+        assert!(out.contains("## Wave close-out 2026-09-17"), "{out}");
+        assert!(out.contains("- [x] shipped"), "{out}");
+        assert!(!out.contains("Version:"), "{out}");
+    }
+
     // THE gate. Rolling used to freeze a whole sheet and reset it to an empty wave, so an
     // unchecked task left the live sheet and survived only inside the frozen note - which
     // is how six open items ended up sealed inside versions/v1.12.0.md and on no live list
@@ -2123,6 +2377,15 @@ mod stage_tag_tests {
     fn a_sheetless_project_gets_the_tag_on_its_title() {
         let out = set_head_tag("# demo\n\nsome prose\n", &STAGES, "draft").unwrap();
         assert!(out.starts_with("# demo #draft"), "{out}");
+    }
+
+    // The stage belongs to the project, so a roll must not strip it off the version line.
+    #[test]
+    fn a_roll_keeps_the_stage_on_the_new_version_line() {
+        let (_, sheet) = rebuild_sheet(SHEET, (1, 2, 0), (1, 2, 1));
+        assert!(sheet.contains("Version: v1.2.1 #prod\n"), "{sheet}");
+        let (_, bare) = rebuild_sheet("# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n", (0, 1, 0), (0, 1, 1));
+        assert!(bare.contains("Version: v0.1.1\n"), "{bare}");
     }
 
     #[test]

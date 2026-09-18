@@ -301,6 +301,9 @@ pub fn move_task(
     else {
         bail!("could not lift '{query}' out of {from}");
     };
+    // Retag to the target, as `demote` does. The row keeping its old `#v` tag is how a moved
+    // task got dragged straight back by the next `sweep`, which buckets by tag.
+    let line = retag_for(&cut, &line, to);
     let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&line));
     md::write_atomic(&sheet, &new)?;
     log.info(
@@ -309,6 +312,18 @@ pub fn move_task(
     );
     println!("moved {}\n  {from} -> {heading}", line.trim());
     Ok(0)
+}
+
+/// `line` retagged for the wave `to` on `content`, keeping `#urgent` only when `to` is the
+/// current wave. Unchanged when `to` is not a version.
+fn retag_for(content: &str, line: &str, to: &str) -> String {
+    let Some(v) = waves::parse(to.trim()) else {
+        return line.to_string();
+    };
+    let is_cur = waves::current_of(content, projects::sheet_version(content))
+        .and_then(|s| s.version)
+        == Some(v);
+    project_sweep::retag_wave(line, v, is_cur).0
 }
 
 /// `notes ptask <name> promote|demote <query>` - step the first matching task one wave
@@ -735,6 +750,24 @@ Version: v1.13.0
         let (heading, grown) = target_wave(ROADMAP, Some("v1.14.0"), true).unwrap();
         assert_eq!(heading, "Wave: v1.14.0 (planned)");
         assert!(grown.is_none(), "an existing wave must not be re-minted");
+    }
+
+    // `move --to` must retag, or the next `sweep` (which buckets by tag) drags the row back.
+    #[test]
+    fn a_moved_row_takes_its_new_wave_tag_and_survives_a_sweep() {
+        let sheet = "# demo\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n- [ ] stays\n\n## Wave: v1.14.0 (planned)\n- [ ] later #v1.14.0\n";
+        let line = retag_for(sheet, "- [ ] moved #v1.13.0 #urgent", "v1.14.0");
+        assert!(line.contains("#v1.14.0") && !line.contains("#v1.13.0"), "{line}");
+        assert!(!line.contains("#urgent"), "urgent is only legal in the current wave: {line}");
+        let placed = md::insert_under_heading(sheet, "Wave: v1.14.0 (planned)", &[line]);
+        let swept = project_sweep::sweep_sheet(&placed).map_or(placed.clone(), |(c, _)| c);
+        let later = waves::find(&swept, (1, 14, 0)).unwrap();
+        let in_later = swept
+            .lines()
+            .skip(later.start)
+            .take(later.end - later.start)
+            .any(|l| l.contains("moved"));
+        assert!(in_later, "sweep pulled it back:\n{swept}");
     }
 
     #[test]

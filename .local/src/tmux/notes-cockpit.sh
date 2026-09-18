@@ -29,7 +29,7 @@
 #        --preview-version <kind> <file> <version> <profile> <project>
 #                             (the rendered pane every note is read through; `wave` slices
 #                              the live sheet, anything else renders the whole file)
-#        --roll-now <profile> <project> [patch|minor|major]  (headless; no key binding)
+#        --roll-now <profile> <project> [patch|minor|major|vX.Y.Z] [carry]  (headless; no key binding)
 #        --browse-versions <profile>/<project>   (the `o` roadmap + release-note browser)
 #        --wave-rows / --wave-add / --wave-plan   (that browser's internals)
 #
@@ -1735,6 +1735,10 @@ roll_tag_guard() { # $1=profile $2=project
   fi
   tag="$(git_tag_for_version "$repo" "$name" "$target" 2>/dev/null)"
   [ -n "$tag" ] && return 0
+  # A newer release already shipped past the sheet: the open version will never get a tag of
+  # its own, and refusing would pin the sheet behind the app forever.
+  [ "$(printf '%s\n%s\n' "${target#v}" "${shipped#v}" | sort -V | tail -1)" = "${shipped#v}" ] \
+    && [ "${target#v}" != "${shipped#v}" ] && return 0
 
   printf 'roll: refusing to freeze %s - no git tag ships it.\n' "$target" >&2
   printf '  newest shipped tag: %s\n' "$shipped" >&2
@@ -1742,10 +1746,10 @@ roll_tag_guard() { # $1=profile $2=project
   return 1
 }
 
-roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
+roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX.Y.Z, plus --carry)
   local profile="$1" name="$2" flag="${3:-}" out frozen
   roll_tag_guard "$profile" "$name" || return 1
-  # shellcheck disable=SC2086  # $flag is one optional word, deliberately unquoted
+  # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
   out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
     || { echo "$out"; echo "roll failed"; return 1; }
   echo "$out"
@@ -1788,17 +1792,26 @@ roll_do() { # $1=profile $2=project $3=flag ('' | --minor | --major)
   fi
 }
 
-# `--roll-now <profile> <project> [patch|minor|major]` — the headless entry a merged wave
-# calls. Defaults to PATCH, because that is what a wave is; a minor (a release) or a major
-# stays a human act through `V`, and passing anything else is rejected rather than guessed.
-roll_now() { # $1=profile $2=project [$3=level]
-  local profile="${1:-}" name="${2:-}" level="${3:-patch}" flag
-  [ -n "$profile" ] && [ -n "$name" ] || { echo "usage: --roll-now <profile> <project> [patch|minor|major]" >&2; return 2; }
+# `--roll-now <profile> <project> [patch|minor|major|vX.Y.Z] [carry]` - the headless entry
+# a merged wave and `agentctl-wave-roll` call. Defaults to PATCH, because that is what a wave
+# is. An exact `vX.Y.Z` opens that version next (a release tag that already passed the sheet).
+# `carry` moves the wave's open tasks forward instead of refusing on them: that is what a
+# release tag closing its version does. Anything else is rejected rather than guessed.
+roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
+  local profile="${1:-}" name="${2:-}" level="${3:-patch}" mode="${4:-}" flag
+  local usage="usage: --roll-now <profile> <project> [patch|minor|major|vX.Y.Z] [carry]"
+  [ -n "$profile" ] && [ -n "$name" ] || { echo "$usage" >&2; return 2; }
   case "$level" in
     patch) flag='' ;;
     minor) flag='--minor' ;;
     major) flag='--major' ;;
-    *) echo "roll-now: unknown level '$level' (patch|minor|major)" >&2; return 2 ;;
+    v[0-9]*.[0-9]*.[0-9]*) flag="--next $level" ;;
+    *) echo "roll-now: unknown level '$level' (patch|minor|major|vX.Y.Z)" >&2; return 2 ;;
+  esac
+  case "$mode" in
+    '') ;;
+    carry) flag="${flag:+$flag }--carry" ;;
+    *) echo "roll-now: unknown mode '$mode' (carry)" >&2; return 2 ;;
   esac
   roll_do "$profile" "$name" "$flag"
 }
@@ -2161,7 +2174,7 @@ case "${1:-}" in
   --wave-log) [ -n "${2:-}" ] && tmux new-window "tail -f '$HOME/.local/state/agentctl/wave/$2.log'" 2>/dev/null; exit 0 ;;
   --new-project) new_project "${2:-}"; exit 0 ;;
   --roll-project) roll_project "${2:-}"; exit 0 ;;
-  --roll-now) roll_now "${2:-}" "${3:-}" "${4:-patch}"; exit $? ;;  # headless: a merged wave rolls its own patch
+  --roll-now) roll_now "${2:-}" "${3:-}" "${4:-patch}" "${5:-}"; exit $? ;;  # headless: a merged wave rolls its own patch
   --browse-versions) browse_versions "${2:-}"; exit 0 ;;
   --wave-rows) browse_rows "${2:-}" "${3:-}"; exit 0 ;;          # the `o` list, for reload
   --preview-version) preview_version "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"; exit $? ;;
