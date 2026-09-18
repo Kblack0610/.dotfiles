@@ -164,9 +164,14 @@ board_stage_of() { # $1=status text [$2=sentinel text] -> stage
 # no amount of comment prevents it.
 #
 # awk (not the shell case) is the survivor because only it can express a word boundary:
-# \<done\> matches "done" and not "abandoned". board_stage_of pays one subprocess per
+# "done" must match and "abandoned" must not. board_stage_of pays one subprocess per
 # call for this; it has exactly one caller (wave-session's _is_live, once per row), so
 # the cost is a rounding error against a class of silent misclassification.
+#
+# The boundary is spelled out as character classes, NOT as GNU's \< \>. BSD awk (every
+# stock macOS) silently does not support \< \>, so the rule matched nothing there and
+# every `DONE - ...` row that lacked the word "merged" read as `working` -- a finished
+# row reported as live, which is the precise bug this function exists to prevent.
 _BOARD_STAGE_AWK='
 # WHERE a verdict appears decides whether it is THIS row`s verdict.
 #
@@ -208,7 +213,7 @@ function board_stage(s,  low, lead, i) {
   if (low ~ /status:? *done/)                       return "merged"
   i = index(low, ". ")
   lead = (i > 0) ? substr(low, 1, i - 1) : low
-  if (lead ~ /merged|\<done\>/)                     return "merged"
+  if (lead ~ /merged|(^|[^a-z0-9_])done([^a-z0-9_]|$)/) return "merged"
   if (lead ~ /skipped/)                             return "skipped"
   if (lead ~ /pr[- ]?open|pr *#[0-9]|pull\/[0-9]|merge it|ready/) return "review"
   if (lead ~ /queued|filed|not dispatched|n\/a|returns/) return "queued"

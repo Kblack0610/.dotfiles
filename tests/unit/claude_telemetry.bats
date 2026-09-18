@@ -13,6 +13,13 @@ setup() {
   SNIP="$BATS_TEST_DIRNAME/../../.config/shared-hooks/claude-telemetry.sh"
   FAKEBIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$FAKEBIN"
+  # The snippet gates on `timeout`, which is /usr/bin on Linux but Homebrew coreutils on
+  # macOS. Resolve it instead of hardcoding, or the pinned PATH below silently omits it,
+  # the guard can never be true, and the on-LAN tests fail as though the snippet were
+  # broken. Skipped rather than failed where it genuinely does not exist.
+  TIMEOUT_BIN="$(command -v timeout || true)"
+  [ -n "$TIMEOUT_BIN" ] || skip "no timeout(1) on PATH"
+  TIMEOUT_DIR="$(dirname "$TIMEOUT_BIN")"
 }
 
 # Source the snippet in a pristine env with a stubbed `getent`, and dump what it exported.
@@ -20,7 +27,7 @@ setup() {
 telemetry_env() {
   printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"
   chmod +x "$FAKEBIN/getent"
-  env -i HOME="$HOME" PATH="$FAKEBIN:/usr/bin:/bin" ${2:+"$2"} bash -c \
+  env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" ${2:+"$2"} bash -c \
     ". '$SNIP' >/dev/null 2>&1; env | grep -E '^(OTEL_|CLAUDE_CODE_ENABLE|CLAUDE_CODE_ENHANCED)' | sort"
 }
 
@@ -73,7 +80,7 @@ telemetry_env() {
   assert_output --partial 'service.name=claude-code,'
 
   printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"; chmod +x "$FAKEBIN/getent"
-  run env -i HOME="$HOME" PATH="$FAKEBIN:/usr/bin:/bin" CLAUDE_TELEMETRY_SERVICE=claude-agentctl \
+  run env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" CLAUDE_TELEMETRY_SERVICE=claude-agentctl \
     bash -c ". '$SNIP' >/dev/null 2>&1; echo \$OTEL_RESOURCE_ATTRIBUTES"
   assert_output --partial 'service.name=claude-agentctl,'
 }

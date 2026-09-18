@@ -1286,8 +1286,11 @@ attention_counts() {
       [ "$canon" != "$proj" ] && map+="$canon=$p"$'\n'  # canonical name -> profile
     done
   done < <(profiles)
-  agent-ask list --all --pending 2>/dev/null | awk -F'\t' -v map="$map" '
-    BEGIN { n=split(map, L, "\n"); for(i=1;i<=n;i++) if(split(L[i],kv,"=")==2) prof_of[kv[1]]=kv[2] }
+  # $map is newline-delimited, so it goes through the environment, NOT `awk -v`. BSD awk
+  # (every stock macOS) refuses a newline inside a -v value -- "awk: newline in string" --
+  # and the whole attention count dies with it. ENVIRON is POSIX and takes it verbatim.
+  agent-ask list --all --pending 2>/dev/null | MAP="$map" awk -F'\t' '
+    BEGIN { n=split(ENVIRON["MAP"], L, "\n"); for(i=1;i<=n;i++) if(split(L[i],kv,"=")==2) prof_of[kv[1]]=kv[2] }
     $1=="" { next }
     # t++ is OUTSIDE the p!="" guard on purpose. It used to be inside, so an ask whose
     # profile column is empty AND whose project is in no profile map counted toward NO
