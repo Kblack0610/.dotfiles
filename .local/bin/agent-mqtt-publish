@@ -7,8 +7,8 @@
 #
 # Entities use HA MQTT discovery: runners, watches, open asks and live sessions appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
-# Triggers: agentctl after every status write, sentinel on a watch state change, and
-# agent-mqtt-publish.timer (--full) for the sources with no event (asks, sessions).
+# Triggers: agentctl after every status write, sentinel on a watch state change,
+# agent-mqtt-sessions.path on ~/.claude/sessions, and agent-mqtt-publish.timer (--full).
 # Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
 set -uo pipefail
 
@@ -71,6 +71,7 @@ emit() {
     case "$kind" in
         runner)  eid="agent_$id" ;;
         watch)   eid="agent_watch_$id" ;;
+        sessions) eid="agent_sessions_$id" ;;
         *)       eid="agent_$id"
                  case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;; esac ;;
     esac
@@ -140,16 +141,30 @@ snapshot() {
             '{"state_class":"measurement"}'
     fi
 
-    # Interactive sessions: live Claude panes. Glyphs are agent-panel's own:
-    # `~` working, `!` needs you, anything else idle/done.
+    # Interactive sessions: live Claude panes, the same `agent-panel list` the waybar
+    # ai-agents module reads. Glyphs are agent-panel's own: `~` working, `!` needs you,
+    # anything else idle. One summary sensor, plus one sensor per project (the bar's groups).
     if command -v agent-panel >/dev/null 2>&1; then
-        emit summary sessions mdi:console "$(agent-panel list 2>/dev/null | jq -cR -s '
+        local sessions proj
+        sessions="$(agent-panel list 2>/dev/null | jq -cR -s '
             [split("\n")[] | select(length > 0) | split("\t")
-             | {project: .[2], title: .[3],
-                status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end)}]
-            | {state: length, working: map(select(.status == "working")) | length,
-               attention: map(select(.status == "attention")) | length, sessions: .}')" \
+             | {target: .[0], glyph: .[1], project: .[2], title: .[3],
+                status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end)}]')"
+        emit summary sessions mdi:console "$(jq -c '
+            {state: length, working: map(select(.status == "working")) | length,
+             attention: map(select(.status == "attention")) | length, sessions: .}' <<< "$sessions")" \
             '{"state_class":"measurement"}'
+        # State is the group's most urgent status, so a widget or automation can key on it.
+        while IFS= read -r proj; do
+            emit sessions "$proj" mdi:console-line "$(jq -c --arg p "$proj" '
+                map(select(.project == $p)) as $g
+                | {state: (if any($g[]; .status == "attention") then "attention"
+                           elif any($g[]; .status == "working") then "working" else "idle" end),
+                   project: $p, glyphs: ($g | map(.glyph) | join("")), count: ($g | length),
+                   working: ($g | map(select(.status == "working")) | length),
+                   attention: ($g | map(select(.status == "attention")) | length),
+                   sessions: ($g | map({target, status, title}))}' <<< "$sessions")"
+        done < <(jq -r 'map(.project) | unique[]' <<< "$sessions")
     fi
 }
 
