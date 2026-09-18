@@ -164,6 +164,12 @@ case "$verb" in
     # has to opt in; a test wanting the create path sets STUB_SELECT_WINDOW_RC=1.
     exit "${STUB_SELECT_WINDOW_RC:-0}"
     ;;
+  switch-client)
+    # `switch-client -l` exits 1 when the client has no last session, which is exactly the
+    # state a fresh attach after a cross-server hop is in. Default to that, so a test wanting
+    # tmux's own last-session to answer has to say so with STUB_LAST_SESSION_RC=0.
+    case " $* " in *" -l "*) exit "${STUB_LAST_SESSION_RC:-1}" ;; esac
+    ;;
   *)
     : ;;   # new-window, display-popup, set-option, ...: recorded no-ops
 esac

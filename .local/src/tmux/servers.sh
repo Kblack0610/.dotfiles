@@ -465,14 +465,17 @@ cmd_goto() {
   _enter "${1:?goto needs a server name}" "${2:?goto needs a session name}"
 }
 
-# back -- return to wherever the last hop left from, and record this spot on the way, so
-# the key is a two-way flip rather than a one-way trip.
+# back -- Prefix+L. tmux's own last-session FIRST; the crumb only when tmux has none.
 #
-# Bound to Prefix+L, which is stock tmux's "last session". Every path that cannot answer
-# falls through to exactly that, so the binding only ever ADDS behaviour: inside one world,
-# with nothing hopped, L still means what tmux says it means.
+# The crumb is written by hops only, so it goes stale the moment you switch sessions any
+# other way (sesh, Prefix+w, choose-tree). Consulting it first made L jump to wherever the
+# last hop started, hours ago, instead of the session you were just in. tmux knows the real
+# answer whenever it has one; it only has none on a fresh attach, which is exactly the state
+# a cross-server hop leaves you in - and that is the one case the crumb exists for.
 cmd_back() {
   local rec srv sess win cur cur_srv cur_sess
+
+  [ -n "${TMUX:-}" ] && tmux switch-client -l 2>/dev/null && return 0
 
   rec="$(head -1 "$BACK_FILE" 2>/dev/null)"
   IFS=$'\t' read -r srv sess win <<<"${rec:-}"
@@ -484,10 +487,8 @@ cmd_back() {
   if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] ||
      ! tmux -L "$srv" has-session 2>/dev/null ||
      { [ "$srv" = "${cur_srv:-}" ] && [ "$sess" = "${cur_sess:-}" ]; }; then
-    # Not exec'd, and the status is swallowed on purpose. switch-client -l exits 1 when the
-    # client has no last session, and run-shell surfaces a non-zero child as the popup
-    # `'tmx back' returned 1` - which reads as a broken key rather than "nowhere to go".
-    [ -n "${TMUX:-}" ] && tmux switch-client -l 2>/dev/null
+    # Nowhere to go. Exit 0 anyway: run-shell surfaces a non-zero child as the popup
+    # `'tmx back' returned 1`, which reads as a broken key rather than "nowhere to go".
     return 0
   fi
 

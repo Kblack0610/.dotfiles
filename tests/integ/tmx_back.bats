@@ -153,6 +153,20 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_not_called "detach-client"
 }
 
+@test "tmux's own last-session wins over a stale crumb" {
+  # The regression: the crumb is only written by hops, so after switching sessions any
+  # other way it points hours into the past. Checking it first made L jump to wherever the
+  # last hop started instead of the session you were just in.
+  recorded lab work 4
+  at hub daily 0
+  export STUB_LAST_SESSION_RC=0
+  run "$TMX" back
+  assert_success
+  assert_called "switch-client -l"
+  assert_not_called "detach-client"
+  assert_not_called "switch-client -t"
+}
+
 @test "with nothing recorded, L is still tmux's own last-session" {
   at hub daily 0
   run "$TMX" back
