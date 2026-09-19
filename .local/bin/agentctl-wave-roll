@@ -46,6 +46,21 @@ log() {
   printf '%s\n' "$*"
 }
 
+# A tag reaches this clone only by fetch, so one pushed from CI or another machine stays
+# invisible to `git tag` until someone fetches here, and the pass would never roll for it.
+# Tags only (no branches, no working tree), once per repo per pass. A failed fetch still
+# compares against the local tags: that answer is stale, never wrong about what it has seen.
+declare -A FETCHED=()
+fetch_tags() { # $1=project
+  local repo
+  repo="$(project_repo_path "$1")"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -z "${FETCHED[$repo]:-}" ] || return 0
+  FETCHED[$repo]=1
+  GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$repo" fetch -q --no-write-fetch-head origin \
+    'refs/tags/*:refs/tags/*' 2>/dev/null \
+    || log "fetch failed for $repo: comparing against local tags"
+}
+
 rolled=0 failed=0
 while read -r profile; do
   # Whole lines: tab is IFS whitespace, so `read a b c d` collapses the empty third column.
@@ -53,6 +68,7 @@ while read -r profile; do
     name="${row%%$'\t'*}" ver="${row##*$'\t'}" sheet="$(cut -f2 <<<"$row")"
     [ -n "$name" ] || continue
     [ -z "$ONE" ] || [ "$name" = "$ONE" ] || continue
+    fetch_tags "$name"
     shipped="$(project_release_version "$name" "$(dirname "$sheet")/summary.md" 2>/dev/null)"
     [ -n "$shipped" ] || continue                    # notes-only: the wave rolls its own patch
     if ! is_ver "$ver" || [ "$(basename "$sheet")" = summary.md ]; then
