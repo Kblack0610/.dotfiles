@@ -61,10 +61,7 @@ user_pref("browser.newtabpage.activity-stream.section.highlights.includeVisited"
 user_pref("privacy.trackingprotection.enabled", true);
 user_pref("privacy.trackingprotection.socialtracking.enabled", true);
 
-// === PASSWORD MANAGER (disable about:logins entirely) ===
-// Stops "Manage Passwords" from ever opening — including stray
-// keystrokes after VDI sign-out that land in the URL bar.
-user_pref("signon.management.page.enabled", false);
+// === PASSWORD MANAGER (disable) ===
 user_pref("signon.rememberSignons", false);
 user_pref("extensions.formautofill.addresses.enabled", false);
 user_pref("extensions.formautofill.creditCards.enabled", false);
@@ -86,16 +83,7 @@ user_pref("browser.startup.homepage", "about:home");
 // === TAB GROUPS ===
 user_pref("browser.tabs.groups.enabled", true);
 
-// === VDI / KEYBOARD CAPTURE ===
-// 3 = PROMPT: ask the first time a site tries to override built-in
-// Firefox shortcuts. Lets the VDI page capture Ctrl+W / Ctrl+T / etc.
-// after a one-time accept, without globally allowing every site.
-// Values: 0=UNKNOWN (default), 1=ALLOW, 2=DENY/blocks VDI, 3=PROMPT.
-// Per-shortcut clearing also available at about:keyboard (Fx 147+).
-user_pref("permissions.default.shortcuts", 3);
-// Alt-keyup normally focuses the (hidden) menu bar, yanking keyboard focus
-// out of the VDI canvas when Alt+Tab leaks through. Kill that behavior.
-user_pref("ui.key.menuAccessKeyFocuses", false);
+// === KEYBOARD ===
 // Disable Alt+letter menu accelerators entirely (Alt+E=Edit, Alt+T=Tools,
 // Alt+W/R/Q...) so the left-hand Alt row is free for Simple Tab Groups
 // shortcuts. 0 = no menu access key (default 18 = Alt).
@@ -108,12 +96,3 @@ user_pref("sidebar.verticalTabs", true);
 // "hide-sidebar" = sidebar slides off-screen until Ctrl+B or edge hover.
 // Alternatives: "always-show" (always visible), "expand-on-hover" (icons only, expand on hover).
 user_pref("sidebar.visibility", "hide-sidebar");
-
-// === DOWNLOADS (auto-save to known dir, no prompt) ===
-// Lets WSL read browser-dumped console logs / saved-as files from a stable
-// Windows path: C:\dev\browser-logs  →  /mnt/c/dev/browser-logs from WSL.
-// Linux Firefox ignores this path silently and falls back to ~/Downloads.
-user_pref("browser.download.useDownloadDir", true);
-user_pref("browser.download.folderList", 2);
-user_pref("browser.download.dir", "C:\\dev\\browser-logs");
-user_pref("browser.download.alwaysOpenPanel", false);
