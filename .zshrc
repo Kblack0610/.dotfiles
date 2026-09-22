@@ -147,6 +147,10 @@ alias websnap='ffmpeg -f v4l2 -i /dev/video0 -vf "select=gte(n\,5)" -frames:v 1 
 alias icat='kitten icat --passthrough=tmux'
 alias img='chafa'
 
+# Notion MCP is work-only, so it is off by default. This loads it for one session.
+# The flag goes last because --mcp-config is variadic and would swallow a prompt argument.
+claude-notion() { claude "$@" --mcp-config ~/.dotfiles/.claude/mcp-optional/notion.json; }
+
 # --- Bottom Prompt (Ergonomic) ---
 # Push prompt to bottom of terminal on new shell
 # Helps reduce neck strain by looking down instead of up
