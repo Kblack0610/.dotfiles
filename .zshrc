@@ -149,7 +149,7 @@ alias img='chafa'
 
 # Notion MCP is work-only, so it is off by default. This loads it for one session.
 # The flag goes last because --mcp-config is variadic and would swallow a prompt argument.
-claude-notion() { claude "$@" --mcp-config ~/.dotfiles/.claude/mcp-optional/notion.json; }
+claude-notion() { claude "$@" --mcp-config ~/.claude/mcp-optional/notion.json; }
 
 # --- Bottom Prompt (Ergonomic) ---
 # Push prompt to bottom of terminal on new shell
