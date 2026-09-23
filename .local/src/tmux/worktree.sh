@@ -83,8 +83,17 @@ wt_main_repo() {
 wt_repo_name() { panel_session_name "$1"; }
 
 # wt_default_branch <main-repo> -- what this repo calls its trunk.
+#
+# `git config wt.trunk <branch>` wins over origin/HEAD, for a repo whose GitHub default is
+# not where work lands. bnb/platform defaults to `main` (production manifests) but merges
+# into `develop`: cutting from main put every agent on a stale base, and judging reap against
+# main kept any worktree whose work had landed on develop but not been released yet.
 wt_default_branch() {
   local ref
+  if ref=$(git -C "$1" config --get wt.trunk 2>/dev/null) && [ -n "$ref" ]; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
   if ref=$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null); then
     printf '%s\n' "${ref##*/}"
     return 0

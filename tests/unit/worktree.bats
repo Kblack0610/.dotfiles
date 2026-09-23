@@ -213,3 +213,12 @@ make_repo() {
   assert_success
   assert_output 'main'
 }
+
+@test "git config wt.trunk overrides origin/HEAD" {
+  make_repo
+  git -C "$MAIN" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$MAIN" config wt.trunk develop
+  run wt_default_branch "$MAIN"
+  assert_success
+  assert_output 'develop'
+}
