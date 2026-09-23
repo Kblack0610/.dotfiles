@@ -162,10 +162,13 @@ REASON="focus-gate: this turn changed code, but the work was not tracked anywher
 
 PROJECT work belongs on the project's board, NOT the daily note - the note is the human's
 own list and an agent item added there crowds it out:
-  notes ptask <project> add   \"<short title>\"   not tracked yet
-  notes ptask <project> start \"<a word or two>\"  you are on it   -> [/]
-  notes ptask <project> done  \"<a word or two>\"  it landed       -> [x]
-  notes board                                     regenerate the board, print its path
+  notes ptask <project> --agent add   \"<short title>\"   not tracked yet
+  notes ptask <project> --agent start \"<a word or two>\"  you are on it   -> [/]
+  notes ptask <project> --agent done  \"<a word or two>\"  it landed       -> [x]
+  notes board                                             regenerate the board, print its path
+
+Your own work goes on the AGENT board (--agent). The sheet without --agent is the human's
+queue: human asks, human-only actions, and prod/PHI/security/money findings only.
 
 Use the daily ## Focus only for the HUMAN's own work on this machine:
   notes focus start \"<couple words>\"   |  notes focus add \"<couple words>\"  |  notes focus done \"<couple words>\"
