@@ -267,11 +267,11 @@ CONTEXT=$(
       # Two lines, not ten. Turn 1 needs the POINTER; the argument for why the two lanes
       # are separate lives in CLAUDE.md, which is already loaded, and repeating it here
       # cost ~10 lines of every session to re-litigate a settled rule.
-      echo "  → the HUMAN's list, not your queue. Project work: \`notes ptask <project> add|start|done \"<title>\"\` (\`notes board\`)"
+      echo "  → the HUMAN's list, not your queue. Your work: \`notes ptask <project> --agent add|start|done \"<title>\"\` (\`notes board\`)"
       echo
     else
       echo "🎯 Focus: none set today — that is the human's list, not yours."
-      echo "  → project work: \`notes ptask <project> add|start|done \"<title>\"\`"
+      echo "  → your work: \`notes ptask <project> --agent add|start|done \"<title>\"\`"
       echo
     fi
   fi

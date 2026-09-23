@@ -104,7 +104,7 @@ seed_focus() {
   seed_focus '- [ ] a human task'
   run context
   assert_output --partial 'a human task'
-  assert_output --partial 'notes ptask <project> add|start|done'
+  assert_output --partial 'notes ptask <project> --agent add|start|done'
   assert_output --partial 'notes board'
 }
 
@@ -124,7 +124,7 @@ seed_focus() {
   seed_focus ''
   run context
   assert_output --partial 'none set'
-  assert_output --partial 'notes ptask <project> add|start|done'
+  assert_output --partial 'notes ptask <project> --agent add|start|done'
   refute_output --partial 'notes focus add'
 }
 
