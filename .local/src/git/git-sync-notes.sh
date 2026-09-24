@@ -110,6 +110,18 @@ ensure_https_credentials() {
     esac
 }
 
+# An interrupted fetch or push leaves its partial pack as .git/objects/pack/tmp_pack_*.
+# git only removes those during gc, which never runs here, so a flapping remote
+# accumulates them: on 2026-09-14 a 30s timer retrying a failing fetch left 41 of
+# them, 4GB, in 21 minutes. Called under the sync lock; the age floor keeps it off a
+# pack some manual git command outside the lock is still writing.
+reap_stale_tmp_packs() {
+    local n
+    n=$(find .git/objects/pack -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -print -delete 2>/dev/null | wc -l)
+    [ "$n" -gt 0 ] && log "CLEANUP: removed $n stale tmp_pack file(s) from interrupted transfers"
+    return 0
+}
+
 mkdir -p "$STATE_DIR"
 rotate_log
 
@@ -125,6 +137,7 @@ if [ ! -d "$NOTES_DIR/.git" ]; then
 fi
 
 cd "$NOTES_DIR"
+reap_stale_tmp_packs
 setup_ssh
 
 if ! git_remote_exists "$PRIMARY_REMOTE"; then
