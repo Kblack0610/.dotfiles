@@ -103,6 +103,7 @@ Media/Music
 !.claude/skills/*/
 .claude/skills/*/*
 !.claude/skills/authoring/figma-use/
+!.claude/skills/authoring/flow-review/
 !.claude/skills/authoring/marp-slide/
 !.claude/skills/authoring/one-pager/
 !.claude/skills/authoring/shell-test-harness/
