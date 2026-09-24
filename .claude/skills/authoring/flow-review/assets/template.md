@@ -23,8 +23,8 @@
 - **VERIFY** <Cannot be judged in this env; say where and what to check.>
 - **OK** <Checked and right. Include these; they tell the reader what was covered.>
 
-![Desktop](shots/01-<step>-desktop.png)
-![Phone](shots/02-<step>-phone.png)
+![Desktop](shots/01-<step>-desktop.jpg)
+![Phone](shots/02-<step>-phone.jpg)
 
 ## What this is not
 

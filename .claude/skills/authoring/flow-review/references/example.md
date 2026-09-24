@@ -1,6 +1,6 @@
 # Worked example (excerpt)
 
-Trimmed from the first real flow-review: a family account paying an accepted care placement, walked on web at 1280 and 390 and in the mobile app, against a preview env. Product names and hosts are removed here because this repo is public. The full report, with all 20 screenshots, is at `~/ref/bnb-platform/2026-09-23-julie-payment-flow/README.md` on the workstation. Read that one when you want the whole shape.
+Trimmed from the first real flow-review: a family account paying an accepted care placement, walked on web at 1280 and 390 and in the mobile app, against a preview env. Product names and hosts are removed here because this repo is public. The full report, with all 20 screenshots, is the 2026-09-23 Julie payment flow under `~/.notes/ref/`. Read that one when you want the whole shape.
 
 What it shows: a tally a reader can act on before scrolling, one line of "what happens" per step, severity on every note, `file:line` on the fixes that have one, OK notes kept so the reader knows the step was checked, and a caveats section that stops the reader from over-reading test data.
 
