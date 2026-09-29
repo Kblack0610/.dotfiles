@@ -39,10 +39,9 @@ is intentionally NOT used (project preference: `gh` CLI over MCP).
      ```bash
      git status --short && git branch --show-current
      ```
-   - Optionally: today's notes for stated focus
+   - Optionally: today's stated focus (open + in-progress items from the daily note)
      ```bash
-     [ -f ~/.notes/journal/daily/$(date +%Y-%m-%d).md ] && \
-       grep -A 5 -i '^## Focus\|^## Priority' ~/.notes/journal/daily/$(date +%Y-%m-%d).md
+     notes focus list
      ```
 
 3. **Identify Blockers**

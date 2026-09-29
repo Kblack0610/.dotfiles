@@ -77,9 +77,13 @@ pub fn run(p: &Profile, log: &Logger, date: Option<&str>, force: bool) -> Result
 
 /// Build the markdown summary block, or `None` if nothing extractable.
 pub fn build_summary(content: &str, date_s: &str) -> Option<String> {
+    // Drop the link footer first: the last H2 runs to EOF under md::section_span, so without
+    // this the `---` + `Backlog: [[...]]` line leaks into whichever section is last.
+    let mut body = content.to_string();
+    crate::daily::strip_backlog_footer(&mut body);
     let mut out: Vec<String> = vec![format!("### {date_s}")];
     for (label, heading) in SECTIONS {
-        if let Some(text) = md::section_text(content, heading) {
+        if let Some(text) = md::section_text(&body, heading) {
             out.push(format!("**{label}:**"));
             out.push(text);
         }
@@ -112,6 +116,18 @@ fn append(path: &Path, summary: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_drops_the_link_footer_from_the_last_section() {
+        let note = "# 2026-09-29\n\n## Notes\nhello\n\n## Focus\n- [ ] a task\n\n---\nBacklog: [[journal/backlogs/fun]] · Knowledge: [[journal/index/moc]]\n";
+        let s = build_summary(note, "2026-09-29").unwrap();
+        assert!(s.contains("- [ ] a task"), "{s}");
+        assert!(s.contains("hello"), "{s}");
+        assert!(
+            !s.contains("Backlog:"),
+            "footer leaked into the summary:\n{s}"
+        );
+    }
 
     #[test]
     fn summary_extracts_sections() {
