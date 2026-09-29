@@ -11,6 +11,7 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `chrome/userChrome.css` | `<profile>/chrome/userChrome.css` | Catppuccin Mocha theme |
 | `containers.json` | `<profile>/containers.json` | Multi-account containers |
 | `policies.json` | `/usr/lib/firefox/distribution/policies.json` | Enterprise policies, extension auto-install |
+| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; Linux only |
 | `mozilla.cfg` | `/usr/lib/firefox/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
 | `autoconfig.js` | `/usr/lib/firefox/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |

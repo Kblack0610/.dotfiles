@@ -82,8 +82,17 @@ install_policies() {
         echo "Creating $dist_dir (requires sudo)"
         sudo mkdir -p "$dist_dir"
     fi
-    sudo cp "$SCRIPT_DIR/policies.json" "$dist_dir/policies.json"
-    echo "  - Installed policies.json to $dist_dir"
+    # Personal-machine overlay from the private repo (Karakeep search engine
+    # etc.): deep-merged over the public base, which cannot name LAN hosts.
+    local overlay="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}/.config/firefox/policies.local.json"
+    if [[ -f "$overlay" ]]; then
+        jq -s '.[0] * (.[1] | del(._comment))' "$SCRIPT_DIR/policies.json" "$overlay" \
+            | sudo tee "$dist_dir/policies.json" >/dev/null
+        echo "  - Installed policies.json (+ $overlay) to $dist_dir"
+    else
+        sudo cp "$SCRIPT_DIR/policies.json" "$dist_dir/policies.json"
+        echo "  - Installed policies.json to $dist_dir"
+    fi
 }
 
 # Install autoconfig.js + mozilla.cfg into the Firefox install directory.
