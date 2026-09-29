@@ -194,13 +194,16 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // index every morning, and the footer already carries `Projects: [[…/index]]` — the
     // same destination, one line instead of a section. The daily note is the human's
     // FOCUS surface; the project/agent board is a click away, not pasted in on top of it.
+    // Notes sits ABOVE Focus: Focus carries every open task forward and runs ~20 lines, so a
+    // Notes section below it was scrolled past and stayed empty on most days. Every reader
+    // finds both sections by heading name (md::section_span), so the order is free to choose.
+    s.push_str("## Notes\n\n");
     s.push_str("## Focus\n");
     for l in &focus_keep {
         s.push_str(l);
         s.push('\n');
     }
-    s.push_str("- [ ] \n\n");
-    s.push_str("## Notes\n\n");
+    s.push_str("- [ ] \n");
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
@@ -514,8 +517,15 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     } else {
         format!(" · Status: {status_links}")
     };
+    // The knowledge index (the `notes index --rebuild` MOC over knowledge/ + zettels), so the
+    // curated side of the vault is one click from the day. Unconditional for the same reason
+    // as the status links: the footer stays identical on every machine.
+    let knowledge_link = format!(
+        " · Knowledge: [[{}]]",
+        config::wikilink(&p.root, &p.index.join("moc.md"))
+    );
     content.push_str(&format!(
-        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{status_link}\n"
+        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{knowledge_link}{status_link}\n"
     ));
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.
@@ -559,7 +569,7 @@ fn footer_idx(content: &str) -> Option<usize> {
 /// note's sections, and the last H2 sits directly above the footer with no H2 between — so
 /// stripping it here keeps the footer out of the carried section (and thus out of
 /// tomorrow's note).
-fn strip_backlog_footer(content: &mut String) {
+pub(crate) fn strip_backlog_footer(content: &mut String) {
     if let Some(idx) = footer_idx(content) {
         content.truncate(idx);
     }
@@ -2013,10 +2023,31 @@ after
         let out = std::fs::read_to_string(&note).unwrap();
 
         assert!(!out.contains("## Due"), "Due section is gone:\n{out}");
-        let focus = &out[out.find("## Focus").unwrap()..out.find("## Notes").unwrap()];
+        let focus = md::section_lines(&out, "Focus").unwrap().join("\n");
         assert!(focus.contains("my thing"), "{out}");
         assert!(focus.contains("water plants"), "legacy Due item stranded:\n{out}");
         assert!(focus.contains("pay rent"), "legacy Due item stranded:\n{out}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Notes is written above Focus, and the footer links the knowledge index.
+    #[test]
+    fn new_note_puts_notes_above_focus_and_links_knowledge() {
+        let dir = std::env::temp_dir().join(format!("notes-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-09-30.md");
+        create_note(&p, &log, d("2026-09-30"), &note).unwrap();
+        ensure_footer(&p, &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        let notes_at = out.find("## Notes").expect("no Notes");
+        let focus_at = out.find("## Focus").expect("no Focus");
+        assert!(notes_at < focus_at, "Notes must precede Focus:\n{out}");
+        assert!(out.contains("Knowledge: [[journal/index/moc]]"), "{out}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
