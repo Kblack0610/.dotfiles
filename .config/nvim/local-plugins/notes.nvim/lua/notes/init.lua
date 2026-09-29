@@ -110,29 +110,6 @@ local function ensure_today_refs_anchor()
   return anchor
 end
 
-local function sync_notes_harpoon_slots()
-  if not is_in_notes_dir() then return end
-
-  vim.defer_fn(function()
-    create_daily_journal()
-    ensure_today_refs_dir()
-
-    local ok, harpoon = pcall(require, "harpoon")
-    if not ok then return end
-
-    local journal_path = get_today_journal()
-    local list = harpoon:list()
-    local items = list.items
-    for i = #items, 1, -1 do
-      local value = items[i].value
-      if value == journal_path then
-        table.remove(items, i)
-      end
-    end
-
-    table.insert(items, 1, { value = journal_path, context = {} })
-  end, 100)
-end
 
 -- Profile-aware, like every other nav target. This alone was hardcoded to the personal
 -- vault's layout with no profile lookup at all, so opening projects from a note in any
@@ -170,6 +147,52 @@ local function ensure_projects_anchor()
   return get_projects_dir()
 end
 
+-- Lab is the parent of the projects dir's parent (`<lab>/projects/index.md`), so it
+-- follows the resolved org the same way the anchor does.
+local function is_in_lab()
+  local lab_root = vim.fn.fnamemodify(get_projects_anchor(), ":h:h")
+  local cwd = vim.fn.getcwd()
+  return cwd == lab_root or cwd:find(lab_root .. "/", 1, true) == 1
+end
+
+-- Pin slot 1 of the cwd's harpoon list: the projects index in lab, today's daily
+-- everywhere else in ~/.notes. Lab also sheds every daily note, which the old
+-- daily-everywhere rule left behind there one per day. The rest keep their order.
+local function sync_notes_harpoon_slots()
+  if not is_in_notes_dir() then return end
+
+  vim.defer_fn(function()
+    create_daily_journal()
+    ensure_today_refs_dir()
+
+    local ok, harpoon = pcall(require, "harpoon")
+    if not ok then return end
+
+    local in_lab = is_in_lab()
+    local pin = in_lab and get_projects_anchor() or get_today_journal()
+    local daily_dir = vim.fn.fnamemodify(get_today_journal(), ":h") .. "/"
+
+    local list = harpoon:list()
+    local kept = {}
+    for i = 1, list:length() do
+      local item = list.items[i]
+      if item then
+        local path = vim.fn.fnamemodify(item.value, ":p")
+        local is_daily = path:find(daily_dir, 1, true) == 1
+        if path ~= pin and not (in_lab and is_daily) then
+          table.insert(kept, item)
+        end
+      end
+    end
+
+    list:clear()
+    list:add({ value = pin, context = {} })
+    for _, item in ipairs(kept) do
+      list:add(item)
+    end
+  end, 100)
+end
+
 -- ============================================
 -- Link current buffer to daily note
 -- Adds a [[wiki link]] to today's journal and jumps there
@@ -198,13 +221,8 @@ local function link_to_daily()
 
   write_file(journal_path, new_content)
 
-  -- Jump to daily via harpoon slot 1
-  local ok, harpoon = pcall(require, "harpoon")
-  if ok then
-    harpoon:list():select(1)
-  else
-    vim.cmd("edit " .. journal_path)
-  end
+  -- Open the daily directly: slot 1 is the projects index when in lab.
+  vim.cmd.edit(vim.fn.fnameescape(journal_path))
 
   vim.notify("Linked: " .. link_text, vim.log.levels.INFO)
 end
