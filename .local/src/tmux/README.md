@@ -340,7 +340,12 @@ therefore never shares the first one's checkout, branch or dirty status - which 
 session with seven windows all named `main` actually was.
 
 **One key, one action.** `Prefix+F` opens no picker and asks nothing: the repo is the one
-the current pane is in, and the slot is the next free one.
+the current pane is in, and the slot is the lowest one that is free or idle. Idle means the
+same thing `reap` means by eligible - clean, landed, no session and no pane inside it - so a
+worktree whose session was killed without `wt done` is reset onto the trunk in place (its
+ignored build caches kept) instead of pushing the next agent one number higher. A leftover
+`agent-N` branch with no directory frees its slot too, once it is merged and checked out
+nowhere.
 
 `Prefix+f` **does** list worktrees, which reverses the original call that "a worktree is
 somewhere you are sent, not somewhere you go looking". Being sent covers the first minute of
@@ -349,7 +354,7 @@ the only way to get there was to remember the path. `$WT_ROOT` only - a worktree
 somewhere else is not something to advertise as a session.
 
 `agent-N` is **not** a persistent workspace slot. It is the Nth worktree alive right now:
-allocated by `new`, freed by `reap`, and the number is reused once it is free. Nothing else
+allocated by `new`, freed by `reap` or by going idle, and the number is reused once it is free. Nothing else
 had to learn a new concept for this, because the layout keeps the basename as the identity:
 
 ```

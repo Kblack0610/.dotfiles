@@ -5,7 +5,10 @@
 #
 # Verbs:
 #   new [-c <dir>]    cut a fresh worktree off the repo containing <dir> (default $PWD),
-#                     open a tmux session rooted in it, and land there.         [Prefix+F]
+#                     open a tmux session rooted in it, and land there. Takes the lowest
+#                     agent-N that is free OR idle (reapable, see `reap`); an idle one is
+#                     reset onto the trunk in place, keeping its ignored build caches.
+#                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
 #                     bound to a key: Prefix+F cuts a worktree outright rather than
@@ -24,7 +27,9 @@
 #
 # THE WORKTREE IS THE AGENT. `agent-N` is not a persistent workspace slot; it is the Nth
 # worktree alive in this system right now - allocated by `new`, freed by `reap`, and the
-# number is reused once it is free. That is why nothing here has to teach the other surfaces
+# number is reused once it is free. An IDLE slot counts as free: a worktree nobody is in
+# (no session, no pane) whose work has landed is recycled in place by `new` rather than
+# stepped over, so the highest N tracks how many agents are running, not how many ever ran. That is why nothing here has to teach the other surfaces
 # a new concept: `agent-panel` (Prefix+g) already parses a session named `<repo>-agent-N`
 # into project + agent number, and it enumerates live tmux panes, which ARE the live
 # worktrees.
@@ -151,6 +156,14 @@ wt_live_sessions() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
 
 wt_session_exists() { tmux has-session -t "=$1" 2>/dev/null; }
 
+# wt_pane_inside <path> -- true when any tmux pane, in ANY session, sits in <path> or below.
+# The session-name check alone misses a pane that cd'd in from elsewhere: a Claude started in
+# the main checkout's session and pointed at the worktree is just as live as one in its own.
+wt_pane_inside() {
+  tmux list-panes -a -F '#{pane_current_path}' 2>/dev/null |
+    awk -v p="$1" '$0 == p || index($0, p "/") == 1 { found = 1 } END { exit !found }'
+}
+
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
 # wt_work_reason <path> -- print why <path> still holds WORK; nothing, and rc 0, when the
@@ -222,6 +235,10 @@ wt_reap_reason() {
   # session, and the check passes honestly rather than being waived.
   if wt_session_exists "$(basename "$1")"; then
     printf 'its tmux session is live\n'
+    return 1
+  fi
+  if wt_pane_inside "$1"; then
+    printf 'a tmux pane is open inside it\n'
     return 1
   fi
 
@@ -339,24 +356,58 @@ cmd_preview() {
 
 # ── Verbs ────────────────────────────────────────────────────────────────────
 
-# wt_next_n <repo-name> <main-repo> -- the lowest N with BOTH the directory and the branch
-# free.
+# wt_next_slot <repo-name> <main-repo> <base-ref> -- `N<TAB>fresh` or `N<TAB>recycle` for the
+# lowest agent-N that `new` may take.
 #
-# Both, not just the directory: a refused reap leaves `agent-N` behind, and
-# `worktree add -b agent-N` on an existing branch fails outright. Gaps are filled (1, 2, 4
-# alive -> 3) so the numbers stay small enough to say out loud, which is the whole point of
-# agent-panel labelling a row `3:1`.
-wt_next_n() {
-  local repo="$1" main="$2" n=1
+# fresh: the directory is gone and so is the branch -- or the branch is a leftover that is
+# already merged into <base-ref> and checked out nowhere, which `new` then resets with -B.
+# A refused reap or a hand-run `git worktree remove` leaves `agent-N` behind; an UNMERGED
+# leftover may be the only copy of a commit, so it still pins its slot.
+#
+# recycle: the directory is a worktree of THIS repo and wt_reap_reason passes -- clean,
+# landed, no session, no pane. The same predicate that would let `gc` delete it, so reusing
+# it can lose nothing that deleting it would not. Without this, a session killed any way but
+# `wt done` pins its slot forever and N ratchets (unity-core-playground reached agent-15 with
+# eight of those idle).
+#
+# Lowest wins across both kinds (1, 2 busy, 3 idle, 4 free -> 3), so the numbers stay small
+# enough to say out loud, which is the whole point of agent-panel labelling a row `3:1`.
+wt_next_slot() {
+  local repo="$1" main="$2" base="$3" n=1 path owner
   while [ "$n" -le 99 ]; do
-    if [ ! -e "$WT_ROOT/$repo-agent-$n" ] &&
-      ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null; then
-      printf '%s\n' "$n"
+    path="$WT_ROOT/$repo-agent-$n"
+    if [ ! -e "$path" ]; then
+      if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
+        { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
+          ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
+        printf '%s\tfresh\n' "$n"
+        return 0
+      fi
+    elif owner=$(wt_main_repo "$path") && [ "$owner" = "$main" ] &&
+      wt_reap_reason "$path" >/dev/null; then
+      printf '%s\trecycle\n' "$n"
       return 0
     fi
     n=$((n + 1))
   done
-  panel_fail "no free slot: $WT_ROOT/$repo-agent-{1..99} are all taken" || return 1
+  panel_fail "no free slot: $WT_ROOT/$repo-agent-{1..99} are all taken or busy" || return 1
+}
+
+# wt_recycle <path> <n> <base> -- put an idle worktree back on branch agent-<n> at <base>.
+#
+# In place rather than reap + add: the tree is clean, so a switch loses nothing tracked, and
+# the ignored build state (Unity's Library/, node_modules) survives, which is minutes saved
+# per agent. The branch it was on goes the way `reap` sends it -- `-d`, never `-D`.
+wt_recycle() {
+  local path="$1" branch="agent-$2" base="$3" old main
+  old="$(wt_branch_of "$path")"
+  main=$(wt_main_repo "$path") || return 1
+  git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
+  if [ -n "$old" ] && [ "$old" != "$branch" ]; then
+    git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
+      panel_warn "kept branch $old: git will not safely delete it"
+  fi
+  return 0
 }
 
 # wt_ensure_session <name> <dir> -- panel_ensure_session, plus the one thing it cannot do.
@@ -383,7 +434,7 @@ cmd_new() {
   done
   [ -d "$dir" ] || panel_die "not a directory: $dir"
 
-  local main repo def base n path branch name
+  local main repo def base slot n path branch name
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
@@ -392,15 +443,22 @@ cmd_new() {
 
   def=$(wt_default_branch "$main") || panel_die "cannot resolve the default branch of $main"
   base=$(wt_base_ref "$main" "$def") || panel_die "no $def in $main to branch from"
-  n=$(wt_next_n "$repo" "$main") || return 1
+  slot=$(wt_next_slot "$repo" "$main" "$base") || return 1
+  n="${slot%%$PANEL_TAB*}"
 
   path="$WT_ROOT/$repo-agent-$n"
   branch="agent-$n"
   name="$repo-agent-$n"
 
-  mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
-  git -C "$main" worktree add "$path" -b "$branch" "$base" >&2 ||
-    panel_die "git worktree add failed: $path"
+  if [ "${slot#*$PANEL_TAB}" = recycle ]; then
+    wt_recycle "$path" "$n" "$base" || panel_die "could not reset idle worktree $path onto $base"
+    panel_warn "reusing idle $name, reset onto $base"
+  else
+    mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
+    # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
+    git -C "$main" worktree add "$path" -B "$branch" "$base" >&2 ||
+      panel_die "git worktree add failed: $path"
+  fi
 
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   printf '%s\n' "$name"
@@ -436,7 +494,7 @@ cmd_reap() {
   # wt_reap_reason's snapshot and this moment are not the same instant.
   git -C "$main" worktree remove "$path" || panel_fail "git worktree remove refused $path" || return 1
 
-  # Take the branch with it, or the slot numbers ratchet forever: wt_next_n treats an existing
+  # Take the branch with it, or the slot numbers ratchet forever: wt_next_slot treats an existing
   # `agent-N` branch as an occupied slot, so four reaped-but-not-deleted worktrees pushed the
   # next one to agent-5 with nothing on disk. agent-panel renders that number as a row label,
   # so left alone it grows to two and three digits for no reason.
