@@ -8,8 +8,11 @@
 #
 # Branch semantics match the default: reuse `branch` if it exists, else create it at the caller's
 # HEAD (a subagent is expected to see its parent's checkout, not the remote tip).
-# Contract: stdout carries only the JSON with hookSpecificOutput.worktreePath; git chatter goes to
-# stderr; any non-zero exit aborts the creation with stderr as the message.
+# Contract (code.claude.com/docs/en/hooks, WorktreeCreate): a COMMAND hook prints the absolute
+# worktree path on stdout and nothing else; the harness reads stdout as the path. The
+# hookSpecificOutput.worktreePath JSON shape is for HTTP hooks only - printed from a command hook,
+# the harness takes its last line (`}`) as the path and aborts. Git chatter goes to stderr; any
+# non-zero exit aborts the creation with stderr as the message.
 set -euo pipefail
 
 input=$(cat)
@@ -26,7 +29,7 @@ repo=${repo#.}
 path="$HOME/.worktrees/${repo}-${name}"
 
 emit() {
-  jq -n --arg p "$path" '{hookSpecificOutput: {hookEventName: "WorktreeCreate", worktreePath: $p}}'
+  printf '%s\n' "$path"
 }
 
 # Resuming a session re-requests the same worktree; hand back the existing one.
