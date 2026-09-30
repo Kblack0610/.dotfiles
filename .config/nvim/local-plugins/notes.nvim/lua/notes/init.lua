@@ -120,7 +120,7 @@ local function get_projects_dir()
   return notes_path("projects", vim.fn.expand("~/.notes/lab/projects/current"))
 end
 
--- The projects front door. ONE file, the same one `Prefix+H` opens and the same one
+-- The projects front door. ONE file, the same one `Prefix+N` opens and the same one
 -- `notes` reads the `## Current` lane out of (notes-cli config.rs derives it as
 -- `<projects-dir>/../index.md`).
 --

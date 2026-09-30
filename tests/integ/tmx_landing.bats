@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# `tmx root <world>` -- Prefix+N / Prefix+H, "take me to the top of this world".
+# `tmx root <world>` -- Prefix+H / Prefix+N, "take me to the top of this world".
 #
 # integ tier: servers.sh runs as a subprocess against the recording tmux stub, so every
 # assertion is "which tmux command did it actually issue". Nothing here needs a real
@@ -88,7 +88,7 @@ in_landing() {
 @test "root lab reopens the projects index when nvim is on some other file" {
   # THE BUG. The old rule only fired on a `journal/daily` pane title and only to swap a
   # stale daily for today's, so lab -- whose page is not a daily -- fell through to
-  # "leave it alone" and Prefix+H never restored the index.
+  # "leave it alone" and Prefix+N never restored the index.
   in_landing lab lab
   STUB_PANE_CMD=nvim STUB_PANE_TITLE="neo-tree filesystem - (~/.notes/lab) - Nvim" \
     run "$TMX" land lab root

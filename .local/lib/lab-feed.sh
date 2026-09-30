@@ -19,7 +19,7 @@
 #                      instead), and resolved versions through a project-map path
 #                      that does not exist.
 #
-# So `lab/projects/index.md` — the file `Prefix+H` opens — rendered every current
+# So `lab/projects/index.md` — the file `Prefix+N` opens — rendered every current
 # project as `- **name** — —` for months. Nothing failed: an index that knows
 # nothing and an index that has nothing to report print the same thing. Same lesson
 # as agent-board.sh (#170) and agent-evals.sh: a second copy of a grammar's regexes
