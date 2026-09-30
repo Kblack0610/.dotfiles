@@ -82,9 +82,9 @@ make_repo() {
 
 @test "the first worktree of a repo is agent-1" {
   make_repo
-  run wt_next_n platform "$MAIN"
+  run wt_next_slot platform "$MAIN" origin/main
   assert_success
-  assert_output '1'
+  assert_output "1${PANEL_TAB}fresh"
 }
 
 @test "a gap in the numbering is filled, not skipped past" {
@@ -93,21 +93,93 @@ make_repo() {
   # because agent-panel says them out loud as a row label ("3:1").
   make_repo
   mkdir -p "$WT_ROOT/platform-agent-1" "$WT_ROOT/platform-agent-2" "$WT_ROOT/platform-agent-4"
-  run wt_next_n platform "$MAIN"
+  run wt_next_slot platform "$MAIN" origin/main
   assert_success
-  assert_output '3'
+  assert_output "3${PANEL_TAB}fresh"
 }
 
-@test "a slot whose DIRECTORY is free but whose BRANCH still exists is skipped" {
-  # The failure this prevents: a refused reap leaves branch agent-3 behind after its
-  # directory is gone, and `git worktree add -b agent-3` then fails outright. Checking only
-  # the directory would hand out a slot that cannot be created.
+@test "a slot whose DIRECTORY is free but whose UNMERGED branch still exists is skipped" {
+  # A refused reap leaves branch agent-3 behind after its directory is gone. If it carries a
+  # commit the trunk does not have, it may be the only copy -- `new` resetting it with -B
+  # would throw that away.
   make_repo
   mkdir -p "$WT_ROOT/platform-agent-1" "$WT_ROOT/platform-agent-2" "$WT_ROOT/platform-agent-4"
   git -C "$MAIN" branch agent-3
-  run wt_next_n platform "$MAIN"
+  git -C "$MAIN" checkout --quiet agent-3
+  git -C "$MAIN" commit --quiet --allow-empty -m only-copy
+  git -C "$MAIN" checkout --quiet main
+  run wt_next_slot platform "$MAIN" origin/main
   assert_success
-  assert_output '5'
+  assert_output "5${PANEL_TAB}fresh"
+}
+
+@test "a leftover branch already MERGED into the trunk does not pin its slot" {
+  # unity-core-playground had agent-1..3 branches with no directories, all merged: three
+  # slots nobody could ever take again.
+  make_repo
+  git -C "$MAIN" branch agent-1
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+}
+
+@test "a merged branch CHECKED OUT in some other worktree still pins its slot" {
+  # -B cannot reset a branch another worktree has checked out; handing out the slot would
+  # just make `worktree add` fail.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b agent-1 origin/main
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+}
+
+@test "an IDLE landed worktree is recycled before a higher free slot is cut" {
+  # The ratchet this prevents: a session killed any way but `wt done` leaves a clean, merged
+  # worktree on disk, and stepping over it every time pushed unity-core-playground to
+  # agent-15 with eight of them sitting idle. Slot 1 is a plain directory (not a worktree of
+  # this repo, so never touched), slot 2 is idle, slot 3 is free: 2 must win.
+  make_repo
+  mkdir -p "$WT_ROOT/platform-agent-1"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-2" -b agent-2 origin/main
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}recycle"
+}
+
+@test "an idle worktree still holding WORK is stepped over, never recycled" {
+  # Refusal first. Recycling switches the branch, so a dirty tree or unpushed commits would
+  # be the one thing this could lose; the reap policy is what says no.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  printf 'wip\n' > "$WT_ROOT/platform-agent-1/file.txt"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-2" -b agent-2 origin/main
+  printf 'work\n' > "$WT_ROOT/platform-agent-2/file.txt"
+  git -C "$WT_ROOT/platform-agent-2" commit --quiet -am work
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "3${PANEL_TAB}fresh"
+}
+
+@test "a landed worktree with a tmux pane open inside it is not idle" {
+  # No session carries its name, but a pane from another session has cd'd into a subdir --
+  # an agent started elsewhere and pointed here. That is as live as its own session.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  printf '%s\n' /somewhere/else "$WT_ROOT/platform-agent-1/sub" > "$NOTES_FIXTURE/tmux.panes"
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+}
+
+@test "a pane in a SIBLING whose name merely extends this one does not pin it" {
+  # agent-1 is a string prefix of agent-10; a prefix match would keep agent-1 busy forever
+  # while agent-10 is in use.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  printf '%s\n' "$WT_ROOT/platform-agent-10" > "$NOTES_FIXTURE/tmux.panes"
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "1${PANEL_TAB}recycle"
 }
 
 # ── Eligibility: the refusals ────────────────────────────────────────────────

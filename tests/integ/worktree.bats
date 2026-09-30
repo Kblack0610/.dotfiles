@@ -128,6 +128,9 @@ add_wt() {
   # repo-agent-1-agent-1.
   make_repo
   "$WT" new -c "$MAIN" > /dev/null
+  # The caller's pane is sitting in agent-1, which is what makes it busy -- without that,
+  # a clean agent-1 is idle and `new` would rightly recycle it.
+  printf '%s\n' "$WT_ROOT/repo-agent-1" > "$NOTES_FIXTURE/tmux.panes"
   run "$WT" new -c "$WT_ROOT/repo-agent-1"
   assert_success
   # The session name is the LAST line of stdout -- git's own "Preparing worktree" progress
@@ -135,6 +138,51 @@ add_wt() {
   assert_equal "${lines[-1]}" repo-agent-2
   [ -d "$WT_ROOT/repo-agent-2" ] || fail "second worktree not created"
   [ ! -d "$WT_ROOT/repo-agent-1-agent-1" ] || fail "resolved the repo from the worktree, not the main checkout"
+}
+
+@test "new RECYCLES an idle landed worktree in place, keeping its ignored build state" {
+  # Slot 1 holds a merged feature branch with nobody in it. `new` takes it back as agent-1
+  # at the trunk, drops the merged branch the way reap would, and leaves ignored files
+  # (Unity's Library/, node_modules) where they are.
+  make_repo
+  printf 'cache/\n' > "$MAIN/.gitignore"
+  git -C "$MAIN" add .gitignore
+  git -C "$MAIN" commit --quiet -m ignore
+  git -C "$MAIN" push --quiet origin main
+  add_wt repo-agent-1 feat/done
+  mkdir -p "$WT_ROOT/repo-agent-1/cache"
+  : > "$WT_ROOT/repo-agent-1/cache/built"
+
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-1
+  assert_output --partial 'reusing idle repo-agent-1'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  [ -f "$WT_ROOT/repo-agent-1/cache/built" ] || fail "the ignored build cache was thrown away"
+  run git -C "$MAIN" show-ref --verify --quiet refs/heads/feat/done
+  assert_failure
+  [ ! -d "$WT_ROOT/repo-agent-2" ] || fail "cut a new slot instead of reusing the idle one"
+}
+
+@test "new takes a slot whose only remnant is a MERGED agent-N branch" {
+  make_repo
+  git -C "$MAIN" branch agent-1 origin/main
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-1
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+}
+
+@test "new NEVER recycles an idle worktree with uncommitted work" {
+  make_repo
+  add_wt repo-agent-1 agent-1
+  printf 'wip\n' > "$WT_ROOT/repo-agent-1/file.txt"
+
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-2
+  assert_equal "$(cat "$WT_ROOT/repo-agent-1/file.txt")" wip
 }
 
 @test "new outside any git repository fails instead of guessing" {
@@ -349,7 +397,7 @@ add_wt() {
 # ── reap takes the branch with it ────────────────────────────────────────────
 
 @test "reap deletes the branch it just freed, so the slot is reusable" {
-  # Without this the numbers ratchet forever: wt_next_n counts an existing `agent-N` branch
+  # Without this the numbers ratchet forever: wt_next_slot counts an existing `agent-N` branch
   # as an occupied slot, so four reaped worktrees pushed the next one to agent-5 with
   # nothing on disk.
   make_repo
