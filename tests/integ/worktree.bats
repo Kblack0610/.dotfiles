@@ -185,6 +185,21 @@ add_wt() {
   assert_equal "$(cat "$WT_ROOT/repo-agent-1/file.txt")" wip
 }
 
+@test "new from a pane whose directory was deleted resolves the repo from the path" {
+  # Prefix+F passes #{pane_current_path}, which tmux reports as `<path> (deleted)` once the
+  # directory is gone. The path re-created at the same place still names the repo.
+  make_repo
+  run "$WT" new -c "$MAIN (deleted)"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-1
+}
+
+@test "new from a deleted directory with nothing back in its place says so" {
+  run "$WT" new -c "$SANDBOX/gone (deleted)"
+  assert_failure
+  assert_output --partial "this pane's directory was deleted: $SANDBOX/gone"
+}
+
 @test "new outside any git repository fails instead of guessing" {
   mkdir -p "$SANDBOX/elsewhere"
   run "$WT" new -c "$SANDBOX/elsewhere"

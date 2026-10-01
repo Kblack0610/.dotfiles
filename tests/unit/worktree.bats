@@ -113,6 +113,18 @@ make_repo() {
   assert_output "5${PANEL_TAB}fresh"
 }
 
+@test "a live SESSION pins its slot even after its directory is gone" {
+  # unity-core-playground-agent-4: an agent force-removed its own worktree with its session
+  # still up, `new` handed slot 4 out again, and the user landed in the old session among
+  # panes sitting in the deleted directory.
+  make_repo
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+}
+
 @test "a leftover branch already MERGED into the trunk does not pin its slot" {
   # unity-core-playground had agent-1..3 branches with no directories, all merged: three
   # slots nobody could ever take again.
