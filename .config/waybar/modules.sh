@@ -116,12 +116,21 @@ toggle() {
 }
 
 # --- pin handoff --------------------------------------------------------------
-# The custom module ids a pin config lists, from its modules-* arrays. A group in
-# the list contributes nothing here, so a pin that shows a group must list its
-# members instead (the gate is per module, never per group).
+# The custom module ids a pin config shows, from its modules-* arrays. A group
+# there (e.g. group/status) is expanded to its own "modules" list, looked up in
+# the pin config and in config.base, since the gate is per module, never per
+# group. One level deep: no config here nests a group inside a group.
 pin_ids() {
-    sed -n '/"modules-\(left\|center\|right\)"/,/\]/p' "$1" \
-        | grep -o '"custom/[^"]*"' | tr -d '"' | sort -u
+    local listed g
+    listed=$(sed -n '/"modules-\(left\|center\|right\)"/,/\]/p' "$1" \
+        | grep -o '"\(custom\|group\)/[^"]*"' | tr -d '"')
+    {
+        grep '^custom/' <<< "$listed"
+        for g in $(grep '^group/' <<< "$listed"); do
+            sed -n "/\"${g//\//\\/}\": {/,/\]/p" "$1" "$CONF_DIR/config.base" \
+                | grep -o '"custom/[^"]*"' | tr -d '"'
+        done
+    } | sort -u
 }
 
 pin_up() {  # pin_up <pid> <config>
