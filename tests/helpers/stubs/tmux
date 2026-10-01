@@ -71,6 +71,13 @@ case "$verb" in
     # must abort the fire, not fall through to a kill. Default 0 (exists) so no existing
     # caller changes behaviour; drop tmux.no-session to make it report gone.
     [ -f "$FIX/tmux.no-session" ] && exit 1
+    # tmux.sessions, when present, names the sessions that exist -- the same file
+    # list-sessions reads below, so the two answers cannot disagree. `=` is tmux's
+    # exact-match prefix and is not part of the name.
+    if [ -f "$FIX/tmux.sessions" ]; then
+      grep -qxF -- "${target#=}" "$FIX/tmux.sessions"
+      exit
+    fi
     exit 0
     ;;
   list-sessions)

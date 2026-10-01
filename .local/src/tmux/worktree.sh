@@ -376,6 +376,14 @@ wt_next_slot() {
   local repo="$1" main="$2" base="$3" n=1 path owner
   while [ "$n" -le 99 ]; do
     path="$WT_ROOT/$repo-agent-$n"
+    # A live session pins its slot whatever is on disk. Its worktree can be removed out from
+    # under it (an agent running `git worktree remove --force` on itself), and handing the slot
+    # out again landed the new worktree in the OLD session: wt_ensure_session found the name
+    # taken and reused it, so you arrived among panes still sitting in the deleted directory.
+    if wt_session_exists "$repo-agent-$n"; then
+      n=$((n + 1))
+      continue
+    fi
     if [ ! -e "$path" ]; then
       if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
         { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
@@ -432,6 +440,15 @@ cmd_new() {
     *) panel_die "new: unknown arg: $1" ;;
     esac
   done
+  # tmux reports a pane whose directory was deleted as `<path> (deleted)`, which is how Linux
+  # reads /proc/<pid>/cwd. `new` only needs the REPO, so the same path re-created is as good
+  # as the original; if nothing is there now, say so rather than "not a directory".
+  case "$dir" in
+  *' (deleted)')
+    dir="${dir% (deleted)}"
+    [ -d "$dir" ] || panel_die "this pane's directory was deleted: $dir (cd into the repo and retry)"
+    ;;
+  esac
   [ -d "$dir" ] || panel_die "not a directory: $dir"
 
   local main repo def base slot n path branch name
