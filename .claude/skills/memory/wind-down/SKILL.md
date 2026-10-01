@@ -189,6 +189,8 @@ If the session produced nothing to commit (pure Q&A / read-only), say so and ski
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session
 ```
 
+**Arm against the session's ORIGINAL project dir.** The Stop hook resolves the sentinel name from the `CLAUDE_PROJECT_DIR` the session started with, not from your current shell. If step 2 already released this session's worktree, a plain `arm` run from somewhere else (the main checkout, `$HOME`) writes `<other-project>__<sid>.request`, the hook never finds it, and the window silently stays open. Pass the original path explicitly: `CLAUDE_PROJECT_DIR=~/.worktrees/<repo>-<slug> wind-down.sh arm`. Why: 2026-09-30, unity-core-playground-agent-15 reaped its worktree, then armed from the main checkout, and the window never closed.
+
 Use `--session` only when the user said "session" / "close everything" or Claude clearly owns
 the whole session it spun up. Default to window scope.
 
