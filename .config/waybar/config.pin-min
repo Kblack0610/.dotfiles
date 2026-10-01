@@ -1,5 +1,6 @@
 // -*- mode: jsonc -*-
-// Mini pin - MINIMAL glance view.
+// Mini pin - MINIMAL glance view: the main bar's status cluster (group/status
+// in config.base, same dividers), which the main bar hides while this is up.
 // A second waybar on the `overlay` layer so it floats OVER fullscreen windows
 // (RustDesk remote, games, etc). Toggle via pin.sh / Super+Shift+M.
 // Module DEFINITIONS come from config.base; overrides live here.
@@ -17,8 +18,7 @@
     "spacing": 2,
     "modules-left": [],
     "modules-center": [
-        "custom/ai-agents",
-        "custom/timebox",
+        "group/status",
         "custom/pin-size"
     ],
     "modules-right": [],

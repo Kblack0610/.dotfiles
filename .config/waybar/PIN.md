@@ -31,8 +31,8 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
   s settings           L2 pinbar-settings a agents | f fleet | t timebox | m machines | l list> | s size | esc back
 ```
 
-Views: **min** = agents + timebox (glance); **big** = + machines/fleet infra, cpu/mem,
-action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
+Views: **min** = the main bar's status cluster (timebox | agents | fleet); **big** = +
+machines, cpu/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
@@ -44,8 +44,8 @@ is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 
 ## Views
 
-- **Minimal** (`config.pin-min`, ~380px): fleet dots + agents + timebox + chevron.
-- **Bigger** (`config.pin-full`, ~940px): full labels + cpu/mem + action buttons.
+- **Minimal** (`config.pin-min`): `group/status`, the same cluster and dividers as the main bar, + chevron.
+- **Bigger** (`config.pin-full`): machines + `group/status` + cpu/mem + action buttons.
 
 Both are single-row (a Waybar bar is one horizontal row). A multi-row card would
 need eww; intentionally out of scope.
@@ -59,14 +59,14 @@ apart) and runs `modules.sh pin-up <pid> <config>`, which records the pin's pid 
 the `custom/*` ids from that config's `modules-*` lists in
 `$XDG_RUNTIME_DIR/waybar-pin.shown`. The pid doubles as the liveness check: if the
 pin dies without `pin.sh`, the main bar takes its modules back on their next tick.
-A pin config must list module ids, not a group, for this to see them.
+A group in a pin's module list is expanded to its members (looked up in the pin config, then `config.base`), one level deep.
 
 Heads up when testing: `pin.sh` stops the pin with `pkill -f 'waybar.*config.pin'`,
 so a shell whose own command line contains both strings gets killed too.
 
 ## Status cluster
 
-On the main bar, timebox, agents and fleet sit in `group/status` (`config.base`).
+Timebox, agents and fleet sit in `group/status` (`config.base`), on the main bar and both pin views.
 `layout.css` draws a divider between each visible member, so a module added to that
 group's `modules` list gets its line with no CSS change, and a hidden one (toggled off
 or handed to the pin) takes its line with it. `layout.css` is theme-neutral and every
