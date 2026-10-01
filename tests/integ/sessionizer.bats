@@ -181,6 +181,26 @@ in_world() {
   assert_line --partial '.worktrees/proj-one-agent-1'
 }
 
+@test "the picker ranks a repo ahead of its own worktrees when both match equally" {
+  # The real fzf with the picker's real flags, via --filter, since the integ tier stubs fzf.
+  # The repo sits deeper than its worktree on purpose: fzf's default tiebreak is length, and
+  # the shorter worktree path is what buried unity-core-playground under its 27 worktrees.
+  [ -n "$REAL_FZF" ] || skip "fzf not installed"
+  mkdir -p "$SANDBOX/roots/alpha/nested/deeper/longproj/.git" "$HOME/.worktrees/longproj-agent-1"
+  printf 'gitdir: /nowhere/.git/worktrees/longproj-agent-1\n' > "$HOME/.worktrees/longproj-agent-1/.git"
+
+  # Negative control: without PICK_FLAGS the worktree wins, so the fixture exercises the bug.
+  run bash -c '. "$SESSIONIZER"; cmd_list | "$REAL_FZF" --filter longproj | head -1'
+  assert_output "$HOME/.worktrees/longproj-agent-1"
+
+  run bash -c '. "$SESSIONIZER"; cmd_list | "$REAL_FZF" --filter longproj "${PICK_FLAGS[@]}" | head -1'
+  assert_output "$SANDBOX/roots/alpha/nested/deeper/longproj"
+
+  # A query that names the worktree still reaches it: only ties keep list order.
+  run bash -c '. "$SESSIONIZER"; cmd_list | "$REAL_FZF" --filter "longproj agent" "${PICK_FLAGS[@]}" | head -1'
+  assert_output "$HOME/.worktrees/longproj-agent-1"
+}
+
 @test "--list rejects a plain directory sitting in the worktree root" {
   # A linked worktree's .git is a FILE. Listing whatever else got parked in $WT_ROOT would
   # hand back a path `wt` does not consider a worktree at all.
