@@ -239,3 +239,102 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   reason="$(gate s1 | jq -r '.reason')"
   [[ "$reason" == *'nothing open today'* ]]
 }
+
+# ── session mode: what THIS session did, read from its transcript ─────────────
+# With a transcript_path in the payload, "did work" and "tracked" are both read from the
+# session's own tool calls instead of the environment. These are the two faults that made
+# the environment version lie: a tree some other writer left dirty, and a notes-log window
+# shared by every session on the project.
+
+# tcall <session> <tool> [bash-command] -- append one assistant tool_use to that session's
+# transcript, in the shape Claude Code writes it.
+tcall() {
+  local input='{}'
+  [ -n "${3:-}" ] && input=$(jq -cn --arg c "$3" '{command:$c}')
+  jq -cn --arg n "$2" --argjson i "$input" \
+    '{type:"assistant", message:{role:"assistant", content:[{type:"tool_use", id:"t", name:$n, input:$i}]}}' \
+    >> "$SANDBOX/$1.jsonl"
+}
+
+# gate_t <session> -- run the hook with that session's transcript in the payload.
+gate_t() {
+  touch "$SANDBOX/$1.jsonl"
+  jq -cn --arg s "$1" --arg t "$SANDBOX/$1.jsonl" \
+    '{session_id:$s, transcript_path:$t, stop_hook_active:false}' | bash "$GATE" 2>/dev/null
+}
+
+@test "session: a tree left dirty by someone else is not this session's work" {
+  # 2026-09-29: a theme writer had two files dirty before the session opened, so every
+  # session in the repo was told it changed code, read-only ones included.
+  dirty
+  tcall s1 Read
+  tcall s1 Bash 'git status --short'
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: an Edit with nothing tracked blocks" {
+  tcall s1 Edit
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: a commit via Bash counts as work with no Edit tool" {
+  tcall s1 Bash 'git add -A && git commit -qm fix'
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: tool names quoted in prose do not count as work" {
+  jq -cn '{type:"assistant", message:{content:[{type:"text", text:"I would use \"name\":\"Edit\" and \"tool_use\" here"}]}}' \
+    >> "$SANDBOX/s1.jsonl"
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: its own ptask write survives a concurrent session's Stop" {
+  # 2026-09-29: `ptask done --proof pr:369` at 10:09:48, another dotfiles session hit Stop
+  # before 10:13:55 and moved the shared last_run past it, so the gate blocked anyway.
+  # The tree is dirty too, so the environment check sees work and the race is reachable.
+  dirty
+  tcall s1 Edit
+  tcall s1 Bash 'notes ptask notes-cockpit --agent done "lab harpoon" --proof pr:369'
+  printf '[%s] [INFO] ptask: done in /p/README.md (notes-cockpit)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  sleep 1
+  gate_t s2 >/dev/null                     # the other session's Stop
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: another session's ptask write does not satisfy this one" {
+  tcall s1 Edit
+  tcall s2 Bash 'notes ptask agent-runtime --agent add "theirs"'
+  printf '[%s] [INFO] ptask: added to /p/README.md (agent-runtime)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: read-only notes verbs are not tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'notes today'
+  tcall s1 Bash 'notes board'
+  tcall s1 Bash 'notes ptask dotfiles list'
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: a focus write counts too" {
+  tcall s1 Write
+  tcall s1 Bash 'notes focus start "my thing"'
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: two concurrent sessions each get their one nudge" {
+  # The per-project blocked_session slot let s2's block overwrite s1's, so s1 fired again.
+  tcall s1 Edit
+  tcall s2 Edit
+  assert_blocks "$(gate_t s1)"
+  assert_blocks "$(gate_t s2)"
+  refute_blocks "$(gate_t s1)"
+  refute_blocks "$(gate_t s2)"
+}
+
+@test "session: an unreadable transcript falls back to the environment checks" {
+  dirty
+  local out
+  out=$(jq -cn --arg t "$SANDBOX/missing.jsonl" '{session_id:"s1", transcript_path:$t, stop_hook_active:false}' | bash "$GATE" 2>/dev/null)
+  assert_blocks "$out"
+}
