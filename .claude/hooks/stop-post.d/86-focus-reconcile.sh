@@ -5,10 +5,19 @@
 # session having shipped three things the cockpit never heard about.
 #
 # Fires only when ALL of these hold:
-#   1. the turn did real work   — dirty tree, or HEAD moved since the last run
-#   2. nothing is in progress   — no `- [/]` item in today's Focus
-#   3. Focus went untouched     — no `notes focus` write since the last run
-#   4. not already fired        — at most ONCE per session, per project
+#   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
+#   2. nothing is in progress    — no `- [/]` item in today's Focus
+#   3. the work went untracked   — no `notes ptask|focus` write by this session
+#   4. not already fired         — at most ONCE per session
+#
+# 1 and 3 are read from THIS session's transcript (`transcript_path` in the payload), so
+# they describe what this agent did. They used to be read from the environment: "did work"
+# was a dirty tree, so files a theme writer left dirty made every session look busy; and
+# "tracked" was any `ptask:`/`focus:` line in the shared notes log newer than one
+# per-PROJECT `last_run`, so a concurrent session's Stop could advance that mark past your
+# write (2026-09-29: a `ptask done --proof pr:369` swallowed four minutes after it landed),
+# and a concurrent session's write could satisfy your gate. Without a transcript (a
+# non-Claude caller) the old environment checks still run as the fallback.
 #
 # So a session that keeps one item marked in progress never sees it at all. That is the
 # intended pressure: declare what you are on, and the gate disappears.
@@ -88,8 +97,19 @@ NOW=$(date +%s)
 # happened just now — the gate would fail open exactly once per project, silently. Fall
 # back to a conservative recent window instead: a turn is not 15 minutes of wall clock.
 [ "$LAST_RUN" -eq 0 ] && LAST_RUN=$((NOW - 900))
-SESSION_ID=""
-[ -n "$STDIN_JSON" ] && SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
+SESSION_ID="" TRANSCRIPT=""
+if [ -n "$STDIN_JSON" ]; then
+  SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
+  TRANSCRIPT=$(echo "$STDIN_JSON" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+fi
+# Transcript mode needs both: the transcript for what was done, the id for the marker.
+SESSION_MODE=0
+[ -n "$SESSION_ID" ] && [ -n "$TRANSCRIPT" ] && [ -r "$TRANSCRIPT" ] && SESSION_MODE=1
+
+# Once-per-session marker. One file per session, not a slot in the per-project state, which
+# two concurrent sessions on one project would overwrite.
+MARKER_DIR="$STATE_DIR/sessions"
+MARKER="$MARKER_DIR/${SESSION_ID:-none}"
 
 HEAD_SHA=""
 cd "$PROJECT_DIR" 2>/dev/null || exit 0
@@ -103,15 +123,34 @@ save_state() {
   } > "$STATE_FILE" 2>/dev/null || true
 }
 
-# --- 1. did this turn do real work? ---
-# A dirty tree counts, and so does a HEAD that moved (work that got committed and merged
-# leaves the tree clean — that is a shipped turn, not an idle one). An empty LAST_HEAD is
-# a first run: initialise it rather than reading the difference as a commit.
+# This session's tool calls, one per line: `TOOL <name>` for every call and `BASH <command>`
+# for Bash ones (newlines folded). The grep prefilter keeps a large transcript cheap; jq
+# then reads only real tool_use blocks, so a tool name quoted in prose cannot count.
+session_calls() {
+  grep -F '"tool_use"' "$TRANSCRIPT" 2>/dev/null \
+    | jq -r 'select(.type == "assistant") | .message.content[]?
+             | select(.type == "tool_use")
+             | "TOOL \(.name)", (select(.name == "Bash") | "BASH \(.input.command // "" | gsub("\n"; " "))")' \
+      2>/dev/null || true
+}
+
+# --- 1. did this session do real work? ---
 DID_WORK=0
-if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-  DID_WORK=1
-elif [ -n "$LAST_HEAD" ] && [ -n "$HEAD_SHA" ] && [ "$LAST_HEAD" != "$HEAD_SHA" ]; then
-  DID_WORK=1
+if [ "$SESSION_MODE" -eq 1 ]; then
+  CALLS=$(session_calls)
+  if printf '%s\n' "$CALLS" | grep -qE '^TOOL (Edit|Write|MultiEdit|NotebookEdit)$' \
+     || printf '%s\n' "$CALLS" | grep -qE '^BASH .*\b(git (commit|push)|gh pr (create|merge))\b'; then
+    DID_WORK=1
+  fi
+else
+  # Fallback: a dirty tree counts, and so does a HEAD that moved (work that got committed
+  # and merged leaves the tree clean). An empty LAST_HEAD is a first run: initialise it
+  # rather than reading the difference as a commit.
+  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    DID_WORK=1
+  elif [ -n "$LAST_HEAD" ] && [ -n "$HEAD_SHA" ] && [ "$LAST_HEAD" != "$HEAD_SHA" ]; then
+    DID_WORK=1
+  fi
 fi
 [ "$DID_WORK" -eq 1 ] || { save_state; exit 0; }
 
@@ -137,7 +176,16 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # Project work belongs on the project's `## Wave` (`notes ptask <project> …`), which is
 # what the cockpit and the generated board already read. Accepting it here means an agent
 # can declare its work on the board it actually works from and never touch the daily note.
-if [ -r "$NOTES_LOG" ]; then
+#
+# In session mode the question is asked of this session's own commands instead, so neither
+# a concurrent session's Stop nor its writes can change the answer. Read-only verbs
+# (`notes ptask x list`, `notes today`) do not count.
+if [ "$SESSION_MODE" -eq 1 ]; then
+  if printf '%s\n' "$CALLS" \
+     | grep -qE '^BASH .*\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b'; then
+    save_state; exit 0
+  fi
+elif [ -r "$NOTES_LOG" ]; then
   LAST_FOCUS_TS=$(tail -n 2000 "$NOTES_LOG" 2>/dev/null \
     | grep -E '^\[[^]]+\] \[[A-Z]+\] (focus|ptask):' | tail -1 \
     | sed -E 's/^\[([^]]+)\].*/\1/' || true)
@@ -150,7 +198,9 @@ fi
 # --- 4. already fired this session? ---
 # One nudge per session. This is a reconciliation prompt, not a tripwire to trip over on
 # every turn of a long session.
-if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" = "$BLOCKED_SESSION" ]; then
+if [ "$SESSION_MODE" -eq 1 ]; then
+  [ -e "$MARKER" ] && { save_state; exit 0; }
+elif [ -n "$SESSION_ID" ] && [ "$SESSION_ID" = "$BLOCKED_SESSION" ]; then
   save_state; exit 0
 fi
 
@@ -158,7 +208,7 @@ fi
 OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
-REASON="focus-gate: this turn changed code, but the work was not tracked anywhere and nothing is marked in progress.
+REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
 
 PROJECT work belongs on the project's board, NOT the daily note - the note is the human's
 own list and an agent item added there crowds it out:
@@ -178,6 +228,12 @@ $OPEN_LIST
 
 Then say what you reconciled. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
 
-save_state "$SESSION_ID"
+if [ "$SESSION_MODE" -eq 1 ]; then
+  mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
+  find "$MARKER_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+  save_state
+else
+  save_state "$SESSION_ID"
+fi
 jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
 exit 0
