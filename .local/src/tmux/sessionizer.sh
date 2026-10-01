@@ -225,10 +225,16 @@ cmd_list() {
   } | awk '!seen[$0]++'
 }
 
+# --tiebreak=index, because --list already puts repos ahead of worktrees and fzf's default
+# `length` tiebreak undid it: a ~/.worktrees path is shorter than most repo paths, so typing
+# `unity-core-playground` ranked 27 of its worktrees above the checkout itself. A row only
+# loses its list position on a tie; a query that names the worktree still scores it higher.
+PICK_FLAGS=(--tiebreak=index --prompt='directory > ')
+
 cmd_pick() {
   panel_need fzf
   panel_fzf_opts
-  cmd_list | fzf "${PANEL_FZF_OPTS[@]}" --prompt='directory > '
+  cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PICK_FLAGS[@]}"
 }
 
 # go <dir> -- ensure the session exists, then land in it.

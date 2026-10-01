@@ -297,6 +297,8 @@ alias would append `-L hub` to every call, including from inside `lab`, where
 | `.config/tmux-servers/*.conf` | every directory a manifest declares, if it exists here | a declared directory can sit *inside* a repo (`~/.notes/lab` is a subdirectory of the `~/.notes` repo), so no repo walk can produce it |
 | `$WT_ROOT` (`~/.worktrees`) | directories whose `.git` is a **file** | a linked worktree's `.git` is a file where a main checkout's is a directory. That test both finds worktrees and rejects whatever else got parked there |
 
+The picker runs fzf with `--tiebreak=index`, so that order survives a search: on an equal match a repo ranks ahead of its own worktrees (`unity-core-playground` above its 27 `~/.worktrees/unity-core-playground-*`), and a query that names the worktree still scores it higher.
+
 It used to be **every** directory to depth 4 under the roots: 1521 rows on the Mac, 1048 of
 them inside `~/.dotfiles` alone, and not one worktree. The volume was the least of it. A
 session name is the **basename** (`panel_session_name`), so 20+ names repeated - `src` x12,
