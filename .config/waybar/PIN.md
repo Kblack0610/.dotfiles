@@ -50,6 +50,29 @@ is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 Both are single-row (a Waybar bar is one horizontal row). A multi-row card would
 need eww; intentionally out of scope.
 
+## Pin handoff
+
+While the pin is up, the main bar hides every module the pin is showing, so nothing
+is on screen twice; closing the pin hands them back. `pin.sh` launches the pin with
+`WAYBAR_PIN=1` (its gated execs inherit it, which is how the gate tells the bars
+apart) and runs `modules.sh pin-up <pid> <config>`, which records the pin's pid and
+the `custom/*` ids from that config's `modules-*` lists in
+`$XDG_RUNTIME_DIR/waybar-pin.shown`. The pid doubles as the liveness check: if the
+pin dies without `pin.sh`, the main bar takes its modules back on their next tick.
+A pin config must list module ids, not a group, for this to see them.
+
+Heads up when testing: `pin.sh` stops the pin with `pkill -f 'waybar.*config.pin'`,
+so a shell whose own command line contains both strings gets killed too.
+
+## Status cluster
+
+On the main bar, timebox, agents and fleet sit in `group/status` (`config.base`).
+`layout.css` draws a divider between each visible member, so a module added to that
+group's `modules` list gets its line with no CSS change, and a hidden one (toggled off
+or handed to the pin) takes its line with it. `layout.css` is theme-neutral and every
+theme template `@import`s it; waybar only watches `style.css`, so `touch style.css`
+after editing it.
+
 ## Module toggles
 
 `Super+A` -> `s settings` hides or shows a module on **both** bars at once, with no
@@ -96,6 +119,7 @@ removed, but stay off 8 too until the old bars are gone.)
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
+- `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds
 - `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals
 

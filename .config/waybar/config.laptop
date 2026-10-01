@@ -8,9 +8,7 @@
         "hyprland/workspaces"
     ],
     "modules-right": [
-        "custom/timebox",
-        "custom/ai-agents",
-        "custom/fleet",
+        "group/status",
         "idle_inhibitor",
         "pulseaudio",
         "custom/bluetooth",

@@ -99,6 +99,18 @@
     // runtime: while a module is off the gate prints nothing and waybar drops it.
     // "signal": 10 is the shared re-run signal every gated module listens on.
     // See modules.registry and PIN.md.
+    // The status cluster: our own custom modules, one divider line between each
+    // VISIBLE member (layout.css). A member added here gets its divider for free,
+    // and one that is hidden (toggled off, or shown on the pin) takes its line
+    // with it. Order is left to right.
+    "group/status": {
+        "orientation": "horizontal",
+        "modules": [
+            "custom/timebox",
+            "custom/ai-agents",
+            "custom/fleet"
+        ]
+    },
     "custom/ai-agents": {
         "format": "{}",
         "return-type": "json",

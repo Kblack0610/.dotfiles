@@ -1,0 +1,17 @@
+/* Theme-neutral layout, @imported by every theme template so a theme switch
+ * (which replaces style.css whole) cannot drop it. Colors here derive from
+ * currentColor so they follow whichever theme is active.
+ *
+ * #status is the `group/status` cluster in config.base. Each member gets the
+ * same padding, and every member after the first VISIBLE one draws a divider on
+ * its left edge. GTK skips hidden siblings when matching :first-child, so a
+ * module that is toggled off or handed to the pin takes its line with it. */
+
+#status > widget > label {
+    padding: 0 12px;
+    margin: 5px 0;
+}
+
+#status > widget:not(:first-child) > label {
+    border-left: 2px solid alpha(currentColor, 0.6);
+}

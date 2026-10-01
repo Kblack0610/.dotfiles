@@ -73,7 +73,9 @@ get_ai_agent_status() {
 
     for p in "${sorted_projects[@]}"; do
         [[ -n "$p" ]] || continue
-        [[ -n "$display" ]] && display+=" │ "
+        # Dim, so these per-project ticks read as inside the module and the
+        # group dividers between modules (layout.css) stay the strong lines.
+        [[ -n "$display" ]] && display+=" <span alpha='40%'>·</span> "
         display+="${p} ${project_agents[$p]}"
         tooltip+="${p}:\\n${project_sessions[$p]}"
     done
