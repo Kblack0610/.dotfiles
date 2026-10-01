@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# karakeep-menu: fuzzy-search every Karakeep bookmark by title, tag or domain and open
+# the link. Bound to Super+B in hypr/conf.d/keybindings.conf. Type any mix of words:
+# "rust dev", "#gamedev unity", "github vim".
+#
+# Host and key both come from the rbw entry `karakeep_api_key` (password = API key,
+# URI = the Karakeep instance), so nothing instance-specific lives in this repo.
+# Fetches live on every open (~10 API pages, well under a second), so there is no
+# cache to go stale.
+set -euo pipefail
+
+notify() { command -v notify-send >/dev/null && notify-send "karakeep" "$1"; }
+
+menu() {
+    if command -v wofi >/dev/null 2>&1; then
+        wofi --dmenu -i --matching=fuzzy -p "$1" --width 1100 --height 600
+    elif command -v rofi >/dev/null 2>&1; then
+        rofi -dmenu -i -matching fuzzy -p "$1"
+    else
+        return 1
+    fi
+}
+
+key=$(rbw get karakeep_api_key 2>/dev/null | head -1) || { notify "rbw locked or karakeep_api_key missing"; exit 1; }
+base=$(rbw get --field uris karakeep_api_key 2>/dev/null | head -1)
+[ -n "$key" ] && [ -n "$base" ] || { notify "rbw entry karakeep_api_key needs a password and a URI"; exit 1; }
+
+# One line per link bookmark: title | #tag #tag | url. The url stays last so the
+# selection can be cut back to it; it also makes the domain searchable.
+list() {
+    local cursor="" page
+    while :; do
+        page=$(curl -fsS -H "Authorization: Bearer $key" \
+            "$base/api/v1/bookmarks?limit=100&includeContent=false${cursor:+&cursor=$cursor}")
+        jq -r '.bookmarks[] | select(.content.type == "link")
+            | [ (.title // .content.title // .content.url | gsub("[\t\n|]"; " ")),
+                ([.tags[].name | "#" + .] | join(" ")),
+                .content.url ] | join("  |  ")' <<<"$page"
+        cursor=$(jq -r '.nextCursor // empty' <<<"$page")
+        [ -n "$cursor" ] || break
+    done
+}
+
+lines=$(list) || { notify "could not reach $base"; exit 1; }
+choice=$(sort -f <<<"$lines" | menu "bookmarks") || exit 0
+url=${choice##*  |  }
+[ -n "$url" ] && xdg-open "$url" >/dev/null 2>&1 &
