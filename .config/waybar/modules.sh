@@ -6,6 +6,8 @@
 #   modules.sh list                              every module and its state
 #   modules.sh on|off|toggle <key>               flip one module (or group)
 #   modules.sh menu                              interactive picker (needs fzf)
+#   modules.sh pin-up <pid> <config>             pin.sh: pin is showing <config>
+#   modules.sh pin-down                          pin.sh: pin is gone
 #
 # Waybar disables a custom module whose exec prints nothing (`hide-empty-text`
 # in man waybar-custom). `gate` wraps each module's real exec and prints nothing
@@ -17,6 +19,13 @@
 # Absent or empty = everything on. Machine-local on purpose (the desktop and the
 # laptop want different answers), and it outlives a reboot unlike pin.sh's
 # /tmp state.
+#
+# Pin handoff: while the pin overlay is up, the main bar hides every module the
+# pin shows, so nothing is on screen twice. pin.sh launches the pin with
+# WAYBAR_PIN=1 (inherited by its execs, which is how `gate` tells the two bars
+# apart) and records the pin's pid and module ids in $PIN_SHOWN. The pid is the
+# liveness check: if the pin dies without pin.sh's help, /proc/<pid> goes and the
+# main bar takes its modules back on their next tick, with no stale file to clean.
 
 set -u
 
@@ -26,6 +35,7 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/waybar"
 OFF="$STATE_DIR/modules.off"
 SIGNAL=10
 NOTIFY_ID=990012
+PIN_SHOWN="${XDG_RUNTIME_DIR:-/tmp}/waybar-pin.shown"
 
 # --- gate ---------------------------------------------------------------------
 # The hot path: waybar runs this once per module every couple of seconds, so it
@@ -34,6 +44,15 @@ if [[ "${1:-}" == "gate" ]]; then
     mod="${2:?gate needs a module id}"
     shift 2
     grep -qxF -- "$mod" "$OFF" 2>/dev/null && exit 0   # empty stdout: waybar hides it
+    # Main bar only, builtins only (no fork per tick): is a live pin showing $mod?
+    if [[ -z "${WAYBAR_PIN:-}" && -r "$PIN_SHOWN" ]]; then
+        { read -r pid; mapfile -t shown; } < "$PIN_SHOWN"
+        comm=""
+        [[ "$pid" =~ ^[0-9]+$ ]] && read -r comm < "/proc/$pid/comm" 2>/dev/null
+        if [[ "$comm" == waybar ]]; then
+            for id in "${shown[@]}"; do [[ "$id" == "$mod" ]] && exit 0; done
+        fi
+    fi
     exec "$@"
 fi
 
@@ -96,6 +115,23 @@ toggle() {
     if is_off "$1"; then set_state "$1" on; else set_state "$1" off; fi
 }
 
+# --- pin handoff --------------------------------------------------------------
+# The custom module ids a pin config lists, from its modules-* arrays. A group in
+# the list contributes nothing here, so a pin that shows a group must list its
+# members instead (the gate is per module, never per group).
+pin_ids() {
+    sed -n '/"modules-\(left\|center\|right\)"/,/\]/p' "$1" \
+        | grep -o '"custom/[^"]*"' | tr -d '"' | sort -u
+}
+
+pin_up() {  # pin_up <pid> <config>
+    { printf '%s\n' "$1"; pin_ids "$2"; } > "$PIN_SHOWN.tmp"
+    mv "$PIN_SHOWN.tmp" "$PIN_SHOWN"
+    refresh
+}
+
+pin_down() { rm -f "$PIN_SHOWN"; refresh; }
+
 # --- ui -----------------------------------------------------------------------
 render() {
     local k mark
@@ -123,5 +159,7 @@ case "${1:-list}" in
     on)     set_state "${2:?usage: modules.sh on <key>}" on ;;
     off)    set_state "${2:?usage: modules.sh off <key>}" off ;;
     toggle) toggle "${2:?usage: modules.sh toggle <key>}" ;;
-    *)      echo "usage: modules.sh {gate|list|menu|on|off|toggle} [args]" >&2; exit 2 ;;
+    pin-up)   pin_up "${2:?usage: modules.sh pin-up <pid> <config>}" "${3:?usage: modules.sh pin-up <pid> <config>}" ;;
+    pin-down) pin_down ;;
+    *)      echo "usage: modules.sh {gate|list|menu|on|off|toggle|pin-up|pin-down} [args]" >&2; exit 2 ;;
 esac

@@ -21,7 +21,9 @@ running() { pgrep -f "$MATCH" >/dev/null 2>&1; }
 get_size() { [[ -r "$STATE_FILE" ]] && cat "$STATE_FILE" || echo min; }
 set_size() { printf '%s' "$1" > "$STATE_FILE"; }
 
-stop() { pkill -f "$MATCH" 2>/dev/null; }
+MODULES="$CONF_DIR/modules.sh"
+
+stop() { pkill -f "$MATCH" 2>/dev/null; "$MODULES" pin-down; }
 
 start() {
     local size="$1"
@@ -30,10 +32,16 @@ start() {
     stop
     # brief settle so the old layer surface is gone before the new one maps
     for _ in 1 2 3 4 5; do running || break; sleep 0.05; done
-    # setsid -f fully detaches: survives the calling shell/terminal, not just
-    # the Hyprland exec double-fork - so `pin.sh` behaves the same from a keybind
-    # or a terminal.
-    setsid -f waybar -c "$CONF_DIR/config.pin-$size" -s "$STYLE" >/dev/null 2>&1 </dev/null
+    # setsid puts the pin in its own session, so it survives the calling
+    # shell/terminal, not just the Hyprland exec double-fork - `pin.sh` behaves the
+    # same from a keybind or a terminal. No -f: a background job of a
+    # non-interactive shell is never a group leader, so setsid execs in place and
+    # $! is waybar's own pid, which the main bar uses as the pin's liveness check.
+    # WAYBAR_PIN=1 tells this bar's gated execs they are the pin (modules.sh).
+    WAYBAR_PIN=1 setsid waybar -c "$CONF_DIR/config.pin-$size" -s "$STYLE" >/dev/null 2>&1 </dev/null &
+    local pid=$!
+    disown
+    "$MODULES" pin-up "$pid" "$CONF_DIR/config.pin-$size"
 }
 
 case "${1:-toggle}" in
