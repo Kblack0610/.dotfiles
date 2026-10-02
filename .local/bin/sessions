@@ -119,9 +119,11 @@ load_live() {
 live_marker() {
   # $1 = session id -> a short, aligned live indicator.
   # Statuses come from the Claude CLI: busy = mid-turn, waiting = sitting at the
-  # prompt wanting input from you, idle = open but not waiting on anything.
+  # prompt wanting input from you, idle = open but not waiting on anything,
+  # shell = at the prompt with a background Bash task still running.
   case "${LIVE_STATUS[${1:-}]:-}" in
     busy)    printf '* busy' ;;
+    shell)   printf '* bg  ' ;;
     waiting) printf 'o wait' ;;
     idle)    printf 'o idle' ;;
     '')      printf '' ;;

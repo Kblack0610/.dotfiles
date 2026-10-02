@@ -50,6 +50,10 @@ get_session_status() {
             # Priority 3: Check if actively working (recent output within 3 seconds)
             elif [ $activity_diff -lt 3 ]; then
                 ((working++))
+            # Priority 3b: At the prompt but a background shell is still running. The
+            # footer reads "· N shell(s) ·" - Claude is waiting on it, not done.
+            elif echo "$last_lines" | grep -qE '· [0-9]+ shells? ·'; then
+                ((working++))
             # Priority 4: At prompt waiting for input (DONE state)
             # Claude shows "> " prompt line and "bypass permissions" or "Context left" in status
             elif echo "$last_lines" | grep -qE '^> |^❯ '; then
