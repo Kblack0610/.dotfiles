@@ -215,6 +215,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "remoteControlAtStartup": true,
   "additionalDirectories": [
     "/root",
     "/mnt/c/Users/keblack",
