@@ -34,8 +34,38 @@
     order: 1 !important;
 }
 
-/* Search suggestions appear ABOVE the URL bar */
-#urlbar .urlbarView {
+/* Search suggestions appear ABOVE the URL bar.
+ * Firefox 157+ renders the view as a top-layer popover="manual" anchored to the
+ * input via position-area (browser/skin/urlbar.css), so flip the area and mirror
+ * the joint background that stock draws to fuse input + view at the bottom.
+ * Absolute positioning would resolve against the viewport and push it off-screen. */
+#urlbar .urlbarView:popover-open {
+    position-area: block-start center !important;
+}
+
+#urlbar[popover-open] > .urlbar-background {
+    inset-block-start: calc(-1 * var(--urlbar-joint-background-overlap)) !important;
+    inset-block-end: calc(-1 * (var(--urlbar-background-overhang-open) + var(--urlbar-input-growth-open-block))) !important;
+    border-radius: 0 0 var(--urlbar-background-border-top-radius-open) var(--urlbar-background-border-top-radius-open) !important;
+    clip-path: inset(
+        calc(var(--urlbar-joint-background-overlap) - var(--urlbar-input-growth-open-block))
+        calc(-1 * var(--urlbar-joint-background-shadow-margin))
+        calc(-1 * var(--urlbar-joint-background-shadow-margin))
+    ) !important;
+}
+
+#urlbar > .urlbarView > .urlbarView-background {
+    inset-block: calc(-1 * var(--urlbarView-joint-background-outset-block)) calc(-1 * var(--urlbarView-margin-block) - var(--urlbar-joint-background-overlap)) !important;
+    border-radius: var(--urlbar-background-border-radius) var(--urlbar-background-border-radius) 0 0 !important;
+    clip-path: inset(
+        calc(-1 * var(--urlbar-joint-background-shadow-margin))
+        calc(-1 * var(--urlbar-joint-background-shadow-margin))
+        var(--urlbar-joint-background-overlap)
+    ) !important;
+}
+
+/* Pre-157 Firefox, where the view is not a popover. */
+#urlbar .urlbarView:not([popover]) {
     position: absolute !important;
     bottom: 100% !important;
     top: auto !important;
