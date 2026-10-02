@@ -47,6 +47,13 @@ MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 # (leading dot stripped, interior dots folded); this is the `--name` verb's front door.
 session_name() { panel_session_name "$1"; }
 
+# world_hidden <name> -- rc 0 when this machine opts out of a world via $MANIFEST_DIR/hidden.
+# Deliberately servers.sh:world_hidden, same file and same parse, for the reason given below.
+world_hidden() {
+  [ -r "$MANIFEST_DIR/hidden" ] || return 1
+  sed 's/#.*//; s/[[:space:]]//g' "$MANIFEST_DIR/hidden" | grep -qxF -- "$1"
+}
+
 # manifest_rows -- "<world> <session> <dir>" for every session the manifests declare.
 #
 # Reads the manifests directly rather than asking tmux, because the question is "where does
@@ -66,6 +73,9 @@ manifest_rows() {
     [ -r "$f" ] || continue # an unmatched glob stays literal; -r rejects it
     world="${f##*/}"
     world="${world%.conf}"
+    # A hidden world declares nothing here, so its directories open in the current world
+    # instead of hopping to one this machine opted out of.
+    world_hidden "$world" && continue
     while read -r name mdir cmd; do
       case "$name" in '' | '#'*) continue ;; esac
       [ -n "$mdir" ] || continue
