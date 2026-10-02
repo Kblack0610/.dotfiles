@@ -17,6 +17,8 @@ CONNECT_TIMEOUT="${NOTES_SYNC_CONNECT_TIMEOUT:-10}"
 # moment. See track_backup_push below.
 BACKUP_ALERT_AFTER="${NOTES_SYNC_BACKUP_ALERT_AFTER:-12}"
 BACKUP_FAIL_FILE="$STATE_DIR/backup-failures"
+# "<local> <remote>" refs of the last merge that conflicted; see the diverged branch below.
+CONFLICT_FILE="$STATE_DIR/conflict"
 
 log() {
     mkdir -p "$STATE_DIR"
@@ -195,16 +197,29 @@ else
         log "SYNC: Fast-forwarded from $PRIMARY_REMOTE/$BRANCH"
     elif [ "$remote_ref" = "$base_ref" ]; then
         log "SYNC: Local branch is ahead of $PRIMARY_REMOTE/$BRANCH"
+    elif [ "$(cat "$CONFLICT_FILE" 2>/dev/null)" = "$local_ref $remote_ref" ]; then
+        # Same pair that already conflicted: retrying cannot succeed and only rewrites the
+        # tree again, which the 3s file watcher would turn into a loop.
+        log "SKIP: Unresolved conflict with $PRIMARY_REMOTE/$BRANCH; resolve manually in $NOTES_DIR"
+        exit 1
     else
-        log "SYNC: Diverged from $PRIMARY_REMOTE/$BRANCH, attempting rebase"
-        if git rebase "$PRIMARY_REMOTE/$BRANCH"; then
-            log "SYNC: Rebased local commits on top of $PRIMARY_REMOTE/$BRANCH"
+        # Merge, not rebase. A rebase first checks out the remote tree, rewriting every file
+        # the local commits touched - i.e. the note open in the editor, which then warns that
+        # it changed on disk. A merge only writes files that changed upstream.
+        log "SYNC: Diverged from $PRIMARY_REMOTE/$BRANCH, merging"
+        if git merge --no-edit -m "Auto-merge $HOST_TAG $(date '+%Y-%m-%d_%H:%M:%S')" "$PRIMARY_REMOTE/$BRANCH"; then
+            log "SYNC: Merged $PRIMARY_REMOTE/$BRANCH"
         else
-            git rebase --abort 2>/dev/null || true
-            log "ERROR: Rebase conflict detected; resolve manually in $NOTES_DIR"
+            git merge --abort 2>/dev/null || true
+            # Alert on entering the stuck state only: the last one sat unnoticed for two days.
+            [ -f "$CONFLICT_FILE" ] || notify high "Notes sync on $HOST_TAG hit a merge conflict and stopped syncing. Resolve in $NOTES_DIR; see $LOG_FILE"
+            printf '%s %s\n' "$local_ref" "$remote_ref" > "$CONFLICT_FILE"
+            log "ERROR: Merge conflict detected; resolve manually in $NOTES_DIR"
             exit 1
         fi
     fi
+    # Any path that got here is unstuck, including a conflict resolved by hand.
+    rm -f "$CONFLICT_FILE"
 
     local_ref=$(git rev-parse HEAD)
     remote_ref=$(git rev-parse "$PRIMARY_REMOTE/$BRANCH")
