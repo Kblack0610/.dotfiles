@@ -384,6 +384,19 @@ in_world() {
   assert_not_called 'tmx goto'
 }
 
+@test "a directory declared by a HIDDEN world opens here instead of hopping there" {
+  # A machine that opted out of lab must not be dragged into it by Prefix+f. The negative
+  # control is the test above it: the same directory hops when lab is not hidden.
+  printf '# not on this machine\nlab\n' > "$TMUX_SERVERS_DIR/hidden"
+  in_world hub
+  run "$SESSIONIZER" --route "$HOME/dev/declared-lab"
+  assert_success
+  assert_output 'here declared-lab'
+  run "$SESSIONIZER" "$HOME/declared-hub"
+  assert_success
+  assert_called 'switch-client -t ownname'
+}
+
 @test "outside tmux, a declared directory still routes to its world" {
   # No enclosing world means nothing to compare against, so the manifest is the only
   # answer there is. tmx land attaches on the far side.

@@ -342,3 +342,7 @@ __pycache__/
 # committed here: client names and repo layouts are exactly what the private
 # overlay is for.
 .config/tmux-servers/work.conf
+
+# Per-machine world opt-out read by servers.sh/sessionizer.sh (world_hidden). Machine-local
+# by definition, and the folded ~/.config link above would otherwise land it in this repo.
+.config/tmux-servers/hidden

@@ -37,7 +37,7 @@
 #
 # Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · hop <name>
 #        · root <name> · goto <name> <session> · land <name> <last|root|session[:window]>
-#        · pick-session · back
+#        · pick-session · back · reload
 
 set -uo pipefail
 
@@ -75,15 +75,27 @@ known_servers() {
   # Seeded UNCONDITIONALLY, not gated on the manifest existing: hub and lab are the
   # two fundamental worlds and `ls` must offer them even when nothing is running and
   # even if a manifest is missing (cmd_ensure has its own no-manifest fallback).
-  for n in "${seed[@]}"; do out+=("$n"); done
+  for n in "${seed[@]}"; do world_hidden "$n" || out+=("$n"); done
   for f in "$MANIFEST_DIR"/*.conf; do
     [ -r "$f" ] || continue          # unmatched glob stays literal; -r rejects it
     n="${f##*/}"; n="${n%.conf}"
+    world_hidden "$n" && continue
     case " ${out[*]} " in *" $n "*) continue ;; esac
     out+=("$n")
   done
   [ ${#out[@]} -gt 0 ] && printf '%s\n' "${out[@]}"
   return 0
+}
+
+# world_hidden <name> -- rc 0 when THIS machine opts out of a world. The opt-out is
+# $MANIFEST_DIR/hidden, one world per line, `#` comments. It is machine-local: stow links
+# the manifests one file at a time, so a file the repo does not have stays on this machine
+# (and .gitignore keeps it out if the directory is ever folded into one link). A hidden
+# world is not listed and refuses hop/root/goto, so its keys can stay bound everywhere.
+# sessionizer.sh:world_hidden reads the same file the same way.
+world_hidden() {
+  [ -r "$MANIFEST_DIR/hidden" ] || return 1
+  sed 's/#.*//; s/[[:space:]]//g' "$MANIFEST_DIR/hidden" | grep -qxF -- "$1"
 }
 
 die() { printf 'tmx: %s\n' "$*" >&2; exit 1; }
@@ -114,6 +126,7 @@ cmd_ls() {
   done < <(known_servers)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
+    world_hidden "$s" && continue
     case " ${all[*]} " in *" $s "*) ;; *) all+=("$s") ;; esac
   done < <(live_servers)
 
@@ -343,6 +356,14 @@ _record_back() {
 _enter() {
   local target="${1:?needs a server name}" mode="${2:-last}"
 
+  if world_hidden "$target"; then
+    # A message, not a failure, from a key: run-shell turns a non-zero exit into a
+    # "returned 1" popup that reads as a broken binding.
+    [ -n "${TMUX:-}" ] || die "'$target' is hidden on this machine ($MANIFEST_DIR/hidden)"
+    tmux display-message "tmx: '$target' is hidden on this machine ($MANIFEST_DIR/hidden)"
+    return 0
+  fi
+
   if [ -n "${TMUX:-}" ]; then
     # Before the detach, because this is the last moment the place we are leaving is
     # still readable. Every hop passes through here, so every hop is reversible.
@@ -547,6 +568,7 @@ _all_rows() {
 
   while IFS= read -r s; do
     [ -n "$s" ] || continue
+    world_hidden "$s" && continue
 
     # The server itself, so one list replaces both this and the old server picker.
     n="$(session_count "$s")"
@@ -619,6 +641,20 @@ cmd_pick_all() {
   fi
 }
 
+# reload -- Prefix+r. Source the config into EVERY live server, not just this one. Each
+# world is its own server and reads the config only when it starts, so a one-server reload
+# leaves the others on old bindings: after the world keys flipped (#372), a hub started
+# before it still had C-h -> lab while lab had C-h -> hub, and C-h bounced between them.
+# Hidden worlds included on purpose: a running one should not keep stale keys either.
+cmd_reload() {
+  local s conf="${TMUX_CONF:-$HOME/.tmux.conf}"
+  while IFS= read -r s; do
+    [ -n "$s" ] && tmux -L "$s" source-file "$conf"
+  done < <(live_servers)
+  [ -n "${TMUX:-}" ] && tmux display-message "tmx: reloaded $conf on every server"
+  return 0
+}
+
 main() {
   local verb="${1:-pick}"
   case "$verb" in
@@ -633,6 +669,7 @@ main() {
     pick)         cmd_pick ;;
     pick-all)     cmd_pick_all ;;
     rows)         _all_rows ;;
+    reload)       cmd_reload ;;
     -h|--help)    sed -n '2,40p' "$0" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac
