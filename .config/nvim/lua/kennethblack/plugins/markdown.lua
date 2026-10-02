@@ -582,9 +582,13 @@ return {
         if not s then
           return lines, false
         end
+        -- Ends at the next H2 or the link footer (a `---` whose next line has a wikilink),
+        -- mirroring md::section_end. Focus is the note's last H2, so without the footer arm
+        -- the sweep strips the footer's `---` and files its link line as a Focus line.
         local e = #lines + 1
         for i = s + 1, #lines do
-          if lines[i]:match "^##%s" then
+          local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
+          if lines[i]:match "^##%s" or footer then
             e = i
             break
           end

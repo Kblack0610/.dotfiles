@@ -236,13 +236,7 @@ pub(crate) fn sweep_section(
             .map(|r| pred(r.trim()))
             .unwrap_or(false)
     })?;
-    let mut end = lines.len();
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        if l.starts_with("## ") || l.trim() == md::ROLLUP_START {
-            end = i;
-            break;
-        }
-    }
+    let end = md::section_end(&lines, start + 1);
     let mut body: Vec<&str> = lines[start + 1..end].to_vec();
     while body.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
         body.pop();

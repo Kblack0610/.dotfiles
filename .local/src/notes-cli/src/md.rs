@@ -45,7 +45,8 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
 pub const ROLLUP_START: &str = "<!-- rollup:start -->";
 
 /// 0-based `[start, end)` line indices of the AUTHORED region under `## heading`: the
-/// lines after the heading, up to the next `## ` H2, a [`ROLLUP_START`] sentinel, or EOF.
+/// lines after the heading, up to the next `## ` H2, a [`ROLLUP_START`] sentinel, the
+/// daily note's link footer (see [`is_footer_rule`]), or EOF.
 /// `None` when the heading is absent. Heading match is case-insensitive and tolerant of
 /// trailing whitespace; `### ` subsections do NOT end a section (their third byte is `#`,
 /// not a space, so they never match the `"## "` prefix).
@@ -61,11 +62,31 @@ pub fn section_span(lines: &[&str], heading: &str) -> Option<std::ops::Range<usi
         l.strip_prefix("## ")
             .is_some_and(|rest| rest.trim().eq_ignore_ascii_case(heading))
     })? + 1;
-    let end = lines[start..]
-        .iter()
-        .position(|l| l.starts_with("## ") || l.trim() == ROLLUP_START)
-        .map_or(lines.len(), |i| start + i);
-    Some(start..end)
+    Some(start..section_end(lines, start))
+}
+
+/// Index of the first line at or after `from` that ends a section body (the end half of
+/// [`section_span`]'s rule), or `lines.len()`. Public so a sweep that matches its heading
+/// by predicate still ends the section exactly where every other reader does.
+pub fn section_end(lines: &[&str], from: usize) -> usize {
+    (from..lines.len())
+        .find(|&i| {
+            let l = lines[i];
+            l.starts_with("## ") || l.trim() == ROLLUP_START || is_footer_rule(lines, i)
+        })
+        .unwrap_or(lines.len())
+}
+
+/// True when `lines[i]` is the `---` that opens the daily note's link footer: a bare rule
+/// whose next line carries a wikilink. Same test as `daily::footer_idx`; the `[[` is what
+/// separates it from the `---` that `focus_sweep` writes above `### Done`.
+///
+/// A section boundary because Focus is the LAST H2 of a daily note (Notes moved above it in
+/// #368), so without this the footer sits inside Focus: the sweep strips its `---` as lane
+/// scaffold and files the link line as a Focus line, and every `notes today` then appends
+/// a fresh footer below it.
+pub fn is_footer_rule(lines: &[&str], i: usize) -> bool {
+    lines[i].trim() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["))
 }
 
 /// Capture the raw lines of the authored region under `## heading`. Returns `None` if the
@@ -1727,6 +1748,17 @@ after
             parse_yaml_scalar(y, "plain").as_deref(),
             Some("still a scalar")
         );
+    }
+
+    #[test]
+    fn a_section_ends_at_the_link_footer_but_not_at_the_done_rule() {
+        let c = "## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n- [x] b\n\n---\nSchedule: [[schedule]]\n";
+        let focus = section_lines(c, "Focus").unwrap();
+        assert!(focus.iter().any(|l| l.contains("[x] b")), "Done rule ended the section: {focus:?}");
+        assert!(!focus.iter().any(|l| l.contains("Schedule")), "footer leaked into Focus: {focus:?}");
+        // NEGATIVE CONTROL: a rule followed by plain text is body, not footer.
+        let c = "## Focus\n- [ ] a\n---\nplain\n";
+        assert!(section_lines(c, "Focus").unwrap().iter().any(|l| *l == "plain"));
     }
 
     #[test]
