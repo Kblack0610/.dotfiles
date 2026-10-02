@@ -51,12 +51,13 @@ pub fn load_all() -> HashMap<u32, Session> {
     out
 }
 
-/// Status glyph. Matches the old bash mapping:
-/// `waiting`→`!` (needs input), `busy`→`~`, anything else (`idle`)→`✓`.
+/// Status glyph: `waiting`→`!` (needs input), `busy`/`shell`→`~`, anything
+/// else (`idle`)→`✓`. Claude writes `shell` when it is idle at the prompt but a
+/// background Bash task is still running, so it is still working, not done.
 pub fn glyph(status: &str) -> char {
     match status {
         "waiting" => '!',
-        "busy" => '~',
+        "busy" | "shell" => '~',
         _ => '✓',
     }
 }
@@ -83,6 +84,7 @@ mod tests {
     fn glyphs() {
         assert_eq!(glyph("waiting"), '!');
         assert_eq!(glyph("busy"), '~');
+        assert_eq!(glyph("shell"), '~');
         assert_eq!(glyph("idle"), '✓');
         assert_eq!(glyph("anything"), '✓');
     }

@@ -1065,7 +1065,7 @@ _factory_live() { # $1=prof $2=lc $3=canon $4=sec $5=ptag
   while IFS=$'\t' read -r id st proj branch started what kind; do
     [ -n "$id" ] || continue
     case "$st" in
-      busy)    glyph='~'; col="$C_INP" ;;
+      busy|shell) glyph='~'; col="$C_INP" ;;
       waiting) glyph='!'; col="$C_SEL" ;;
       *)       glyph='o'; col="$C_DIM" ;;
     esac
