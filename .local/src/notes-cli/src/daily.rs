@@ -2062,11 +2062,19 @@ after
         std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
         let p = profile(dir.to_str().unwrap());
         let note = dir.join("journal/daily/2026-10-02.md");
-        std::fs::write(&note, "# 2026-10-02\n\n## Notes\n\n## Focus\n- [ ] a #high\n- [x] b\n").unwrap();
+        std::fs::write(
+            &note,
+            "# 2026-10-02\n\n## Notes\n\n## Focus\n- [ ] a #high\n- [x] b\n",
+        )
+        .unwrap();
         let pass = || {
             ensure_footer(&p, &note).unwrap();
             let c = std::fs::read_to_string(&note).unwrap();
-            if let Some(s) = crate::sweep::sweep_section(&c, |h| h.eq_ignore_ascii_case("Focus"), &md::PRIORITIES) {
+            if let Some(s) = crate::sweep::sweep_section(
+                &c,
+                |h| h.eq_ignore_ascii_case("Focus"),
+                &md::PRIORITIES,
+            ) {
                 std::fs::write(&note, s).unwrap();
             }
             std::fs::read_to_string(&note).unwrap()
@@ -2076,8 +2084,14 @@ after
         assert_eq!(first, second, "a second run rewrote the note");
         assert_eq!(first.matches("Schedule:").count(), 1, "{first}");
         let footer = &first[footer_idx(&first).expect("footer lost its rule")..];
-        assert!(footer.trim().lines().count() == 2, "footer is not last:\n{first}");
-        assert!(first.contains("### Done\n- [x] b"), "sweep did not run:\n{first}");
+        assert!(
+            footer.trim().lines().count() == 2,
+            "footer is not last:\n{first}"
+        );
+        assert!(
+            first.contains("### Done\n- [x] b"),
+            "sweep did not run:\n{first}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

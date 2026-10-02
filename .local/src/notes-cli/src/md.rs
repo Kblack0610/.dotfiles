@@ -1754,11 +1754,20 @@ after
     fn a_section_ends_at_the_link_footer_but_not_at_the_done_rule() {
         let c = "## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n- [x] b\n\n---\nSchedule: [[schedule]]\n";
         let focus = section_lines(c, "Focus").unwrap();
-        assert!(focus.iter().any(|l| l.contains("[x] b")), "Done rule ended the section: {focus:?}");
-        assert!(!focus.iter().any(|l| l.contains("Schedule")), "footer leaked into Focus: {focus:?}");
+        assert!(
+            focus.iter().any(|l| l.contains("[x] b")),
+            "Done rule ended the section: {focus:?}"
+        );
+        assert!(
+            !focus.iter().any(|l| l.contains("Schedule")),
+            "footer leaked into Focus: {focus:?}"
+        );
         // NEGATIVE CONTROL: a rule followed by plain text is body, not footer.
         let c = "## Focus\n- [ ] a\n---\nplain\n";
-        assert!(section_lines(c, "Focus").unwrap().iter().any(|l| *l == "plain"));
+        assert!(section_lines(c, "Focus")
+            .unwrap()
+            .iter()
+            .any(|l| *l == "plain"));
     }
 
     #[test]
