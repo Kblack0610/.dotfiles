@@ -2052,6 +2052,50 @@ after
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// With Focus as the last H2, repeated `notes today` passes (footer, then sweep) must
+    /// leave the note byte-identical with exactly one footer, last. The live bug: the sweep
+    /// ate the footer into Focus and every run appended another.
+    #[test]
+    fn footer_and_sweep_are_stable_when_focus_is_last() {
+        let dir = std::env::temp_dir().join(format!("notes-footer-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let note = dir.join("journal/daily/2026-10-02.md");
+        std::fs::write(
+            &note,
+            "# 2026-10-02\n\n## Notes\n\n## Focus\n- [ ] a #high\n- [x] b\n",
+        )
+        .unwrap();
+        let pass = || {
+            ensure_footer(&p, &note).unwrap();
+            let c = std::fs::read_to_string(&note).unwrap();
+            if let Some(s) = crate::sweep::sweep_section(
+                &c,
+                |h| h.eq_ignore_ascii_case("Focus"),
+                &md::PRIORITIES,
+            ) {
+                std::fs::write(&note, s).unwrap();
+            }
+            std::fs::read_to_string(&note).unwrap()
+        };
+        let first = pass();
+        let second = pass();
+        assert_eq!(first, second, "a second run rewrote the note");
+        assert_eq!(first.matches("Schedule:").count(), 1, "{first}");
+        let footer = &first[footer_idx(&first).expect("footer lost its rule")..];
+        assert!(
+            footer.trim().lines().count() == 2,
+            "footer is not last:\n{first}"
+        );
+        assert!(
+            first.contains("### Done\n- [x] b"),
+            "sweep did not run:\n{first}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A line carrying BOTH tokens is a contradiction the format allows. It must land in
     /// exactly one branch or it surfaces twice; the date wins as the more specific
     /// instruction, and the line is consumed.

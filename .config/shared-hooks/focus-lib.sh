@@ -24,13 +24,12 @@ focus_daily_note() {
   printf '%s' "$p"
 }
 
-# focus_body <note> — the `## Focus` section body, up to the next H2 OR a `rollup:start`
-# sentinel. Empty if the note has no Focus section (or does not exist), which every caller
-# must treat as "nothing".
+# focus_body <note> - the `## Focus` section body, up to the next H2, a `rollup:start`
+# sentinel, or the link footer. Empty if the note has no Focus section (or does not exist),
+# which every caller must treat as "nothing".
 #
-# BOTH terminators, because this is the shell half of a boundary rule the Rust CLI owns
-# (md.rs::section_span, the single place that knows it) and the two must agree. This half
-# knew only the H2 arm.
+# ALL three terminators, because this is the shell half of a boundary rule the Rust CLI owns
+# (md.rs::section_end, the single place that knows it) and the two must agree.
 #
 # Latent today -- no live daily note carries the sentinel -- and that is exactly why it is
 # worth fixing now rather than when it fires. The moment a job profile rolls up, everything
@@ -40,11 +39,19 @@ focus_daily_note() {
 # `trim` before comparing, matching the Rust `l.trim() == ROLLUP_START`.
 focus_body() {
   [ -f "${1:-}" ] || return 0
+  # The footer arm (a `---` whose next line has a wikilink, md::is_footer_rule) needs one
+  # line of lookahead, so a bare `---` is held in `rule` until the next line decides it.
+  # `rule` is cleared before every exit because awk still runs END after one.
   awk '
     /^## Focus/ { f=1; next }
-    f && /^## / { exit }
-    f { line=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); if (line == "<!-- rollup:start -->") exit }
-    f
+    !f { next }
+    rule != "" { if (index($0, "[[")) { rule=""; exit } print rule; rule="" }
+    /^## / { exit }
+    { line=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line) }
+    line == "<!-- rollup:start -->" { exit }
+    line == "---" { rule=$0; next }
+    { print }
+    END { if (rule != "") print rule }
   ' "$1" 2>/dev/null || true
 }
 
