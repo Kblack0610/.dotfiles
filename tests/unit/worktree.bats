@@ -272,6 +272,89 @@ make_repo() {
   assert_output ''
 }
 
+# ── Submodules: a stale pointer is not work ──────────────────────────────────
+
+# make_repo, plus a submodule `sub` whose origin has commits c1 and c2. The trunk records c1,
+# then c2. agent-1 is cut at c1, initialised, then moved onto the trunk WITHOUT a submodule
+# update -- exactly how a recycled unity-core-playground slot ends up: HEAD records c2, the
+# checkout still sits on c1, and status reports ` M sub`.
+make_drifted_submodule() {
+  make_repo
+  # file:// submodules are refused by default since git 2.38.1; this sandbox is all local.
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+  SUBORIGIN="$SANDBOX/sub.git"
+  git init --quiet --bare -b main "$SUBORIGIN"
+  git clone --quiet "$SUBORIGIN" "$SANDBOX/subwork" 2>/dev/null
+  git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c1
+  C1=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
+  git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c2
+  C2=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
+  git -C "$SANDBOX/subwork" push --quiet origin main
+
+  git -C "$MAIN" submodule add --quiet "$SUBORIGIN" sub
+  git -C "$MAIN/sub" checkout --quiet "$C1"
+  git -C "$MAIN" add sub
+  git -C "$MAIN" commit --quiet -m 'sub at c1'
+  git -C "$MAIN" push --quiet origin main
+
+  WT="$WT_ROOT/platform-agent-1"
+  git -C "$MAIN" worktree add --quiet "$WT" -b agent-1 origin/main
+  git -C "$WT" submodule update --init --quiet
+
+  git -C "$MAIN/sub" checkout --quiet "$C2"
+  git -C "$MAIN" commit --quiet -am 'sub at c2'
+  git -C "$MAIN" push --quiet origin main
+  git -C "$WT" fetch --quiet origin
+  git -C "$WT" merge --quiet --ff-only origin/main
+  export SUBORIGIN C1 C2 WT
+}
+
+@test "a submodule left on an older PUSHED commit does not make a worktree dirty" {
+  make_drifted_submodule
+  run git -C "$WT" status --porcelain
+  assert_output ' M sub' # the fixture really is in the drifted state
+  run wt_reap_reason "$WT"
+  assert_success
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_output "1${PANEL_TAB}recycle"
+}
+
+@test "a submodule on an UNPUSHED commit still pins the worktree" {
+  # The commit exists only in this checkout; recycling would strand it.
+  make_drifted_submodule
+  git -C "$WT/sub" commit --quiet --allow-empty -m local-only
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output 'dirty (1 uncommitted)'
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_output "2${PANEL_TAB}fresh"
+}
+
+@test "uncommitted edits INSIDE a drifted submodule still pin the worktree" {
+  make_drifted_submodule
+  printf 'wip\n' > "$WT/sub/wip.txt"
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output 'dirty (1 uncommitted)'
+}
+
+@test "a STAGED submodule pointer is somebody's intent, not drift" {
+  make_drifted_submodule
+  git -C "$WT" add sub
+  run wt_reap_reason "$WT"
+  assert_failure
+}
+
+@test "recycling a drifted worktree brings the submodule up to the trunk" {
+  make_drifted_submodule
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C2"
+  run git -C "$WT" status --porcelain
+  assert_output ''
+}
+
 # ── Repo resolution ──────────────────────────────────────────────────────────
 
 @test "the main repo resolves identically from inside a linked worktree" {
