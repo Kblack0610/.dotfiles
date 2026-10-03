@@ -107,7 +107,7 @@ test-container: test-fast test-ui-inner
 lint:
 	@$(HERE)lint.sh
 
-# The Rust crates (notes-cli, agent-panel, timebox). Same shape as `lint`: one
+# The Rust crates (notes-cli, agent-panel, agent-web, timebox). Same shape as `lint`: one
 # implementation in rust.sh, shared with CI, carrying its own ratchet.
 #
 # Deliberately NOT part of test-fast. test-fast is the Stop-hook gate and is measured in

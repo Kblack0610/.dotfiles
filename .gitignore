@@ -276,6 +276,7 @@ test_notifications.sh
 .config/systemd/user/*mqtt*
 .config/systemd/user/*regen-project*
 .config/systemd/user/*lab-sync*
+.config/systemd/user/*agent-web*
 .config/systemd/user/*/*notes*
 .config/systemd/user/*/*agentctl*
 .config/systemd/user/*/*git-sync*
@@ -284,6 +285,7 @@ test_notifications.sh
 .config/systemd/user/*/*mqtt*
 .config/systemd/user/*/*regen-project*
 .config/systemd/user/*/*lab-sync*
+.config/systemd/user/*/*agent-web*
 
 # Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
 .agent/

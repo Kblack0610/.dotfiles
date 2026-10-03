@@ -21,11 +21,16 @@ pub struct Agent {
     pub jsonl: Option<PathBuf>,
     /// Window tags (Prefix+a, see tags.sh). Empty when the window is untagged.
     pub tags: String,
+    /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
+    pub pane: String,
+    pub session_id: String,
+    /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
+    pub status: String,
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
 /// session, and build an ordered agent list.
-fn collect() -> Vec<Agent> {
+pub fn collect() -> Vec<Agent> {
     let panes = tmux::list_panes();
     let Ok(procmap) = ProcMap::capture() else {
         return Vec::new();
@@ -80,6 +85,9 @@ fn collect() -> Vec<Agent> {
             summary,
             jsonl: jsonl_path.exists().then_some(jsonl_path),
             tags: pane.tags.clone(),
+            pane: format!("{}/{}", pane.server, pane.pane_id),
+            session_id: sess.session_id.clone(),
+            status: sess.status.clone(),
         });
     }
     agents

@@ -1,0 +1,24 @@
+[package]
+name = "agent-web"
+version = "0.1.0"
+edition = "2021"
+description = "Web view of the running Claude agents: read any session, type into it, answer asks"
+
+[[bin]]
+name = "agent-web"
+path = "src/main.rs"
+
+[dependencies]
+agent-panel = { path = "../agent-panel" }
+anyhow = "1"
+axum = "0.8"
+notify = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "sync", "io-util"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

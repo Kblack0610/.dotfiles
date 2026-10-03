@@ -7,15 +7,8 @@
 
 use std::path::PathBuf;
 
+use agent_panel::chooser;
 use clap::{Parser, Subcommand};
-
-mod chooser;
-mod fzf;
-mod jsonl;
-mod procmap;
-mod render;
-mod session;
-mod tmux;
 
 #[derive(Parser)]
 #[command(
