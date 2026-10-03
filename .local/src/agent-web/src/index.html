@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agents</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e3e1db;
+  --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
+  --user: #eaf0fb; --tool: #f1efe9; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9a998f; --line: #2e2d2a;
+    --accent: #6f9ef0; --user: #1f2a3d; --tool: #24231f; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; }
+.tabs { display: flex; gap: 4px; margin-left: auto; }
+.tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+.tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
+.conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.conn.live { background: var(--idle); }
+main { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 49px - env(safe-area-inset-top, 0px)); }
+#list { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+.group { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 16px; cursor: pointer; border-left: 3px solid transparent; }
+.row:hover { background: var(--bg); }
+.row.sel { background: var(--bg); border-left-color: var(--accent); }
+.dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }
+.dot.waiting { background: var(--wait); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wait) 25%, transparent); }
+.dot.busy, .dot.shell { background: var(--busy); }
+.row .t { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.row .s { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bar .name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar .seg { margin-left: auto; display: flex; gap: 4px; }
+#back { display: none; }
+#scroll { flex: 1; overflow-y: auto; padding: 12px 16px; }
+.ev { margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+.ev.user { background: var(--user); padding: 8px 10px; border-radius: 8px; }
+.ev.tool { font-family: var(--mono); font-size: 12px; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
+.ev.tool b { color: var(--accent); }
+.ev details summary { cursor: pointer; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.ev details pre { margin: 4px 0 0; font-size: 12px; max-height: 320px; overflow: auto; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
+.ts { color: var(--muted); font-size: 11px; }
+#screen { margin: 0; font: 12px/1.35 var(--mono); white-space: pre; overflow-x: auto; }
+.older { display: block; margin: 0 auto 12px; }
+.compose { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 16px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+.keys { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.keys button, .btn { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 5px 10px; font: 12px var(--mono); cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-family: inherit; font-size: 14px; }
+.send { display: flex; gap: 8px; }
+textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.empty { color: var(--muted); padding: 24px 16px; }
+.err { color: var(--wait); font-size: 12px; min-height: 1em; }
+#asks { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: 760px; }
+.card .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-family: var(--mono); }
+.card .q { white-space: pre-wrap; margin-bottom: 10px; }
+.card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.card .opts .rec { border-color: var(--accent); }
+.card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  #list { border-right: 0; }
+  main.open #list { display: none; }
+  main:not(.open) #detail { display: none; }
+  #back { display: inline-block; }
+}
+</style>
+</head>
+<body>
+<header>
+  <span class="conn" id="conn" title="live updates"></span>
+  <h1>Agents</h1>
+  <div class="tabs">
+    <button id="tab-sessions" class="on">Sessions<span id="wait-badge"></span></button>
+    <button id="tab-asks">Asks<span id="ask-badge"></span></button>
+  </div>
+</header>
+<main id="main">
+  <nav id="list"></nav>
+  <section id="detail">
+    <div class="bar">
+      <button class="btn" id="back">&larr;</button>
+      <span class="dot" id="d-dot"></span>
+      <span class="name" id="d-name">Pick an agent</span>
+      <div class="seg">
+        <button id="v-transcript" class="on">Transcript</button>
+        <button id="v-screen">Screen</button>
+      </div>
+    </div>
+    <div id="scroll"><div class="empty">Select an agent on the left.</div></div>
+    <div class="compose" id="compose" hidden>
+      <div class="keys" id="keys"></div>
+      <div class="send">
+        <textarea id="text" placeholder="Message this agent (Ctrl+Enter to send)"></textarea>
+        <button class="btn primary" id="send">Send</button>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+  </section>
+  <section id="asks" hidden></section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
+
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "sessions", asks: [] };
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  if (r.status === 401) { location.reload(); throw new Error("unauthorized"); }
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
+}
+const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+// Run fn, and if it is asked for again while running, run it once more after.
+// An event storm becomes at most one trailing refetch, with no timer involved.
+function coalesce(fn) {
+  let running = false, again = false;
+  return async function run() {
+    if (running) { again = true; return; }
+    running = true;
+    try { await fn(); } catch (e) { console.warn(e); }
+    running = false;
+    if (again) { again = false; run(); }
+  };
+}
+
+const refreshAgents = coalesce(async () => {
+  st.agents = await api("/api/agents");
+  renderList();
+  if (st.sel) {
+    const a = st.agents.find((x) => x.target === st.sel.target);
+    if (a) { st.sel = a; renderHead(); } else { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
+  }
+});
+
+function renderList() {
+  const waiting = st.agents.filter((a) => a.status === "waiting").length;
+  $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
+  if (!st.agents.length) { $("list").innerHTML = '<div class="empty">No agents running.</div>'; return; }
+  const groups = new Map();
+  for (const a of st.agents) { if (!groups.has(a.project)) groups.set(a.project, []); groups.get(a.project).push(a); }
+  let html = "";
+  for (const [proj, list] of groups) {
+    html += `<div class="group">${esc(proj)}</div>`;
+    for (const a of list) {
+      const sel = st.sel && st.sel.target === a.target ? " sel" : "";
+      html += `<div class="row${sel}" data-t="${esc(a.target)}"><span class="dot ${esc(a.status)}"></span><div style="min-width:0"><div class="t">${esc(a.target)}</div><div class="s">${esc(a.summary || "")}</div></div></div>`;
+    }
+  }
+  $("list").innerHTML = html;
+}
+
+$("list").addEventListener("click", (e) => {
+  const row = e.target.closest(".row");
+  if (!row) return;
+  const a = st.agents.find((x) => x.target === row.dataset.t);
+  if (a) select(a);
+});
+
+function renderHead() {
+  $("d-dot").className = "dot " + st.sel.status;
+  $("d-name").textContent = `${st.sel.target}  ${st.sel.summary || ""}`;
+}
+
+function select(a) {
+  st.sel = a; st.start = null; st.end = null;
+  $("main").classList.add("open");
+  $("compose").hidden = false;
+  $("err").textContent = "";
+  renderHead(); renderList();
+  $("scroll").innerHTML = "";
+  load();
+}
+
+$("back").onclick = () => { $("main").classList.remove("open"); };
+
+function evHtml(e) {
+  const ts = e.ts ? `<div class="ts">${esc(e.ts.replace("T", " ").slice(0, 19))}</div>` : "";
+  if (e.kind === "tool_use") return `<div class="ev tool"><b>${esc(e.name || "tool")}</b> ${esc(e.text)}</div>`;
+  if (e.kind === "tool_result") {
+    const first = e.text.split("\n")[0].slice(0, 120);
+    return `<div class="ev"><details><summary>result: ${esc(first)}</summary><pre>${esc(e.text)}</pre></details></div>`;
+  }
+  return `<div class="ev ${e.role === "user" ? "user" : ""}">${ts}${esc(e.text)}</div>`;
+}
+
+const atBottom = () => { const s = $("scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 40; };
+const toBottom = () => { const s = $("scroll"); s.scrollTop = s.scrollHeight; };
+
+async function load() {
+  if (st.view === "screen") return loadScreen();
+  const a = st.sel;
+  let page;
+  try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}`); }
+  catch (e) { $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (st.sel !== a) return;
+  st.start = page.start; st.end = page.end;
+  $("scroll").innerHTML = olderBtn() + page.events.map(evHtml).join("");
+  toBottom();
+}
+
+const olderBtn = () => st.start > 0 ? '<button class="btn older" id="older">Load older</button>' : "";
+
+$("scroll").addEventListener("click", async (e) => {
+  if (e.target.id !== "older") return;
+  const a = st.sel, s = $("scroll");
+  const page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&before=${st.start}`);
+  if (st.sel !== a) return;
+  const prevH = s.scrollHeight;
+  e.target.remove();
+  st.start = page.start;
+  s.insertAdjacentHTML("afterbegin", olderBtn() + page.events.map(evHtml).join(""));
+  s.scrollTop += s.scrollHeight - prevH; // keep the reader where they were
+});
+
+const loadNewer = coalesce(async () => {
+  const a = st.sel;
+  if (!a || st.view !== "transcript" || st.end === null) return;
+  const stick = atBottom();
+  const page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&after=${st.end}`);
+  if (st.sel !== a) return;
+  if (page.start !== st.end) { load(); return; } // fell too far behind: server sent the newest page
+  st.end = page.end;
+  if (page.events.length) {
+    $("scroll").insertAdjacentHTML("beforeend", page.events.map(evHtml).join(""));
+    if (stick) toBottom();
+  }
+});
+
+const loadScreen = coalesce(async () => {
+  const a = st.sel;
+  if (!a || st.view !== "screen") return;
+  const text = await api(`/api/screen?t=${encodeURIComponent(a.target)}`);
+  if (st.sel !== a) return;
+  $("scroll").innerHTML = `<pre id="screen">${esc(String(text).replace(/\s+$/, ""))}</pre>`;
+  toBottom();
+});
+
+function setView(v) {
+  st.view = v;
+  $("v-transcript").classList.toggle("on", v === "transcript");
+  $("v-screen").classList.toggle("on", v === "screen");
+  if (st.sel) load();
+}
+$("v-transcript").onclick = () => setView("transcript");
+$("v-screen").onclick = () => setView("screen");
+
+$("keys").innerHTML = KEYS.map(([label, key]) => `<button data-k="${key}">${label}</button>`).join("");
+$("keys").addEventListener("click", async (e) => {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (!k || !st.sel) return;
+  try { await post("/api/send", { t: st.sel.target, key: k }); $("err").textContent = ""; if (st.view === "screen") loadScreen(); }
+  catch (err) { $("err").textContent = err.message; }
+});
+
+async function sendText() {
+  const text = $("text").value;
+  if (!text.trim() || !st.sel) return;
+  $("send").disabled = true;
+  try { await post("/api/send", { t: st.sel.target, text }); $("text").value = ""; $("err").textContent = ""; }
+  catch (err) { $("err").textContent = err.message; }
+  $("send").disabled = false;
+}
+$("send").onclick = sendText;
+$("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendText(); } });
+
+const refreshAsks = coalesce(async () => {
+  st.asks = await api("/api/asks");
+  $("ask-badge").innerHTML = st.asks.length ? `<span class="badge">${st.asks.length}</span>` : "";
+  if (st.tab === "asks") renderAsks();
+});
+
+function renderAsks() {
+  if (!st.asks.length) { $("asks").innerHTML = '<div class="empty">No pending asks.</div>'; return; }
+  $("asks").innerHTML = st.asks.map((a) => `
+    <div class="card" data-id="${esc(a.id)}">
+      <div class="meta">${esc(a.project)} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
+      <div class="q">${esc(a.question)}</div>
+      <div class="opts">
+        ${a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (rec)" : ""}</button>`).join("")}
+        <input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>
+      </div>
+      <div class="err"></div>
+    </div>`).join("");
+}
+
+$("asks").addEventListener("click", async (e) => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  let answer = e.target.dataset.a;
+  if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
+  if (!answer || !answer.trim()) return;
+  try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
+  catch (err) { card.querySelector(".err").textContent = err.message; }
+});
+
+function setTab(t) {
+  st.tab = t;
+  $("tab-sessions").classList.toggle("on", t === "sessions");
+  $("tab-asks").classList.toggle("on", t === "asks");
+  $("list").hidden = t !== "sessions";
+  $("detail").hidden = t !== "sessions";
+  $("asks").hidden = t !== "asks";
+  if (t === "asks") renderAsks();
+}
+$("tab-sessions").onclick = () => setTab("sessions");
+$("tab-asks").onclick = () => setTab("asks");
+
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onopen = () => { $("conn").classList.add("live"); refreshAgents(); refreshAsks(); if (st.sel) load(); };
+  es.onerror = () => { $("conn").classList.remove("live"); }; // EventSource reconnects by itself
+  es.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.kind === "sessions" || ev.kind === "resync") { refreshAgents(); if (st.view === "screen") loadScreen(); }
+    if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
+    if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
+      if (st.view === "screen") loadScreen(); else loadNewer();
+    }
+  };
+}
+connect();
+</script>
+</body>
+</html>

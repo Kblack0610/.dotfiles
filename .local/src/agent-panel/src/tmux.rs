@@ -16,6 +16,9 @@ pub struct Pane {
     pub window_index: String,
     pub current_path: String,
     pub pid: u32,
+    /// tmux's stable pane id (`%12`). A window target hits the ACTIVE pane, which in a
+    /// split window may not be the agent, so anything that types into a pane uses this.
+    pub pane_id: String,
     pub title: String,
     /// Window tags set via Prefix+a (see .local/src/tmux/tags.sh), rendered by
     /// tmux itself from the `@tag_*` window options. Empty when untagged.
@@ -101,7 +104,7 @@ pub fn list_panes() -> Vec<Pane> {
 }
 
 fn list_server_panes(server: &str) -> Vec<Pane> {
-    let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_title}\t\
+    let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t#{pane_title}\t\
                #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}";
     let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", fmt]).output() else {
         return Vec::new();
@@ -125,8 +128,9 @@ fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
             window_index: f[1].to_string(),
             current_path: f[2].to_string(),
             pid,
-            title: f.get(4).copied().unwrap_or("").to_string(),
-            tags: f.get(5).copied().unwrap_or("").trim().to_string(),
+            pane_id: f.get(4).copied().unwrap_or("").to_string(),
+            title: f.get(5).copied().unwrap_or("").to_string(),
+            tags: f.get(6).copied().unwrap_or("").trim().to_string(),
         });
     }
     panes
@@ -210,11 +214,13 @@ mod tests {
 
     #[test]
     fn parses_panes_with_their_server() {
-        let text = "hub\t0\t/home/u\t42\t✳ title\tpinned \nshort\trow\n";
+        let text = "hub\t0\t/home/u\t42\t%7\t✳ title\tpinned \nshort\trow\n";
         let panes = parse_panes("hub", text);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].server, "hub");
         assert_eq!(panes[0].pid, 42);
+        assert_eq!(panes[0].pane_id, "%7");
+        assert_eq!(panes[0].title, "✳ title");
         assert_eq!(panes[0].tags, "pinned");
     }
 }

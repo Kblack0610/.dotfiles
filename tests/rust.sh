@@ -5,7 +5,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# Three crates ship from this repo -- notes-cli, agent-panel, timebox -- carrying 188
+# Four crates ship from this repo -- notes-cli, agent-panel, agent-web, timebox -- carrying 188
 # in-tree tests between them, and until this file NONE of them ran anywhere. The CI
 # workflow had four jobs and zero cargo. The failure was silent in both directions:
 # nothing ran the tests, and build_local_rust_tools() in the installer treats a build
@@ -46,7 +46,7 @@ fi
 mapfile -t CRATES < <(tests/rust-crates.sh)
 
 # An empty list is a BROKEN GATE, not a clean tree -- the exact bug this whole file was
-# written to close. Three crates are tracked; zero can only mean rust-crates.sh could not
+# written to close. Four crates are tracked; zero can only mean rust-crates.sh could not
 # enumerate them, and exiting 0 here would report "clean" having compiled nothing.
 [ "${#CRATES[@]}" -gt 0 ] || {
   echo "rust: refusing to pass - the crate list came back EMPTY (see rust-crates.sh)" >&2
