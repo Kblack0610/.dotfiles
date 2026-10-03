@@ -136,7 +136,27 @@ wt_is_linked() {
 
 wt_branch_of() { git -C "$1" branch --show-current 2>/dev/null; }
 
-wt_dirty_count() { git -C "$1" status --porcelain 2>/dev/null | grep -c ''; }
+# wt_dirty_count <path> -- uncommitted changes that are WORK. One shape is not counted: a
+# submodule left on an older commit after its superproject moved (`SC..`: commit changed,
+# nothing modified or untracked inside, nothing staged) whose checkout is already on one of
+# its remotes. That is a stale pointer, not work -- `submodule update` fixes it and loses
+# nothing. Counting it pinned 17 of 29 unity-core-playground slots, every one dirty only
+# because the trunk bumped External/unity-core underneath it, so `new` ratcheted to agent-31.
+wt_dirty_count() {
+  local n=0 kind xy sub p
+  while read -r kind xy sub _ _ _ _ _ p; do
+    if [ "$kind $xy $sub" = '1 .M SC..' ] && wt_submodule_pushed "$1/$p"; then
+      continue
+    fi
+    n=$((n + 1))
+  done < <(git -C "$1" status --porcelain=v2 2>/dev/null)
+  printf '%s\n' "$n"
+}
+
+# wt_submodule_pushed <dir> -- true when the submodule's checked-out commit is on a remote ref.
+wt_submodule_pushed() {
+  [ -n "$(git -C "$1" for-each-ref --count=1 --contains HEAD refs/remotes 2>/dev/null)" ]
+}
 
 # wt_landed <path> <base-ref> -- has this worktree's work gone somewhere durable?
 #
@@ -411,6 +431,11 @@ wt_recycle() {
   old="$(wt_branch_of "$path")"
   main=$(wt_main_repo "$path") || return 1
   git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
+  # Bring the already-initialised submodules to what <base> records; wt_dirty_count waved
+  # through a stale one as idle, so this is where it stops being stale. A failure (offline,
+  # commit not fetchable) leaves the tree usable, just behind, so it warns rather than aborts.
+  git -C "$path" submodule update --recursive --quiet >&2 ||
+    panel_warn "submodules in $path are not at $base; run git submodule update there"
   if [ -n "$old" ] && [ "$old" != "$branch" ]; then
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
