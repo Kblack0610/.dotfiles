@@ -30,6 +30,7 @@ setup() {
   mkdir -p "$SANDBOX/roots/alpha/proj-one/.git" \
     "$SANDBOX/roots/alpha/not-a-repo/src" \
     "$SANDBOX/roots/alpha/proj-one/vendored/.git" \
+    "$SANDBOX/roots/alpha/proj-one/own-project/.git" \
     "$SANDBOX/roots/alpha/proj-one/parked-repo/.git" \
     "$SANDBOX/roots/alpha/proj-one/vendor/third-party/.git" \
     "$SANDBOX/roots/alpha/proj-one/.claude/worktrees/agent-abc123/.git" \
@@ -44,6 +45,10 @@ setup() {
   # whatever separates them cannot be depth, position, or the prune list.
   printf '[submodule "vendored"]\n\tpath = vendored\n\turl = git@example.com:x/vendored.git\n' \
     > "$SANDBOX/roots/alpha/proj-one/.gitmodules"
+  # Declared too, but opted back in. It comes AFTER vendored so the opt-in key cannot leak
+  # backwards into vendored's section and pass the drop test by accident.
+  printf '[submodule "own-project"]\n\tpath = own-project\n\ttmux-picker = true\n' \
+    >> "$SANDBOX/roots/alpha/proj-one/.gitmodules"
 
   # Worktrees, read from $WT_ROOT's default ($HOME/.worktrees, and $HOME is the sandbox). A
   # LINKED worktree's .git is a FILE; the plain directory beside it is the negative control.
@@ -136,6 +141,15 @@ in_world() {
   run "$SESSIONIZER" --list
   assert_success
   assert_line --partial 'roots/alpha/proj-one'
+  refute_output --partial 'vendored'
+}
+
+@test "--list keeps a declared submodule that opts in with tmux-picker = true" {
+  # .dotfiles/.local/src/android-suite: a project of its own that only lives inside dotfiles.
+  # A manifest line also listed it, but `ensure` recreated it on every hop into the world.
+  run "$SESSIONIZER" --list
+  assert_success
+  assert_line --partial 'proj-one/own-project'
   refute_output --partial 'vendored'
 }
 
