@@ -31,7 +31,7 @@ done
 target="${1:-$PWD}"
 projects="$HOME/.claude/projects"
 
-encode() { printf '%s' "$1" | sed 's:[/.]:-:g'; }
+encode() { printf '%s' "$1" | sed 's:[/._]:-:g'; }  # same rule as agent-panel session.rs jsonl_path
 
 resolve_proj() {
   local d="$1"
