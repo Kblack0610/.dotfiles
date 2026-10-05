@@ -26,6 +26,7 @@ header h1 { font-size: 16px; margin: 0; }
 .tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
 .tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
+.signout { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 4px; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--idle); }
 main { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 49px - env(safe-area-inset-top, 0px)); }
@@ -86,6 +87,7 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
     <button id="tab-sessions" class="on">Sessions<span id="wait-badge"></span></button>
     <button id="tab-asks">Asks<span id="ask-badge"></span></button>
   </div>
+  <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
 </header>
 <main id="main">
   <nav id="list"></nav>

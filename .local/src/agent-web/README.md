@@ -20,9 +20,20 @@ Only a target that is a live agent right now accepts input, so the API cannot be
 
 ## Auth
 
-The page can type into live sessions, so a network allowlist is not enough. On first start it writes a random token to `~/.config/agent-web/token` (0600).
+The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows one button, Sign in with Forgejo. It starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
 
-Opening the page without a session shows a sign-in form. The form is a normal password login, so a browser or Bitwarden can save the token and fill it in on the next visit. The token is also kept in the Bitwarden vault (rbw), under the hostname the ingress serves. A correct token sets an HttpOnly, SameSite=Strict cookie that lasts a year. `/?token=<token>` does the same in one step, which is handy for a link or QR code. Scripts can send `Authorization: Bearer <token>`. `/healthz` is the only route that needs no token.
+On return agent-web exchanges the code for the user's Forgejo login and checks it against an allowlist (`AGENT_WEB_ALLOWED_USERS`, default `kblack0610`). A match gets an opaque session id in an HttpOnly cookie, valid 90 days. Sessions are stored in `~/.config/agent-web/sessions.json` (0600), so a restart signs nobody out. `POST /logout` revokes the session. `/healthz` is the only route that needs no session.
+
+| Setting | Where | Default |
+|---|---|---|
+| OAuth client id and secret | `~/.config/agent-web/oauth.json` (0600), also kept in the Bitwarden vault | none, agent-web will not start without it |
+| `AGENT_WEB_FORGEJO_URL` | env, Forgejo base URL | required |
+| `AGENT_WEB_BASE_URL` | env, the URL agent-web is served at; the OAuth callback is `<base>/oauth/callback` | required |
+| `AGENT_WEB_ALLOWED_USERS` | env, comma separated Forgejo logins | `kblack0610` |
+
+To recreate the OAuth app: Forgejo -> Settings -> Applications -> OAuth2, confidential client, redirect URI `<base>/oauth/callback`, then write `{"client_id": ..., "client_secret": ...}` to `oauth.json`.
+
+The two Forgejo calls (token exchange, `GET /api/v1/user`) run through `curl` with the secret on stdin, so no HTTP client library is linked in.
 
 ## Run
 
