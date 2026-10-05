@@ -91,15 +91,20 @@ mkdir -p "$REG_DIR" 2>/dev/null || exit 0
 
 # --- upsert + self-heal: rewrite dropping this id and any dead transcripts ---
 TMP=$(mktemp 2>/dev/null) || exit 0
+# Two jq passes, no per-line forks: the old loop ran jq twice per registry line, ~6 s per
+# Stop on a 1,400-line registry. Pass 1 lists transcript paths so bash only stats short
+# strings; pass 2 filters. Raw input (-R) so an unparseable line is kept verbatim, as
+# before, instead of aborting the pass and truncating the registry.
 if [ -f "$REG" ]; then
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    lid=$(printf '%s' "$line" | jq -r '.session_id // empty' 2>/dev/null || true)
-    [ "$lid" = "$SID" ] && continue
-    lt=$(printf '%s' "$line" | jq -r '.transcript // empty' 2>/dev/null || true)
-    [ -n "$lt" ] && [ ! -f "$lt" ] && continue
-    printf '%s\n' "$line" >> "$TMP"
-  done < "$REG"
+  DEAD=$(jq -rR 'try (fromjson | .transcript // empty | strings) catch empty' "$REG" 2>/dev/null \
+         | sort -u | while IFS= read -r p; do [ -f "$p" ] || printf '%s\n' "$p"; done)
+  jq -nrR --arg sid "$SID" --arg dead "$DEAD" '
+    ($dead | split("\n") | map(select(length > 0)) | INDEX(.)) as $d
+    | inputs | select(length > 0) | . as $raw
+    | (try fromjson catch null) as $o
+    | select((try ($o.session_id // "") catch "") != $sid)
+    | select($d[(try ($o.transcript // "") catch "") | tostring] | not)
+    | $raw' "$REG" >> "$TMP" 2>/dev/null
 fi
 
 jq -nc \

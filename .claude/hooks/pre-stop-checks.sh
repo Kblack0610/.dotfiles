@@ -39,11 +39,16 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook"
 CI_RESULT_FILE="$CACHE_DIR/ci-result-${PROJ}-${DATE}.txt"
 LOG="$CACHE_DIR/last-stop-${PROJ}.log"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
+# One ci-result file per project per day, and nothing else ever deletes them.
+find "$CACHE_DIR" -maxdepth 1 -name 'ci-result-*.txt' -mtime +7 -delete 2>/dev/null || true
 
 VERBOSE="${CLAUDE_STOP_VERBOSE:-0}"
 # Lines of a failing check's output to replay inline. The tail, not the head: bats, cargo
 # and the linters all put their summary last. The rest stays one `cat "$LOG"` away.
 REPLAY_LINES="${CLAUDE_STOP_REPLAY_LINES:-40}"
+# Guard per check (seconds). A hung check would otherwise run until Claude Code kills the
+# whole hook, and the post phase (session register, eval gate) would never run.
+CHECK_TIMEOUT="${CLAUDE_STOP_CHECK_TIMEOUT:-300}"
 
 note() {
   printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true
@@ -139,7 +144,7 @@ if [ -d "$CHECKS_DIR" ]; then
   for s in "$CHECKS_DIR"/*.sh; do
     [ -x "$s" ] || continue
     name=$(basename "$s" .sh)
-    bash "$s" >"$OUT_DIR/$name.out" 2>"$OUT_DIR/$name.err" &
+    timeout "$CHECK_TIMEOUT" bash "$s" >"$OUT_DIR/$name.out" 2>"$OUT_DIR/$name.err" &
     pids+=("$!")
     names+=("$name")
   done
@@ -184,6 +189,12 @@ else
         note "[WARN] $name"
         replay "$name" note
         notes+=("$name=warn")
+        ;;
+      124)
+        CONTENT_BLOCKED=1
+        emit "[FAIL] $name (timed out after ${CHECK_TIMEOUT}s; result unknown)"
+        replay "$name" emit
+        notes+=("$name=timeout")
         ;;
       *)
         CONTENT_BLOCKED=1

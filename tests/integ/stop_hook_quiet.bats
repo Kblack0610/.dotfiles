@@ -194,3 +194,31 @@ stderr() { cat "$ERRF"; }
   assert_output --partial "status=PASS"
   assert_output --partial "note=all checks passed"
 }
+
+@test "a check that outlives CLAUDE_STOP_CHECK_TIMEOUT is killed and blocks as a timeout" {
+  dirty
+  printf '#!/bin/bash\nsleep 30\n' > "$HOOK_DIR/stop-checks.d/hang.sh"
+  chmod +x "$HOOK_DIR/stop-checks.d/hang.sh"
+  check green 0
+  local start=$SECONDS
+  CLAUDE_STOP_CHECK_TIMEOUT=1 run_hook
+  assert_equal "$STATUS" 2
+  [ $((SECONDS - start)) -lt 15 ]
+  run stderr
+  assert_output --partial "[FAIL] hang (timed out after 1s; result unknown)"
+  refute_output --partial "green"
+  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  assert_output --partial "note=hang=timeout"
+}
+
+@test "ci-result files older than a week are pruned, recent ones kept" {
+  local dir="$HOME/.cache/claude-stop-hook"
+  mkdir -p "$dir"
+  : > "$dir/ci-result-old-2020-01-01.txt"
+  touch -d '10 days ago' "$dir/ci-result-old-2020-01-01.txt"
+  : > "$dir/ci-result-recent-2020-01-02.txt"
+  touch -d '2 days ago' "$dir/ci-result-recent-2020-01-02.txt"
+  run_hook
+  [ ! -e "$dir/ci-result-old-2020-01-01.txt" ]
+  [ -e "$dir/ci-result-recent-2020-01-02.txt" ]
+}

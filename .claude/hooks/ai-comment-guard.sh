@@ -19,33 +19,32 @@ set -uo pipefail
 
 payload=$(cat)
 
-added=$(printf '%s' "$payload" | python3 -c '
-import json, sys
+# One python3 for parse, path filter and scan: this runs on every Edit/Write, and three
+# interpreter starts were most of its cost. Line 1 of the output is the path, the rest are
+# findings.
+out=$(python3 -c '
+import json, re, sys
+
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 ti = d.get("tool_input", {}) or {}
-out = []
+parts = []
 if "content" in ti:
-    out.append(ti["content"])
+    parts.append(ti["content"])
 if "new_string" in ti:
-    out.append(ti["new_string"])
+    parts.append(ti["new_string"])
 for e in ti.get("edits", []) or []:
     if isinstance(e, dict) and "new_string" in e:
-        out.append(e["new_string"])
-print("\n".join(x for x in out if isinstance(x, str)))
-' 2>/dev/null)
-
-[ -z "$added" ] && exit 0
-
-path=$(printf '%s' "$payload" | python3 -c 'import json,sys;print((json.load(sys.stdin).get("tool_input") or {}).get("file_path",""))' 2>/dev/null)
-case "$path" in
-  */node_modules/*|*/dist/*|*.min.*|*.generated.*|*/CHANGELOG.md) exit 0 ;;
-esac
-
-findings=$(printf '%s' "$added" | python3 -c '
-import re, sys
+        parts.append(e["new_string"])
+added = "\n".join(x for x in parts if isinstance(x, str))
+if not added:
+    sys.exit(0)
+path = ti.get("file_path", "") or ""
+if re.search(r"/node_modules/|/dist/|\.min\.|\.generated\.|/CHANGELOG\.md$", path):
+    sys.exit(0)
+print(path)
 
 C = r"^\s*(//|#|\*|--|\x27)\s*"   # line-initial comment marker
 
@@ -74,7 +73,7 @@ RULES = [
 COMMENT_LINE = re.compile(r"^\s*(//|#|\*|/\*|--|\x27)")
 SHEBANG = re.compile(r"^#!")
 
-lines = sys.stdin.read().split("\n")
+lines = added.split("\n")
 
 hits = []
 for i, line in enumerate(lines, 1):
@@ -105,7 +104,11 @@ for i, line in enumerate(lines + [""], 1):
 for label, line in hits[:6]:
     print(f"  [{label}]\n    {line}")
 print(f"  ...and {len(hits)-6} more" if len(hits) > 6 else "", end="")
-' 2>/dev/null)
+' <<<"$payload" 2>/dev/null)
+
+path=${out%%$'\n'*}
+findings=""
+[[ $out == *$'\n'* ]] && findings=${out#*$'\n'}
 
 if [ -n "${findings//[[:space:]]/}" ]; then
   {
