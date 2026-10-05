@@ -24,7 +24,7 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Form, Json, Router};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -33,6 +33,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
 const INDEX: &str = include_str!("index.html");
+const LOGIN: &str = include_str!("login.html");
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
 const PAGE_MAX: usize = 1000;
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/login", post(login))
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
         .with_state(state);
@@ -169,12 +171,39 @@ async fn index(
     let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
     match auth::presented(None, cookie) {
         Some(t) if auth::matches(t, &s.token) => Html(INDEX).into_response(),
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            "Open this page once as /?token=<contents of ~/.config/agent-web/token>",
-        )
-            .into_response(),
+        _ => login_page(StatusCode::OK, false),
     }
+}
+
+fn login_page(code: StatusCode, failed: bool) -> Response {
+    let err = if failed {
+        r#"<div class="err">That token is not right.</div>"#
+    } else {
+        ""
+    };
+    (code, Html(LOGIN.replace("{{error}}", err))).into_response()
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    token: String,
+}
+
+/// The sign-in form posts here. A plain form login (not the `?token=` link) is what
+/// lets a browser or Bitwarden offer to save and later autofill the token.
+async fn login(State(s): State<Shared>, Form(f): Form<LoginForm>) -> Response {
+    let t = f.token.trim();
+    if !auth::matches(t, &s.token) {
+        return login_page(StatusCode::UNAUTHORIZED, true);
+    }
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, auth::set_cookie(t)),
+            (header::LOCATION, "/".to_string()),
+        ],
+    )
+        .into_response()
 }
 
 #[derive(Serialize)]
