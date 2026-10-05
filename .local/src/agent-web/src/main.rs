@@ -6,7 +6,7 @@
 //! browser over SSE from inotify on `~/.claude`, so nothing polls.
 //!
 //! Served behind the home cluster ingress (home-config `apps/agents`),
-//! which only proxies; the token in `~/.config/agent-web/token` is the real gate.
+//! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
 mod auth;
 mod transcript;
@@ -24,7 +24,7 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Form, Json, Router};
+use axum::{Json, Router};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -46,7 +46,8 @@ const KEYS: &[&str] = &[
 ];
 
 struct AppState {
-    token: String,
+    oauth: auth::OAuth,
+    sessions: auth::Sessions,
     events: broadcast::Sender<String>,
 }
 
@@ -59,10 +60,15 @@ fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let token = auth::load_or_create()?;
+    let oauth = auth::OAuth::load()?;
+    let sessions = auth::Sessions::load();
     let (events, _) = broadcast::channel(256);
     let _watcher = watch(events.clone())?; // dropping it stops the inotify watch
-    let state = Arc::new(AppState { token, events });
+    let state = Arc::new(AppState {
+        oauth,
+        sessions,
+        events,
+    });
 
     let api = Router::new()
         .route("/api/agents", get(agents))
@@ -76,7 +82,9 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
-        .route("/login", post(login))
+        .route("/login", get(login))
+        .route("/oauth/callback", get(callback))
+        .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
         .with_state(state);
@@ -128,78 +136,132 @@ fn classify(p: &Path) -> Option<String> {
     }
 }
 
+fn cookie_header(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+}
+
+fn signed_in(s: &AppState, headers: &HeaderMap) -> Option<String> {
+    auth::cookie(cookie_header(headers), auth::SESSION_COOKIE).and_then(|id| s.sessions.user(id))
+}
+
 async fn require_auth(
     State(s): State<Shared>,
     headers: HeaderMap,
     req: Request,
     next: Next,
 ) -> Response {
-    let authz = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
-    match auth::presented(authz, cookie) {
-        Some(t) if auth::matches(t, &s.token) => next.run(req).await,
-        _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    match signed_in(&s, &headers) {
+        Some(_) => next.run(req).await,
+        None => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
 }
 
-#[derive(Deserialize)]
-struct IndexQuery {
-    token: Option<String>,
+/// The app for a signed-in browser, the sign-in page otherwise.
+async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
+    match signed_in(&s, &headers) {
+        Some(_) => Html(INDEX).into_response(),
+        None => Html(LOGIN.replace("{{error}}", "")).into_response(),
+    }
 }
 
-/// `/?token=...` trades the token for a cookie and redirects to a clean URL, so
-/// the token does not sit in the address bar or browser history after the first visit.
-async fn index(
+fn denied(code: StatusCode, msg: &str) -> Response {
+    let err = format!(r#"<div class="err">{msg}</div>"#);
+    (code, Html(LOGIN.replace("{{error}}", &err))).into_response()
+}
+
+/// Start the OAuth flow: remember a random state in a short-lived cookie and hand the
+/// browser to Forgejo. Forgejo shows its own sign-in form if there is no session there.
+async fn login(State(s): State<Shared>) -> Response {
+    let Ok(state) = auth::random_hex(16) else {
+        return denied(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not start sign-in.",
+        );
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, auth::state_cookie(&state)),
+            (header::LOCATION, s.oauth.authorize_url(&state)),
+        ],
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn callback(
     State(s): State<Shared>,
     headers: HeaderMap,
-    Query(q): Query<IndexQuery>,
+    Query(q): Query<CallbackQuery>,
 ) -> Response {
-    if let Some(t) = q.token.as_deref() {
-        if auth::matches(t, &s.token) {
-            return (
-                StatusCode::SEE_OTHER,
-                [
-                    (header::SET_COOKIE, auth::set_cookie(t)),
-                    (header::LOCATION, "/".to_string()),
-                ],
-            )
-                .into_response();
-        }
+    let expected = auth::cookie(cookie_header(&headers), auth::STATE_COOKIE);
+    let state_ok =
+        matches!((q.state.as_deref(), expected), (Some(a), Some(b)) if auth::matches(a, b));
+    if q.error.is_some() || !state_ok {
+        return denied(
+            StatusCode::BAD_REQUEST,
+            "Sign-in was cancelled or expired. Try again.",
+        );
     }
-    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
-    match auth::presented(None, cookie) {
-        Some(t) if auth::matches(t, &s.token) => Html(INDEX).into_response(),
-        _ => login_page(StatusCode::OK, false),
-    }
-}
-
-fn login_page(code: StatusCode, failed: bool) -> Response {
-    let err = if failed {
-        r#"<div class="err">That token is not right.</div>"#
-    } else {
-        ""
+    let Some(code) = q.code.as_deref() else {
+        return denied(StatusCode::BAD_REQUEST, "Forgejo sent no code. Try again.");
     };
-    (code, Html(LOGIN.replace("{{error}}", err))).into_response()
+    let login = match s.oauth.login_for_code(code).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("agent-web: sign-in failed: {e:#}");
+            return denied(
+                StatusCode::BAD_GATEWAY,
+                "Could not reach Forgejo to finish sign-in.",
+            );
+        }
+    };
+    if !s.oauth.is_allowed(&login) {
+        eprintln!("agent-web: rejected Forgejo user {login}");
+        return denied(
+            StatusCode::FORBIDDEN,
+            "That Forgejo account is not allowed here.",
+        );
+    }
+    let id = match s.sessions.create(&login) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("agent-web: could not store session: {e:#}");
+            return denied(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not start a session.",
+            );
+        }
+    };
+    let mut resp = Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, "/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    for c in [
+        auth::session_cookie(&id),
+        auth::clear_cookie(auth::STATE_COOKIE),
+    ] {
+        resp.headers_mut()
+            .append(header::SET_COOKIE, c.parse().unwrap());
+    }
+    resp
 }
 
-#[derive(Deserialize)]
-struct LoginForm {
-    token: String,
-}
-
-/// The sign-in form posts here. A plain form login (not the `?token=` link) is what
-/// lets a browser or Bitwarden offer to save and later autofill the token.
-async fn login(State(s): State<Shared>, Form(f): Form<LoginForm>) -> Response {
-    let t = f.token.trim();
-    if !auth::matches(t, &s.token) {
-        return login_page(StatusCode::UNAUTHORIZED, true);
+async fn logout(State(s): State<Shared>, headers: HeaderMap) -> Response {
+    if let Some(id) = auth::cookie(cookie_header(&headers), auth::SESSION_COOKIE) {
+        s.sessions.revoke(id);
     }
     (
         StatusCode::SEE_OTHER,
         [
-            (header::SET_COOKIE, auth::set_cookie(t)),
+            (header::SET_COOKIE, auth::clear_cookie(auth::SESSION_COOKIE)),
             (header::LOCATION, "/".to_string()),
         ],
     )
