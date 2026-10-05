@@ -22,11 +22,11 @@ extract_transcript() {
 
   # Tail the JSONL, extract user/assistant messages, truncate long content
   tail -n "$tail_lines" "$source" | jq -r --argjson max "$max_chars" '
-    select(.type == "message" or .type == "human" or .type == "assistant" or
-           .role == "user" or .role == "assistant") |
-    # Normalize role
+    select(.type == "message" or .type == "human" or .type == "user" or
+           .type == "assistant" or .role == "user" or .role == "assistant") |
+    # Normalize role. Claude Code writes user turns as {"type":"user"}.
     (if .role then .role
-     elif .type == "human" then "user"
+     elif .type == "human" or .type == "user" then "user"
      elif .type == "assistant" then "assistant"
      elif .type == "message" then (.message.role // "unknown")
      else "unknown" end) as $role |

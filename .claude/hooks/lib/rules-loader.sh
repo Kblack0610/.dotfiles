@@ -36,9 +36,10 @@ load_rules() {
 
 strip_frontmatter() {
   local file="$1"
+  # Frontmatter only when line 1 opens it; a later `---` is a horizontal rule.
   awk '
-    BEGIN { in_fm = 0; past_fm = 0 }
-    /^---$/ && !past_fm { in_fm = !in_fm; if (!in_fm) past_fm = 1; next }
+    NR == 1 && /^---$/ { in_fm = 1; next }
+    in_fm && /^---$/ { in_fm = 0; next }
     !in_fm { print }
   ' "$file"
 }
