@@ -33,10 +33,10 @@ fi
 
 WARN=0
 if command -v gh >/dev/null 2>&1; then
-  PR_STATE=$(gh pr view "$BRANCH" --json state --jq '.state' 2>/dev/null)
-  if [ "$PR_STATE" = "OPEN" ]; then
-    PR_URL=$(gh pr view "$BRANCH" --json url --jq '.url' 2>/dev/null)
-    echo "Open PR not yet merged (may be pre-existing): $PR_URL" >&2
+  # Bounded: offline, gh waits on the network and this runs on every Stop.
+  PR=$(timeout 5 gh pr view "$BRANCH" --json state,url --jq '.state + " " + .url' 2>/dev/null)
+  if [ "${PR%% *}" = "OPEN" ]; then
+    echo "Open PR not yet merged (may be pre-existing): ${PR#* }" >&2
     WARN=1
   fi
 fi
