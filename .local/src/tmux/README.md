@@ -293,7 +293,7 @@ alias would append `-L hub` to every call, including from inside `lab`, where
 
 | Source | What it contributes | Why it cannot be dropped |
 |---|---|---|
-| git repos under `SESSIONIZER_ROOTS` | every repo `SESSIONIZER_DEPTH` deep, **except** one its enclosing repo declares in `.gitmodules` | the actual projects. A declared submodule (`.local/src/gungan`) is a dependency pinned to somebody else's commit; an undeclared nested repo is a checkout parked there to work in |
+| git repos under `SESSIONIZER_ROOTS` | every repo `SESSIONIZER_DEPTH` deep, **except** one its enclosing repo declares in `.gitmodules`, unless that section sets `tmux-picker = true` | the actual projects. A declared submodule (`.local/src/gungan`) is a dependency pinned to somebody else's commit; an undeclared nested repo is a checkout parked there to work in. `tmux-picker = true` is for a submodule that is its own project (`.local/src/android-suite`); a manifest line would list it too, but `ensure` recreates manifest sessions on every hop |
 | `.config/tmux-servers/*.conf` | every directory a manifest declares, if it exists here | a declared directory can sit *inside* a repo (`~/.notes/lab` is a subdirectory of the `~/.notes` repo), so no repo walk can produce it |
 | `$WT_ROOT` (`~/.worktrees`) | directories whose `.git` is a **file** | a linked worktree's `.git` is a file where a main checkout's is a directory. That test both finds worktrees and rejects whatever else got parked there |
 

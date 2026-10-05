@@ -141,22 +141,35 @@ cmd_route() {
   fi
 }
 
-# declared_submodule <repo> <relpath> -- true if <repo>/.gitmodules declares <relpath>.
+# declared_submodule <repo> <relpath> -- true if <repo>/.gitmodules declares <relpath> as a
+# dependency: declared, and its section does not carry `tmux-picker = true`.
+#
+# The opt-in is for a submodule that is a project of its own and only LIVES inside the repo
+# (.dotfiles/.local/src/android-suite). It is a key in .gitmodules because that file is where
+# ownership is already recorded; a tmux-servers manifest line would list it too, but `ensure`
+# recreates every manifest session on each hop into the world, so it could never be closed.
 #
 # The parse is textual and never shells out to git, because this runs once per nested repo
 # inside a popup and because the test fixtures are `mkdir .git` trees, not real repos -- a
 # rule only assertable against a live clone is a rule the suite cannot hold.
 #
 # `path` has to be anchored: a bare `path*` glob also matches `pathspec`, and .gitmodules is
-# ordinary git-config, so the key may be indented and spaced however the writer felt.
+# ordinary git-config, so the key may be indented and spaced however the writer felt. A key
+# belongs to the section above it, so the verdict is taken at each section's end.
 declared_submodule() {
-  local gm="$1/.gitmodules" line
+  local gm="$1/.gitmodules" line match=0 optin=0
   [ -r "$gm" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] || continue
-    [ "${BASH_REMATCH[1]}" = "$2" ] && return 0
+    if [[ "$line" =~ ^[[:space:]]*\[ ]]; then
+      [ "$match" = 1 ] && [ "$optin" = 0 ] && return 0
+      match=0 optin=0
+    elif [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]]; then
+      [ "${BASH_REMATCH[1]}" = "$2" ] && match=1
+    elif [[ "$line" =~ ^[[:space:]]*tmux-picker[[:space:]]*=[[:space:]]*true[[:space:]]*$ ]]; then
+      optin=1
+    fi
   done < "$gm"
-  return 1
+  [ "$match" = 1 ] && [ "$optin" = 0 ]
 }
 
 # repo_roots <root>... -- every git repo under these roots, nested ones included.
