@@ -5,7 +5,6 @@
 src/
 
 !.local/src
-.local/src/pxe-server/images
 # Local Rust crates (notes-cli, agent-panel, …) keep their sources in the
 # conventional src/ dir, which the broad `src/` rule above would otherwise
 # swallow. Re-include every .local/src/<crate>/src tree; per-crate .gitignores

@@ -501,7 +501,7 @@ install_aur_packages() {
 setup_profile() {
     log_section "Setting up startup profile"
 
-    local profile_switch="$HOME/.local/scripts/profile-switch"
+    local profile_switch="$HOME/.local/bin/profile-switch"
     local profiles_dir="$HOME/.config/profile/profiles"
 
     # Check if profile-switch exists
