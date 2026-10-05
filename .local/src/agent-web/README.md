@@ -20,7 +20,9 @@ Only a target that is a live agent right now accepts input, so the API cannot be
 
 ## Auth
 
-The page can type into live sessions, so a network allowlist is not enough. On first start it writes a random token to `~/.config/agent-web/token` (0600). Open the page once as `/?token=<token>`; it trades the token for an HttpOnly, SameSite=Strict cookie and redirects to a clean URL. Scripts can send `Authorization: Bearer <token>`. `/healthz` is the only unauthenticated route.
+The page can type into live sessions, so a network allowlist is not enough. On first start it writes a random token to `~/.config/agent-web/token` (0600).
+
+Opening the page without a session shows a sign-in form. The form is a normal password login, so a browser or Bitwarden can save the token and fill it in on the next visit. The token is also kept in the Bitwarden vault (rbw), under the hostname the ingress serves. A correct token sets an HttpOnly, SameSite=Strict cookie that lasts a year. `/?token=<token>` does the same in one step, which is handy for a link or QR code. Scripts can send `Authorization: Bearer <token>`. `/healthz` is the only route that needs no token.
 
 ## Run
 
