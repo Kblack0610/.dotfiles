@@ -166,8 +166,8 @@ cmd_ensure() {
       continue
     fi
     # A declared dir that does not exist means "this session does not belong on this
-    # machine": hub.conf names ~/dev/home/home-config and lab.conf ~/dev/bnb/platform,
-    # both Linux-only, so a manifest can stay identical on every machine.
+    # machine": e.g. hub.conf names ~/dev/home/home-config,
+    # which is Linux-only, so a manifest can stay identical on every machine.
     #
     # This used to be `[ -d "$dir" ] || dir="$HOME"`, which created a junk session
     # rooted at $HOME on every machine that lacked the repo — that is why a
