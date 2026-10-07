@@ -141,6 +141,18 @@ setup_storage() {
     fi
 }
 
+# Android-specific: terminal profile + login shell, so install.sh is the only
+# command a new phone needs. Stow holds ~/.termux back (.stow-local-ignore);
+# termux-style is its deploy step.
+setup_termux() {
+    log_section "Termux profile and shell"
+    bash ~/.dotfiles/.local/bin/termux-style || log_warning "termux-style failed"
+
+    if [ "$(basename "${SHELL:-}")" != "zsh" ]; then
+        chsh -s zsh && log_info "Login shell set to zsh (new sessions)"
+    fi
+}
+
 # Override main installation for Android
 install_all() {
     # Setup Termux-specific
@@ -172,9 +184,10 @@ install_all() {
     setup_git
     install_npm_packages
     apply_dotfiles
-    
+    setup_termux
+
     log_section "Installation Complete!"
-    log_info "Run 'zsh' to start using Zsh"
+    log_info "Restart Termux (or run 'exec zsh') to land in zsh"
 }
 
 # Run if executed directly
