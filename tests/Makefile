@@ -1,4 +1,4 @@
-# Test suite for the tmux cockpit surfaces.
+# Test suite for the tmux and shell surfaces.
 #
 # Three tiers, cheapest first:
 #   unit   sourced bash functions, no subprocess          ~1s   host-safe

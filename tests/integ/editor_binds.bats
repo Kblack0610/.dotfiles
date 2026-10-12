@@ -56,7 +56,7 @@ bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
   [ "$n" -ge 20 ] || fail "parsed only $n root bindings from .tmux.conf -- the parser broke"
   # And it must resolve a binding this file does not otherwise touch, so the parser is
   # proved against something stable rather than only against its own subject.
-  assert_equal "$(bind_for C)" 'run-shell "$HOME/.local/src/tmux/cockpit.sh attach"'
+  assert_equal "$(bind_for C-g)" 'display-popup -E -w 100% -h 100% "$HOME/.local/src/tmux/fleet.sh"'
 }
 
 # ── The editor keys ──────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
   # Space's stock binding is next-layout, which is tmux's own and not a surface in this
   # repo. Every other key in .tmux.conf must still point where it did.
   local k
-  for k in e i I s o t p g C w m a f S A W r N H; do
+  for k in e i I s o p g w m a f S A W r N H; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }
@@ -146,7 +146,7 @@ bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
 }
 
 @test "every verb the binds invoke has a dispatch arm" {
-  # cockpit_binds.bats' trick, scoped to one script: a verb named in a bind but absent from
+  # Two lists, comm'd: a verb named in a bind but absent from
   # the case block fails silently inside run-shell, where nobody sees the error.
   local invoked dispatched v
   invoked="$(grep -oE "editor\.sh [a-z-]+" "$TMUX_CONF" | awk '{print $2}' | sort -u)"

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# fleet.sh — the HEADLESS half of the cockpit: what is running that has no terminal.
+# fleet.sh - the HEADLESS half of agent-panel: what is running that has no terminal.
 #
 # agent-panel (Prefix+g) can only see agents that OWN A PANE: it joins tmux panes against
 # ~/.claude/sessions/<pid>.json, so anything without a pane is structurally invisible to it.
 # That is most of the fleet — the agentctl units, their timers, and the sentinel watches all
-# run under `systemd --user` with no terminal attached. Before this script the only readout
-# was notes-cockpit's `_global_agents`, which hardcoded a seven-name roster and showed a bare
-# active/inactive. This is the surface that answers "what is running, and does it need me".
+# run under `systemd --user` with no terminal attached. This is the surface that answers
+# "what is running, and does it need me".
 #
 # THE ROSTER IS THE CONF DIR, NOT A LIST IN THIS FILE. Every runner row is derived from
 # ~/.config/agentctl/agents/*.conf. Drop a conf in, it appears here; no edit to this script.
@@ -52,7 +51,7 @@ _RUNS_LIB="${AGENTCTL_RUNS_LIB:-$HOME/.local/lib/agentctl-runs.sh}"
 WATCH_DIR="${WATCH_DIR:-$HOME/.agent/watches}"
 WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
 
-# Same palette as notes-cockpit.sh:63-69 so the two surfaces read as one system.
+# Same palette as panel-lib.sh so the surfaces read as one system.
 C_HEAD=$'\033[1;37m' # section header (bold white)
 C_SEL=$'\033[1;32m'  # healthy / active (bold green)
 C_INP=$'\033[1;33m'  # needs attention (yellow)
@@ -397,7 +396,7 @@ runner_op() {
   agentctl "$op" "$name" >/dev/null 2>&1
 }
 
-journal() { # same shape notes-cockpit.sh already uses for --journal
+journal() {
   local name="${1:-}"
   [ -n "$name" ] || return 0
   tmux new-window "journalctl --user -u 'agentctl@$name.service' -e -n 200 || journalctl --user -u 'agentctl@$name.service'" 2>/dev/null
@@ -460,7 +459,7 @@ esac
 
 # Sourced by the test suite rather than run: stop here with every function defined but the
 # UI never launched. Must sit after the verb dispatch (so --verb still works) and before
-# the fzf preflight (so sourcing never needs fzf on PATH). Same seam as notes-cockpit.sh.
+# the fzf preflight (so sourcing never needs fzf on PATH).
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 command -v fzf >/dev/null 2>&1 || { echo "fzf not found on PATH"; exit 1; }

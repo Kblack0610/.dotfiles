@@ -84,7 +84,7 @@ setup() {
 @test "still selects the .sh and .bash files the old selector covered" {
   run "$LINT_FILES"
   assert_success
-  assert_line '.local/src/tmux/notes-cockpit.sh'
+  assert_line '.local/src/tmux/fleet.sh'
   assert_line 'tests/lint.sh'
   assert_line 'tests/helpers/sandbox.bash'
 }

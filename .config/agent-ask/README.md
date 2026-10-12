@@ -1,9 +1,9 @@
-# agent-ask - the human<->agent ask queue (the cockpit bridge)
+# agent-ask - the human<->agent ask queue
 
 The two-way channel a headless agent uses to ASK the human a question and later READ
 the answer. Fills the gap where a blocked agent could only fire a one-way `agent-notify`
 and stop. This is the shared data source behind the `prefix g` agent-bridge surface and
-the `prefix t` cockpit attention badges.
+agent-web's asks list.
 
 - CLI: `~/.dotfiles/.local/bin/agent-ask` (public, symlinked into `~/.local/bin`).
 - Store: `~/.agent/asks/{project}/{id}.md`, one flat `key: value` file per ask.
@@ -25,7 +25,7 @@ SECONDARY convenience for an attended agent only; producers never use it.
 ```
 agent-ask post [opts] "question"          create a pending ask; print its id
   --project P     canonical project (default: resolve from $PWD)
-  --profile X     cockpit rail section (personal / a job profile)
+  --profile X     profile section (personal / a job profile)
   --session S     link to a sessions.jsonl session id
   --agent A       who asked (kb-coordinator, delivery-loop, ...)
   --task T        link to a Focus/Wave task key or tracker ticket
@@ -35,7 +35,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --wait          SECONDARY: block until answered, print the answer to stdout
 
 agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task
-agent-ask count [project|--all]             number of pending asks (cockpit badge source)
+agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
 agent-ask answer <id> <answer...>            record answer; status->answered; fire agent-notify
 agent-ask cancel <id>                        status->cancelled
@@ -72,7 +72,7 @@ Consumers (read answered asks and continue):
 
 Surfaces:
 - `prefix g` agent-bridge -> `agent-ask list --pending --all` + sentinel trips + gates + live panes.
-- `prefix t` notes-cockpit -> `agent-ask count` per section/project as a `!N` badge; `a` jumps to the bridge.
+- agent-web -> `agent-ask list --all --pending`, answered in place via `agent-ask answer`.
 
 ## Keep distinct from the lab release feed
 

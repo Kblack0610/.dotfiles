@@ -20,7 +20,7 @@
 #   * `command tmux` still honours PATH, so it finds a stub instead of bypassing one.
 # So every call here goes through ONE mechanism: a PATH shim (tmux_shim) that pins `-S
 # <socket-inside-this-test's-sandbox>` onto every invocation. The shim covers the subject
-# too -- cockpit.sh runs plain `tmux` internally, as it must, and gets scoped for free.
+# too -- a subject runs plain `tmux` internally, as it must, and gets scoped for free.
 # And because the flag can still be got wrong, the whole tier additionally refuses to run
 # outside the disposable container (require_disposable_host).
 
@@ -38,7 +38,7 @@ TM_HEIGHT="${TM_HEIGHT:-30}"
 # resolves $REAL_TMUX before the stub dir shadows it).
 #
 # Every tmux call in the ui tier -- the harness's own, and any the SUBJECT makes -- resolves
-# through here, which is what makes "plain `tmux` inside cockpit.sh" safe to test.
+# through here, which is what makes "plain `tmux` inside a subject" safe to test.
 # `-f /dev/null` is pinned here too, so no config can leak in from anywhere.
 tmux_shim() {
   : "${SANDBOX:?sandbox_init must run first}"

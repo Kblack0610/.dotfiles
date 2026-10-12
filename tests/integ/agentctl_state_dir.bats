@@ -3,7 +3,7 @@
 #
 # `agentctl` (the WRITER) resolved its state dir from $AGENTCTL_STATE, which
 # agentctl@.service exports into every unit. Every READER -- agent-proof.sh,
-# fleet.sh, cockpit.sh, the bats sandbox -- resolved it from $AGENTCTL_STATE_DIR.
+# fleet.sh, the bats sandbox -- resolved it from $AGENTCTL_STATE_DIR.
 # Two names for one directory.
 #
 # That is invisible while both are unset, because both default to the same path.
@@ -124,7 +124,7 @@ landed_dirs() {
 
 # ------------------------------------------------------------------ drift guard
 #
-# The four resolvers must stay byte-identical in precedence. They are in four
+# The resolvers must stay byte-identical in precedence. They are in separate
 # files that no single change touches together, which is exactly how they came
 # apart the first time. Written as a scan so a NEW reader that honours only one
 # name is caught the day it lands, rather than the day someone sets a variable.
@@ -135,7 +135,7 @@ landed_dirs() {
   # test is how we found out -- it failed on the count before anyone had set a
   # variable, which is the entire point of pinning it.
   for f in .local/bin/agentctl .local/lib/agent-proof.sh .local/lib/agentctl-runs.sh \
-           .local/src/tmux/fleet.sh .local/src/tmux/cockpit.sh .local/bin/agent-mqtt-publish; do
+           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish; do
     # the line that establishes the state dir must mention both names
     grep -qE 'AGENTCTL_STATE_DIR:-\$\{?AGENTCTL_STATE' "$REPO_ROOT/$f" || offenders+=("$f")
   done
@@ -144,5 +144,5 @@ landed_dirs() {
   # quietly honouring one name. The count is also the empty-input guard: if the
   # grep matched nothing at all, this fails rather than reading as "all fine".
   run bash -c "grep -rlE 'AGENTCTL_STATE_DIR:-\\\$\\{?AGENTCTL_STATE' '$REPO_ROOT'/.local | wc -l"
-  assert_output '6'
+  assert_output '5'
 }

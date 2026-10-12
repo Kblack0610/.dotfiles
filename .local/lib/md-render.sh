@@ -22,9 +22,8 @@
 # honour the house plain-ASCII rule (no general renderer does), and a sourced function is
 # testable in the unit tier where a vendored binary is not.
 #
-# Lives in .local/lib rather than .local/src/tmux/panel-lib.sh because notes-cockpit.sh does
-# not source panel-lib (it predates it and still carries its own palette), and this is the
-# established shape for a library two unrelated consumers share -- same three-step lookup as
+# Lives in .local/lib rather than .local/src/tmux/panel-lib.sh because that is the
+# established shape for a library unrelated consumers share -- same three-step lookup as
 # agent-board.sh. panel-lib.sh wraps it as `panel_md` so panels keep the panel_* vocabulary.
 #
 # Usage:

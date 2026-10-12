@@ -3,9 +3,8 @@
 # filter expression. No server is touched, so this is the cheap tier.
 #
 # This mapping is load-bearing well beyond the tag UI. wind-down.sh decides what NOT to kill
-# by asking `tmux-tags protected`, and `cockpit.sh stale` encodes the same tags directly in
-# its tmux -f filter -- both defined entirely in terms of PROTECT_TAGS and the option names
-# built here. A silent drift between "the tag the user set" and "the option the filter looks
+# by asking `tmux-tags protected`, which is defined entirely in terms of PROTECT_TAGS and the
+# option names built here. A silent drift between "the tag the user set" and "the option the filter looks
 # for" means a window marked pinned gets killed anyway, on a timer, with no error.
 
 setup() {

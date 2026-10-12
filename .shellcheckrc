@@ -16,5 +16,5 @@ source-path=SCRIPTDIR
 # Warnings that are noise in this codebase specifically:
 #   SC1090  non-constant source path -- deliberate, the hooks source resolved paths
 #   SC2016  single quotes intentionally prevent expansion in fzf --bind action strings,
-#           which is the entire point of the cockpit's re-entrant dispatch
+#           which is the entire point of a panel's re-entrant dispatch
 disable=SC1090,SC2016

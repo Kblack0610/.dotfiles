@@ -35,7 +35,6 @@ root    A     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-a
 root    g     rust-bin     FULL     .local/src/agent-panel                -
 root    C-g   script       FULL     .local/src/tmux/fleet.sh              -
 root    p     script       WIDE     .local/src/tmux/pr-viewer.sh          -
-root    t     script       FULL     .local/src/tmux/notes-cockpit.sh      -
 root    o     script       WIDE     .local/src/tmux/favourites.sh         open
 tags    l     bin-symlink  SMALL    .local/src/tmux/tags.sh               ls
 root    W     bin-symlink  SMALL    .local/src/tmux/tags.sh               pick

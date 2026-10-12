@@ -6,7 +6,7 @@
 #     --options a|b|c   the fixed answer vocabulary
 #     --recommend b     which of them YOU recommend; shown marked in the picker
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
-#                                       TSV rows for the bridge/cockpit
+#                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify
 #   agent-ask cancel <id>               flip to cancelled

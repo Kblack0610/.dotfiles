@@ -2,9 +2,8 @@
 # Stub for `tmux`, used by the unit and integ tiers only.
 #
 # Two jobs:
-#   1. Record every invocation, so tests can assert intent. The cockpit's --jump /
-#      --open-file / --journal / --resume-session verbs all shell out to
-#      `tmux new-window "nvim +N file"`; a test must capture that, not spawn an editor.
+#   1. Record every invocation, so tests can assert intent. Verbs that shell out to
+#      `tmux new-window "nvim +N file"` must be captured, not allowed to spawn an editor.
 #   2. Serve canned pane data, so claude-status.sh can be driven through every branch
 #      of its classifier without a live tmux server full of real Claude sessions.
 #
@@ -99,7 +98,7 @@ case "$verb" in
     # interchangeable, so they get their own fixtures:
     #   -F '#{window_id}'                              -> tmux.window_ids
     #   -F '#{window_id} #{session_name}:#{window_index}' -> tmux.window_labels
-    # Anything else keeps the pre-existing tmux.windows behaviour (cockpit.sh stale).
+    # Any other format has no fixture and prints nothing.
     case "$fmt" in
       '#{window_id}')
         [ -f "$FIX/tmux.window_ids" ] && cat "$FIX/tmux.window_ids"
@@ -108,16 +107,6 @@ case "$verb" in
         [ -f "$FIX/tmux.window_labels" ] && cat "$FIX/tmux.window_labels"
         exit 0 ;;
     esac
-    # Canned rows for `cockpit.sh stale`, which reads
-    #   session:index:name:pane_current_command:pane_current_path:window_activity
-    #
-    # The real call also passes `-f '#{&&:...@tag_pinned...}'` so tmux drops protected
-    # windows server-side. A stub cannot evaluate a tmux format expression, so the
-    # fixture stands in for the POST-filter result: a window that must be treated as
-    # protected simply does not belong in tmux.windows. Tests that care about the
-    # protection contract assert on the filter argument via calls.log instead, which is
-    # the only part this stub can honestly speak to.
-    [ -f "$FIX/tmux.windows" ] && cat "$FIX/tmux.windows"
     ;;
   capture-pane)
     f="$FIX/tmux.capture.$(target_key "$target")"

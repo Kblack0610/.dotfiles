@@ -6,9 +6,8 @@
 # no strict mode, five ways to resolve $0. None of it is detectable by running a panel; it is
 # only visible by cross-referencing the whole set at once. This file is that cross-reference.
 #
-# It is the sibling of cockpit_binds.bats, which does the same trick for ONE script's verbs.
-# The pattern generalises: build two lists, comm them, and guard the lint itself against
-# matching nothing.
+# The pattern: build two lists, comm them, and guard the lint itself against matching
+# nothing.
 #
 # Pure text -- no tmux, no fzf, no subject subprocess. That is deliberate: CI's `fast` job
 # installs neither binary on purpose ("if a test ever starts reaching for a real binary, this
@@ -44,8 +43,8 @@ setup() {
 
 @test "panel_field addresses columns by name, not position" {
   # If this breaks, every column-based assertion silently reads the wrong field.
-  assert_equal "$(panel_field root:t path)" ".local/src/tmux/notes-cockpit.sh"
-  assert_equal "$(panel_field root:t geometry)" "FULL"
+  assert_equal "$(panel_field root:C-g path)" ".local/src/tmux/fleet.sh"
+  assert_equal "$(panel_field root:C-g geometry)" "FULL"
   assert_equal "$(panel_field tags:l kind)" "bin-symlink"
   run panel_field root:NOPE path
   assert_failure
@@ -59,8 +58,8 @@ setup() {
   local col
   for col in table key kind geometry path argv; do
     local v
-    v="$(panel_field root:t "$col")" || fail "panel_field could not read column '$col' -- the header row was not located"
-    [ -n "$v" ] || fail "column '$col' resolved to an EMPTY field for root:t"
+    v="$(panel_field root:C-g "$col")" || fail "panel_field could not read column '$col' -- the header row was not located"
+    [ -n "$v" ] || fail "column '$col' resolved to an EMPTY field for root:C-g"
   done
 }
 
@@ -272,8 +271,8 @@ setup() {
 }
 
 @test "no fzf action hardcodes the script's own name" {
-  # A bare `notes-cockpit.sh --list` inside an action depends on PATH, which display-popup
-  # does not guarantee. Generalises cockpit_binds.bats:85 to every panel. No legacy: 0.
+  # A bare `fleet.sh --list` inside an action depends on PATH, which display-popup does not
+  # guarantee. No legacy: 0.
   panel_ratchet 0 "no bare script name in an fzf action" panel_assert_no_bare_script_name
 }
 

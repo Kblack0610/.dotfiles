@@ -18,7 +18,7 @@ DRY=0
 if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
 ONE="${1:-}"
 
-COCKPIT="${WAVE_ROLL_COCKPIT:-$HOME/.local/src/tmux/notes-cockpit.sh}"
+ROLL="${WAVE_ROLL_BIN:-$HOME/.local/bin/notes-roll}"
 HOOKS="${WAVE_ROLL_HOOKS:-$HOME/.config/shared-hooks/project-name.sh}"
 INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/wave-roll}"
 mkdir -p "$INBOX"
@@ -88,7 +88,7 @@ while read -r profile; do
       log "skip $name: a wave holds the lock"
       continue
     fi
-    if out="$("$COCKPIT" --roll-now "$profile" "$name" "$next" carry 2>&1)"; then
+    if out="$("$ROLL" "$profile" "$name" "$next" carry 2>&1)"; then
       rolled=$((rolled + 1))
       log "rolled $name $ver -> $next (tag $shipped, carried $open)"
       stale="$(grep -o 'stale (carried [0-9]*x): .*' <<<"$out" || true)"
