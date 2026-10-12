@@ -98,6 +98,11 @@ sandbox_init() {
   # and the fleet view rendered them as real for two weeks.
   unset AGENTCTL_STATE AGENTCTL_NAME
 
+  # `agent-ask answer` runs the ask's resume command, and `wave-start` on the real PATH
+  # would start a real wave. Off for every test; ask_resume.bats turns it back on, with
+  # wave-start and claude stubbed, to assert exactly that behaviour.
+  export AGENT_ASK_NO_RESUME=1
+
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"

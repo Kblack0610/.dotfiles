@@ -2,19 +2,17 @@
 # ask-resume — run the `resume` command of an answered ask. The producer half of the
 # human<->agent loop, and the piece that was missing.
 #
-#   ask-resume <id>          resume one ask (what the cockpit calls on Enter)
+#   ask-resume <id>          resume one ask (what `agent-ask answer` calls)
 #   ask-resume --all         drain every resumable ask, any project
 #   ask-resume --dry-run     print what would run, run nothing
 #
-# `agent-ask answer` records a decision and fires a notification. That is all it does.
-# Nothing read those answers: a wave posted a gate, you answered `approve`, and the wave
-# stayed blocked forever because no code path anywhere turned the answer back into an
-# action. `agent-ask`'s own header promised "a later fire / `/captain resume` consumes the
-# answer" and that consumer was never written. This is it.
+# Without this, an answer is only a field on disk: a wave posts a gate, you answer
+# `approve`, and nothing turns that answer back into an action.
 #
 # Called from two places, deliberately:
-#   - the cockpit's answer path, with an id, so answering IS starting (instant feedback)
-#   - `wave-start`, with --all, so an answer given anywhere else still gets picked up
+#   - `agent-ask answer`, with an id, so answering IS starting from any surface
+#   - `wave-start`, with --all, as a backstop for an answer recorded with
+#     AGENT_ASK_NO_RESUME or whose resume could not start
 #
 # Marking happens BEFORE running (`agent-ask mark-resumed`), so a resume that dies part
 # way is not retried forever. These commands create tickets and cut branches; re-running
@@ -84,7 +82,7 @@ if [ "$TARGET" != "--all" ]; then
   line="$(agent-ask resumable --all 2>/dev/null | awk -F'\t' -v i="$TARGET" '$1==i')"
   if [ -z "$line" ]; then
     # Not an error: an ask with no `resume`, or one already consumed, is the common case.
-    # The cockpit calls this on EVERY answer and must stay silent for ordinary questions.
+    # `agent-ask answer` calls this on EVERY answer and must stay silent for ordinary questions.
     exit 0
   fi
   IFS=$'\t' read -r id project cmd _answer <<<"$line"
