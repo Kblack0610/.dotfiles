@@ -158,7 +158,7 @@ cmd_ensure() {
       || panel_warn "could not move the editor to the front of $sess"
   fi
   # Renumber gapless so the indexes stay contiguous after the insert, and after any window
-  # that was killed out of sequence. cockpit.sh:82 does the same for the same reason.
+  # that was killed out of sequence.
   tmux move-window -r -t "$sess:" 2>/dev/null || true
 
   printf '%s\n' "$win"

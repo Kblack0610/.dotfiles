@@ -145,9 +145,9 @@ on `PATH`, which a popup does not guarantee) and never a bare `$0`.
 
 `panel_fzf_opts` includes `--border`, and the bind passes `-B` so tmux draws none. Exactly one
 of them should draw, and making it the *script* is the better half of the choice here, because
-`cockpit.sh:74-80` reuses `notes-cockpit.sh` and `pr-viewer.sh` as **window** commands where
-there is no popup border at all. A surface that renders identically in a popup, in a cockpit
-window, and from a bare shell is one fewer thing to reason about. `bind g` + `agent-panel` has
+a panel can also run as a **window** command, where there is no popup border at all. A surface
+that renders identically in a popup, in a window, and from a bare shell is one fewer thing to
+reason about. `bind g` + `agent-panel` has
 shipped this pairing all along.
 
 ## Dispatch: always reject an unknown verb
@@ -161,7 +161,7 @@ case "${1:-}" in
 esac
 ```
 
-`notes-cockpit.sh:915` and `fleet.sh:320` have **no default arm**: an unknown verb falls
+`fleet.sh` has **no default arm**: an unknown verb falls
 through to the fzf UI. So a typo opens a picker instead of erroring, and in a headless test it
 blocks *forever* rather than failing. Do not copy that shape.
 

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# notes-roll - roll a project to its next version, headless, with everything a roll owes.
+#
+#   notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry]
+#
+# Wraps `notes projects --roll` with the tag guard (a shipping app never freezes an
+# untagged version), the agent changelog appended to the frozen note, and the
+# notes-version-summary refresh (best-effort).
+#
+# Defaults to PATCH, because that is what a wave is. `vX.Y.Z` opens that exact version
+# next; `carry` moves the wave's open tasks forward instead of refusing on them (what a
+# release tag closing its version does). Anything else is rejected, never guessed.
+#
+# Exit: 0 rolled, 1 refused or the roll failed, 2 bad arguments.
+
+set -uo pipefail
+SELF="$(realpath "$0")"
+
+# The project registry accessors (project_repo_name / project_repo_path /
+# project_release_version). Lookup order: explicit override (tests), deployed path, then
+# the in-repo sibling so a checkout works before stow has run. SOFT-FAIL: without them
+# every project reads as notes-only, which is the correct degraded answer for a
+# public-only checkout (the registry itself is private).
+# shellcheck source=/dev/null
+. "${PROJECT_NAME_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || . "$(dirname "$SELF")/../../.config/shared-hooks/project-name.sh" 2>/dev/null \
+  || true
+declare -F project_repo_name >/dev/null 2>&1 \
+  || project_repo_name() { printf '%s' "${1:-}"; }
+
+USAGE="usage: notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry]"
+
+# canon_namespaces <project> -> every ~/.agent namespace this project's sessions can be
+# under, one per line, most specific first: the project, then the repo it belongs to
+# (`trackers.<project>.repo`), e.g. notes-cockpit -> dotfiles.
+canon_namespaces() { # $1=project
+  local p="${1:-}" repo
+  [ -n "$p" ] || return 0
+  printf '%s\n' "$p"
+  repo="$(project_repo_name "$p" 2>/dev/null)"
+  [ -n "$repo" ] && [ "$repo" != "$p" ] && printf '%s\n' "$repo"
+  return 0
+}
+
+# roll_tag_guard <profile> <project> -> 0 proceed, 1 refuse.
+# On a SHIPPING app the version being frozen must already be a git tag: the app owns
+# the version and the sheet only tracks it. This VERIFIES, it never tags (creating one
+# would let an agent ship). Empty `project_release_version` = NOTES-ONLY project, where
+# the sheet counter is the only counter, so it skips rather than refuses.
+roll_tag_guard() { # $1=profile $2=project
+  local profile="$1" name="$2" target shipped repo tag
+  [ "${ROLL_TAG_CHECK:-on}" = off ] && return 0
+  command -v project_release_version >/dev/null 2>&1 || return 0
+
+  shipped="$(project_release_version "$name" 2>/dev/null)"
+  [ -n "$shipped" ] || return 0
+
+  target="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+  [ -n "$target" ] || return 0
+
+  # Source the predicate HERE. project_release_version also sources git-release.sh,
+  # but only inside a command substitution - a subshell, whose function definitions
+  # die with it. Relying on that side effect left git_tag_for_version undefined and
+  # the guard passing everything, which a negative control caught and nothing else
+  # would have.
+  if ! command -v git_tag_for_version >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}" 2>/dev/null || true
+  fi
+  # Fail CLOSED. We already know this is a shipping app, so a missing predicate means
+  # the check cannot run - and a guard that cannot run must say so, not wave things by.
+  if ! command -v git_tag_for_version >/dev/null 2>&1; then
+    printf 'roll: refusing - git_tag_for_version unavailable, cannot verify %s.\n' "$target" >&2
+    printf '  expected lib: %s\n' "${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}" >&2
+    printf '  to override: ROLL_TAG_CHECK=off\n' >&2
+    return 1
+  fi
+
+  repo="$(project_repo_path "$name" 2>/dev/null)"
+  if [ -z "$repo" ]; then
+    printf 'roll: refusing - no repo path for %s, cannot verify %s.\n' "$name" "$target" >&2
+    printf '  to override: ROLL_TAG_CHECK=off\n' >&2
+    return 1
+  fi
+  tag="$(git_tag_for_version "$repo" "$name" "$target" 2>/dev/null)"
+  [ -n "$tag" ] && return 0
+  # A newer release already shipped past the sheet: the open version will never get a tag of
+  # its own, and refusing would pin the sheet behind the app forever.
+  [ "$(printf '%s\n%s\n' "${target#v}" "${shipped#v}" | sort -V | tail -1)" = "${shipped#v}" ] \
+    && [ "${target#v}" != "${shipped#v}" ] && return 0
+
+  printf 'roll: refusing to freeze %s - no git tag ships it.\n' "$target" >&2
+  printf '  newest shipped tag: %s\n' "$shipped" >&2
+  printf '  push the release tag first, then roll. To override: ROLL_TAG_CHECK=off\n' >&2
+  return 1
+}
+
+# The roll itself plus everything that has to happen after it: the agent changelog, then
+# the LLM summaries. NO PROMPT - the bump level arrives as flags.
+roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX.Y.Z, plus --carry)
+  local profile="$1" name="$2" flag="${3:-}" out frozen
+  roll_tag_guard "$profile" "$name" || return 1
+  # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
+  out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
+    || { echo "$out"; echo "roll failed"; return 1; }
+  echo "$out"
+  # the note that was just frozen (path is in the `(froze <path>)` line)
+  frozen="$(sed -n 's/.*(froze \(.*\))$/\1/p' <<<"$out")"
+
+  # The AGENT CHANGELOG: what the agents did for the version we just froze, appended to
+  # the frozen note so it ships with the release rather than living only in the registry.
+  #
+  # The window runs from the PREVIOUS version's `rolled:` stamp up to now. The newest
+  # versions/*.md at this point is the note just written, so the window has to be taken
+  # from the note BEFORE it.
+  if [ -n "$frozen" ] && command -v agent-usage >/dev/null 2>&1; then
+    local canon prev since block
+    canon="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | sort -rV | sed -n 2p)"
+    since=0
+    if [ -n "$prev" ]; then
+      since="$(sed -n 's/.*<!-- *rolled: *\([0-9]\{1,\}\).*/\1/p' "$prev" | head -1)"
+      [ -n "$since" ] || since="$(stat -c %Y "$prev" 2>/dev/null || echo 0)"
+    fi
+    block="$(while IFS= read -r cn; do
+               [ -n "$cn" ] && agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
+             done < <(canon_namespaces "$canon"))"
+    if [ -n "$block" ]; then
+      printf '\n%s\n' "$block" >> "$frozen"
+      echo "wrote the agent changelog into $(basename "$frozen")"
+    else
+      echo "(no agent sessions recorded for this version - skipping the agent changelog)"
+    fi
+  fi
+
+  if [ -n "$frozen" ] && command -v notes-version-summary >/dev/null 2>&1; then
+    echo "summarizing $(basename "$frozen") ..."
+    notes-version-summary "$profile" "$name" "$frozen" \
+      || echo "(summary skipped - see ~/.config/notes-cockpit/llm.env)"
+    # a new release changes "what's next" - refresh the project overview too (best-effort)
+    echo "refreshing overview ..."
+    notes-version-summary --overview "$profile" "$name" || true
+  fi
+}
+
+roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
+  local profile="${1:-}" name="${2:-}" level="${3:-patch}" mode="${4:-}" flag
+  [ -n "$profile" ] && [ -n "$name" ] || { echo "$USAGE" >&2; return 2; }
+  case "$level" in
+    patch) flag='' ;;
+    minor) flag='--minor' ;;
+    major) flag='--major' ;;
+    v[0-9]*.[0-9]*.[0-9]*) flag="--next $level" ;;
+    *) echo "notes-roll: unknown level '$level' (patch|minor|major|vX.Y.Z)" >&2; return 2 ;;
+  esac
+  case "$mode" in
+    '') ;;
+    carry) flag="${flag:+$flag }--carry" ;;
+    *) echo "notes-roll: unknown mode '$mode' (carry)" >&2; return 2 ;;
+  esac
+  roll_do "$profile" "$name" "$flag"
+}
+
+case "${1:-}" in
+  -h | --help) echo "$USAGE"; exit 0 ;;
+esac
+roll_now "${1:-}" "${2:-}" "${3:-patch}" "${4:-}"
+exit $?

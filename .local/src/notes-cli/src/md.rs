@@ -311,7 +311,7 @@ pub fn drop_tag(line: &str, tag: &str) -> String {
 /// which needs to find it on the live sheets one last time.
 ///
 /// Delimited deliberately: a bare `contains("#ai")` also matches `#aid`, the trap
-/// `notes-cockpit.sh` documented and then fell into anyway with its substring badge.
+/// the retired task cockpit documented and then fell into anyway with its substring badge.
 pub fn has_legacy_ai_tag(line: &str) -> bool {
     line.split_whitespace()
         .any(|w| w.trim_end_matches(',') == "#ai")

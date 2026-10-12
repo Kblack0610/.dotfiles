@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stub for `fzf`.
 #
-# Without this, any test that reaches the cockpit's UI launch (`list_section | fzf ...`)
+# Without this, any test that reaches a panel's UI launch (`... | fzf ...`)
 # HANGS instead of failing: fzf drains stdin and then opens /dev/tty for interaction, so
 # it blocks forever on any machine that has a terminal. It only appeared to pass in CI,
 # where there is no tty and fzf exits on its own. That made the fast tier unrunnable from

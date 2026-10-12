@@ -13,7 +13,7 @@
 # Two surfaces answer that question and, until this file, they answered it
 # differently:
 #
-#   notes-cockpit.sh   `_feed_gist` — counted the feed. Correct.
+#   the task cockpit   `_feed_gist` - counted the feed. Correct. (retired)
 #   regen-project-index.sh  scraped a `## Status` HEADING that the current project
 #                      template stopped emitting (it writes STATUS:START/END markers
 #                      instead), and resolved versions through a project-map path
@@ -27,7 +27,7 @@
 #
 # Public API:
 #   lab_feed_fields <path>   one TSV line, 8 fields (below)
-#   lab_feed_gist   <path>   the joined one-line summary the cockpit rows carry
+#   lab_feed_gist   <path>   the joined one-line summary a project row carries
 #
 # <path> is either a project's `summary.md` or its working sheet (`README.md`);
 # both resolve to the same project. Both functions print nothing and succeed for a
@@ -209,7 +209,7 @@ lab_feed_gist() {
   # this hard to see: -e is ignored for every command of an AND list EXCEPT the last, so
   # a failing `[` short-circuits harmlessly while a failing ASSIGNMENT does not.
   #
-  # Latent here only because notes-cockpit.sh does not `set -e`. The identical idiom in
+  # Latent here only because its first caller never ran `set -e`. The identical idiom in
   # the private regen-project-index.sh, which does, stalled agentctl@project-index for
   # four days (2026-08-06..09) the moment a project reached exactly one open PR.
   [ "${prs:-0}" -gt 1 ] && plural=s

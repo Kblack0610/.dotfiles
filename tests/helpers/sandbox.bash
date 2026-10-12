@@ -1,10 +1,7 @@
 # Sandbox: every test runs against a throwaway $HOME with stub binaries on PATH.
 #
-# The subjects under test are already env-injectable, which is why this is short:
-#   notes-cockpit.sh  STATE/MODEF/PFILTER are $TMPDIR-rooted (:32,:37,:66)
-#                     NOTES_COCKPIT_ALIASES (:43), NOTES_COCKPIT_REPOS (:47)
-#   agent-ask         ASK_ROOT under $HOME/.agent/asks
-# So redirecting HOME + TMPDIR relocates all persistent state for free.
+# The subjects under test keep their state under $HOME or $TMPDIR (agent-ask's ASK_ROOT is
+# $HOME/.agent/asks, for one), so redirecting HOME + TMPDIR relocates it all for free.
 #
 # The sandbox path deliberately contains a space (asdf's test suite does the same) so
 # any unquoted expansion in the subject fails loudly here instead of on someone's laptop.
@@ -14,15 +11,13 @@ REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 TESTS_DIR="$REPO_ROOT/tests"
 export REPO_ROOT TESTS_DIR
 
-COCKPIT="$REPO_ROOT/.local/src/tmux/notes-cockpit.sh"
 FLEET="$REPO_ROOT/.local/src/tmux/fleet.sh"
-COCKPIT_SESSION_SH="$REPO_ROOT/.local/src/tmux/cockpit.sh"
 STATUS_SH="$REPO_ROOT/.local/src/tmux/claude-status.sh"
 EDITOR_SH="$REPO_ROOT/.local/src/tmux/editor.sh"
 AGENT_ASK="$REPO_ROOT/.local/bin/agent-ask"
 ASK_RESUME="$REPO_ROOT/.local/bin/ask-resume"
-# NOTE: agent-bridge.sh was folded into notes-cockpit (459519ad) and deleted; that view is
-# its former $BRIDGE export is gone with it. fleet.sh is the headless-side surface now.
+# The headless version roll (agentctl-wave-roll and the release runbook call it).
+NOTES_ROLL="$REPO_ROOT/.local/bin/notes-roll"
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
@@ -46,7 +41,7 @@ MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
 GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 # The shared AUTO-block splicer, same reason again.
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
-export COCKPIT FLEET COCKPIT_SESSION_SH STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -108,14 +103,12 @@ sandbox_init() {
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"
   chmod +x "$SANDBOX/bin/"*
 
-  # The REPO's own bins, on PATH. Not stubs -- the real scripts, which is the point: the
-  # cockpit shells out to `agent-ask` by name, and its whole state lives under $HOME
+  # The REPO's own bins, on PATH. Not stubs -- the real scripts, which is the point:
+  # subjects shell out to `agent-ask` by name, and its whole state lives under $HOME
   # (`ASKS_ROOT="$HOME/.agent/asks"`), which is already sandboxed. There is nothing to fake.
   #
-# This existed as a FALSE PASS for as long as no test needed it. A developer's own
-  # `~/.local/bin` is on PATH, so `agent-ask` resolved on a laptop and resolved NOWHERE on
-  # a clean runner -- the factory view's question rows simply vanished in CI while every local
-  # run stayed green. cockpit_factory.bats opens with a guard against that coming back.
+  # Without this a developer's own `~/.local/bin` supplies `agent-ask` on a laptop and
+  # nothing does on a clean runner: a false pass locally, a silent gap in CI.
   #
   # COPIED, never symlinked. A symlink here points back into the working tree, and a test
   # that overrides one of these with `cat > "$SANDBOX/bin/<x>"` (wave_start.bats does,
@@ -139,12 +132,6 @@ sandbox_init() {
   # the one calls.log that assert_called reads. A second log would mean a test could assert
   # against gh calls while silently missing tmux ones, or the reverse.
   export GH_FIXTURE="$NOTES_FIXTURE"
-
-  # Cockpit machine-local config: point at the sandbox, empty by default.
-  export NOTES_COCKPIT_ALIASES="$NOTES_FIXTURE/aliases"
-  export NOTES_COCKPIT_REPOS="$NOTES_FIXTURE/repos"
-  [ -f "$NOTES_COCKPIT_ALIASES" ] || : > "$NOTES_COCKPIT_ALIASES"
-  [ -f "$NOTES_COCKPIT_REPOS" ] || : > "$NOTES_COCKPIT_REPOS"
 
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect
   # above relocates them for free; they are exported explicitly anyway so a test can point
@@ -178,10 +165,6 @@ sandbox_init() {
   export PS1='' PROMPT_COMMAND='' HISTFILE=''
   unset "${!FZF_@}" 2>/dev/null || true
   export FZF_DEFAULT_OPTS="--no-scrollbar --pointer='>' --marker='>'"
-
-  # Tell the subjects they are under test, so paths that exec/become or spawn a
-  # nested fzf can no-op instead of hijacking the terminal.
-  export NOTES_COCKPIT_TEST=1
 }
 
 # seed_runner <name> [activity-line]
@@ -267,8 +250,8 @@ assert_not_called() {
   fi
 }
 
-# Strip SGR sequences before comparing. The cockpit colours rows inline
-# (C_BOX/C_HEAD/C_PROJ/... at notes-cockpit.sh:54-60), so raw comparison is unstable.
+# Strip SGR sequences before comparing. Panels colour rows inline, so raw comparison is
+# unstable.
 # Mirrors bats-core's own filter_control_sequences.
 strip_ansi() { sed -E $'s,\x1b\\[[0-9;]*[a-zA-Z],,g'; }
 

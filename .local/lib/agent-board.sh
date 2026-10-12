@@ -8,7 +8,7 @@
 # or /kb:sprint and everything that watches it. Five consumers read it and, until
 # this file, each parsed it its own way:
 #
-#   notes-cockpit.sh   _sprint_items    the good one — header keyed by NAME
+#   the task cockpit   _sprint_items    the good one - header keyed by NAME (retired)
 #   wave-session.sh    rows_of          header keyed by a literal `#` first column,
 #                                       so `| Ticket | P | Title | ... |` read ZERO rows
 #   delivery-loop      a single regex   grep for `queued|in-progress|pr-open` anywhere in a
@@ -20,7 +20,7 @@
 # not an error, it is SILENCE. delivery-loop reports "no active queue" and stops,
 # which is exactly what it reports when there is genuinely nothing to do.
 #
-# The parser is the one from notes-cockpit.sh, extracted after two bugs were fixed
+# The parser is the one from the task cockpit, extracted after two bugs were fixed
 # in it (#159) that the other parsers still have:
 #
 #   * A new H2 ENDS the table. Without it the column map latched on the first
@@ -66,7 +66,7 @@ BOARD_APPROVAL_RE='^- *Approval: *APPROVED-FOR-AUTONOMOUS-DELIVERY *$'
 board_list() { # $1=project
   [ -n "${1:-}" ] || return 0
   # `|| true` because EVERY consumer of this library sets `pipefail` (wave-session.sh,
-  # wave-start and notes-cockpit all open with `set -uo pipefail`). With pipefail a
+  # wave-start and delivery-loop all open with `set -uo pipefail`). With pipefail a
   # project that simply has no board yet made `ls` exit 2 and took the whole pipeline's
   # status with it, so discovery reported FAILURE for the ordinary, expected case of
   # "nothing scheduled here". Empty output is the answer; a non-zero status is a lie that

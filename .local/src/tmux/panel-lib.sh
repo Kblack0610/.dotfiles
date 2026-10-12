@@ -75,8 +75,8 @@ export PATH
 PANEL_TAB=$'\t'
 
 # ── Palette ──────────────────────────────────────────────────────────────────
-# The C_* names and the $'..' form, taken from notes-cockpit.sh and fleet.sh (the two
-# largest and newest surfaces, so they win on volume and recency).
+# The C_* names and the $'..' form, taken from fleet.sh and the retired task cockpit (the
+# two largest surfaces at the time, so they won on volume and recency).
 #
 # The $'..' form is load-bearing, not cosmetic: pr-viewer.sh's single-quoted '\033[..'
 # requires printf %b, so the first person to reach for %s silently prints a literal \033.
@@ -189,7 +189,7 @@ panel_fzf_table() {
 # panel_fzf_preview <side> <percent> -- emit --preview-window in the MODERN COMMA form.
 #
 # fzf accepts both `left:24%:wrap:border-right` and `left,24%,border-right,wrap`; the colon
-# form is legacy and is what notes-cockpit.sh, favourites.sh and agent-panel each spell
+# form is legacy and is what favourites.sh and agent-panel each spell
 # differently. One function, one dialect.
 panel_fzf_preview() {
   local side="$1" pct="$2" border
@@ -230,8 +230,8 @@ panel_session_name() {
 }
 
 # panel_focus_session <name> / panel_focus_window <target>
-# switch-client inside tmux, attach outside. Three correct copies existed (cockpit.sh:90,
-# favourites.sh:302, agent-panel/src/tmux.rs:75); this is the fourth and last.
+# switch-client inside tmux, attach outside. Correct copies also live in favourites.sh and
+# agent-panel/src/tmux.rs; this is the shell one.
 panel_focus_session() {
   if panel_in_tmux; then
     tmux switch-client -t "$1"
@@ -255,9 +255,9 @@ panel_ensure_session() {
 
 # panel_new_window <cmd...> -- open a window, or say why not.
 #
-# THE FIX for notes-cockpit.sh:909-911, which calls `tmux new-window` with no $TMUX check and
-# swallows the failure with 2>/dev/null -- so run outside tmux it silently does NOTHING,
-# which reads to the user as the key not working.
+# A bare `tmux new-window` with no $TMUX check that swallows the failure with 2>/dev/null
+# silently does NOTHING when run outside tmux, which reads to the user as the key not
+# working. This refuses loudly instead.
 panel_new_window() {
   panel_in_tmux || panel_die "not inside tmux, cannot open a window"
   tmux new-window "$@"

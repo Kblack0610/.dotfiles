@@ -8,7 +8,7 @@
 #   * an unknown verb must REJECT. Falling through to the default action means a typo
 #     silently does something, and in a headless run it blocks instead of failing.
 #   * a tmux verb run OUTSIDE tmux must fail LOUDLY. This is the exact bug panel_new_window
-#     exists to prevent (panel-lib.sh:233) -- notes-cockpit.sh swallowed the failure with
+#     exists to prevent (panel-lib.sh:233) -- a panel once swallowed the failure with
 #     2>/dev/null, so outside tmux the key simply did nothing and read as broken.
 #
 # sandbox_init unsets $TMUX, so "outside tmux" is this tier's default state and costs nothing

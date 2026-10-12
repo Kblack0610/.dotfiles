@@ -29,7 +29,7 @@
 #
 # Each server holds a SET of sessions, declared in .config/tmux-servers/<name>.conf.
 # `ensure` creates only the ones that are missing, keyed on session name, so booting a
-# world and repairing one are the same command — the pattern cockpit.sh already uses.
+# world and repairing one are the same command.
 #
 # Because sessions are per-socket, `Prefix+w` (choose-tree) inside a server can only
 # ever list that server's sessions. That is the whole point and needs no code:

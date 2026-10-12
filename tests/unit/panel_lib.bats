@@ -223,7 +223,7 @@ load_lib() {
 }
 
 @test "panel_fzf_preview emits the modern comma form with the border on the inner edge" {
-  # One dialect. notes-cockpit.sh, favourites.sh and agent-panel each spelled the legacy
+  # One dialect. favourites.sh, agent-panel and the retired task cockpit each spelled the legacy
   # colon form differently.
   load_lib
   assert_equal "$(panel_fzf_preview left 24)" '--preview-window=left,24%,border-right,wrap'
@@ -261,9 +261,8 @@ load_lib() {
 }
 
 @test "panel_new_window refuses outside tmux instead of silently doing nothing" {
-  # THE fix for notes-cockpit.sh:909-911, which called new-window with no $TMUX check and
-  # swallowed the failure with 2>/dev/null -- so outside tmux it did nothing at all and read
-  # to the user as a dead key.
+  # A panel once called new-window with no $TMUX check and swallowed the failure with
+  # 2>/dev/null -- so outside tmux it did nothing at all and read to the user as a dead key.
   load_lib
   run bash -c 'SELF="$2"; . "$1"; unset TMUX; panel_new_window nvim' _ "$PANEL_LIB" "$SKELETON"
   assert_failure

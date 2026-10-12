@@ -90,7 +90,7 @@ for f in .local/src/tmux/*.sh; do
 done
 # Same empty-list reasoning as FILES above: zero files checked means the glob broke,
 # not that the tree is clean.
-if [ ! -f .local/src/tmux/notes-cockpit.sh ]; then
+if [ ! -f .local/src/tmux/fleet.sh ]; then
   echo "house-rules: refusing to pass - .local/src/tmux/ did not enumerate" >&2
   rc=1
 elif [ "${#missing[@]}" -gt 0 ]; then

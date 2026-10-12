@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # lab-feed.sh is the ONE parser for a project's release feed, read by two surfaces that
-# used to disagree: the cockpit's project rows (Prefix+t) and `lab/projects/index.md`
+# used to disagree: the task cockpit's project rows (since retired) and `lab/projects/index.md`
 # (Prefix+N). The index half was broken for months and nobody could see it, because an
 # index that cannot resolve a version and an index with nothing to report both print `—`.
 #

@@ -7,9 +7,9 @@
 # of what the agent that asked would do, and nowhere to type. The contract existed and the
 # UI did not, so every nuanced answer had to be flattened into one of three words.
 #
-# The recommendation is a FIELD rather than a sentence in the question for the same reason:
-# advice buried in 900 characters of prose is advice the human reads only if they open the
-# ask, which is exactly the thing a one-key picker exists to avoid.
+# The recommendation is a FIELD rather than a sentence in the question: advice buried in 900
+# characters of prose is advice the human reads only if they open the ask, which is exactly
+# the thing a one-key picker exists to avoid.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -85,86 +85,6 @@ gate() { # [recommended]
   assert_output '11'
   run bash -c '"$AGENT_ASK" list alpha | cut -f11'
   assert_output 'approve'
-}
-
-# ── the picker's ordering ────────────────────────────────────────────────────
-
-@test "_ask_choices puts the recommendation first and marks it" {
-  run bash -c 'source "$COCKPIT"; _ask_choices "approve|hold|cancel" "hold"'
-  assert_line --index 0 'hold  (recommended)'
-  assert_line --index 1 'approve'
-  assert_line --index 2 'cancel'
-}
-
-@test "_ask_choices lists every option exactly once" {
-  run bash -c 'source "$COCKPIT"; _ask_choices "approve|hold|cancel" "hold" | wc -l'
-  assert_output '3'
-}
-
-@test "_ask_choices without a recommendation is the plain list, in order" {
-  run bash -c 'source "$COCKPIT"; _ask_choices "approve|hold|cancel" ""'
-  assert_line --index 0 'approve'
-  assert_line --index 1 'hold'
-  assert_line --index 2 'cancel'
-}
-
-@test "_ask_choices on empty options emits nothing rather than one blank line" {
-  run bash -c 'source "$COCKPIT"; _ask_choices "" "" | wc -c'
-  assert_output '0'
-}
-
-# The marker is display only. `approve  (recommended)` is not a word any consumer knows,
-# and wave.md's vocabulary is fixed - so it must never reach the answer field.
-@test "the recommended marker is stripped before the answer is recorded" {
-  local id; id="$(gate approve)"
-  run bash -c 'source "$COCKPIT"; ans="approve  (recommended)"; printf "%s" "${ans%%  (recommended)}"'
-  assert_output 'approve'
-}
-
-# ── the row ──────────────────────────────────────────────────────────────────
-
-@test "_opts_render lights the recommended option and dims the rest" {
-  run bash -c 'source "$COCKPIT"; _opts_render "approve|hold|cancel" "hold"'
-  assert_output --partial 'approve'
-  assert_output --partial 'hold'
-  assert_output --partial 'cancel'
-  # the lit colour appears exactly once - on the recommendation
-  run bash -c 'source "$COCKPIT"; _opts_render "approve|hold|cancel" "hold" | grep -o "$(printf "\033\[1;32m")" | wc -l'
-  assert_output '1'
-}
-
-@test "_opts_render with no recommendation renders the plain dim list" {
-  run bash -c 'source "$COCKPIT"; _opts_render "approve|hold|cancel" "" | sed "s/\x1b\[[0-9;]*m//g"'
-  assert_output '(approve|hold|cancel)'
-}
-
-@test "_opts_render keeps every option and the pipe separators" {
-  run bash -c 'source "$COCKPIT"; _opts_render "approve|hold|cancel" "hold" | sed "s/\x1b\[[0-9;]*m//g"'
-  assert_output '(approve|hold|cancel)'
-}
-
-@test "a gated task row surfaces the recommendation" {
-  local id; id="$(gate approve)"
-  run bash -c 'source "$COCKPIT"; _task_row personal /f.md 3 k1 personal/alpha "- [ ] x #ai <!-- ask:'"$id"' -->" | sed "s/\x1b\[[0-9;]*m//g"'
-  assert_output --partial 'needs you (approve|hold|cancel)'
-}
-
-@test "a gated task row without a recommendation is unchanged" {
-  local id; id="$(gate)"
-  run bash -c 'source "$COCKPIT"; _task_row personal /f.md 3 k1 personal/alpha "- [ ] x #ai <!-- ask:'"$id"' -->" | sed "s/\x1b\[[0-9;]*m//g"'
-  assert_output --partial 'needs you (approve|hold|cancel)'
-}
-
-@test "the row wire stays 7 fields with a recommendation on it" {
-  local id; id="$(gate approve)"
-  run bash -c 'source "$COCKPIT"; _task_row personal /f.md 3 k1 personal/alpha "- [ ] x #ai <!-- ask:'"$id"' -->" | awk -F"\t" "{print NF}"'
-  assert_output '7'
-}
-
-@test "_line_ask hands back the recommendation as its third field" {
-  local id; id="$(gate cancel)"
-  run bash -c 'source "$COCKPIT"; _line_ask "- [ ] x #ai <!-- ask:'"$id"' -->" | cut -f3'
-  assert_output 'cancel'
 }
 
 # ── free text ────────────────────────────────────────────────────────────────

@@ -6,16 +6,6 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  # `load` only handles .bash files, and the subject is .sh -- source it directly.
-  source "$COCKPIT"
-}
-
-@test "sourcing the cockpit does not launch the UI" {
-  # The source guard returned before the fzf preflight, so we got here at all.
-  # Prove the functions came with us.
-  declare -F classify   >/dev/null
-  declare -F _task_row  >/dev/null
-  declare -F rail       >/dev/null
 }
 
 @test "sandbox redirects HOME and TMPDIR away from the real ones" {
@@ -100,10 +90,4 @@ setup() {
   assert_line 'personal'
   assert_line 'work'
   assert_called 'notes config --profiles'
-}
-
-@test "cockpit state files land in the sandbox, not the real TMPDIR" {
-  [[ "$STATE"   == "$TMPDIR"/* ]]
-  [[ "$MODEF"   == "$TMPDIR"/* ]]
-  [[ "$PFILTER" == "$TMPDIR"/* ]]
 }

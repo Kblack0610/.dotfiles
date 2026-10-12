@@ -1,22 +1,11 @@
-# notes-cockpit - machine-local config
+# notes-cockpit - machine-local config for version rolls and summaries
 
-The notes cockpit (`~/.dotfiles/.local/src/tmux/notes-cockpit.sh`, opened with `prefix t`) reads three
-optional machine-local files from this directory. They are NOT committed - they carry private project
-names, repo paths, and a key reference, so they live only in your real `~/.config/notes-cockpit/`. This
-README is the only tracked file here.
+`notes-version-summary` (which `notes-roll` calls after every roll) reads two optional machine-local files from this directory.
+They are NOT committed - they carry repo paths and a key reference, so they live only in your real
+`~/.config/notes-cockpit/`. This README is the only tracked file here. (The directory keeps its name
+from the retired tmux task cockpit; `NOTES_COCKPIT_CONF` overrides it.)
 
 ## Files
-
-### `aliases` - short tag -> project name
-
-Keeps private project names out of the public cockpit script. One `prefix=project` per line; a task
-whose text starts with `prefix:` classifies under that project.
-
-```
-# ~/.config/notes-cockpit/aliases
-webapp=my-web-app
-api=my-api-service
-```
 
 ### `repos` - project -> code repo (for version summaries)
 
@@ -72,11 +61,10 @@ Model notes:
 
 ## How summaries get written
 
-- On roll: `V` in the cockpit freezes the version, then `notes-version-summary` writes a
+- On roll: `notes-roll <profile> <project>` freezes the version, then `notes-version-summary` writes a
   `<!-- summary:auto -->` block at the top of the frozen note. Best-effort - a gateway outage never
   fails the roll.
-- On demand: in the version browser (`o`), `C-s` (re)generates the highlighted version's summary and
-  refreshes the preview; `C-d`/`C-u` scroll the preview (vim half-page).
+- On demand: `notes-version-summary [--force] <profile> <project> <frozen-file.md>`.
 - Backfill existing versions: `notes-version-summary --backfill <profile> <project>` (add `--all` for
   every project, `--dry-run` to preview, `--force` to regenerate). The block sits between markers and
   is regenerable; the original note body is never touched.
@@ -112,30 +100,12 @@ read by the preflight while sitting empty in every live project, so wants now go
 (`notes ptask <project> add "..."`). The agents' own working board is `<project>/agent/README.md`
 (`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
 
-Surfaced in the cockpit: pressing `o` on a project pins an `= overview =` entry at the TOP of the
-browser (the whole `summary.md` in the preview) above the roadmap; `C-s` on that row regenerates
-the overview. Rolling a version (`V`) refreshes the overview automatically. `--dry-run` previews.
+Rolling a version refreshes the overview automatically. `--dry-run` previews.
 
-## The roadmap (`o`)
+## The roadmap
 
-A project sheet holds a PAST, a PRESENT and a FUTURE, and `o` shows all three in one list that
-reads down out of the future and into the past:
-
-```
-= overview =                     the summary.md index above
-  + v1.15.0  planned  3 open     the roadmap, furthest first
-  + v1.14.0  planned  6 open
-  > v1.13.0  current  2 open     the wave /wave runs and V freezes
-    v1.12.0                      frozen release records, newest first
-    v1.11.1
-```
-
-- `a` adds a task to the highlighted wave; `N` plans a new version (it opens with its first
-  task - a planned wave with nothing in it is a heading that says nothing).
-- `enter` opens the sheet (a wave row) or the note (overview / frozen row).
-- The preview of a wave row is that wave's section of the live sheet plus its AI note.
-
-On the sheet these are just more `## Wave:` sections below the current one:
+A project sheet holds a PAST (frozen `versions/*.md`), a PRESENT (the current wave) and a FUTURE
+(planned waves). On the sheet the future is just more `## Wave:` sections below the current one:
 
 ```markdown
 # myapp
@@ -148,8 +118,8 @@ Version: v1.13.0
 - [ ] android: sweep remaining screens
 ```
 
-The FIRST `## Wave` is the current one, always - `notes ptask`, `notes board`, `/wave` and the
-cockpit all read it by position, which is exactly why they ignore everything planned below it.
+The FIRST `## Wave` is the current one, always - `notes ptask`, `notes board` and `/wave` all read
+it by position, which is exactly why they ignore everything planned below it.
 Anything writing a planned section must keep it there; `notes ptask <project> add --to vX.Y.Z`
 is the sanctioned way, and it inserts in version order.
 
@@ -164,8 +134,9 @@ notes ptask <project> list --all                     # every wave, with its vers
 
 ### A version does not close until it is finished
 
-`V` (and the headless `--roll-now`) REFUSES to roll while the current wave has open tasks. It
-names them and points at `move --to`. `--force` overrides.
+`notes projects --roll` (and so `notes-roll`) REFUSES to roll while the current wave has open
+tasks. It names them and points at `move --to`. `--force` overrides; `notes-roll ... carry` moves
+them to the next wave instead.
 
 This is deliberate. Rolling used to freeze the whole sheet and reset it to an empty wave, so
 anything still unchecked left the live sheet and survived only inside the frozen note - which
@@ -202,12 +173,3 @@ Both doors exist on purpose. The failure mode of a proof field is not people lyi
 people leaving it blank until it means nothing - and the roll gate above only means something if
 a ticked checkbox does. `notes projects --agent-note <project> [--version vX.Y.Z]` resolves (and
 creates) the path, so no writer has to build it.
-
-### Accepting suggestions (the `g` key)
-
-`g` on a project row opens a multi-select of that project's `Next up` tasks (TAB to mark, enter to
-accept). Each accepted task is added to the project sheet via `ptask add`, then - if the project has a
-`repos` entry (for the `cd` target) and a wired tracker with an epic in its `<!-- cockpit: … -->`
-marker - you are offered to file it as a ticket (`ticket create <epic> "<task>" --labels=todo`). No
-`repos` entry, no tracker, or no `ticket` on PATH -> it adds to the sheet only, no error. The overview
-refreshes afterward.
