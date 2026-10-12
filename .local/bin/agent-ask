@@ -8,9 +8,10 @@
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
-#   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify
+#   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify;
+#                                       run its `resume` command (via ask-resume)
 #   agent-ask cancel <id>               flip to cancelled
-#   agent-ask count [project|--all]     number of pending asks (for cockpit badges)
+#   agent-ask count [project|--all]     number of pending asks (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
 #   agent-ask recommend <id> <option>   set/replace the recommended option
@@ -23,12 +24,15 @@
 # headless and CANNOT block: they post and exit, and a later fire / `/captain resume`
 # consumes the answer. `post --wait` is a secondary convenience for an attended agent.
 #
-# ANSWERING IS ONLY HALF A LOOP. `answer` records the decision and notifies; it does not
-# re-run the thing that asked. That producer-side half is `resumable` + `mark-resumed`:
-# an ask posted with `--resume "<command>"` stays listed by `resumable` until somebody
-# runs the command and stamps `resumed_at`. A wave that posted a gate, got `approve`, and
-# never moved is exactly what this pair exists to make impossible - `resumed_at` empty on
-# an answered ask IS the "your answer went nowhere" signal, and the cockpit renders it.
+# ANSWERING IS STARTING. `answer` records the decision, notifies, and then hands the id to
+# `ask-resume`, which runs the ask's `resume` command (a `/wave` resume goes through
+# wave-start, which detaches) and exits silently for an ask that has none. Every surface
+# that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
+# can record an answer that silently goes nowhere. `resumable` + `mark-resumed` remain
+# the queue behind it: `wave-start` drains `ask-resume --all` as a backstop for an answer
+# whose resume failed to start, and `resumed_at` empty on an answered ask is still the "your answer went nowhere" signal.
+# AGENT_ASK_NO_RESUME=1 records the answer only (the test sandbox sets it, so no test
+# can start a real wave by answering a gate).
 #
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
 # "PR #1036 is green, merge it?" - the loop's common ask under AUTONOMY=pr.
@@ -242,6 +246,12 @@ cmd_answer() {
   local project; project="$(field "$f" project)"
   agent-notify -t "ask answered" "${project}: ${answer}" >/dev/null 2>&1 || true
   echo "answered $id: $answer" >&2
+
+  # Answering IS starting (see header). ask-resume marks before it runs and detaches the
+  # long work, so this returns promptly; its failure must not fail the answer.
+  if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
+    ask-resume "$id" >&2 || true
+  fi
 }
 
 cmd_cancel() {

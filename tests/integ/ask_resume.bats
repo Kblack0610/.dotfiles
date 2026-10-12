@@ -110,6 +110,45 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_output "$first"
 }
 
+# -- answering is starting --
+# agent-web, fleet.sh and the CLI all answer through `agent-ask answer`, so the resume
+# has to happen there or an answer given on one of them goes nowhere.
+
+@test "answering a gate runs its resume, once, with no separate ask-resume call" {
+  unset AGENT_ASK_NO_RESUME
+  local id; id="$(gate alpha)"
+  run "$AGENT_ASK" answer "$id" approve
+  assert_success
+  run calls
+  assert_output --partial 'wave-start alpha --verb start'
+  run "$AGENT_ASK" resumable alpha
+  assert_output ''
+  ask-resume --all
+  run bash -c 'grep -c "^wave-start" "$NOTES_FIXTURE/calls.log"'
+  assert_output '1'
+}
+
+@test "answering a plain question resumes nothing and still succeeds" {
+  unset AGENT_ASK_NO_RESUME
+  local id; id="$("$AGENT_ASK" post --project alpha --kind question 'just wondering?')"
+  run "$AGENT_ASK" answer "$id" ok
+  assert_success
+  run calls
+  refute_output --partial 'wave-start'
+  refute_output --partial 'claude '
+}
+
+@test "a resume that fails does not fail the answer, and the answer is recorded" {
+  unset AGENT_ASK_NO_RESUME
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/wave-start"
+  chmod +x "$SANDBOX/bin/wave-start"
+  local id; id="$(gate alpha)"
+  run "$AGENT_ASK" answer "$id" approve
+  assert_success
+  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^status: //p"' _ "$id"
+  assert_output 'answered'
+}
+
 # ── running ──────────────────────────────────────────────────────────────────
 
 @test "a /wave resume goes through wave-start, not a bare claude" {
@@ -161,7 +200,7 @@ EOF
 }
 
 @test "resuming an id with no pending resume is a silent no-op, not an error" {
-  # The cockpit calls this on EVERY answer. An ordinary question must not print or fail.
+  # `agent-ask answer` calls this on EVERY answer. An ordinary question must not print or fail.
   local id; id="$("$AGENT_ASK" post --project alpha --kind question 'just wondering?')"
   "$AGENT_ASK" answer "$id" ok >/dev/null 2>&1
   run ask-resume "$id"
