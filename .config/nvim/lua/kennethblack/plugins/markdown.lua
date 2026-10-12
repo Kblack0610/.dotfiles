@@ -632,40 +632,52 @@ return {
         return sweep_focus(lines, inherit)
       end
 
-      local function file_focus_done()
-        local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_buffer(lines, true)
-        if not changed then
-          return
-        end
-        local cur = vim.api.nvim_win_get_cursor(0)
-        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
-        local row = math.min(cur[1], vim.api.nvim_buf_line_count(0))
-        pcall(vim.api.nvim_win_set_cursor, 0, { row, cur[2] })
+      -- A task line with its priority and wave tags removed, so a line and the copy the sweep
+      -- re-tagged (`#high` appended to an untagged task, a wave tag moved) compare equal.
+      local function task_key(line)
+        return (strip_priority(strip_wave(line)))
       end
 
-      -- Sweep, then put the cursor on wherever the line currently at `track_lnum` ended up
-      -- (matched by exact text), so a direct priority set lands the cursor on the task it
-      -- just moved instead of leaving it on the old row. Falls back to a row-clamp when the
-      -- line can't be found (e.g. it was the placeholder). No-op when the sweep changes nothing.
-      local function sweep_and_follow(track_lnum)
+      -- Sweep, then put the cursor on wherever the line currently at `track_lnum` ended up,
+      -- so the cursor stays on the task it was on instead of on the old row number. Matched
+      -- by exact text first, then by `task_key` (the save sweep rewrites tags). Falls back to
+      -- a row-clamp when the line can't be found, or is blank (a blank would match the first
+      -- blank anywhere). No-op when the sweep changes nothing. `inherit` is passed to the
+      -- sweep: OFF for the live cycles, ON for save (see rebuild_focus_body).
+      local function sweep_and_follow(track_lnum, inherit)
         local target = vim.fn.getline(track_lnum)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_buffer(lines, false) -- live cycle: tag-driven, no drop-to-tag
+        local out, changed = sweep_buffer(lines, inherit or false)
         if not changed then
           return
         end
         local col = vim.api.nvim_win_get_cursor(0)[2]
         vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
         local row
-        for i, l in ipairs(out) do
-          if l == target then
-            row = i
-            break
+        if target:match "%S" then
+          for i, l in ipairs(out) do
+            if l == target then
+              row = i
+              break
+            end
+          end
+          if not row and target:match "^%s*%- %[" then
+            local key = task_key(target)
+            for i, l in ipairs(out) do
+              if task_key(l) == key then
+                row = i
+                break
+              end
+            end
           end
         end
         row = row or math.min(track_lnum, vim.api.nvim_buf_line_count(0))
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
+      end
+
+      -- The on-save sweep: drop-to-tag ON, cursor follows the task it was on.
+      local function file_focus_done()
+        sweep_and_follow(vim.api.nvim_win_get_cursor(0)[1], true)
       end
 
       -- Cycle the priority tag on a range by `dir` (+1 raise / -1 lower). The next level is
