@@ -37,7 +37,7 @@ daily notes inside `employment/jobs/<job>/` while a personal machine uses
 
 **A job is one line.** Every path key defaults to the org convention (`daily/`, `refs/`,
 `backlogs/fun.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
-`inbox/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
+`knowledge/`, `inbox/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
 differs. `personal` is the sole profile that overrides them all, because its root IS the
 vault. An org that still holds a `log/` from before the directory was renamed is migrated
 to `daily/` on the next `notes today`; a profile that explicitly pins `daily = "log"`
@@ -62,7 +62,7 @@ keeps it.
 | `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `inbox/_archive/` (pick one selector). |
 | `notes seed-backlogs [--from N] [--force]` | One-time migration: lift `## Fun` + `## Carry Over` out of a daily note into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<id>-<slug>.md` (id = `YYYYMMDDThhmm`). |
-| `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or rebuild `index/` backlinks + MOC. |
+| `notes index [--rebuild]` | Scan `[[wikilinks]]` across `permanent/` and `knowledge/`; report or rebuild `index/` backlinks + MOC (zettels by tag, then `## Knowledge` by subdir). |
 | `notes doctor` | Diagnose: config/profile, dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans, and whether the **binary is stale** against its own source. |
 | `notes config` | Print the resolved profile + all paths. |
 
