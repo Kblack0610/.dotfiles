@@ -213,6 +213,10 @@ struct RawProfile {
     zettel: String,
     #[serde(default = "default_index")]
     index: String,
+    /// Curated, hand-organised reference notes (subdirs by topic). `notes index` lists them
+    /// in the MOC under `## Knowledge` and `notes tags` scans them. A missing dir is fine.
+    #[serde(default = "default_knowledge")]
+    knowledge: String,
     /// Defaults to `projects/current` — the same value the three non-personal orgs each spell out.
     /// Still `Option` because "this org has no projects root" is a real state (resolve() maps None
     /// through to `project_index`/`board_path` being None), distinct from "unset, so use default".
@@ -301,6 +305,10 @@ fn default_index() -> String {
     "index".to_string()
 }
 
+fn default_knowledge() -> String {
+    "knowledge".to_string()
+}
+
 fn default_projects() -> Option<String> {
     Some("projects/current".to_string())
 }
@@ -353,6 +361,8 @@ pub struct Profile {
     pub zettel: PathBuf,
     pub meetings: PathBuf,
     pub index: PathBuf,
+    /// Curated knowledge tree (`<root>/knowledge` by default), listed in the MOC.
+    pub knowledge: PathBuf,
     pub projects: Option<PathBuf>,
     /// Hand-curated cross-project index (`lab/projects/index.md`). The daily note links
     /// it from the footer (`Projects: [[…]]`); it used to also copy the index's
@@ -461,6 +471,7 @@ fn builtin_default() -> RawConfig {
             archive: "journal/daily_archive".into(),
             zettel: "journal/permanent".into(),
             index: "journal/index".into(),
+            knowledge: default_knowledge(),
             projects: None,
             meetings: None,
             inbox: "inbox".into(),
@@ -615,7 +626,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         if let Some(parent) = join(&rp.fun).parent() {
             v.push(parent.to_path_buf()); // backlogs dir (parent of fun.md)
         }
-        v.push(root.join("knowledge"));
+        v.push(join(&rp.knowledge));
         v
     } else {
         rp.tag_dirs.iter().map(|s| join(s)).collect()
@@ -654,6 +665,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
             .map(|s| join(s))
             .unwrap_or_else(|| root.join("meetings")),
         index: join(&rp.index),
+        knowledge: join(&rp.knowledge),
         projects: rp.projects.as_ref().map(|s| join(s)),
         // `<projects-dir>/../index.md` — e.g. lab/projects/current → lab/projects/index.md
         project_index: rp
@@ -774,6 +786,50 @@ pub fn print_comms(c: &Comms) {
     }
 }
 
+/// A fully-populated profile rooted at `root`, for unit tests across the crate.
+#[cfg(test)]
+pub(crate) fn test_profile(root: &str) -> Profile {
+    let r = PathBuf::from(root);
+    Profile {
+        name: "test".into(),
+        source: "test".into(),
+        root: r.clone(),
+        daily: r.join("journal/daily"),
+        refs: r.join("journal/refs"),
+        refs_rel: "journal/refs".into(),
+        fun: r.join("journal/backlogs/fun.md"),
+        carryover: r.join("journal/backlogs/carryover.md"),
+        scheduled: r.join("journal/backlogs/scheduled.md"),
+        recurring: r.join("journal/backlogs/recurring.md"),
+        schedule: r.join("journal/schedule.md"),
+        footer_links: vec![
+            ("Backlog".into(), r.join("journal/backlogs/fun.md")),
+            ("Schedule".into(), r.join("journal/schedule.md")),
+        ],
+        watches: None,
+        watches_state: r.join("state/watch-companion"),
+        clickup_list: None,
+        rollup: Vec::new(),
+        index_orgs: Vec::new(),
+        summaries: r.join("journal/summaries"),
+        continuous: r.join("journal/summaries/continuous"),
+        monthly: r.join("journal/summaries/monthly"),
+        archive: r.join("journal/daily_archive"),
+        zettel: r.join("journal/permanent"),
+        meetings: r.join("journal/meetings"),
+        index: r.join("journal/index"),
+        knowledge: r.join("knowledge"),
+        projects: None,
+        project_index: None,
+        vault: PathBuf::from(root),
+        board: PathBuf::from(root).join("lab/projects/board.md"),
+        inbox: r.join("inbox"),
+        tag_scan: Vec::new(),
+        state_dir: r.join(".state"),
+        log_file: r.join(".state/journal.log"),
+    }
+}
+
 /// Build a vault-relative `[[wikilink]]` body for a file under `root`.
 pub fn wikilink(root: &Path, file: &Path) -> String {
     let rel = file.strip_prefix(root).unwrap_or(file);
@@ -842,6 +898,7 @@ pub fn print(p: &Profile) {
     println!("zettel      {}", p.zettel.display());
     println!("meetings    {}", p.meetings.display());
     println!("index       {}", p.index.display());
+    println!("knowledge   {}", p.knowledge.display());
     println!("inbox       {}", p.inbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(

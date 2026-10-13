@@ -1321,44 +1321,7 @@ mod tests {
     use super::*;
 
     fn profile(root: &str) -> Profile {
-        let r = PathBuf::from(root);
-        Profile {
-            name: "test".into(),
-            source: "test".into(),
-            root: r.clone(),
-            daily: r.join("journal/daily"),
-            refs: r.join("journal/refs"),
-            refs_rel: "journal/refs".into(),
-            fun: r.join("journal/backlogs/fun.md"),
-            carryover: r.join("journal/backlogs/carryover.md"),
-            scheduled: r.join("journal/backlogs/scheduled.md"),
-            recurring: r.join("journal/backlogs/recurring.md"),
-            schedule: r.join("journal/schedule.md"),
-            footer_links: vec![
-                ("Backlog".into(), r.join("journal/backlogs/fun.md")),
-                ("Schedule".into(), r.join("journal/schedule.md")),
-            ],
-            watches: None,
-            watches_state: r.join("state/watch-companion"),
-            clickup_list: None,
-            rollup: Vec::new(),
-            index_orgs: Vec::new(),
-            summaries: r.join("journal/summaries"),
-            continuous: r.join("journal/summaries/continuous"),
-            monthly: r.join("journal/summaries/monthly"),
-            archive: r.join("journal/daily_archive"),
-            zettel: r.join("journal/permanent"),
-            meetings: r.join("journal/meetings"),
-            index: r.join("journal/index"),
-            projects: None,
-            project_index: None,
-            vault: PathBuf::from(root),
-            board: PathBuf::from(root).join("lab/projects/board.md"),
-            inbox: r.join("inbox"),
-            tag_scan: Vec::new(),
-            state_dir: r.join(".state"),
-            log_file: r.join(".state/journal.log"),
-        }
+        crate::config::test_profile(root)
     }
 
     /// A note left behind by an older build: the dead headings go, the human's Due items
