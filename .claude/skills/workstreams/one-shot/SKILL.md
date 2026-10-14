@@ -39,7 +39,11 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    ```
    One landing step per call, absolute paths, no `;` or pipes after a push or merge. Then reap the worktree (`wt done`, or `git worktree remove`) and do the project's post-land step (unity-core-playground: pull the main checkout only when the editor is not playing, otherwise report "pull waiting").
 
-7. **Record.** `notes ptask <project> --agent done "<title>" --proof pr:<N>`. If a row on the human's sheet asked for this work, `done --proof pr:<N>` that row too. With `--pr-only`, record the PR as in flight instead of done.
+7. **Record.** Close the agent-board row: `notes ptask <project> --agent done "<title>" --proof pr:<N>`. Then put the result on the human's sheet too, because a one-shot is always an ask the human wrote. If a sheet row already asked for this work, `done --proof pr:<N>` it. Otherwise add one tagged `#oneshot` and close it straight away:
+   ```bash
+   notes ptask <project> add "<title> #oneshot" '#low' && notes ptask <project> done "<title> #oneshot" --proof pr:<N>
+   ```
+   `#low` stops the CLI defaulting the row to `#high`. Quote it, or zsh reads it as a comment. With `--pr-only`, add the `#oneshot` row but leave it open with the PR in the title, and leave the agent row started. If the project has no sheet (`no current project named ...`), say so in the wind-down note and skip it.
 
 8. **Wind down.** Invoke the `wind-down` skill. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **Blocked mode** (hard gate or red gate): write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
