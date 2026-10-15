@@ -1,6 +1,7 @@
 # ============================================================================
 # Paru/Pacman Package List for CachyOS/Arch
-# Install with: paru -S --needed - < ~/.config/paru/packages.txt
+# Install with: grep -vE '^\s*(#|$)' ~/.config/paru/packages.txt | paru -S --needed -
+# (paru reads comment lines as package names; one containing / is taken as repo/pkg and aborts the run)
 # ============================================================================
 
 # --- Core System ---

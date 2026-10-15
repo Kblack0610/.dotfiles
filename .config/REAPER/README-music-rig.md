@@ -27,7 +27,7 @@ The Scarlett Solo has no MIDI ports. The keyboard must be USB-MIDI (or go throug
 | Sampler | sfizz (VST3), plays free SFZ libraries |
 | Chiptune | Furnace tracker (NES, Game Boy, Genesis, SNES chips); export WAV, mix in REAPER |
 
-Install or update everything: `paru -S --needed - < ~/.config/paru/packages.txt`
+Install or update everything: `grep -vE '^\s*(#|$)' ~/.config/paru/packages.txt | paru -S --needed -` (the grep matters: paru aborts on the file's comment lines)
 
 Optional, manual: Vital (wavetable synth, needs a manual .deb download for `vital-synth`), FamiStudio (`famistudio`, AUR, NES-focused).
 
