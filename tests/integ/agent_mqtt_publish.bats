@@ -185,3 +185,38 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_output --partial $'agents/testhost/runner/alpha\t'
   [ ! -s "$PUBLOG" ]
 }
+
+# ── numeric fields for Prometheus ─────────────────────────────────────────────
+# mqtt2prom (kpetremann/mqtt-exporter) keeps only numeric/boolean JSON fields, so the
+# text `state` never reaches Prometheus. These booleans are what the Command Center
+# dashboard counts; without them "watches tripped" and "runners failed" cannot be drawn.
+
+@test "a watch carries tripped and stale booleans" {
+  local now; now="$(date +%s)"
+  seed_watch fresh-ok OK '' "$(( now - 60 ))"
+  seed_watch dead-ok  OK '' "$(( now - 3600 ))"
+  printf '%s' "$(( now - 60 ))" > "$WATCH_STATE_DIR/skill-drift.lastrun"
+  run "$PUB" --quiet
+  assert_success
+  local t f d
+  t="$(payload agents/testhost/watch/skill_drift)"
+  f="$(payload agents/testhost/watch/fresh_ok)"
+  d="$(payload agents/testhost/watch/dead_ok)"
+  assert_equal "$(jq -c '[.tripped, .stale]' <<< "$t")" '[true,false]'
+  assert_equal "$(jq -c '[.tripped, .stale]' <<< "$f")" '[false,false]'
+  assert_equal "$(jq -c '[.tripped, .stale]' <<< "$d")" '[false,true]'
+}
+
+@test "a runner whose last run STALLED, or whose state is error, is failed" {
+  seed_runner beta
+  seed_status beta error dotfiles 'x' 1789700000
+  seed_runner gamma
+  seed_status gamma idle dotfiles 'x' 1789700000
+  printf 'STALLED' > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/alpha)")" false
+  assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/beta)")" true
+  assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/gamma)")" true
+  assert_equal "$(jq -r '.running | type' <<< "$(payload agents/testhost/runner/alpha)")" boolean
+}

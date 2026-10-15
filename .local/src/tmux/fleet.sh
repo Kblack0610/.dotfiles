@@ -48,6 +48,12 @@ _RUNS_LIB="${AGENTCTL_RUNS_LIB:-$HOME/.local/lib/agentctl-runs.sh}"
 [ -r "$_RUNS_LIB" ] || _RUNS_LIB="$(dirname "$SELF")/../../lib/agentctl-runs.sh"
 # shellcheck source=/dev/null
 [ -r "$_RUNS_LIB" ] && . "$_RUNS_LIB"
+# Staleness is judged once, in the shared lib, so this view and the MQTT/Prometheus
+# publisher cannot disagree about which watches are stale.
+_WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
+[ -r "$_WATCH_LIB" ] || _WATCH_LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/sentinel-watch.sh"
+# shellcheck source=/dev/null
+. "$_WATCH_LIB"
 WATCH_DIR="${WATCH_DIR:-$HOME/.agent/watches}"
 WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
 
@@ -101,24 +107,6 @@ _yaml_desc() {
     END { if (block) print "" }
   ' "$1" 2>/dev/null
 }
-
-# _interval_secs <file> -> the watch's poll interval in seconds. Same grammar and 300s
-# default as watch-companion-loop's to_secs; that writer lives in the private overlay, so
-# this mirrors it rather than sourcing it.
-_interval_secs() {
-  local d n
-  d="$(awk '/^interval:/ { sub(/^interval:[[:space:]]*/, ""); gsub(/["'\'' ]/, ""); print; exit }' "$1" 2>/dev/null)"
-  [[ "$d" =~ ^([0-9]+)([smhd]?)$ ]] && (( BASH_REMATCH[1] > 0 )) || { printf 300; return; }
-  n="${BASH_REMATCH[1]}"
-  case "${BASH_REMATCH[2]:-s}" in
-    s) printf '%s' "$n" ;; m) printf '%s' $(( n * 60 )) ;;
-    h) printf '%s' $(( n * 3600 )) ;; d) printf '%s' $(( n * 86400 )) ;;
-  esac
-}
-
-# A watch whose last poll is older than this many intervals is STALE. A dead sentinel
-# leaves every .state frozen at its last value, so without this an unpolled OK reads green.
-WATCH_STALE_FACTOR=3
 
 # _clip <text> <width> -> text truncated to width with an ellipsis marker.
 # Watch descriptions are paragraphs (one is 300+ chars); unclipped they wrap and destroy
@@ -317,8 +305,7 @@ watches() {
     esac
     age="$(_age "$lastrun")"
     stale=''
-    if [[ "$lastrun" =~ ^[0-9]+$ ]] \
-       && (( now - lastrun > WATCH_STALE_FACTOR * $(_interval_secs "$y") )); then
+    if watch_is_stale "$y" "$lastrun" "$now"; then
       stale=" ${C_INP}STALE${C_OFF}"
       [ "$state" = OK ] && { glyph="$G_ATTN"; col="$C_INP"; }
     fi
