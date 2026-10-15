@@ -1,0 +1,12 @@
+[Desktop Entry]
+# Shadows /usr/share/applications/cockos-reaper.desktop. Runs REAPER on PipeWire's JACK
+# layer at 128 samples / 48kHz (~2.7ms per buffer) so a guitar can be played live through
+# amp sims. The quantum request is scoped to this process; desktop audio keeps its own.
+Type=Application
+Name=REAPER
+Comment=REAPER (low-latency, PipeWire JACK)
+Exec=env PIPEWIRE_QUANTUM=128/48000 pw-jack /usr/lib/REAPER/reaper %F
+Icon=cockos-reaper
+Categories=Audio;AudioVideo;
+MimeType=application/x-reaper-project;application/x-reaper-project-backup;application/x-reaper-theme
+Terminal=false
