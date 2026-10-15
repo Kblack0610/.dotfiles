@@ -78,7 +78,7 @@ _badge() {
     0) printf '%s   OK   %s' "$C_OK" "$C_OFF" ;;
     1) printf '%s  WARN  %s' "$C_WARN" "$C_OFF" ;;
     2) printf '%s  RED   %s' "$C_RED" "$C_OFF" ;;
-    *) printf '%s NO DATA %s' "$C_NONE" "$C_OFF" ;;
+    *) printf '%sNO DATA %s' "$C_NONE" "$C_OFF" ;;
   esac
 }
 _dom() { _num "cc:domain_status/$1"; }
@@ -132,6 +132,7 @@ _pad() {
 
 render() {
   local cols="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"
+  local lines="${LINES:-$(tput lines 2>/dev/null || echo 24)}"
   local per=$(( cols / (TILE_W + 1) )); (( per < 1 )) && per=1
   local inner=$(( TILE_W - 4 ))
   printf '%sCOMMAND CENTER%s  %s%s%s\n\n' "$C_HEAD" "$C_OFF" "$C_DIM" "$(date '+%H:%M:%S')" "$C_OFF"
@@ -142,6 +143,16 @@ render() {
     return 0
   fi
   local i j n=${#TILES[@]} t title st l1 l2 line
+  # Tiles are 6 lines tall; header and footer take 5 more. When the grid would not fit,
+  # draw one line per domain instead of letting the top rows scroll off screen.
+  if (( ( (n + per - 1) / per ) * 6 + 5 > lines )); then
+    for (( j = 0; j < n; j++ )); do
+      IFS=$'\x1f' read -r title st l1 l2 <<< "${TILES[$j]}"
+      printf '%s %s%s%s %s %s%s%s\n' "$(_badge "$st")" "$C_HEAD" "$(_pad "$title" 17)" "$C_OFF" \
+        "$l1" "$C_DIM" "${l2:+ - $l2}" "$C_OFF"
+    done
+    n=0
+  fi
   for (( i = 0; i < n; i += per )); do
     for line in top title badge l1 l2 bottom; do
       for (( j = i; j < i + per && j < n; j++ )); do
@@ -178,12 +189,19 @@ fi
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0 # sourced by the test suite
 
 trap 'tput cnorm 2>/dev/null; exit 0' INT TERM
+# A resize must redraw at the new width. bash only interrupts `read` for a signal that
+# has a trap, so the empty trap is what makes WINCH end the wait below.
+trap ':' WINCH
 tput civis 2>/dev/null
 while :; do
+  # Measured HERE, where stdout is the terminal. Inside $(frame) tput sees a pipe and
+  # answers 80, which drew two tiles a row in a 144-column window.
+  COLUMNS="$(tput cols 2>/dev/null || echo 80)"
+  LINES="$(tput lines 2>/dev/null || echo 24)"
+  export COLUMNS LINES
   out="$(frame)"
   printf '\033[H\033[2J%s' "$out"
-  # One wait per frame: a keypress ends it early (q quits, anything else redraws), and a
-  # window resize interrupts read, which also redraws at the new width.
+  # One wait per frame: a keypress or a resize ends it early (q quits).
   if read -rsn1 -t "$REFRESH_SECS" key; then
     [ "$key" = q ] && { tput cnorm 2>/dev/null; exit 0; }
   fi

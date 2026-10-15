@@ -9,7 +9,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   CC="$REPO_ROOT/.local/src/tmux/command-center.sh"
-  export NO_COLOR=1 COLUMNS=140 CC_PROM_URL=http://prom.test
+  export NO_COLOR=1 COLUMNS=140 LINES=40 CC_PROM_URL=http://prom.test
   # curl stub: answers the cc:* query from $CC_FIXTURE, the red-items query with one item,
   # and fails outright when CURL_FAIL is set.
   cat > "$SANDBOX/bin/curl" <<'STUB'
@@ -74,4 +74,20 @@ tile_status() { # tile_status <title> -> the badge word under that tile's title
   run "$CC" --once
   assert_failure
   assert_output --partial 'recording rules not loaded'
+}
+
+@test "a terminal too short for the grid gets one line per domain, every domain still shown" {
+  LINES=12 run "$CC" --once
+  assert_success
+  refute_output --partial '+----'
+  assert_output --regexp 'RED +LLM'
+  assert_output --regexp 'OK +CLUSTER home-k3s +nodes 8/8 ready'
+  assert_output --regexp 'NO DATA +MACHINES'
+}
+
+@test "every tile row is the same width, whatever the badge says" {
+  run "$CC" --once
+  local widths
+  widths="$(grep -E '^[|+]' <<< "$output" | awk '{ print length($0) }' | sort -u | wc -l)"
+  assert_equal "$widths" 1
 }
