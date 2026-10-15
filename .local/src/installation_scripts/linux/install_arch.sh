@@ -147,6 +147,13 @@ install_zsh() {
     fi
 }
 
+# One ssh-agent for shells and systemd user services. .zshrc and
+# .config/environment.d/ssh-agent.conf point SSH_AUTH_SOCK at this socket.
+setup_ssh_agent() {
+    log_section "Enabling the systemd ssh-agent socket"
+    systemctl --user enable --now ssh-agent.socket
+}
+
 # Override: Install Neovim
 install_nvim() {
     log_section "Installing Neovim"
@@ -732,6 +739,7 @@ install_all() {
 
     # Shell setup
     install_zsh
+    setup_ssh_agent
     install_oh_my_zsh
     install_starship
 
