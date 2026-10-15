@@ -225,6 +225,9 @@ test_notifications.sh
 # fleet-pulse: GATUS_BASE/FLEET_ROSTER name real infra, and `token` is the shared
 # bearer token for every heartbeat. Both live in the private overlay.
 .config/fleet-pulse/
+# command-center: CC_PROM_URL / CC_GRAFANA_URL name real infra; the env file lives in
+# the private overlay (~/.dotfiles-private/.config/command-center/env).
+.config/command-center/
 .config/smug/
 .config/llm-judge/
 .config/rulesync-global/

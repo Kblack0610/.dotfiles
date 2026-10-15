@@ -77,7 +77,7 @@ manifest_rows() {
     # instead of hopping to one this machine opted out of.
     world_hidden "$world" && continue
     while read -r name mdir cmd; do
-      case "$name" in '' | '#'*) continue ;; esac
+      case "$name" in '' | '#'* | *:*) continue ;; esac # session:window adds a window, owns no dir
       [ -n "$mdir" ] || continue
       mdir="${mdir/#\~/$HOME}"
       printf '%s %s %s\n' "$world" "$name" "${mdir%/}"

@@ -474,3 +474,14 @@ in_world() {
   assert_success
   assert_called 'switch-client -t has space here'
 }
+
+@test "--route ignores a session:window line, which declares a window and not a session" {
+  # hub.conf's `hub:infra ~/.agent/watches` must not make that directory route to a
+  # session named "hub:infra" that tmx never creates.
+  mkdir -p "$HOME/declared-win"
+  printf 'hub:board ~/declared-win  some-board\n' >> "$TMUX_SERVERS_DIR/hub.conf"
+  run "$SESSIONIZER" --route "$HOME/declared-win"
+  assert_success
+  refute_output --partial 'hub:board'
+  assert_output 'here declared-win'
+}
