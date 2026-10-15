@@ -45,9 +45,9 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # for the same items. Anything else falls back to a plain headless claude.
 #
 # The Anthropic transport env is scrubbed first. A caller may be `delivery-loop`, which
-# exports ANTHROPIC_BASE_URL pointing at the LiteLLM gateway's Lazer (client proxy) route;
-# inheriting that would silently push a personal project's notes-vault content through a
-# client's proxy. Resumes run on the native subscription, always.
+# exports ANTHROPIC_BASE_URL pointing at the LiteLLM gateway's Lazer route; inheriting
+# that would silently move a resume onto the paid Lazer pool instead of the route it chose.
+# Resumes run on the native subscription, always.
 run_resume() { # $1=id $2=project $3=command
   local id="$1" project="$2" cmd="$3"
   unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY

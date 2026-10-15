@@ -51,7 +51,7 @@ ANTHROPIC_VERTEX_BASE_URL
 ANTHROPIC_VERTEX_PROJECT_ID
 
 # --- opencode. Choosing the config IS choosing the provider: personal.json pins
-# local MLX, opencode.json reaches the paid client proxy. Four names select it
+# local MLX, opencode.json reaches paid Lazer. Four names select it
 # and one holds the credentials, so all five have to go.
 OPENCODE_CONFIG
 OPENCODE_CONFIG_FILE

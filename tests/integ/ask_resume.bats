@@ -235,9 +235,9 @@ EOF
   assert_output --partial "would run: claude -p '/captain status'"
 }
 
-# The Lazer route is a CLIENT proxy. delivery-loop exports ANTHROPIC_BASE_URL pointing at
-# it, and a resume inherits that env unless it is scrubbed — which would push a personal
-# project's notes-vault content through a client's infrastructure.
+# delivery-loop exports ANTHROPIC_BASE_URL pointing at the gateway's Lazer route, and a
+# resume inherits that env unless it is scrubbed, which would silently move the resume
+# onto the paid Lazer pool.
 @test "the Anthropic transport env is scrubbed before a resume runs" {
   cat > "$SANDBOX/bin/wave-start" <<'EOF'
 #!/usr/bin/env bash
