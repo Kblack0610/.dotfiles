@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # phone-backup - pull an Android phone's user storage over adb and archive it on the NAS
-# Usage: phone-backup <name>        (reads ~/.config/phone-backup/<name>.env)
+# Usage: phone-backup <name> [--free]   (reads ~/.config/phone-backup/<name>.env)
 #
 # The env file holds the host-specific values, kept out of this public repo:
 #   SERIAL=...           adb serial of the phone (see `adb devices -l`)
@@ -9,17 +9,32 @@
 #   NAS_PORT=22
 #   NAS_DEST=/path       archive root for this phone on the NAS
 #   NAS_SUDO=            set to "sudo" when NAS_DEST is root-owned
+#   ADB=adb              adb binary; match the version other adb users on the
+#                        host run (e.g. a Unity editor's bundled adb), or each
+#                        one kills the other's server mid-transfer
+#   FREE_KEEP="a b"      top-level /sdcard entries --free never deletes from
+#                        (folders an app reads, e.g. an emulator's games)
 #
 # Covers /sdcard minus Android/ (app-private, unreadable without root). SMS,
 # call logs and app data are NOT covered. The NAS copy is an archive: there is
 # no --delete, so clearing space on the phone never removes a file from it.
 # The local stage under ~/.cache is kept so the next run only ships changes.
+#
+# --free: after a clean backup, delete each phone file whose exact bytes are on
+# the NAS (same relative path, same sha256), skipping FREE_KEEP. Anything that
+# is new, changed or missing on the NAS stays on the phone. Folders stay.
 
 set -euo pipefail
 
 die() { echo "phone-backup: $*" >&2; exit 1; }
 
-[[ $# -eq 1 && $1 != -h && $1 != --help ]] || { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 2; }
+[[ $# -ge 1 && $# -le 2 && $1 != -h && $1 != --help ]] || usage
+free=no
+if [[ $# -eq 2 ]]; then
+    [[ $2 == --free ]] || usage
+    free=yes
+fi
 
 name="$1"
 env_file="${XDG_CONFIG_HOME:-$HOME/.config}/phone-backup/$name.env"
@@ -30,35 +45,36 @@ for var in SERIAL MODEL NAS_SSH NAS_PORT NAS_DEST; do
     [[ -n ${!var:-} ]] || die "$var is not set in $env_file"
 done
 NAS_SUDO="${NAS_SUDO:-}"
+ADB="${ADB:-adb}"
 
-command -v adb >/dev/null || die "adb not found"
+command -v "$ADB" >/dev/null || die "adb not found: $ADB"
 command -v rsync >/dev/null || die "rsync not found"
 
 # -- Device guard: the configured phone, and only that phone -------------------
-state=$(adb -s "$SERIAL" get-state 2>/dev/null || true)
+state=$("$ADB" -s "$SERIAL" get-state 2>/dev/null || true)
 [[ $state == device ]] || die "$name ($SERIAL) is not connected and authorized (state: ${state:-absent}). Plug it in, enable USB debugging, accept the prompt."
-got_model=$(adb -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')
+got_model=$("$ADB" -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')
 [[ $got_model == "$MODEL" ]] || die "device $SERIAL reports model '$got_model', expected '$MODEL'"
 
 stage="${XDG_CACHE_HOME:-$HOME/.cache}/phone-backup/$name/sdcard"
 mkdir -p "$stage"
 
 # -- Stage: pull every top-level /sdcard entry except Android/ -----------------
-mapfile -t entries < <(adb -s "$SERIAL" shell ls -1 /sdcard/ | tr -d '\r' | grep -v -x -e '' -e Android)
+mapfile -t entries < <("$ADB" -s "$SERIAL" shell ls -1 /sdcard/ | tr -d '\r' | grep -v -x -e '' -e Android)
 [[ ${#entries[@]} -gt 0 ]] || die "/sdcard listed nothing on $SERIAL"
 
 # Another adb client of a different version (e.g. the adb bundled with a Unity
 # editor) kills and restarts the server, dropping the phone mid-pull. So on a
 # failed pull, wait for the phone to reattach and retry that entry.
-PULL_ATTEMPTS=3
+ADB_ATTEMPTS=3
 REATTACH_TIMEOUT=60
-pull_entry() {
-    local entry="$1" attempt
-    for ((attempt = 1; attempt <= PULL_ATTEMPTS; attempt++)); do
-        adb -s "$SERIAL" pull -a "/sdcard/$entry" "$stage/" && return 0
-        ((attempt < PULL_ATTEMPTS)) || break
-        echo "   pull failed (attempt $attempt/$PULL_ATTEMPTS), waiting for $SERIAL to reattach" >&2
-        timeout "$REATTACH_TIMEOUT" adb -s "$SERIAL" wait-for-device || return 1
+adb_retry() {
+    local attempt
+    for ((attempt = 1; attempt <= ADB_ATTEMPTS; attempt++)); do
+        "$ADB" -s "$SERIAL" "$@" && return 0
+        ((attempt < ADB_ATTEMPTS)) || break
+        echo "   adb $1 failed (attempt $attempt/$ADB_ATTEMPTS), waiting for $SERIAL to reattach" >&2
+        timeout "$REATTACH_TIMEOUT" "$ADB" -s "$SERIAL" wait-for-device || return 1
     done
     return 1
 }
@@ -66,7 +82,7 @@ pull_entry() {
 failed=()
 for entry in "${entries[@]}"; do
     echo "== pull /sdcard/$entry"
-    pull_entry "$entry" || failed+=("$entry")
+    adb_retry pull -a "/sdcard/$entry" "$stage/" || failed+=("$entry")
 done
 
 # -- Ship: archive to the NAS (no --delete) ------------------------------------
@@ -89,3 +105,46 @@ if [[ ${#failed[@]} -gt 0 ]]; then
     die "shipped, but these entries did not pull cleanly: ${failed[*]}"
 fi
 echo "phone-backup: $name done"
+[[ $free == yes ]] || exit 0
+
+# -- Free: delete phone files whose exact bytes are on the NAS -----------------
+read -r -a keep <<<"${FREE_KEEP:-}"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+phone_df() { adb_retry shell df -h /data | tr -d '\r' | tail -1; }
+echo "== free: phone before: $(phone_df)"
+
+echo "== hashing the NAS copy"
+# bash -s, not a command string: the NAS login shell need not be POSIX.
+ssh -p "$NAS_PORT" "$NAS_SSH" bash -s -- "$NAS_DEST/sdcard" "$NAS_SUDO" >"$work/nas.sha" <<'EOF'
+$2 sh -c 'cd "$1" && find . -type f -print0 | xargs -0 -r sha256sum' _ "$1"
+EOF
+sed -i 's|^\([0-9a-f]\{64\}\)  \./|\1  |' "$work/nas.sha"
+
+: >"$work/phone.sha"
+for entry in "${entries[@]}"; do
+    if [[ " ${keep[*]} " == *" $entry "* ]]; then
+        echo "   keep /sdcard/$entry (FREE_KEEP)"
+        continue
+    fi
+    echo "== hashing /sdcard/$entry on the phone"
+    adb_retry shell "cd /sdcard && find \"$entry\" -type f -exec sha256sum {} +" >"$work/entry.sha" ||
+        die "could not hash /sdcard/$entry on the phone; nothing deleted"
+    tr -d '\r' <"$work/entry.sha" >>"$work/phone.sha"
+done
+
+# A retried hash appends to the same output, so keep only complete lines, once.
+{ grep -E '^[0-9a-f]{64}  ' "$work/phone.sha" || true; } | sort -u >"$work/phone.uniq"
+mv "$work/phone.uniq" "$work/phone.sha"
+grep -F -x -f "$work/nas.sha" "$work/phone.sha" | cut -c67- >"$work/free.txt" || true
+total=$(wc -l <"$work/phone.sha")
+matched=$(wc -l <"$work/free.txt")
+echo "== free: $matched of $total phone files are byte-identical on the NAS; $((total - matched)) stay on the phone"
+if [[ $matched -gt 0 ]]; then
+    # rm -f is idempotent, so a retry after a dropped connection just resumes.
+    adb_retry push "$work/free.txt" /data/local/tmp/phone-backup-free.txt >/dev/null ||
+        die "could not push the delete list; nothing deleted"
+    adb_retry shell 'cd /sdcard && while IFS= read -r f; do rm -f -- "$f"; done </data/local/tmp/phone-backup-free.txt && rm -f /data/local/tmp/phone-backup-free.txt' ||
+        die "delete interrupted; every listed file is on the NAS, re-run --free to finish"
+fi
+echo "== free: phone after:  $(phone_df)"
