@@ -91,7 +91,23 @@ spotify-launcher
 sunshine
 moonlight-qt
 
+# --- Music production (REAPER rig, see ~/.config/REAPER/README-music-rig.md) ---
+# Only the formats REAPER loads natively (CLAP/VST3); LV2-only plugins go through Carla.
+reaper
+qpwgraph
+carla
+realtime-privileges
+aida-x-clap
+guitarix
+lsp-plugins-clap
+dragonfly-reverb-clap
+surge-xt-clap
+dexed-clap
+sfizz-vst3
+furnace
+
 # --- AUR Packages (require paru/yay) ---
+neural-amp-modeler-lv2
 visual-studio-code-bin
 zulu-17-bin
 hunk
