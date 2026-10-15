@@ -69,6 +69,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
+        "knowledge" => p.knowledge.clone(),
         // The org's projects root. Added so `lab-roots.sh` can ASK for it rather than restating
         // it: that file hardcoded all four roots and its own comments named config.toml as "the
         // other place that has to know" — two declarations of one fact, where missing the second
