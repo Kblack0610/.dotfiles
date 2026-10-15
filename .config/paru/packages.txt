@@ -96,7 +96,6 @@ moonlight-qt
 reaper
 qpwgraph
 carla
-realtime-privileges
 aida-x-clap
 guitarix
 lsp-plugins-clap

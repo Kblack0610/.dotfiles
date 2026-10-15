@@ -21,7 +21,6 @@ The Scarlett Solo has no MIDI ports. The keyboard must be USB-MIDI (or go throug
 | Host / DAW | REAPER |
 | Patchbay (route any app's audio) | qpwgraph |
 | Load LV2 plugins REAPER cannot | Carla (add "Carla-Rack" as an FX, load the LV2 inside it) |
-| Realtime scheduling limits | realtime-privileges (`realtime` group) |
 | Amp sims | Neural Amp Modeler (LV2, AUR), AIDA-X (CLAP), Guitarix (standalone + LV2) |
 | FX | LSP plugins (gate, comp, EQ, CLAP), Dragonfly reverb (CLAP), REAPER's own Rea* FX |
 | Synths | Surge XT (CLAP), Dexed (DX7 FM, CLAP) |
@@ -34,12 +33,13 @@ Optional, manual: Vital (wavetable synth, needs a manual .deb download for `vita
 
 ## One-time setup
 
-1. `sudo usermod -aG realtime $USER`, then log out and back in.
-2. Start REAPER from the app launcher. The launcher entry (`~/.local/share/applications/cockos-reaper.desktop`) runs it under `pw-jack` at 128 samples / 48kHz. Starting `reaper` from a terminal skips that.
-3. REAPER Preferences -> Audio -> Device: audio system **JACK**, sample rate 48000. This lives in `reaper.ini`, which is machine state and not tracked here.
-4. Preferences -> Plug-ins -> CLAP / VST: click "Re-scan". LV2 plugins only appear through Carla.
-5. Preferences -> Audio -> MIDI Inputs: plug the keyboard in, right-click it, Enable input.
-6. Actions -> Show action list -> New action -> Load ReaScript: pick `~/.config/REAPER/Scripts/music-rig/new-guitar-keys-project.lua`. Optionally bind it to a key.
+Realtime priority already comes from the `audio` group (`/etc/security/limits.d`: rtprio 99), so no extra group or logout is needed.
+
+1. Start REAPER from the app launcher. The launcher entry (`~/.local/share/applications/cockos-reaper.desktop`) runs it under `pw-jack` at 128 samples / 48kHz. Starting `reaper` from a terminal skips that.
+2. REAPER Preferences -> Audio -> Device: audio system **JACK**, sample rate 48000. This lives in `reaper.ini`, which is machine state and not tracked here.
+3. Preferences -> Plug-ins -> CLAP / VST: click "Re-scan". LV2 plugins only appear through Carla.
+4. Preferences -> Audio -> MIDI Inputs: plug the keyboard in, right-click it, Enable input.
+5. Actions -> Show action list -> New action -> Load ReaScript: pick `~/.config/REAPER/Scripts/music-rig/new-guitar-keys-project.lua`. Optionally bind it to a key.
 
 ## Daily use
 
