@@ -194,6 +194,22 @@ setup() {
   refute [ "$ok" = "$trip" ]
 }
 
+@test "a watch not polled for 3x its interval is flagged STALE, a fresh one is not" {
+  # A dead sentinel leaves every .state at its last value, so an OK that nobody has
+  # re-checked must not read as healthy. seed_watch writes interval: 5m (900s at 3x).
+  local now; now="$(date +%s)"
+  seed_watch fresh OK '' "$(( now - 60 ))"
+  seed_watch dead  OK '' "$(( now - 3600 ))"
+  local f d
+  f="$("$FLEET" --watches | awk -F'\t' '$2=="fresh" { print $5 }')"
+  d="$("$FLEET" --watches | awk -F'\t' '$2=="dead"  { print $5 }')"
+  [[ "$f" != *STALE* ]]
+  [[ "$d" == *STALE* ]]
+  # field 4 stays the sentinel's own verdict; STALE is this reader's judgement
+  run bash -c '"$FLEET" --watches | awk -F"\t" "\$2==\"dead\" { print \$4 }"'
+  assert_output 'OK'
+}
+
 @test "a watch with no state file renders as unknown rather than vanishing" {
   printf 'name: orphan\nprobe: http\n' > "$WATCH_DIR/orphan.yaml"
   run bash -c '"$FLEET" --watches | awk -F"\t" "\$2==\"orphan\" { print \$4 }"'
