@@ -20,6 +20,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
 | `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). |
+| `command-center.sh` | window `hub:infra` | The glance board: one tile per domain (cluster, machines, prod, LLM, CI, agents, spend, agent platform), coloured by the `cc:*` recording rules in home-config `apps/monitoring/prometheus-rules-command-center.yaml`. Same series as the Grafana Command Center, so the two cannot disagree. Read-only; actions stay in `fleet.sh`. |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
 ## Usage
@@ -160,7 +161,7 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config, infra | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
@@ -419,7 +420,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub**, dotfiles, home-config, infra | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 

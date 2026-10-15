@@ -156,11 +156,29 @@ cmd_ensure() {
     return 0
   fi
 
-  local name dir cmd
+  local name dir cmd sess win
   while read -r name dir cmd; do
     case "$name" in ''|'#'*) continue ;; esac
     [ -n "$dir" ] || continue
     dir="${dir/#\~/$HOME}"           # manifests are written with ~
+    # `<session>:<window>` adds a named window to a session declared on an earlier line
+    # (hub.conf's `hub:infra`, the Command Center board beside the daily note). It never
+    # creates the session: an undeclared or skipped session skips its windows too.
+    if [[ "$name" == *:* ]]; then
+      sess="${name%%:*}" win="${name#*:}"
+      if ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null || [ ! -d "$dir" ]; then
+        skipped=$((skipped + 1)); continue
+      fi
+      if tmux -L "$srv" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null | grep -qxF -- "$win"; then
+        kept=$((kept + 1)); continue
+      fi
+      # -n also turns automatic-rename off for this window, so the name stays put and the
+      # next ensure still finds it.
+      tmux -L "$srv" new-window -d -t "$sess:" -n "$win" -c "$dir" 2>/dev/null || continue
+      made=$((made + 1))
+      [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$sess:$win" "$cmd" Enter
+      continue
+    fi
     if tmux -L "$srv" has-session -t "=$name" 2>/dev/null; then
       kept=$((kept + 1))
       continue

@@ -100,6 +100,37 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'config daily dotfiles '
 }
 
+windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 2>/dev/null; }
+
+@test "a session:window line adds a named window to that session, not a session" {
+  # hub.conf's `hub:infra` line: the Command Center board lives beside the daily note.
+  manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
+  run "$TMX" ensure "$SRV_A"
+  assert_success
+  assert_equal "$(sessions_of "$SRV_A" | tr '\n' ' ')" 'main '
+  assert_equal "$(windows_of "$SRV_A" main | tr '\n' ' ')" "$(windows_of "$SRV_A" main | head -1) board "
+}
+
+@test "a window line is idempotent and rebuilds only a missing window" {
+  manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
+  "$TMX" ensure "$SRV_A"
+  run "$TMX" ensure "$SRV_A"
+  assert_output --partial '0 created'
+  assert_equal "$(windows_of "$SRV_A" main | grep -cx board)" 1
+  "${REAL_TMUX}" -L "$SRV_A" kill-window -t 'main:board'
+  run "$TMX" ensure "$SRV_A"
+  assert_output --partial '1 created'
+  assert_equal "$(windows_of "$SRV_A" main | grep -cx board)" 1
+}
+
+@test "a window line whose session is not declared is skipped, not invented" {
+  manifest "$SRV_A" "main $MDIR" "ghost:board $MDIR"
+  run "$TMX" ensure "$SRV_A"
+  assert_success
+  assert_output --partial '1 skipped'
+  assert_equal "$(sessions_of "$SRV_A" | tr '\n' ' ')" 'main '
+}
+
 @test "ensure is idempotent: a second run creates nothing new" {
   manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
