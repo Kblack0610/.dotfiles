@@ -62,7 +62,6 @@ python
 python-pip
 go
 rust
-rustup
 
 # --- Fonts ---
 ttf-hack-nerd
