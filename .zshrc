@@ -24,6 +24,17 @@ ZSH_THEME="robbyrussell"
 # Disable compfix to stop insecure directory warnings.
 ZSH_DISABLE_COMPFIX="true"
 
+# One ssh-agent for shells and systemd user services: the socket-activated
+# ssh-agent.socket (see ~/.config/environment.d/ssh-agent.conf). honor-existing makes the
+# plugin reuse it and only add keys. A live forwarded agent in an SSH session still wins.
+_sys_agent="${XDG_RUNTIME_DIR:-/nonexistent}/ssh-agent.socket"
+if [[ -S "$_sys_agent" ]] && [[ -z "${SSH_CONNECTION:-}" || ! -S "${SSH_AUTH_SOCK:-}" ]]; then
+    export SSH_AUTH_SOCK="$_sys_agent"
+    unset SSH_AGENT_PID
+fi
+unset _sys_agent
+zstyle :omz:plugins:ssh-agent honor-existing yes
+
 # List of Oh My Zsh plugins to load.
 plugins=(
     git
