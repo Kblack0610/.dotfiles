@@ -6,7 +6,7 @@
 # HTTP directly with their own curl -- comms-triage.sh, notes-version-summary,
 # llm-call.sh -- and each carried its own hardcoded base URL, model and key entry.
 # That is six unshared copies of "which model, whose gateway, whose key", and the
-# reason two of them were found routing personal data at a paid client proxy.
+# reason two of them were found silently spilling onto a paid Lazer route.
 #
 # Here they read the same LLM_* names they already read, and the ROUTE decides
 # what those names contain.
