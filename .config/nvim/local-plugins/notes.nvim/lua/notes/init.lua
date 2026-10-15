@@ -374,6 +374,12 @@ function M.setup()
         if profile_root ~= "" and profile_root ~= notes_dir then
           vim.opt_local.path:prepend(profile_root)
         end
+        -- The lookup above only works for a link with no space and no `|alias`; this gf
+        -- takes the whole [[target]] and falls back to the builtin off a link.
+        vim.keymap.set("n", "gf", require("notes.wikilink").follow, {
+          buffer = args.buf,
+          desc = "Follow [[wikilink]] or file under cursor",
+        })
       end
     end,
   })

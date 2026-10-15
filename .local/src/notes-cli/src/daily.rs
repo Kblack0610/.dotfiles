@@ -17,13 +17,17 @@
 //! the three files was ever a backlog, which is why the footer used to list three
 //! "backlogs" for two concepts.
 //!
-//! The note carries the human's own lists and the auto-rendered context sections
-//! (`## Work`, `## Watches`, `## Comms`, `## Inbox`). It deliberately does NOT render the
-//! project/agent board: that is regenerated as a FILE each run (`board.rs`) and reached from
-//! the footer's `Board:` link. A `## Current Projects` block used to duplicate the lab
-//! index here every morning; it was removed because the note is the FOCUS surface, and
-//! anything pasted into it competes with the one list the human actually maintains — which
-//! is exactly why the board is a link and not a section.
+//! The note carries the human's own lists plus one generated section, `## Projects`: quick
+//! links to the projects at `#alpha` or `#beta` in this org and the orgs it rolls up. Prod
+//! projects are left out (they are visited directly), so the section stays a few lines. It is
+//! rendered when the note is CREATED and never again, which is the rule for the whole note:
+//! after the morning, only the human writes to it. Everything that changes during the day is
+//! a status page (`status.rs`: watches, comms, inbox) or a regenerated file (`board.rs`),
+//! reached from the footer, one link per line.
+//!
+//! An earlier `## Current Projects` block copied the whole lab index in every morning and was
+//! removed for crowding Focus; `## Work` (a job roster with open counts) and `## Comms` were
+//! rewritten every run. The alpha/beta filter and the create-once rule are the answer to both.
 
 use crate::config::{self, Profile};
 use crate::logging::Logger;
@@ -98,18 +102,20 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
 
     link_refs(p, log)?;
     ensure_footer(p, &note)?;
-    // Renders the `## Work` roster (job link + open-count), like refresh_watches renders
-    // `## Watches`. Running every `notes today` keeps the counts current as job notes sync in.
-    refresh_work(p, log, &note)?;
-    // Writes the watches page, then strips the note's section. Swallowed like the board below:
-    // a page that cannot be written must never abort the note.
+    // A note written before `## Projects` existed carries the `## Work` roster instead; swap it
+    // once. The marker is gone after the first pass, so this cannot repeat during the day.
+    migrate_work(p, log, &note)?;
+    // Each feed writes its status page, then strips its section from the note. Swallowed like
+    // the board below: a page that cannot be written must never abort the note.
     if let Err(e) = refresh_watches(p, log, &note) {
         log.warn("today", &format!("watches page skipped: {e}"));
     }
-    // Renders the `## Comms` section from the triage poller's per-profile surface file,
-    // like `refresh_watches` renders `## Watches`. No-op when comms is unconfigured.
-    crate::comms::refresh(p, log, &note)?;
-    refresh_inbox(p, log, &note)?;
+    if let Err(e) = crate::comms::refresh(p, log, &note) {
+        log.warn("today", &format!("comms page skipped: {e}"));
+    }
+    if let Err(e) = refresh_inbox(p, log, &note) {
+        log.warn("today", &format!("inbox page skipped: {e}"));
+    }
     // The project/agent board is regenerated as a FILE, not a section — the footer links it.
     // Same "render an external source each run" pattern as the sections above; the target
     // differs precisely so the note stays the human's focus surface. A failure here must
@@ -190,10 +196,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     s.push_str("tags: [daily]\n");
     s.push_str("---\n\n");
     s.push_str(&format!("# {today_s}\n\n"));
-    // No `## Current Projects` block. It was a static link list re-derived from the lab
-    // index every morning, and the footer already carries `Projects: [[…/index]]` — the
-    // same destination, one line instead of a section. The daily note is the human's
-    // FOCUS surface; the project/agent board is a click away, not pasted in on top of it.
     // Notes sits ABOVE Focus: Focus carries every open task forward and runs ~20 lines, so a
     // Notes section below it was scrolled past and stayed empty on most days. Every reader
     // finds both sections by heading name (md::section_span), so the order is free to choose.
@@ -204,6 +206,9 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         s.push('\n');
     }
     s.push_str("- [ ] \n");
+    // Rendered HERE and only here, so the note is written once by whichever machine creates
+    // it and then only changes when the human edits it.
+    s.push_str(&projects_block(p, log));
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
@@ -452,17 +457,15 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // section refresh goes through `insert_before_footer`.
     let mut content = original.clone();
     strip_backlog_footer(&mut content);
+    // One link per line, so the footer reads as a menu you can move down with j/k and `gf`.
+    // Every line carries its own `[[`, which is what `md::is_footer_rule` (and its Lua twin
+    // in markdown.lua) keys on, so the footer is still found by its first line.
+    let mut links: Vec<(String, String)> = Vec::new();
     // Config-driven (`footer_links`), so the list is edited in config.toml, not here.
     // Each link carries its own LABEL: a Backlog (no time trigger) and a Schedule (has one)
     // are different kinds of thing, and the old single "Backlogs:" heading said otherwise.
-    let backlogs = p
-        .footer_links
-        .iter()
-        .map(|(label, b)| format!("{label}: [[{}]]", config::wikilink(&p.root, b)))
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if !content.ends_with('\n') {
-        content.push('\n');
+    for (label, b) in &p.footer_links {
+        links.push((label.clone(), config::wikilink(&p.root, b)));
     }
     // Board first, then the index. The board is the one the human opens daily (it carries
     // the live wave + agent lane); the index is the slower "what projects exist" page.
@@ -472,29 +475,27 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // live bug -- bnb's note read `Board: [[projects/board]]`, i.e. lab/bnb/projects/board.md,
     // which was never written. The editor puts both the org root and the vault on `path` (see
     // notes.nvim's gf setup), so the vault-relative form resolves from inside any org.
-    let board_link = crate::board::board_path(p)
-        .map(|b| format!(" · Board: [[{}]]", config::wikilink(&p.vault, &b)))
-        .unwrap_or_default();
+    if let Some(b) = crate::board::board_path(p) {
+        links.push(("Board".into(), config::wikilink(&p.vault, &b)));
+    }
     // The agent lane gets its own link, or `agent-board.md` would be written by every
     // `notes today` and reachable from nothing.
-    let agent_board_link = crate::board::agent_board_path(p)
-        .map(|b| format!(" · Agent board: [[{}]]", config::wikilink(&p.vault, &b)))
-        .unwrap_or_default();
+    if let Some(b) = crate::board::agent_board_path(p) {
+        links.push(("Agent board".into(), config::wikilink(&p.vault, &b)));
+    }
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
     // as the complete list while showing only one org's, which is how projects in another org
     // came to look missing.
-    let projects_link = p
-        .project_index
-        .as_ref()
-        .map(|pi| {
-            format!(
-                " · {} projects: [[{}]]",
-                p.name,
-                config::wikilink(&p.root, pi)
-            )
-        })
-        .unwrap_or_default();
+    if let Some(pi) = &p.project_index {
+        links.push((format!("{} projects", p.name), config::wikilink(&p.root, pi)));
+    }
+    // The knowledge index (the `notes index --rebuild` MOC over knowledge/ + zettels), so the
+    // curated side of the vault is one click from the day.
+    links.push((
+        "Knowledge".into(),
+        config::wikilink(&p.root, &p.index.join("moc.md")),
+    ));
     // The generated feeds, as links to their own pages.
     //
     // Unconditional and count-free, and both halves are load-bearing. This fragment used to
@@ -503,30 +504,19 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // holding still. Rendering all three regardless of whether the page exists yet also keeps
     // the footer identical on every machine, so the note never becomes machine-dependent; an
     // unfollowed wikilink is normal in a vault.
-    let status_links = status::Feed::ALL
-        .iter()
-        .filter_map(|f| {
-            let t = config::wikilink(&p.root, &status::page_path(&p.root, *f));
-            (!t.is_empty() && !t.starts_with("..") && !t.starts_with('/'))
-                .then(|| format!("[[{t}|{}]]", f.title()))
-        })
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let status_link = if status_links.is_empty() {
-        String::new()
-    } else {
-        format!(" · Status: {status_links}")
-    };
-    // The knowledge index (the `notes index --rebuild` MOC over knowledge/ + zettels), so the
-    // curated side of the vault is one click from the day. Unconditional for the same reason
-    // as the status links: the footer stays identical on every machine.
-    let knowledge_link = format!(
-        " · Knowledge: [[{}]]",
-        config::wikilink(&p.root, &p.index.join("moc.md"))
-    );
-    content.push_str(&format!(
-        "\n---\n{backlogs}{board_link}{agent_board_link}{projects_link}{knowledge_link}{status_link}\n"
-    ));
+    for f in status::Feed::ALL {
+        let t = config::wikilink(&p.root, &status::page_path(&p.root, f));
+        if !t.is_empty() && !t.starts_with("..") && !t.starts_with('/') {
+            links.push((f.title().to_string(), t));
+        }
+    }
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str("\n---\n");
+    for (label, target) in &links {
+        content.push_str(&format!("- {label}: [[{target}]]\n"));
+    }
     // Only write on change: `notes today` is idempotent and runs on every shell init, so a
     // no-op rewrite would churn the vault's mtime and its git sync every single time.
     if content != original {
@@ -608,66 +598,6 @@ pub(crate) fn remove_section(content: &str, heading: &str) -> String {
         out.push('\n');
     }
     out
-}
-
-/// Open tasks from a note's `## Focus` - unchecked, non-empty, real task lines only (the
-/// job notes mix prose, pasted terminal output and `---` rules into Focus). Used to COUNT
-/// a job's open work for the `## Work` roster; `md::section_lines` stops at
-/// [`md::ROLLUP_START`], so a note carrying a legacy inline block is not double-counted.
-fn job_focus_tasks(content: &str) -> Vec<String> {
-    md::section_lines(content, "Focus")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|l| md::is_open_task(l))
-        .collect()
-}
-
-/// Remove the legacy inline-rollup remnants from `## Focus`: the `<!-- rollup:start -->`
-/// sentinel line, and each `### <job>` mirror heading (its first token in `names`) together
-/// with the consecutive task lines beneath it.
-///
-/// Surgical on purpose. An earlier design mirrored each job's tasks inline under Focus; the
-/// roster now lives in its own `## Work` section, so old notes must be migrated. But a note
-/// can have the user's OWN tasks interleaved with a stale block (people hand-edit inside
-/// Focus, `---` rules and all), so a blunt "delete sentinel..end-of-Focus" would eat real
-/// tasks. This drops ONLY a recognized `### <job>` heading and its own task lines; every
-/// authored line is preserved. A no-op once no note carries these - byte-stable, idempotent.
-fn strip_legacy_rollup(content: &str, names: &[String]) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut in_focus = false;
-    let mut dropping = false; // inside a recognized `### <job>` mirror sub-block
-    for line in content.lines() {
-        if line.trim_start().starts_with("## ") {
-            in_focus = line.trim() == "## Focus";
-            dropping = false;
-            out.push(line.to_string());
-            continue;
-        }
-        if in_focus {
-            if line.trim() == md::ROLLUP_START {
-                continue; // drop the sentinel wherever it sits
-            }
-            if let Some(rest) = line.trim_start().strip_prefix("### ") {
-                let label = rest.split_whitespace().next().unwrap_or("");
-                if names.iter().any(|n| n == label) {
-                    dropping = true; // drop this heading and the task lines under it
-                    continue;
-                }
-                dropping = false; // a `### ` the user wrote - keep it
-            } else if dropping {
-                if md::is_task(line) {
-                    continue; // a mirror task line
-                }
-                dropping = false; // first non-task ends the mirror sub-block
-            }
-        }
-        out.push(line.to_string());
-    }
-    let mut joined = out.join("\n");
-    if content.ends_with('\n') && !joined.ends_with('\n') {
-        joined.push('\n');
-    }
-    joined
 }
 
 /// Render the Sentinel registry for the daily note: a one-line roster summary, then a
@@ -846,61 +776,41 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     }
 }
 
-/// Refresh the daily note's `## Inbox` section with today's quick-captures (the bullet
-/// lines in `inbox/<today>.md`). Runs every `notes today` so captures added during the
-/// day appear at the bottom of the note. Self-hiding: no section when today's inbox file
-/// is absent or has no bullets. Read-only against the inbox (only the daily note is
-/// written).
-fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+/// Today's quick-captures (the bullet lines in `inbox/<today>.md`) as the inbox status page,
+/// in capture order. Each keeps a short `(sess <id>)` suffix when the capture carried a
+/// session marker, so it links back to its conversation via `claude -r <id>`.
+pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let inbox_today = p.inbox.join(format!("{today}.md"));
-    // Raw capture lines from today's inbox file (bullet lines only); the render loop
-    // splits each into its core text + optional session marker.
-    let bodies: Vec<String> = fs::read_to_string(&inbox_today)
+    let rows: Vec<status::Row> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
-        .map(|l| l.to_string())
-        .collect();
-
-    let content = fs::read_to_string(note)?;
-    // Preserve which captures the user already ticked off in the existing section, so a
-    // re-run doesn't reset the checkmark (the section is rebuilt from the inbox file).
-    // Keyed on the core text (session marker/suffix stripped) so source and rendered match.
-    let checked: std::collections::HashSet<String> = md::section_lines(&content, "Inbox")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|l| md::is_checked(l))
-        .filter_map(|l| inbox_core(&l))
-        .collect();
-
-    let stripped = remove_section(&content, "Inbox");
-    let new_content = if bodies.is_empty() {
-        stripped
-    } else {
-        let mut block = String::from("\n\n## Inbox\n");
-        for line in &bodies {
-            let Some(core) = inbox_core(line) else {
-                continue;
-            };
-            let mark = if checked.contains(&core) { "x" } else { " " };
-            // Surface a short session id (`(sess 8e87fd5e)`) so the capture links back to
-            // its conversation via `claude -r <id>`; only when the source carried a tag.
+        .filter_map(|line| {
+            let core = inbox_core(line)?;
             let suffix = inbox_session(line)
                 .map(|id| format!(" (sess {})", id.split('-').next().unwrap_or(&id)))
                 .unwrap_or_default();
-            block.push_str(&format!("- [{mark}] {core}{suffix}\n"));
-        }
-        insert_before_footer(&stripped, &block)
-    };
-    if new_content != content {
-        md::write_atomic(note, &new_content)?;
-        log.info(
-            "today",
-            &format!("refreshed {} inbox capture(s) in ## Inbox", bodies.len()),
-        );
+            Some(format!("{core}{suffix}"))
+        })
+        .enumerate()
+        .map(|(i, head)| status::Row {
+            attention: true,
+            sort: (0, format!("{i:04}")),
+            head,
+            detail: vec![],
+        })
+        .collect();
+    status::Page {
+        feed: status::Feed::Inbox,
+        stat: Some(format!("{} captured {today}", rows.len())),
+        rows,
     }
-    Ok(())
+}
+
+/// Publish today's captures to the inbox page and take any `## Inbox` section out of the note.
+/// Captures land all day, so they live on the page: the note itself is not rewritten for them.
+fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    publish_and_strip(p, log, note, &inbox_page(p), p.inbox.is_dir(), "Inbox")
 }
 
 /// Core text of an inbox capture line, for display + dedup: strip a leading bullet or
@@ -944,131 +854,107 @@ fn inbox_session(line: &str) -> Option<String> {
     }
 }
 
-/// Collect each rollup profile's open Focus tasks.
-///
-/// Infallible by construction, like `watch_rows`. `config::resolve` returns `Err`
-/// for a name that is not defined, and `notes today` runs from the shell rc on every new
-/// shell - so a single typo in `rollup` must not be able to take the command down. An
-/// unresolvable entry is warned (Logger::warn always reaches stderr, so a genuine
-/// misconfiguration still gets noticed) and skipped.
-///
-/// Resolve a rollup profile NAME to its latest source note: today's if it exists, else the
-/// most recent prior one. Returns `(path, stale)` where `stale` is `Some(date)` when the note
-/// is not today's. `None` when the name is this profile itself, does not resolve, or has no
-/// notes yet. Used by `work_lines` to build the `## Work` roster line for each job.
-fn rollup_source(p: &Profile, log: &Logger, name: &str) -> Option<(PathBuf, Option<String>)> {
-    if name == p.name {
-        return None; // a profile mirroring itself would duplicate its own Focus
-    }
-    let jp = match config::resolve(Some(name)) {
-        Ok(jp) => jp,
-        Err(e) => {
-            log.warn("today", &format!("rollup: skipping '{name}': {e}"));
-            return None;
-        }
-    };
-    let today_s = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let today_note = jp.daily.join(format!("{today_s}.md"));
-    if today_note.exists() {
-        Some((today_note, None))
-    } else {
-        match latest_prev(&jp.daily, &today_s) {
-            Ok(Some(prev)) => {
-                let d = file_date(&prev).map(|d| d.format("%Y-%m-%d").to_string());
-                Some((prev, d))
-            }
-            // No note yet (a job whose log dir does not exist) contributes nothing.
-            _ => None,
-        }
-    }
-}
-
-/// One collapsed roster line per rollup profile for the `## Work` section: a link to the
-/// job's latest note plus its open-task count - a glance-value pointer, not the tasks
-/// themselves (those live in the job note, reached with `gf` on the link). Every configured
-/// job is listed even at zero open (a stable roster for now); a job with no note yet is
-/// listed link-less. Infallible like `watch_rows`: a resolve/read failure degrades one
-/// line, never aborts `notes today`.
-fn work_lines(p: &Profile, log: &Logger) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in &p.rollup {
-        if name == &p.name {
-            continue; // a profile listing itself is meaningless here
-        }
-        match rollup_source(p, log, name) {
-            Some((src, _stale)) => {
-                let content = fs::read_to_string(&src).unwrap_or_default();
-                let n = job_focus_tasks(&content).len();
-                let link = config::wikilink(&p.root, &src);
-                out.push(format!("- {name} - [[{link}]] ({n} open)"));
-            }
-            // No note yet (e.g. a job whose log dir does not exist): still rostered, but
-            // there is nothing to link to.
-            None => out.push(format!("- {name} - (no note yet)")),
-        }
-    }
-    out
-}
-
-/// Refresh the daily note's `## Work` section: one collapsed link + open-count per job in
-/// `p.rollup`. Its own H2 section, kept above the footer like `## Watches`, regenerated every
-/// run - so it is NOT carried forward into tomorrow's note and NOT folded into summaries.
-///
-/// No-op when `rollup` is empty. The notes config is machine-local and gitignored, so a
-/// machine without the key must not add a section the next 5-minute sync would strip off the
-/// machine that has it: that ping-pong is the same failure `refresh_watches` guards against.
-///
-/// Also strips any legacy inline rollup block from `## Focus` (the earlier design), so an
-/// existing note upgrades in place - a no-op once the old block is gone.
-fn refresh_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    if p.rollup.is_empty() {
-        return Ok(());
-    }
-    let content = fs::read_to_string(note)?;
-    let migrated = strip_legacy_rollup(&content, &p.rollup); // clean any legacy inline block
-    let lines = work_lines(p, log);
-    let stripped = remove_section(&migrated, "Work");
-    let new_content = if lines.is_empty() {
-        stripped
-    } else {
-        let mut block = String::from("\n\n## Work\n");
-        for l in &lines {
-            block.push_str(l);
-            block.push('\n');
-        }
-        insert_before_footer(&stripped, &block)
-    };
-    if new_content != content {
-        md::write_atomic(note, &new_content)?;
-        log.info(
-            "today",
-            &format!("refreshed ## Work ({} job(s))", lines.len()),
-        );
-    }
-    Ok(())
-}
-
-/// Publish the watches page, then take `## Watches` out of the note - in that order, and only
-/// once the page is actually on disk.
+/// Publish a feed's status page, then take its `## heading` out of the note - in that order,
+/// and only once the page is actually on disk.
 ///
 /// The ordering is the whole safety argument. Stripping a section whose replacement was not
-/// written would destroy the only copy, and on a machine that does not host the registry it
+/// written would destroy the only copy, and on a machine that does not host the source it
 /// would strip a section another machine wrote and synced in. Both are refused here, so a
 /// machine mid-rollout converges instead of fighting: it never removes what it did not write.
-fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    let present = watches_present(p);
-    let outcome = status::publish(&p.root, &p.daily, log, &watches_page(p), present)?;
+pub(crate) fn publish_and_strip(
+    p: &Profile,
+    log: &Logger,
+    note: &Path,
+    page: &status::Page,
+    source_present: bool,
+    heading: &str,
+) -> Result<()> {
+    let outcome = status::publish(&p.root, &p.daily, log, page, source_present)?;
     if matches!(outcome, status::Outcome::Skipped(_))
-        || !status::page_path(&p.root, status::Feed::Watches).exists()
+        || !status::page_path(&p.root, page.feed).exists()
     {
         return Ok(());
     }
     let content = fs::read_to_string(note)?;
-    let stripped = remove_section(&content, "Watches");
+    let stripped = remove_section(&content, heading);
     if stripped != content {
         md::write_atomic(note, &stripped)?;
-        log.info("today", "moved ## Watches to the status page");
+        log.info("today", &format!("moved ## {heading} to the status page"));
     }
+    Ok(())
+}
+
+fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    publish_and_strip(p, log, note, &watches_page(p), watches_present(p), "Watches")
+}
+
+/// The stages `## Projects` links, in display order. Prod is left out on purpose: a live
+/// product is visited directly, and draft has nothing to look at yet.
+const QUICK_STAGES: [&str; 2] = ["beta", "alpha"];
+
+/// One org's alpha/beta projects as `(stage rank, name, front page)`, sorted beta first.
+fn quick_projects(org: &Profile) -> Vec<(usize, String, PathBuf)> {
+    let mut out: Vec<(usize, String, PathBuf)> = discover_project_dirs(org)
+        .into_iter()
+        .filter_map(|(name, summary)| {
+            let dir = summary.parent()?;
+            let stage = crate::projects::stage_of(dir)?;
+            let rank = QUICK_STAGES.iter().position(|s| *s == stage)?;
+            Some((rank, name, crate::projects::front_page(dir)))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `## Projects` section: quick links to every alpha/beta project in this org and each org
+/// it rolls up, one small `### <org>` block per org that has any. Empty string when none do.
+///
+/// Links are VAULT-relative, like the board's: a rolled-up org's project is not under this
+/// org's root. Infallible like `watch_rows`, because `notes today` runs from the shell rc and a
+/// typo in `rollup` must not take it down: an unresolvable org is warned and skipped.
+pub(crate) fn projects_block(p: &Profile, log: &Logger) -> String {
+    let mut rolled: Vec<Profile> = Vec::new();
+    for name in p.rollup.iter().filter(|n| **n != p.name) {
+        match config::resolve(Some(name)) {
+            Ok(org) => rolled.push(org),
+            Err(e) => log.warn("today", &format!("projects: skipping '{name}': {e}")),
+        }
+    }
+    let mut block = String::new();
+    for org in std::iter::once(p).chain(rolled.iter()) {
+        let projects = quick_projects(org);
+        if projects.is_empty() {
+            continue;
+        }
+        block.push_str(&format!("### {}\n", org.name));
+        for (rank, name, page) in projects {
+            let link = config::wikilink(&p.vault, &page);
+            block.push_str(&format!("- [[{link}|{name}]] {}\n", QUICK_STAGES[rank]));
+        }
+    }
+    if block.is_empty() {
+        return block;
+    }
+    format!("\n## Projects\n{block}")
+}
+
+/// Swap a pre-`## Projects` note's `## Work` roster for the Projects section. Keyed on the
+/// legacy heading, so it runs at most once per note and never on a note created by this build.
+fn migrate_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
+    let content = fs::read_to_string(note)?;
+    let stripped = remove_section(&content, "Work");
+    if stripped == content {
+        return Ok(());
+    }
+    let block = projects_block(p, log);
+    let migrated = if block.is_empty() || md::section_lines(&stripped, "Projects").is_some() {
+        stripped
+    } else {
+        insert_before_footer(&stripped, &format!("\n{block}"))
+    };
+    md::write_atomic(note, &migrated)?;
+    log.info("today", "replaced ## Work with ## Projects");
     Ok(())
 }
 
@@ -1451,57 +1337,30 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The real `## Focus` shape from a job-profile note (2026-07-15): a pasted
-    /// terminal blob, plain prose bullets, a `----` rule, a malformed `- [ ]change` with
-    /// no space, an indented child task, and a trailing empty `- [ ]`. Anything that
-    /// mirrors this section has to survive all of it.
-    const JOB_FOCUS: &str = "\
-## Focus
+    /// Write a project dir whose front page carries `stage` as its head tag.
+    fn project(dir: &Path, name: &str, stage: &str) {
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("summary.md"), format!("# {name}\n\n#{stage}\n")).unwrap();
+    }
 
-
-❯ thansk, is  eveyrhgin up?... first wehn i hit rebot it sayis \"cant reboot\"
-  first .. ... lastly.. when i rebooted intor runteim admin after restart
-
-- for universal boot.
-    - boot diff color(orange?)
-    - player loop (reset)
-
-
-----
-- [ ] clarify boot layer is for networked use cases (2d) <!-- since:2026-07-13 -->
-- [ ]change the endpoint autorun.zip, and call it /runtime (2d) <!-- since:2026-07-13 -->
-- [x] already done thing (2d) <!-- since:2026-07-13 -->
-- [ ] clickup ticket for investiagation of index.js renaming (2d) <!-- since:2026-07-13 -->
-    - [ ] admin local ui (2d) <!-- since:2026-07-13 -->
-- [ ]
-
-## Notes
-after
-";
-
-    /// The daily note is the human's FOCUS surface: no `## Current Projects` block, and the
-    /// lab index still reachable in one click from the footer.
-    ///
-    /// Both halves matter. Dropping the section alone would strand the destination if the
-    /// footer link were ever conditional, so the reachability is asserted in the same test
-    /// rather than assumed — that link is now the ONLY path from the note to the projects.
+    /// `## Projects` is quick links to what is in alpha or beta, nothing else: prod is visited
+    /// directly and draft has nothing to look at. Every link must open a real file, and the
+    /// lab index stays reachable from the footer.
     #[test]
-    fn a_fresh_note_has_no_current_projects_but_still_reaches_the_index() {
-        let dir = std::env::temp_dir().join(format!("notes-slim-{}", std::process::id()));
+    fn a_fresh_note_links_alpha_and_beta_projects_only() {
+        let dir = std::env::temp_dir().join(format!("notes-quick-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let projects = dir.join("lab/projects/current");
-        std::fs::create_dir_all(&projects).unwrap();
         std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        project(&projects, "live", "prod");
+        project(&projects, "shiny", "beta");
+        project(&projects, "early", "alpha");
+        project(&projects, "idea", "draft");
+        project(&projects, "untagged", "nothing");
         let mut p = profile(dir.to_str().unwrap());
         p.projects = Some(projects.clone());
         p.project_index = Some(projects.parent().unwrap().join("index.md"));
-        // A populated index: under the old behaviour its `## Current` lane was copied into
-        // the note verbatim, so this is exactly the fixture that used to produce a block.
-        std::fs::write(
-            p.project_index.as_ref().unwrap(),
-            "## Current\n- [[lab/projects/current/myapp/README|myapp]]\n",
-        )
-        .unwrap();
 
         let log = Logger::new(dir.join("log"), false);
         let note = dir.join("journal/daily/2026-08-05.md");
@@ -1509,157 +1368,83 @@ after
         ensure_footer(&p, &note).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        assert!(!out.contains("## Current Projects"), "section is gone:\n{out}");
-        assert!(
-            !out.contains("myapp"),
-            "the index lane must not be copied in:\n{out}"
+        let block = md::section_lines(&out, "Projects").expect("no Projects section");
+        assert_eq!(
+            block,
+            vec![
+                "### test",
+                "- [[lab/projects/current/shiny/summary|shiny]] beta",
+                "- [[lab/projects/current/early/summary|early]] alpha",
+            ],
+            "beta then alpha, prod/draft/untagged left out:\n{out}"
         );
-        // The index link NAMES its org. Unqualified, "Projects:" sat beside the cross-org
-        // "Board:" and read as the complete list while showing one org's -- which is how
-        // projects living in another org came to look missing.
+        for target in wikilink_targets(&block.join("\n")) {
+            assert!(
+                dir.join(format!("{target}.md")).exists(),
+                "link does not open a file: {target}"
+            );
+        }
         assert!(
-            out.contains("test projects: [[lab/projects/index]]"),
+            out.contains("- test projects: [[lab/projects/index]]"),
             "footer links the index, scoped to its org:\n{out}"
         );
-        // The note opens straight into the human's own list.
-        assert!(out.contains("## Focus"));
+        assert!(out.find("## Focus").unwrap() < out.find("## Projects").unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An org with no alpha/beta project gets no heading, and no org at all means no section.
     #[test]
-    fn job_focus_tasks_filters_prose_and_preserves_indent() {
-        let tasks = job_focus_tasks(JOB_FOCUS);
-        assert_eq!(
-            tasks,
-            vec![
-                "- [ ] clarify boot layer is for networked use cases (2d) <!-- since:2026-07-13 -->",
-                "- [ ]change the endpoint autorun.zip, and call it /runtime (2d) <!-- since:2026-07-13 -->",
-                "- [ ] clickup ticket for investiagation of index.js renaming (2d) <!-- since:2026-07-13 -->",
-                "    - [ ] admin local ui (2d) <!-- since:2026-07-13 -->",
-            ]
-        );
-        // The child task keeps its indentation, which is the only thing tying it to its
-        // parent once the mirror drops everything that is not a task.
-        assert!(tasks[3].starts_with("    - [ ]"));
-        // Prose, pasted output, rules and the empty placeholder are all gone.
-        assert!(!tasks.iter().any(|t| t.contains("universal boot")));
-        assert!(!tasks.iter().any(|t| t.contains("eveyrhgin")));
-        assert!(!tasks.iter().any(|t| t.contains("----")));
-        assert!(!tasks.iter().any(|t| md::is_checked(t)));
-        assert!(!tasks.iter().any(|t| md::is_empty_unchecked(t)));
-    }
-
-    /// A job note that already carries its own rollup block must not re-mirror it.
-    #[test]
-    fn job_focus_tasks_ignores_a_nested_rollup_block() {
-        let note = format!(
-            "## Focus\n- [ ] mine\n\n{}\n\n### other\n- [ ] someone elses\n\n## Notes\n",
-            md::ROLLUP_START
-        );
-        assert_eq!(job_focus_tasks(&note), vec!["- [ ] mine"]);
-    }
-
-    #[test]
-    fn strip_legacy_rollup_removes_mirror_but_keeps_interleaved_tasks() {
-        // A TANGLED note from the old inline design: the user hand-added their own tasks (and a
-        // `---`) BELOW the sentinel, then the `### g` mirror block follows. The migration must
-        // drop the sentinel + the mirror heading/tasks, and preserve every authored line -
-        // deleting the user's interleaved tasks would be data loss.
-        let note = format!(
-            "## Focus\n- [ ] before\n\n{}\n- [ ] sync notes\n\n---\n\n- [x] done thing\n\n### g (2026-07-15) [[x]]\n- [ ] mirror one\n- [ ] mirror two\n\n## Notes\nkeep\n",
-            md::ROLLUP_START
-        );
-        let out = strip_legacy_rollup(&note, &["g".to_string()]);
-        // Mirror gone.
-        assert!(!out.contains(md::ROLLUP_START));
-        assert!(!out.contains("### g"));
-        assert!(!out.contains("mirror one"));
-        assert!(!out.contains("mirror two"));
-        // Every authored line preserved - including the ones the user put below the sentinel.
-        assert!(out.contains("- [ ] before"));
-        assert!(out.contains("- [ ] sync notes"));
-        assert!(out.contains("- [x] done thing"));
-        assert!(out.contains("---"));
-        assert!(out.contains("## Notes\nkeep"));
-        // Idempotent, and a no-op on a note that never had a block.
-        assert_eq!(out, strip_legacy_rollup(&out, &["g".to_string()]));
-        let clean = "## Focus\n- [ ] a\n\n## Notes\nx\n";
-        assert_eq!(strip_legacy_rollup(clean, &["g".to_string()]), clean);
-        // A `### heading` the user wrote themselves (not a rollup name) is left alone.
-        let user_h3 = "## Focus\n### my own subheading\n- [ ] a\n\n## Notes\n";
-        assert_eq!(strip_legacy_rollup(user_h3, &["g".to_string()]), user_h3);
-    }
-
-    #[test]
-    fn refresh_work_renders_roster_migrates_and_is_stable() {
-        // Temp vault: a "g" job note with 2 open + 1 done Focus task (count = 2), an "e" job
-        // with no note at all (rostered link-less), and a personal note that still carries a
-        // legacy inline rollup block in Focus (must be migrated out).
-        let dir = std::env::temp_dir().join(format!("notes-work-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("employment/jobs/g/log")).unwrap();
-        fs::create_dir_all(dir.join("employment/jobs/e")).unwrap(); // exists, but no log/ dir
-        fs::create_dir_all(dir.join("journal/daily")).unwrap();
-
-        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        fs::write(
-            dir.join(format!("employment/jobs/g/log/{today}.md")),
-            "## Focus\n- [ ] open one\n- [ ] open two\n- [x] already done\n\n## Notes\n",
-        )
-        .unwrap();
-
-        let pnote = dir.join("journal/daily").join(format!("{today}.md"));
-        let pcontent = format!(
-            "## Focus\n- [ ] mine\n\n{}\n\n### g [[employment/jobs/g/log/{today}]]\n- [ ] open one\n\n## Notes\n\n---\nBacklogs: [[backlogs/fun]]\n",
-            md::ROLLUP_START
-        );
-        fs::write(&pnote, &pcontent).unwrap();
-
-        let mut prof = profile(dir.to_str().unwrap());
-        prof.name = "personal".into();
-        prof.rollup = vec!["g".into(), "e".into()];
-        let cfg = dir.join("config.toml");
-        fs::write(
-            &cfg,
-            format!(
-                "default_profile=\"personal\"\n\n[profile.personal]\nroot=\"{d}\"\ndaily=\"journal/daily\"\nrefs=\"journal/refs\"\nfun=\"journal/backlogs/fun.md\"\ncarryover=\"journal/backlogs/carryover.md\"\nsummaries=\"journal/summaries\"\narchive=\"journal/daily_archive\"\nzettel=\"journal/permanent\"\nindex=\"journal/index\"\n\n[profile.g]\nroot=\"{d}/employment/jobs/g\"\ndaily=\"log\"\nrefs=\"refs\"\nfun=\"b/f.md\"\ncarryover=\"b/c.md\"\nsummaries=\"s\"\narchive=\"a\"\nzettel=\"z\"\nindex=\"i\"\n\n[profile.e]\nroot=\"{d}/employment/jobs/e\"\ndaily=\"log\"\nrefs=\"refs\"\nfun=\"b/f.md\"\ncarryover=\"b/c.md\"\nsummaries=\"s\"\narchive=\"a\"\nzettel=\"z\"\nindex=\"i\"\n",
-                d = dir.display()
-            ),
-        )
-        .unwrap();
-        std::env::set_var("NOTES_CONFIG", &cfg);
-
+    fn no_quick_projects_means_no_section() {
+        let dir = std::env::temp_dir().join(format!("notes-quick-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let projects = dir.join("lab/projects/current");
+        project(&projects, "live", "prod");
+        let mut p = profile(dir.to_str().unwrap());
+        p.projects = Some(projects);
         let log = Logger::new(dir.join("log"), false);
-        refresh_work(&prof, &log, &pnote).unwrap();
-        let out = fs::read_to_string(&pnote).unwrap();
+        assert_eq!(projects_block(&p, &log), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // The `## Work` roster: g with a link + count, e listed link-less.
-        assert!(out.contains("## Work"), "no Work section: {out}");
-        assert!(
-            out.contains(&format!("- g - [[employment/jobs/g/log/{today}]] (2 open)")),
-            "{out}"
-        );
-        assert!(out.contains("- e - (no note yet)"), "{out}");
-        // The legacy inline block is gone from Focus; the personal task and footer survive.
-        assert!(
-            !out.contains(md::ROLLUP_START),
-            "legacy block not migrated: {out}"
-        );
-        assert!(!out.contains("### g "), "legacy heading left behind: {out}");
-        assert!(out.contains("- [ ] mine"));
-        assert!(out.contains("Backlogs: [[backlogs/fun]]"));
+    /// The targets of every `[[target]]` / `[[target|alias]]` in `s`.
+    fn wikilink_targets(s: &str) -> Vec<String> {
+        s.split("[[")
+            .skip(1)
+            .filter_map(|r| r.split("]]").next())
+            .map(|t| t.split('|').next().unwrap().to_string())
+            .collect()
+    }
 
-        // Byte-stable on a second run (no churn given shell-startup + 5-min sync).
-        refresh_work(&prof, &log, &pnote).unwrap();
-        assert_eq!(
-            fs::read_to_string(&pnote).unwrap(),
-            out,
-            "Work section churned"
-        );
+    /// A note from before this build carries `## Work`: it is swapped for `## Projects` once,
+    /// and the next pass changes nothing - the note is not rewritten during the day.
+    #[test]
+    fn a_legacy_work_section_becomes_projects_once() {
+        let dir = std::env::temp_dir().join(format!("notes-work-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let projects = dir.join("lab/projects/current");
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        project(&projects, "shiny", "beta");
+        let mut p = profile(dir.to_str().unwrap());
+        p.projects = Some(projects);
+        let note = dir.join("journal/daily/2026-10-14.md");
+        std::fs::write(
+            &note,
+            "# 2026-10-14\n\n## Focus\n- [ ] mine\n\n## Work\n- bnb - [[lab/bnb/log/x]] (0 open)\n\n---\nBacklog: [[journal/backlogs/fun]]\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log"), false);
 
-        std::env::remove_var("NOTES_CONFIG");
-        let _ = fs::remove_dir_all(&dir);
+        migrate_work(&p, &log, &note).unwrap();
+        let once = std::fs::read_to_string(&note).unwrap();
+        assert!(!once.contains("## Work"), "{once}");
+        assert!(once.contains("## Projects\n### test\n- [[lab/projects/current/shiny/summary|shiny]] beta\n\n---\n"), "{once}");
+        assert!(once.contains("- [ ] mine"));
+
+        migrate_work(&p, &log, &note).unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), once, "migration repeated");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2048,8 +1833,12 @@ after
         assert_eq!(first.matches("Schedule:").count(), 1, "{first}");
         let footer = &first[footer_idx(&first).expect("footer lost its rule")..];
         assert!(
-            footer.trim().lines().count() == 2,
-            "footer is not last:\n{first}"
+            footer
+                .trim()
+                .lines()
+                .skip(1)
+                .all(|l| l.starts_with("- ") && l.contains("[[")),
+            "footer is not last, or not one link per line:\n{first}"
         );
         assert!(
             first.contains("### Done\n- [x] b"),
@@ -2121,10 +1910,9 @@ after
             !footer.chars().any(|c| c.is_ascii_digit()),
             "the footer must carry no counts:\n{footer}"
         );
-        assert!(
-            footer.contains("Status:") && footer.contains("[[status/watches|Watches]]"),
-            "the footer must reach the status pages:\n{footer}"
-        );
+        for feed in ["- Watches: [[status/watches]]", "- Comms: [[status/comms]]", "- Inbox: [[status/inbox]]"] {
+            assert!(footer.contains(feed), "the footer must reach {feed}:\n{footer}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2243,57 +2031,6 @@ after
                 && out.contains("  - at: ~/.dotfiles and the private overlay"),
             "{out}"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn refresh_inbox_lists_today_captures_and_self_hides() {
-        let dir = std::env::temp_dir().join(format!("notes-inbox-{}", std::process::id()));
-        let inbox = dir.join("inbox");
-        let daily = dir.join("journal/daily");
-        std::fs::create_dir_all(&inbox).unwrap();
-        std::fs::create_dir_all(&daily).unwrap();
-        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        let inbox_file = inbox.join(format!("{today}.md"));
-        // second capture carries a session marker (as `notes inbox add` writes it)
-        std::fs::write(&inbox_file, format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank <!-- session:abcd1234-ef56-7890-abcd-ef1234567890 -->\n")).unwrap();
-        let note = daily.join(format!("{today}.md"));
-        std::fs::write(&note, "# note\n\n## Due\n\n---\nBacklogs: [[fun]]\n").unwrap();
-
-        let p = profile(dir.to_str().unwrap()); // profile() sets inbox = <root>/inbox
-        let log = Logger::new(dir.join("log"), false);
-
-        refresh_inbox(&p, &log, &note).unwrap();
-        let out = std::fs::read_to_string(&note).unwrap();
-        assert!(out.contains("## Inbox"));
-        // rendered as checkbox tasks, not plain bullets
-        assert!(out.contains("- [ ] 09:01 buy milk"));
-        // session marker → short `(sess …)` suffix; raw comment stripped from the note
-        assert!(out.contains("- [ ] 10:15 call bank (sess abcd1234)"));
-        assert!(!out.contains("<!--"));
-        // section sits above the footer
-        assert!(out.find("## Inbox").unwrap() < out.find("---\nBacklogs:").unwrap());
-
-        // check one off, add a new capture, re-run → the checkmark is preserved
-        let ticked = out.replace("- [ ] 09:01 buy milk", "- [x] 09:01 buy milk");
-        std::fs::write(&note, &ticked).unwrap();
-        std::fs::write(
-            &inbox_file,
-            format!("# Inbox - {today}\n- 09:01 buy milk\n- 10:15 call bank\n- 11:30 new one\n"),
-        )
-        .unwrap();
-        refresh_inbox(&p, &log, &note).unwrap();
-        let out2 = std::fs::read_to_string(&note).unwrap();
-        assert!(out2.contains("- [x] 09:01 buy milk")); // preserved
-        assert!(out2.contains("- [ ] 10:15 call bank"));
-        assert!(out2.contains("- [ ] 11:30 new one"));
-
-        // empty inbox → section removed (self-hiding), idempotent
-        std::fs::write(&inbox_file, format!("# Inbox - {today}\n")).unwrap();
-        refresh_inbox(&p, &log, &note).unwrap();
-        let out3 = std::fs::read_to_string(&note).unwrap();
-        assert!(!out3.contains("## Inbox"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

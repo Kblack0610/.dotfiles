@@ -1,4 +1,4 @@
-//! `notes comms` — surface multi-account email triage into the daily note.
+//! `notes comms`: surface multi-account email triage onto the comms status page.
 //!
 //! Division of labour (mirrors the Sentinel watches model):
 //!   - The **triage poller** (`comms-fetch.py` + `comms-triage.sh`, driven by
@@ -6,16 +6,17 @@
 //!     Gmail labels, and writes a *pre-rendered* per-profile surface file at
 //!     `<state_dir>/surface/<profile>.md` (one `- …` bullet per critical/action item).
 //!   - This module (and `notes today`) is **read-only + offline**: it just reads that
-//!     surface file and renders it as a `## Comms` section, exactly like `refresh_watches`
+//!     surface file and renders it as `status/comms.md`, exactly like `refresh_watches`
 //!     reads `<name>.state` files. No network, no LLM, no new crate deps.
 //!
-//! So `notes today` stays fast and works with no connectivity; the freshness of the
-//! `## Comms` block is whatever the poller last wrote.
+//! So `notes today` stays fast and works with no connectivity; the freshness of the page is
+//! whatever the poller last wrote. It is a page and not a note section because mail moves all
+//! day, and the daily note is only written when it is created.
 
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
-use crate::md;
+use crate::status;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -40,7 +41,7 @@ pub fn surface_lines(profile: &str) -> Vec<String> {
 }
 
 /// One-line cross-account stats summary (from the poller's `stats-summary.txt`), or None
-/// when comms is unconfigured / the snapshot is absent. Rendered as the `## Comms` lead line.
+/// when comms is unconfigured / the snapshot is absent. Rendered as the comms page's lead line.
 pub fn summary_line() -> Option<String> {
     let c = config::comms_config().ok()?;
     if c.accounts.is_empty() {
@@ -51,56 +52,50 @@ pub fn summary_line() -> Option<String> {
     (!line.is_empty()).then(|| line.to_string())
 }
 
-/// Build the `## Comms` section into `existing`, replacing any prior one in place. Pure
-/// (no I/O) so it is unit-testable and provably idempotent: a second pass over its own
-/// output is byte-stable. The section renders when EITHER a `summary` line or `lines`
-/// exist; empty summary + empty lines strips the section entirely.
-pub(crate) fn render_comms(existing: &str, summary: Option<&str>, lines: &[String]) -> String {
-    let stripped = daily::remove_section(existing, "Comms");
-    if summary.is_none() && lines.is_empty() {
-        return stripped;
+/// The comms status page from the poller's summary line and surface bullets. Pure, so the
+/// tiering is testable without a configured mailbox. Every surfaced line is a critical or
+/// action item, so all of them need attention; CRITICAL sorts above ACTION, and the poller's
+/// own order is kept within a tier.
+pub(crate) fn comms_page(summary: Option<&str>, lines: &[String]) -> status::Page {
+    let rows = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let head = l.trim_start().trim_start_matches("- ").to_string();
+            let tier = match head.split_whitespace().next() {
+                Some("CRITICAL") => 0,
+                Some("ACTION") => 1,
+                _ => 2,
+            };
+            status::Row {
+                attention: true,
+                sort: (tier, format!("{i:04}")),
+                head,
+                detail: vec![],
+            }
+        })
+        .collect();
+    status::Page {
+        feed: status::Feed::Comms,
+        stat: summary.map(str::to_string),
+        rows,
     }
-    let mut block = String::from("\n\n## Comms\n");
-    if let Some(s) = summary {
-        block.push('_');
-        block.push_str(s);
-        block.push_str("_\n");
-    }
-    for l in lines {
-        block.push_str(l);
-        block.push('\n');
-    }
-    daily::insert_before_footer(&stripped, &block)
 }
 
-/// Refresh the daily note's `## Comms` section from the triage poller's surface file. Runs
-/// every `notes today` (like `refresh_watches`) so it stays current as the poller writes.
+/// Publish the comms page from the triage poller's surface file and take any `## Comms`
+/// section out of the note. Runs every `notes today` so the page tracks the poller.
 ///
-/// No-op when comms is unconfigured on this machine (the surface file / config is absent),
-/// which is the guard against sync ping-pong: a machine without comms config must not strip
-/// a `## Comms` section another machine wrote and synced in.
+/// Skipped when comms is unconfigured on this machine, which is the guard against sync
+/// ping-pong: a machine without comms config must not strip a `## Comms` section another
+/// machine wrote, nor overwrite the page it publishes.
 pub fn refresh(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    // Feature off on this machine? Leave the note untouched (do NOT strip).
-    match config::comms_config() {
-        Ok(c) if !c.accounts.is_empty() => {}
-        _ => return Ok(()),
-    }
-    let content = fs::read_to_string(note)?;
-    let lines = surface_lines(&p.name);
-    let summary = summary_line();
-    let new_content = render_comms(&content, summary.as_deref(), &lines);
-    if new_content != content {
-        md::write_atomic(note, &new_content)?;
-        log.info(
-            "today",
-            &format!("refreshed ## Comms ({} item(s))", lines.len()),
-        );
-    }
-    Ok(())
+    let present = config::comms_config().is_ok_and(|c| !c.accounts.is_empty());
+    let page = comms_page(summary_line().as_deref(), &surface_lines(&p.name));
+    daily::publish_and_strip(p, log, note, &page, present, "Comms")
 }
 
 /// `notes comms` (default / `list`): print the currently-surfaced comms lines for the
-/// active profile. Read-only; the same lines `## Comms` would render.
+/// active profile. Read-only; the same lines the comms page renders.
 pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
     let summary = summary_line();
     let lines = surface_lines(&p.name);
@@ -117,8 +112,8 @@ pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
     Ok(())
 }
 
-/// `notes comms refresh`: ensure today's note exists, then re-render its `## Comms`
-/// section from the surface file. A manual trigger for the same work `notes today` does.
+/// `notes comms refresh`: ensure today's note exists, then re-publish the comms page from
+/// the surface file. A manual trigger for the same work `notes today` does.
 pub fn refresh_cmd(p: &Profile, log: &Logger) -> Result<()> {
     let note = daily::today_path(p);
     if !note.exists() {
@@ -190,48 +185,29 @@ pub fn stats(fresh: bool, _log: &Logger) -> Result<()> {
 mod tests {
     use super::*;
 
-    const BASE: &str = "# 2026-07-18\n\n## Focus\n- [ ] a task\n\n---\nBacklogs: [[fun]]\n";
-
-    #[test]
-    fn render_inserts_above_footer() {
-        let lines = vec!["- CRITICAL [work] Re: contract - alice@acme".to_string()];
-        let out = render_comms(BASE, None, &lines);
-        assert!(out.contains("## Comms\n- CRITICAL [work] Re: contract"));
-        // Section sits above the backlog footer, not after it.
-        let comms_at = out.find("## Comms").unwrap();
-        let footer_at = out.find("\n---\nBacklogs:").unwrap();
-        assert!(comms_at < footer_at);
+    fn line(s: &str) -> String {
+        s.to_string()
     }
 
     #[test]
-    fn render_is_idempotent() {
+    fn every_surfaced_line_needs_attention_and_critical_leads() {
         let lines = vec![
-            "- CRITICAL [work] Re: contract - alice@acme".to_string(),
-            "- ACTION [personal] renew passport".to_string(),
+            line("- ACTION [personal] renew passport"),
+            line("- CRITICAL [work] Re: contract - alice@acme"),
         ];
-        let once = render_comms(BASE, Some("Inbox 9k - 2 crit"), &lines);
-        let twice = render_comms(&once, Some("Inbox 9k - 2 crit"), &lines);
-        assert_eq!(
-            once, twice,
-            "re-rendering its own output must be byte-stable"
-        );
+        let page = comms_page(Some("Inbox 9k - 1 crit"), &lines);
+        assert_eq!(page.feed, status::Feed::Comms);
+        assert_eq!(page.stat.as_deref(), Some("Inbox 9k - 1 crit"));
+        assert!(page.rows.iter().all(|r| r.attention));
+        let mut rows: Vec<_> = page.rows.iter().collect();
+        rows.sort_by(|a, b| a.sort.cmp(&b.sort));
+        assert_eq!(rows[0].head, "CRITICAL [work] Re: contract - alice@acme");
+        assert_eq!(rows[1].head, "ACTION [personal] renew passport");
     }
 
     #[test]
-    fn summary_renders_as_italic_lead_line() {
-        let out = render_comms(BASE, Some("Inbox 9k - 2 crit, 5 action"), &[]);
-        // Section shows on summary alone (no bullets), summary italicized under the heading.
-        assert!(out.contains("## Comms\n_Inbox 9k - 2 crit, 5 action_\n"));
-    }
-
-    #[test]
-    fn empty_summary_and_lines_strip_section() {
-        let lines = vec!["- CRITICAL [work] x".to_string()];
-        let with = render_comms(BASE, Some("s"), &lines);
-        assert!(with.contains("## Comms"));
-        let without = render_comms(&with, None, &[]);
-        assert!(!without.contains("## Comms"));
-        // Stripping restores the original (footer + focus intact).
-        assert_eq!(without, BASE);
+    fn nothing_surfaced_is_an_empty_page() {
+        let page = comms_page(None, &[]);
+        assert!(page.rows.is_empty() && page.stat.is_none());
     }
 }

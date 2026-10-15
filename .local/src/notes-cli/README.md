@@ -47,7 +47,7 @@ keeps it.
 
 | Command | What it does |
 |---|---|
-| `notes today` | Idempotent daily note. Carries unfinished **Focus** forward (day-stamped), surfaces anything the schedule fires, links refs, regenerates the footer, and conforms a note an older build left behind. |
+| `notes today` | Idempotent daily note. Carries unfinished **Focus** forward (day-stamped), surfaces anything the schedule fires, adds `## Projects`, links refs, regenerates the footer, publishes the status pages, and conforms a note an older build left behind. |
 | `notes path` | Print today's note path (for `nvim "$(notes path)"`). |
 | `notes link-refs` | Link today's `refs/<date>/*.md` into the note's `## Refs`. |
 | `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
@@ -91,49 +91,17 @@ Which backlogs the footer links is config-driven via `footer_links` (names: `bac
 `schedule`, or a vault-relative path; default `["backlog", "schedule"]`) - edit that list in
 `config.toml`, no recompile. `footer_backlogs` is the old key name, still read as an alias.
 
-**Inbox** is surfaced two ways: a footer `Inbox (N): [[inbox]]` link when there are
-pending captures (N = capture files awaiting triage, same count as `notes inbox`), and a
-`## Inbox` section near the bottom of the note listing **today's** quick-captures inline
-(the bullets in `inbox/<today>.md`) as checkbox tasks, refreshed every `notes today` so
-captures added during the day show up. Ticking one off is preserved across refreshes.
-The section self-hides on days with no captures.
+**The note is written once a day.** `notes today` builds the note when it creates it, and after that only you write to it. Everything that changes during the day lives on a status page beside the note under `<root>/status/`, reached from the footer:
 
-**Session tagging** — when `notes inbox add` runs inside a Claude Code session it stamps
-the capture with `<!-- session:<id> -->` (from `$CLAUDE_CODE_SESSION_ID`). The `## Inbox`
-section then shows a short `(sess <8-char>)` suffix, so a capture links back to the
-conversation that produced it via `claude -r <id>`. Plain terminal captures are untagged.
+- `status/watches.md` - Sentinel watches (set `watches = "~/.agent/watches"`; state read from `~/.local/state/watch-companion/<name>.state`). Read-only against the Sentinel runtime.
+- `status/comms.md` - the mail triage poller's surface file plus its stats line. Skipped on a machine without comms config, so it never overwrites the page another machine publishes.
+- `status/inbox.md` - today's quick-captures (`inbox/<today>.md`), with a short `(sess <8-char>)` suffix when `notes inbox add` ran inside a Claude Code session, so a capture links back via `claude -r <id>`.
 
-**Sentinel watches** — set `watches = "~/.agent/watches"` in `config.toml` (opt-in;
-default off) and `notes today` renders a `## Watches` section listing each registered
-watch with its live state (`OK` / `TRIP` / `ERROR` / `paused`), unhealthy first,
-refreshed every run. State is read from `~/.local/state/watch-companion/<name>.state`
-(override the dir with `watches_state`). These are runtime paths outside the vault; the
-notes CLI only reads them (it never writes to the Sentinel runtime, and Sentinel never
-writes to the vault).
+A note written by an older build has its `## Watches`, `## Comms`, `## Inbox` and `## Work` sections removed once each page is on disk.
 
-**Work roster** - set `rollup = ["acmecorp", "othercorp"]` on a profile (opt-in; default
-off) and `notes today` renders a `## Work` section: one collapsed line per job with a link
-to that job's latest note and its open-task count, e.g. `- acmecorp - [[..]] (7 open)`.
-It is its own H2 section (kept above the footer like `## Watches`), regenerated every run,
-so it is never carried forward into tomorrow's note nor folded into summaries. The tasks
-themselves stay in the job's own note - the point is a glance-value pointer, not a copy;
-`gf` on the link jumps you into the job note where you read and complete them. Every
-configured job is listed even at zero open (a stable roster); a job with no note yet is
-listed link-less as `(no note yet)`.
+**Projects** - the note's one generated section, rendered at creation: quick links to every project tagged `#beta` or `#alpha` (see `notes projects --stage`) in this org and in each org listed in `rollup`, one small `### <org>` block per org that has any. Prod and draft projects are left out. Links are vault-relative, so they resolve from any org.
 
-`## Work` is separate from `## Focus` by design: Focus is your personal now, Work is the
-per-job pointer. (An earlier design mirrored each job's tasks inline under Focus behind a
-`<!-- rollup:start -->` sentinel; `refresh_work` still strips any such legacy block from an
-existing note - surgically, preserving any tasks the user interleaved with it - so notes
-upgrade in place.)
-
-Two properties worth knowing:
-
-- No-op when `rollup` is empty. The config is machine-local and gitignored, so a machine
-  without the key must not add a `## Work` section the next 5-minute sync would strip off
-  the machine that has it - the same ping-pong guard `## Watches` uses.
-- The count regenerates from the job note each run, so it tracks reality as you complete
-  tasks there; byte-stable between runs when nothing changed (no cross-machine churn).
+**Footer** - one `- Label: [[target]]` per line below a `---`: the `footer_links` files, the project board and agent board, this org's project index, the knowledge MOC, and the three status pages. It carries no counts, so it only changes when the set of links does.
 
 ## Wiring
 
