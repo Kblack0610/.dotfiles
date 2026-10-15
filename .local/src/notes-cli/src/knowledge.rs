@@ -11,7 +11,7 @@
 //!   - every date gets exactly one immutable log, `_log/YYYY/MM/YYYY-MM-DD.md`, which is also
 //!     the checkpoint: git syncs it, so no machine re-runs a date another already did.
 //!
-//! `new_section` renders the daily note's `## New knowledge` from those logs.
+//! `morning_lines` renders the knowledge half of the daily note's `## Morning` from those logs.
 
 use crate::config::{self, Profile};
 use crate::logging::Logger;
@@ -445,11 +445,12 @@ fn snapshot_original(p: &Profile, file: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The daily note's `## New knowledge`: every log from the last week that the previous note did
-/// not already list, oldest first, with the articles it created or updated. Keyed on the
-/// previous note's content rather than on dates, so a log that lands after today's note was
-/// created shows up tomorrow instead of never. Empty string when there is nothing new.
-pub fn new_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
+/// The knowledge lines of the daily note's `## Morning`: every log from the last week that the
+/// previous note did not already list, oldest first, with the articles it created or updated.
+/// Keyed on the previous note's content rather than on dates, so a log that lands after today's
+/// note was created shows up tomorrow instead of never. With nothing new it says when the engine
+/// last compiled, so a stalled engine is visible instead of looking like a quiet night.
+pub fn morning_lines(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let mut block = String::new();
     for back in (1..=NEW_SECTION_DAYS).rev() {
         let file = log_path(p, today - Duration::days(back));
@@ -476,7 +477,7 @@ pub fn new_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         if items.is_empty() {
             continue;
         }
-        block.push_str(&format!("- [[{link}]]\n"));
+        block.push_str(&format!("- Knowledge: [[{link}]]\n"));
         for item in items.iter().take(NEW_SECTION_CAP) {
             block.push_str(item);
             block.push('\n');
@@ -486,9 +487,32 @@ pub fn new_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         }
     }
     if block.is_empty() {
-        return block;
+        block = match last_log_date(p) {
+            Some(d) => format!("- Knowledge: nothing new (last compiled {d})\n"),
+            None => "- Knowledge: nothing compiled yet\n".to_string(),
+        };
     }
-    format!("\n## New knowledge\n{block}")
+    block
+}
+
+/// The newest date with a log under `knowledge/_log/YYYY/MM/`, if any.
+fn last_log_date(p: &Profile) -> Option<NaiveDate> {
+    let mut newest = None;
+    let years = fs::read_dir(p.knowledge.join(LOG_DIR)).ok()?;
+    for y in years.flatten().filter(|e| e.path().is_dir()) {
+        for m in fs::read_dir(y.path()).into_iter().flatten().flatten() {
+            for f in fs::read_dir(m.path()).into_iter().flatten().flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                if let Some(Ok(d)) = name
+                    .strip_suffix(".md")
+                    .map(|stem| NaiveDate::parse_from_str(stem, "%Y-%m-%d"))
+                {
+                    newest = newest.max(Some(d));
+                }
+            }
+        }
+    }
+    newest
 }
 
 #[cfg(test)]
@@ -769,8 +793,8 @@ mod tests {
     }
 
     #[test]
-    fn new_section_lists_each_log_once() {
-        let root = vault("newsec");
+    fn morning_lists_each_log_once_then_says_when_it_last_compiled() {
+        let root = vault("morning");
         run(
             &root,
             &[
@@ -782,15 +806,20 @@ mod tests {
         let p = profile(&root);
         let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
 
-        let sec = new_section(&p, Some("# yesterday\n"), today);
+        let lines = morning_lines(&p, Some("# yesterday\n"), today);
         assert_eq!(
-            sec,
-            "\n## New knowledge\n- [[knowledge/_log/2026/10/2026-10-13]]\n  - new [[knowledge/software/gw]]\n"
+            lines,
+            "- Knowledge: [[knowledge/_log/2026/10/2026-10-13]]\n  - new [[knowledge/software/gw]]\n"
         );
         // Tomorrow's note sees today's note already listed it.
-        assert_eq!(new_section(&p, Some(&sec), today + Duration::days(1)), "");
-        // Nothing logged: no section at all.
-        assert_eq!(new_section(&profile(&vault("empty")), None, today), "");
+        assert_eq!(
+            morning_lines(&p, Some(&lines), today + Duration::days(1)),
+            "- Knowledge: nothing new (last compiled 2026-10-13)\n"
+        );
+        assert_eq!(
+            morning_lines(&profile(&vault("empty")), None, today),
+            "- Knowledge: nothing compiled yet\n"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

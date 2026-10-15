@@ -101,8 +101,14 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     }
     conform_legacy_sections(&note, log)?;
 
+    // Swallowed like the feeds below: a briefing or log that cannot be read must never abort
+    // the note.
+    if let Err(e) = refresh_morning(p, &note, today) {
+        log.warn("today", &format!("morning section skipped: {e}"));
+    }
     link_refs(p, log)?;
     ensure_footer(p, &note)?;
+    space_headings(&note)?;
     // A note written before `## Projects` existed carries the `## Work` roster instead; swap it
     // once. The marker is gone after the first pass, so this cannot repeat during the day.
     migrate_work(p, log, &note)?;
@@ -136,7 +142,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
     let mut focus_keep: Vec<String> = Vec::new();
     let mut focus_defer: Vec<String> = Vec::new();
-    let mut prev_note: Option<String> = None;
 
     if let Some(prev) = latest_prev(&p.daily, &today_s)? {
         let prev_date = file_date(&prev).unwrap_or(today);
@@ -174,7 +179,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             focus_keep.extend(keep);
             focus_defer.extend(defer);
         }
-        prev_note = Some(content);
     }
 
     // The SCHEDULE: one pass surfaces both kinds of trigger into Focus — a `[date]` within
@@ -211,8 +215,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     s.push_str("- [ ] \n");
     // Rendered HERE and only here, so the note is written once by whichever machine creates
     // it and then only changes when the human edits it.
-    // What the knowledge engine compiled since the last note listed it (see knowledge.rs).
-    s.push_str(&crate::knowledge::new_section(p, prev_note.as_deref(), today));
     s.push_str(&projects_block(p, log));
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
@@ -398,6 +400,66 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
+/// The morning briefing's file stem under today's refs dir. Written by `agentctl-briefing`.
+const BRIEFING: &str = "briefing";
+
+/// `## Morning`: what happened while you were away, at the top of the note. The briefing's
+/// headline and its "Needs you" items (each cut before its `-> do:` hint, which stays in the
+/// briefing), then what the knowledge engine compiled since the last note listed it.
+fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
+    let today_s = today.format("%Y-%m-%d").to_string();
+    let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
+    let mut s = String::from("## Morning\n");
+    match fs::read_to_string(&briefing) {
+        Ok(text) => {
+            let headline = text
+                .lines()
+                .find(|l| l.starts_with("As of "))
+                .unwrap_or("")
+                .trim();
+            let link = format!("{}/{today_s}/{BRIEFING}", p.refs_rel);
+            if headline.is_empty() {
+                s.push_str(&format!("- Briefing: [[{link}]]\n"));
+            } else {
+                s.push_str(&format!("- Briefing: [[{link}]] {headline}\n"));
+            }
+            for item in md::section_lines(&text, "Needs you").unwrap_or_default() {
+                let Some(body) = item.strip_prefix("- ") else {
+                    continue;
+                };
+                let body = body.split(" -> do:").next().unwrap_or(body).trim();
+                if !body.is_empty() && body != "nothing" {
+                    s.push_str(&format!("  - {body}\n"));
+                }
+            }
+        }
+        Err(_) => s.push_str("- Briefing: not written yet\n"),
+    }
+    s.push_str(&crate::knowledge::morning_lines(p, prev_note, today));
+    s
+}
+
+/// Render `## Morning` into the note, above `## Notes`. Rewritten only when it changes, which
+/// in practice is when the briefing or a knowledge log lands after the note was created.
+fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
+    let today_s = today.format("%Y-%m-%d").to_string();
+    let prev_note = latest_prev(&p.daily, &today_s)?.and_then(|f| fs::read_to_string(f).ok());
+    let block = morning_section(p, prev_note.as_deref(), today);
+    let content = fs::read_to_string(note)?;
+    let stripped = remove_section(&content, "Morning");
+    let anchor = ["## Notes", "## Focus"]
+        .iter()
+        .find_map(|h| stripped.find(&format!("\n{h}\n")).map(|i| i + 1));
+    let updated = match anchor {
+        Some(i) => format!("{}{block}\n{}", &stripped[..i], &stripped[i..]),
+        None => insert_before_footer(&stripped, &block),
+    };
+    if updated != content {
+        md::write_atomic(note, &updated)?;
+    }
+    Ok(())
+}
+
 /// Link today's ref files into the note's `## Refs` section (idempotent).
 pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
@@ -412,7 +474,8 @@ pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
         let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if stem != "_index" {
+                // The briefing is rendered in `## Morning`, so listing it here would say it twice.
+                if stem != "_index" && stem != BRIEFING {
                     names.push(stem.to_string());
                 }
             }
@@ -573,9 +636,9 @@ pub(crate) fn strip_backlog_footer(content: &mut String) {
 pub(crate) fn insert_before_footer(content: &str, block: &str) -> String {
     if let Some(idx) = footer_idx(content) {
         let (head, tail) = content.split_at(idx);
-        format!("{}{}{}", head.trim_end(), block, tail)
+        format!("{}\n\n{}{}", head.trim_end(), block.trim_start_matches('\n'), tail)
     } else {
-        format!("{}{}", content.trim_end(), block)
+        format!("{}\n\n{}", content.trim_end(), block.trim_start_matches('\n'))
     }
 }
 
@@ -1091,6 +1154,30 @@ fn migrate_to_schedule(p: &Profile, log: &Logger) -> Result<()> {
 /// engine is. That gap is why a machine one build behind produced a visibly different daily.
 ///
 /// Idempotent, and a no-op on a note that is already clean.
+/// Put a blank line above every `## ` heading that lacks one. Sections are inserted by several
+/// writers, and one that joins its block straight onto the previous section runs the two
+/// together when rendered. Code fences are left alone. Writes only on change.
+fn space_headings(note: &Path) -> Result<()> {
+    let original = fs::read_to_string(note)?;
+    let mut out = String::with_capacity(original.len() + 16);
+    let mut prev_blank = true;
+    let mut in_fence = false;
+    for line in original.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && line.starts_with("## ") && !prev_blank {
+            out.push('\n');
+        }
+        prev_blank = line.trim().is_empty();
+        out.push_str(line);
+    }
+    if out != original {
+        md::write_atomic(note, &out)?;
+    }
+    Ok(())
+}
+
 fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
     let original = fs::read_to_string(note)
         .with_context(|| format!("reading {}", note.display()))?;
@@ -1805,41 +1892,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A knowledge log the previous note did not list lands in the new note's `## New knowledge`;
-    /// one it already listed does not come back.
+    /// `## Morning` sits above Notes: the briefing headline and its "Needs you" items without
+    /// their `-> do:` hints, then the knowledge log the previous note did not list. Re-running it
+    /// changes nothing.
     #[test]
-    fn new_note_lists_knowledge_the_previous_note_did_not() {
-        let dir = std::env::temp_dir().join(format!("notes-newknow-{}", std::process::id()));
+    fn morning_shows_the_briefing_and_unlisted_knowledge_above_notes() {
+        let dir = std::env::temp_dir().join(format!("notes-morning-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        std::fs::create_dir_all(dir.join("journal/refs/2026-09-30")).unwrap();
         std::fs::create_dir_all(dir.join("knowledge/_log/2026/09")).unwrap();
         std::fs::write(
-            dir.join("knowledge/_log/2026/09/2026-09-28.md"),
-            "# log\n\n## Changes\n- created [[knowledge/a]]: r\n",
+            dir.join("journal/refs/2026-09-30/briefing.md"),
+            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45, 2 page(s), 1 high.\n\n## Needs you\n\n- wave-roll STALLED -> do: agentctl status wave-roll\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("knowledge/_log/2026/09/2026-09-29.md"),
-            "# log\n\n## Changes\n- updated [[knowledge/b]]: r\n",
-        )
-        .unwrap();
+        for (d, line) in [("28", "- created [[knowledge/a]]: r"), ("29", "- updated [[knowledge/b]]: r")] {
+            std::fs::write(
+                dir.join(format!("knowledge/_log/2026/09/2026-09-{d}.md")),
+                format!("# log\n\n## Changes\n{line}\n"),
+            )
+            .unwrap();
+        }
         std::fs::write(
             dir.join("journal/daily/2026-09-29.md"),
-            "# 2026-09-29\n\n## New knowledge\n- [[knowledge/_log/2026/09/2026-09-28]]\n",
+            "# 2026-09-29\n\n## Morning\n- Knowledge: [[knowledge/_log/2026/09/2026-09-28]]\n",
         )
         .unwrap();
         let p = profile(dir.to_str().unwrap());
         let log = Logger::new(dir.join("log"), false);
         let note = dir.join("journal/daily/2026-09-30.md");
         create_note(&p, &log, d("2026-09-30"), &note).unwrap();
+        refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        assert!(
-            out.contains("## New knowledge\n- [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n"),
-            "{out}"
-        );
+        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Knowledge: [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n\n## Notes\n";
+        assert!(out.contains(expected), "{out}");
         assert!(!out.contains("2026-09-28"), "already listed yesterday:\n{out}");
+
+        refresh_morning(&p, &note, d("2026-09-30")).unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No briefing yet and no logs ever: the section says so instead of disappearing.
+    #[test]
+    fn morning_says_what_is_missing() {
+        let dir = std::env::temp_dir().join(format!("notes-morning-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        assert_eq!(
+            morning_section(&p, None, d("2026-09-30")),
+            "## Morning\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A note whose `## Refs` was joined onto the previous section gets its blank line back, once.
+    #[test]
+    fn headings_get_a_blank_line_above_them() {
+        let dir = std::env::temp_dir().join(format!("notes-space-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("n.md");
+        std::fs::write(&note, "# d\n\n## Projects\n- [[x]]\n## Refs\n- [[r]]\n```\n## not a heading\n```\n").unwrap();
+        space_headings(&note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert_eq!(out, "# d\n\n## Projects\n- [[x]]\n\n## Refs\n- [[r]]\n```\n## not a heading\n```\n");
+        space_headings(&note).unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A section added above the footer is separated from what comes before it by a blank line.
+    #[test]
+    fn a_block_inserted_before_the_footer_gets_a_blank_line() {
+        let note = "# d\n\n## Projects\n- [[x]]\n\n---\n- Backlog: [[b]]\n";
+        let out = insert_before_footer(note, "\n## Refs\n- [[r]]\n");
+        assert!(out.contains("- [[x]]\n\n## Refs\n- [[r]]\n"), "{out}");
     }
 
     /// With Focus as the last H2, repeated `notes today` passes (footer, then sweep) must

@@ -104,7 +104,7 @@ A note written by an older build has its `## Watches`, `## Comms`, `## Inbox` an
 
 **Projects** - the note's one generated section, rendered at creation: quick links to every project tagged `#beta` or `#alpha` (see `notes projects --stage`) in this org and in each org listed in `rollup`, one small `### <org>` block per org that has any. Prod and draft projects are left out. Links are vault-relative, so they resolve from any org.
 
-**New knowledge** - written once at creation: every knowledge-engine log from the last week that the previous note did not already list, with the articles it created or updated. Omitted when there are none.
+**Morning** - at the top, above Notes, re-rendered only when it changes: the morning briefing (`journal/refs/<date>/briefing.md`, its headline and "Needs you" items; it is not repeated under Refs) and every knowledge-engine log from the last week that the previous note did not already list, with the articles it created or updated. With nothing new it names the last compile date, so a stalled engine shows.
 
 **Footer** - one `- Label: [[target]]` per line below a `---`: the `footer_links` files, the project board and agent board, this org's project index, the knowledge MOC, and the three status pages. It carries no counts, so it only changes when the set of links does.
 
