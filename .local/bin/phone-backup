@@ -47,10 +47,26 @@ mkdir -p "$stage"
 mapfile -t entries < <(adb -s "$SERIAL" shell ls -1 /sdcard/ | tr -d '\r' | grep -v -x -e '' -e Android)
 [[ ${#entries[@]} -gt 0 ]] || die "/sdcard listed nothing on $SERIAL"
 
+# Another adb client of a different version (e.g. the adb bundled with a Unity
+# editor) kills and restarts the server, dropping the phone mid-pull. So on a
+# failed pull, wait for the phone to reattach and retry that entry.
+PULL_ATTEMPTS=3
+REATTACH_TIMEOUT=60
+pull_entry() {
+    local entry="$1" attempt
+    for ((attempt = 1; attempt <= PULL_ATTEMPTS; attempt++)); do
+        adb -s "$SERIAL" pull -a "/sdcard/$entry" "$stage/" && return 0
+        ((attempt < PULL_ATTEMPTS)) || break
+        echo "   pull failed (attempt $attempt/$PULL_ATTEMPTS), waiting for $SERIAL to reattach" >&2
+        timeout "$REATTACH_TIMEOUT" adb -s "$SERIAL" wait-for-device || return 1
+    done
+    return 1
+}
+
 failed=()
 for entry in "${entries[@]}"; do
     echo "== pull /sdcard/$entry"
-    adb -s "$SERIAL" pull -a "/sdcard/$entry" "$stage/" || failed+=("$entry")
+    pull_entry "$entry" || failed+=("$entry")
 done
 
 # -- Ship: archive to the NAS (no --delete) ------------------------------------
