@@ -234,8 +234,8 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
-    /// Other profiles whose open Focus tasks are MIRRORED into this profile's daily note
-    /// as `### <name>` subsections (`rollup = ["acmecorp"]`). Empty = off.
+    /// Other orgs whose alpha/beta projects the daily note's `## Projects` section links,
+    /// as `### <name>` blocks beside this org's own (`rollup = ["acmecorp"]`). Empty = own only.
     #[serde(default)]
     rollup: Vec<String>,
     /// Orgs this profile's project INDEX rolls up. Unset falls back to `rollup`.
@@ -346,10 +346,10 @@ pub struct Profile {
     /// ClickUp list id whose in-progress tickets are mirrored into `## Focus`. `None`
     /// disables the ClickUp bridge (`notes clickup sync` is a no-op), opt-in via config.
     pub clickup_list: Option<String>,
-    /// Profile NAMES whose Focus is mirrored into this profile's daily note. Empty = off.
+    /// Profile NAMES whose alpha/beta projects this profile's daily note links. Empty = own only.
     ///
     /// Deliberately left unresolved: `resolve()` calling itself for each entry would
-    /// recurse forever on a config cycle (personal -> job -> personal). `daily::rollup_entries`
+    /// recurse forever on a config cycle (personal -> job -> personal). `daily::projects_block`
     /// resolves each name lazily instead, and tolerates one that does not resolve.
     pub rollup: Vec<String>,
     /// Orgs this profile's project index rolls up; falls back to `rollup` when unset.

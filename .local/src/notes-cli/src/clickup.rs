@@ -18,7 +18,7 @@
 //! user's checkbox/priority edits are never clobbered. Only genuinely-new tickets are added.
 //!
 //! Opt-in: no-op when the profile has no `clickup_list` (only the work profile sets it), the
-//! same guard `refresh_watches`/`refresh_work` use so a machine/profile without it is inert.
+//! same guard `refresh_watches` uses so a machine/profile without it is inert.
 
 use crate::config::Profile;
 use crate::daily;

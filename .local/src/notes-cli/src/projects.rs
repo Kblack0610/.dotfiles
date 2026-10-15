@@ -188,7 +188,7 @@ fn head_tag(content: &str, vocab: &[&str]) -> Option<String> {
 
 /// The file a project declares itself on: its working sheet, else its summary. A
 /// summary-only project (a prose brief, an archived stub) still gets to carry a tag.
-fn front_page(dir: &Path) -> PathBuf {
+pub(crate) fn front_page(dir: &Path) -> PathBuf {
     sheet_path(dir).unwrap_or_else(|| dir.join("summary.md"))
 }
 
