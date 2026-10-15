@@ -121,6 +121,13 @@ Media/Music
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
 !.claude/skills/reference/compliance/
+!.claude/skills/reference/hz-immersive-designer/
+!.claude/skills/reference/hz-perfetto-debug/
+!.claude/skills/reference/hz-quest-verify-first/
+!.claude/skills/reference/hz-simpleperf-debug/
+!.claude/skills/reference/hz-unity-code-review/
+!.claude/skills/reference/hz-vr-debug/
+!.claude/skills/reference/metavr-cli/
 !.claude/skills/research/deep-research/
 !.claude/skills/research/deep-research-code/
 !.claude/skills/research/asset-store-audit/
