@@ -51,14 +51,16 @@ log() {
 # Tags only (no branches, no working tree), once per repo per pass. A failed fetch still
 # compares against the local tags: that answer is stale, never wrong about what it has seen.
 declare -A FETCHED=()
+fetched=0 fetch_failed=0
 fetch_tags() { # $1=project
   local repo
   repo="$(project_repo_path "$1")"
   [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -z "${FETCHED[$repo]:-}" ] || return 0
   FETCHED[$repo]=1
+  fetched=$((fetched + 1))
   GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$repo" fetch -q --no-write-fetch-head origin \
     'refs/tags/*:refs/tags/*' 2>/dev/null \
-    || log "fetch failed for $repo: comparing against local tags"
+    || { fetch_failed=$((fetch_failed + 1)); log "fetch failed for $repo: comparing against local tags"; }
 }
 
 rolled=0 failed=0
@@ -103,5 +105,25 @@ while read -r profile; do
   done < <(notes --profile "$profile" projects 2>/dev/null)
 done < <(notes config --profiles 2>/dev/null)
 
-[ "$DRY" = 1 ] || log "pass done: $rolled rolled, $failed failed"
+[ "$DRY" = 1 ] && exit 0
+log "pass done: $rolled rolled, $failed failed, $fetch_failed of $fetched tag fetches failed"
+
+# Publish a verdict, or the unit's PENDING is promoted to STALLED on stop and fleet-liveness
+# reads every quiet pass as a stall. Every fetch failing is a stall in its own right: the pass
+# ran blind to tags pushed from CI or another machine, so "nothing to roll" would be a guess.
+# shellcheck source=/dev/null
+. "${AGENT_PROOF_LIB:-$HOME/.local/lib/agent-proof.sh}" 2>/dev/null || true
+if command -v proof_report >/dev/null 2>&1; then
+  if [ "$failed" -gt 0 ]; then
+    proof_report wave-roll STALLED "$failed roll(s) failed"
+  elif [ "$fetched" -gt 0 ] && [ "$fetch_failed" = "$fetched" ]; then
+    proof_report wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
+  elif [ "$rolled" -gt 0 ]; then
+    proof_report wave-roll WORKED "$rolled rolled"
+  else
+    detail="nothing to roll"
+    [ "$fetch_failed" = 0 ] || detail+=" ($fetch_failed of $fetched tag fetches failed)"
+    proof_report wave-roll NOOP "$detail"
+  fi
+fi
 [ "$failed" = 0 ]
