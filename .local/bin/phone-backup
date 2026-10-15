@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# phone-backup - pull an Android phone's user storage over adb and archive it on the NAS
+# Usage: phone-backup <name>        (reads ~/.config/phone-backup/<name>.env)
+#
+# The env file holds the host-specific values, kept out of this public repo:
+#   SERIAL=...           adb serial of the phone (see `adb devices -l`)
+#   MODEL="..."          expected ro.product.model; any other device is refused
+#   NAS_SSH=user@host    where the archive lives
+#   NAS_PORT=22
+#   NAS_DEST=/path       archive root for this phone on the NAS
+#   NAS_SUDO=            set to "sudo" when NAS_DEST is root-owned
+#
+# Covers /sdcard minus Android/ (app-private, unreadable without root). SMS,
+# call logs and app data are NOT covered. The NAS copy is an archive: there is
+# no --delete, so clearing space on the phone never removes a file from it.
+# The local stage under ~/.cache is kept so the next run only ships changes.
+
+set -euo pipefail
+
+die() { echo "phone-backup: $*" >&2; exit 1; }
+
+[[ $# -eq 1 && $1 != -h && $1 != --help ]] || { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+name="$1"
+env_file="${XDG_CONFIG_HOME:-$HOME/.config}/phone-backup/$name.env"
+[[ -f $env_file ]] || die "no config at $env_file"
+# shellcheck source=/dev/null
+source "$env_file"
+for var in SERIAL MODEL NAS_SSH NAS_PORT NAS_DEST; do
+    [[ -n ${!var:-} ]] || die "$var is not set in $env_file"
+done
+NAS_SUDO="${NAS_SUDO:-}"
+
+command -v adb >/dev/null || die "adb not found"
+command -v rsync >/dev/null || die "rsync not found"
+
+# -- Device guard: the configured phone, and only that phone -------------------
+state=$(adb -s "$SERIAL" get-state 2>/dev/null || true)
+[[ $state == device ]] || die "$name ($SERIAL) is not connected and authorized (state: ${state:-absent}). Plug it in, enable USB debugging, accept the prompt."
+got_model=$(adb -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')
+[[ $got_model == "$MODEL" ]] || die "device $SERIAL reports model '$got_model', expected '$MODEL'"
+
+stage="${XDG_CACHE_HOME:-$HOME/.cache}/phone-backup/$name/sdcard"
+mkdir -p "$stage"
+
+# -- Stage: pull every top-level /sdcard entry except Android/ -----------------
+mapfile -t entries < <(adb -s "$SERIAL" shell ls -1 /sdcard/ | tr -d '\r' | grep -v -x -e '' -e Android)
+[[ ${#entries[@]} -gt 0 ]] || die "/sdcard listed nothing on $SERIAL"
+
+failed=()
+for entry in "${entries[@]}"; do
+    echo "== pull /sdcard/$entry"
+    adb -s "$SERIAL" pull -a "/sdcard/$entry" "$stage/" || failed+=("$entry")
+done
+
+# -- Ship: archive to the NAS (no --delete) ------------------------------------
+remote_rsync="rsync"
+[[ -n $NAS_SUDO ]] && remote_rsync="$NAS_SUDO rsync"
+echo "== rsync -> $NAS_SSH:$NAS_DEST/sdcard/"
+rsync -a --partial --mkpath --info=stats1 \
+    -e "ssh -p $NAS_PORT" --rsync-path="$remote_rsync" \
+    "$stage/" "$NAS_SSH:$NAS_DEST/sdcard/"
+
+# -- Proof: the NAS holds at least everything that was staged ------------------
+local_count=$(find "$stage" -type f | wc -l)
+remote_count=$(ssh -p "$NAS_PORT" "$NAS_SSH" "$NAS_SUDO find '$NAS_DEST/sdcard' -type f | wc -l" | tr -d '[:space:]')
+local_size=$(du -sh "$stage" | cut -f1)
+remote_size=$(ssh -p "$NAS_PORT" "$NAS_SSH" "$NAS_SUDO du -sh '$NAS_DEST/sdcard'" | cut -f1)
+echo "staged: $local_count files ($local_size)   NAS: $remote_count files ($remote_size)"
+[[ $remote_count -ge $local_count ]] || die "NAS has fewer files than the stage ($remote_count < $local_count)"
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+    die "shipped, but these entries did not pull cleanly: ${failed[*]}"
+fi
+echo "phone-backup: $name done"
