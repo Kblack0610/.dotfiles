@@ -403,7 +403,7 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
 /// The morning briefing's file stem under today's refs dir. Written by `agentctl-briefing`.
 const BRIEFING: &str = "briefing";
 
-/// `## Morning`: what happened while you were away, at the top of the note. The briefing's
+/// `## Morning`: what happened while you were away, below Notes and Focus. The briefing's
 /// headline and its "Needs you" items (each cut before its `-> do:` hint, which stays in the
 /// briefing), then what the knowledge engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
@@ -439,7 +439,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
     s
 }
 
-/// Render `## Morning` into the note, above `## Notes`. Rewritten only when it changes, which
+/// Render `## Morning` into the note, below Notes and Focus. Rewritten only when it changes, which
 /// in practice is when the briefing or a knowledge log lands after the note was created.
 fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
     let today_s = today.format("%Y-%m-%d").to_string();
@@ -447,9 +447,11 @@ fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
     let block = morning_section(p, prev_note.as_deref(), today);
     let content = fs::read_to_string(note)?;
     let stripped = remove_section(&content, "Morning");
-    let anchor = ["## Notes", "## Focus"]
-        .iter()
-        .find_map(|h| stripped.find(&format!("\n{h}\n")).map(|i| i + 1));
+    // Directly under Focus: the first `## ` heading after it (Projects, Refs), else the footer.
+    let anchor = stripped.find("\n## Focus\n").and_then(|focus| {
+        let after = focus + "\n## Focus\n".len();
+        stripped[after..].find("\n## ").map(|i| after + i + 1)
+    });
     let updated = match anchor {
         Some(i) => format!("{}{block}\n{}", &stripped[..i], &stripped[i..]),
         None => insert_before_footer(&stripped, &block),
@@ -1892,7 +1894,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `## Morning` sits above Notes: the briefing headline and its "Needs you" items without
+    /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items without
     /// their `-> do:` hints, then the knowledge log the previous note did not list. Re-running it
     /// changes nothing.
     #[test]
@@ -1926,12 +1928,36 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Knowledge: [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n\n## Notes\n";
+        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Knowledge: [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n";
         assert!(out.contains(expected), "{out}");
+        let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
+        assert!(at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"), "{out}");
         assert!(!out.contains("2026-09-28"), "already listed yesterday:\n{out}");
 
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A note rendered when Morning sat at the top gets it moved under Focus, above Projects.
+    #[test]
+    fn morning_moves_under_focus_and_above_projects() {
+        let dir = std::env::temp_dir().join(format!("notes-morning-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let note = dir.join("journal/daily/2026-09-30.md");
+        std::fs::write(
+            &note,
+            "# 2026-09-30\n\n## Morning\n- Briefing: old\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Projects\n- [[x]]\n",
+        )
+        .unwrap();
+        refresh_morning(&p, &note, d("2026-09-30")).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert_eq!(
+            out,
+            "# 2026-09-30\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Morning\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n\n## Projects\n- [[x]]\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
