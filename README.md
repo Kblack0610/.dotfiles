@@ -15,12 +15,12 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.config/rulesync-global/` | **Source of truth** for shared AI rules + MCP servers (fan-out to Claude/Codex/Gemini/OpenCode) |
 | `.config/codex/` | Codex sync scripts (`sync-ai-global-config.sh`), Codex skills, project-checks heuristics |
 | `.config/shared-hooks/` | `project-map.json`, session preflight, eval reporter, stale-plan archiver — used by all AI tools |
-| `.config/{openclaw,agentctl,infra-dash,llm-judge,playwright,profile,smug}/` | Local agent/orchestration runtime config |
+| `.config/{openclaw,agentctl,llm-judge,playwright,profile,smug}/` | Local agent/orchestration runtime config |
 | `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, llm-judge, settings (see below) |
 | `.opencode/`, `.cursor/`, `.codeium/`, `.serena/` | Per-tool runtime state |
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
-| `.local/src/{adb-controller,android-suite,claude-wrapper,gungan,infra-dash,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
+| `.local/src/{adb-controller,android-suite,claude-wrapper,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
 | `.githooks/post-commit` | Repo-local git hooks |
 | `.fonts/` | Bundled fonts |
 | `Media/` | Wallpapers / lock screen assets |

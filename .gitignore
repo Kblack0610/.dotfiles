@@ -226,7 +226,6 @@ test_notifications.sh
 # bearer token for every heartbeat. Both live in the private overlay.
 .config/fleet-pulse/
 .config/smug/
-.config/infra-dash/
 .config/llm-judge/
 .config/rulesync-global/
 .config/opencode/

@@ -102,6 +102,24 @@ _yaml_desc() {
   ' "$1" 2>/dev/null
 }
 
+# _interval_secs <file> -> the watch's poll interval in seconds. Same grammar and 300s
+# default as watch-companion-loop's to_secs; that writer lives in the private overlay, so
+# this mirrors it rather than sourcing it.
+_interval_secs() {
+  local d n
+  d="$(awk '/^interval:/ { sub(/^interval:[[:space:]]*/, ""); gsub(/["'\'' ]/, ""); print; exit }' "$1" 2>/dev/null)"
+  [[ "$d" =~ ^([0-9]+)([smhd]?)$ ]] && (( BASH_REMATCH[1] > 0 )) || { printf 300; return; }
+  n="${BASH_REMATCH[1]}"
+  case "${BASH_REMATCH[2]:-s}" in
+    s) printf '%s' "$n" ;; m) printf '%s' $(( n * 60 )) ;;
+    h) printf '%s' $(( n * 3600 )) ;; d) printf '%s' $(( n * 86400 )) ;;
+  esac
+}
+
+# A watch whose last poll is older than this many intervals is STALE. A dead sentinel
+# leaves every .state frozen at its last value, so without this an unpolled OK reads green.
+WATCH_STALE_FACTOR=3
+
 # _clip <text> <width> -> text truncated to width with an ellipsis marker.
 # Watch descriptions are paragraphs (one is 300+ chars); unclipped they wrap and destroy
 # the column alignment that makes the list scannable.
@@ -281,8 +299,8 @@ runs() {
 
 watches() {
   head_row 'watches · sentinel'
-  local y name state lastrun desc glyph col age
-  local any=0
+  local y name state lastrun desc glyph col age stale
+  local any=0 now; now="$(date +%s)"
   for y in "$WATCH_DIR"/*.yaml; do
     [ -f "$y" ] || continue
     any=1
@@ -298,12 +316,18 @@ watches() {
       *)          glyph="$G_IDLE"; col="$C_DIM" ;;
     esac
     age="$(_age "$lastrun")"
+    stale=''
+    if [[ "$lastrun" =~ ^[0-9]+$ ]] \
+       && (( now - lastrun > WATCH_STALE_FACTOR * $(_interval_secs "$y") )); then
+      stale=" ${C_INP}STALE${C_OFF}"
+      [ "$state" = OK ] && { glyph="$G_ATTN"; col="$C_INP"; }
+    fi
 
     row watch "$name" "$y" "$state" \
-      "$(printf '  %s%s %-24s%s %s%-5s%s %s%s%s' \
+      "$(printf '  %s%s %-24s%s %s%-5s%s %s%s%s%s' \
         "$col" "$glyph" "$name" "$C_OFF" \
         "$col" "$state" "$C_OFF" \
-        "$C_DIM" "$(_clip "${desc:-$name}" 52) · ${age} ago" "$C_OFF")"
+        "$C_DIM" "$(_clip "${desc:-$name}" 52) · ${age} ago" "$C_OFF" "$stale")"
   done
   [ "$any" -eq 0 ] && hint_row "no watches in $WATCH_DIR"
   return 0
@@ -413,6 +437,14 @@ enter_action() { # $1=type $2=id $3=target — what Enter means for each row kin
   esac
 }
 
+# header_line -> the fzf header, stamped with when the rows were read. Re-run on fzf's
+# `load` event, which fires after the first read and after every reload, so the stamp is
+# always the age of what is on screen. Without it a view left open for hours (the hub
+# `infra` session) shows frozen "3m ago" ages that read as current.
+header_line() {
+  printf 'loaded %s · r refresh · enter act · s/x/R start/stop/restart · l logs · ? keys' "$(date +%H:%M)"
+}
+
 help_view() {
   cat <<'EOF'
 fleet — headless agents, watches and asks
@@ -436,6 +468,7 @@ fleet — headless agents, watches and asks
   glyphs
     !  needs you / last run failed      ~  active now
     ✓  healthy                          ·  idle (normal for a oneshot)
+    STALE  watch not polled in 3x its interval: sentinel may be down, the state is old
 
   enable/disable are deliberately NOT here: they change durable schedule state.
   Edit the unit's .conf instead.
@@ -455,6 +488,7 @@ case "${1:-}" in
   --journal) shift; journal "$@"; exit 0 ;;
   --enter) shift; enter_action "$@"; exit 0 ;;
   --help-view) help_view; exit 0 ;;
+  --header-line) header_line; exit 0 ;;
 esac
 
 # Sourced by the test suite rather than run: stop here with every function defined but the
@@ -468,11 +502,11 @@ list_all | fzf \
   --ansi --reverse --cycle --no-sort --border --no-input --wrap \
   --delimiter=$'\t' --with-nth='5..' \
   --prompt='search > ' \
-  --header='enter act · s/x/R start/stop/restart · l logs · ? keys' \
+  --header="$(header_line)" \
   --bind "?:execute($SELF --help-view | less -R)" \
   --bind 'j:down+transform:[ {1} = head ] && echo down' \
   --bind 'k:up+transform:[ {1} = head ] && echo up' \
-  --bind 'load:transform:[ {1} = head ] && echo down' \
+  --bind "load:transform-header($SELF --header-line)+transform:[ {1} = head ] && echo down" \
   --bind 'q:abort' \
   --bind "r:reload($SELF --list)" \
   --bind "enter:execute-silent($SELF --enter {1} {2} {3})+reload($SELF --list)" \
