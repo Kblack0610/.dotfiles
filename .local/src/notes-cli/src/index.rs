@@ -18,7 +18,7 @@ pub enum Kind {
 }
 
 pub struct Note {
-    /// Lower-cased file stem.
+    /// Lower-cased file stem: the key for collisions and resolution, never written as a link.
     pub stem: String,
     /// The `[[wikilink]]` body that names this note and no other. A zettel keeps its bare
     /// stem unless another scanned note shares it; a knowledge note always uses its
@@ -44,7 +44,8 @@ pub struct Scan {
 }
 
 /// Collect markdown files under `dir` as `(path, content)`, sorted by path. Recursive when
-/// `deep`; dot-entries are skipped. A missing dir yields nothing.
+/// `deep`; dot-entries and `_log` dirs (the knowledge engine's logs, not notes) are skipped. A
+/// missing dir yields nothing.
 fn collect(dir: &Path, deep: bool) -> Result<Vec<(PathBuf, String)>> {
     let mut out = Vec::new();
     if !dir.exists() {
@@ -57,7 +58,7 @@ fn collect(dir: &Path, deep: bool) -> Result<Vec<(PathBuf, String)>> {
             .file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with('.'));
-        if hidden {
+        if hidden || path.file_name().is_some_and(|n| n == "_log") {
             continue;
         }
         // `file_type` does not follow symlinks, so a linked dir cannot loop the walk.
@@ -174,8 +175,10 @@ pub fn scan(p: &Profile) -> Result<Scan> {
     let mut notes = Vec::new();
     for (kind, path, content) in raw {
         let stem = stem_of(&path).to_lowercase();
+        // The link keeps the file's real case: `20260618T2221-x` must not become `...t2221-x`,
+        // which opens nothing on a case-sensitive filesystem.
         let link = if kind == Kind::Zettel && stem_count[&stem] == 1 {
-            stem.clone()
+            stem_of(&path)
         } else {
             config::wikilink(&p.root, &path)
         };
@@ -221,9 +224,25 @@ pub fn scan(p: &Profile) -> Result<Scan> {
     })
 }
 
+/// One frontmatter field (`key: value`) from the first lines of `content`, quotes trimmed.
+fn front_field(content: &str, key: &str) -> Option<String> {
+    let body = content.strip_prefix("---\n")?;
+    let end = body.find("\n---")?;
+    body[..end].lines().find_map(|l| {
+        let v = l
+            .strip_prefix(key)?
+            .strip_prefix(':')?
+            .trim()
+            .trim_matches('"');
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
 /// `## Knowledge`, one `### <subdir>` per directory under `p.knowledge` (top-level files
-/// first), each note linked by path with its file stem as the label. Within a directory an
-/// INDEX/README leads, then the rest by name. Empty when there are no knowledge notes.
+/// first), each note linked by path and labelled with its `title` (else its file stem). A
+/// compiled article also shows its one-line `summary` and its tags, which makes the MOC the
+/// catalog the knowledge engine reads first. Within a directory an INDEX/README leads, then the
+/// rest by name. Empty when there are no knowledge notes.
 fn render_knowledge(p: &Profile, notes: &[Note]) -> String {
     let mut by_dir: BTreeMap<(String, String), Vec<&Note>> = BTreeMap::new();
     for n in notes.iter().filter(|n| n.kind == Kind::Knowledge) {
@@ -249,8 +268,18 @@ fn render_knowledge(p: &Profile, notes: &[Note]) -> String {
         let heading = if dir.is_empty() { "(top level)" } else { &dir };
         out.push_str(&format!("### {heading}\n"));
         for n in group {
-            let label = n.path.file_stem().unwrap_or_default().to_string_lossy();
-            out.push_str(&format!("- [[{}|{label}]]\n", n.link));
+            let content = fs::read_to_string(&n.path).unwrap_or_default();
+            let stem = n.path.file_stem().unwrap_or_default().to_string_lossy();
+            let label = front_field(&content, "title").unwrap_or_else(|| stem.into_owned());
+            let mut line = format!("- [[{}|{label}]]", n.link);
+            if let Some(summary) = front_field(&content, "summary") {
+                line.push_str(&format!(" - {summary}"));
+            }
+            for tag in &n.tags {
+                line.push_str(&format!(" #{tag}"));
+            }
+            out.push_str(&line);
+            out.push('\n');
         }
         out.push('\n');
     }
@@ -446,6 +475,83 @@ mod tests {
             !backlinks.contains("## [[knowledge/a/notes]]"),
             "{backlinks}"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Every link the MOC and backlinks write must open the file it names on a case-sensitive
+    /// filesystem: zettel ids carry an uppercase `T`, and knowledge names keep their spaces.
+    #[test]
+    fn every_generated_link_resolves_case_sensitively() {
+        let root = vault("case");
+        write(
+            &root,
+            "journal/permanent/20260618T2221-an-idea.md",
+            "---\ntags: [idea]\n---\nsee [[knowledge/sw/Hit List]]\n",
+        );
+        write(&root, "knowledge/sw/Hit List.md", "# hit list\n");
+
+        let (moc, backlinks) = rebuild(&root);
+
+        let mut checked = 0;
+        for target in extract_links_raw(&moc)
+            .into_iter()
+            .chain(extract_links_raw(&backlinks))
+        {
+            let candidates = [
+                root.join(format!("{target}.md")),
+                root.join("journal/permanent").join(format!("{target}.md")),
+            ];
+            assert!(
+                candidates.iter().any(|c| c.exists()),
+                "[[{target}]] opens nothing:\n{moc}\n{backlinks}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "too few links checked: {checked}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `[[target]]` bodies with their case kept, alias and anchor dropped.
+    fn extract_links_raw(content: &str) -> Vec<String> {
+        content
+            .split("[[")
+            .skip(1)
+            .filter_map(|r| r.split("]]").next())
+            .map(|t| {
+                t.split('|')
+                    .next()
+                    .unwrap()
+                    .split('#')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_compiled_article_shows_title_summary_and_tags_and_logs_are_not_notes() {
+        let root = vault("catalog");
+        write(
+            &root,
+            "knowledge/software/gw.md",
+            "---\ntitle: LiteLLM gateway\nsummary: how models are routed\ntags: [software, reference]\n---\n# gw\n",
+        );
+        write(
+            &root,
+            "knowledge/_log/2026/10/2026-10-13.md",
+            "- created [[knowledge/software/gw]]\n",
+        );
+
+        let (moc, _) = rebuild(&root);
+
+        assert!(
+            moc.contains(
+                "- [[knowledge/software/gw|LiteLLM gateway]] - how models are routed #software #reference\n"
+            ),
+            "{moc}"
+        );
+        assert!(!moc.contains("_log"), "{moc}");
         let _ = fs::remove_dir_all(&root);
     }
 

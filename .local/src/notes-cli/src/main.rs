@@ -19,6 +19,7 @@ mod focus_move;
 mod focus_sweep;
 mod inbox;
 mod index;
+mod knowledge;
 mod logging;
 mod md;
 mod meeting;
@@ -152,6 +153,11 @@ enum Cmd {
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
+    },
+    /// Compiled knowledge base under knowledge/ (written by the nightly engine)
+    Knowledge {
+        #[command(subcommand)]
+        sub: KnowledgeCmd,
     },
     /// Zettelkasten operations
     Zettel {
@@ -445,6 +451,32 @@ enum InboxCmd {
 }
 
 #[derive(Subcommand)]
+enum KnowledgeCmd {
+    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template
+    Init {
+        /// Overwrite an existing SCHEMA.md
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the N articles most due for a whole-article review (oldest `reviewed` first)
+    Due {
+        #[arg(short, default_value_t = 3)]
+        n: usize,
+    },
+    /// Validate and apply an ops batch (JSON) from the knowledge engine, then write its log
+    Apply {
+        /// The batch file: {"date", "sources": [..], "ops": [..]}
+        file: std::path::PathBuf,
+        /// Unix time the engine started; an update to a file modified after it is rejected
+        #[arg(long)]
+        started: Option<i64>,
+        /// Validate and print the log, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ZettelCmd {
     /// Create a new permanent (zettel) note with a timestamp id
     New {
@@ -638,6 +670,26 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Knowledge { sub } => match sub {
+            KnowledgeCmd::Init { force } => {
+                knowledge::init(&prof, &log, force)?;
+                0
+            }
+            KnowledgeCmd::Due { n } => {
+                for path in knowledge::due(&prof, n) {
+                    println!("{path}");
+                }
+                0
+            }
+            KnowledgeCmd::Apply {
+                file,
+                started,
+                dry_run,
+            } => {
+                knowledge::apply(&prof, &log, &file, started, dry_run)?;
+                0
+            }
+        },
         Cmd::Zettel { sub } => match sub {
             ZettelCmd::New { title } => {
                 zettel::new_note(&prof, &log, &title.join(" "))?;

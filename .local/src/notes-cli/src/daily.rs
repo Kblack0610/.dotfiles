@@ -69,6 +69,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "zettel" => p.zettel.clone(),
         "meetings" => p.meetings.clone(),
         "index" => p.index.clone(),
+        "knowledge" => p.knowledge.clone(),
         // The org's projects root. Added so `lab-roots.sh` can ASK for it rather than restating
         // it: that file hardcoded all four roots and its own comments named config.toml as "the
         // other place that has to know" — two declarations of one fact, where missing the second
@@ -135,6 +136,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
     let mut focus_keep: Vec<String> = Vec::new();
     let mut focus_defer: Vec<String> = Vec::new();
+    let mut prev_note: Option<String> = None;
 
     if let Some(prev) = latest_prev(&p.daily, &today_s)? {
         let prev_date = file_date(&prev).unwrap_or(today);
@@ -172,6 +174,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             focus_keep.extend(keep);
             focus_defer.extend(defer);
         }
+        prev_note = Some(content);
     }
 
     // The SCHEDULE: one pass surfaces both kinds of trigger into Focus — a `[date]` within
@@ -208,6 +211,8 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     s.push_str("- [ ] \n");
     // Rendered HERE and only here, so the note is written once by whichever machine creates
     // it and then only changes when the human edits it.
+    // What the knowledge engine compiled since the last note listed it (see knowledge.rs).
+    s.push_str(&crate::knowledge::new_section(p, prev_note.as_deref(), today));
     s.push_str(&projects_block(p, log));
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
@@ -1797,6 +1802,43 @@ mod tests {
         assert!(notes_at < focus_at, "Notes must precede Focus:\n{out}");
         assert!(out.contains("Knowledge: [[journal/index/moc]]"), "{out}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A knowledge log the previous note did not list lands in the new note's `## New knowledge`;
+    /// one it already listed does not come back.
+    #[test]
+    fn new_note_lists_knowledge_the_previous_note_did_not() {
+        let dir = std::env::temp_dir().join(format!("notes-newknow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        std::fs::create_dir_all(dir.join("knowledge/_log/2026/09")).unwrap();
+        std::fs::write(
+            dir.join("knowledge/_log/2026/09/2026-09-28.md"),
+            "# log\n\n## Changes\n- created [[knowledge/a]]: r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("knowledge/_log/2026/09/2026-09-29.md"),
+            "# log\n\n## Changes\n- updated [[knowledge/b]]: r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("journal/daily/2026-09-29.md"),
+            "# 2026-09-29\n\n## New knowledge\n- [[knowledge/_log/2026/09/2026-09-28]]\n",
+        )
+        .unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-09-30.md");
+        create_note(&p, &log, d("2026-09-30"), &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        assert!(
+            out.contains("## New knowledge\n- [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n"),
+            "{out}"
+        );
+        assert!(!out.contains("2026-09-28"), "already listed yesterday:\n{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
