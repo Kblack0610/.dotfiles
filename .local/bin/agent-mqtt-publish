@@ -22,6 +22,11 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
+# Same staleness rule fleet.sh uses (one lib, so the two never disagree).
+_WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
+[ -r "$_WATCH_LIB" ] || _WATCH_LIB="$(dirname "$(realpath "$0")")/../lib/sentinel-watch.sh"
+# shellcheck source=/dev/null
+. "$_WATCH_LIB"
 MQTT_HOST="${AGENT_MQTT_HOST:-}"
 MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
 # Per-message guard on the broker call. The agentctl hook runs synchronously inside a
@@ -110,23 +115,30 @@ snapshot() {
             '{state: $state, project: $project, item: $item, detail: $detail,
               updated: (if $updated == "" then null else $updated end),
               last_outcome: $outcome, unit: $active,
-              next_run: (if $next == "" then null else $next end)}')"
+              next_run: (if $next == "" then null else $next end),
+              # Booleans, because mqtt2prom drops text: these are what Prometheus sees.
+              failed: ($state == "error" or $outcome == "STALLED" or $outcome == "FAILED"),
+              running: ($active == "active" or $active == "activating")}')"
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
-        local ws paused=false
+        local ws paused=false lr stale=false
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
+        lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
+        # A paused watch is not polled on purpose, so it is never stale.
+        [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
-            --arg state "${ws:-NEW}" --argjson paused "$paused" \
+            --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
             --arg since "$(iso "$(cat "$WSTATE/$name.since" 2>/dev/null)")" \
-            --arg lastrun "$(iso "$(cat "$WSTATE/$name.lastrun" 2>/dev/null)")" \
+            --arg lastrun "$(iso "$lr")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
-              last_run: (if $lastrun == "" then null else $lastrun end)}')"
+              last_run: (if $lastrun == "" then null else $lastrun end),
+              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.
