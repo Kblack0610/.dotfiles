@@ -4,22 +4,25 @@
 -- profile's `## Focus` lane (personal + each job/workstream) plus the indexed
 -- projects, in ONE reversibly-nested picker.
 --
---   :lua require("notes.cockpit").open()   (bound to <leader>nc by notes.setup())
+--   :lua require("notes.cockpit").open()            (<leader>nc, <leader>tc)
+--   :lua require("notes.cockpit").open_projects()   (<leader>np: starts at Projects)
 --
 -- Nesting / navigation:
 --   The window is a STACK of "nodes", each rendered as one Snacks.picker level.
 --   <CR> on a branch item drills DOWN (pushes a child node); <Esc>/<C-o> steps
---   BACK UP one level (closes at the root). The breadcrumb sits in the title. This
---   generalises the two-stage drill in notes/projects.lua so it scales to any depth
---   — new branches just return another node from their `enter`.
+--   BACK UP one level (closes at the root). The breadcrumb sits in the title. New
+--   branches just return another node from their `enter`.
 --
 --   Root
 --    ├─ <profile>  (N open)   →  that profile's open Focus tasks
 --    │                            x = toggle done   a = add   <CR> = jump to the line
---    └─ Projects  ▸           →  notes projects  →  a project's files  →  open
+--    └─ Projects  ▸           →  every lab profile's projects  →  a project's files  →  open
+--                                 a = new  x = archive/restore  s = stage  g = group
+--                                 p = move profile  t = archived view
 --
 -- Every WRITE routes back through the `notes` CLI (`notes --profile <p> focus …`),
--- so the vault rule holds: journal markdown is never hand-edited, the `<!-- since -->`
+-- (and `notes --profile <p> projects …` for the project lifecycle), so the vault rule
+-- holds: journal markdown is never hand-edited, the `<!-- since -->`
 -- stamp + rollup-sentinel invariants are always respected. Reads are the
 -- `notes focus --all` aggregator (TSV: profile<TAB>file<TAB>line<TAB>key<TAB>text).
 --
@@ -29,7 +32,7 @@
 
 local M = {}
 
--- ── Guards + shell helpers (mirrors notes/projects.lua) ─────────────
+-- ── Guards + shell helpers ─────────────────────────────────────────
 local function notes_available()
   if vim.fn.executable("notes") == 1 then
     return true
@@ -251,7 +254,7 @@ local function show_snacks(node)
       if not item then
         return
       end
-      -- Close FIRST (like notes/projects.lua), THEN act: branch `enter`s are
+      -- Close FIRST, THEN act: branch `enter`s are
       -- side-effect free and return a child node to push; leaf `enter`s open a
       -- file (return nil) and must run after the float is gone so the buffer
       -- lands in the underlying window.
@@ -368,14 +371,51 @@ function profile_node(profile)
   }
 end
 
+-- `notes config` as key -> value. The list-valued keys used here (`index-orgs`,
+-- `board-order`) are comma-separated.
+local function notes_config()
+  local cfg = {}
+  for _, l in ipairs(run({ "config" })) do
+    local k, v = l:match("^(%S+)%s+(.*)$")
+    if k then
+      cfg[k] = vim.trim(v)
+    end
+  end
+  return cfg
+end
+
+local function split_list(s)
+  local out = {}
+  for part in (s or ""):gmatch("[^,%s]+") do
+    out[#out + 1] = part
+  end
+  return out
+end
+
+-- The profiles whose project indexes the lab covers: the active profile plus its
+-- `index-orgs` (personal + bnb here). Every project row carries its profile, so each
+-- write below targets `notes --profile <p>` explicitly.
+local function project_profiles()
+  local cfg = notes_config()
+  local out = { cfg.profile }
+  for _, p in ipairs(split_list(cfg["index-orgs"])) do
+    if not vim.tbl_contains(out, p) then
+      out[#out + 1] = p
+    end
+  end
+  return out
+end
+
+local STAGES = { "draft", "alpha", "beta", "prod" }
+
 -- The files inside one project (summary first). <CR> opens the file.
-function project_files_node(name)
+function project_files_node(name, profile)
   return {
     label = name,
     empty = "no files for " .. name,
     fetch = function()
       local items = {}
-      for _, l in ipairs(run({ "projects", name })) do
+      for _, l in ipairs(run({ "--profile", profile, "projects", name })) do
         local file, label = l:match("^(.-)\t(.*)$")
         if file then
           items[#items + 1] = { file = file, text = label, _label = label }
@@ -398,24 +438,43 @@ function project_files_node(name)
   }
 end
 
--- The indexed projects (name / status), previewing summary.md. <CR> drills into files.
+-- The indexed projects of every lab profile, previewing the sheet. <CR> drills into
+-- files. The actions are the project lifecycle, each one a `notes projects` verb so
+-- the CLI stays the only writer of the index lanes:
+--   C-a new   C-x archive (restore in the archived view)   C-s stage   C-g group
+--   C-p move to another profile   C-t toggle current/archived
 function projects_node()
-  return {
+  local node
+  node = {
     label = "Projects",
-    empty = "no indexed projects (add lab/projects/current/<name>/summary.md)",
+    archived = false,
+    empty = "no indexed projects (C-a adds one, C-t shows archived)",
     fetch = function()
+      node.label = node.archived and "Projects (archived)" or "Projects"
       local items = {}
-      for _, l in ipairs(run({ "projects" })) do
-        local name, summary, status, version = l:match("^(.-)\t(.-)\t(.-)\t(.*)$")
-        if name then
-          items[#items + 1] =
-            { name = name, file = summary, status = status, version = version, _label = name }
+      for _, profile in ipairs(project_profiles()) do
+        local args = { "--profile", profile, "projects" }
+        if node.archived then
+          args[#args + 1] = "--archived"
+        end
+        for _, l in ipairs(run(args)) do
+          local name, summary, status, version = l:match("^(.-)\t(.-)\t(.-)\t(.*)$")
+          if name then
+            items[#items + 1] = {
+              name = name,
+              profile = profile,
+              file = summary,
+              status = status,
+              version = version,
+              _label = profile .. " " .. name,
+            }
+          end
         end
       end
       return items
     end,
     format = function(item)
-      local row = { { item.name, "Identifier" } }
+      local row = { { item.name, "Identifier" }, { "  " .. item.profile, "Type" } }
       if item.version and item.version ~= "" then
         row[#row + 1] = { "  " .. item.version, "Special" }
       end
@@ -426,9 +485,107 @@ function projects_node()
     end,
     preview = "file",
     enter = function(item)
-      return project_files_node(item.name)
+      return project_files_node(item.name, item.profile)
     end,
+    actions = {
+      {
+        key_i = "<c-a>",
+        key_n = "a",
+        label = "C-a new",
+        fn = function(_item, refresh)
+          vim.ui.select(project_profiles(), { prompt = "New project in profile" }, function(profile)
+            if not profile then
+              return
+            end
+            vim.ui.input({ prompt = profile .. " project name: " }, function(name)
+              name = name and vim.trim(name) or ""
+              if name ~= "" and run_write({ "--profile", profile, "projects", "--new", name }) then
+                refresh()
+              end
+            end)
+          end)
+        end,
+      },
+      {
+        key_i = "<c-x>",
+        key_n = "x",
+        label = "C-x archive/restore",
+        fn = function(item, refresh)
+          if not item then
+            return
+          end
+          local verb = node.archived and "restore" or "archive"
+          local yes = vim.fn.confirm(("%s %s/%s ?"):format(verb, item.profile, item.name), "&Yes\n&No", 2)
+          if yes == 1 and run_write({ "--profile", item.profile, "projects", "--" .. verb, item.name }) then
+            refresh()
+          end
+        end,
+      },
+      {
+        key_i = "<c-s>",
+        key_n = "s",
+        label = "C-s stage",
+        fn = function(item, refresh)
+          if not item then
+            return
+          end
+          vim.ui.select(STAGES, { prompt = item.name .. " stage" }, function(stage)
+            if stage and run_write({ "--profile", item.profile, "projects", "--stage", item.name, "--set", stage }) then
+              refresh()
+            end
+          end)
+        end,
+      },
+      {
+        key_i = "<c-g>",
+        key_n = "g",
+        label = "C-g group",
+        fn = function(item, refresh)
+          if not item then
+            return
+          end
+          local groups = split_list(notes_config()["board-order"])
+          groups[#groups + 1] = "dev"
+          vim.ui.select(groups, { prompt = item.name .. " index group" }, function(group)
+            if group and run_write({ "--profile", item.profile, "projects", "--group", item.name, "--set", group }) then
+              refresh()
+            end
+          end)
+        end,
+      },
+      {
+        key_i = "<c-p>",
+        key_n = "p",
+        label = "C-p move profile",
+        fn = function(item, refresh)
+          if not item then
+            return
+          end
+          local targets = vim.tbl_filter(function(p)
+            return p ~= item.profile
+          end, project_profiles())
+          vim.ui.select(targets, { prompt = "Move " .. item.name .. " to profile" }, function(dest)
+            if
+              dest
+              and run_write({ "--profile", item.profile, "projects", "--move", item.name, "--to-profile", dest })
+            then
+              refresh()
+            end
+          end)
+        end,
+      },
+      {
+        key_i = "<c-t>",
+        key_n = "t",
+        label = "C-t archived",
+        fn = function(_item, refresh)
+          node.archived = not node.archived
+          refresh()
+        end,
+      },
+    },
   }
+  return node
 end
 
 -- Root: one row per profile (with open counts) + a Projects branch.
@@ -476,6 +633,16 @@ function M.open()
     return
   end
   stack = { root_node() }
+  show(stack[1], true)
+end
+
+-- Open straight at the Projects level (<leader>np): the same node the cockpit's
+-- Projects branch drills into, so there is one projects picker, not two.
+function M.open_projects()
+  if not notes_available() then
+    return
+  end
+  stack = { projects_node() }
   show(stack[1], true)
 end
 
