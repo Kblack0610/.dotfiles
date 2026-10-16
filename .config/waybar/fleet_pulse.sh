@@ -39,6 +39,11 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 #   @<group>=<label>  collapse a gatus group to a single dot: green when every
 #                     member is up, amber when some are, red only when NONE are
 #                     (@k3s=k3s -> one dot for the pi cluster).
+#   ~<name>=<label>   a machine that is OFF by design (a laptop): its dot is drawn
+#                     only while it is up, and nothing at all otherwise. Keep it OFF
+#                     FLEET_ROSTER - the roster is "who should always be reporting",
+#                     and a closed laptop is not a fault. It still shows in the
+#                     tooltip, and a name gatus has never heard of is still a `?`.
 # Groups not named here stay in the tooltip only. Gatus group names are the key
 # (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
 # a future settings submenu just rewrites this line and signals the module.
@@ -52,7 +57,7 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # been rendering a red `lzr○` that was indistinguishable from a machine that was
 # merely down. Hence the ghost check below: a token naming a host that is in
 # NEITHER the roster NOR the API is a config bug, and now says so.
-: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap living-room-pc=lr gp-mac=gp @k3s=k3s}"
+: "${FLEET_DISPLAY:=linux-cachyos=main ~cachy-laptop=lap living-room-pc=lr gp-mac=gp @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
@@ -223,8 +228,18 @@ if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degrad
 # you which line of FLEET_DISPLAY to go delete.
 ghosts=()
 text="$(printf "<span color='%s'>%s</span>" "$icon_col" "$ICON")"
+transient=()
 for tok in $FLEET_DISPLAY; do
     lbl="${tok#*=}"; key="${tok%%=*}"
+    if [[ "$key" == "~"* ]]; then
+        key="${key#"~"}"; transient+=("$key")
+        if [[ -z "${in_roster[$key]:-}" && -z "$(row_of "$key")" ]]; then
+            ghosts+=("~$key"); text="${text} ${lbl}$(dot ghost)"
+        elif [[ "$(classify "$key")" == "up" ]]; then
+            text="${text} ${lbl}$(dot up)"
+        fi
+        continue
+    fi
     if [[ "$key" == @* ]]; then
         # collapse a group: worst of its API members that are also on the roster
         grp="${key#@}"
@@ -253,6 +268,11 @@ while IFS= read -r g; do
     done < <(members_of "$g" | sort)
     [[ -n "$section" ]] && tooltip="${tooltip}\\n${g}:${section}"
 done < <(cut -f2 <<< "$rows" | sort -u)
+# transient hosts are off the roster by design, so list them on their own
+for m in "${transient[@]}"; do
+    [[ -n "${in_roster[$m]:-}" || -z "$(row_of "$m")" ]] && continue
+    tooltip="${tooltip}\\n  ${m} (only shown when online): $(status_text "$m")"
+done
 # rostered hosts the API has never materialized (no group to file them under)
 for m in $ROSTER; do
     [[ -z "$m" ]] && continue
