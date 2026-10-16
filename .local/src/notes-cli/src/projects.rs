@@ -1584,6 +1584,7 @@ fn migrate_dir(p: &Profile, name: &str) -> Result<PathBuf> {
 /// single file to become.
 fn fold_loose_versions(dir: &Path) -> Result<(usize, Vec<String>)> {
     let versions = dir.join("versions");
+    let open = declared_open(dir);
     let mut srcs: Vec<PathBuf> = fs::read_dir(dir)?
         .flatten()
         .map(|e| e.path())
@@ -1604,6 +1605,14 @@ fn fold_loose_versions(dir: &Path) -> Result<(usize, Vec<String>)> {
         if !is_version_file(fname) {
             continue;
         }
+        if let Some(o) = open.filter(|_| is_loose_plan(fname, open)) {
+            left.push(format!(
+                "{fname}: not below the open version {} - a plan, not a frozen version; \
+                 put its rows on the sheet (`ptask add`) or rename it",
+                fmt_version(o)
+            ));
+            continue;
+        }
         let dest = versions.join(fname);
         if dest.exists() {
             left.push(format!(
@@ -1616,6 +1625,25 @@ fn fold_loose_versions(dir: &Path) -> Result<(usize, Vec<String>)> {
         moved += 1;
     }
     Ok((moved, left))
+}
+
+/// The version a project's working sheet declares open, when it has a sheet that says so.
+/// A project with no `Version:` line is the old layout, where root version notes ARE the
+/// history, so there is nothing to compare against.
+fn declared_open(dir: &Path) -> Option<(u32, u32, u32)> {
+    let sheet = sheet_path(dir)?;
+    fs::read_to_string(sheet).ok().and_then(|c| sheet_version(&c))
+}
+
+/// A root `vX.Y.Z.md` at or above the declared open version is a plan for a version that
+/// has not shipped (an idea list named after its target), not a frozen record. Folding it
+/// into `versions/` would claim it closed, and the roll that later reaches that version
+/// would refuse on the twin it finds there.
+fn is_loose_plan(fname: &str, open: Option<(u32, u32, u32)>) -> bool {
+    match (fname.strip_suffix(".md").and_then(parse_version), open) {
+        (Some(v), Some(o)) => v >= o,
+        _ => false,
+    }
 }
 
 pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
@@ -1883,8 +1911,13 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
                 .filter_map(|e| e.file_name().to_str().map(str::to_string))
                 .collect();
             names.sort();
+            let open = declared_open(&dir);
             for f in names {
-                if is_version_file(&f) {
+                if is_loose_plan(&f, open) {
+                    loose.push(format!(
+                        "{rel}/{f} is a plan for an unshipped version (rows -> sheet, or rename)"
+                    ));
+                } else if is_version_file(&f) {
                     loose.push(format!("{rel}/{f} loose (-> versions/)"));
                 } else if f.eq_ignore_ascii_case("changelog.md") {
                     loose.push(format!("{rel}/{f} loose (split into versions/ by hand)"));
@@ -3422,6 +3455,8 @@ mod move_layout_tests {
     fn migrate_folds_loose_versions_of_an_archived_project_and_is_idempotent() {
         let v = vault("migrate");
         let d = project(&v.personal, "Archived", "home");
+        // The old layout: no working sheet, so the root version notes ARE the history.
+        fs::remove_file(d.join("README.md")).unwrap();
         fs::write(d.join("v2.0.0.md"), "the release\n").unwrap();
         fs::write(d.join("changelog.md"), "v1.0.0\n- a\nv2.0.0\n- b\n").unwrap();
 
@@ -3458,6 +3493,7 @@ mod move_layout_tests {
     fn migrate_refuses_to_clobber_a_frozen_version() {
         let v = vault("clobber");
         let d = project(&v.personal, "Archived", "port");
+        fs::write(d.join("README.md"), "# port\nVersion: v1.9.0\n").unwrap();
         fs::create_dir_all(d.join("versions")).unwrap();
         fs::write(d.join("versions/v1.7.0.md"), "frozen\n").unwrap();
         fs::write(d.join("v1.7.0.md"), "loose twin\n").unwrap();
@@ -3475,5 +3511,26 @@ mod move_layout_tests {
         // One conflict does not hold the rest back.
         assert!(d.join("versions/v1.8.0.md").exists());
         assert!(!d.join("v1.8.0.md").exists());
+    }
+
+    #[test]
+    fn migrate_leaves_a_plan_for_an_unshipped_version_where_it_is() {
+        let v = vault("plans");
+        let d = project(&v.personal, "Current", "binks");
+        fs::write(d.join("README.md"), "# binks\nVersion: v1.0.3 #draft\n").unwrap();
+        fs::write(d.join("v2.0.0.md"), "future ideas\n").unwrap();
+        fs::write(d.join("v1.0.3.md"), "this wave\n").unwrap();
+        fs::write(d.join("v1.0.1.md"), "what shipped\n").unwrap();
+
+        migrate(&v.personal, &v.log, "binks").unwrap();
+        assert!(d.join("versions/v1.0.1.md").exists(), "below open: frozen history");
+        assert!(d.join("v2.0.0.md").exists(), "above open: a plan, left alone");
+        assert!(d.join("v1.0.3.md").exists(), "the open version is not frozen yet");
+        assert!(!d.join("versions/v2.0.0.md").exists());
+        assert!(!d.join("versions/v1.0.3.md").exists());
+
+        let f = layout_findings_with(&v.personal, &others(&v)).join("\n");
+        assert!(f.contains("current/binks/v2.0.0.md is a plan"), "{f}");
+        assert!(!f.contains("v2.0.0.md loose (-> versions/)"), "never advise folding a plan: {f}");
     }
 }
