@@ -10,9 +10,13 @@ with its name already in the title). So rules.conf puts every Unity window on
 ws3, and this listener moves the playground editor to ws4 on the event that
 carries its real title.
 
-It also sends a Unity popup (Build Settings, Package Manager, progress bars) to
-ws4 when it opens while a playground editor has focus, so dialogs follow the
-editor that raised them instead of landing on ws3.
+It also owns every floating Unity window (menus, Build Settings, Package
+Manager, progress bars): one that opens away from its editor's workspace goes to
+ws4 when a playground editor has focus, else to ws3. One that opens where it
+belongs is left alone. A menu opens on the focused workspace, its editor's, and
+must not be moved: a silent move leaves it unfocused, and Unity's menus and
+sub-menus then take no hover or clicks (the playground's broke that way from
+2026-09-28 until the static float rule went).
 
 Started by exec-once in conf.d/autostart.conf; exits when Hyprland closes the
 socket, and the next session's exec-once starts it again.
@@ -25,6 +29,7 @@ import socket
 import subprocess
 
 PLAYGROUND_WORKSPACE = "4"
+GAME_WORKSPACE = "3"
 EDITOR_CLASS = re.compile(r"^[Uu]nity[Hh]ub-")
 PLAYGROUND_PROJECT = re.compile(r"playground", re.IGNORECASE)
 
@@ -49,6 +54,12 @@ def is_unity_popup(client):
     return bool(EDITOR_CLASS.match(client.get("class", ""))) and client.get("floating", False)
 
 
+def popup_target(popup, playground_active):
+    """The workspace a newly opened floating Unity window belongs on, or None when it is there."""
+    target = PLAYGROUND_WORKSPACE if playground_active else GAME_WORKSPACE
+    return None if str(popup.get("workspace", {}).get("id")) == target else target
+
+
 def hyprctl_json(*args):
     out = subprocess.run(["hyprctl", "-j", *args], capture_output=True, text=True).stdout
     try:
@@ -63,9 +74,9 @@ def address_of(data):
     return raw if raw.startswith("0x") else "0x" + raw
 
 
-def move(address, follow):
+def move(address, workspace, follow):
     verb = "movetoworkspace" if follow else "movetoworkspacesilent"
-    subprocess.run(["hyprctl", "dispatch", verb, f"{PLAYGROUND_WORKSPACE},address:{address}"],
+    subprocess.run(["hyprctl", "dispatch", verb, f"{workspace},address:{address}"],
                    capture_output=True)
 
 
@@ -87,7 +98,7 @@ class Router:
             return
         self.routed.add(c["address"])
         if str(c.get("workspace", {}).get("id")) != PLAYGROUND_WORKSPACE:
-            move(c["address"], follow=c["address"] == active_address)
+            move(c["address"], PLAYGROUND_WORKSPACE, follow=c["address"] == active_address)
 
     def active_address(self):
         return (hyprctl_json("activewindow") or {}).get("address")
@@ -108,8 +119,10 @@ class Router:
         if c is None:
             return
         active = self.active_address()
-        if name == "openwindow" and is_unity_popup(c) and active in self.routed:
-            move(address, follow=False)
+        if name == "openwindow" and is_unity_popup(c):
+            target = popup_target(c, active in self.routed)
+            if target is not None:
+                move(address, target, follow=False)
             return
         self.route_editor(c, active)
 
