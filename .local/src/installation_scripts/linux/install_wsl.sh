@@ -265,33 +265,35 @@ setup_notes_sync() {
 }
 
 install_all() {
-    create_directories
-    update_system
-    install_packages
+    step base       create_directories
+    step base       update_system
+    step base       install_packages
 
-    install_zsh
-    install_oh_my_zsh
-    install_starship
+    step shell      install_zsh
+    step shell      install_oh_my_zsh
+    step shell      install_starship
 
-    install_rust
+    step dev        install_rust
 
-    setup_docker
-    setup_sysctl
-    setup_postgres
+    step containers setup_docker
+    step base       setup_sysctl
+    step dev        setup_postgres
 
-    setup_git
-    install_npm_packages
-    apply_dotfiles
-    setup_dotfiles_private   # attach the private overlay (~/.dotfiles-private) on top
-    setup_ai_memory
+    step dotfiles   setup_git
+    step dev        install_npm_packages
+    step dotfiles   apply_dotfiles
+    step dotfiles   setup_dotfiles_private # attach the private overlay (~/.dotfiles-private) on top
+    step dotfiles   setup_ai_memory
 
-    setup_notes_sync
+    step notes      setup_notes_sync
+}
 
+post_install_notes() {
     log_section "Installation Complete!"
     log_info "Restart your terminal or run: source ~/.zshrc"
     log_warning "From Windows PowerShell run: wsl --shutdown   (to apply systemd in /etc/wsl.conf)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    install_all
+    run_install
 fi

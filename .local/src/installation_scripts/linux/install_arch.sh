@@ -494,14 +494,27 @@ install_aur_packages() {
 
     install_paru
 
-    local aur_packages=(
-        "spotify"
-        "discord"
-    )
+    install_package_list install_aur_package arch $PACKAGES_AUR_ARCH
+}
 
-    for pkg in "${aur_packages[@]}"; do
-        install_aur_package "$pkg"
-    done
+# Override: music production rig. Guide: ~/.config/REAPER/README-music-rig.md
+install_music() {
+    log_section "Installing music production rig"
+
+    # paru takes repo and AUR packages alike; neural-amp-modeler-lv2 is AUR-only.
+    install_paru
+    install_package_list install_aur_package arch \
+        $PACKAGES_MUSIC $PACKAGES_MUSIC_ARCH
+
+    # Realtime priority comes from the audio group (limits.d rtprio 99).
+    if id -nG "$USER" | grep -qw audio; then
+        log_info "$USER already in audio group"
+    elif [[ -n "${NO_SUDO:-}" ]]; then
+        log_warning "--no-sudo: run 'sudo usermod -aG audio $USER' for realtime audio"
+    else
+        sudo usermod -aG audio "$USER"
+        log_info "Added $USER to audio group (log out and back in)"
+    fi
 }
 
 # Setup startup profile
@@ -725,86 +738,66 @@ setup_freerdp_avd() {
 
 # Override main installation to include AUR
 install_all() {
-    # Create structure
-    create_directories
+    step base        create_directories
+    step base        update_system
+    step base        install_basics
+    step dev         install_tools
+    step shell       install_terminal
+    step base        install_runtime
 
-    # System updates
-    update_system
+    step shell       install_zsh
+    step shell       setup_ssh_agent
+    step shell       install_oh_my_zsh
+    step shell       install_starship
 
-    # Core installations
-    install_basics
-    install_tools
-    install_terminal
-    install_runtime
+    step dev         install_nvim
+    step dev         install_tmux
+    step dev         install_lazygit
+    step dev         install_kitty
 
-    # Shell setup
-    install_zsh
-    setup_ssh_agent
-    install_oh_my_zsh
-    install_starship
+    step containers  install_kubernetes
+    step containers  setup_kubernetes
 
-    # Development tools
-    install_nvim
-    install_tmux
-    install_lazygit
-    install_kitty
-
-    # Kubernetes & Containers
-    install_kubernetes
-    setup_kubernetes
-
-    # Printing
-    setup_printing
+    step printing    setup_printing
 
     # Game streaming
-    setup_sunshine
-    install_moonlight
+    step streaming   setup_sunshine
+    step streaming   install_moonlight
 
     # Remote desktop (Azure Virtual Desktop via FreeRDP webview)
-    setup_freerdp_avd
+    step avd         setup_freerdp_avd
 
-    # Input remapping
-    setup_keyd
+    step keyd        setup_keyd
+    step fingerprint setup_fingerprint
+    step tailscale   install_tailscale
 
-    # Biometric auth (fingerprint)
-    setup_fingerprint
+    step desktop     install_gui
+    step desktop     install_aur_packages
+    step music       install_music
 
-    # Networking
-    install_tailscale
+    step shell       install_fonts
+    step dotfiles    setup_git
+    step dev         install_npm_packages
+    step dotfiles    apply_dotfiles
 
-    # Desktop environment
-    install_gui
-
-    # AUR packages
-    install_aur_packages
-
-    # Additional setup
-    install_fonts
-    setup_git
-    install_npm_packages
-    apply_dotfiles
-
-    # Setup startup profile (must come after apply_dotfiles)
-    setup_profile
+    # Must come after apply_dotfiles
+    step dotfiles    setup_profile
 
     # Generated theme files (must come after apply_dotfiles -- writes into the
     # stowed config tree, and these three are gitignored so a clone lacks them)
-    setup_theme
+    step dotfiles    setup_theme
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
-    setup_notes_sync
+    step notes       setup_notes_sync
 
-    # Secrets CLI (rbw → self-hosted Vaultwarden)
-    setup_rbw
+    # Secrets CLI (rbw -> self-hosted Vaultwarden)
+    step secrets     setup_rbw
 
     # Mail credentials (aerc refuses to start on a lax accounts.conf)
-    setup_aerc
-
-    log_section "Installation Complete!"
-    log_info "Please restart your terminal or run: source ~/.zshrc"
+    step mail        setup_aerc
 }
 
 # Run if executed directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    install_all
+    run_install
 fi

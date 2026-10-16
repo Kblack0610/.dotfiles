@@ -477,54 +477,56 @@ setup_notes_sync() {
 
 install_all() {
     # Create structure
-    create_directories
+    step base       create_directories
     
     # System updates
-    update_system
+    step base       update_system
     
     # Core installations
-    install_basics
-    install_tools
-    install_terminal
-    install_runtime
+    step base       install_basics
+    step dev        install_tools
+    step shell      install_terminal
+    step base       install_runtime
     
     # Shell setup
-    install_zsh
-    install_oh_my_zsh
-    install_starship
+    step shell      install_zsh
+    step shell      install_oh_my_zsh
+    step shell      install_starship
     
     # Development tools
-    install_nvim
-    install_tmux
-    install_lazygit
-    install_kitty
-    setup_docker
+    step dev        install_nvim
+    step dev        install_tmux
+    step dev        install_lazygit
+    step dev        install_kitty
+    step containers setup_docker
 
     # Game streaming
-    setup_sunshine
-    install_moonlight
+    step streaming  setup_sunshine
+    step streaming  install_moonlight
 
     # Input remapping
-    setup_keyd
+    step keyd       setup_keyd
 
     # Desktop environment
-    install_gui
-    install_flatpak
+    step desktop    install_gui
+    step desktop    install_flatpak
     
     # Additional setup
-    install_fonts
-    setup_git
-    install_npm_packages
-    apply_dotfiles
+    step shell      install_fonts
+    step dotfiles   setup_git
+    step dev        install_npm_packages
+    step dotfiles   apply_dotfiles
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
-    setup_notes_sync
+    step notes      setup_notes_sync
+}
 
+post_install_notes() {
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
 }
 
 # Run if executed directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    install_all
+    run_install
 fi
