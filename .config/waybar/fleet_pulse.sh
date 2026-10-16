@@ -52,7 +52,7 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # been rendering a red `lzr○` that was indistinguishable from a machine that was
 # merely down. Hence the ghost check below: a token naming a host that is in
 # NEITHER the roster NOR the API is a config bug, and now says so.
-: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap gp-mac=gp @k3s=k3s}"
+: "${FLEET_DISPLAY:=linux-cachyos=main cachy-laptop=lap living-room-pc=lr gp-mac=gp @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
