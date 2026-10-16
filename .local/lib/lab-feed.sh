@@ -111,6 +111,26 @@ _lf_feed_file() {
   return 0
 }
 
+# _lf_count <auto-block> <heading> -> the bullets under `**<heading>**`, up to the first
+# blank line.
+#
+# A writer that caps a list ends it with an elision marker, `- ...(+N more)`. That line
+# is ITSELF a bullet, so it adds N instead of counting as one: counting it AND adding N is
+# an off-by-one in the only direction nobody would notice, and counting only the visible
+# rows turns a cap into a fact (the feed caps Shipping next at 6, so every busy monorepo
+# app read "6 to ship"). The marker is read inside its OWN section: a global search would
+# hand one section's hidden total to another.
+_lf_count() {
+  printf '%s' "${1:-}" | awk -v h="**${2}**" '
+    index($0, h) { f = 1; next }
+    f && /^$/ { exit }
+    f && /^- / {
+      if (match($0, /\(\+[0-9]+ more\)/)) n += substr($0, RSTART + 2, RLENGTH - 8)
+      else n++
+    }
+    END { print n + 0 }'
+}
+
 # lab_feed_fields <path> -> one TSV line (see the field table above), or nothing.
 lab_feed_fields() {
   local p="${1:-}" dir feed meta sheet auto tag ship tick more prs next status date sdate
@@ -137,15 +157,9 @@ lab_feed_fields() {
   tag="${tag##*-}"
 
   # ── 2-4. the counts ────────────────────────────────────────────────────────
-  # bullets between "Shipping next" and the next blank-line-terminated block
-  ship="$(printf '%s' "$auto" | awk '/\*\*Shipping next\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
-  # The elision marker is ITSELF a bullet (`- …(+10 more)`), so it must not be counted
-  # as a ticket before its number is added back — that is an off-by-one in the only
-  # direction nobody would notice, since the total still looks plausible.
-  tick="$(printf '%s' "$auto" | awk '/\*\*In progress\*\*/{f=1;next} f&&/more\)/{next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
-  more="$(printf '%s' "$auto" | sed -n 's/.*(+\([0-9]\{1,\}\) more).*/\1/p' | head -1)"
-  [ -n "$more" ] && tick=$((tick + more))
-  prs="$(printf '%s' "$auto" | awk '/\*\*In flight\*\*/{f=1;next} f&&/^- /{n++} f&&/^$/{exit} END{print n+0}')"
+  ship="$(_lf_count "$auto" 'Shipping next')"
+  tick="$(_lf_count "$auto" 'In progress')"
+  prs="$(_lf_count "$auto" 'In flight')"
 
   # ── 5. what is next ────────────────────────────────────────────────────────
   # The `nextup:auto` block first — it is generated from the sheet and already sorted

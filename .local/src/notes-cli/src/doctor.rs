@@ -148,7 +148,30 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         );
     }
 
-    // 9. A binary older than its own source silently writes the previous note format, and
+    // 9. Project layout: version notes belong in `versions/`, every project dir in a lane of
+    // its own org's index. Warn only - each finding is a hand fix or a `--migrate` away.
+    let layout = projects::layout_findings(p);
+    if layout.is_empty() {
+        r.add(
+            Status::Pass,
+            "project layout",
+            "every project indexed, versions in versions/",
+        );
+    } else {
+        let sample: Vec<&str> = layout.iter().take(6).map(String::as_str).collect();
+        let more = if layout.len() > sample.len() {
+            ", ..."
+        } else {
+            ""
+        };
+        r.add(
+            Status::Warn,
+            "project layout",
+            &format!("{} ({}{more})", layout.len(), sample.join("; ")),
+        );
+    }
+
+    // 10. A binary older than its own source silently writes the previous note format, and
     // nothing else here would catch it: every path resolves, every heading parses, the notes
     // are simply the wrong shape. That is exactly how one machine's dailies drifted a month
     // behind another's while both looked healthy.
