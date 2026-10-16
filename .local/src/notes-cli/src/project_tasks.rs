@@ -277,34 +277,10 @@ pub fn move_task(
     let (heading, grown) = target_wave(&content, Some(to), true)?;
     let content = grown.unwrap_or(content);
 
-    // Find it in any wave EXCEPT the target, so a move onto its own wave is a clear no-op
-    // rather than a silent delete-and-reinsert.
-    let mut found: Option<(String, String)> = None; // (source heading, line)
-    for s in waves::sections(&content) {
-        if s.heading == heading {
-            continue;
-        }
-        if let Some((_, l)) = md::section_numbered(&content, &s.heading)
-            .into_iter()
-            .find(|(_, l)| is_match(l, &query))
-        {
-            found = Some((s.heading.clone(), l.trim_end().to_string()));
-            break;
-        }
-    }
-    let Some((from, line)) = found else {
+    let Some((new, line, from)) = move_within(&content, &query, &heading, to)? else {
         eprintln!("no open task matches '{query}' outside {heading} in {name}");
         return Ok(1);
     };
-    let Some((cut, _)) =
-        md::edit_first_in_section(&content, &from, |l| is_match(l, &query), |_| None)
-    else {
-        bail!("could not lift '{query}' out of {from}");
-    };
-    // Retag to the target, as `demote` does. The row keeping its old `#v` tag is how a moved
-    // task got dragged straight back by the next `sweep`, which buckets by tag.
-    let line = retag_for(&cut, &line, to);
-    let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&line));
     md::write_atomic(&sheet, &new)?;
     log.info(
         "ptask",
@@ -312,6 +288,190 @@ pub fn move_task(
     );
     println!("moved {}\n  {from} -> {heading}", line.trim());
     Ok(0)
+}
+
+/// Pure core of the same-sheet `move`: lift the first open row matching `query` out of any
+/// wave other than `heading` and insert it, retagged for `to`, under `heading`. Returns
+/// `(new_content, moved_line, source_heading)`, or `None` when nothing outside the target
+/// matches.
+fn move_within(
+    content: &str,
+    query: &str,
+    heading: &str,
+    to: &str,
+) -> Result<Option<(String, String, String)>> {
+    // Find it in any wave EXCEPT the target, so a move onto its own wave is a clear no-op
+    // rather than a silent delete-and-reinsert.
+    let Some((from, line)) = find_open(content, query, Some(heading)) else {
+        return Ok(None);
+    };
+    let Some((cut, _)) =
+        md::edit_first_in_section(content, &from, |l| is_match(l, query), |_| None)
+    else {
+        bail!("could not lift '{query}' out of {from}");
+    };
+    // Retag to the target, as `demote` does. The row keeping its old `#v` tag is how a moved
+    // task got dragged straight back by the next `sweep`, which buckets by tag.
+    let line = retag_for(&cut, &line, to);
+    let new = md::insert_under_heading(&cut, heading, std::slice::from_ref(&line));
+    Ok(Some((new, line, from)))
+}
+
+/// The first open row matching `query` (lower-cased) in wave order, skipping the wave
+/// headed `skip`: `(source heading, line)`. The one search both forms of `move` use, so
+/// "which row does `move <query>` take" has a single answer.
+fn find_open(content: &str, query: &str, skip: Option<&str>) -> Option<(String, String)> {
+    for s in waves::sections(content) {
+        if Some(s.heading.as_str()) == skip {
+            continue;
+        }
+        if let Some((_, l)) = md::section_numbered(content, &s.heading)
+            .into_iter()
+            .find(|(_, l)| is_match(l, query))
+        {
+            return Some((s.heading.clone(), l.trim_end().to_string()));
+        }
+    }
+    None
+}
+
+/// `notes ptask <src> move <query> --project <dest> [--to vX.Y.Z]` - move the first open
+/// row matching `<query>` off SRC's sheet and onto DEST's: its current wave, or the wave
+/// `--to` names. How a catch-all sheet gets split into per-project ones without hand-editing.
+///
+/// DEST resolves through `projects::project_dir` like every other name here, so it may live
+/// in another profile. Unlike the same-project form this never MINTS a wave: which version
+/// something ships in on another project's roadmap is that project's call, so a `--to` the
+/// dest sheet does not already hold is refused. `--agent` works because both ends go through
+/// the same `lane_dir`: agent sheet to agent sheet.
+pub fn move_to_project(
+    p: &Profile,
+    log: &Logger,
+    src: &str,
+    dest: &str,
+    query: &str,
+    to: Option<&str>,
+    lane: Lane,
+) -> Result<i32> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        bail!("which one? (provide a word from the task)");
+    }
+    let src_dir = lane_dir(p, src, lane)?;
+    let dest_dir = lane_dir(p, dest, lane)?;
+    let Some(src_sheet) = task_sheet(&src_dir) else {
+        bail!("'{src}' has no task sheet yet - nothing to move");
+    };
+    let Some(dest_sheet) = task_sheet(&dest_dir) else {
+        let flag = if lane == Lane::Agent { " --agent" } else { "" };
+        bail!("'{dest}' has no task sheet with a `## Wave` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
+    };
+    let Some(moved) = transfer(&src_sheet, &dest_sheet, &query, to)? else {
+        eprintln!("no open task matches '{query}' in {src}");
+        return Ok(1);
+    };
+    log.info(
+        "ptask",
+        &format!(
+            "moved from {} ({src}) to {} in {} ({dest})",
+            src_sheet.display(),
+            moved.into,
+            dest_sheet.display()
+        ),
+    );
+    println!(
+        "moved {}\n  {src}: {} -> {dest}: {}",
+        moved.line.trim(),
+        moved.from,
+        moved.into
+    );
+    Ok(0)
+}
+
+/// What a cross-project move did: both sheets' new text, the row as it landed, and the
+/// wave headings it left and joined.
+#[derive(Debug)]
+struct Lifted {
+    src: String,
+    dest: String,
+    line: String,
+    from: String,
+    into: String,
+}
+
+/// File half of `move_to_project`: read both sheets, compute both edits, then write.
+///
+/// Every refusal happens before the first write. The DEST is written first and the SRC
+/// second, because if the second write fails the row then exists on BOTH sheets (a
+/// duplicate you can see and `rm`) rather than on NEITHER (a task silently gone).
+fn transfer(
+    src_sheet: &Path,
+    dest_sheet: &Path,
+    query: &str,
+    to: Option<&str>,
+) -> Result<Option<Lifted>> {
+    let same = match (src_sheet.canonicalize(), dest_sheet.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => src_sheet == dest_sheet,
+    };
+    if same {
+        bail!(
+            "source and destination are the same sheet - use `move --to <VERSION>` to change waves"
+        );
+    }
+    let src = fs::read_to_string(src_sheet)?;
+    let dest = fs::read_to_string(dest_sheet)?;
+    let Some(moved) = lift_into(&src, &dest, query, to)? else {
+        return Ok(None);
+    };
+    md::write_atomic(dest_sheet, &moved.dest)?;
+    md::write_atomic(src_sheet, &moved.src).map_err(|e| {
+        anyhow::anyhow!(
+            "{e}\n  the row was ADDED to {} but not removed from {} - `rm` it there",
+            dest_sheet.display(),
+            src_sheet.display()
+        )
+    })?;
+    Ok(Some(moved))
+}
+
+/// Pure core of a cross-project move: the first open row matching `query` in `src` (any
+/// wave, in order - the same search the same-sheet `move` runs), cut from `src` and
+/// inserted into `dest`'s current wave or its existing wave `to`. `None` on no match.
+fn lift_into(src: &str, dest: &str, query: &str, to: Option<&str>) -> Result<Option<Lifted>> {
+    // Resolve the destination before looking at the source: a dest with no wave to land
+    // in is the refusal, whether or not the query would have matched.
+    let (into, _) = target_wave(dest, to, false)?;
+    let Some((from, line)) = find_open(src, query, None) else {
+        return Ok(None);
+    };
+    let Some((cut, _)) = md::edit_first_in_section(src, &from, |l| is_match(l, query), |_| None)
+    else {
+        bail!("could not lift '{query}' out of {from}");
+    };
+    let line = retag_into(dest, &into, &line);
+    let grown = md::insert_under_heading(dest, &into, std::slice::from_ref(&line));
+    Ok(Some(Lifted {
+        src: cut,
+        dest: grown,
+        line,
+        from,
+        into,
+    }))
+}
+
+/// `line` retagged for the wave headed `heading` on `dest`. The source project's `#v` tag
+/// means nothing on another project's roadmap, so a dest wave with no parseable version
+/// strips it rather than keeping it.
+fn retag_into(dest: &str, heading: &str, line: &str) -> String {
+    match waves::sections(dest)
+        .into_iter()
+        .find(|s| s.heading == heading)
+        .and_then(|s| s.version)
+    {
+        Some(v) => retag_for(dest, line, &waves::fmt(v)),
+        None => md::split_wave(line).0,
+    }
 }
 
 /// `line` retagged for the wave `to` on `content`, keeping `#urgent` only when `to` is the
@@ -822,6 +982,174 @@ Version: v1.13.0
     fn the_stamp_opens_a_marker_on_a_bare_line() {
         let out = md::add_marker("- [x] plain task", "unverified: no artifact");
         assert_eq!(out, "- [x] plain task <!-- unverified: no artifact -->");
+    }
+
+    // A catch-all sheet and one of the per-project sheets it is being split into.
+    const SRC: &str = "\
+# unity-playground
+Version: v0.4.0
+
+## Wave: v0.4.0 (current)
+- [ ] playground thing #high
+- [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->
+- [ ] dodgeball menu polish #low
+
+## Wave: v0.5.0 (planned)
+- [ ] dodgeball netcode #v0.5.0 #high
+";
+
+    const DEST: &str = "\
+# dodginballs
+Version: v1.2.0
+
+## Wave: v1.2.0 (current)
+- [ ] existing row #high
+
+## Wave: v1.3.0 (planned)
+- [ ] later row #v1.3.0 #high
+";
+
+    #[test]
+    fn a_cross_project_move_lands_in_the_dest_current_wave_retagged() {
+        let m = lift_into(SRC, DEST, "spawn bug", None).unwrap().unwrap();
+        assert_eq!(m.from, "Wave: v0.4.0 (current)");
+        assert_eq!(m.into, "Wave: v1.2.0 (current)");
+        // Source tag swapped for the dest's; priority, other tags and the marker kept.
+        assert_eq!(
+            m.line,
+            "- [ ] dodgeball spawn bug #urgent #game #v1.2.0 <!-- since:2026-10-01 carried:2 -->"
+        );
+        assert!(
+            !m.src.contains("spawn bug"),
+            "row must leave SRC:\n{}",
+            m.src
+        );
+        assert!(m.src.contains("- [ ] dodgeball menu polish #low"));
+        let cur = waves::find(&m.dest, (1, 2, 0)).unwrap();
+        let in_cur: Vec<&str> = m
+            .dest
+            .lines()
+            .skip(cur.start)
+            .take(cur.end - cur.start)
+            .collect();
+        assert!(in_cur.contains(&m.line.as_str()), "{}", m.dest);
+        assert!(m.dest.contains("- [ ] existing row #high"));
+    }
+
+    #[test]
+    fn a_cross_project_move_with_to_lands_in_an_existing_planned_wave() {
+        let m = lift_into(SRC, DEST, "spawn", Some("v1.3.0"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.into, "Wave: v1.3.0 (planned)");
+        // #urgent is only legal in a current wave, the same rule the same-sheet move applies.
+        assert_eq!(
+            m.line,
+            "- [ ] dodgeball spawn bug #game #high #v1.3.0 <!-- since:2026-10-01 carried:2 -->"
+        );
+        let later = waves::find(&m.dest, (1, 3, 0)).unwrap();
+        assert!(m
+            .dest
+            .lines()
+            .skip(later.start)
+            .take(later.end - later.start)
+            .any(|l| l == m.line));
+    }
+
+    // The source search spans every wave, as the same-sheet move's does.
+    #[test]
+    fn a_cross_project_move_finds_a_row_in_a_planned_source_wave() {
+        let m = lift_into(SRC, DEST, "netcode", None).unwrap().unwrap();
+        assert_eq!(m.from, "Wave: v0.5.0 (planned)");
+        assert_eq!(m.line, "- [ ] dodgeball netcode #high #v1.2.0");
+    }
+
+    // Agents may not create planned waves on another project's roadmap.
+    #[test]
+    fn a_cross_project_move_refuses_a_dest_wave_that_does_not_exist() {
+        let e = lift_into(SRC, DEST, "spawn", Some("v9.0.0"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no wave v9.0.0"), "{e}");
+    }
+
+    #[test]
+    fn a_cross_project_move_refuses_a_dest_with_no_wave() {
+        assert!(lift_into(SRC, "# prose only\n\nnothing here\n", "spawn", None).is_err());
+    }
+
+    #[test]
+    fn a_cross_project_move_with_no_match_is_none() {
+        assert!(lift_into(SRC, DEST, "no such row", None).unwrap().is_none());
+        // A closed row is not movable.
+        let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
+        assert!(lift_into(&closed, DEST, "menu polish", None)
+            .unwrap()
+            .is_none());
+    }
+
+    // A dest wave with no parseable version gets no tag, never the source's stale one.
+    #[test]
+    fn a_cross_project_move_into_an_unversioned_wave_drops_the_source_tag() {
+        let dest = "# legacy\n\n## Wave: new (current)\n- [ ] x\n";
+        let m = lift_into(SRC, dest, "spawn", None).unwrap().unwrap();
+        assert!(!m.line.contains("#v0.4.0"), "{}", m.line);
+        assert!(m.line.contains("<!-- since:2026-10-01 carried:2 -->"));
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ptask-xproj-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn transfer_writes_both_sheets() {
+        let d = scratch("ok");
+        let (s, t) = (d.join("src.md"), d.join("dest.md"));
+        fs::write(&s, SRC).unwrap();
+        fs::write(&t, DEST).unwrap();
+        let m = transfer(&s, &t, "spawn", None).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(&s).unwrap(), m.src);
+        assert_eq!(fs::read_to_string(&t).unwrap(), m.dest);
+        assert!(!m.src.contains("spawn") && m.dest.contains("spawn"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    // Every refusal must leave both sheets byte-identical.
+    #[test]
+    fn transfer_refusals_write_nothing() {
+        let d = scratch("refuse");
+        let (s, t) = (d.join("src.md"), d.join("dest.md"));
+        fs::write(&s, SRC).unwrap();
+        fs::write(&t, DEST).unwrap();
+        let same = transfer(&s, &s, "spawn", None).unwrap_err().to_string();
+        assert!(same.contains("same sheet"), "{same}");
+        assert!(transfer(&s, &t, "spawn", Some("v9.0.0")).is_err());
+        assert!(transfer(&s, &t, "no such row", None).unwrap().is_none());
+        assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
+        assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    // The same-sheet move, pinned through its refactor into `move_within`: same row, same
+    // retag, same placement, and a move onto the row's own wave still matches nothing.
+    #[test]
+    fn the_same_project_move_is_unchanged() {
+        let (h, grown) = target_wave(SRC, Some("v0.5.0"), true).unwrap();
+        assert!(grown.is_none());
+        let (new, line, from) = move_within(SRC, "spawn", &h, "v0.5.0").unwrap().unwrap();
+        assert_eq!(from, "Wave: v0.4.0 (current)");
+        assert_eq!(
+            line,
+            "- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->"
+        );
+        assert_eq!(
+            new,
+            "# unity-playground\nVersion: v0.4.0\n\n## Wave: v0.4.0 (current)\n- [ ] playground thing #high\n- [ ] dodgeball menu polish #low\n\n## Wave: v0.5.0 (planned)\n- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->\n- [ ] dodgeball netcode #v0.5.0 #high\n"
+        );
+        assert!(move_within(SRC, "netcode", &h, "v0.5.0").unwrap().is_none());
     }
 
     #[test]
