@@ -203,10 +203,19 @@ enum Cmd {
         /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
         #[arg(long, value_name = "NAME")]
         roll: Option<String>,
-        /// Consolidate a project onto the one version layout: fold changelog/ into
-        /// versions/ and backfill each version's ai/ note. Idempotent.
+        /// Consolidate a project onto the one version layout: fold changelog/ and loose
+        /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
+        /// Works on archived projects too. Never overwrites; idempotent.
         #[arg(long, value_name = "NAME")]
         migrate: Option<String>,
+        /// Move a project to another profile (with --to-profile): same lifecycle dir
+        /// (current/ or archived/) and same index lane on the other side. Links to the
+        /// old path elsewhere are counted, not rewritten
+        #[arg(long = "move", value_name = "NAME", requires = "to_profile")]
+        move_project: Option<String>,
+        /// With --move: the destination profile
+        #[arg(long, value_name = "PROFILE", requires = "move_project")]
+        to_profile: Option<String>,
         /// Remove the retired `#ai` tag from live project sheets (the lane is the agent
         /// sheet now). Bare = every project in the profile; with a NAME = just that one.
         /// Frozen versions/ notes keep their tags as history. Idempotent.
@@ -376,11 +385,17 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Move the first matching open task into another wave
+    /// Move the first matching open task into another wave, or with --project onto
+    /// another project's sheet (its current wave, or the existing wave --to names)
     Move {
-        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new
-        #[arg(long, value_name = "VERSION", required = true)]
-        to: String,
+        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new. With
+        /// --project: optional, and the wave must already exist on the dest sheet
+        #[arg(long, value_name = "VERSION", required_unless_present = "project")]
+        to: Option<String>,
+        /// Move the row to this project instead (any profile; with --agent, agent sheet to
+        /// agent sheet). Retagged for the wave it lands in
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -618,9 +633,22 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Add { to, text }) => {
                     project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
                 }
-                Some(PtaskCmd::Move { to, query }) => {
-                    project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
-                }
+                Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
+                    (Some(dest), to) => project_tasks::move_to_project(
+                        &prof,
+                        &log,
+                        &name,
+                        &dest,
+                        &query.join(" "),
+                        to.as_deref(),
+                        lane,
+                    )?,
+                    // clap's `required_unless_present` guarantees --to here.
+                    (None, Some(to)) => {
+                        project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
+                    }
+                    (None, None) => unreachable!("clap requires --to without --project"),
+                },
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
@@ -721,6 +749,8 @@ fn main() -> Result<()> {
             archived,
             roll,
             migrate,
+            move_project,
+            to_profile,
             retire_ai_tag,
             dry_run,
             minor,
@@ -758,6 +788,11 @@ fn main() -> Result<()> {
             }
             if let Some(n) = group {
                 projects::group(&prof, &log, &n, set.as_deref())?;
+                std::process::exit(0);
+            }
+            // Two values (name + destination), so it sits beside --stage, not in the tuple.
+            if let (Some(n), Some(dest)) = (move_project, to_profile) {
+                projects::move_to_profile(&prof, &log, &n, &dest)?;
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths

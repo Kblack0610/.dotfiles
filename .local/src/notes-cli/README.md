@@ -66,7 +66,8 @@ keeps it.
 | `notes knowledge init [--force]` | Write `knowledge/SCHEMA.md`, the article contract (frontmatter, sections, links, tag vocabulary), from the template built into the binary (`src/knowledge_schema.md`). |
 | `notes knowledge due [-n N]` | The N articles most due for a whole-article review, oldest `reviewed` first. |
 | `notes knowledge apply <ops.json> [--started <unix>] [--dry-run]` | The only writer for the nightly knowledge engine: validates a batch of create/update ops (path under `knowledge/`, required frontmatter, shrink guard, loses to a human edit made after `--started`), snapshots a hand-written article to `_log/originals/` the first time it is rewritten, and writes the date's immutable log `knowledge/_log/YYYY/MM/YYYY-MM-DD.md`. The log is also the checkpoint: a date applies once. |
-| `notes doctor` | Diagnose: config/profile, dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans, and whether the **binary is stale** against its own source. |
+| `notes projects --move <name> --to-profile <dest>` | Move a project to another profile: same lifecycle dir (`current/` or `archived/`), same index lane on the other side. Refuses on an unknown or same profile, a name the destination already has, or a missing project, before writing anything. Links to the old path are counted, not rewritten. |
+| `notes doctor` | Diagnose: config/profile, dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans, **project layout** (loose `vX.Y.Z.md`/`changelog.md` at a project root, project dirs in no index lane, lane lines that are missing or point into another profile), and whether the **binary is stale** against its own source. |
 | `notes config` | Print the resolved profile + all paths. |
 
 `--verbose` echoes the structured log (also written to `~/.local/state/notes/journal.log`).

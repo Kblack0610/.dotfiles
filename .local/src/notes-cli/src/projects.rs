@@ -595,6 +595,154 @@ pub fn restore(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     Ok(())
 }
 
+// -- moving a project to another profile -------------------------------------
+//
+// The same dir/lane lockstep archive/restore keep, across two indexes instead of one. A
+// hand move leaves lanes pointing into the other org's tree; doctor's "project layout"
+// check reports those.
+
+/// Where a project lives in its own profile: its dir and the lane that mirrors it.
+/// `current/` wins over `archived/`, the same precedence `notes projects` lists in.
+fn locate(p: &Profile, name: &str) -> Option<(PathBuf, &'static str)> {
+    let cur = p.projects.as_ref()?.join(name);
+    if cur.is_dir() {
+        return Some((cur, "Current"));
+    }
+    let arch = archived_dir(p)?.join(name);
+    arch.is_dir().then_some((arch, "Archived"))
+}
+
+/// `notes [--profile <src>] projects --move <name> --to-profile <dest>`: move a project
+/// dir to the same lifecycle dir (`current/` or `archived/`) of another profile, and its
+/// entry to the same-named lane of that profile's index.
+pub fn move_to_profile(p: &Profile, log: &Logger, name: &str, dest: &str) -> Result<()> {
+    move_with(p, log, name, dest, |n| config::resolve(Some(n)))
+}
+
+/// [`move_to_profile`] with the profile lookup injected, so the refusals are testable
+/// without a config file. Every check runs before the first write: a refused move leaves
+/// both trees and both indexes exactly as they were.
+fn move_with(
+    src: &Profile,
+    log: &Logger,
+    name: &str,
+    dest_name: &str,
+    resolve: impl Fn(&str) -> Result<Profile>,
+) -> Result<()> {
+    let name = name.trim();
+    check_name(name)?;
+    if dest_name == src.name {
+        bail!("'{name}' is already in profile '{dest_name}'");
+    }
+    let dest = resolve(dest_name)?;
+    let Some((from, lane)) = locate(src, name) else {
+        bail!(
+            "no project named '{name}' in profile '{}' (current/ or archived/)",
+            src.name
+        );
+    };
+    if let Some((there, _)) = locate(&dest, name) {
+        bail!(
+            "profile '{}' already has a project named '{name}' at {}",
+            dest.name,
+            there.display()
+        );
+    }
+    let dest_root = match lane {
+        "Current" => dest.projects.clone(),
+        _ => archived_dir(&dest),
+    };
+    let Some(dest_root) = dest_root else {
+        bail!("profile '{}' has no `projects` dir configured", dest.name);
+    };
+    let to = dest_root.join(name);
+
+    // Both index rewrites are built BEFORE the dir moves, so nothing is half-done if one
+    // cannot be read. The link names the same file the source lane did (sheet, else
+    // summary), re-rooted under the destination.
+    let target = to.join(lane_target(&from).file_name().unwrap_or_default());
+    let src_index = src.project_index.as_ref().and_then(|idx| {
+        let c = fs::read_to_string(idx).ok()?;
+        let c = remove_from_lane(&c, lane, name)?;
+        Some((idx.clone(), ensure_lane_placeholder(&c, lane)))
+    });
+    let dest_index = dest.project_index.as_ref().map(|idx| {
+        let c = fs::read_to_string(idx).unwrap_or_default();
+        let c = strip_lane_placeholder(&c, lane);
+        let c = md::insert_under_heading(&c, lane, &[lane_line(&dest, &target, name)]);
+        (idx.clone(), c)
+    });
+
+    fs::create_dir_all(&dest_root)?;
+    fs::rename(&from, &to)?;
+    for (idx, content) in src_index.iter().chain(dest_index.iter()) {
+        md::write_atomic(idx, content)?;
+    }
+    log.info(
+        "projects",
+        &format!(
+            "moved {name} {} -> {} ({})",
+            src.name,
+            dest.name,
+            to.display()
+        ),
+    );
+    println!("moved {name} -> {} ({} ## {lane})", to.display(), dest.name);
+
+    // Links elsewhere are NOT rewritten: a wikilink can sit in any note, in either root's
+    // form, and a silent vault-wide rewrite is a bigger change than a move. Say how many
+    // are left so they can be fixed on purpose.
+    let mut olds = vec![config::wikilink(&src.vault, &from)];
+    let rooted = config::wikilink(&src.root, &from);
+    if !olds.contains(&rooted) {
+        olds.push(rooted);
+    }
+    let stale = files_linking(&src.vault, &olds);
+    if stale > 0 {
+        println!(
+            "hint: {stale} note(s) under {} still link [[{}/...]] - not rewritten",
+            src.vault.display(),
+            olds[0]
+        );
+    }
+    Ok(())
+}
+
+/// How many `.md` files under `root` hold a wikilink into one of `prefixes` (vault- or
+/// org-relative dir paths). Anchored on `[[` so an org-relative `projects/current/x` does
+/// not match inside the longer `lab/projects/current/x`. Hidden dirs (`.git`) are skipped.
+fn files_linking(root: &Path, prefixes: &[String]) -> usize {
+    let needles: Vec<String> = prefixes
+        .iter()
+        .flat_map(|p| [format!("[[{p}/"), format!("[[{p}|"), format!("[[{p}]]")])
+        .collect();
+    let mut n = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(_) if path.extension().and_then(|x| x.to_str()) == Some("md") => {
+                    if fs::read_to_string(&path)
+                        .is_ok_and(|c| needles.iter().any(|nd| c.contains(nd.as_str())))
+                    {
+                        n += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    n
+}
+
 // ── versions ────────────────────────────────────────────────────────────────
 //
 // Every lab project is version-based and starts at v0.0.1. A version is a
@@ -622,6 +770,11 @@ fn parse_version(stem: &str) -> Option<(u32, u32, u32)> {
         return None;
     }
     Some(v)
+}
+
+/// A `vX.Y.Z.md` file name: a version note, wherever it happens to sit.
+fn is_version_file(fname: &str) -> bool {
+    fname.strip_suffix(".md").and_then(parse_version).is_some()
 }
 
 pub(crate) fn fmt_version(v: (u32, u32, u32)) -> String {
@@ -1406,8 +1559,67 @@ pub fn retire_ai_tag(p: &Profile, log: &Logger, name: Option<&str>, dry_run: boo
     Ok(())
 }
 
+/// The dir `--migrate` works on: an ARCHIVED project of the active profile when that is
+/// where the name lives, else the usual cross-org [`project_dir`] lookup (which only sees
+/// current projects). The archived dir is checked first only when no current dir shares
+/// the name, so a current project resolves exactly as it always did.
+fn migrate_dir(p: &Profile, name: &str) -> Result<PathBuf> {
+    let n = name.trim();
+    if check_name(n).is_ok() {
+        let current = p.projects.as_ref().map(|d| d.join(n));
+        let archived = archived_dir(p).map(|d| d.join(n));
+        if let Some(a) = archived.filter(|a| a.is_dir()) {
+            if !current.is_some_and(|c| c.is_dir()) {
+                return Ok(a);
+            }
+        }
+    }
+    project_dir(p, name)
+}
+
+/// Fold version notes left at a project's ROOT into `versions/`, where every reader looks.
+/// Returns how many moved, plus one line per file left in place: a root note whose
+/// `versions/` twin already exists (two records of one version; the human picks), and a
+/// root `changelog.md`, which holds several versions under no one name and so has no
+/// single file to become.
+fn fold_loose_versions(dir: &Path) -> Result<(usize, Vec<String>)> {
+    let versions = dir.join("versions");
+    let mut srcs: Vec<PathBuf> = fs::read_dir(dir)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|f| f.is_file())
+        .collect();
+    srcs.sort();
+    let (mut moved, mut left) = (0usize, Vec::new());
+    for src in srcs {
+        let Some(fname) = src.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if fname.eq_ignore_ascii_case("changelog.md") {
+            left.push(format!(
+                "{fname}: several versions in one file - split into versions/vX.Y.Z.md by hand"
+            ));
+            continue;
+        }
+        if !is_version_file(fname) {
+            continue;
+        }
+        let dest = versions.join(fname);
+        if dest.exists() {
+            left.push(format!(
+                "{fname}: versions/{fname} already exists - merge by hand"
+            ));
+            continue;
+        }
+        fs::create_dir_all(&versions)?;
+        fs::rename(&src, &dest)?;
+        moved += 1;
+    }
+    Ok((moved, left))
+}
+
 pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
-    let dir = project_dir(p, name)?;
+    let dir = migrate_dir(p, name)?;
     let versions = dir.join("versions");
     let changelog = dir.join("changelog");
 
@@ -1439,6 +1651,9 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
             fs::remove_dir(&changelog)?;
         }
     }
+    // Before the backfill below, so a folded note gets its agent note too.
+    let (folded, left) = fold_loose_versions(&dir)?;
+    moved += folded;
 
     let mut backfilled = 0usize;
     let mut notes: Vec<PathBuf> = fs::read_dir(&versions)
@@ -1478,12 +1693,19 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         ),
     );
     if relocated == 0 && moved == 0 && backfilled == 0 {
-        println!("{name}: already consolidated - nothing to do");
+        if left.is_empty() {
+            println!("{name}: already consolidated - nothing to do");
+        } else {
+            println!("{name}: nothing moved");
+        }
     } else {
         println!(
             "migrated {name}: {relocated} ai/ note(s) -> agent/versions/, \
              {moved} note(s) -> versions/, {backfilled} agent note(s) backfilled"
         );
+    }
+    for l in &left {
+        println!("  left in place: {l}");
     }
     Ok(())
 }
@@ -1563,6 +1785,121 @@ pub fn wave_order_findings(p: &Profile) -> Vec<String> {
         }
     }
     out
+}
+
+/// Departures from the canonical project shape, as short lines for `notes doctor`.
+///
+/// The shape: `README.md` (sheet), `summary.md` (cockpit), `agent/`, `versions/<vX.Y.Z>.md`,
+/// plus whatever notes and dirs a project wants. What is reported: a version note or
+/// `changelog.md` loose at a project root (readers only look in `versions/`), a project dir
+/// no index lane lists, a lane line whose target is missing or sits in another org's tree,
+/// and a dir under `current/` or `archived/` that is not a project at all.
+pub fn layout_findings(p: &Profile) -> Vec<String> {
+    // Every OTHER org's projects tree, so a cross-org lane line can say whose it is.
+    let others: Vec<(String, PathBuf)> = config::all_profile_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| *n != p.name)
+        .filter_map(|n| {
+            let op = config::resolve(Some(&n)).ok()?;
+            let tree = op.projects.as_ref()?.parent()?.to_path_buf();
+            Some((n, tree))
+        })
+        .collect();
+    layout_findings_with(p, &others)
+}
+
+/// [`layout_findings`] with the other orgs' trees passed in, so it runs without a config.
+fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String> {
+    let Some(tree) = p.projects.as_ref().and_then(|d| d.parent()) else {
+        return Vec::new();
+    };
+    let (mut loose, mut lanes, mut unlisted, mut strays) = (vec![], vec![], vec![], vec![]);
+
+    // Lane lines, resolved the way `from_index` resolves them: org-root-relative.
+    let index = p
+        .project_index
+        .as_ref()
+        .and_then(|i| fs::read_to_string(i).ok());
+    let mut listed: Vec<PathBuf> = Vec::new();
+    for lane in ["Current", "Archived"] {
+        let lines = index.as_deref().and_then(|c| md::section_lines(c, lane));
+        for line in lines.unwrap_or_default() {
+            let Some((target, _)) = parse_wikilink(&line) else {
+                continue;
+            };
+            let mut path = p.root.join(&target);
+            if path.extension().is_none() {
+                path.set_extension("md");
+            }
+            if !path.starts_with(tree) {
+                let whose = others
+                    .iter()
+                    .find(|(_, t)| path.starts_with(t))
+                    .map_or("outside this profile".to_string(), |(n, _)| {
+                        format!("in profile {n}")
+                    });
+                lanes.push(format!("## {lane} -> {target} is {whose}"));
+            } else if !path.exists() {
+                lanes.push(format!("## {lane} -> {target} is missing"));
+            } else if let Some(dir) = path.parent() {
+                listed.push(dir.to_path_buf());
+            }
+        }
+    }
+
+    for life in ["current", "archived"] {
+        let Ok(entries) = fs::read_dir(tree.join(life)) else {
+            continue;
+        };
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|d| d.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || name.starts_with('_') {
+                continue;
+            }
+            let rel = format!("{life}/{name}");
+            // A dump of old notes, not a project: named once, its contents never walked.
+            if !dir.join("README.md").exists() && !dir.join("summary.md").exists() {
+                strays.push(format!("{rel} is not a project dir"));
+                continue;
+            }
+            // Without an index there are no lanes to be missing from (`indexed` falls back
+            // to the dir scan), so only an index that exists makes this a finding.
+            if index.is_some() && !listed.contains(&dir) {
+                unlisted.push(format!("{rel} is in no index lane"));
+            }
+            let Ok(files) = fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut names: Vec<String> = files
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .collect();
+            names.sort();
+            for f in names {
+                if is_version_file(&f) {
+                    loose.push(format!("{rel}/{f} loose (-> versions/)"));
+                } else if f.eq_ignore_ascii_case("changelog.md") {
+                    loose.push(format!("{rel}/{f} loose (split into versions/ by hand)"));
+                }
+            }
+        }
+    }
+
+    // Loose files first: they are the commonest finding and the one `--migrate` fixes.
+    loose
+        .into_iter()
+        .chain(lanes)
+        .chain(unlisted)
+        .chain(strays)
+        .collect()
 }
 
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
@@ -2787,5 +3124,356 @@ Agents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all
     fn no_org_holds_it_says_so() {
         let err = choose_project_dir("ghost", vec![]).unwrap_err().to_string();
         assert!(err.contains("ghost") && err.contains("any org"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod move_layout_tests {
+    use super::*;
+
+    /// A scratch vault holding two orgs laid out like the live one: `personal` rooted at the
+    /// vault (`lab/projects/...`) and `bnb` rooted one level down (`lab/bnb/projects/...`), so
+    /// their index links are relative to DIFFERENT roots, which is the case a move has to get
+    /// right.
+    struct Vault {
+        root: PathBuf,
+        personal: Profile,
+        bnb: Profile,
+        log: Logger,
+    }
+
+    impl Drop for Vault {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn org(vault: &Path, name: &str, root: &Path) -> Profile {
+        let mut p = config::test_profile(&root.to_string_lossy());
+        p.name = name.to_string();
+        p.vault = vault.to_path_buf();
+        let projects = root.join(if name == "personal" {
+            "lab/projects/current"
+        } else {
+            "projects/current"
+        });
+        p.project_index = projects.parent().map(|d| d.join("index.md"));
+        p.projects = Some(projects);
+        p
+    }
+
+    fn vault(tag: &str) -> Vault {
+        let root = std::env::temp_dir().join(format!(
+            "notes-move-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let personal = org(&root, "personal", &root);
+        let bnb = org(&root, "bnb", &root.join("lab/bnb"));
+        for p in [&personal, &bnb] {
+            fs::create_dir_all(p.projects.as_ref().unwrap()).unwrap();
+            fs::write(
+                p.project_index.as_ref().unwrap(),
+                "# Projects\n\n## Current\n_(nothing yet)_\n\n## Archived\n_(nothing yet)_\n",
+            )
+            .unwrap();
+        }
+        let log = Logger::new(root.join(".state/log"), false);
+        Vault {
+            root,
+            personal,
+            bnb,
+            log,
+        }
+    }
+
+    /// A project dir with a sheet, listed in `lane` of its org's index.
+    fn project(p: &Profile, lane: &str, name: &str) -> PathBuf {
+        let base = if lane == "Current" {
+            p.projects.clone().unwrap()
+        } else {
+            archived_dir(p).unwrap()
+        };
+        let dir = base.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!("# {name}\nVersion: v0.1.0\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), format!("# {name}\n")).unwrap();
+        let idx = p.project_index.as_ref().unwrap();
+        let c = fs::read_to_string(idx).unwrap();
+        let c = strip_lane_placeholder(&c, lane);
+        let c = md::insert_under_heading(&c, lane, &[lane_line(p, &dir.join("README.md"), name)]);
+        fs::write(idx, c).unwrap();
+        dir
+    }
+
+    fn index(p: &Profile) -> String {
+        fs::read_to_string(p.project_index.as_ref().unwrap()).unwrap()
+    }
+
+    /// The resolver `main` would use, minus the config file: only the two scratch orgs exist.
+    fn resolver(v: &Vault) -> impl Fn(&str) -> Result<Profile> + '_ {
+        move |n: &str| match n {
+            "personal" => Ok(org(&v.root, "personal", &v.root)),
+            "bnb" => Ok(org(&v.root, "bnb", &v.root.join("lab/bnb"))),
+            other => bail!("profile '{other}' is not defined"),
+        }
+    }
+
+    // --- projects --move ------------------------------------------------------------------
+
+    #[test]
+    fn a_current_project_moves_with_its_index_entry() {
+        let v = vault("happy");
+        let from = project(&v.personal, "Current", "dodgy");
+        fs::write(from.join("ideas.md"), "keep me\n").unwrap();
+
+        move_with(&v.personal, &v.log, "dodgy", "bnb", resolver(&v)).unwrap();
+
+        let to = v.bnb.projects.as_ref().unwrap().join("dodgy");
+        assert!(!from.exists(), "the source dir is gone");
+        assert_eq!(
+            fs::read_to_string(to.join("ideas.md")).unwrap(),
+            "keep me\n"
+        );
+        // Source lane emptied and got its placeholder back.
+        let src = index(&v.personal);
+        assert!(!src.contains("dodgy"), "{src}");
+        assert!(lane_entries(&src, "Current").is_empty(), "{src}");
+        assert!(src.contains("_(nothing yet)_"), "{src}");
+        // Dest lane carries a link relative to the DEST org's root, which is what its index
+        // resolves against.
+        let dst = index(&v.bnb);
+        assert_eq!(
+            lane_entries(&dst, "Current"),
+            vec!["- [[projects/current/dodgy/README|dodgy]]".to_string()],
+            "{dst}"
+        );
+        assert!(lane_entries(&dst, "Archived").is_empty(), "{dst}");
+        assert_eq!(project_dir_in(&v.bnb, "dodgy"), Some(to));
+    }
+
+    #[test]
+    fn an_archived_project_stays_archived_on_the_other_side() {
+        let v = vault("archived");
+        let keep = project(&v.bnb, "Current", "stays");
+        project(&v.bnb, "Archived", "oldie");
+
+        move_with(&v.bnb, &v.log, "oldie", "personal", resolver(&v)).unwrap();
+
+        assert!(archived_dir(&v.personal)
+            .unwrap()
+            .join("oldie/README.md")
+            .exists());
+        assert!(!archived_dir(&v.bnb).unwrap().join("oldie").exists());
+        let dst = index(&v.personal);
+        assert_eq!(
+            lane_entries(&dst, "Archived"),
+            vec!["- [[lab/projects/archived/oldie/README|oldie]]".to_string()],
+            "{dst}"
+        );
+        assert!(
+            lane_entries(&dst, "Current").is_empty(),
+            "not promoted: {dst}"
+        );
+        // The sibling in the source org is untouched.
+        assert!(keep.exists());
+        assert_eq!(lane_entries(&index(&v.bnb), "Current").len(), 1);
+    }
+
+    #[test]
+    fn a_name_collision_in_the_destination_refuses_and_writes_nothing() {
+        let v = vault("collide");
+        let from = project(&v.personal, "Current", "twin");
+        // The clash is in the dest's ARCHIVE: a name is taken whichever lane holds it.
+        project(&v.bnb, "Archived", "twin");
+        let (src_before, dst_before) = (index(&v.personal), index(&v.bnb));
+
+        let err = move_with(&v.personal, &v.log, "twin", "bnb", resolver(&v)).unwrap_err();
+        assert!(err.to_string().contains("already has"), "{err}");
+        assert!(from.join("README.md").exists(), "nothing moved");
+        assert_eq!(index(&v.personal), src_before);
+        assert_eq!(index(&v.bnb), dst_before);
+    }
+
+    #[test]
+    fn an_unknown_profile_refuses_and_writes_nothing() {
+        let v = vault("unknown");
+        let from = project(&v.personal, "Current", "lost");
+        let before = index(&v.personal);
+
+        let err = move_with(&v.personal, &v.log, "lost", "nope", resolver(&v)).unwrap_err();
+        assert!(format!("{err:#}").contains("nope"), "{err:#}");
+        assert!(from.exists());
+        assert_eq!(index(&v.personal), before);
+    }
+
+    #[test]
+    fn moving_to_the_same_profile_or_a_missing_project_refuses() {
+        let v = vault("same");
+        project(&v.personal, "Current", "here");
+        assert!(move_with(&v.personal, &v.log, "here", "personal", resolver(&v)).is_err());
+        assert!(move_with(&v.personal, &v.log, "ghost", "bnb", resolver(&v)).is_err());
+        assert!(v.personal.projects.as_ref().unwrap().join("here").exists());
+    }
+
+    // --- doctor: project layout ----------------------------------------------------------
+
+    fn others(v: &Vault) -> Vec<(String, PathBuf)> {
+        vec![(
+            "bnb".to_string(),
+            v.bnb
+                .projects
+                .as_ref()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        )]
+    }
+
+    #[test]
+    fn a_clean_profile_has_no_layout_findings() {
+        // NEGATIVE CONTROL: indexed dirs, versions in versions/, extra notes and dirs allowed.
+        let v = vault("clean");
+        let d = project(&v.personal, "Current", "tidy");
+        fs::create_dir_all(d.join("versions")).unwrap();
+        fs::write(d.join("versions/v0.0.1.md"), "frozen\n").unwrap();
+        fs::create_dir_all(d.join("brainstorming")).unwrap();
+        fs::write(d.join("ideas.md"), "x\n").unwrap();
+        project(&v.personal, "Archived", "done");
+        assert_eq!(
+            layout_findings_with(&v.personal, &others(&v)),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn doctor_flags_loose_version_files_at_a_project_root() {
+        let v = vault("loose");
+        let d = project(&v.personal, "Current", "port");
+        fs::write(d.join("v1.7.0.md"), "x\n").unwrap();
+        fs::write(d.join("changelog.md"), "x\n").unwrap();
+        let a = project(&v.personal, "Archived", "home");
+        fs::write(a.join("v2.0.0.md"), "x\n").unwrap();
+
+        let f = layout_findings_with(&v.personal, &others(&v)).join("\n");
+        assert!(f.contains("current/port/v1.7.0.md"), "{f}");
+        assert!(f.contains("current/port/changelog.md"), "{f}");
+        assert!(
+            f.contains("archived/home/v2.0.0.md"),
+            "archived projects too: {f}"
+        );
+    }
+
+    #[test]
+    fn doctor_flags_a_lane_line_pointing_into_another_profile() {
+        let v = vault("cross");
+        project(&v.bnb, "Current", "pick");
+        let idx = v.personal.project_index.clone().unwrap();
+        let c = strip_lane_placeholder(&index(&v.personal), "Archived");
+        let c = md::insert_under_heading(
+            &c,
+            "Archived",
+            &["- [[lab/bnb/projects/current/pick/README|pick]] (bnb-platform)".to_string()],
+        );
+        fs::write(&idx, c).unwrap();
+
+        let f = layout_findings_with(&v.personal, &others(&v)).join("\n");
+        assert!(f.contains("lab/bnb/projects/current/pick/README"), "{f}");
+        assert!(f.contains("bnb"), "names the org it belongs to: {f}");
+    }
+
+    #[test]
+    fn doctor_flags_a_dangling_lane_line_and_a_dir_in_no_lane() {
+        let v = vault("orphan");
+        let d = project(&v.personal, "Current", "gone");
+        fs::remove_dir_all(&d).unwrap();
+        let stray = v.personal.projects.as_ref().unwrap().join("stray");
+        fs::create_dir_all(&stray).unwrap();
+        fs::write(stray.join("summary.md"), "# stray\n").unwrap();
+        // A legacy dump: no README, no summary. Reported once, its contents never walked.
+        let dump = archived_dir(&v.personal).unwrap().join("old");
+        fs::create_dir_all(dump.join("binks_v1")).unwrap();
+        fs::write(dump.join("v9.9.9.md"), "x\n").unwrap();
+
+        let f = layout_findings_with(&v.personal, &others(&v));
+        let all = f.join("\n");
+        assert!(all.contains("lab/projects/current/gone/README"), "{all}");
+        assert!(all.contains("current/stray"), "{all}");
+        assert!(
+            all.contains("archived/old") && all.contains("not a project"),
+            "{all}"
+        );
+        assert!(
+            !all.contains("v9.9.9"),
+            "a non-project dir is not scanned: {all}"
+        );
+        assert_eq!(f.len(), 3, "{all}");
+    }
+
+    // --- migrate folds loose files -------------------------------------------------------
+
+    #[test]
+    fn migrate_folds_loose_versions_of_an_archived_project_and_is_idempotent() {
+        let v = vault("migrate");
+        let d = project(&v.personal, "Archived", "home");
+        fs::write(d.join("v2.0.0.md"), "the release\n").unwrap();
+        fs::write(d.join("changelog.md"), "v1.0.0\n- a\nv2.0.0\n- b\n").unwrap();
+
+        migrate(&v.personal, &v.log, "home").unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join("versions/v2.0.0.md")).unwrap(),
+            "the release\n"
+        );
+        assert!(!d.join("v2.0.0.md").exists());
+        // A multi-version changelog has no one name to file under: left for a hand split.
+        assert!(d.join("changelog.md").exists());
+        assert!(!d.join("versions/changelog.md").exists());
+        // What doctor still reports is exactly what migrate left.
+        let f = layout_findings_with(&v.personal, &others(&v)).join("\n");
+        assert!(!f.contains("v2.0.0"), "{f}");
+        assert!(f.contains("changelog.md"), "{f}");
+
+        let snapshot = |d: &Path| {
+            let mut v: Vec<PathBuf> = fs::read_dir(d.join("versions"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            v.sort();
+            v
+        };
+        let once = snapshot(&d);
+        migrate(&v.personal, &v.log, "home").unwrap();
+        assert_eq!(snapshot(&d), once, "a second run changes nothing");
+        assert!(d.join("changelog.md").exists());
+    }
+
+    #[test]
+    fn migrate_refuses_to_clobber_a_frozen_version() {
+        let v = vault("clobber");
+        let d = project(&v.personal, "Archived", "port");
+        fs::create_dir_all(d.join("versions")).unwrap();
+        fs::write(d.join("versions/v1.7.0.md"), "frozen\n").unwrap();
+        fs::write(d.join("v1.7.0.md"), "loose twin\n").unwrap();
+        fs::write(d.join("v1.8.0.md"), "free to move\n").unwrap();
+
+        migrate(&v.personal, &v.log, "port").unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join("versions/v1.7.0.md")).unwrap(),
+            "frozen\n"
+        );
+        assert_eq!(
+            fs::read_to_string(d.join("v1.7.0.md")).unwrap(),
+            "loose twin\n"
+        );
+        // One conflict does not hold the rest back.
+        assert!(d.join("versions/v1.8.0.md").exists());
+        assert!(!d.join("v1.8.0.md").exists());
     }
 }

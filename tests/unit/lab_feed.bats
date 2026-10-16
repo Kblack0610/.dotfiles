@@ -185,6 +185,27 @@ S
   assert_equal "$(f zeta 3)" '12'
 }
 
+@test "a capped Shipping next list reports the REAL total, not the cap" {
+  # The feed shows 6 commits and elides the rest. Counting only the visible rows made
+  # every busy monorepo app read exactly "6 to ship", whatever its real backlog was.
+  mk_summary theta <<'S'
+<!-- AUTO:START -->
+**Shipping next** - merged since `theta-v1.0.0`:
+- fix: one
+- fix: two
+- …(+17 more)
+
+**In progress** (tracker):
+- Area: one
+- …(+4 more)
+<!-- AUTO:END -->
+S
+  assert_equal "$(f theta 2)" '19'
+  # each section's marker stays in its own section: the ticket count must not absorb
+  # the 17 hidden commits, and the ship count must not absorb the 4 hidden tickets
+  assert_equal "$(f theta 3)" '5'
+}
+
 @test "a section that is present but empty counts zero" {
   mk_summary eta <<'S'
 <!-- AUTO:START -->
