@@ -132,6 +132,50 @@ EOF
   refute_output --partial "k3s<span color='#ffcc2f'>●</span>"
 }
 
+# --- transient (~) tokens: a laptop is drawn only while it is up --------------
+
+@test "a ~ token for a host that is up draws a green dot" {
+  FLEET_DISPLAY="linux-cachyos=main ~gp-mac=gp" run "$MODULE"
+  assert_success
+  assert_output --partial "gp<span color='#a6e34a'>●</span>"
+}
+
+@test "a ~ token for a host that is not up draws nothing at all" {
+  # pi4-worker4's last result is a failure 2h old: a normal token draws it red.
+  FLEET_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
+  assert_output --partial "w4<span color='#ef5734'>○</span>"
+  # The same host as ~ leaves no label and no dot behind.
+  FLEET_DISPLAY="linux-cachyos=main ~pi4-worker4=w4" run "$MODULE"
+  assert_success
+  refute_output --partial " w4<"
+}
+
+@test "a ~ host off the roster does not turn the fleet icon amber" {
+  # cachy-laptop: reported once, 2h ago, now closed. Not on FLEET_ROSTER.
+  cat > "$SANDBOX/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+[
+  {"name":"linux-cachyos","group":"homelab","results":[{"success":true,"timestamp":"$NOW"}]},
+  {"name":"cachy-laptop","group":"homelab","results":[{"success":true,"timestamp":"$OLD"}]}
+]
+JSON
+EOF
+  chmod +x "$SANDBOX/bin/curl"
+  FLEET_ROSTER="linux-cachyos" FLEET_DISPLAY="linux-cachyos=main ~cachy-laptop=lap" run "$MODULE"
+  assert_success
+  assert_output --partial '"class": "healthy"'
+  refute_output --partial " lap<"
+  # ...but the tooltip still says where it is.
+  assert_output --partial "cachy-laptop (only shown when online): STALE"
+}
+
+@test "a ~ token naming a host gatus has never heard of is still a ghost" {
+  FLEET_DISPLAY="linux-cachyos=main ~typo-laptop=lap" run "$MODULE"
+  assert_success
+  assert_output --partial "lap<span color='#ffcc2f'>?</span>"
+}
+
 # --- the shape the bar contract depends on -----------------------------------
 
 @test "the default FLEET_DISPLAY names no host that is absent from the roster" {
@@ -153,6 +197,7 @@ EOF
   for tok in $display; do
     key="${tok%%=*}"
     [[ "$key" == @* ]] && continue          # groups are gatus-side, not roster-side
+    [[ "$key" == "~"* ]] && continue        # transient: OFF the roster by design
     [[ " $roster " == *" $key "* ]] || fail "FLEET_DISPLAY names '$key', absent from FLEET_ROSTER"
   done
 }
