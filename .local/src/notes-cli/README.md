@@ -72,6 +72,49 @@ keeps it.
 
 `--verbose` echoes the structured log (also written to `~/.local/state/notes/journal.log`).
 
+## Projects cheatsheet
+
+A project lives under its profile's lab tree: `lab/projects/` for personal, `lab/bnb/projects/` for bnb. Each profile has an `index.md`. The CLI owns its `## Current` and `## Archived` lanes. lab-sync regenerates the `## Overview (auto)` block above them. Do not hand-edit either.
+
+A project directory has this shape:
+
+```
+current/<name>/
+  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
+  summary.md               the lab bus: status + the release feed lab-sync writes
+  agent/README.md          the agent board (`ptask --agent`)
+  agent/versions/vX.Y.Z.md proof table for a version
+  versions/vX.Y.Z.md       frozen sheet of a closed version
+```
+
+Other notes (a design doc, `research/`, `ideas.md`) can sit beside these. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose ones and `projects --migrate` folds them in.
+
+Every command takes `--profile <p>`. Without it, the active profile is used (`notes config`).
+
+| I want to | Command |
+|---|---|
+| see projects | `notes projects`, `notes projects --archived`, `notes projects <name>` for its files |
+| add a project | `notes --profile bnb projects --new <name>` |
+| set where it shows in the Overview | `projects --stage <name> --set draft\|alpha\|beta\|prod` |
+| show it under another group heading | `projects --group <name> --set <profile>\|dev` |
+| move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
+| retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
+| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`) |
+| fix an old layout | `projects --migrate <name>` |
+| see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
+| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |
+| work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
+| move a task between waves | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
+| move a task to another project | `ptask <name> move "<query>" --project <other>` |
+| drop a task | `ptask <name> rm "<query>"` |
+| tidy a sheet | `ptask <name> sweep` |
+| agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |
+| regenerate the boards | `notes board` |
+
+In nvim, `<leader>np` opens the projects picker for every lab profile. `<CR>` drills into a project's files. The keys are `a` new, `x` archive or restore, `s` stage, `g` group, `p` move profile and `t` archived view. They take Ctrl as well (`C-a`, ...) while you type in the filter. `<leader>nc` is the same picker one level up, beside each profile's Focus list.
+
+The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in `~/.claude/CLAUDE.md`, Workflow Expectations.
+
 ## Daily-note model
 
 Lean by design: **ONE** task list, `## Focus`, swept into `### Urgent` / `### High` /

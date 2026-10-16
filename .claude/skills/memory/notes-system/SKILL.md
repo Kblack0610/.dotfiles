@@ -87,6 +87,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes knowledge init\|due\|apply` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log). Hand edits to articles are fine; an engine update loses to an edit made during its run. |
 | `notes doctor` | Diagnose: profile/dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. Alias: `ndoctor`. **Run this first when "notes are broken".** |
+| `notes projects ...` / `notes ptask ...` | Projects, waves and tasks. Do not restate them here: the cheatsheet (every verb, the project dir shape, the `<leader>np` keys) is `~/.dotfiles/.local/src/notes-cli/README.md` -> Projects cheatsheet. |
 
 Structured log: `~/.local/state/notes/journal.log`; `--verbose` echoes to stderr.
 Daily-note model: only fresh **Focus** + **Priority** inline; Fun/Carry Over live in
