@@ -554,53 +554,158 @@ install_npm_packages() {
     done
 }
 
-# Main installation orchestrator
-install_all() {
-    # Create structure
-    create_directories
+# Install the music production rig (REAPER + plugins). Arch only for now.
+install_music() {
+    log_section "Installing music production rig"
+    log_info "No default implementation - override in OS-specific file"
+}
 
-    # System updates
-    update_system
-
-    # Core installations
-    install_basics
-    install_tools
-    install_terminal
-    install_runtime
-
-    # Shell setup
-    install_zsh
-    install_oh_my_zsh
-    install_starship
-
-    # Development tools
-    install_nvim
-    install_tmux
-    install_lazygit
-    install_kitty
-    install_rust
-    build_local_rust_tools
-
-    # Kubernetes & Containers
-    install_kubernetes
-    setup_kubernetes
-
-    # Printing
-    setup_printing
-
-    # GUI (if applicable)
-    install_gui
-
-    # Additional setup
-    install_fonts
-    setup_git
-    install_npm_packages
-    apply_dotfiles
-    setup_dotfiles_private
-    setup_ai_memory
-
+# Printed after a real (non dry-run) install. OS installers override this to
+# add their own manual follow-ups.
+post_install_notes() {
     log_section "Installation Complete!"
     log_info "Please restart your terminal or run: source ~/.zshrc"
+}
+
+# Modules: every line of install_all is `step <module> <function>`, and the
+# INSTALL_ONLY / INSTALL_WITH / INSTALL_WITHOUT / INSTALL_MODE env vars (set
+# by install.sh flags) pick which run. See README.md "Modules".
+
+# Modules install_all names, in first-seen order, and the steps under each.
+declare -ga _INSTALL_MODULES=()
+declare -gA _INSTALL_MODULE_STEPS=()
+
+# _csv_has <csv> <item> - true when item is one of the comma-separated values.
+_csv_has() {
+    [[ ",$1," == *",$2,"* ]]
+}
+
+# module_selected <module> - true when the module should run this install.
+module_selected() {
+    local module="$1"
+    if [[ -n "${INSTALL_ONLY:-}" ]]; then
+        _csv_has "$INSTALL_ONLY" "$module"
+        return
+    fi
+    _csv_has "${INSTALL_WITHOUT:-}" "$module" && return 1
+    _csv_has "${INSTALL_WITH:-}" "$module" && return 0
+    local optional="${INSTALL_OPTIONAL_MODULES:-}"
+    ! _csv_has "${optional// /,}" "$module"
+}
+
+# step <module> <function> - run one install step if its module is selected.
+step() {
+    local module="$1" fn="$2"
+    if [[ -z "${_INSTALL_MODULE_STEPS[$module]+x}" ]]; then
+        _INSTALL_MODULES+=("$module")
+        _INSTALL_MODULE_STEPS[$module]=""
+    fi
+    case "${INSTALL_MODE:-run}" in
+        list)
+            _INSTALL_MODULE_STEPS[$module]+="${_INSTALL_MODULE_STEPS[$module]:+ }$fn"
+            return 0
+            ;;
+        dry-run)
+            module_selected "$module" && printf '  %-12s %s\n' "$module" "$fn"
+            return 0
+            ;;
+    esac
+    module_selected "$module" || return 0
+    "$fn"
+}
+
+# Collect the module table by walking install_all without running anything.
+_collect_modules() {
+    _INSTALL_MODULES=()
+    _INSTALL_MODULE_STEPS=()
+    INSTALL_MODE=list install_all
+}
+
+# Fail loudly on a module name this OS does not have; a typo must not turn
+# `--only musik` into an install that silently does nothing.
+validate_module_names() {
+    local known
+    known=$(IFS=,; echo "${_INSTALL_MODULES[*]}")
+    local var name bad=0
+    for var in INSTALL_ONLY INSTALL_WITH INSTALL_WITHOUT; do
+        local IFS=,
+        for name in ${!var:-}; do
+            [[ -z "$name" ]] && continue
+            if ! _csv_has "$known" "$name"; then
+                log_error "Unknown module '$name' (${var}). Available here: $known"
+                bad=1
+            fi
+        done
+    done
+    return "$bad"
+}
+
+print_modules() {
+    local module mark
+    echo "Modules (* = runs by default; opt-in ones need --with or --only):"
+    for module in "${_INSTALL_MODULES[@]}"; do
+        mark=" "
+        if INSTALL_ONLY="" INSTALL_WITH="" INSTALL_WITHOUT="" module_selected "$module"; then
+            mark="*"
+        fi
+        printf '  %s %-12s %s\n' "$mark" "$module" "${_INSTALL_MODULE_STEPS[$module]}"
+    done
+}
+
+# Entry point for every OS installer: validate the selection, then list,
+# dry-run, or install.
+run_install() {
+    _collect_modules
+    validate_module_names || return 1
+    case "${INSTALL_MODE:-run}" in
+        list)
+            print_modules
+            ;;
+        dry-run)
+            log_section "Dry run: steps that would run"
+            INSTALL_MODE=dry-run install_all
+            ;;
+        *)
+            install_all
+            post_install_notes
+            ;;
+    esac
+}
+
+# Main installation orchestrator. Steps run in this order; the module label
+# only decides whether a step runs.
+install_all() {
+    step base       create_directories
+    step base       update_system
+    step base       install_basics
+    step dev        install_tools
+    step shell      install_terminal
+    step base       install_runtime
+
+    step shell      install_zsh
+    step shell      install_oh_my_zsh
+    step shell      install_starship
+
+    step dev        install_nvim
+    step dev        install_tmux
+    step dev        install_lazygit
+    step dev        install_kitty
+    step dev        install_rust
+    step dev        build_local_rust_tools
+
+    step containers install_kubernetes
+    step containers setup_kubernetes
+
+    step printing   setup_printing
+
+    step desktop    install_gui
+
+    step shell      install_fonts
+    step dotfiles   setup_git
+    step dev        install_npm_packages
+    step dotfiles   apply_dotfiles
+    step dotfiles   setup_dotfiles_private
+    step dotfiles   setup_ai_memory
 }
 
 # Export all functions for overriding
@@ -611,5 +716,7 @@ export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
+export -f install_music post_install_notes
+export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all
 export -f _resolve_pkg_name install_package_list

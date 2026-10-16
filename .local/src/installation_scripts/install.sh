@@ -35,7 +35,7 @@ detect_os() {
                 debian|ubuntu|pop|mint)
                     os_type="debian"
                     ;;
-                arch|manjaro|endeavouros)
+                arch|manjaro|endeavouros|cachyos)
                     os_type="arch"
                     ;;
                 *)
@@ -94,6 +94,8 @@ main() {
     # password by exporting NO_SUDO=1, which the OS-specific installers honor
     # (on macOS, macos_defaults.sh skips its privileged steps). Exported so it
     # reaches child scripts like macos_defaults.sh.
+    # Module flags become INSTALL_* env vars, read by base_functions.sh::step.
+    export INSTALL_MODE=run
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-sudo|--no-root)
@@ -101,9 +103,23 @@ main() {
                 echo -e "${YELLOW}--no-sudo: privileged steps will be skipped (no root password needed)${NC}"
                 shift
                 ;;
+            --only|--with|--without)
+                [[ -n "${2:-}" ]] || { echo -e "${RED}$1 needs a module list, e.g. $1 music${NC}"; exit 1; }
+                set -- "$1=$2" "${@:3}"
+                ;;
+            --only=*)    export INSTALL_ONLY="${1#*=}"; shift ;;
+            --with=*)    export INSTALL_WITH="${1#*=}"; shift ;;
+            --without=*) export INSTALL_WITHOUT="${1#*=}"; shift ;;
+            --list)      INSTALL_MODE=list; shift ;;
+            --dry-run)   INSTALL_MODE=dry-run; shift ;;
             -h|--help)
-                echo "Usage: install.sh [--no-sudo|--no-root]"
+                echo "Usage: install.sh [--no-sudo] [--list] [--dry-run] [--only a,b | --with a,b] [--without a,b]"
                 echo "  --no-sudo, --no-root   Skip every step that needs a root password"
+                echo "  --list                 Show this OS's modules and which run by default"
+                echo "  --dry-run              Print the steps that would run, install nothing"
+                echo "  --only a,b             Run just these modules (e.g. --only music)"
+                echo "  --with a,b             Add opt-in modules to the default set"
+                echo "  --without a,b          Drop modules from the default set"
                 exit 0
                 ;;
             *)
@@ -131,12 +147,14 @@ main() {
     echo -e "${GREEN}System detected: ${BLUE}$os_type${NC}"
     echo ""
 
-    # Ask for confirmation
-    read -p "Do you want to proceed with installation? (y/n): " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Installation cancelled${NC}"
-        exit 0
+    # Ask for confirmation (listing and dry runs change nothing)
+    if [[ "$INSTALL_MODE" == run ]]; then
+        read -p "Do you want to proceed with installation? (y/n): " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Installation cancelled${NC}"
+            exit 0
+        fi
     fi
 
     # Run the appropriate OS-specific installer
@@ -166,17 +184,8 @@ main() {
             ;;
     esac
 
-    # Run the installation
-    install_all
-
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}          Installation Complete!                ${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
-    echo -e "${YELLOW}Please restart your terminal or run:${NC}"
-    echo -e "${BLUE}  source ~/.zshrc${NC}"
-    echo ""
+    # Run the installation (the OS installer prints its own completion notes)
+    run_install
 }
 
 # Run main function
