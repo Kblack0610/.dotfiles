@@ -497,7 +497,7 @@ install_aur_packages() {
     install_package_list install_aur_package arch $PACKAGES_AUR_ARCH
 }
 
-# Override: music production rig. Guide: ~/.config/REAPER/README-music-rig.md
+# Override: music production rig. Rig config + guide: the audio repo (~/dev/home/audio).
 install_music() {
     log_section "Installing music production rig"
 
