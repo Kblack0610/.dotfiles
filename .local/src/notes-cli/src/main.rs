@@ -385,11 +385,17 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Move the first matching open task into another wave
+    /// Move the first matching open task into another wave, or with --project onto
+    /// another project's sheet (its current wave, or the existing wave --to names)
     Move {
-        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new
-        #[arg(long, value_name = "VERSION", required = true)]
-        to: String,
+        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new. With
+        /// --project: optional, and the wave must already exist on the dest sheet
+        #[arg(long, value_name = "VERSION", required_unless_present = "project")]
+        to: Option<String>,
+        /// Move the row to this project instead (any profile; with --agent, agent sheet to
+        /// agent sheet). Retagged for the wave it lands in
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -627,9 +633,22 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Add { to, text }) => {
                     project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
                 }
-                Some(PtaskCmd::Move { to, query }) => {
-                    project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
-                }
+                Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
+                    (Some(dest), to) => project_tasks::move_to_project(
+                        &prof,
+                        &log,
+                        &name,
+                        &dest,
+                        &query.join(" "),
+                        to.as_deref(),
+                        lane,
+                    )?,
+                    // clap's `required_unless_present` guarantees --to here.
+                    (None, Some(to)) => {
+                        project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
+                    }
+                    (None, None) => unreachable!("clap requires --to without --project"),
+                },
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
