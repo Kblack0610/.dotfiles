@@ -203,10 +203,19 @@ enum Cmd {
         /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
         #[arg(long, value_name = "NAME")]
         roll: Option<String>,
-        /// Consolidate a project onto the one version layout: fold changelog/ into
-        /// versions/ and backfill each version's ai/ note. Idempotent.
+        /// Consolidate a project onto the one version layout: fold changelog/ and loose
+        /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
+        /// Works on archived projects too. Never overwrites; idempotent.
         #[arg(long, value_name = "NAME")]
         migrate: Option<String>,
+        /// Move a project to another profile (with --to-profile): same lifecycle dir
+        /// (current/ or archived/) and same index lane on the other side. Links to the
+        /// old path elsewhere are counted, not rewritten
+        #[arg(long = "move", value_name = "NAME", requires = "to_profile")]
+        move_project: Option<String>,
+        /// With --move: the destination profile
+        #[arg(long, value_name = "PROFILE", requires = "move_project")]
+        to_profile: Option<String>,
         /// Remove the retired `#ai` tag from live project sheets (the lane is the agent
         /// sheet now). Bare = every project in the profile; with a NAME = just that one.
         /// Frozen versions/ notes keep their tags as history. Idempotent.
@@ -740,6 +749,8 @@ fn main() -> Result<()> {
             archived,
             roll,
             migrate,
+            move_project,
+            to_profile,
             retire_ai_tag,
             dry_run,
             minor,
@@ -777,6 +788,11 @@ fn main() -> Result<()> {
             }
             if let Some(n) = group {
                 projects::group(&prof, &log, &n, set.as_deref())?;
+                std::process::exit(0);
+            }
+            // Two values (name + destination), so it sits beside --stage, not in the tuple.
+            if let (Some(n), Some(dest)) = (move_project, to_profile) {
+                projects::move_to_profile(&prof, &log, &n, &dest)?;
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths
