@@ -337,8 +337,8 @@ function M.setup()
     require("notes.tags").pick()
   end, { desc = "Find notes by tag" })
   vim.keymap.set("n", "<leader>np", function()
-    require("notes.projects").pick()
-  end, { desc = "Find notes by project" })
+    require("notes.cockpit").open_projects()
+  end, { desc = "Projects (find, new, archive, stage, move)" })
   -- Task cockpit — reachable as <leader>nc (notes group) and <leader>tc (tasks
   -- group; one-handed). Both open the same global cross-profile cockpit.
   local open_cockpit = function()
