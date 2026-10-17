@@ -198,8 +198,11 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
 
-  # The editor exits; the shell tail catches the window.
-  wait_until "_tm display-message -p -t '$ed_id' '#{pane_current_command}' | grep -qvx sleep"
+  # The editor exits; the shell tail catches the window. Wait on the PROCESS: the pane names
+  # its wrapping shell even while `sleep 1` runs, so "the pane is not sleep" is true from the
+  # first instant and used to let the toggle below race the editor it was meant to follow.
+  local pid; pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "! pgrep -P '$pid' -x sleep >/dev/null"
   # THE assertion. Without a RESOLVED shell on the window command the tail is `exec \"\"`,
   # the window closes here, and its place in the list is gone. $SHELL is unset under
   # run-shell, so that is not a hypothetical.
