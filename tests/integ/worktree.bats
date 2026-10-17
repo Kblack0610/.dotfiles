@@ -165,6 +165,71 @@ add_wt() {
   [ ! -d "$WT_ROOT/repo-agent-2" ] || fail "cut a new slot instead of reusing the idle one"
 }
 
+@test "new refuses while a live process holds this repo's lock" {
+  # Prefix+F runs in the background, so nothing serializes two presses; both would pick the
+  # same slot. $$ is this test's own shell, so the holder is alive.
+  make_repo
+  mkdir -p "$HOME/.local/state/wt"
+  ln -s "$$" "$HOME/.local/state/wt/new-repo.lock"
+  run "$WT" new -c "$MAIN"
+  assert_failure
+  assert_output --partial 'already preparing a worktree for repo'
+  [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "cut a worktree while another new held the lock"
+  [ -L "$HOME/.local/state/wt/new-repo.lock" ] || fail "removed a lock it did not own"
+}
+
+@test "new takes over a lock whose holder is dead, and releases its own on exit" {
+  # A SIGKILLed new never runs its EXIT trap; its lock must not block the next press forever.
+  make_repo
+  sh -c 'exit 0' &
+  local dead=$!
+  wait "$dead"
+  mkdir -p "$HOME/.local/state/wt"
+  ln -s "$dead" "$HOME/.local/state/wt/new-repo.lock"
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-1
+  [ ! -e "$HOME/.local/state/wt/new-repo.lock" ] && [ ! -L "$HOME/.local/state/wt/new-repo.lock" ] ||
+    fail "the lock outlived the run"
+}
+
+@test "new shows its progress in the status line and clears it when done" {
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_called 'set-option -g @wt_busy wt: finding a worktree for repo'
+  assert_called 'set-option -g @wt_busy wt: cutting repo-agent-1 (fresh checkout)'
+  assert_called 'set-option -gu @wt_busy'
+}
+
+@test "new does not recycle a worktree whose session is live on ANOTHER server" {
+  # The real socket path, end to end: panel_live_servers finds lab's socket, and the stub
+  # says lab holds repo-agent-1. Short path, a unix socket path is capped near 104 bytes.
+  command -v python3 >/dev/null || skip "python3 needed to make a socket"
+  make_repo
+  add_wt repo-agent-1 feat/done
+  export TMUX_TMPDIR
+  TMUX_TMPDIR="$(mktemp -d /tmp/wtx.XXXXXX)"
+  mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/lab"
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$WT" new -c "$MAIN"
+  rm -rf "$TMUX_TMPDIR"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-2
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" feat/done
+}
+
+@test "Prefix+F runs new in the background so tmux keeps taking keys" {
+  # A blocking run-shell froze the client for the fetch plus the checkout, which on a Unity
+  # repo is many seconds.
+  run grep -E "^bind F run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
+  assert_success
+  run grep -F '#{@wt_busy}' "$REPO_ROOT/.tmux.conf"
+  assert_success
+}
+
 @test "new takes a slot whose only remnant is a MERGED agent-N branch" {
   make_repo
   git -C "$MAIN" branch agent-1 origin/main

@@ -27,9 +27,7 @@ setup() {
   TMX="$REPO_ROOT/.local/src/tmux/servers.sh"
   export TMX
 
-  # sandbox_init redirects HOME but not XDG_STATE_HOME, and BACK_FILE prefers the latter.
-  # Pin it inside the sandbox or a test would write to the developer's real back-slot.
-  export XDG_STATE_HOME="$HOME/.local/state"
+  # sandbox_init pins XDG_STATE_HOME inside the sandbox, so this is the sandboxed back-slot.
   BACK_FILE="$XDG_STATE_HOME/tmx/back"
   export BACK_FILE
 

@@ -158,6 +158,51 @@ make_repo() {
   assert_output "2${PANEL_TAB}recycle"
 }
 
+@test "an idle worktree ABOVE a free hole is recycled, not passed over for the hole" {
+  # unity-core-playground 2026-10-16: slot 15 had no directory and no branch, so `new` cut a
+  # full Unity checkout there while agent-20 and agent-27 sat idle. Slot 1 is a plain
+  # directory, slot 2 is the hole, slot 3 is idle: 3 must win, because a fresh checkout is
+  # the slow path and cold build state on top.
+  make_repo
+  mkdir -p "$WT_ROOT/platform-agent-1"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-3" -b agent-3 origin/main
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "3${PANEL_TAB}recycle"
+}
+
+@test "a session on ANOTHER tmux server keeps its worktree from being recycled" {
+  # Agents run in `lab` while you sit in `hub`. Asking only the current server saw agent-1
+  # as idle while a Claude worked in it, and `new` would have switched its branch.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  panel_live_servers() { printf 'lab\n'; }
+  printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+}
+
+@test "a pane on ANOTHER tmux server inside a worktree keeps it from being recycled" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  panel_live_servers() { printf 'lab\n'; }
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  printf '%s\n' "$WT_ROOT/platform-agent-1" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+}
+
+@test "the current server is not asked twice when it is also in the socket list" {
+  # $TMUX names the socket we are on; wt_other_servers drops it so every other server is
+  # asked exactly once.
+  panel_live_servers() { printf 'hub\nlab\n'; }
+  TMUX=/tmp/tmux-1000/hub,1,0 run wt_other_servers
+  assert_success
+  assert_output 'lab'
+}
+
 @test "an idle worktree still holding WORK is stepped over, never recycled" {
   # Refusal first. Recycling switches the branch, so a dirty tree or unpushed commits would
   # be the one thing this could lose; the reap policy is what says no.

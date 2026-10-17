@@ -5,9 +5,10 @@
 #
 # Verbs:
 #   new [-c <dir>]    cut a fresh worktree off the repo containing <dir> (default $PWD),
-#                     open a tmux session rooted in it, and land there. Takes the lowest
-#                     agent-N that is free OR idle (reapable, see `reap`); an idle one is
-#                     reset onto the trunk in place, keeping its ignored build caches.
+#                     open a tmux session rooted in it, and land there. Reuses the lowest
+#                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
+#                     one is reset onto the trunk in place, keeping its ignored build caches.
+#                     Prefix+F runs it in the background; progress shows in status-right.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -63,6 +64,9 @@ WT_PROJECT_MAP="${WT_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
 # outcome has nowhere to be printed; a refusal that nobody can read is the same as a silent
 # one. Mirrors wind-down's fire.log, for the same reason.
 WT_LOG="${WT_LOG:-$HOME/.agent/wt/done.log}"
+# Where `new` takes its per-repo lock. Prefix+F runs in the background now, so nothing
+# serializes two presses any more; without the lock both pick the same slot.
+WT_LOCK_DIR="${WT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wt}"
 
 # ── Repo plumbing ────────────────────────────────────────────────────────────
 
@@ -172,15 +176,47 @@ wt_landed() {
 
 # ── tmux state ───────────────────────────────────────────────────────────────
 
-wt_live_sessions() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
+# EVERY SERVER, not just this one. Agents run in `lab` while you sit in `hub`
+# (servers.sh), so asking only the server the key was pressed on saw a worktree with a Claude
+# working in it as idle: Prefix+F from hub would recycle it and `gc` would reap it, both
+# under a live agent. wt_tmux_all runs one tmux query on the current server, then on each
+# other live one, and concatenates the answers.
+#
+# wt_other_servers -- live servers other than the one $TMUX points at (`default` outside tmux).
+wt_other_servers() {
+  local cur="${TMUX:-}" s
+  cur="${cur%%,*}"
+  cur="${cur##*/}"
+  while IFS= read -r s; do
+    [ -n "$s" ] && [ "$s" != "${cur:-default}" ] && printf '%s\n' "$s"
+  done < <(panel_live_servers)
+  return 0
+}
 
-wt_session_exists() { tmux has-session -t "=$1" 2>/dev/null; }
+wt_tmux_all() {
+  local s
+  tmux "$@" 2>/dev/null
+  while IFS= read -r s; do
+    tmux -L "$s" "$@" 2>/dev/null
+  done < <(wt_other_servers)
+}
+
+wt_live_sessions() { wt_tmux_all list-sessions -F '#{session_name}'; }
+
+wt_session_exists() {
+  local s
+  tmux has-session -t "=$1" 2>/dev/null && return 0
+  while IFS= read -r s; do
+    tmux -L "$s" has-session -t "=$1" 2>/dev/null && return 0
+  done < <(wt_other_servers)
+  return 1
+}
 
 # wt_pane_inside <path> -- true when any tmux pane, in ANY session, sits in <path> or below.
 # The session-name check alone misses a pane that cd'd in from elsewhere: a Claude started in
 # the main checkout's session and pointed at the worktree is just as live as one in its own.
 wt_pane_inside() {
-  tmux list-panes -a -F '#{pane_current_path}' 2>/dev/null |
+  wt_tmux_all list-panes -a -F '#{pane_current_path}' |
     awk -v p="$1" '$0 == p || index($0, p "/") == 1 { found = 1 } END { exit !found }'
 }
 
@@ -390,34 +426,40 @@ cmd_preview() {
 # `wt done` pins its slot forever and N ratchets (unity-core-playground reached agent-15 with
 # eight of those idle).
 #
-# Lowest wins across both kinds (1, 2 busy, 3 idle, 4 free -> 3), so the numbers stay small
-# enough to say out loud, which is the whole point of agent-panel labelling a row `3:1`.
+# RECYCLE BEATS FRESH, whatever the numbers: the lowest idle slot wins, and a fresh slot is
+# cut only when no idle one exists (1 busy, 2 free, 3 idle -> 3). A fresh slot is a full
+# checkout with cold build state; on unity-core-playground that is the freeze Prefix+F was
+# known for plus a Unity reimport, and it was taking hole 15 while 20 and 27 sat idle. Small
+# numbers are nice for agent-panel's `3:1` labels, not worth minutes per agent.
 wt_next_slot() {
-  local repo="$1" main="$2" base="$3" n=1 path owner
+  local repo="$1" main="$2" base="$3" n=1 path owner fresh=''
   while [ "$n" -le 99 ]; do
     path="$WT_ROOT/$repo-agent-$n"
-    # A live session pins its slot whatever is on disk. Its worktree can be removed out from
-    # under it (an agent running `git worktree remove --force` on itself), and handing the slot
-    # out again landed the new worktree in the OLD session: wt_ensure_session found the name
-    # taken and reused it, so you arrived among panes still sitting in the deleted directory.
-    if wt_session_exists "$repo-agent-$n"; then
-      n=$((n + 1))
-      continue
-    fi
-    if [ ! -e "$path" ]; then
+    if [ -e "$path" ]; then
+      # wt_reap_reason includes the live-session and open-pane checks, on every server.
+      if owner=$(wt_main_repo "$path") && [ "$owner" = "$main" ] &&
+        wt_reap_reason "$path" >/dev/null; then
+        printf '%s\trecycle\n' "$n"
+        return 0
+      fi
+    elif [ -z "$fresh" ] && ! wt_session_exists "$repo-agent-$n"; then
+      # A live session pins its slot even with the directory gone. Its worktree can be
+      # removed out from under it (an agent running `git worktree remove --force` on
+      # itself), and handing the slot out again landed the new worktree in the OLD session:
+      # wt_ensure_session found the name taken and reused it, so you arrived among panes
+      # still sitting in the deleted directory.
       if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
         { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
           ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
-        printf '%s\tfresh\n' "$n"
-        return 0
+        fresh="$n"
       fi
-    elif owner=$(wt_main_repo "$path") && [ "$owner" = "$main" ] &&
-      wt_reap_reason "$path" >/dev/null; then
-      printf '%s\trecycle\n' "$n"
-      return 0
     fi
     n=$((n + 1))
   done
+  if [ -n "$fresh" ]; then
+    printf '%s\tfresh\n' "$fresh"
+    return 0
+  fi
   panel_fail "no free slot: $WT_ROOT/$repo-agent-{1..99} are all taken or busy" || return 1
 }
 
@@ -440,6 +482,35 @@ wt_recycle() {
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
   fi
+  return 0
+}
+
+# wt_lock <path> -- take the lock at <path>, or return 1 while a live process holds it.
+#
+# A symlink whose target is the holder's pid: `ln -s` is atomic and carries the pid in the
+# same step, where mkdir-then-write leaves a window with a lock and no owner. flock would do,
+# but the Mac has none. A lock whose pid is dead (the holder was SIGKILLed past its EXIT
+# trap) is taken over.
+wt_lock() {
+  local lock="$1" pid
+  mkdir -p "${lock%/*}" 2>/dev/null || return 1
+  ln -s "$$" "$lock" 2>/dev/null && return 0
+  pid=$(readlink "$lock" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 1
+  rm -f "$lock"
+  ln -s "$$" "$lock" 2>/dev/null
+}
+
+# wt_busy [<text>] -- show <text> in status-right while `new` works; no argument clears it.
+# The status line reads the global user option @wt_busy (.tmux.conf status-right).
+wt_busy() {
+  panel_in_tmux || return 0
+  if [ -n "${1:-}" ]; then
+    tmux set-option -g @wt_busy "$1" 2>/dev/null
+  else
+    tmux set-option -gu @wt_busy 2>/dev/null
+  fi
+  tmux refresh-client -S 2>/dev/null
   return 0
 }
 
@@ -476,9 +547,15 @@ cmd_new() {
   esac
   [ -d "$dir" ] || panel_die "not a directory: $dir"
 
-  local main repo def base slot n path branch name
+  local main repo def base slot n path branch name lock
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
+
+  lock="$WT_LOCK_DIR/new-$repo.lock"
+  wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
+  # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
+  trap "wt_busy; rm -f $(printf '%q' "$lock")" EXIT
+  wt_busy "wt: finding a worktree for $repo"
 
   # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
   git -C "$main" fetch origin --quiet 2>/dev/null || panel_warn "fetch failed; cutting off the local trunk"
@@ -493,9 +570,11 @@ cmd_new() {
   name="$repo-agent-$n"
 
   if [ "${slot#*$PANEL_TAB}" = recycle ]; then
+    wt_busy "wt: reusing $name"
     wt_recycle "$path" "$n" "$base" || panel_die "could not reset idle worktree $path onto $base"
     panel_warn "reusing idle $name, reset onto $base"
   else
+    wt_busy "wt: cutting $name (fresh checkout)"
     mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
     # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
     git -C "$main" worktree add "$path" -B "$branch" "$base" >&2 ||
