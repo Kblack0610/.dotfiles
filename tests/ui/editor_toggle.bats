@@ -212,6 +212,22 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   assert_equal "$(current_win)" "$ed_id"
 }
 
+@test "toggling back to a RUNNING editor does not type the editor command into it" {
+  # The editor ensure starts runs under a non-interactive shell, so its pane names the SHELL
+  # while it runs. A heal keyed on that name alone fires into the live editor every time.
+  start_session
+  ed two ensure 'sleep 300'
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id pid; ed_id="$(marked)"
+  pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "pgrep -P '$pid' -x sleep >/dev/null"
+  ed three toggle 'sleep 300'
+  sleep 0.5
+  run _tm capture-pane -p -t "$ed_id"
+  refute_output --partial 'sleep 300'
+  assert_equal "$(current_win)" "$ed_id"
+}
+
 # ── the real .tmux.conf ──────────────────────────────────────────────────────
 #
 # editor_binds.bats reads the config as TEXT, which proves what is written but not what tmux
@@ -306,11 +322,12 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   ed two ensure 'sleep 300'
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
-  # Until sleep is the foreground process the pane still reads as its wrapping shell, and
-  # open would (correctly) start an editor instead of typing :e.
-  wait_until "_tm display-message -p -t '$ed_id' '#{pane_current_command}' | grep -qx sleep"
+  # The pane reads as its wrapping shell for the editor's whole life (see _at_shell), so
+  # wait for the editor PROCESS, which is what open now asks about.
+  local pid; pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "pgrep -P '$pid' -x sleep >/dev/null"
   _tm select-window -t work:one
-  _tm run-shell -t work:one "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
+  _tm run-shell -t work:one "EDITOR_WINDOW_CMD='sleep 300' '$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
   wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
   run _tm capture-pane -p -t "$ed_id"
   assert_output --partial ':e +7 '

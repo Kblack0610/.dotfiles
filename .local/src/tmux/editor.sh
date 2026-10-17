@@ -115,13 +115,27 @@ _fallback_shell() {
 # _at_shell <window-id> - the window's active pane has fallen back to a bare prompt, i.e.
 # you quit the editor. The shell tail on the window command is what puts it here rather
 # than closing the window and losing its place in the list.
+#
+# A shell NAME is not enough. ensure runs `<editor>; exec <shell>` through a non-interactive
+# shell, so the editor shares that shell's process group and pane_current_command names the
+# SHELL for as long as the editor runs (seen on 3.7b in the container: a running `sleep 300`
+# read as `sh` for its whole life). So it is only a prompt when the editor binary is not
+# running under the pane's process. Without this, toggle's heal and `open` type an editor
+# command into a live editor as keystrokes.
 _at_shell() {
-  local cmd
+  local cmd pid bin
   cmd="$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)"
   case "$cmd" in
-  sh | bash | zsh | fish | dash | ksh) return 0 ;;
+  sh | bash | zsh | fish | dash | ksh) ;;
   *) return 1 ;;
   esac
+  pid="$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"
+  bin="${EDITOR_WINDOW_CMD%% *}"
+  bin="${bin##*/}"
+  if [ -n "$pid" ] && pgrep -P "$pid" -x "$bin" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
 }
 
 # ── Verbs ────────────────────────────────────────────────────────────────────
