@@ -300,12 +300,15 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
 
 @test "open with a running editor types :e at the line into it and goes there" {
   start_session
-  ed two ensure cat
+  # `sleep`, not `cat`, as the running editor: a run-shell child's pane gets a stdin that
+  # EOFs at once, so cat exits and the pane is back at its shell (see the self-heal test).
+  # The keystrokes still echo on the pane's tty, which is what the capture reads.
+  ed two ensure 'sleep 300'
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
-  # Until cat is the foreground process the pane still reads as its wrapping shell, and open
-  # would (correctly) start an editor instead of typing :e. Wait for the editor to be up.
-  wait_until '[ "$(_tm display-message -p -t "$ed_id" "#{pane_current_command}")" = cat ]'
+  # Until sleep is the foreground process the pane still reads as its wrapping shell, and
+  # open would (correctly) start an editor instead of typing :e.
+  wait_until "_tm display-message -p -t '$ed_id' '#{pane_current_command}' | grep -qx sleep"
   _tm select-window -t work:one
   _tm run-shell -t work:one "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
   wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
