@@ -250,6 +250,12 @@ enum Cmd {
         /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
         #[arg(long, value_name = "NAME")]
         waves: Option<String>,
+        /// Every profile's indexed projects with their open work, for the projects popup
+        /// (TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>
+        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the current wave's, planned
+        /// is the later waves', agent is the agent board's)
+        #[arg(long)]
+        stats: bool,
         /// Print a project's maturity stage; with --set, declare it.
         /// One of: draft, alpha, beta, prod
         #[arg(long, value_name = "NAME")]
@@ -760,6 +766,7 @@ fn main() -> Result<()> {
             next,
             version_of,
             waves,
+            stats,
             agent_note,
             version,
             stage,
@@ -793,6 +800,10 @@ fn main() -> Result<()> {
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
             if let (Some(n), Some(dest)) = (move_project, to_profile) {
                 projects::move_to_profile(&prof, &log, &n, &dest)?;
+                std::process::exit(0);
+            }
+            if stats {
+                projects::stats()?;
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths
