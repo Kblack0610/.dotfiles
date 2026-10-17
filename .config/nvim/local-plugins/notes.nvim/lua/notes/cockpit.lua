@@ -1,11 +1,11 @@
 -- notes.cockpit — a single, global "where's all my work" window over the whole
 -- `~/.notes` vault, wired to the profile-aware `notes` Rust CLI. It aggregates the
 -- day-to-day task surface that is otherwise scattered across many files: every
--- profile's `## Focus` lane (personal + each job/workstream) plus the indexed
--- projects, in ONE reversibly-nested picker.
+-- profile's `## Focus` lane (personal + each job/workstream), in ONE reversibly-nested
+-- picker. Projects are the tmux popup (projects.sh), which the root's Projects row opens.
 --
 --   :lua require("notes.cockpit").open()            (<leader>nc, <leader>tc)
---   :lua require("notes.cockpit").open_projects()   (<leader>np: starts at Projects)
+--   :lua require("notes.cockpit").open_projects()   (<leader>np: the tmux projects popup)
 --
 -- Nesting / navigation:
 --   The window is a STACK of "nodes", each rendered as one Snacks.picker level.
@@ -16,12 +16,9 @@
 --   Root
 --    ├─ <profile>  (N open)   →  that profile's open Focus tasks
 --    │                            x = toggle done   a = add   <CR> = jump to the line
---    └─ Projects  ▸           →  every lab profile's projects  →  a project's files  →  open
---                                 a = new  x = archive/restore  s = stage  g = group
---                                 p = move profile  t = archived view
+--    └─ Projects  ▸           ->  the tmux projects popup (Prefix+P), see projects.sh
 --
--- Every WRITE routes back through the `notes` CLI (`notes --profile <p> focus …`),
--- (and `notes --profile <p> projects …` for the project lifecycle), so the vault rule
+-- Every WRITE routes back through the `notes` CLI (`notes --profile <p> focus …`), so the vault rule
 -- holds: journal markdown is never hand-edited, the `<!-- since -->`
 -- stamp + rollup-sentinel invariants are always respected. Reads are the
 -- `notes focus --all` aggregator (TSV: profile<TAB>file<TAB>line<TAB>key<TAB>text).
@@ -303,7 +300,7 @@ show = function(node, _replace)
 end
 
 -- ── Nodes ───────────────────────────────────────────────────────────
-local projects_node, project_files_node, profile_node
+local profile_node
 
 -- A single profile's open Focus tasks. The legend (rendered in the title) shows:
 --   enter = jump to the line (edit in the daily buffer, where <leader>ts etc. work)
@@ -371,224 +368,8 @@ function profile_node(profile)
   }
 end
 
--- `notes config` as key -> value. The list-valued keys used here (`index-orgs`,
--- `board-order`) are comma-separated.
-local function notes_config()
-  local cfg = {}
-  for _, l in ipairs(run({ "config" })) do
-    local k, v = l:match("^(%S+)%s+(.*)$")
-    if k then
-      cfg[k] = vim.trim(v)
-    end
-  end
-  return cfg
-end
-
-local function split_list(s)
-  local out = {}
-  for part in (s or ""):gmatch("[^,%s]+") do
-    out[#out + 1] = part
-  end
-  return out
-end
-
--- The profiles whose project indexes the lab covers: the active profile plus its
--- `index-orgs` (personal + bnb here). Every project row carries its profile, so each
--- write below targets `notes --profile <p>` explicitly.
-local function project_profiles()
-  local cfg = notes_config()
-  local out = { cfg.profile }
-  for _, p in ipairs(split_list(cfg["index-orgs"])) do
-    if not vim.tbl_contains(out, p) then
-      out[#out + 1] = p
-    end
-  end
-  return out
-end
-
-local STAGES = { "draft", "alpha", "beta", "prod" }
-
--- The files inside one project (summary first). <CR> opens the file.
-function project_files_node(name, profile)
-  return {
-    label = name,
-    empty = "no files for " .. name,
-    fetch = function()
-      local items = {}
-      for _, l in ipairs(run({ "--profile", profile, "projects", name })) do
-        local file, label = l:match("^(.-)\t(.*)$")
-        if file then
-          items[#items + 1] = { file = file, text = label, _label = label }
-        end
-      end
-      return items
-    end,
-    format = function(item)
-      return {
-        { item.text, "Directory" },
-        { "  " .. vim.fn.fnamemodify(item.file, ":t"), "Comment" },
-      }
-    end,
-    preview = "file",
-    enter_label = "open",
-    enter = function(item)
-      open_at(item.file, 1)
-      return nil
-    end,
-  }
-end
-
--- The indexed projects of every lab profile, previewing the sheet. <CR> drills into
--- files. The actions are the project lifecycle, each one a `notes projects` verb so
--- the CLI stays the only writer of the index lanes:
---   C-a new   C-x archive (restore in the archived view)   C-s stage   C-g group
---   C-p move to another profile   C-t toggle current/archived
-function projects_node()
-  local node
-  node = {
-    label = "Projects",
-    archived = false,
-    empty = "no indexed projects (C-a adds one, C-t shows archived)",
-    fetch = function()
-      node.label = node.archived and "Projects (archived)" or "Projects"
-      local items = {}
-      for _, profile in ipairs(project_profiles()) do
-        local args = { "--profile", profile, "projects" }
-        if node.archived then
-          args[#args + 1] = "--archived"
-        end
-        for _, l in ipairs(run(args)) do
-          local name, summary, status, version = l:match("^(.-)\t(.-)\t(.-)\t(.*)$")
-          if name then
-            items[#items + 1] = {
-              name = name,
-              profile = profile,
-              file = summary,
-              status = status,
-              version = version,
-              _label = profile .. " " .. name,
-            }
-          end
-        end
-      end
-      return items
-    end,
-    format = function(item)
-      local row = { { item.name, "Identifier" }, { "  " .. item.profile, "Type" } }
-      if item.version and item.version ~= "" then
-        row[#row + 1] = { "  " .. item.version, "Special" }
-      end
-      if item.status and item.status ~= "" then
-        row[#row + 1] = { "  " .. item.status, "Comment" }
-      end
-      return row
-    end,
-    preview = "file",
-    enter = function(item)
-      return project_files_node(item.name, item.profile)
-    end,
-    actions = {
-      {
-        key_i = "<c-a>",
-        key_n = "a",
-        label = "C-a new",
-        fn = function(_item, refresh)
-          vim.ui.select(project_profiles(), { prompt = "New project in profile" }, function(profile)
-            if not profile then
-              return
-            end
-            vim.ui.input({ prompt = profile .. " project name: " }, function(name)
-              name = name and vim.trim(name) or ""
-              if name ~= "" and run_write({ "--profile", profile, "projects", "--new", name }) then
-                refresh()
-              end
-            end)
-          end)
-        end,
-      },
-      {
-        key_i = "<c-x>",
-        key_n = "x",
-        label = "C-x archive/restore",
-        fn = function(item, refresh)
-          if not item then
-            return
-          end
-          local verb = node.archived and "restore" or "archive"
-          local yes = vim.fn.confirm(("%s %s/%s ?"):format(verb, item.profile, item.name), "&Yes\n&No", 2)
-          if yes == 1 and run_write({ "--profile", item.profile, "projects", "--" .. verb, item.name }) then
-            refresh()
-          end
-        end,
-      },
-      {
-        key_i = "<c-s>",
-        key_n = "s",
-        label = "C-s stage",
-        fn = function(item, refresh)
-          if not item then
-            return
-          end
-          vim.ui.select(STAGES, { prompt = item.name .. " stage" }, function(stage)
-            if stage and run_write({ "--profile", item.profile, "projects", "--stage", item.name, "--set", stage }) then
-              refresh()
-            end
-          end)
-        end,
-      },
-      {
-        key_i = "<c-g>",
-        key_n = "g",
-        label = "C-g group",
-        fn = function(item, refresh)
-          if not item then
-            return
-          end
-          local groups = split_list(notes_config()["board-order"])
-          groups[#groups + 1] = "dev"
-          vim.ui.select(groups, { prompt = item.name .. " index group" }, function(group)
-            if group and run_write({ "--profile", item.profile, "projects", "--group", item.name, "--set", group }) then
-              refresh()
-            end
-          end)
-        end,
-      },
-      {
-        key_i = "<c-p>",
-        key_n = "p",
-        label = "C-p move profile",
-        fn = function(item, refresh)
-          if not item then
-            return
-          end
-          local targets = vim.tbl_filter(function(p)
-            return p ~= item.profile
-          end, project_profiles())
-          vim.ui.select(targets, { prompt = "Move " .. item.name .. " to profile" }, function(dest)
-            if
-              dest
-              and run_write({ "--profile", item.profile, "projects", "--move", item.name, "--to-profile", dest })
-            then
-              refresh()
-            end
-          end)
-        end,
-      },
-      {
-        key_i = "<c-t>",
-        key_n = "t",
-        label = "C-t archived",
-        fn = function(_item, refresh)
-          node.archived = not node.archived
-          refresh()
-        end,
-      },
-    },
-  }
-  return node
-end
-
--- Root: one row per profile (with open counts) + a Projects branch.
+-- Root: one row per profile (with open counts) + a Projects row, which opens the tmux
+-- projects popup (M.open_projects) rather than a level of its own.
 local function root_node()
   return {
     label = "Cockpit",
@@ -603,9 +384,10 @@ local function root_node()
           profile = profile,
           count = n,
           _label = ("%s  (%d open)"):format(profile, n),
+          text = profile,
         }
       end
-      items[#items + 1] = { kind = "projects", _label = "Projects  ▸" }
+      items[#items + 1] = { kind = "projects", _label = "Projects  ▸", text = "projects" }
       return items
     end,
     format = function(item)
@@ -620,7 +402,9 @@ local function root_node()
     preview = false,
     enter = function(item)
       if item.kind == "projects" then
-        return projects_node()
+        stack = {}
+        vim.schedule(M.open_projects)
+        return nil
       end
       return profile_node(item.profile)
     end,
@@ -636,14 +420,19 @@ function M.open()
   show(stack[1], true)
 end
 
--- Open straight at the Projects level (<leader>np): the same node the cockpit's
--- Projects branch drills into, so there is one projects picker, not two.
+-- The projects switcher is the tmux popup (`.local/src/tmux/projects.sh`, Prefix+P), not a
+-- picker level here, so there is one projects UI whether you start from nvim or a shell.
+-- PROJECTS_NVIM hands it this nvim's server, so the popup's `o` opens files right here.
 function M.open_projects()
-  if not notes_available() then
+  if not vim.env.TMUX then
+    vim.notify("the projects switcher is a tmux popup (Prefix+P); outside tmux use `notes projects --stats`", vim.log.levels.WARN)
     return
   end
-  stack = { projects_node() }
-  show(stack[1], true)
+  vim.fn.jobstart({
+    "tmux", "display-popup", "-E", "-B", "-w", "80%", "-h", "60%",
+    "-e", "PROJECTS_NVIM=" .. vim.v.servername,
+    vim.fn.expand("$HOME/.local/src/tmux/projects.sh"),
+  }, { detach = true })
 end
 
 return M
