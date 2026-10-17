@@ -5,8 +5,8 @@
 
 use crate::config::Profile;
 use crate::index;
-use crate::projects;
 use crate::logging::Logger;
+use crate::projects;
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDate};
 use std::fs;
@@ -125,7 +125,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // 7. Version pairing: a frozen version and its ai/ evidence note travel together
     let pairing = projects::pairing_findings(p);
     if pairing.is_empty() {
-        r.add(Status::Pass, "version pairing", "every frozen version matches its agent note");
+        r.add(
+            Status::Pass,
+            "version pairing",
+            "every frozen version matches its agent note",
+        );
     } else {
         r.add(
             Status::Warn,
@@ -139,7 +143,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // silently redirects the board, `ptask list` and `/wave` onto unstarted work.
     let order = projects::wave_order_findings(p);
     if order.is_empty() {
-        r.add(Status::Pass, "wave order", "every sheet opens with its declared version");
+        r.add(
+            Status::Pass,
+            "wave order",
+            "every sheet opens with its declared version",
+        );
     } else {
         r.add(
             Status::Warn,
@@ -201,7 +209,11 @@ fn check_build(r: &mut Report) {
         return;
     };
     if !src.is_dir() {
-        r.add(Status::Pass, "build", "source tree not present, cannot compare");
+        r.add(
+            Status::Pass,
+            "build",
+            "source tree not present, cannot compare",
+        );
         return;
     }
     let newest = fs::read_dir(&src)
@@ -345,11 +357,7 @@ fn check_headings(r: &mut Report, p: &Profile) {
         r.add(
             Status::Warn,
             "daily headings",
-            &format!(
-                "{} note(s) missing Focus: {}",
-                bad.len(),
-                bad.join(", ")
-            ),
+            &format!("{} note(s) missing Focus: {}", bad.len(), bad.join(", ")),
         );
     }
 }

@@ -558,7 +558,10 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // as the complete list while showing only one org's, which is how projects in another org
     // came to look missing.
     if let Some(pi) = &p.project_index {
-        links.push((format!("{} projects", p.name), config::wikilink(&p.root, pi)));
+        links.push((
+            format!("{} projects", p.name),
+            config::wikilink(&p.root, pi),
+        ));
     }
     // The knowledge index (the `notes index --rebuild` MOC over knowledge/ + zettels), so the
     // curated side of the vault is one click from the day.
@@ -638,9 +641,18 @@ pub(crate) fn strip_backlog_footer(content: &mut String) {
 pub(crate) fn insert_before_footer(content: &str, block: &str) -> String {
     if let Some(idx) = footer_idx(content) {
         let (head, tail) = content.split_at(idx);
-        format!("{}\n\n{}{}", head.trim_end(), block.trim_start_matches('\n'), tail)
+        format!(
+            "{}\n\n{}{}",
+            head.trim_end(),
+            block.trim_start_matches('\n'),
+            tail
+        )
     } else {
-        format!("{}\n\n{}", content.trim_end(), block.trim_start_matches('\n'))
+        format!(
+            "{}\n\n{}",
+            content.trim_end(),
+            block.trim_start_matches('\n')
+        )
     }
 }
 
@@ -781,7 +793,6 @@ pub(crate) fn watch_summary(rows: &[WatchRow]) -> String {
     }
     format!("{total} watches - {}", parts.join(", "))
 }
-
 
 /// Is the watch registry actually on THIS machine?
 ///
@@ -955,7 +966,14 @@ pub(crate) fn publish_and_strip(
 }
 
 fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    publish_and_strip(p, log, note, &watches_page(p), watches_present(p), "Watches")
+    publish_and_strip(
+        p,
+        log,
+        note,
+        &watches_page(p),
+        watches_present(p),
+        "Watches",
+    )
 }
 
 /// The stages `## Projects` links, in display order. Prod is left out on purpose: a live
@@ -1109,9 +1127,8 @@ fn migrate_to_schedule(p: &Profile, log: &Logger) -> Result<()> {
         active.extend(md::section_lines(&c, "Active").unwrap_or_default());
         done.extend(md::section_lines(&c, "Done").unwrap_or_default());
     }
-    let keep = |v: Vec<String>| -> Vec<String> {
-        v.into_iter().filter(|l| md::is_task(l)).collect()
-    };
+    let keep =
+        |v: Vec<String>| -> Vec<String> { v.into_iter().filter(|l| md::is_task(l)).collect() };
     let (active, done) = (keep(active), keep(done));
 
     if let Some(parent) = p.schedule.parent() {
@@ -1181,8 +1198,8 @@ fn space_headings(note: &Path) -> Result<()> {
 }
 
 fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
-    let original = fs::read_to_string(note)
-        .with_context(|| format!("reading {}", note.display()))?;
+    let original =
+        fs::read_to_string(note).with_context(|| format!("reading {}", note.display()))?;
 
     let mut folded: Vec<String> = Vec::new();
     for heading in ["Due", "Priority"] {
@@ -1208,7 +1225,10 @@ fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
     md::write_atomic(note, &content)?;
     log.info(
         "today",
-        &format!("conformed legacy sections ({} item(s) folded into Focus)", folded.len()),
+        &format!(
+            "conformed legacy sections ({} item(s) folded into Focus)",
+            folded.len()
+        ),
     );
     Ok(())
 }
@@ -1324,10 +1344,19 @@ mod tests {
         conform_legacy_sections(&note, &log).unwrap();
         let out = fs::read_to_string(&note).unwrap();
 
-        assert!(!out.contains("## Current Projects"), "static link list dropped");
+        assert!(
+            !out.contains("## Current Projects"),
+            "static link list dropped"
+        );
         assert!(!out.contains("## Due"), "second list dropped");
-        assert!(out.contains("- [ ] carried from due"), "open item folded, not deleted");
-        assert!(!out.contains("- [x] finished"), "completed item not resurrected");
+        assert!(
+            out.contains("- [ ] carried from due"),
+            "open item folded, not deleted"
+        );
+        assert!(
+            !out.contains("- [x] finished"),
+            "completed item not resurrected"
+        );
         assert!(out.contains("- [ ] already here"), "existing focus kept");
         assert!(out.contains("Schedule: [[schedule]]"), "footer intact");
 
@@ -1369,9 +1398,15 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert!(dir.join("daily/2026-06-18.md").exists(), "note carried over");
+        assert!(
+            dir.join("daily/2026-06-18.md").exists(),
+            "note carried over"
+        );
         assert!(!dir.join("log").exists(), "legacy dir is gone, not copied");
-        assert!(dir.join("daily_archive/2026").is_dir(), "archive migrated too");
+        assert!(
+            dir.join("daily_archive/2026").is_dir(),
+            "archive migrated too"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1389,7 +1424,10 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert!(dir.join("log/2026-06-18.md").exists(), "pinned dir untouched");
+        assert!(
+            dir.join("log/2026-06-18.md").exists(),
+            "pinned dir untouched"
+        );
         assert!(!dir.join("daily").exists(), "no daily dir invented");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1410,7 +1448,10 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert_eq!(fs::read_to_string(dir.join("daily/keep.md")).unwrap(), "keep");
+        assert_eq!(
+            fs::read_to_string(dir.join("daily/keep.md")).unwrap(),
+            "keep"
+        );
         assert!(dir.join("log/old.md").exists(), "legacy left for the human");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1536,7 +1577,11 @@ mod tests {
         assert!(once.contains("- [ ] mine"));
 
         migrate_work(&p, &log, &note).unwrap();
-        assert_eq!(std::fs::read_to_string(&note).unwrap(), once, "migration repeated");
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            once,
+            "migration repeated"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1752,12 +1797,20 @@ mod tests {
         let (out, remaining) = promote_schedule(content, d("2026-07-10"));
 
         let surfaced: Vec<&str> = out.iter().map(|s| s.as_str()).collect();
-        assert_eq!(surfaced.len(), 2, "friday habit + today's one-off: {surfaced:?}");
+        assert_eq!(
+            surfaced.len(),
+            2,
+            "friday habit + today's one-off: {surfaced:?}"
+        );
         assert!(surfaced.iter().any(|l| l.contains("timesheets")));
         assert!(surfaced.iter().any(|l| l.contains("one-off thing")));
         // triggers stripped, day-stamped
-        assert!(!out.iter().any(|l| l.contains("every:") || l.contains("[2026-")));
-        assert!(out.iter().all(|l| l.contains("(0d) <!-- since:2026-07-10 -->")));
+        assert!(!out
+            .iter()
+            .any(|l| l.contains("every:") || l.contains("[2026-")));
+        assert!(out
+            .iter()
+            .all(|l| l.contains("(0d) <!-- since:2026-07-10 -->")));
 
         // the cadence line SURVIVES so it fires again next Friday...
         assert!(remaining.contains("- [ ] timesheets (every:fri)"));
@@ -1829,7 +1882,10 @@ mod tests {
         assert!(active.contains("water plants (every:sun)"), "{out}");
         // the finished items stayed finished
         assert!(!active.contains("old one"), "Done bled into Active:\n{out}");
-        assert!(!active.contains("old habit"), "Done bled into Active:\n{out}");
+        assert!(
+            !active.contains("old habit"),
+            "Done bled into Active:\n{out}"
+        );
         assert!(out.contains("- [x] old one") && out.contains("- [x] old habit"));
 
         // sources renamed aside, not deleted — the data is the user's
@@ -1867,8 +1923,14 @@ mod tests {
         assert!(!out.contains("## Due"), "Due section is gone:\n{out}");
         let focus = md::section_lines(&out, "Focus").unwrap().join("\n");
         assert!(focus.contains("my thing"), "{out}");
-        assert!(focus.contains("water plants"), "legacy Due item stranded:\n{out}");
-        assert!(focus.contains("pay rent"), "legacy Due item stranded:\n{out}");
+        assert!(
+            focus.contains("water plants"),
+            "legacy Due item stranded:\n{out}"
+        );
+        assert!(
+            focus.contains("pay rent"),
+            "legacy Due item stranded:\n{out}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1909,7 +1971,10 @@ mod tests {
             "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45, 2 page(s), 1 high.\n\n## Needs you\n\n- wave-roll STALLED -> do: agentctl status wave-roll\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
-        for (d, line) in [("28", "- created [[knowledge/a]]: r"), ("29", "- updated [[knowledge/b]]: r")] {
+        for (d, line) in [
+            ("28", "- created [[knowledge/a]]: r"),
+            ("29", "- updated [[knowledge/b]]: r"),
+        ] {
             std::fs::write(
                 dir.join(format!("knowledge/_log/2026/09/2026-09-{d}.md")),
                 format!("# log\n\n## Changes\n{line}\n"),
@@ -1931,11 +1996,21 @@ mod tests {
         let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Knowledge: [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
-        assert!(at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"), "{out}");
-        assert!(!out.contains("2026-09-28"), "already listed yesterday:\n{out}");
+        assert!(
+            at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("2026-09-28"),
+            "already listed yesterday:\n{out}"
+        );
 
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
-        assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            out,
+            "a second pass must not write"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1982,10 +2057,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let note = dir.join("n.md");
-        std::fs::write(&note, "# d\n\n## Projects\n- [[x]]\n## Refs\n- [[r]]\n```\n## not a heading\n```\n").unwrap();
+        std::fs::write(
+            &note,
+            "# d\n\n## Projects\n- [[x]]\n## Refs\n- [[r]]\n```\n## not a heading\n```\n",
+        )
+        .unwrap();
         space_headings(&note).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
-        assert_eq!(out, "# d\n\n## Projects\n- [[x]]\n\n## Refs\n- [[r]]\n```\n## not a heading\n```\n");
+        assert_eq!(
+            out,
+            "# d\n\n## Projects\n- [[x]]\n\n## Refs\n- [[r]]\n```\n## not a heading\n```\n"
+        );
         space_headings(&note).unwrap();
         assert_eq!(std::fs::read_to_string(&note).unwrap(), out);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2109,8 +2191,15 @@ mod tests {
             !footer.chars().any(|c| c.is_ascii_digit()),
             "the footer must carry no counts:\n{footer}"
         );
-        for feed in ["- Watches: [[status/watches]]", "- Comms: [[status/comms]]", "- Inbox: [[status/inbox]]"] {
-            assert!(footer.contains(feed), "the footer must reach {feed}:\n{footer}");
+        for feed in [
+            "- Watches: [[status/watches]]",
+            "- Comms: [[status/comms]]",
+            "- Inbox: [[status/inbox]]",
+        ] {
+            assert!(
+                footer.contains(feed),
+                "the footer must reach {feed}:\n{footer}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2149,7 +2238,10 @@ mod tests {
         // Every watch survives now, healthy ones included -- the page has a `## Quiet` to put
         // them in, where the note's one-glance section could only afford the exceptions.
         assert_eq!(rows.len(), 3);
-        assert_eq!(watch_summary(&rows), "3 watches - 1 OK, 1 tripped, 1 paused");
+        assert_eq!(
+            watch_summary(&rows),
+            "3 watches - 1 OK, 1 tripped, 1 paused"
+        );
         assert_eq!(rows[0].name, "router"); // unhealthy first
         assert_eq!(rows[1].name, "api"); // healthy next
         assert_eq!(rows[2].name, "parked"); // paused last

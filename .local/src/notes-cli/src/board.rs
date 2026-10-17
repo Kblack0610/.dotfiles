@@ -238,7 +238,10 @@ fn retire_ai_board(log: &Logger, agent_board: &std::path::Path) {
     }
     match fs::remove_file(&legacy) {
         Ok(()) => log.info("board", &format!("retired {}", legacy.display())),
-        Err(e) => log.info("board", &format!("could not retire {}: {e}", legacy.display())),
+        Err(e) => log.info(
+            "board",
+            &format!("could not retire {}: {e}", legacy.display()),
+        ),
     }
 }
 
@@ -775,11 +778,18 @@ mod tests {
 
     #[test]
     fn the_pre_rename_board_is_retired_once_its_replacement_exists() {
-        let dir = sheet("retire", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "retire",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         let legacy = dir.join("ai-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
-        std::fs::write(&legacy, "---\nid: ai-board\ntags: [board]\n---\n\n# AI board\n").unwrap();
+        std::fs::write(
+            &legacy,
+            "---\nid: ai-board\ntags: [board]\n---\n\n# AI board\n",
+        )
+        .unwrap();
 
         retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent);
         assert!(!legacy.exists(), "the stale board is gone");
@@ -791,7 +801,10 @@ mod tests {
     // by hand; only a file carrying the generator's own `id:` may be removed.
     #[test]
     fn a_hand_written_file_of_the_same_name_is_never_removed() {
-        let dir = sheet("keep", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "keep",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         let mine = dir.join("ai-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
@@ -807,7 +820,10 @@ mod tests {
 
     #[test]
     fn retiring_is_a_no_op_when_there_is_nothing_to_retire() {
-        let dir = sheet("noop", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "noop",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
         retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent); // must not panic on a missing file

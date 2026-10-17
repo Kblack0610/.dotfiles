@@ -139,7 +139,9 @@ pub(crate) fn sections(content: &str) -> Vec<Section> {
 
 /// The section naming `ver`, current or planned.
 pub(crate) fn find(content: &str, ver: (u32, u32, u32)) -> Option<Section> {
-    sections(content).into_iter().find(|s| s.version == Some(ver))
+    sections(content)
+        .into_iter()
+        .find(|s| s.version == Some(ver))
 }
 
 /// The CURRENT wave: the section naming the sheet's declared `Version:`, falling back to the
@@ -198,7 +200,10 @@ pub(crate) fn insert_planned(content: &str, ver: (u32, u32, u32)) -> String {
 /// by `ptask move` is NOT — that one moves a single task, not a section.
 pub(crate) fn cut(content: &str, s: &Section) -> (String, Vec<String>) {
     let lines: Vec<&str> = content.lines().collect();
-    let cut: Vec<String> = lines[s.start..s.end].iter().map(|l| (*l).to_string()).collect();
+    let cut: Vec<String> = lines[s.start..s.end]
+        .iter()
+        .map(|l| (*l).to_string())
+        .collect();
     let mut kept: Vec<String> = Vec::new();
     kept.extend(lines[..s.start].iter().map(|l| (*l).to_string()));
     kept.extend(lines[s.end..].iter().map(|l| (*l).to_string()));
@@ -254,7 +259,9 @@ Version: v1.13.0
         let last = s.last().unwrap();
         let lines: Vec<&str> = ROADMAP.lines().collect();
         assert_eq!(lines[last.end], "## Backlog");
-        assert!(!open_tasks(ROADMAP, last).iter().any(|t| t.contains("not a wave")));
+        assert!(!open_tasks(ROADMAP, last)
+            .iter()
+            .any(|t| t.contains("not a wave")));
     }
 
     #[test]
@@ -276,7 +283,10 @@ Version: v1.13.0
             vec![(1, 13, 0), (1, 14, 0), (1, 15, 0), (1, 16, 0)],
             "v1.15.0 belongs between v1.14.0 and v1.16.0:\n{out}"
         );
-        assert!(s[0].heading.contains("(current)"), "the current wave stays first");
+        assert!(
+            s[0].heading.contains("(current)"),
+            "the current wave stays first"
+        );
     }
 
     // Negative control for the same invariant from the other end: a planned version LOWER

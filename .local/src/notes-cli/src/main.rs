@@ -23,8 +23,8 @@ mod knowledge;
 mod logging;
 mod md;
 mod meeting;
-mod project_tasks;
 mod project_sweep;
+mod project_tasks;
 mod projects;
 mod status;
 mod summarize;
@@ -250,6 +250,12 @@ enum Cmd {
         /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
         #[arg(long, value_name = "NAME")]
         waves: Option<String>,
+        /// Every profile's indexed projects with their open work, for the projects popup
+        /// (TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>
+        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the current wave's, planned
+        /// is the later waves', agent is the agent board's)
+        #[arg(long)]
+        stats: bool,
         /// Print a project's maturity stage; with --set, declare it.
         /// One of: draft, alpha, beta, prod
         #[arg(long, value_name = "NAME")]
@@ -760,6 +766,7 @@ fn main() -> Result<()> {
             next,
             version_of,
             waves,
+            stats,
             agent_note,
             version,
             stage,
@@ -795,17 +802,20 @@ fn main() -> Result<()> {
                 projects::move_to_profile(&prof, &log, &n, &dest)?;
                 std::process::exit(0);
             }
+            if stats {
+                projects::stats()?;
+                std::process::exit(0);
+            }
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,
-                name,
+                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
             ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
                 (_, _, _, Some(n), ..) => {
                     projects::roll(&prof, &log, &n, level, force, carry, next.as_deref())?
-                },
+                }
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
