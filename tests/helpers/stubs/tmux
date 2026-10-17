@@ -19,6 +19,8 @@
 #   tmux.capture.<sess>_<idx>   content for `capture-pane -t <sess>:<idx>`
 #   tmux.activity.<sess>_<idx>  epoch seconds for `#{window_activity}`
 #   tmux.session                name returned for `#{session_name}`
+#   tmux.sessions.<server>      sessions on `-L <server>`, for has-session and list-sessions
+#   tmux.panes.<server>         lines for `-L <server> list-panes -a -F ...`
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -51,11 +53,13 @@ done
 #
 # -L/-S/-f take a value; the rest of tmux's global flags (-2, -u, -v, -C) do not.
 verb=""
+server=""
+prev_flag=""
 skip_value=0
 for a in "$@"; do
-  if [ "$skip_value" = 1 ]; then skip_value=0; continue; fi
+  if [ "$skip_value" = 1 ]; then skip_value=0; [ "$prev_flag" = -L ] && server="$a"; continue; fi
   case "$a" in
-    -L|-S|-f) skip_value=1; continue ;;
+    -L|-S|-f) skip_value=1; prev_flag="$a"; continue ;;
     -*)       continue ;;
     *)        verb="$a"; break ;;
   esac
@@ -63,9 +67,24 @@ done
 
 case "$verb" in
   list-panes)
-    [ -f "$FIX/tmux.panes" ] && cat "$FIX/tmux.panes"
+    # Per-server fixture first: worktree.sh asks every live server, and a test pinning a
+    # pane on another server must be able to put it on only that one.
+    if [ -n "$server" ] && [ -f "$FIX/tmux.panes.$server" ]; then
+      cat "$FIX/tmux.panes.$server"
+    elif [ -f "$FIX/tmux.panes" ]; then
+      cat "$FIX/tmux.panes"
+    fi
     ;;
   has-session)
+    # `-L <server>` with a tmux.sessions.<server> fixture answers from that file alone,
+    # ahead of the global switches below, so one server can hold a session the current
+    # one does not.
+    # No -t is panel_live_servers asking "is this server up?": the fixture says it is.
+    if [ -n "$server" ] && [ -f "$FIX/tmux.sessions.$server" ]; then
+      [ -z "$target" ] && exit 0
+      grep -qxF -- "${target#=}" "$FIX/tmux.sessions.$server"
+      exit
+    fi
     # wind-down.sh `fire` gates every teardown on this: a session that is already gone
     # must abort the fire, not fall through to a kill. Default 0 (exists) so no existing
     # caller changes behaviour; drop tmux.no-session to make it report gone.
@@ -89,6 +108,10 @@ case "$verb" in
     # command must not change the behaviour of callers that never cared about it. Drop
     # tmux.sessions to name the sessions a test needs, or tmux.no-sessions to assert
     # the genuinely-empty world the guard exists for.
+    if [ -n "$server" ] && [ -f "$FIX/tmux.sessions.$server" ]; then
+      cat "$FIX/tmux.sessions.$server"
+      exit 0
+    fi
     [ -f "$FIX/tmux.no-sessions" ] && exit 0
     if [ -f "$FIX/tmux.sessions" ]; then cat "$FIX/tmux.sessions"; else echo "stub"; fi
     exit 0

@@ -74,7 +74,7 @@ fn socket_dir() -> Option<PathBuf> {
 
 /// Servers with a live process behind their socket, sorted. A socket file can outlive
 /// its server, so only ones that answer `has-session` count (same rule as
-/// servers.sh `live_servers`).
+/// panel-lib.sh `panel_live_servers`).
 pub fn servers() -> Vec<String> {
     let Some(dir) = socket_dir() else {
         return Vec::new();

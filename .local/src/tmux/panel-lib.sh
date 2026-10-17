@@ -253,6 +253,21 @@ panel_ensure_session() {
   tmux new-session -ds "$name" -c "$dir"
 }
 
+# panel_live_servers -- every tmux server with a live socket, by name, one per line.
+#
+# A socket file can outlive its server, so only one that answers counts. Read at call time,
+# not source time: a caller may set TMUX_TMPDIR after sourcing. servers.sh lists worlds with
+# it; worktree.sh needs it because a worktree's agent may be running on any of them.
+panel_live_servers() {
+  local dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" sock
+  [ -d "$dir" ] || return 0
+  for sock in "$dir"/*; do
+    [ -S "$sock" ] || continue
+    tmux -L "${sock##*/}" has-session 2>/dev/null && printf '%s\n' "${sock##*/}"
+  done
+  return 0
+}
+
 # panel_new_window <cmd...> -- open a window, or say why not.
 #
 # A bare `tmux new-window` with no $TMUX check that swallows the failure with 2>/dev/null

@@ -41,6 +41,9 @@
 
 set -uo pipefail
 
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+. "${SELF%/*}/panel-lib.sh" || exit 1
+
 # server name -> start dir for its initial session. A name not listed here still
 # works; it just boots at $HOME.
 server_root() {
@@ -51,7 +54,6 @@ server_root() {
   esac
 }
 
-SOCKET_DIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
 MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 SESH_CONFIG_DIR="${SESH_CONFIG_DIR:-$HOME/.config/sesh}"
 
@@ -102,17 +104,6 @@ die() { printf 'tmx: %s\n' "$*" >&2; exit 1; }
 
 command -v tmux >/dev/null 2>&1 || die "tmux not installed"
 
-# Sockets that currently have a live server behind them.
-live_servers() {
-  [ -d "$SOCKET_DIR" ] || return 0
-  local sock name
-  for sock in "$SOCKET_DIR"/*; do
-    [ -S "$sock" ] || continue
-    name="${sock##*/}"
-    # A socket file can outlive its server; only report ones that answer.
-    tmux -L "$name" has-session 2>/dev/null && printf '%s\n' "$name"
-  done
-}
 
 session_count() { tmux -L "$1" list-sessions 2>/dev/null | wc -l | tr -d ' '; }
 
@@ -128,7 +119,7 @@ cmd_ls() {
     [ -n "$s" ] || continue
     world_hidden "$s" && continue
     case " ${all[*]} " in *" $s "*) ;; *) all+=("$s") ;; esac
-  done < <(live_servers)
+  done < <(panel_live_servers)
 
   for s in "${all[@]}"; do
     local n; n="$(session_count "$s")"
@@ -397,7 +388,7 @@ _enter() {
     # $mode is quoted too: pick-all passes "<session>" or "<session>:<window>",
     # and a session name is free to contain spaces.
     tmux detach-client -E \
-      "$(printf '%q' "$0") land $(printf '%q' "$target") $(printf '%q' "$mode")"
+      "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")"
     return 0
   fi
 
@@ -627,7 +618,7 @@ _all_rows() {
 
     done < <(tmux -L "$s" list-sessions -F \
       "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}" 2>/dev/null)
-  done < <(live_servers)
+  done < <(panel_live_servers)
 }
 
 # pick-all -- fzf over every session and window everywhere. Enter goes there.
@@ -668,7 +659,7 @@ cmd_reload() {
   local s conf="${TMUX_CONF:-$HOME/.tmux.conf}"
   while IFS= read -r s; do
     [ -n "$s" ] && tmux -L "$s" source-file "$conf"
-  done < <(live_servers)
+  done < <(panel_live_servers)
   [ -n "${TMUX:-}" ] && tmux display-message "tmx: reloaded $conf on every server"
   return 0
 }
@@ -688,7 +679,7 @@ main() {
     pick-all)     cmd_pick_all ;;
     rows)         _all_rows ;;
     reload)       cmd_reload ;;
-    -h|--help)    sed -n '2,40p' "$0" ;;
+    -h|--help)    sed -n '2,40p' "$SELF" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac
 }
