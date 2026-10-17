@@ -2017,6 +2017,84 @@ pub fn show_waves(p: &Profile, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Open tasks on a sheet, counted the way the projects popup shows them: the current wave
+/// (its open total and how many carry each priority tag) and everything still open on the
+/// planned waves after it. An untagged row counts toward `open` and no priority.
+#[derive(Debug, Default, PartialEq)]
+struct SheetCounts {
+    open: usize,
+    urgent: usize,
+    high: usize,
+    low: usize,
+    planned: usize,
+}
+
+fn sheet_counts(content: &str) -> SheetCounts {
+    let mut c = SheetCounts::default();
+    for (i, s) in waves::sections(content).iter().enumerate() {
+        let open = waves::open_tasks(content, s);
+        if i > 0 {
+            c.planned += open.len();
+            continue;
+        }
+        c.open = open.len();
+        for l in &open {
+            match md::task_priority(l) {
+                Some("#urgent") => c.urgent += 1,
+                Some("#high") => c.high += 1,
+                Some("#low") => c.low += 1,
+                _ => {}
+            }
+        }
+    }
+    c
+}
+
+/// One `--stats` row for the project in `dir`. The sheet is the one `ptask` reads, so the
+/// counts here and `ptask list` cannot disagree; a project with no wave sheet yet reports
+/// zeros and its front page.
+fn stats_row(profile: &str, name: &str, dir: &Path) -> String {
+    let read = |p: Option<PathBuf>| {
+        p.and_then(|p| fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    };
+    let sheet = project_tasks::task_sheet(dir);
+    let c = sheet_counts(&read(sheet.clone()));
+    let agent = sheet_counts(&read(project_tasks::task_sheet(&agent_dir(dir)))).open;
+    format!(
+        "{profile}\t{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{agent}\t{}",
+        stage_of(dir).unwrap_or_default(),
+        version_str(dir),
+        c.open,
+        c.urgent,
+        c.high,
+        c.low,
+        c.planned,
+        sheet.unwrap_or_else(|| front_page(dir)).display(),
+    )
+}
+
+/// `notes projects --stats` — every profile's indexed projects with their open work, as
+/// TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>low<TAB>
+/// planned<TAB>agent<TAB>sheet`.
+///
+/// One call for the whole projects popup, across every profile like `focus --all`, so the
+/// switcher opens without a process per project. A profile that does not resolve is
+/// skipped: one broken profile must not blank the list.
+pub fn stats() -> Result<()> {
+    for profile in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&profile)) else {
+            continue;
+        };
+        for (name, summary) in indexed(&p) {
+            if let Some(dir) = summary.parent() {
+                println!("{}", stats_row(&profile, &name, dir));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The agents' half of a project: `<project>/agent/`.
 ///
 /// ONE name for it, so no caller spells the directory itself. Named `agent` rather than `ai`
@@ -3532,5 +3610,84 @@ mod move_layout_tests {
         let f = layout_findings_with(&v.personal, &others(&v)).join("\n");
         assert!(f.contains("current/binks/v2.0.0.md is a plan"), "{f}");
         assert!(!f.contains("v2.0.0.md loose (-> versions/)"), "never advise folding a plan: {f}");
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    const SHEET: &str = "# demo\nVersion: v0.3.2 #beta\n\n\
+## Wave: v0.3.2 (current)\n\
+- [ ] fix boss #urgent\n\
+- [/] tune ai #high\n\
+- [ ] note it #low\n\
+- [ ] untagged\n\
+- [x] shipped #high\n\n\
+## Wave: v0.3.3 (planned)\n\
+- [ ] later one #high\n\
+- [ ] later two\n\
+- [x] already done\n";
+
+    #[test]
+    fn counts_split_the_current_wave_by_priority_and_sum_the_planned_ones() {
+        assert_eq!(
+            sheet_counts(SHEET),
+            SheetCounts {
+                open: 4,
+                urgent: 1,
+                high: 1,
+                low: 1,
+                planned: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_sheet_with_no_waves_counts_nothing() {
+        assert_eq!(sheet_counts("# x\n\n- [ ] loose\n"), SheetCounts::default());
+    }
+
+    #[test]
+    fn a_row_carries_stage_version_counts_agent_and_sheet() {
+        let dir = std::env::temp_dir().join(format!("proj-stats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        fs::write(dir.join("README.md"), SHEET).unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# agent\n\n## Wave: v0.3.2 (current)\n- [ ] a\n- [ ] b\n- [x] c\n",
+        )
+        .unwrap();
+        let row = stats_row("bnb", "demo", &dir);
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(
+            &cols[..10],
+            &["bnb", "demo", "beta", "v0.3.2", "4", "1", "1", "1", "2", "2"],
+            "{row}"
+        );
+        assert_eq!(cols[10], dir.join("README.md").display().to_string());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_with_no_sheet_reports_zeros_and_its_front_page() {
+        let dir = std::env::temp_dir().join(format!("proj-stats-bare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "# demo #draft\n").unwrap();
+        let cols: Vec<String> = stats_row("personal", "demo", &dir)
+            .split('\t')
+            .map(String::from)
+            .collect();
+        assert_eq!(cols[2], "draft");
+        assert_eq!(
+            cols[3],
+            version_str(&dir),
+            "the same version `notes projects` shows"
+        );
+        assert_eq!(&cols[4..10], &["0", "0", "0", "0", "0", "0"]);
+        assert_eq!(cols[10], dir.join("summary.md").display().to_string());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
