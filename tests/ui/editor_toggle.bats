@@ -280,3 +280,33 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   assert_equal "$(win_count)" 4
   assert_equal "$(marked)" "$ed_id"
 }
+
+# ── open ─────────────────────────────────────────────────────────────────────
+
+@test "open with no editor yet creates the editor ON the file" {
+  # Started on the file rather than typed into a starting editor: that is the race toggle's
+  # self-heal comment describes, so the window command itself must carry the file and line.
+  start_session
+  _tm run-shell -t work:two "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id; ed_id="$(marked)"
+  run _tm display-message -p -t "$ed_id" '#{pane_start_command}'
+  assert_output --partial 'nvim +7'
+  assert_output --partial 'a\ sheet.md'
+  assert_equal "$(current_win)" "$ed_id"
+}
+
+@test "open with a running editor types :e at the line into it and goes there" {
+  start_session
+  ed two ensure cat
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id; ed_id="$(marked)"
+  _tm select-window -t work:one
+  _tm run-shell -t work:one "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
+  wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
+  run _tm capture-pane -p -t "$ed_id"
+  assert_output --partial ':e +7 '
+  assert_output --partial 'a\ sheet.md'
+  assert_equal "$(current_win)" "$ed_id"
+  assert_equal "$(win_count)" 4
+}
