@@ -8,6 +8,7 @@
 # Fixture files (all TAB-delimited, all optional):
 #   profiles                    one profile name per line
 #   projects.<profile>          name  summary  status  version
+#   stats                       profile name stage version open urgent high low planned agent sheet
 #   focus.all                   profile  file  line  key  text
 #   ptask.<profile>.<project>   path  line  key  text
 set -uo pipefail
@@ -55,6 +56,8 @@ case "${1:-}" in
       --version-of) emit "version-of.${3:-}" ;;
       # `notes projects --waves <name>` -> version TAB state TAB open TAB done TAB heading
       --waves) emit "waves.${3:-}" ;;
+      # `notes projects --stats` -> every profile's projects with their open counts
+      --stats) emit stats ;;
       # `notes --profile P projects` -> name TAB summary TAB status TAB version
       *) emit "projects.${profile:-personal}" ;;
     esac

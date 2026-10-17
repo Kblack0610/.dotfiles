@@ -198,8 +198,11 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
 
-  # The editor exits; the shell tail catches the window.
-  wait_until "_tm display-message -p -t '$ed_id' '#{pane_current_command}' | grep -qvx sleep"
+  # The editor exits; the shell tail catches the window. Wait on the PROCESS: the pane names
+  # its wrapping shell even while `sleep 1` runs, so "the pane is not sleep" is true from the
+  # first instant and used to let the toggle below race the editor it was meant to follow.
+  local pid; pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "! pgrep -P '$pid' -x sleep >/dev/null"
   # THE assertion. Without a RESOLVED shell on the window command the tail is `exec \"\"`,
   # the window closes here, and its place in the list is gone. $SHELL is unset under
   # run-shell, so that is not a hypothetical.
@@ -209,6 +212,22 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   # And the toggle re-enters it rather than delivering you to a bare prompt.
   ed two toggle 'sleep 300'
   wait_until "_tm display-message -p -t '$ed_id' '#{pane_current_command}' | grep -qx sleep"
+  assert_equal "$(current_win)" "$ed_id"
+}
+
+@test "toggling back to a RUNNING editor does not type the editor command into it" {
+  # The editor ensure starts runs under a non-interactive shell, so its pane names the SHELL
+  # while it runs. A heal keyed on that name alone fires into the live editor every time.
+  start_session
+  ed two ensure 'sleep 300'
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id pid; ed_id="$(marked)"
+  pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "pgrep -P '$pid' -x sleep >/dev/null"
+  ed three toggle 'sleep 300'
+  sleep 0.5
+  run _tm capture-pane -p -t "$ed_id"
+  refute_output --partial 'sleep 300'
   assert_equal "$(current_win)" "$ed_id"
 }
 
@@ -279,4 +298,43 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   sleep 0.3
   assert_equal "$(win_count)" 4
   assert_equal "$(marked)" "$ed_id"
+}
+
+# ── open ─────────────────────────────────────────────────────────────────────
+
+@test "open with no editor yet creates the editor ON the file" {
+  # Started on the file rather than typed into a starting editor: that is the race toggle's
+  # self-heal comment describes, so the window command itself must carry the file and line.
+  start_session
+  _tm run-shell -t work:two "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id; ed_id="$(marked)"
+  # tmux quotes the start command when it prints it and doubles the backslash, so assert
+  # the parts rather than one escaped spelling of the path.
+  run _tm display-message -p -t "$ed_id" '#{pane_start_command}'
+  assert_output --partial 'nvim +7 '
+  assert_output --partial 'sheet.md'
+  assert_equal "$(current_win)" "$ed_id"
+}
+
+@test "open with a running editor types :e at the line into it and goes there" {
+  start_session
+  # `sleep`, not `cat`, as the running editor: a run-shell child's pane gets a stdin that
+  # EOFs at once, so cat exits and the pane is back at its shell (see the self-heal test).
+  # The keystrokes still echo on the pane's tty, which is what the capture reads.
+  ed two ensure 'sleep 300'
+  wait_until '[ -n "$(marked)" ]'
+  local ed_id; ed_id="$(marked)"
+  # The pane reads as its wrapping shell for the editor's whole life (see _at_shell), so
+  # wait for the editor PROCESS, which is what open now asks about.
+  local pid; pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
+  wait_until "pgrep -P '$pid' -x sleep >/dev/null"
+  _tm select-window -t work:one
+  _tm run-shell -t work:one "EDITOR_WINDOW_CMD='sleep 300' '$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
+  wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
+  run _tm capture-pane -p -t "$ed_id"
+  assert_output --partial ':e +7 '
+  assert_output --partial 'a\ sheet.md'
+  assert_equal "$(current_win)" "$ed_id"
+  assert_equal "$(win_count)" 4
 }

@@ -19,6 +19,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
 | `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens a project's tasks: `a` add, `m` move to another project, `x` done, `+`/`-` change wave, `o` open the sheet. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). |
 | `command-center.sh` | window `hub:infra` | The glance board: one tile per domain (cluster, machines, prod, LLM, CI, agents, spend, agent platform), coloured by the `cc:*` recording rules in home-config `apps/monitoring/prometheus-rules-command-center.yaml`. Same series as the Grafana Command Center, so the two cannot disagree. Read-only; actions stay in `fleet.sh`. |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
@@ -36,6 +37,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Root of a world**: `Prefix+H` hub · `Prefix+N` lab (daily / projects overview)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find a repo or a worktree
+- **Project work**: `Prefix+P` → projects with their open counts; Enter for the tasks
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows

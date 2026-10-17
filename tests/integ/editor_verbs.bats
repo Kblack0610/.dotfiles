@@ -93,3 +93,15 @@ setup() {
   assert_failure
   assert_not_called 'new-window'
 }
+
+@test "open outside tmux fails loudly too" {
+  run "$EDITOR_SH" open "$SANDBOX/sheet.md" 3
+  assert_failure
+  assert_output --partial 'not inside tmux'
+}
+
+@test "open with no file is a usage error, not an empty edit" {
+  TMUX=/fake run "$EDITOR_SH" open
+  assert_failure
+  assert_output --partial 'usage: editor.sh open'
+}

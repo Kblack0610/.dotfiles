@@ -12,6 +12,9 @@
 #                 Idempotent, so it is both the create path and the repair path.
 #   root          print the directory the editor opens in. Split out so the resolution
 #                 order is assertable without a terminal.
+#   open <file> [line]
+#                 show <file> at <line> in the editor window, creating it if needed. The
+#                 projects popup's `o`.
 #   --help, -h    this text
 #
 # ONE editor per session, living at window 1, rooted at the session's directory. NOT one per
@@ -112,13 +115,27 @@ _fallback_shell() {
 # _at_shell <window-id> - the window's active pane has fallen back to a bare prompt, i.e.
 # you quit the editor. The shell tail on the window command is what puts it here rather
 # than closing the window and losing its place in the list.
+#
+# A shell NAME is not enough. ensure runs `<editor>; exec <shell>` through a non-interactive
+# shell, so the editor shares that shell's process group and pane_current_command names the
+# SHELL for as long as the editor runs (seen on 3.7b in the container: a running `sleep 300`
+# read as `sh` for its whole life). So it is only a prompt when the editor binary is not
+# running under the pane's process. Without this, toggle's heal and `open` type an editor
+# command into a live editor as keystrokes.
 _at_shell() {
-  local cmd
+  local cmd pid bin
   cmd="$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)"
   case "$cmd" in
-  sh | bash | zsh | fish | dash | ksh) return 0 ;;
+  sh | bash | zsh | fish | dash | ksh) ;;
   *) return 1 ;;
   esac
+  pid="$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"
+  bin="${EDITOR_WINDOW_CMD%% *}"
+  bin="${bin##*/}"
+  if [ -n "$pid" ] && pgrep -P "$pid" -x "$bin" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
 }
 
 # ── Verbs ────────────────────────────────────────────────────────────────────
@@ -222,6 +239,29 @@ cmd_toggle() {
   tmux select-window -t "$win"
 }
 
+# cmd_open <file> [line] - show <file> at <line> in this session's editor.
+#
+# No editor window yet: create it ON the file, so there is nothing to type into an editor
+# that is still starting (the race cmd_toggle describes). Editor fell back to its shell:
+# start it on the file. Editor running: `:e` it, the way servers.sh's _refresh_landing does,
+# backslash-escaping spaces because this is typed at vim's command line.
+cmd_open() {
+  panel_in_tmux || panel_die "not inside tmux - there is no editor window to open in"
+  local file="${1:-}" line="${2:-1}" win
+  [ -n "$file" ] || panel_die "usage: editor.sh open <file> [line]"
+
+  win="$(_editor_window)"
+  if [ -z "$win" ]; then
+    win="$(EDITOR_WINDOW_CMD="nvim +$line $(printf '%q' "$file")" cmd_ensure)" || return 1
+  elif _at_shell "$win"; then
+    tmux send-keys -t "$win" "nvim +$line $(printf '%q' "$file")" Enter
+  else
+    tmux send-keys -t "$win" Escape
+    tmux send-keys -t "$win" ":e +$line ${file// /\\ }" Enter
+  fi
+  tmux select-window -t "$win"
+}
+
 # ── The test seam ────────────────────────────────────────────────────────────
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
@@ -230,6 +270,7 @@ case "${1:-}" in
 toggle) cmd_toggle "${2:-}" ;;
 ensure) cmd_ensure ;;
 root) cmd_root ;;
+open) cmd_open "${2:-}" "${3:-}" ;;
 -h | --help) panel_usage ;;
 *) panel_die "unknown verb: ${1:-} (try --help)" ;;
 esac
