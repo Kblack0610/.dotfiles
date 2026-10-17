@@ -281,6 +281,11 @@ _open() {
 }
 
 # --- Picker ---
+# The table flags minus --no-sort. An empty query shows the rows in their own order either
+# way; a search ranks by match, which is what makes "time" land on time-tangle rather than
+# on agent-run(time), the earlier row a scattered match also hits. Ties keep row order.
+PROJECTS_FZF_TABLE=(--cycle --wrap --tiebreak=index --delimiter="$PANEL_TAB")
+
 # Project search reads the label (number, name, profile) and never the counts: --nth counts
 # the fields --with-nth shows, so the label is its own tab field and --tabstop=1 draws the
 # tab as one space. Fuzzy over the whole row, "dodg" matched unity-playground through
@@ -291,7 +296,7 @@ _pick_tasks() {
   local -a BINDS
   export PROJECTS_P="$1" PROJECTS_N="$2"
   _binds tasks j k / a m x + - o esc enter
-  out="$(cmd_tasks "$1" "$2" | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" \
+  out="$(cmd_tasks "$1" "$2" | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4 --exact --prompt="$2 > " \
     --header="$(cmd_header "$1" "$2")"$'\n'"a add  m move  x done  +/- wave  o open  / search  esc back" \
     "${BINDS[@]}")" || return 0
@@ -304,7 +309,6 @@ _pick_tasks() {
 cmd_pick() {
   panel_need fzf notes
   panel_fzf_opts
-  panel_fzf_table
 
   local out key state=main row profile name sheet prompt list
   local -a BINDS
@@ -312,7 +316,7 @@ cmd_pick() {
     list='' prompt='projects> '
     if [ "$state" = drafts ]; then list=--drafts prompt='all projects> '; fi
     _binds list j k / 1 2 3 4 5 6 7 8 9 o q n s x d esc enter
-    out="$(cmd_list ${list:+"$list"} | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" \
+    out="$(cmd_list ${list:+"$list"} | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
       --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt="$prompt" \
       --header='1-9 tasks  o open  n new  s stage  x archive  d drafts  / search  q quit' \
       "${BINDS[@]}")" || return 0
