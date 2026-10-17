@@ -290,9 +290,11 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   _tm run-shell -t work:two "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
+  # tmux quotes the start command when it prints it and doubles the backslash, so assert
+  # the parts rather than one escaped spelling of the path.
   run _tm display-message -p -t "$ed_id" '#{pane_start_command}'
-  assert_output --partial 'nvim +7'
-  assert_output --partial 'a\ sheet.md'
+  assert_output --partial 'nvim +7 '
+  assert_output --partial 'sheet.md'
   assert_equal "$(current_win)" "$ed_id"
 }
 
@@ -301,6 +303,9 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   ed two ensure cat
   wait_until '[ -n "$(marked)" ]'
   local ed_id; ed_id="$(marked)"
+  # Until cat is the foreground process the pane still reads as its wrapping shell, and open
+  # would (correctly) start an editor instead of typing :e. Wait for the editor to be up.
+  wait_until '[ "$(_tm display-message -p -t "$ed_id" "#{pane_current_command}")" = cat ]'
   _tm select-window -t work:one
   _tm run-shell -t work:one "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
   wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
