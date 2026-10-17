@@ -722,14 +722,18 @@ pub fn comms_config() -> Result<Comms> {
     let llm_base_url = rc
         .llm_base_url
         .unwrap_or_else(|| "http://localhost:4000/v1".to_string());
-    let llm_model = rc.llm_model.unwrap_or_else(|| "local".to_string());
+    let llm_model = rc
+        .llm_model
+        .unwrap_or_else(|| "local".to_string());
     let stats_bin = rc.stats_bin.as_ref().map(|s| expand(s));
     let accounts = rc
         .account
         .into_iter()
         .map(|a| {
             let name = a.name;
-            let rbw_entry = a.rbw_entry.unwrap_or_else(|| format!("gmail_app_{name}"));
+            let rbw_entry = a
+                .rbw_entry
+                .unwrap_or_else(|| format!("gmail_app_{name}"));
             Account {
                 address: a.address.unwrap_or_default(),
                 rbw_entry,

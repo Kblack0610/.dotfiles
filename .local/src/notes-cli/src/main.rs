@@ -23,8 +23,8 @@ mod knowledge;
 mod logging;
 mod md;
 mod meeting;
-mod project_sweep;
 mod project_tasks;
+mod project_sweep;
 mod projects;
 mod status;
 mod summarize;
@@ -808,14 +808,15 @@ fn main() -> Result<()> {
             }
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
+                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,
+                name,
             ) {
                 (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
                 (_, _, _, Some(n), ..) => {
                     projects::roll(&prof, &log, &n, level, force, carry, next.as_deref())?
-                }
+                },
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,

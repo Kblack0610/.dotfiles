@@ -214,9 +214,7 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             continue;
         };
         for (proj, summary) in crate::daily::discover_project_dirs(&p) {
-            let Some(dir) = summary.parent() else {
-                continue;
-            };
+            let Some(dir) = summary.parent() else { continue };
             // No task sheet means no version to track and nothing to link from. A prose
             // brief is not a project that has started; scaffolding into it would put an
             // agent board on something with no wave to put work in.
@@ -252,15 +250,8 @@ mod tests {
 
     #[test]
     fn a_fresh_sheet_is_the_same_skeleton_the_human_gets() {
-        let b = body(
-            "notes-cockpit",
-            "v0.0.2",
-            "lab/projects/current/notes-cockpit/README",
-        );
-        assert!(
-            b.starts_with("# notes-cockpit - agent board\nVersion: v0.0.2\n"),
-            "{b}"
-        );
+        let b = body("notes-cockpit", "v0.0.2", "lab/projects/current/notes-cockpit/README");
+        assert!(b.starts_with("# notes-cockpit - agent board\nVersion: v0.0.2\n"), "{b}");
         assert!(b.contains("## Wave: v0.0.2 (current)"), "{b}");
         assert!(b.contains("- [ ] "), "{b}");
         // The human's reader must find the wave, or nothing downstream sees this file.
@@ -283,19 +274,10 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "# demo");
         assert_eq!(lines[1], "Version: v0.0.2");
-        assert!(
-            lines[2].starts_with("Agents: [[lab/p/demo/agent/README|agent board]]"),
-            "{out}"
-        );
-        assert!(
-            lines[2].contains("[[lab/projects/agent-board|all projects]]"),
-            "{out}"
-        );
+        assert!(lines[2].starts_with("Agents: [[lab/p/demo/agent/README|agent board]]"), "{out}");
+        assert!(lines[2].contains("[[lab/projects/agent-board|all projects]]"), "{out}");
         // and the wave is untouched below it
-        assert!(
-            out.contains("## Wave: v0.0.2 (current)\n- [ ] a\n"),
-            "{out}"
-        );
+        assert!(out.contains("## Wave: v0.0.2 (current)\n- [ ] a\n"), "{out}");
     }
 
     #[test]
@@ -303,10 +285,7 @@ mod tests {
         // This runs on every `notes today`. An append would grow the head without bound.
         let sheet = "# demo\nVersion: v0.0.2\n\n## Wave: v0.0.2 (current)\n";
         let once = with_link(sheet, &link_line("lab/p/demo/agent/README")).unwrap();
-        assert!(
-            with_link(&once, &link_line("lab/p/demo/agent/README")).is_none(),
-            "no rewrite"
-        );
+        assert!(with_link(&once, &link_line("lab/p/demo/agent/README")).is_none(), "no rewrite");
         assert_eq!(once.matches("Agents: ").count(), 1, "{once}");
     }
 
@@ -344,10 +323,7 @@ mod tests {
         let got = fs::read_to_string(sheet_path(&dir)).unwrap();
         assert!(got.contains("Version: v0.0.2"), "{got}");
         assert!(got.contains("## Wave: v0.0.2 (current)"), "{got}");
-        assert!(
-            !got.contains("v0.0.1"),
-            "no trace of the old version:\n{got}"
-        );
+        assert!(!got.contains("v0.0.1"), "no trace of the old version:\n{got}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -374,15 +350,9 @@ mod tests {
     fn the_empty_placeholder_row_does_not_count_as_work() {
         // Every fresh wave carries `- [ ] `. Counting it would freeze the scaffold at the
         // version it was created with, which is the bug this whole path exists to avoid.
-        assert!(is_untouched(
-            "# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] \n"
-        ));
-        assert!(!is_untouched(
-            "# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] real\n"
-        ));
-        assert!(!is_untouched(
-            "# d\n\n## Wave: v1 (current)\n- [x] done work\n"
-        ));
+        assert!(is_untouched("# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] \n"));
+        assert!(!is_untouched("# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] real\n"));
+        assert!(!is_untouched("# d\n\n## Wave: v1 (current)\n- [x] done work\n"));
     }
 
     /// A scratch project dir, unique per test and per thread.

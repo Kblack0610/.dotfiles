@@ -1065,10 +1065,7 @@ mod tests {
 
     #[test]
     fn drop_tag_removes_only_the_whole_token() {
-        assert_eq!(
-            drop_tag("- [ ] a thing #ai #high", "#ai"),
-            "- [ ] a thing #high"
-        );
+        assert_eq!(drop_tag("- [ ] a thing #ai #high", "#ai"), "- [ ] a thing #high");
         assert_eq!(drop_tag("- [ ] #ai leading", "#ai"), "- [ ] leading");
         // NEGATIVE CONTROL: `#aid` is a different tag and must survive untouched.
         assert_eq!(
@@ -1084,10 +1081,7 @@ mod tests {
         // The marker is the evidence trail. A `#ai` inside it is something someone wrote
         // down, not routing, so the sweep must leave it exactly where it is.
         assert_eq!(
-            drop_tag(
-                "- [x] a thing #ai <!-- pr:1218 fixed the #ai path -->",
-                "#ai"
-            ),
+            drop_tag("- [x] a thing #ai <!-- pr:1218 fixed the #ai path -->", "#ai"),
             "- [x] a thing <!-- pr:1218 fixed the #ai path -->"
         );
     }

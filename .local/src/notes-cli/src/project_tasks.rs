@@ -917,14 +917,8 @@ Version: v1.13.0
     fn a_moved_row_takes_its_new_wave_tag_and_survives_a_sweep() {
         let sheet = "# demo\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n- [ ] stays\n\n## Wave: v1.14.0 (planned)\n- [ ] later #v1.14.0\n";
         let line = retag_for(sheet, "- [ ] moved #v1.13.0 #urgent", "v1.14.0");
-        assert!(
-            line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
-            "{line}"
-        );
-        assert!(
-            !line.contains("#urgent"),
-            "urgent is only legal in the current wave: {line}"
-        );
+        assert!(line.contains("#v1.14.0") && !line.contains("#v1.13.0"), "{line}");
+        assert!(!line.contains("#urgent"), "urgent is only legal in the current wave: {line}");
         let placed = md::insert_under_heading(sheet, "Wave: v1.14.0 (planned)", &[line]);
         let swept = project_sweep::sweep_sheet(&placed).map_or(placed.clone(), |(c, _)| c);
         let later = waves::find(&swept, (1, 14, 0)).unwrap();
