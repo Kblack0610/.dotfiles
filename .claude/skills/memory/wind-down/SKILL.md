@@ -4,7 +4,7 @@ description: Cleanly wrap up and spin down the current Claude session - write a 
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-08-10"
+  reviewed: "2026-10-19"
 ---
 
 # wind-down
@@ -87,18 +87,19 @@ Then invoke the **`lab-status`** skill (`status` verb) for that project to recor
 
 The wrap-up note's `## Next step` is durable but passive - it only resurfaces if someone opens
 that file. When the session leaves a real follow-up that should come back up on its own, ALSO
-drop it in the dated-capture **inbox** so it lands in the triage queue:
+put it on the project board, picking the lane by who has to do it:
 
 ```bash
-notes inbox add "<project>: <the next action> - see ~/.agent/sessions/<project>/<date>-wind-down.md"
+notes ptask <project> --agent add "<the next action>"   # an agent can do it: the default
+notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 
-`notes inbox add` appends a timestamped line to today's `inbox/<date>.md`; `notes inbox` (the
-triage view) and `notes today` (which links the inbox into the daily note) surface it later. Use
-it for a concrete next action or a blocked-on-X follow-up - one line, pointing back at the wrap-up
-note or plan for detail. Skip it when the session has no meaningful next step. For work that
-belongs on a tracked board instead, prefer a Vikunja ticket (the repo tracker) or the project board
-(`notes ptask <project> add "..."`) over the inbox.
+One line, a couple of words; the wrap-up note holds the detail. Check both lanes for the same
+thing first and skip the add if it is already there. Skip it entirely when the session has no
+meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
+
+Do NOT write it to `notes inbox add`. The inbox is not triaged: by 2026-10-19 it held 217
+wind-down captures across 58 files, none drained since June, all archived unread.
 
 Do NOT auto-write to the daily `## Focus` cockpit here - that lane is for tasks you deliberately
 choose to surface every session, so multiple wind-downs don't flood it. The cockpit's write path
