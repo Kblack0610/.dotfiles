@@ -266,7 +266,6 @@ test_notifications.sh
 .local/bin/notes-to-vikunja
 .local/bin/notes-sync
 .local/bin/notes-watch
-.local/bin/inbox-notify
 .local/bin/opencode-binks
 .local/bin/opencode-binks-bootstrap
 .local/bin/watch-companion-loop
