@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly sweep of dead Claude session scratchpads in /tmp
+
+[Timer]
+# A steady cadence on purpose: a crashed or hand-closed session emits no event to wait on.
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

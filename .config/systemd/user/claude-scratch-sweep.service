@@ -1,0 +1,8 @@
+[Unit]
+Description=Remove scratchpads of Claude sessions that ended without winding down
+
+[Service]
+Type=oneshot
+# /tmp is a tmpfs, so a dead session's scratchpad is RAM until something removes it.
+ExecStart=%h/.dotfiles/.local/src/tmux/wind-down.sh sweep
+TimeoutStartSec=300

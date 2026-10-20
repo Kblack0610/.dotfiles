@@ -4,7 +4,7 @@ description: Cleanly wrap up and spin down the current Claude session - write a 
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-10-19"
+  reviewed: "2026-10-20"
 ---
 
 # wind-down
@@ -154,9 +154,21 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    are non-destructive and usually permitted. Discarding tool-regenerated churn (Serena's
    `.serena/project.yml`, theme output) with `git restore` is fine and is often what unblocks a
    branch switch.
-5. **Clean up after yourself.** Remove this session's scratch artifacts (the session scratchpad
-   dir, temp files, stray `*.tmp`, throwaway test output). Leave the working tree and `/tmp`
-   scratch area as clean as you found them.
+5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
+   RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
+   and `claude-scratch-sweep.timer` (`wind-down.sh sweep`) reclaims the scratchpads of sessions
+   that never wound down. What no script can know, and so is yours:
+   - **Stop the background processes this session started**: anything launched with
+     `run_in_background`, `nohup`, `setsid` or `&`, such as dev servers, `kubectl port-forward`,
+     `pw-record`, emulators, Unity `-batchMode` editors, `docker run` containers. Stop them by
+     PID, never `pkill -f` a pattern that also appears in your own command line. MCP children
+     (playwright's firefox and the rest) die with Claude; leave them. Never touch a process
+     another live session or the user owns.
+   - **Delete what this session wrote outside its scratchpad**: `/tmp/*.tar`, builds, disk
+     images, stray `*.tmp`, throwaway test output in the working tree.
+   - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
+     images, Unity or Windows builds, tarballs) goes to disk, e.g.
+     `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
 6. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
 
    ```bash

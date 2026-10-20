@@ -20,6 +20,13 @@
 #       agent-runtime axis: ~/.agent/sessions/<project>/<date>-wind-down.md.
 #       The skill writes the wrap-up there. Project resolution matches the hook.
 #
+#   wind-down.sh sweep [-n]
+#       Remove the scratchpads of Claude sessions that ended without winding down:
+#       <scratch-root>/<project>/<session-id>/ whose session is not live and which has
+#       not been touched for SWEEP_IDLE_HOURS (24). /tmp is a tmpfs here, so every dir
+#       left behind is RAM. -n prints what it would remove. Run hourly by
+#       claude-scratch-sweep.timer.
+#
 # Sentinel format (key=val, one per line):
 #   scope=window|session
 #   target=<window_id>          # stable @N — NEVER use window_index (it renumbers
@@ -32,6 +39,7 @@
 #   worktree=<path>             # set only when this session sits in a `wt` worktree; `fire`
 #                               #   hands it to `wt reap` AFTER the kill, and reap refuses
 #                               #   unless it is clean, landed and has no live session
+#   sid=<claude_session_id>     # `fire` removes this session's scratchpad AFTER the kill
 #   ts=<unix>
 
 set -uo pipefail
@@ -131,6 +139,7 @@ cmd_arm() {
     echo "socket=$socket"
     echo "windows=$windows"
     echo "worktree=$worktree"
+    echo "sid=$sid"
     echo "ts=$(date +%s)"
   } > "$sentinel"
 
@@ -148,8 +157,9 @@ cmd_fire() {
   [ -n "$sentinel" ] && [ -f "$sentinel" ] || { echo "wind-down fire: sentinel not found: $sentinel" >&2; return 1; }
 
   # shellcheck source=/dev/null
-  local scope target session pane socket label worktree
+  local scope target session pane socket label worktree sid
   scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
+  sid=$(grep '^sid=' "$sentinel" | head -1 | cut -d= -f2-)
   worktree=$(grep '^worktree=' "$sentinel" | head -1 | cut -d= -f2-)
   target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
   session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
@@ -242,7 +252,14 @@ cmd_fire() {
     reap_cmd="; $HOME/.local/bin/wt reap '$worktree' >> '$logf' 2>&1"
   fi
 
-  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd" 2>/dev/null
+  # The scratchpad goes after the kill too: until then Claude may still be writing to it.
+  # The id sits inside a glob, so anything that is not exactly a session id schedules nothing.
+  local scratch_cmd=''
+  if is_session_id "$sid"; then
+    scratch_cmd="; rm -rf -- '$(scratch_root)'/*/'$sid'"
+  fi
+
+  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
   local sched_rc=$?
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
@@ -256,6 +273,65 @@ cmd_note_path() {
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
 }
 
+# Claude Code keeps each session's scratchpad at <root>/<project-slug>/<session-id>/.
+scratch_root() { echo "${CLAUDE_SCRATCH_ROOT:-/tmp/claude-$(id -u)}"; }
+
+is_session_id() {
+  [[ "${1:-}" =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]
+}
+
+# Session ids of Claude processes that are alive right now. Claude writes
+# ~/.claude/sessions/<pid>.json per running session, and the file can outlive the
+# process, so the pid is checked too.
+live_session_ids() {
+  local f pid sid
+  for f in "$HOME/.claude/sessions"/*.json; do
+    [ -f "$f" ] || continue
+    read -r pid sid < <(jq -r '"\(.pid // "") \(.sessionId // "")"' "$f" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$sid"
+  done
+}
+
+cmd_sweep() {
+  local dry=0 a
+  for a in "$@"; do
+    case "$a" in
+      -n|--dry-run) dry=1 ;;
+      *) echo "wind-down sweep: unknown arg '$a'" >&2; return 2 ;;
+    esac
+  done
+
+  # No registry means no way to tell a live session from a dead one. Refuse rather than
+  # treat everyone as dead.
+  if [ ! -d "$HOME/.claude/sessions" ] || ! command -v jq >/dev/null 2>&1; then
+    echo "wind-down sweep: no ~/.claude/sessions registry (or no jq) -- cannot tell live sessions, sweeping nothing" >&2
+    return 1
+  fi
+
+  local root live idle_min d sid mb total=0 count=0
+  root=$(scratch_root)
+  [ -d "$root" ] || return 0
+  live=$(live_session_ids)
+  idle_min=$(( ${SWEEP_IDLE_HOURS:-24} * 60 ))
+
+  for d in "$root"/*/*/; do
+    d="${d%/}"; sid="${d##*/}"
+    is_session_id "$sid" || continue
+    grep -qxF "$sid" <<<"$live" && continue
+    # Anything touched inside the window keeps the dir: a resumed session can be writing
+    # under an id that is no longer the one in its registry entry.
+    [ -n "$(find "$d" -mmin "-$idle_min" -print -quit 2>/dev/null)" ] && continue
+    mb=$(du -sm "$d" 2>/dev/null | cut -f1)
+    if [ "$dry" = 1 ]; then
+      echo "would remove ${mb}M $d"
+    else
+      rm -rf -- "$d" && echo "removed ${mb}M $d"
+    fi
+    total=$(( total + ${mb:-0} )); count=$(( count + 1 ))
+  done
+  echo "wind-down sweep: $count dir(s), ${total}M$( [ "$dry" = 1 ] && echo ' (dry run)')"
+}
+
 # Sourced (by the test suite) rather than run: stop here with every function defined but
 # no verb dispatched. Without this, sourcing falls into the case below with $1 unset, hits
 # the usage arm and `exit 2`s the test runner -- which is why the suite had reached for
@@ -267,8 +343,9 @@ case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
   fire)      shift; cmd_fire "$@" ;;
   note-path) shift; cmd_note_path "$@" ;;
+  sweep)     shift; cmd_sweep "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | sweep [-n]}" >&2
     exit 2
     ;;
 esac
