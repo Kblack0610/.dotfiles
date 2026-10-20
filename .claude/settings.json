@@ -151,6 +151,15 @@
             "command": "bash ~/.claude/hooks/block-pip.sh"
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/spawn-watch.sh"
+          }
+        ]
       }
     ],
     "SessionStart": [
