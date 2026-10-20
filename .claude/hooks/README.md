@@ -70,6 +70,7 @@ These read the project transcript and produce a deeper compliance audit than the
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
+| Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 
 ## File layout
 
