@@ -332,6 +332,13 @@ make_drifted_submodule() {
   git clone --quiet "$SUBORIGIN" "$SANDBOX/subwork" 2>/dev/null
   git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c1
   C1=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
+  # `make_drifted_submodule lfs`: c2 also brings an LFS-tracked file, so moving onto it runs
+  # the smudge filter.
+  if [ "${1:-}" = lfs ]; then
+    echo '*.bin filter=lfs' >"$SANDBOX/subwork/.gitattributes"
+    echo payload >"$SANDBOX/subwork/a.bin"
+    git -C "$SANDBOX/subwork" -c filter.lfs.clean=cat add .gitattributes a.bin
+  fi
   git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c2
   C2=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
   git -C "$SANDBOX/subwork" push --quiet origin main
@@ -398,6 +405,34 @@ make_drifted_submodule() {
   assert_output "$C2"
   run git -C "$WT" status --porcelain
   assert_output ''
+}
+
+@test "recycling never smudges LFS through the worktree's own submodule store" {
+  # A smudge here is a download into a per-worktree store (4.2 GB on unity-core-playground).
+  # Stub git-lfs and record what the smudge filter would have been asked to do.
+  make_drifted_submodule lfs
+  mkdir -p "$SANDBOX/bin"
+  # Real git-lfs reads GIT_LFS_SKIP_SMUDGE itself (git still calls the filter), so the stub
+  # logs a smudge only when it would have fetched.
+  cat >"$SANDBOX/bin/git-lfs" <<EOF
+#!/bin/sh
+case "\$1" in
+smudge) [ "\$GIT_LFS_SKIP_SMUDGE" = 1 ] || echo smudge >>"$SANDBOX/lfs.log"; cat ;;
+*) echo "\$1" >>"$SANDBOX/lfs.log" ;;
+esac
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/git-lfs"
+  export PATH="$SANDBOX/bin:$PATH"
+  export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_1=filter.lfs.smudge GIT_CONFIG_VALUE_1='git-lfs smudge -- %f' \
+    GIT_CONFIG_KEY_2=filter.lfs.clean GIT_CONFIG_VALUE_2=cat
+  touch "$SANDBOX/lfs.log"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run grep -c '^smudge' "$SANDBOX/lfs.log"
+  assert_output 0
+  run grep -c '^checkout' "$SANDBOX/lfs.log"
+  assert_output 1
 }
 
 # ── Repo resolution ──────────────────────────────────────────────────────────
