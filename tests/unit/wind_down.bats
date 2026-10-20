@@ -354,6 +354,111 @@ EOF
   refute_output --partial 'wt reap'
 }
 
+# -- the session scratchpad --
+#
+# /tmp is a tmpfs on this fleet, so a scratchpad left behind is RAM that never comes back.
+# fire removes THIS session's dir after the kill; sweep reclaims the dirs of sessions that
+# never wound down.
+
+SID_A="11111111-2222-3333-4444-555555555555"
+
+@test "arm records the Claude session id, and an empty one outside Claude" {
+  CLAUDE_CODE_SESSION_ID="$SID_A" wd arm
+  assert_success
+  run grep '^sid=' "$SPIN_DIR"/*__"$SID_A".request
+  assert_output "sid=$SID_A"
+
+  rm -f "$SPIN_DIR"/*.request
+  CLAUDE_CODE_SESSION_ID='' wd arm
+  assert_success
+  run grep '^sid=' "$SPIN_DIR"/*.request
+  assert_output 'sid='
+}
+
+@test "fire removes the session scratchpad AFTER the kill, in the same chain" {
+  mk_sentinel <<EOF
+scope=session
+target=@7
+session=cockpit
+sid=$SID_A
+EOF
+  CLAUDE_SCRATCH_ROOT="$HOME/scratch" run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "rm -rf -- '$HOME/scratch'/*/'$SID_A'"
+  local before_kill="${output%%kill-session*}"
+  case "$before_kill" in
+    *"rm -rf"*) fail "the scratchpad goes BEFORE the kill -- Claude would lose it mid-turn" ;;
+  esac
+}
+
+@test "fire removes no scratchpad for an empty or malformed session id" {
+  # The id lands inside a glob. Anything that is not exactly a UUID could widen it.
+  local bad
+  for bad in '' '*' '../x' "$SID_A extra"; do
+    : > "$NOTES_FIXTURE/calls.log"
+    mk_sentinel <<EOF
+scope=session
+target=@7
+session=cockpit
+sid=$bad
+EOF
+    run bash "$WIND_DOWN" fire "$SENTINEL"
+    assert_success
+    run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+    refute_output --partial 'rm -rf'
+  done
+}
+
+# A scratch root with one dir per case, and a sessions registry naming the live one.
+mk_scratch() {
+  export CLAUDE_SCRATCH_ROOT="$BATS_TEST_TMPDIR/scratch"
+  LIVE="aaaaaaaa-0000-0000-0000-000000000001"
+  DEAD_STALE="aaaaaaaa-0000-0000-0000-000000000002"
+  DEAD_RECENT="aaaaaaaa-0000-0000-0000-000000000003"
+  local s
+  for s in "$LIVE" "$DEAD_STALE" "$DEAD_RECENT" not-a-session; do
+    mkdir -p "$CLAUDE_SCRATCH_ROOT/-home-proj/$s/scratchpad"
+    echo x > "$CLAUDE_SCRATCH_ROOT/-home-proj/$s/scratchpad/f"
+  done
+  # Old enough to sweep: every file AND dir, since a fresh dir mtime counts as activity.
+  for s in "$LIVE" "$DEAD_STALE" not-a-session; do
+    find "$CLAUDE_SCRATCH_ROOT/-home-proj/$s" -exec touch -d '3 days ago' {} +
+  done
+  # A pid that is certainly dead, for a registry entry that outlived its process.
+  sleep 0 & local dead_pid=$!; wait "$dead_pid"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"sessionId":"%s"}\n' "$$" "$LIVE" > "$HOME/.claude/sessions/$$.json"
+  printf '{"pid":%s,"sessionId":"%s"}\n' "$dead_pid" "$DEAD_STALE" > "$HOME/.claude/sessions/$dead_pid.json"
+}
+
+@test "sweep removes only a dead session's stale scratchpad" {
+  mk_scratch
+  wd sweep
+  assert_success
+  [ ! -e "$CLAUDE_SCRATCH_ROOT/-home-proj/$DEAD_STALE" ] || fail "dead + stale dir survived"
+  [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/$LIVE" ] || fail "removed a LIVE session's scratchpad"
+  [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/$DEAD_RECENT" ] || fail "removed a dir touched within the idle window"
+  [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/not-a-session" ] || fail "touched a non-session entry"
+}
+
+@test "sweep -n names what it would remove and removes nothing" {
+  mk_scratch
+  wd sweep -n
+  assert_success
+  assert_output --partial "$DEAD_STALE"
+  refute_output --partial "$LIVE"
+  [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/$DEAD_STALE" ] || fail "-n deleted a dir"
+}
+
+@test "sweep refuses without a sessions registry instead of guessing nobody is live" {
+  mk_scratch
+  rm -rf "$HOME/.claude/sessions"
+  wd sweep
+  assert_failure
+  [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/$DEAD_STALE" ] || fail "swept with no liveness signal"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 @test "an unknown verb is a usage error, not a silent no-op" {
