@@ -476,8 +476,19 @@ wt_recycle() {
   # Bring the already-initialised submodules to what <base> records; wt_dirty_count waved
   # through a stale one as idle, so this is where it stops being stale. A failure (offline,
   # commit not fetchable) leaves the tree usable, just behind, so it warns rather than aborts.
-  git -C "$path" submodule update --recursive --quiet >&2 ||
+  #
+  # NEVER smudge LFS here. A submodule's LFS store lives in ITS gitdir, one per worktree, so a
+  # plain update re-downloads everything that store lacks: on unity-core-playground that was
+  # 4.2 GB of External/asset-library, 20+ minutes behind Prefix+F with no output. Repos that
+  # carry LFS submodules own the fetch (that one: scripts/setup/asset-library.sh, a shared
+  # store plus reflinked checkout). `lfs checkout` then fills in whatever the module's
+  # CONFIGURED store already holds, offline; anything it lacks stays a pointer for the repo's
+  # own setup to fetch, which is exactly the state a fresh `worktree add` is in.
+  GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2 ||
     panel_warn "submodules in $path are not at $base; run git submodule update there"
+  if panel_have git-lfs; then
+    git -C "$path" submodule foreach --quiet --recursive 'git lfs checkout >/dev/null 2>&1 || true' >&2
+  fi
   if [ -n "$old" ] && [ "$old" != "$branch" ]; then
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
