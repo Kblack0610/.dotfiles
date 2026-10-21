@@ -111,6 +111,17 @@
             "custom/fleet"
         ]
     },
+    // Shown only while keys bypass Hyprland (VDI submap or RustDesk grab). Not gated:
+    // it is a safety indicator. No interval: the toggles fire RTMIN+11 instead.
+    "custom/passthrough": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": "once",
+        "exec": "$HOME/.config/waybar/passthrough.sh",
+        "signal": 11,
+        "hide-empty-text": true,
+        "tooltip": true
+    },
     "custom/ai-agents": {
         "format": "{}",
         "return-type": "json",

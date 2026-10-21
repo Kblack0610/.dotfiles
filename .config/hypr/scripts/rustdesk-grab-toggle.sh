@@ -24,3 +24,6 @@ else
   hyprctl keyword binds:disable_keybind_grabbing true
   note "RustDesk: compositor control → your Hyprland keybinds work locally."
 fi
+
+# Re-read waybar's custom/passthrough indicator (waybar/passthrough.sh).
+pkill -RTMIN+11 waybar || true

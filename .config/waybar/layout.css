@@ -15,3 +15,14 @@
 #status > widget:not(:first-child) > label {
     border-left: 2px solid alpha(currentColor, 0.6);
 }
+
+/* Keys are bypassing Hyprland (passthrough.sh). Fixed red on purpose: an alarm
+ * should read the same under every theme. */
+#custom-passthrough {
+    padding: 0 10px;
+    margin: 5px 3px;
+    border-radius: 6px;
+    background-color: #ff5555;
+    color: #1b1d1e;
+    font-weight: bold;
+}

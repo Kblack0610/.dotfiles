@@ -5,7 +5,8 @@
         "~/.config/waybar/config.base"
     ],
     "modules-left": [
-        "hyprland/workspaces"
+        "hyprland/workspaces",
+        "custom/passthrough"
     ],
     "modules-right": [
         "group/status",
