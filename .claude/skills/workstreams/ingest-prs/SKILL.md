@@ -23,10 +23,12 @@ list -> DEFINE every PR (mandatory table) -> tier + blocker per PR -> verdict ->
 
 ## 1. Collect, in as few calls as possible
 
+**Scope is the user's own PRs, always.** Filter with `--author @me` unless the user explicitly names another author or asks for the whole repo. Other people's PRs are not the user's queue: do not list them, tier them or propose verdicts for them. Why: 2026-10-21 a brightsign-fleet-platform survey listed all 16 open PRs, six of them other people's, and the user had to stop it ("it should always be my PRs").
+
 One list call for the shape of the queue:
 
 ```bash
-gh pr list --state open --limit 100 \
+gh pr list --state open --author @me --limit 100 \
   --json number,title,author,createdAt,updatedAt,headRefName,baseRefName,isDraft,\
 mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles
 ```
@@ -39,11 +41,14 @@ Then ONE GraphQL call for every PR's file list, rather than a per-PR loop (a loo
 gh api graphql -f query='
 { repository(owner:"OWNER", name:"REPO") {
     pullRequests(states:OPEN, first:50) { nodes {
+      author { login }
       number
       files(first:100) { nodes { path } }
       commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
     } } } }'
 ```
+
+The GraphQL connection has no author filter, so drop every node whose `author.login` is not the user's before using it.
 
 **The 100-file cap is real and it is a trap.** `gh pr view --json files` silently truncates at 100, so a protected path in file 101 vanishes and the PR gets mis-tiered. When `changedFiles > 100`, page the REST endpoint for that PR specifically:
 `gh api repos/OWNER/REPO/pulls/<n>/files --paginate -q '.[].filename'`
