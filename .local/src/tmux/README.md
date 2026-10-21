@@ -349,7 +349,7 @@ breaking all three at once.
 
 | verb | what |
 |---|---|
-| `wt new [-c <dir>]` | cut a worktree off `<dir>`'s repo, open its session, land there |
+| `wt new [-c <dir>]` | take the next agent-N of `<dir>`'s repo and land in its session at once; the fetch and checkout run visibly in that session's first pane |
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason |
