@@ -193,14 +193,47 @@ add_wt() {
     fail "the lock outlived the run"
 }
 
-@test "new shows its progress in the status line and clears it when done" {
+@test "inside tmux, new lands you in the session BEFORE the slow work, which runs in its pane" {
+  # The background version did fetch + checkout first (a whole asset-library fetch, once)
+  # with nothing on screen, then switch-client yanked you out of wherever you had gone.
   make_repo
   export TMUX=/tmp/tmux-stub/default,1,0
   run "$WT" new -c "$MAIN"
   assert_success
-  assert_called 'set-option -g @wt_busy wt: finding a worktree for repo'
-  assert_called 'set-option -g @wt_busy wt: cutting repo-agent-1 (fresh checkout)'
-  assert_called 'set-option -gu @wt_busy'
+  assert_equal "${lines[-1]}" repo-agent-1
+  assert_called 'new-session -ds repo-agent-1'
+  assert_called '_prepare'
+  assert_called 'switch-client -t repo-agent-1'
+  [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "did the checkout before landing"
+  [ ! -L "$HOME/.local/state/wt/new-repo.lock" ] || fail "kept the lock after the session claimed the slot"
+
+  # ...and the pane's command does the work, then becomes a shell in the worktree.
+  SHELL=/bin/true run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
+  assert_success
+  assert_output --partial 'ready'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+}
+
+@test "a second press while the first is still preparing takes the NEXT slot" {
+  # The first press's session exists but its worktree does not yet: the session alone
+  # must pin the slot, or both presses would cut agent-1.
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  run "$WT" new -c "$MAIN"
+  assert_success
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-2
+}
+
+@test "a failed prepare leaves the error on screen and a shell in the main checkout" {
+  make_repo
+  SHELL=/bin/true run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 recycle
+  assert_success
+  assert_output --partial 'FAILED'
+  [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "made a worktree out of a failed recycle"
 }
 
 @test "new does not recycle a worktree whose session is live on ANOTHER server" {
@@ -225,8 +258,6 @@ add_wt() {
   # A blocking run-shell froze the client for the fetch plus the checkout, which on a Unity
   # repo is many seconds.
   run grep -E "^bind F run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
-  assert_success
-  run grep -F '#{@wt_busy}' "$REPO_ROOT/.tmux.conf"
   assert_success
 }
 

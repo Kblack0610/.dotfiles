@@ -8,7 +8,9 @@
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
 #                     one is reset onto the trunk in place, keeping its ignored build caches.
-#                     Prefix+F runs it in the background; progress shows in status-right.
+#                     Inside tmux it lands you in the new session AT ONCE; the fetch and
+#                     checkout then run in that session's first pane, where you can watch
+#                     them (and read any error), and the pane becomes your shell.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -512,19 +514,6 @@ wt_lock() {
   ln -s "$$" "$lock" 2>/dev/null
 }
 
-# wt_busy [<text>] -- show <text> in status-right while `new` works; no argument clears it.
-# The status line reads the global user option @wt_busy (.tmux.conf status-right).
-wt_busy() {
-  panel_in_tmux || return 0
-  if [ -n "${1:-}" ]; then
-    tmux set-option -g @wt_busy "$1" 2>/dev/null
-  else
-    tmux set-option -gu @wt_busy 2>/dev/null
-  fi
-  tmux refresh-client -S 2>/dev/null
-  return 0
-}
-
 # wt_ensure_session <name> <dir> -- panel_ensure_session, plus the one thing it cannot do.
 wt_ensure_session() {
   local name="$1" dir="$2"
@@ -558,43 +547,85 @@ cmd_new() {
   esac
   [ -d "$dir" ] || panel_die "not a directory: $dir"
 
-  local main repo def base slot n path branch name lock
+  local main repo def base slot n kind path name lock start
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
   lock="$WT_LOCK_DIR/new-$repo.lock"
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
-  trap "wt_busy; rm -f $(printf '%q' "$lock")" EXIT
-  wt_busy "wt: finding a worktree for $repo"
+  trap "rm -f $(printf '%q' "$lock")" EXIT
 
-  # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
-  git -C "$main" fetch origin --quiet 2>/dev/null || panel_warn "fetch failed; cutting off the local trunk"
-
+  # The slot is chosen BEFORE the fetch, against the trunk already on disk: that is what makes
+  # landing instant. Safe, because the trunk only moves forward -- a worktree landed on the
+  # old tip is landed on the new one, and so is a merged agent-N branch.
   def=$(wt_default_branch "$main") || panel_die "cannot resolve the default branch of $main"
   base=$(wt_base_ref "$main" "$def") || panel_die "no $def in $main to branch from"
   slot=$(wt_next_slot "$repo" "$main" "$base") || return 1
   n="${slot%%$PANEL_TAB*}"
-
+  kind="${slot#*$PANEL_TAB}"
   path="$WT_ROOT/$repo-agent-$n"
-  branch="agent-$n"
   name="$repo-agent-$n"
 
-  if [ "${slot#*$PANEL_TAB}" = recycle ]; then
-    wt_busy "wt: reusing $name"
-    wt_recycle "$path" "$n" "$base" || panel_die "could not reset idle worktree $path onto $base"
-    panel_warn "reusing idle $name, reset onto $base"
-  else
-    wt_busy "wt: cutting $name (fresh checkout)"
-    mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
-    # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
-    git -C "$main" worktree add "$path" -B "$branch" "$base" >&2 ||
-      panel_die "git worktree add failed: $path"
+  # In tmux: create the session now, running the slow half in its first pane, and go there.
+  # Doing that work in the background first meant ~20 s of nothing (a whole asset-library
+  # fetch, once), then a switch-client that yanked you out of wherever you had gone since.
+  # From here the live session is what claims the slot -- wt_next_slot skips any slot with
+  # one -- so the lock is released on return and a second press takes the NEXT slot.
+  if panel_in_tmux; then
+    start="$path"
+    [ "$kind" = recycle ] || start="$main"
+    tmux new-session -ds "$name" -c "$start" \
+      "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind")" ||
+      panel_die "could not create session $name"
+    printf '%s\n' "$name"
+    panel_focus_session "$name"
+    return 0
   fi
 
+  wt_prepare "$main" "$path" "$n" "$kind" || exit 1
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   printf '%s\n' "$name"
   panel_focus_session "$name"
+}
+
+# wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then put
+# agent-<n> at the trunk, by resetting the idle worktree in place or cutting a fresh one.
+wt_prepare() {
+  local main="$1" path="$2" n="$3" kind="$4" def base
+  # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
+  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; cutting off the local trunk"
+  def=$(wt_default_branch "$main") || panel_fail "cannot resolve the default branch of $main" || return 1
+  base=$(wt_base_ref "$main" "$def") || panel_fail "no $def in $main to branch from" || return 1
+
+  if [ "$kind" = recycle ]; then
+    wt_recycle "$path" "$n" "$base" || panel_fail "could not reset idle worktree $path onto $base" || return 1
+    panel_warn "reusing idle $(basename "$path"), reset onto $base"
+  else
+    mkdir -p "$WT_ROOT" || panel_fail "cannot create $WT_ROOT" || return 1
+    # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
+    git -C "$main" worktree add "$path" -B "agent-$n" "$base" >&2 ||
+      panel_fail "git worktree add failed: $path" || return 1
+  fi
+}
+
+# cmd_prepare -- `_prepare`, the first pane of a session `new` opened inside tmux. Not for
+# typing: it does wt_prepare in the foreground, then BECOMES the pane's shell -- in the
+# worktree on success, in the main checkout on failure with the error left on screen.
+cmd_prepare() {
+  local main="$1" path="$2" n="$3" kind="$4" what
+  what="cutting $(basename "$path")"
+  [ "$kind" = recycle ] && what="reusing idle $(basename "$path")"
+  printf '%swt: %s, fetching and checking out...%s\n' "$C_DIM" "$what" "$C_OFF"
+  if wt_prepare "$main" "$path" "$n" "$kind"; then
+    printf '%swt: ready.%s\n' "$C_SEL" "$C_OFF"
+    cd "$path" || exit 1
+    [ -n "$WT_NEW_CMD" ] && exec "${SHELL:-/bin/sh}" -c "$WT_NEW_CMD"
+    exec "${SHELL:-/bin/sh}" -l
+  fi
+  printf '\n%swt: %s FAILED, see above. This shell is in %s.%s\n' "$C_ERR" "$what" "$main" "$C_OFF"
+  cd "$main" || exit 1
+  exec "${SHELL:-/bin/sh}" -l
 }
 
 # wt_land <path> -- ensure the session for an EXISTING worktree, then go there.
@@ -782,6 +813,10 @@ case "${1:-}" in
 new)
   shift
   cmd_new "$@"
+  ;;
+_prepare)
+  shift
+  cmd_prepare "$@"
   ;;
 done)
   shift
