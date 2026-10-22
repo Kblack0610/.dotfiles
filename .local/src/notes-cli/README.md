@@ -106,6 +106,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
 | move a task between waves | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>` |
+| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags |
 | drop a task | `ptask <name> rm "<query>"` |
 | tidy a sheet | `ptask <name> sweep` |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |

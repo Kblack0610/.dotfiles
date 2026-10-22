@@ -1015,6 +1015,56 @@ pub fn task_text(line: &str) -> String {
     t.trim().to_string()
 }
 
+/// Replace a task line's text with `text`, keeping everything that is not the text:
+/// indentation, the checkbox state (`[/]` included), priority and wave tags, a trailing
+/// day count and the marker comment. Non-task lines pass through unchanged.
+///
+/// The text [`task_text`] reads is almost always a prefix of the line after the checkbox,
+/// with the tags and stamps behind it; then only that prefix is swapped and the rest stays
+/// byte for byte. A tag the human typed mid-text is the one case where it is not: the tags
+/// and stamps are then rebuilt behind the new text in canonical order.
+///
+/// This is what `ptask edit` is for: before it, changing a row meant `rm` + `add`, which
+/// moved the row to the top of its wave, dropped an in-progress mark, and lost any tag the
+/// caller forgot to retype.
+pub fn retext_task(line: &str, text: &str) -> String {
+    let text = text.trim();
+    if !is_task(line) || text.is_empty() {
+        return line.to_string();
+    }
+    let indent_end = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_end);
+    // `is_task` guarantees `- [`; byte 4 closes a single-character state (see set_checkbox).
+    if rest.as_bytes().get(4) != Some(&b']') {
+        return line.to_string();
+    }
+    let (checkbox, after) = rest.split_at(5);
+    let body = after.trim_start();
+    let old = task_text(line);
+    if let Some(tail) = body.strip_prefix(old.as_str()) {
+        return format!("{indent}{checkbox} {text}{tail}");
+    }
+
+    let marker = body.find("<!--").map(|i| body[i..].trim_end());
+    let before_marker = marker.map_or(body, |m| body[..body.len() - m.len()].trim_end());
+    let no_day = strip_trailing_day(before_marker);
+    let day = before_marker[no_day.len()..].trim();
+    let mut out = format!("{indent}{checkbox} {text}");
+    if !day.is_empty() {
+        out = format!("{out} {day}");
+    }
+    if let Some(m) = marker {
+        out = format!("{out} {m}");
+    }
+    if let Some(p) = task_priority(before_marker) {
+        out = add_tag(&out, p);
+    }
+    if let Some(w) = wave_tag(before_marker) {
+        out = add_tag(&out, &w);
+    }
+    out
+}
+
 /// Normalised core text of a task line, for de-duplication. Case-folded [`task_text`];
 /// every matching path (`ptask done "<query>"`, carryover dedupe) depends on that folding.
 pub fn task_key(line: &str) -> String {
@@ -1249,6 +1299,53 @@ after
         assert_eq!(
             strip_cu_marker("- [ ] plain (1d) <!-- since:2026-07-20 -->"),
             "- [ ] plain (1d) <!-- since:2026-07-20 -->"
+        );
+    }
+
+    #[test]
+    fn retext_swaps_only_the_text_and_keeps_tags_state_and_marker() {
+        // The real row this verb was written for: tags and a `(#399 ...)` aside behind the text.
+        assert_eq!(
+            retext_task(
+                "- [ ] playtest outside the walls (#399 #412) #high #v0.3.2",
+                "playtest outside the walls, and the town board (#399 #412 #745)"
+            ),
+            "- [ ] playtest outside the walls, and the town board (#399 #412 #745) #high #v0.3.2"
+        );
+        // In progress stays in progress; a closed row's proof marker survives.
+        assert_eq!(
+            retext_task("  - [/] wire it #low", "wire it up"),
+            "  - [/] wire it up #low"
+        );
+        assert_eq!(
+            retext_task("- [x] shipped #v0.0.2 #high <!-- pr:307 -->", "shipped it"),
+            "- [x] shipped it #v0.0.2 #high <!-- pr:307 -->"
+        );
+        // A daily-note row: day count, since-marker and the priority after them.
+        assert_eq!(
+            retext_task(
+                "- [ ] ship it (3d) <!-- since:2026-05-31 --> #low",
+                "ship it now"
+            ),
+            "- [ ] ship it now (3d) <!-- since:2026-05-31 --> #low"
+        );
+    }
+
+    #[test]
+    fn retext_rebuilds_tags_typed_mid_text() {
+        // Not a prefix any more, so the tags are put back behind the new text.
+        assert_eq!(
+            retext_task("- [ ] fix #high the thing #v0.1.0", "fix the other thing"),
+            "- [ ] fix the other thing #high #v0.1.0"
+        );
+    }
+
+    #[test]
+    fn retext_leaves_non_tasks_and_empty_text_alone() {
+        assert_eq!(retext_task("## Wave: v0.1.0", "x"), "## Wave: v0.1.0");
+        assert_eq!(
+            retext_task("- [ ] keep me #low", "  "),
+            "- [ ] keep me #low"
         );
     }
 

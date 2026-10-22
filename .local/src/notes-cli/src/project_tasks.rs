@@ -668,6 +668,33 @@ pub fn rm(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Res
     Ok(edit(p, log, name, query, "removed", lane, |_| None)?.0)
 }
 
+/// `notes ptask <name> edit <query> --text|--append` - change the first matching wave task's
+/// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
+/// checkbox state and its tags stay as they were ([`md::retext_task`]).
+pub fn retext(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    query: &str,
+    text: Option<&str>,
+    append: Option<&str>,
+    lane: Lane,
+) -> Result<i32> {
+    let (text, append) = (text.map(str::trim), append.map(str::trim));
+    if text.or(append).is_none_or(str::is_empty) {
+        bail!("edit needs the new words: --text \"<new text>\" or --append \"<more>\"");
+    }
+    Ok(edit(p, log, name, query, "edited", lane, |l| {
+        let new = match (text, append) {
+            (Some(t), _) => t.to_string(),
+            (None, Some(a)) => format!("{} {a}", md::task_text(l)),
+            (None, None) => unreachable!("checked above"),
+        };
+        Some(md::retext_task(l, &new))
+    })?
+    .0)
+}
+
 /// `notes ptask <name> start <query>` — toggle the first matching wave task between todo
 /// (`[ ]`) and in-progress (`[/]`).
 pub fn start(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Result<i32> {
