@@ -427,6 +427,18 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Change the first matching open wave task's text in place: its place on the sheet,
+    /// its checkbox state and its tags stay as they were
+    Edit {
+        /// The task's new text
+        #[arg(long, conflicts_with = "append", required_unless_present = "append")]
+        text: Option<String>,
+        /// Words to add to the end of the task's text
+        #[arg(long)]
+        append: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// Step the first matching task one wave SOONER (toward the current wave).
     /// Clamps there: nothing may sit before the wave that is in flight
     Promote {
@@ -674,6 +686,19 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Rm { query }) => {
                     project_tasks::rm(&prof, &log, &name, &query.join(" "), lane)?
                 }
+                Some(PtaskCmd::Edit {
+                    text,
+                    append,
+                    query,
+                }) => project_tasks::retext(
+                    &prof,
+                    &log,
+                    &name,
+                    &query.join(" "),
+                    text.as_deref(),
+                    append.as_deref(),
+                    lane,
+                )?,
                 Some(PtaskCmd::Promote { query }) => {
                     project_tasks::step(&prof, &log, &name, &query.join(" "), -1, lane)?
                 }
