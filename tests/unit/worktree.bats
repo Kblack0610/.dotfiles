@@ -418,7 +418,7 @@ make_drifted_submodule() {
 #!/bin/sh
 case "\$1" in
 smudge) [ "\$GIT_LFS_SKIP_SMUDGE" = 1 ] || echo smudge >>"$SANDBOX/lfs.log"; cat ;;
-*) echo "\$1" >>"$SANDBOX/lfs.log" ;;
+*) echo "\$*" >>"$SANDBOX/lfs.log" ;;
 esac
 exit 0
 EOF
@@ -433,6 +433,9 @@ EOF
   assert_output 0
   run grep -c '^checkout' "$SANDBOX/lfs.log"
   assert_output 1
+  # Only what c1 -> c2 changed, never a bare whole-tree scan (20s+ on asset-library).
+  run grep '^checkout' "$SANDBOX/lfs.log"
+  assert_output 'checkout -- .gitattributes a.bin'
 }
 
 @test "recycling skips lfs checkout in a submodule that did not move" {
