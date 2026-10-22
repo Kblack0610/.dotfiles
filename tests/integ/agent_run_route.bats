@@ -109,8 +109,10 @@ EOF
   local list="$REPO_ROOT/.local/src/agent-run/lib/scrub.list"
   assert [ -r "$list" ]
 
-  # Scope: code WE own and deploy. Excluded, each for a reason:
-  #   .git         compressed objects whose bytes match the pattern by accident
+  # Scope: code WE own and deploy, so tracked and untracked files but never
+  # ignored ones. ~/.claude is stowed from this tree, and Claude Code writes
+  # runtime state into it (.claude/cache/changelog.md names ~200 of its own
+  # vars), which a plain grep -r picked up. Also excluded, each for a reason:
   #   node_modules vendored third-party JS (the opencode SDK names its own vars)
   #   vendor       vendored bats
   #   .serena      a third-party tool's own config, which names model ids
@@ -122,9 +124,10 @@ EOF
   # code. It caught me once already. So do not spell unclassified examples out.
   local -a names=()
   while IFS= read -r n; do [ -n "$n" ] && names+=("$n"); done < <(
-    grep -rhoE --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=vendor \
-      --exclude-dir=.serena --exclude-dir=.opencode \
-      '\b(ANTHROPIC|CLAUDE_CODE|LLM|OPENCODE)_[A-Z0-9_]+\b' "$REPO_ROOT" 2>/dev/null | sort -u
+    git -C "$REPO_ROOT" grep --untracked -hoIwE \
+      '(ANTHROPIC|CLAUDE_CODE|LLM|OPENCODE)_[A-Z0-9_]+' -- . \
+      ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/vendor/**' \
+      ':(exclude,glob)**/.serena/**' ':(exclude,glob)**/.opencode/**' 2>/dev/null | sort -u
   )
   # Empty input is FAILURE, not success. A scanner that matched nothing would
   # otherwise report a perfectly classified codebase.
