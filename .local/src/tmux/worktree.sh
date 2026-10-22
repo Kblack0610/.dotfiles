@@ -486,10 +486,19 @@ wt_recycle() {
   # store plus reflinked checkout). `lfs checkout` then fills in whatever the module's
   # CONFIGURED store already holds, offline; anything it lacks stays a pointer for the repo's
   # own setup to fetch, which is exactly the state a fresh `worktree add` is in.
+  #
+  # Only in a submodule whose HEAD this update MOVED. `lfs checkout` scans the whole tree
+  # (asset-library: 28k LFS files, 20s+) and wt_reap_reason already proved the tree clean, so
+  # an unmoved module holds nothing its last checkout did not fill in.
+  local heads
+  heads=$(git -C "$path" submodule foreach --quiet --recursive \
+    'printf "%s %s\n" "$displaypath" "$(git rev-parse HEAD)"' 2>/dev/null)
   GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2 ||
     panel_warn "submodules in $path are not at $base; run git submodule update there"
   if panel_have git-lfs; then
-    git -C "$path" submodule foreach --quiet --recursive 'git lfs checkout >/dev/null 2>&1 || true' >&2
+    WT_SUB_HEADS="$heads" git -C "$path" submodule foreach --quiet --recursive '
+      printf "%s\n" "$WT_SUB_HEADS" | grep -qxF "$displaypath $(git rev-parse HEAD)" && exit 0
+      git lfs checkout >/dev/null 2>&1 || true' >&2
   fi
   if [ -n "$old" ] && [ "$old" != "$branch" ]; then
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
