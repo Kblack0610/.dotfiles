@@ -58,6 +58,10 @@ sandbox_init() {
   mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
 
   export HOME="$SANDBOX/home"
+  # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with
+  # `filter.lfs.process`, which outranks a test's stubbed `filter.lfs.smudge`: the LFS
+  # recycle fixture's submodule update failed there and the test passed by accident.
+  export GIT_CONFIG_NOSYSTEM=1
   export TMPDIR="$SANDBOX/tmp"
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_CACHE_HOME="$HOME/.cache"
