@@ -134,12 +134,12 @@ os_supports() {
     return 0
 }
 
-# Portable sed -i (macOS vs Linux)
+# Portable sed -i: keyed on the sed flavour, not the OS, because macOS often has GNU sed first on PATH (Homebrew gnubin).
 sedi() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        sed -i '' "$@"
-    else
+    if sed --version >/dev/null 2>&1; then
         sed -i "$@"
+    else
+        sed -i '' "$@"
     fi
 }
 
