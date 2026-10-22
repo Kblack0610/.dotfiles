@@ -435,6 +435,31 @@ EOF
   assert_output 1
 }
 
+@test "recycling skips lfs checkout in a submodule that did not move" {
+  # On unity-core-playground that scan is 28k LFS files in asset-library, 20s+ of a recycle,
+  # and it bought nothing when the pointer had not changed.
+  make_drifted_submodule lfs
+  git -C "$WT" submodule update --quiet # already at the trunk's C2: nothing will move
+  mkdir -p "$SANDBOX/bin"
+  cat >"$SANDBOX/bin/git-lfs" <<EOF
+#!/bin/sh
+case "\$1" in
+smudge | clean) cat ;;
+*) echo "\$1" >>"$SANDBOX/lfs.log" ;;
+esac
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/git-lfs"
+  export PATH="$SANDBOX/bin:$PATH"
+  touch "$SANDBOX/lfs.log"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C2"
+  run grep -c '^checkout' "$SANDBOX/lfs.log"
+  assert_output 0
+}
+
 # ── Repo resolution ──────────────────────────────────────────────────────────
 
 @test "the main repo resolves identically from inside a linked worktree" {
