@@ -4,7 +4,7 @@ description: User's notes toolchain rooted at ~/.notes, driven by the profile-aw
 metadata:
   category: memory
   tags: [notes, journal, cli]
-  reviewed: "2026-07-22"
+  reviewed: "2026-10-22"
 ---
 
 # notes-system
@@ -43,7 +43,7 @@ do not reinvent their logic.
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
 │   └── daily_archive/# archived dailies (YYYY/YYYY-MM/)
 ├── knowledge/        # compiled articles (nightly knowledge engine + hand edits); SCHEMA.md is the contract, _log/ the engine's per-date logs
-├── employment/       # job/company notes (corporate profile roots here)
+├── employment/       # job/company notes (corporate profile roots here); README.md maps every engagement
 └── _archive/         # incl. retired Obsidian setup (_archive/obsidian/)
 ```
 
@@ -68,6 +68,8 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
  (corporate machines). Same git repo - only the active location changes.
 
 `notes config` prints the resolved profile + every path; use it before assuming any location.
+
+**Finding past or current work:** read `~/.notes/employment/README.md` first. It maps each engagement to its agency, codenames and every place its material lives (this tree, `journal/refs/archive/`, `~/.agent/plans/_archive/<codename>/`). Work is often filed under the agency or a repo codename rather than the end client, so grep every name in that row before reporting that notes do not exist.
 
 ## The `notes` CLI
 
