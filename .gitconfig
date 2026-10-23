@@ -7,8 +7,10 @@
 # Trailing slash matters: scopes to the directory tree.
 [includeIf "gitdir:~/dev/"]
 	path = ~/.gitconfig-work
+# The macOS keychain, on macOS only. Elsewhere there is no git-credential-osxkeychain, and
+# naming it printed "'credential-osxkeychain' is not a git command" on every https fetch.
 [credential]
-	helper = osxkeychain
+	helper = "!f() { [ \"$(uname)\" = Darwin ] || exit 0; exec git credential-osxkeychain \"$@\"; }; f"
 [filter "lfs"]
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
