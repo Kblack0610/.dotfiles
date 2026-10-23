@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly sizing of the storage buckets
+
+[Timer]
+# A steady cadence on purpose: disk usage changing emits no event to wait on.
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

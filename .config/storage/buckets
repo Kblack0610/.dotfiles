@@ -1,0 +1,26 @@
+# Buckets for `storage` (see .local/src/system/storage.sh and README.md beside it).
+# Format:  label|path|reclaim command
+#   label    the row name; also how `storage preview|reclaim <label>` addresses it
+#   path     ~ is expanded; symlinks are followed, so a bucket moved to another drive is
+#            sized and filed under the drive it really lives on
+#   reclaim  optional; run from the picker with ctrl-x after a typed y. Leave it empty for
+#            anything that is not safely rebuildable.
+#
+# Buckets must not nest (one inside another counts the inner one twice). Anything not
+# listed still shows, as each drive's "everything else" row.
+
+Steam|~/.local/share/Steam|
+worktrees|~/.worktrees|wt gc
+dev checkouts|~/dev|
+Downloads|~/Downloads|
+Trash|~/.local/share/Trash|gio trash --empty
+Asset Store cache|~/.local/share/unity3d|
+Unity cache|~/.cache/unity3d|
+Unity editors|~/Unity|
+pacman cache|/var/cache/pacman/pkg|sudo paccache -rk1
+paru cache|~/.cache/paru|paru -Sc
+uv cache|~/.cache/uv|uv cache clean
+npm cache|~/.npm|npm cache clean --force
+gradle|~/.gradle|
+phone backup|~/.cache/phone-backup|
+Media|~/Media|

@@ -52,12 +52,17 @@
         "format": "{}% "
     },
     // The root disk fills from Unity worktrees (15-20 GB each), so it warns early.
-    "disk": {
-        "path": "/",
+    // Root use% on the bar; hover shows every drive, the biggest buckets and what can be
+    // reclaimed; click opens the storage picker. See .local/src/system/README.md.
+    "custom/storage": {
+        "format": "{}",
+        "return-type": "json",
         "interval": 60,
-        "format": "{percentage_used}% \uf0a0",
-        "tooltip-format": "{used} of {total} used on {path}, {free} free",
-        "states": { "critical": 90 }
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/storage $HOME/.local/bin/storage waybar",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class storage-term -e $HOME/.local/bin/storage",
+        "tooltip": true
     },
     "temperature": {
         "critical-threshold": 80,

@@ -16,7 +16,7 @@
         "network",
         "cpu",
         "memory",
-        "disk",
+        "custom/storage",
         "temperature",
         "temperature#gpu",
         "clock#date",
