@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# night-shift - queue agent tasks during the day, run them unattended overnight, read the
+# results in the morning.
+#
+#   night-shift queue <repo> <task...> [--slug s] [--after slug] [--project p]
+#                     [--data-class personal|work] [--model m] [--max-turns n]
+#   night-shift list [--date YYYY-MM-DD]   TSV: state slug repo when pr summary
+#   night-shift report [YYYY-MM-DD]        one night as markdown bullets (default: latest)
+#   night-shift cancel <slug> | log [slug] | status
+#   night-shift run                        work the queue once (the agentctl timer)
+#
+# Each task is one `/one-shot --pr-only` run under agentctl-run's build role, one at a time,
+# in queue order. Nothing here merges, deploys or tags. Layout, file format and the morning
+# view: ~/.claude/skills/night-shift/SKILL.md.
+set -uo pipefail
+
+# The agentctl template runs a non-login `bash -c`; without this agentctl-run vanishes and
+# the pass dies at 127.
+export PATH="$HOME/.local/bin:$PATH"
+
+NS_DIR="${NIGHT_SHIFT_DIR:-$HOME/.agent/night}"
+NS_LOGS="${NIGHT_SHIFT_LOGS:-${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/night-shift}}"
+NS_NAME="${AGENTCTL_NAME:-night-shift}"
+NS_MODEL="${NIGHT_SHIFT_MODEL:-claude-opus-5-5}"
+NS_MAX_TURNS="${NIGHT_SHIFT_MAX_TURNS:-200}"
+# A timeout GUARD on the external call, not a wait: a task that wedges must not eat the
+# rest of the queue. 5h covers a Unity reimport plus a full test pass.
+NS_TASK_TIMEOUT="${NIGHT_SHIFT_TASK_TIMEOUT:-5h}"
+NS_RUN="${NIGHT_SHIFT_RUNNER:-agentctl-run}"
+
+die() { echo "night-shift: $*" >&2; exit 1; }
+
+# --- the file format ---
+# `key: value` lines, a `---` line, then free text. One parser for tasks and results.
+fm_get() { # file key
+  awk -v k="$2" '$0 == "---" { exit }
+    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null
+}
+fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//; s/-$//' | cut -c1-40 | sed 's/-$//'
+}
+
+tasks_in() { # dir -> task files in queue order
+  local f
+  for f in "$1"/*.md; do [ -e "$f" ] && printf '%s\n' "$f"; done | sort
+}
+
+latest_night() { ls -1 "$NS_DIR/done" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -1; }
+
+# Status of a slug's most recent result, across nights. Empty if it never ran.
+result_status() { # slug
+  local r
+  r="$(ls -1 "$NS_DIR"/done/*/"$1".result.md 2>/dev/null | sort | tail -1)"
+  [ -n "$r" ] && fm_get "$r" status
+}
+
+# --- queue / cancel ---
+cmd_queue() {
+  local repo="${1:-}"; shift || true
+  local slug="" after="" project="" dc="personal" model="" turns="" task=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --slug) slug="${2:?}"; shift 2 ;;
+      --after) after="${2:?}"; shift 2 ;;
+      --project) project="${2:?}"; shift 2 ;;
+      --data-class) dc="${2:?}"; shift 2 ;;
+      --model) model="${2:?}"; shift 2 ;;
+      --max-turns) turns="${2:?}"; shift 2 ;;
+      *) task+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$repo" ] && [ "${#task[@]}" -gt 0 ] || die "usage: night-shift queue <repo> <task...> [--slug s] [--after slug]"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such repo dir: ${1:-}"
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "$repo is not a git checkout"
+  slug="$(slugify "${slug:-${task[*]}}")"
+  [ -n "$slug" ] || die "could not derive a slug; pass --slug"
+  if [ -n "$(tasks_in "$NS_DIR/queue" | grep -- "-$slug.md$")" ]; then die "already queued: $slug"; fi
+  if [ -n "$after" ] && [ -z "$(tasks_in "$NS_DIR/queue" | grep -- "-$after.md$")" ] && [ -z "$(result_status "$after")" ]; then
+    die "--after $after: no queued or finished task has that slug"
+  fi
+  mkdir -p "$NS_DIR/queue"
+  local f; f="$NS_DIR/queue/$(date +%Y%m%d%H%M%S%N | cut -c1-17)-$slug.md"
+  {
+    printf 'slug: %s\nrepo: %s\nqueued: %s\n' "$slug" "$repo" "$(date -Iseconds)"
+    [ -n "$project" ] && printf 'project: %s\n' "$project"
+    [ -n "$after" ] && printf 'after: %s\n' "$after"
+    printf 'data_class: %s\n' "$dc"
+    [ -n "$model" ] && printf 'model: %s\n' "$model"
+    [ -n "$turns" ] && printf 'max_turns: %s\n' "$turns"
+    printf -- '---\n%s\n' "${task[*]}"
+  } > "$f"
+  echo "queued $slug -> $f"
+}
+
+cmd_cancel() {
+  local slug="${1:?usage: night-shift cancel <slug>}" f
+  f="$(tasks_in "$NS_DIR/queue" | grep -- "-$slug.md$" | head -1)"
+  [ -n "$f" ] || die "not queued: $slug"
+  rm -f -- "$f" && echo "cancelled $slug"
+}
+
+# --- list / report / log ---
+# Empty fields print as `-`: tab is IFS whitespace, so `read` collapses an empty column and
+# shifts every later one left.
+row() { # state slug repo when pr summary
+  local f out=""
+  for f in "$@"; do out+="${f:--}"$'\t'; done
+  printf '%s\n' "${out%$'\t'}"
+}
+
+cmd_list() {
+  local night="" f r
+  [ "${1:-}" = --date ] && night="${2:-}"
+  night="${night:-$(latest_night)}"
+  while IFS= read -r f; do
+    row queued "$(fm_get "$f" slug)" "$(basename "$(fm_get "$f" repo)")" \
+      "$(fm_get "$f" queued | cut -c1-16)" "" "$(fm_get "$f" after | sed 's/^./after &/')"
+  done < <(tasks_in "$NS_DIR/queue")
+  while IFS= read -r f; do
+    row running "$(fm_get "$f" slug)" "$(basename "$(fm_get "$f" repo)")" \
+      "$(date -d "@$(stat -c %Y "$f")" '+%F %H:%M')" "" "since $(date -d "@$(stat -c %Y "$f")" +%H:%M)"
+  done < <(tasks_in "$NS_DIR/running")
+  [ -n "$night" ] || return 0
+  for r in "$NS_DIR/done/$night"/*.result.md; do
+    [ -e "$r" ] || continue
+    row "$(fm_get "$r" status)" "$(basename "$r" .result.md)" "$(basename "$(fm_get "$r" repo)")" \
+      "$(fm_get "$r" finished | cut -c1-16)" "$(fm_get "$r" pr | sed 's/^none$//')" "$(fm_get "$r" summary)"
+  done
+}
+
+cmd_report() {
+  local night="${1:-$(latest_night)}" state slug repo when pr summary n=0
+  printf '# Night shift %s\n\n' "${night:-(no runs yet)}"
+  while IFS=$'\t' read -r state slug repo when pr summary; do
+    n=$((n + 1))
+    [ "$pr" = - ] && pr=""
+    [ "$summary" = - ] && summary=""
+    printf -- '- **%s** %s (%s)%s%s\n' "$state" "$slug" "$repo" "${summary:+: $summary}" "${pr:+ - $pr}"
+  done < <(cmd_list --date "$night")
+  [ "$n" -gt 0 ] || printf -- '- nothing queued or run\n'
+}
+
+cmd_log() {
+  local slug="${1:-}" f
+  if [ -z "$slug" ]; then
+    f="$(tasks_in "$NS_DIR/running" | head -1)"
+    [ -n "$f" ] && slug="$(fm_get "$f" slug)"
+  fi
+  [ -n "$slug" ] || return 1
+  printf '%s\n' "$NS_LOGS/$slug.log"
+}
+
+cmd_status() {
+  echo "queue:   $(tasks_in "$NS_DIR/queue" | grep -c . || true) task(s) in $NS_DIR/queue"
+  echo "running: $(tasks_in "$NS_DIR/running" | xargs -r -n1 basename | tr '\n' ' ')"
+  echo "latest:  $(latest_night)"
+  systemctl --user list-timers "agentctl-$NS_NAME.timer" --no-pager 2>/dev/null | sed -n '1,2p'
+}
+
+# --- run ---
+_publish() {
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
+  proof_report "$NS_NAME" "$1" "$2" 2>/dev/null || true
+}
+
+# stream-json -> one readable line per event, for the tmux log pane.
+NS_FORMAT='fromjson? |
+  (now | strflocaltime("%H:%M")) as $t |
+  if .type == "system" and .subtype == "init" then "\($t) == session \(.session_id) model \(.model)"
+  elif .type == "assistant" then
+    (.message.content[]? |
+      if .type == "text" then "\($t)   \(.text | gsub("\n"; "\n        "))"
+      elif .type == "tool_use" then "\($t) > \(.name) \((.input.command // .input.file_path // .input.pattern // .input.skill // .input.description // .input.prompt // "") | tostring | gsub("\n"; " ") | .[0:160])"
+      else empty end)
+  elif .type == "result" then "\($t) == \(.subtype) turns=\(.num_turns) cost=$\(.total_cost_usd // 0)"
+  else empty end'
+
+prompt_for() { # task-file
+  local project; project="$(fm_get "$1" project)"
+  cat <<EOF
+/one-shot --pr-only $(fm_body "$1")
+
+This is an unattended night-shift run. The human queued it during the day and is asleep; read the results in the morning.
+- Decide every reversible question yourself, taking your own recommended option, and log each one as \`assumed: <X> because <Y>\` in the PR body.
+- Stop at the open PR. Do not merge, deploy, push tags or touch secrets.
+- If a hard gate stops you, post it for the morning with \`agent-ask post${project:+ --project $project} --options <a|b|...> --recommend <your pick> "<question>"\`, then stop in blocked mode.
+End your final message with exactly this block, filled in:
+NIGHT-SHIFT-RESULT
+status: ok | blocked | failed
+pr: <PR URL, or none>
+asks: <agent-ask ids, or none>
+summary: <one line: what landed or what stopped you>
+END
+EOF
+}
+
+# Pull the result block out of the run's final text. Missing block = failed, said so.
+write_result() { # task jsonl rc started out
+  local task="$1" jsonl="$2" rc="$3" started="$4" out="$5" text block sid
+  text="$(jq -rR 'fromjson? | select(.type == "result") | .result // empty' "$jsonl" 2>/dev/null | tail -c 20000)"
+  sid="$(jq -rR 'fromjson? | select(.type == "system" and .subtype == "init") | .session_id' "$jsonl" 2>/dev/null | head -1)"
+  block="$(printf '%s\n' "$text" | awk '/^NIGHT-SHIFT-RESULT/ { f = 1; next } /^END$/ { f = 0 } f')"
+  local status pr asks summary
+  status="$(printf '%s\n' "$block" | fm_get /dev/stdin status | tr -d ' ')"
+  case "$status" in
+    ok | blocked | failed) ;;
+    *) status=failed ;;
+  esac
+  pr="$(printf '%s\n' "$block" | fm_get /dev/stdin pr)"
+  asks="$(printf '%s\n' "$block" | fm_get /dev/stdin asks)"
+  summary="$(printf '%s\n' "$block" | fm_get /dev/stdin summary)"
+  if [ -z "$block" ]; then
+    summary="no NIGHT-SHIFT-RESULT block (exit $rc) - read the log"
+  fi
+  {
+    printf 'status: %s\nrepo: %s\npr: %s\nasks: %s\nsummary: %s\n' "$status" "$(fm_get "$task" repo)" \
+      "${pr:-none}" "${asks:-none}" "$summary"
+    printf 'exit: %s\nsession: %s\nstarted: %s\nfinished: %s\nlog: %s\n---\n%s\n' "$rc" "${sid:-unknown}" \
+      "$started" "$(date -Iseconds)" "$NS_LOGS/$(fm_get "$task" slug).log" "$text"
+  } > "$out"
+}
+
+skip_result() { # task out status summary
+  printf 'status: %s\nrepo: %s\npr: none\nasks: none\nsummary: %s\nfinished: %s\n---\n' \
+    "$3" "$(fm_get "$1" repo)" "$4" "$(date -Iseconds)" > "$2"
+}
+
+run_one() { # task-file night-dir
+  local task="$1" out="$2" slug repo after dc model turns started rc
+  slug="$(fm_get "$task" slug)"; repo="$(fm_get "$task" repo)"; after="$(fm_get "$task" after)"
+  dc="$(fm_get "$task" data_class)"; model="$(fm_get "$task" model)"; turns="$(fm_get "$task" max_turns)"
+  if [ -n "$after" ] && [ "$(result_status "$after")" != ok ]; then
+    skip_result "$task" "$out/$slug.result.md" skipped "after $after, which ended ${after:+$(result_status "$after")}"
+    mv -- "$task" "$out/$slug.md"
+    echo "$NS_NAME: skipped $slug (after $after)"
+    return 0
+  fi
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    skip_result "$task" "$out/$slug.result.md" failed "repo missing: $repo"
+    mv -- "$task" "$out/$slug.md"
+    return 0
+  fi
+  mv -- "$task" "$NS_DIR/running/" && task="$NS_DIR/running/$(basename "$task")"
+  started="$(date -Iseconds)"
+  : > "$NS_LOGS/$slug.log"
+  echo "$NS_NAME: running $slug in $repo"
+  (
+    cd "$repo" || exit 1
+    timeout --kill-after=60 "$NS_TASK_TIMEOUT" "$NS_RUN" --role build --data-class "${dc:-personal}" \
+      -p "$(prompt_for "$task")" --model "${model:-$NS_MODEL}" --max-turns "${turns:-$NS_MAX_TURNS}" \
+      --output-format stream-json --verbose
+  ) 2>>"$NS_LOGS/$slug.stderr" | tee "$NS_LOGS/$slug.jsonl" | jq -rR --unbuffered "$NS_FORMAT" >> "$NS_LOGS/$slug.log"
+  rc="${PIPESTATUS[0]}"
+  write_result "$task" "$NS_LOGS/$slug.jsonl" "$rc" "$started" "$out/$slug.result.md"
+  mv -- "$task" "$out/$slug.md"
+  echo "$NS_NAME: $slug -> $(fm_get "$out/$slug.result.md" status)"
+}
+
+cmd_run() {
+  command -v jq >/dev/null || die "jq not on PATH"
+  mkdir -p "$NS_DIR/queue" "$NS_DIR/running" "$NS_LOGS"
+  exec 9> "$NS_LOGS/run.lock"
+  flock -n 9 || { echo "$NS_NAME: a run is already in progress"; exit 0; }
+  local night out f s n=0 bad=0
+  night="$(date +%F)"; out="$NS_DIR/done/$night"; mkdir -p "$out"
+  # Under the lock nothing can be running, so anything in running/ was orphaned by a crash
+  # or reboot. Report it as failed rather than leave it there forever.
+  while IFS= read -r f; do
+    s="$(fm_get "$f" slug)"
+    skip_result "$f" "$out/$s.result.md" failed "interrupted: the runner died mid-task (see $NS_LOGS/$s.log)"
+    mv -- "$f" "$out/$s.md"
+    bad=$((bad + 1))
+  done < <(tasks_in "$NS_DIR/running")
+  if [ -z "$(tasks_in "$NS_DIR/queue")" ] && [ "$bad" -eq 0 ]; then
+    echo "$NS_NAME: queue empty - nothing to do."
+    _publish NOOP "queue empty"
+    exit 0
+  fi
+  # Re-read the queue after each task, so a task queued mid-run still goes tonight.
+  local slug
+  while f="$(tasks_in "$NS_DIR/queue" | head -1)"; [ -n "$f" ]; do
+    slug="$(fm_get "$f" slug)"
+    run_one "$f" "$out"
+    n=$((n + 1))
+    case "$(fm_get "$out/$slug.result.md" status)" in
+      ok | skipped) ;;
+      *) bad=$((bad + 1)) ;;
+    esac
+  done
+  if [ "$bad" -gt 0 ]; then
+    _publish WORKED "$n task(s), $bad need the human -> night-shift report $night"
+  else
+    _publish WORKED "$n task(s), all ok -> night-shift report $night"
+  fi
+}
+
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
+case "${1:-}" in
+  queue) shift; cmd_queue "$@" ;;
+  cancel) shift; cmd_cancel "$@" ;;
+  list) shift; cmd_list "$@" ;;
+  report) shift; cmd_report "$@" ;;
+  log) shift; cmd_log "$@" ;;
+  run) cmd_run ;;
+  status) cmd_status ;;
+  -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (try --help)" ;;
+esac
