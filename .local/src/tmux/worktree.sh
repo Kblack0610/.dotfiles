@@ -438,8 +438,12 @@ wt_next_slot() {
   while [ "$n" -le 99 ]; do
     path="$WT_ROOT/$repo-agent-$n"
     if [ -e "$path" ]; then
-      # wt_reap_reason includes the live-session and open-pane checks, on every server.
-      if owner=$(wt_main_repo "$path") && [ "$owner" = "$main" ] &&
+      # wt_reap_reason includes the live-session and open-pane checks, on every server, but
+      # only AFTER its git work check: ~1s a slot on unity-core-playground (status across a
+      # 150k-file submodule), with nothing on screen yet. A live session pins the slot either
+      # way, and asking tmux first is 45ms.
+      if ! wt_session_exists "$repo-agent-$n" &&
+        owner=$(wt_main_repo "$path") && [ "$owner" = "$main" ] &&
         wt_reap_reason "$path" >/dev/null; then
         printf '%s\trecycle\n' "$n"
         return 0
@@ -572,6 +576,10 @@ cmd_new() {
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
   trap "rm -f $(printf '%q' "$lock")" EXIT
 
+  # Prefix+F runs this with its output thrown away, so until the session exists the status
+  # line is the only place to say anything.
+  panel_in_tmux && tmux display-message -d 20000 "wt: finding a free $repo slot..." 2>/dev/null
+
   # The slot is chosen BEFORE the fetch, against the trunk already on disk: that is what makes
   # landing instant. Safe, because the trunk only moves forward -- a worktree landed on the
   # old tip is landed on the new one, and so is a merged agent-N branch.
@@ -589,6 +597,7 @@ cmd_new() {
   # From here the live session is what claims the slot -- wt_next_slot skips any slot with
   # one -- so the lock is released on return and a second press takes the NEXT slot.
   if panel_in_tmux; then
+    tmux display-message "wt: $kind $name, opening it" 2>/dev/null
     start="$path"
     [ "$kind" = recycle ] || start="$main"
     tmux new-session -ds "$name" -c "$start" \

@@ -183,6 +183,21 @@ make_repo() {
   assert_output "2${PANEL_TAB}fresh"
 }
 
+@test "a slot with a live session is passed over without its git work check" {
+  # That check is ~1s per slot on unity-core-playground (status across a 150k-file
+  # submodule) and runs before any session is on screen; with agent-1..9 live, Prefix+F
+  # showed nothing for ~9s. The session lookup is 45ms and answers the same question.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
+  panel_live_servers() { printf 'lab\n'; }
+  printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  wt_work_reason() { echo "$1" >>"$SANDBOX/work.log"; }
+  run wt_next_slot platform "$MAIN" origin/main
+  assert_success
+  assert_output "2${PANEL_TAB}fresh"
+  [ ! -s "$SANDBOX/work.log" ] || fail "git work check ran on a live slot: $(cat "$SANDBOX/work.log")"
+}
+
 @test "a pane on ANOTHER tmux server inside a worktree keeps it from being recycled" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
