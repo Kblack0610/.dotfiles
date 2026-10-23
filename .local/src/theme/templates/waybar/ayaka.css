@@ -146,7 +146,8 @@ button:hover {
     color: #E59DB1;
 }
 
-#temperature.critical {
+#temperature.critical,
+#disk.critical {
     background-color: rgba(229, 157, 177, 0.3);
     color: #E59DB1;
 }

@@ -16,6 +16,7 @@
         "network",
         "cpu",
         "memory",
+        "disk",
         "temperature",
         "temperature#gpu",
         "clock#date",

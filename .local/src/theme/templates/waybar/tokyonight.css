@@ -150,7 +150,8 @@ button:hover {
     color: #e0af68;
 }
 
-#temperature.critical {
+#temperature.critical,
+#disk.critical {
     background-color: rgba(247, 118, 142, 0.3);
     color: #f7768e;
 }
