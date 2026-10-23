@@ -1,0 +1,9 @@
+[Unit]
+Description=Size the storage buckets for the waybar tooltip and the storage picker
+
+[Service]
+Type=oneshot
+ExecStart=%h/.dotfiles/.local/src/system/storage.sh scan
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=1800

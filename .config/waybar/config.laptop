@@ -17,7 +17,7 @@
         "power-profiles-daemon",
         "cpu",
         "memory",
-        "disk",
+        "custom/storage",
         "temperature",
         "backlight",
         "battery",

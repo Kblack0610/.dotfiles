@@ -93,7 +93,7 @@ button:hover {
 #battery,
 #cpu,
 #memory,
-#disk,
+#custom-storage,
 #temperature,
 #backlight,
 #network,
@@ -151,7 +151,7 @@ button:hover {
 }
 
 #temperature.critical,
-#disk.critical {
+#custom-storage.critical {
     background-color: rgba(255, 0, 0, 0.3);
     color: #ff0000;
 }
