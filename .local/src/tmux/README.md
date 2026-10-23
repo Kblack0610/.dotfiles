@@ -14,7 +14,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted — no existing key was moved. |
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
-| `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-h` / `C-n` | Server layer: pick a world (compact) or every session everywhere (full); hop to hub / lab |
+| `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-h` / `C-n` | Server layer: pick a world (compact) or every session everywhere (full); hop to lab / hub |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `favourites.sh` | `Prefix+s` / `Prefix+o` | Star a claude/opencode chat; reopen & resume it later |
@@ -34,8 +34,8 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **The editor**: `Prefix+Space` → this session's editor; again → back where you were
 - **Which world**: `Prefix+C-s` (or bare `tmx`) → the worlds, sessions in the preview
 - **Everything, everywhere**: `Prefix+A` → every session and window on every server
-- **Resume a world**: `Prefix+C-h` hub · `Prefix+C-n` lab (back where you left off)
-- **Root of a world**: `Prefix+H` hub · `Prefix+N` lab (daily / projects overview)
+- **Resume a world**: `Prefix+C-h` lab · `Prefix+C-n` hub (back where you left off)
+- **Root of a world**: `Prefix+H` lab · `Prefix+N` hub (projects overview / daily)
 - **Switch session**: `Prefix+S` → sessions of the current world only
 - **Switch projects**: `Prefix+f` → fuzzy find a repo or a worktree
 - **Project work**: `Prefix+P` → projects with their open counts; Enter for the tasks
@@ -101,15 +101,15 @@ socket, and the blast radius of a kill is exactly one server.
 |---|---|
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
 | `Prefix+A` | **everything, everywhere** - every session AND window across every server |
-| `Prefix+C-h` / `C-n` | **resume** hub / lab - back on the exact window you left |
-| `Prefix+H` / `N` | **root page** of hub / lab - today's daily, projects overview |
+| `Prefix+C-h` / `C-n` | **resume** lab / hub - back on the exact window you left |
+| `Prefix+H` / `N` | **root page** of lab / hub - projects overview, today's daily |
 | `Prefix+C-s` | **compact**: just the worlds, sessions in the preview (also bare `tmx`) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
 
 One letter per world, so the only thing the Ctrl changes is resume-vs-root:
-`h` = hub, `n` = lab. (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
+`h` = lab, `n` = hub, set by `WORLD_H` / `WORLD_N` near the top of `~/.tmux.conf` - swap those two lines to swap every world key. (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
 return at the *terminal*, so a `bind C-m` can never fire.)
 
 **Resume vs root** is the whole point of having two pairs of keys. `C-h`/`C-n`
