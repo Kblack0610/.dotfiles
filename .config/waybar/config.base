@@ -51,6 +51,14 @@
     "memory": {
         "format": "{}% "
     },
+    // The root disk fills from Unity worktrees (15-20 GB each), so it warns early.
+    "disk": {
+        "path": "/",
+        "interval": 60,
+        "format": "{percentage_used}% \uf0a0",
+        "tooltip-format": "{used} of {total} used on {path}, {free} free",
+        "states": { "critical": 90 }
+    },
     "temperature": {
         "critical-threshold": 80,
         "format": "{temperatureC}°C {icon}",
