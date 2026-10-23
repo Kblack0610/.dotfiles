@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# agent-hold - a fleet-wide pause on a shared resource, held as state instead of sent as
+# a message.
+#
+#   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
+#   agent-hold release <resource>
+#   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free
+#   agent-hold list                 resource<TAB>since<TAB>by<TAB>reason, one per hold
+#   agent-hold show <resource>      print the hold file
+#
+# One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
+# A hold is state, not a message, because shell loops have no inbox and new sessions miss
+# a broadcast: the gate, the preflight and the coordinator all read this one file. Why and
+# how to use it: the fleet-comms and fleet-overseer skills.
+
+set -uo pipefail
+
+HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
+
+now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+
+# collapse a value to a single physical line (files are one key:value per line)
+oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
+
+# field <file> <key> -> first value (text after "key: ")
+field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
+
+# A resource is one path segment. Anything else could escape HOLD_ROOT.
+valid_resource() {
+  case "$1" in
+    ''|.|..|*/*) return 1 ;;
+  esac
+  [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+need_resource() {
+  valid_resource "${1:-}" || { echo "agent-hold: bad resource name '${1:-}' (letters, digits, . _ -)" >&2; exit 2; }
+}
+
+# Who is holding: the tmux session when there is one (that is the name ListAgents and the
+# panel show), else the working directory's basename.
+default_by() {
+  local s=""
+  [ -n "${TMUX:-}" ] && s="$(tmux display-message -p '#S' 2>/dev/null)"
+  printf '%s' "${s:-${PWD##*/}}"
+}
+
+notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
+
+cmd_set() {
+  local resource="${1:-}"; shift || true
+  need_resource "$resource"
+  local roster="" by="" reason=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --roster) roster="${2:-}"; shift 2 ;;
+      --by)     by="${2:-}"; shift 2 ;;
+      --) shift; reason="$*"; break ;;
+      -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
+      *)  reason="$*"; break ;;
+    esac
+  done
+  [ -n "$reason" ] || { echo "agent-hold set: say why (the reason is what every reader sees)" >&2; exit 2; }
+  [ -n "$by" ] || by="$(default_by)"
+  mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
+
+  local f="$HOLD_ROOT/$resource" tmp
+  tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
+  {
+    printf 'resource: %s\n' "$resource"
+    printf 'since: %s\n'    "$(now_iso)"
+    printf 'by: %s\n'       "$(oneline "$by")"
+    printf 'roster: %s\n'   "$(oneline "$roster")"
+    printf 'reason: %s\n'   "$(oneline "$reason")"
+  } > "$tmp"
+  # Re-setting an existing hold replaces it (new reason, new roster), atomically, so a
+  # reader never sees half a file.
+  mv "$tmp" "$f"
+  # High on set, normal on release: the held state is the one that needs the human.
+  notify -p high -t "hold: $resource" "$(oneline "$reason") (by $(oneline "$by"))"
+  echo "held: $resource"
+}
+
+cmd_release() {
+  local resource="${1:-}"
+  need_resource "$resource"
+  local f="$HOLD_ROOT/$resource"
+  [ -f "$f" ] || { echo "agent-hold: $resource is not held" >&2; exit 1; }
+  local reason roster
+  reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
+  rm -f "$f"
+  notify -p normal -t "go: $resource" "released (was: $reason)"
+  echo "released: $resource"
+  # Printed so the caller can send GO to exactly the sessions that were told to stop.
+  [ -n "$roster" ] && echo "roster: $roster"
+  return 0
+}
+
+cmd_check() {
+  local resource="${1:-}"
+  need_resource "$resource"
+  local f="$HOLD_ROOT/$resource"
+  [ -f "$f" ] || return 0
+  echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
+  return 1
+}
+
+cmd_list() {
+  [ -d "$HOLD_ROOT" ] || return 0
+  local f
+  for f in "$HOLD_ROOT"/*; do
+    [ -f "$f" ] || continue
+    printf '%s\t%s\t%s\t%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "$(field "$f" reason)"
+  done
+}
+
+cmd_show() {
+  local resource="${1:-}"
+  need_resource "$resource"
+  cat "$HOLD_ROOT/$resource" 2>/dev/null || { echo "agent-hold: $resource is not held" >&2; exit 1; }
+}
+
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+
+verb="${1:-}"; shift || true
+case "$verb" in
+  set)     cmd_set "$@" ;;
+  release) cmd_release "$@" ;;
+  check)   cmd_check "$@" ;;
+  list)    cmd_list ;;
+  show)    cmd_show "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

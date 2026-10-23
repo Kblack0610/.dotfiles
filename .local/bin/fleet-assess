@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# fleet-assess - is this machine overloaded, by whom, and can each consumer hear a message?
+#
+#   fleet-assess                 headroom, holds, verdict, and one row per heavy process
+#   fleet-assess --watch-probe   one line; exit 1 on HOLD (the sentinel `fleet-thermal` probe)
+#
+# Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
+# (under the low mark while a hold is set: safe to send GO), OK (nothing to do).
+# Load is the primary signal. Tctl alone is not: a Zen 4 part boosts until it reads 95 C,
+# so 90s under one busy thread is by design. Thresholds are the FLEET_* block below.
+
+set -uo pipefail
+
+# --- thresholds (env overrides) --------------------------------------------------------
+: "${FLEET_HOLD_LOAD_X:=3}"      # 1-min load / cores at or above this -> HOLD
+: "${FLEET_CLEAR_LOAD_X:=1.5}"   # below this (and memory below) -> CLEAR
+: "${FLEET_HOLD_MEM_PCT:=10}"    # MemAvailable % below this -> HOLD
+: "${FLEET_CLEAR_MEM_PCT:=25}"   # at or above this -> may CLEAR
+: "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
+: "${FLEET_HOT_LOAD_X:=2}"       # ... with load at least this -> HOLD
+: "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
+HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
+
+# fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
+fleet_verdict() {
+  awk -v l="$1" -v c="$2" -v t="$3" -v m="$4" -v held="$5" \
+      -v hx="$FLEET_HOLD_LOAD_X" -v cx="$FLEET_CLEAR_LOAD_X" \
+      -v hm="$FLEET_HOLD_MEM_PCT" -v cm="$FLEET_CLEAR_MEM_PCT" \
+      -v ht="$FLEET_HOT_TCTL" -v htx="$FLEET_HOT_LOAD_X" 'BEGIN {
+    x = (c > 0) ? l / c : 0
+    hot = (t != "-" && t + 0 >= ht && x >= htx)
+    if (x >= hx)  { printf "HOLD load %.1fx cores >= %sx\n", x, hx; exit }
+    if (m < hm)   { printf "HOLD memory %d%% free < %d%%\n", m, hm; exit }
+    if (hot)      { printf "HOLD tctl %s C at %.1fx cores\n", t, x; exit }
+    low = (x < cx && m >= cm)
+    if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free\n", x, cx, m; exit }
+    if (held)         { printf "HOLD held, load %.1fx not yet under %sx\n", x, cx; exit }
+    printf "OK load %.1fx cores\n", x
+  }'
+}
+
+# --- readings ---------------------------------------------------------------------------
+read_load()  { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0; }
+read_cores() { nproc 2>/dev/null || echo 1; }
+
+# Tctl from the k10temp hwmon (AMD), else the hottest thermal zone, else "-".
+read_tctl() {
+  local h
+  for h in /sys/class/hwmon/hwmon*; do
+    [ "$(cat "$h/name" 2>/dev/null)" = k10temp ] || continue
+    awk '{ printf "%.1f\n", $1 / 1000 }' "$h/temp1_input" 2>/dev/null && return
+  done
+  local z max=""
+  for z in /sys/class/thermal/thermal_zone*/temp; do
+    [ -r "$z" ] && max="$(awk -v a="${max:-0}" '{ print ($1 > a ? $1 : a) }' "$z")"
+  done
+  if [ -n "$max" ] && [ "$max" != 0 ]; then awk -v v="$max" 'BEGIN { printf "%.1f\n", v / 1000 }'; else echo -; fi
+}
+
+read_mem_pct() {
+  awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
+       END { if (t > 0) printf "%d\n", a * 100 / t; else print 100 }' /proc/meminfo 2>/dev/null || echo 100
+}
+
+holds_set() { [ -d "$HOLD_ROOT" ] && compgen -G "$HOLD_ROOT/*" >/dev/null; }
+
+# --- process rows -----------------------------------------------------------------------
+# Who drives a process decides how it can be stopped: a `claude` ancestor can take a
+# message, a tmux pane with none is a `shell` loop (gate or kill only), an `agentctl` unit
+# stops through agentctl, and anything else was reparented to init: an `orphan`.
+classify() {
+  local pid="$1" q="$1" i comm class="" pane=""
+  if grep -q 'agentctl@' "/proc/$pid/cgroup" 2>/dev/null; then class=agentctl; fi
+  for i in $(seq 1 12); do
+    # ppid counted after the last ")": comm itself may hold spaces or parens.
+    q="$(sed 's/.*) //' "/proc/$q/stat" 2>/dev/null | cut -d' ' -f2)"
+    [ -n "$q" ] && [ "$q" -gt 1 ] || break
+    comm="$(cat "/proc/$q/comm" 2>/dev/null)"
+    [ -z "$class" ] && [ "$comm" = claude ] && class=claude
+    case "$comm" in "tmux: server") pane=1; break ;; systemd) break ;; esac
+  done
+  [ -n "$class" ] || { [ -n "$pane" ] && class=shell || class=orphan; }
+  printf '%s\t%s\n' "$class" "$(session_of "$pid")"
+}
+
+# The tmux session, asked of the server the process was started under. There is more
+# than one server on this box (hub, lab), so `tmux list-panes -a` alone misses most.
+session_of() {
+  local env sock pane
+  env="$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null)"
+  sock="$(sed -n 's/^TMUX=//p' <<<"$env")"; sock="${sock%%,*}"
+  pane="$(sed -n 's/^TMUX_PANE=//p' <<<"$env")"
+  [ -n "$sock" ] && [ -n "$pane" ] || { echo -; return; }
+  tmux -S "$sock" display-message -p -t "$pane" '#S' 2>/dev/null || echo -
+}
+
+worktree_of() {
+  local cwd
+  cwd="$(readlink "/proc/$1/cwd" 2>/dev/null)"
+  case "$cwd" in
+    "$HOME"/.worktrees/*) cwd="${cwd#"$HOME"/.worktrees/}"; echo "${cwd%%/*}" ;;
+    "$HOME"/*) echo "~/${cwd#"$HOME"/}" ;;
+    *) echo "${cwd:--}" ;;
+  esac
+}
+
+rows() {
+  ps -eo pid=,ni=,pcpu=,comm=,args= --sort=-pcpu 2>/dev/null \
+    | awk -v min="$FLEET_ROW_CPU" '$3 + 0 >= min || ($4 == "Unity" && / -batchmode/) { print }' \
+    | while read -r pid ni cpu comm _; do
+        IFS=$'\t' read -r class sess < <(classify "$pid")
+        printf '%-8s %5s %3s  %-8s %-28s %-34s %s\n' "$pid" "$cpu" "$ni" "$class" "$sess" "$(worktree_of "$pid")" "$comm"
+      done
+}
+
+main() {
+  local load cores tctl mem held=0 verdict
+  load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"
+  holds_set && held=1
+  verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held")"
+
+  if [ "${1:-}" = --watch-probe ]; then
+    echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free)"
+    case "$verdict" in HOLD*) return 1 ;; *) return 0 ;; esac
+  fi
+
+  echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free"
+  if [ "$held" = 1 ]; then
+    echo "holds:"
+    agent-hold list 2>/dev/null | awk -F'\t' '{ printf "  %s since %s by %s: %s\n", $1, $2, $3, $4 }'
+  else
+    echo "holds: none"
+  fi
+  echo "verdict: $verdict"
+  echo
+  printf '%-8s %5s %3s  %-8s %-28s %-34s %s\n' PID CPU NI CLASS SESSION WORKTREE COMM
+  rows
+}
+
+# Sourceable for tests (fleet_verdict); runs main only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
