@@ -116,7 +116,9 @@ Media/Music
 !.claude/skills/memory/session-registry/
 !.claude/skills/memory/session-snapshot/
 !.claude/skills/memory/wind-down/
+!.claude/skills/messaging/fleet-comms/
 !.claude/skills/messaging/work-comms/
+!.claude/skills/monitoring/fleet-overseer/
 !.claude/skills/monitoring/sentinel/
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/

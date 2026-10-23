@@ -68,6 +68,22 @@ fi
 CONTEXT=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
 
+  # Active fleet holds (agent-hold), first because they say what NOT to start. The
+  # coordinator's messages only reach sessions already running; this is how one started
+  # mid-hold finds out. Read directly so a missing agent-hold binary cannot hide a hold.
+  HOLD_DIR="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
+  if compgen -G "$HOLD_DIR/*" >/dev/null 2>&1; then
+    echo "⛔ Active holds - do not start work on these until released (GO):"
+    for hold in "$HOLD_DIR"/*; do
+      [ -f "$hold" ] || continue
+      printf '  %s since %s by %s: %s\n' "${hold##*/}" \
+        "$(sed -n 's/^since: //p' "$hold")" "$(sed -n 's/^by: //p' "$hold")" \
+        "$(sed -n 's/^reason: //p' "$hold")"
+    done
+    echo "  (\`agent-hold list\`; how to honor one: the fleet-comms skill)"
+    echo
+  fi
+
   # Post-compaction banner — after auto/manual compaction Claude Code fires a fresh
   # SessionStart with source=compact. The raw conversation was just summarized, so
   # re-surface the durable pointers (below) and flag that uncaptured in-flight work
