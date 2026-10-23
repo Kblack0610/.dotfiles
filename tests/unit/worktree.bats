@@ -512,3 +512,86 @@ EOF
   assert_success
   assert_output 'develop'
 }
+
+# ── Squash merges, editors, submodule worktrees, and reaping with submodules ─
+
+# A worktree with one local commit and no upstream, its origin renamed to a GitHub URL so
+# wt_pr_merged_at_head asks the gh stub. Pushes are done before the rename.
+make_squash_candidate() {
+  make_repo
+  git -C "$MAIN" worktree add --quiet --no-track "$WT_ROOT/repo-agent-1" -b feat/x origin/main
+  printf 'work\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am work
+  git -C "$MAIN" remote set-url origin https://github.com/me/repo.git
+  HEAD_OID=$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)
+  export HEAD_OID
+}
+
+@test "a squash-merged branch whose PR head is this HEAD is reapable" {
+  make_squash_candidate
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+}
+
+@test "a commit made AFTER the merged PR's head still pins the worktree" {
+  make_squash_candidate
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  printf 'more\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am more
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+}
+
+@test "no merged PR for the branch pins the worktree" {
+  make_squash_candidate
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+}
+
+@test "a Unity editor with the worktree open pins it" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf '#!/bin/sh\necho "Unity /opt/Unity/Editor/Unity -projectPath %s -logFile x"\n' "$WT_ROOT/repo-agent-1" > "$SANDBOX/bin/ps"
+  chmod +x "$SANDBOX/bin/ps"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output 'a Unity editor has it open'
+}
+
+@test "an editor on ANOTHER project does not pin the worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf '#!/bin/sh\necho "unityhub-unity-editor-6000 x -projectpath %s"\n' "$WT_ROOT/repo-agent-10" > "$SANDBOX/bin/ps"
+  chmod +x "$SANDBOX/bin/ps"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+}
+
+@test "a worktree of its own submodule pins the worktree" {
+  # That worktree's git dir lives in this one's .git/modules; removing this one orphans it.
+  make_drifted_submodule
+  git -C "$WT/sub" worktree add --quiet "$SANDBOX/sub-wt" -b side
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --partial 'a submodule worktree lives off it'
+}
+
+@test "reap removes a clean worktree that has an initialised submodule" {
+  # Plain `git worktree remove` refuses every such tree, clean or not.
+  make_drifted_submodule
+  run cmd_reap "$WT"
+  assert_success
+  [ ! -d "$WT" ]
+}
+
+@test "reap keeps a worktree with edits inside its submodule" {
+  make_drifted_submodule
+  printf 'wip\n' > "$WT/sub/wip.txt"
+  run cmd_reap "$WT"
+  assert_failure
+  [ -f "$WT/sub/wip.txt" ]
+}

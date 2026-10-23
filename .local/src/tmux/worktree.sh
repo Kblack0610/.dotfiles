@@ -170,10 +170,68 @@ wt_submodule_pushed() {
 # (merged), or every commit is on its upstream (pushed, PR open, review pending). A branch
 # that is only ever pushed would never be reapable under the first test alone, and waiting
 # for the merge to land locally would keep worktrees alive for days after they are done.
+#
+# A third: a PR from this branch was MERGED at exactly this HEAD. A squash merge puts a new
+# commit on the trunk, so HEAD is never its ancestor, and the forge deletes the branch, so
+# there is no upstream left either. Without this every squash-merged worktree was held as
+# "not merged" forever (2026-10-23: unity-core-playground had several of those at 15-20 GB each).
 wt_landed() {
   git -C "$1" merge-base --is-ancestor HEAD "$2" 2>/dev/null && return 0
-  git -C "$1" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 &&
-    [ -z "$(git -C "$1" rev-list '@{upstream}..HEAD' 2>/dev/null)" ]
+  if git -C "$1" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 &&
+    [ -z "$(git -C "$1" rev-list '@{upstream}..HEAD' 2>/dev/null)" ]; then
+    return 0
+  fi
+  wt_pr_merged_at_head "$1"
+}
+
+# wt_pr_merged_at_head <path> -- true when GitHub has a MERGED PR whose head is this HEAD.
+# Fails closed: no gh, no jq, a non-GitHub origin, a detached HEAD or a network error all
+# answer "not landed", which only ever keeps a worktree.
+wt_pr_merged_at_head() {
+  local branch head url slug
+  branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
+  head=$(git -C "$1" rev-parse HEAD 2>/dev/null) || return 1
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  case "$url" in
+  *github.com[:/]*) slug="${url#*github.com[:/]}" slug="${slug%.git}" ;;
+  *) return 1 ;;
+  esac
+  panel_have gh && panel_have jq || return 1
+  timeout 20 gh pr list -R "$slug" --head "$branch" --state merged --json headRefName,headRefOid,state 2>/dev/null |
+    jq -e --arg b "$branch" --arg h "$head" \
+      'any(.[]; .state == "MERGED" and .headRefName == $b and .headRefOid == $h)' >/dev/null 2>&1
+}
+
+# wt_submodule_worktrees <path> -- print the first linked worktree of any initialised
+# submodule of <path>; nothing, and rc 1, when there are none. A worktree cut from a
+# submodule (`git -C External/unity-core worktree add ~/.worktrees/unity-core-x`) keeps its
+# git dir INSIDE this worktree's .git/modules, so removing this one orphans that one.
+wt_submodule_worktrees() {
+  local sub
+  while read -r _ sub _; do
+    [ -e "$1/$sub/.git" ] || continue
+    git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
+      awk 'NR > 1 && /^worktree / { print substr($0, 10); found = 1; exit } END { exit !found }' &&
+      return 0
+  done < <(git -C "$1" submodule status 2>/dev/null)
+  return 1
+}
+
+# wt_editor_open <path> -- true when a Unity editor has <path> open. An editor holds no tmux
+# pane, so the session checks miss it, and deleting a project under it loses its scene edits.
+# Hub-launched editors run as unityhub-unity-editor-* with a lowercase -projectpath.
+wt_editor_open() {
+  ps -eo comm=,args= 2>/dev/null |
+    awk -v p="$1" '
+      $1 !~ /^(Unity|unityhub-unity)/ { next }
+      {
+        # By text, not by field: a project path may hold spaces.
+        at = index(tolower($0), " -projectpath ")
+        if (!at) next
+        rest = substr($0, at + 14)
+        if (rest == p || index(rest, p " ") == 1) found = 1
+      }
+      END { exit !found }'
 }
 
 # ── tmux state ───────────────────────────────────────────────────────────────
@@ -263,6 +321,12 @@ wt_work_reason() {
     return 1
   }
 
+  local nested
+  if nested=$(wt_submodule_worktrees "$path"); then
+    printf 'a submodule worktree lives off it: %s\n' "$nested"
+    return 1
+  fi
+
   if ! wt_landed "$path" "$base"; then
     if up=$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) && [ -n "$up" ]; then
       printf 'unpushed commits (ahead of %s)\n' "$up"
@@ -297,6 +361,10 @@ wt_reap_reason() {
   fi
   if wt_pane_inside "$1"; then
     printf 'a tmux pane is open inside it\n'
+    return 1
+  fi
+  if wt_editor_open "$1"; then
+    printf 'a Unity editor has it open\n'
     return 1
   fi
 
@@ -680,7 +748,23 @@ cmd_reap() {
   # From the MAIN repo, never from inside the directory being removed. git's own dirty check
   # runs again here, which is a second lock on the same door -- deliberately, because
   # wt_reap_reason's snapshot and this moment are not the same instant.
-  git -C "$main" worktree remove "$path" || panel_fail "git worktree remove refused $path" || return 1
+  #
+  # Except for submodules: git refuses ANY worktree with an initialised submodule ("working
+  # trees containing submodules cannot be moved or removed"), clean or not, so `done` never
+  # removed a unity-core-playground worktree and they piled up at 15-20 GB each. wt_dirty_count
+  # already counts edits, untracked files and unpushed commits inside submodules, so a tree it
+  # calls clean is safe to remove with --force; the count is taken again right before.
+  local out
+  if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
+    case "$out" in
+    *'containing submodules'*)
+      [ "$(wt_dirty_count "$path")" -eq 0 ] &&
+        git -C "$main" worktree remove --force "$path" ||
+        panel_fail "git worktree remove refused $path" || return 1
+      ;;
+    *) panel_fail "git worktree remove refused $path: $out" || return 1 ;;
+    esac
+  fi
 
   # Take the branch with it, or the slot numbers ratchet forever: wt_next_slot treats an existing
   # `agent-N` branch as an occupied slot, so four reaped-but-not-deleted worktrees pushed the
