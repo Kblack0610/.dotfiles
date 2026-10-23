@@ -26,6 +26,8 @@ pub struct Agent {
     pub session_id: String,
     /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
     pub status: String,
+    /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
+    pub plan: bool,
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
@@ -58,10 +60,11 @@ pub fn collect() -> Vec<Agent> {
         };
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        let mut summary = if jsonl_path.exists() {
-            jsonl::last_event(&jsonl_path)
+        let (mut summary, plan) = if jsonl_path.exists() {
+            let info = jsonl::row_info(&jsonl_path);
+            (info.summary, info.plan)
         } else {
-            String::new()
+            (String::new(), false)
         };
         // Prefer Claude's pane title (the live session title) over the JSONL
         // "say:" text; the row glyph already conveys status.
@@ -88,6 +91,7 @@ pub fn collect() -> Vec<Agent> {
             pane: format!("{}/{}", pane.server, pane.pane_id),
             session_id: sess.session_id.clone(),
             status: sess.status.clone(),
+            plan,
         });
     }
     agents
