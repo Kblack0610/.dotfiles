@@ -16,21 +16,15 @@ fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// Read the last `n` lines of a file. Returns empty on any read error.
-fn tail_lines(path: &Path, n: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
+/// The last `n` lines of a transcript's text.
+fn tail_lines(text: &str, n: usize) -> Vec<&str> {
     let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    lines[lines.len().saturating_sub(n)..].to_vec()
 }
 
 /// Parse JSONL lines, keeping only assistant/user events in order.
-fn turns(path: &Path) -> Vec<Value> {
-    tail_lines(path, 200)
+fn turns(text: &str) -> Vec<Value> {
+    tail_lines(text, 200)
         .iter()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| {
@@ -42,12 +36,55 @@ fn turns(path: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// Whole transcript text. Empty on any read error.
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_default()
+}
+
+/// What a chooser row needs from the transcript, from a single read of it.
+pub struct RowInfo {
+    /// One-line summary of the most recent turn.
+    pub summary: String,
+    /// The session is in plan mode.
+    pub plan: bool,
+}
+
+pub fn row_info(path: &Path) -> RowInfo {
+    let text = read(path);
+    RowInfo {
+        summary: last_event_in(&text),
+        plan: permission_mode(&text).as_deref() == Some("plan"),
+    }
+}
+
 /// One-line summary of the most recent turn, for the chooser row.
 pub fn last_event(path: &Path) -> String {
-    match turns(path).last() {
+    last_event_in(&read(path))
+}
+
+fn last_event_in(text: &str) -> String {
+    match turns(text).last() {
         None => "(no events)".to_string(),
         Some(v) => summarize(v),
     }
+}
+
+/// The session's current permission mode (`plan`, `default`, `bypassPermissions`,
+/// ...): the last line carrying one. `~/.claude/sessions/<pid>.json` does not
+/// record it, but Claude writes a `permission-mode` entry with every turn's
+/// metadata (and stamps it on each prompt), so this trails a Shift+Tab toggle
+/// by at most one turn. It is still right when a dialog hides the pane's footer.
+fn permission_mode(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"permissionMode\""))
+        .find_map(|l| {
+            serde_json::from_str::<Value>(l)
+                .ok()?
+                .get("permissionMode")?
+                .as_str()
+                .map(str::to_string)
+        })
 }
 
 fn summarize(v: &Value) -> String {
@@ -72,7 +109,7 @@ fn summarize(v: &Value) -> String {
 
 /// The last few turns formatted (most-recent first) for the preview pane.
 pub fn recent_events(path: &Path, count: usize) -> Vec<String> {
-    let all = turns(path);
+    let all = turns(&read(path));
     all.iter()
         .rev()
         .take(count)
@@ -143,5 +180,28 @@ mod tests {
         assert_eq!(last_event(&p), "say: hello world");
         fs::remove_file(&p).ok();
         assert_eq!(last_event(Path::new("/no/such/file.jsonl")), "(no events)");
+    }
+
+    #[test]
+    fn plan_mode_follows_the_last_mode_line() {
+        let p = tmpfile("plan", &[
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+            r#"{"type":"user","permissionMode":"plan","message":{"content":"plan it"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
+        ]);
+        let info = row_info(&p);
+        assert!(info.plan);
+        assert_eq!(info.summary, "tool: Read");
+        fs::remove_file(&p).ok();
+
+        // Leaving plan mode (ExitPlanMode approved) writes a newer mode line.
+        let p = tmpfile("built", &[
+            r#"{"type":"permission-mode","permissionMode":"plan"}"#,
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+        ]);
+        assert!(!row_info(&p).plan);
+        fs::remove_file(&p).ok();
+
+        assert!(!row_info(Path::new("/no/such/file.jsonl")).plan);
     }
 }

@@ -2,7 +2,8 @@
 
 A cross-platform tmux chooser for running Claude / AI agents. Lists every tmux
 window running an agent, grouped by project, with a live status glyph and a
-preview pane — pick one with fzf and jump to it.
+preview pane — pick one with fzf and jump to it. A magenta `P` after the glyph
+marks an agent in plan mode, read from the transcript's latest `permissionMode`.
 
 Bound in `~/.tmux.conf`:
 
@@ -52,7 +53,7 @@ which owns the detach-and-attach hop and the Prefix+L way back.
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; JSONL path
-- `jsonl.rs` — tail the transcript; row summary + recent-events for the preview
+- `jsonl.rs` — tail the transcript; row summary, plan mode, recent-events for the preview
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks
 - `chooser.rs` — orchestration for the three entry points
