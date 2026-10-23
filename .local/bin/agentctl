@@ -69,7 +69,7 @@ load_agent() {
 agent_field() {
     local name="$1" field="$2"
     load_agent "$name" 2>/dev/null \
-        | awk -F= -v k="$field" 'BEGIN{IGNORECASE=0} {if (substr($0,1,length(k)+1) == k"=") {print substr($0, length(k)+2); exit}}'
+        | awk -F= -v k="$field" 'BEGIN{IGNORECASE=0} !f && substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); f=1}'
 }
 
 systemd_show() {
@@ -110,9 +110,11 @@ unit_uptime() {
 unit_next_run() {
     local timer="agentctl-${1}.timer"
     # systemd output: "Fri 2026-05-01 03:00:00 PDT      11h -  ..."
-    # Show "Fri 03:00:00" as a compact next-run marker.
+    # Show "Fri 03:00:00" as a compact next-run marker. awk reads to EOF instead of
+    # exiting on the match: an early exit SIGPIPEs systemctl, and under pipefail + set -e
+    # that kills `agentctl list` after the first row.
     systemctl --user list-timers --all 2>/dev/null \
-        | awk -v t="$timer" '$0 ~ t {print $1" "$3; exit}'
+        | awk -v t="$timer" '!f && $0 ~ t {print $1" "$3; f=1}'
 }
 
 fmt_dur() {
