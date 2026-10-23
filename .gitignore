@@ -138,6 +138,7 @@ Media/Music
 !.claude/skills/workstreams/ingest-prs/
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
+!.claude/skills/workstreams/night-shift/
 !.claude/skills/workstreams/sprint-overseer/
 !.claude/skills/workstreams/stack-review/
 # Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
