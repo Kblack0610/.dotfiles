@@ -26,6 +26,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# agentctl reads next-run times from `list-timers`; served whole from one fixture file.
+# exec, so a reader that closes the pipe early kills the stub with SIGPIPE like the real one.
+if [ "${args[0]:-}" = list-timers ]; then
+  [ -f "$FIX/systemctl.list-timers" ] && exec cat "$FIX/systemctl.list-timers"
+  exit 0
+fi
+
 # args = (show <unit>) for the only form fleet.sh uses.
 [ "${args[0]:-}" = show ] || exit 0
 unit="${args[1]:-}"
