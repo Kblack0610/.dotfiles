@@ -449,6 +449,28 @@ make_drifted_submodule() {
   assert_failure
 }
 
+@test "a submodule commit already fetched but on no ref is still borrowed from main" {
+  # `update` treats a commit no ref reaches as missing and goes to the network for it, so
+  # "the object exists" is not enough to skip the local fetch. Same fixture as above, but C3
+  # is first fetched into FETCH_HEAD only.
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c3
+  C3=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
+  git -C "$SANDBOX/subwork" push --quiet origin main
+  git -C "$MAIN/sub" fetch --quiet origin
+  git -C "$MAIN/sub" checkout --quiet "$C3"
+  git -C "$MAIN" commit --quiet -am 'sub at c3'
+  git -C "$MAIN" push --quiet origin main
+  git -C "$MAIN" fetch --quiet origin
+  git -C "$WT/sub" fetch --quiet "$MAIN/sub" "$C3" # FETCH_HEAD, no ref
+  mv "$SUBORIGIN" "$SUBORIGIN.offline"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C3"
+}
+
 @test "recycling never smudges LFS through the worktree's own submodule store" {
   # A smudge here is a download into a per-worktree store (4.2 GB on unity-core-playground).
   # Stub git-lfs and record what the smudge filter would have been asked to do.

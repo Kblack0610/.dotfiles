@@ -573,10 +573,11 @@ wt_recycle() {
   # is left to `update`, which fetches it from the network as before.
   #
   # Into a REF, refs/wt/main: `update` counts a commit as present only when a ref reaches it
-  # (FETCH_HEAD does not), and NOT under refs/remotes, where wt_submodule_pushed would take a
+  # (FETCH_HEAD does not; the skip test above is that same rule), and NOT under refs/remotes, where wt_submodule_pushed would take a
   # commit that only the main checkout has for a pushed one.
   WT_MAIN="$main" git -C "$path" submodule foreach --quiet --recursive '
-    git cat-file -e "$sha1^{commit}" 2>/dev/null && exit 0
+    git cat-file -e "$sha1^{commit}" 2>/dev/null &&
+      [ -z "$(git rev-list -n 1 "$sha1" --not --all 2>/dev/null)" ] && exit 0
     [ -e "$WT_MAIN/$displaypath/.git" ] || exit 0
     git fetch --quiet --no-tags "$WT_MAIN/$displaypath" "+$sha1:refs/wt/main" >/dev/null 2>&1 || true' >&2
   GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2 ||
