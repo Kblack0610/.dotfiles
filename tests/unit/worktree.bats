@@ -444,6 +444,9 @@ make_drifted_submodule() {
   assert_output "$C3"
   run git -C "$WT" status --porcelain
   assert_output ''
+  # Borrowed is not pushed: this store never saw C3 on a remote, and must not claim it did.
+  run wt_submodule_pushed "$WT/sub"
+  assert_failure
 }
 
 @test "recycling never smudges LFS through the worktree's own submodule store" {
