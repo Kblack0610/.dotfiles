@@ -422,6 +422,30 @@ make_drifted_submodule() {
   assert_output ''
 }
 
+@test "recycling takes a submodule's new commit from the main checkout, not the network" {
+  # The main fetch already brought it into the main checkout's copy; each worktree has its
+  # own submodule store, and fetching it again was ~1s of ssh to github per recycle. C3
+  # exists only upstream and in $MAIN/sub, and upstream then goes away: only a local fetch
+  # can reach it.
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  git -C "$SANDBOX/subwork" commit --quiet --allow-empty -m c3
+  C3=$(git -C "$SANDBOX/subwork" rev-parse HEAD)
+  git -C "$SANDBOX/subwork" push --quiet origin main
+  git -C "$MAIN/sub" fetch --quiet origin
+  git -C "$MAIN/sub" checkout --quiet "$C3"
+  git -C "$MAIN" commit --quiet -am 'sub at c3'
+  git -C "$MAIN" push --quiet origin main
+  git -C "$MAIN" fetch --quiet origin
+  mv "$SUBORIGIN" "$SUBORIGIN.offline"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C3"
+  run git -C "$WT" status --porcelain
+  assert_output ''
+}
+
 @test "recycling never smudges LFS through the worktree's own submodule store" {
   # A smudge here is a download into a per-worktree store (4.2 GB on unity-core-playground).
   # Stub git-lfs and record what the smudge filter would have been asked to do.
