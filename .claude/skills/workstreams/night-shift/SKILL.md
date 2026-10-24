@@ -1,6 +1,6 @@
 ---
 name: night-shift
-description: Queue agent tasks during the day to run unattended overnight, then read what happened in the morning. Each queued task becomes one headless `/one-shot --pr-only` run at 01:00 (agentctl runner `night-shift`), one at a time, deciding its own questions with its own recommendation and stopping at an open PR. Hard gates go to `agent-ask` for the morning. Use when the user says "do this tonight", "run it overnight", "queue this for later", "have agents work on it while I sleep", "what did the night shift do", "show me the overnight agents", or "/night-shift queue|list|report|cancel". The live view is tmux prefix M-n. Other skills cover the neighbours - a task to run now is `one-shot`, a batch of tracker tickets is `/captain`, a release is `release-coordinator`, and watching a running wave is `wave-overseer`.
+description: Queue agent tasks during the day to run unattended overnight, then read what happened in the morning. Each queued task becomes one headless `/one-shot --pr-only` run at 01:00 (agentctl runner `night-shift`), one at a time, deciding its own questions with its own recommendation and stopping at an open PR. Hard gates go to `agent-ask` for the morning. Use when the user says "do this tonight", "run it overnight", "queue this for later", "have agents work on it while I sleep", "what did the night shift do", "show me the overnight agents", or "/night-shift queue|list|report|cancel". The live view is tmux prefix C. Other skills cover the neighbours - a task to run now is `one-shot`, a batch of tracker tickets is `/captain`, a release is `release-coordinator`, and watching a running wave is `wave-overseer`.
 metadata:
   category: workstreams
   tags: [delivery, autonomy, scheduling, overnight]
@@ -24,7 +24,7 @@ Not for work to do right now (`one-shot`), a ticket batch (`/captain`), or anyth
 
 1. Write the task as the brief a fresh agent will get with nobody to ask: the goal, the plan file if there is one (`~/.agent/plans/<project>/...`), the merge gate to run, and what "done" means. A task that only makes sense with this conversation's context will come back `blocked` or wrong.
 2. `night-shift queue <repo> "<brief>" --slug <short-name> --project <ptask project>`. Add `--after <slug>` when the task depends on another one: it runs only if that one ended `ok`. Use `--data-class work` for client work (the route interlock refuses personal data on a client route). `--model` and `--max-turns` override the runner defaults.
-3. Say what will happen before bed: the timer fires at 01:00, the human's own prerequisites (installs, logins, editor closed) need doing first, and `prefix M-n` shows it live. Do not add an agent-board row yourself: one-shot adds and closes its own.
+3. Say what will happen before bed: the timer fires at 01:00, the human's own prerequisites (installs, logins, editor closed) need doing first, and `prefix C` shows it live. Do not add an agent-board row yourself: one-shot adds and closes its own.
 
 ### list / report / cancel
 
@@ -35,7 +35,7 @@ Not for work to do right now (`one-shot`), a ticket batch (`/captain`), or anyth
 ### The morning view
 
 - The 06:45 briefing (daily note refs) has a `Night shift` section, and a `blocked` or `failed` task also appears under Needs you.
-- tmux `prefix M-n` opens the `night-shift` session. The top pane is the board, the bottom pane follows the running task's log, and both redraw on file events.
+- tmux `prefix C` opens the `night-shift` session. The top pane is the board, the bottom pane follows the running task's log, and both redraw on file events.
 
 ## How a run works
 
