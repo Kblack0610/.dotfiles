@@ -50,6 +50,21 @@ systemctl --user enable --now storage-scan.timer
 
 `storage scan Trash Steam` rescans just those buckets. The cache is `~/.cache/storage/` (`scan.tsv`, one `children/<label>.tsv` per bucket, `reapable.tsv`).
 
+## Moving a bucket to another drive
+
+On the desktop the second NVMe is mounted at `/data` (btrfs, `compress=zstd`, `nofail` in fstab by UUID). Steam, the Asset Store cache, Downloads and the phone-backup stage live there, each behind a symlink at its old path, so apps and the buckets file need no change:
+
+| Old path | Lives at |
+|---|---|
+| `~/.local/share/Steam` | `/data/Steam` |
+| `~/.local/share/unity3d/Asset Store-5.x` | `/data/unity/Asset Store-5.x` |
+| `~/Downloads` | `/data/Downloads` |
+| `~/.cache/phone-backup` | `/data/phone-backup` |
+
+To move another bucket, close whatever writes to it, then `rsync -aHAX --remove-source-files <old>/ /data/<name>/`, check nothing is left (`find <old> ! -type d`), remove the empty dirs and `ln -s /data/<name> <old>`. `--remove-source-files` deletes each file only once its copy landed, so an interrupted run loses nothing. To undo, do the same in the other direction and remove the link first.
+
+Worktrees and `~/dev` stay on the root drive: live sessions have them open, and Unity copies `Library/` with reflinks, which only work inside one filesystem.
+
 ## Install
 
 Needs `jq`, `fzf`, and `dua-cli` (for browsing): `sudo pacman -S dua-cli`. All three are in `installation_scripts/packages.conf`.
@@ -64,3 +79,5 @@ Needs `jq`, `fzf`, and `dua-cli` (for browsing): `sudo pacman -S dua-cli`. All t
 | enter says `dua is not installed` | `sudo pacman -S dua-cli`. |
 | A network mount says `not responding` | The NAS did not answer `df` within 2 seconds. Check it with `findmnt -t nfs,nfs4,cifs` and `ls <mountpoint>`. |
 | Bar module missing | It is a toggleable module: `~/.config/waybar/modules.sh on storage`. |
+| A move to `/data` ends with rsync code 23, `failed to remove ... Permission denied` | A root-owned folder in the source (often from a `sudo unzip`). The copies are made; `sudo rm -r` the leftover folder, `sudo chown -R $USER: ` its copy on `/data`, then make the link. |
+| `umount` leaves the drive still mounted | It was mounted twice on the same point (a mount command run twice). `findmnt -S <partition>` lists every mount; unmount until it is empty. |
