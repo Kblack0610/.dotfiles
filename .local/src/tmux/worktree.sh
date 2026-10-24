@@ -566,6 +566,20 @@ wt_recycle() {
   local heads
   heads=$(git -C "$path" submodule foreach --quiet --recursive \
     'printf "%s %s\n" "$displaypath" "$(git rev-parse HEAD)"' 2>/dev/null)
+  # Take each new submodule commit from the MAIN checkout's copy first. wt_prepare's fetch
+  # already brought it there (git fetches submodules on demand when a pointer moves), but
+  # every worktree has its own submodule store, so `update` went back to the network for it:
+  # ~1s of ssh to github for unity-core, against 8ms locally. Anything the main copy lacks
+  # is left to `update`, which fetches it from the network as before.
+  #
+  # Into a REF, refs/wt/main: `update` counts a commit as present only when a ref reaches it
+  # (FETCH_HEAD does not; the skip test above is that same rule), and NOT under refs/remotes, where wt_submodule_pushed would take a
+  # commit that only the main checkout has for a pushed one.
+  WT_MAIN="$main" git -C "$path" submodule foreach --quiet --recursive '
+    git cat-file -e "$sha1^{commit}" 2>/dev/null &&
+      [ -z "$(git rev-list -n 1 "$sha1" --not --all 2>/dev/null)" ] && exit 0
+    [ -e "$WT_MAIN/$displaypath/.git" ] || exit 0
+    git fetch --quiet --no-tags "$WT_MAIN/$displaypath" "+$sha1:refs/wt/main" >/dev/null 2>&1 || true' >&2
   GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2 ||
     panel_warn "submodules in $path are not at $base; run git submodule update there"
   if panel_have git-lfs; then
