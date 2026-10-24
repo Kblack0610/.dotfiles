@@ -57,6 +57,73 @@ pub fn row_info(path: &Path) -> RowInfo {
     }
 }
 
+/// What `list --json` adds for fleet-sessions: context size, model, and plan file.
+pub struct FleetInfo {
+    /// input + cache_read + cache_creation tokens on the last main-thread assistant turn.
+    pub context_tokens: u64,
+    pub model: String,
+    /// The session's plan file, empty when it has none.
+    pub plan_file: String,
+}
+
+pub fn fleet_info(path: &Path) -> FleetInfo {
+    let text = read(path);
+    let (context_tokens, model) = last_usage(&text);
+    FleetInfo { context_tokens, model, plan_file: plan_file(&text) }
+}
+
+/// Token count and model of the last real assistant turn. Sidechain (subagent) turns
+/// and `<synthetic>` placeholders carry their own, smaller contexts.
+fn last_usage(text: &str) -> (u64, String) {
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"usage\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| {
+            v.get("type").and_then(Value::as_str) == Some("assistant")
+                && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+                && v.pointer("/message/model").and_then(Value::as_str) != Some("<synthetic>")
+        })
+        .map(|v| {
+            let n = |k: &str| v.pointer(&format!("/message/usage/{k}")).and_then(Value::as_u64).unwrap_or(0);
+            let model = v.pointer("/message/model").and_then(Value::as_str).unwrap_or("");
+            (
+                n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"),
+                model.to_string(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the
+/// `~/.claude/plans/*.md` path the transcript names most often (a plan handed in by prompt).
+fn plan_file(text: &str) -> String {
+    const KEY: &str = "\"planFilePath\":\"";
+    if let Some(i) = text.rfind(KEY) {
+        let rest = &text[i + KEY.len()..];
+        if let Some(end) = rest.find('"') {
+            return rest[..end].to_string();
+        }
+    }
+    const DIR: &str = "/.claude/plans/";
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, _) in text.match_indices(DIR) {
+        let rest = &text[i + DIR.len()..];
+        let name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+            .unwrap_or(rest.len());
+        let name = &rest[..name_len];
+        if name.ends_with(".md") && name.len() > 3 {
+            *counts.entry(name).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+        .map(|(name, _)| crate::session::home().join(".claude/plans").join(name).to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// One-line summary of the most recent turn, for the chooser row.
 pub fn last_event(path: &Path) -> String {
     last_event_in(&read(path))
@@ -203,5 +270,33 @@ mod tests {
         fs::remove_file(&p).ok();
 
         assert!(!row_info(Path::new("/no/such/file.jsonl")).plan);
+    }
+
+    #[test]
+    fn fleet_info_reads_usage_and_plan() {
+        let p = tmpfile("fleet", &[
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":8}}}"#,
+            r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/older.md"}}"#,
+            r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/mine.md"}}"#,
+            r#"{"type":"user","message":{"content":"see /h/.claude/plans/other.md and /h/.claude/plans/other.md"}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5}}}"#,
+            r#"{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}}}"#,
+        ]);
+        let info = fleet_info(&p);
+        assert_eq!(info.context_tokens, 110);
+        assert_eq!(info.model, "claude-opus-5-5");
+        assert_eq!(info.plan_file, "/h/.claude/plans/mine.md");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn plan_file_falls_back_to_most_named() {
+        let p = tmpfile("planref", &[
+            r#"{"type":"user","message":{"content":"run ~/.claude/plans/a-b.md then /x/.claude/plans/a-b.md, not /x/.claude/plans/c.md"}}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/a-b.md"));
+        fs::remove_file(&p).ok();
+        let none = fleet_info(Path::new("/no/such/file.jsonl"));
+        assert_eq!((none.context_tokens, none.plan_file.as_str()), (0, ""));
     }
 }

@@ -24,6 +24,8 @@ pub struct Agent {
     /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
     pub pane: String,
     pub session_id: String,
+    /// The session's working directory, from `~/.claude/sessions` (not the pane's).
+    pub cwd: String,
     /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
     pub status: String,
     /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
@@ -90,6 +92,7 @@ pub fn collect() -> Vec<Agent> {
             tags: pane.tags.clone(),
             pane: format!("{}/{}", pane.server, pane.pane_id),
             session_id: sess.session_id.clone(),
+            cwd: sess.cwd.clone(),
             status: sess.status.clone(),
             plan,
         });
@@ -163,9 +166,42 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// `~/.claude/sessions` join instead of reimplementing it in bash and drifting.
 /// Deliberately raw fields, not the chooser's display text: that carries box-drawing
 /// header rows and alignment padding meant only for fzf.
-pub fn run_list() -> Result<()> {
+///
+/// `json` prints one object per line instead, with the session and transcript facts
+/// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file).
+pub fn run_list(json: bool) -> Result<()> {
     for a in collect() {
-        println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+        if !json {
+            println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+            continue;
+        }
+        let (info, idle_since) = match &a.jsonl {
+            Some(p) => (
+                jsonl::fleet_info(p),
+                fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs()),
+            ),
+            None => (jsonl::fleet_info(Path::new("")), 0),
+        };
+        let row = serde_json::json!({
+            "target": a.target,
+            "pane": a.pane,
+            "status": a.status,
+            "project": a.project,
+            "cwd": a.cwd,
+            "session_id": a.session_id,
+            "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
+            "plan_mode": a.plan,
+            "idle_since": idle_since,
+            "context_tokens": info.context_tokens,
+            "model": info.model,
+            "plan_file": info.plan_file,
+            "summary": a.summary,
+        });
+        println!("{row}");
     }
     Ok(())
 }
