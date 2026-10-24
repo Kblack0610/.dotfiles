@@ -82,19 +82,27 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 
 ## Verb: `shepherd`
 
-One pass. Run it as `/loop 15m /fleet-overseer shepherd` from the session the human talks to. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
+One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode: a permission prompt stalls the loop while the human is away, and every pass adds to that session's context. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
 
-1. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`.
+1. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`.
 2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
-3. For each LANDED or STALLED row:
-   - `nudged: false`: send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
-     - LANDED: "PR #N merged and your tree is clean. Record board done with proof if it is not, then run /wind-down. Reply only if something is still open."
-     - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR.
-   - `nudged: true`: the same fact survived a nudge. Do not message again. Put it on the human's list.
-4. NEEDS and UNCLEAR rows: never message. They go on the human's list.
-5. Report: counts per bucket, messages sent (session and fact), and the human's list. The report lands in the session the human talks to, so it pages nobody.
+3. For each LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
+   - LANDED: "PR #N merged and your tree is clean. If your plan (`<plan_file>`) has another phase, start it now under /my:autopilot rules: new branch off origin/main, then the same landing tail. If the next phase is a human gate or you are unsure what it is, post an agent-ask with `--session <your tmux session>` and stop. Only when the plan is finished: record board done with proof, then /wind-down."
+   - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
+   The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
+4. Rows for the human: NEEDS and UNCLEAR rows, and LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page.
+5. Report, then page (see Reporting).
 
-The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact. A new fact for the same session (its PR went from red to green) is nudged again; the same fact never is.
+### Reporting
+
+The human is usually away while this loop runs, so every pass leaves a record and pages only on news.
+
+- **Log.** When a pass sent a message or escalated a row, append one entry to `~/.agent/shepherd/log.md`: a `## <date time>` heading, the counts per bucket, one line per message sent (session, fact), and one line per new escalation. A pass that did nothing writes nothing. This file is the rundown the human reads on return.
+- **Page on escalation.** If step 4 escalated anything, send one page for the pass: `agent-notify -p normal -t shepherd '<n> need you: <session> <reason>; ...'`. Escalation is once per fact, so the same session never pages twice for the same reason.
+- **Page when settled.** When no row is WORKING, and every LANDED or STALLED row is already nudged, nothing is left for the shepherd to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
+- **In the session.** Each pass also prints its report in the shepherd's own session, where `/fleet-overseer status` gives the live table.
+
+The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact and the last escalated fact. A new fact for the same session (its PR went from red to green, or the next phase merged) is nudged again; the same fact never is.
 
 A session in a different permission mode holds a peer message for approval. If a message comes back pending approval, say so in the report and do not count it as delivered.
 
@@ -113,6 +121,6 @@ A session in a different permission mode holds a peer message for approval. If a
 
 - `fleet-comms`: channel choice and message wording, used by `hold`, `go` and `shepherd`.
 - `one-shot`: the delivery tail (gate, PR, merge, board done, pull, wind-down) that `shepherd` nudges sessions along.
-- `wind-down`: what a LANDED session runs when asked.
+- `wind-down`: what a LANDED session runs once its plan is finished.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running this skill acts.
 - `wave-overseer`, `sprint-overseer`: delivery-state watchdogs. Neither of them looks at the machine.
