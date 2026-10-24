@@ -114,6 +114,11 @@ b() { session_bucket "$@"; }
   [ "$(jq -r .nudged <<<"$output")" = false ]
   [ "$(jq -r .pane <<<"$output")" = %7 ]
 
+  # The table: bucket heading, then the reason as the last column with no pane glued on.
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --index 0 LANDED
+  assert_line --index 1 --regexp '^  s1:1 +feat/x +875 +60m  PR #875 merged, tree clean$'
+
   "$REPO_ROOT/.local/bin/fleet-sessions" mark sid-9 'LANDED PR #875 merged, tree clean @feat/x'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .nudged <<<"$output")" = true ]
