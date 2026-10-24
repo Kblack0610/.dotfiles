@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# fleet-sessions - where is each live Claude session in its delivery, and does it need anyone?
+#
+#   fleet-sessions                    one row per session, grouped by bucket
+#   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
+#   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
+#
+# Buckets: WORKING, NEEDS (the human), LANDED (wind it down), STALLED (nudge once), UNCLEAR.
+# Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
+# `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
+
+set -uo pipefail
+
+# --- thresholds (env overrides) --------------------------------------------------------
+: "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
+LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
+ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+
+# session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
+#                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1>
+#   -> "BUCKET reason"
+session_bucket() {
+  local st="$1" plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
+        pr="$9" state="${10}" ci="${11}" inpr="${12}"
+  case "$st" in
+    waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
+    busy|shell) echo "WORKING $st"; return ;;
+  esac
+  [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
+  [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
+  [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
+  [ "$idle" -lt "$FLEET_IDLE_MIN" ] && { echo "WORKING idle ${idle}m"; return; }
+  [ "$git" = 1 ] || { echo "UNCLEAR not in a git repo"; return; }
+  case "$state" in
+    MERGED)
+      if [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
+      elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
+      else echo "LANDED PR #$pr merged, tree clean"; fi ;;
+    OPEN)
+      case "$ci" in
+        FAIL)    echo "STALLED PR #$pr CI red" ;;
+        PENDING) echo "WORKING PR #$pr CI running" ;;
+        *)       echo "STALLED PR #$pr green, not merged" ;;
+      esac ;;
+    CLOSED) echo "UNCLEAR PR #$pr closed without merging" ;;
+    *)
+      if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s), no PR"
+      elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead commit(s) ahead, no PR"
+      else echo "UNCLEAR clean, nothing on the branch: done or never started"; fi ;;
+  esac
+}
+
+# nudged <sid> <fact> -> exit 0 when this exact fact was already nudged for this session.
+nudged() { [ "$(sed -n 's/^fact: //p' "$LEDGER/$1" 2>/dev/null)" = "$2" ]; }
+
+mark() {
+  local sid="$1" fact="$2" tmp
+  case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
+  mkdir -p "$LEDGER"
+  tmp="$(mktemp "$LEDGER/.$sid.XXXXXX")" || return 1
+  printf 'fact: %s\nat: %s\n' "$fact" "$(date -Iseconds)" > "$tmp" && mv "$tmp" "$LEDGER/$sid"
+}
+
+# --- facts ------------------------------------------------------------------------------
+# Pending asks whose `session:` names this session (tmux session name or session id).
+asks_for() {
+  local f n=0
+  for f in "$ASK_ROOT"/*/*.md; do
+    [ -f "$f" ] || continue
+    grep -q '^status: pending$' "$f" || continue
+    grep -qxF -e "session: $1" -e "session: $2" "$f" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+# tmux sessions holding a heavy process (fleet-assess rows), one per line.
+heavy_sessions() {
+  local fa
+  fa="$(command -v fleet-assess || echo "$(dirname "$0")/fleet-assess")"
+  "$fa" 2>/dev/null | awk 'f && $5 != "-" { print $5 } /^PID /{ f = 1 }' | sort -u
+}
+
+# PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid".
+prs_for() {
+  local dir="$1" url key
+  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
+  key="$CACHE/$(printf '%s' "$url" | tr -c 'A-Za-z0-9' _)"
+  [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
+      --json number,state,headRefName,headRefOid,statusCheckRollup -q '.[] | [
+        .headRefName, .number, .state,
+        (.statusCheckRollup // [] | map(.conclusion // .state // "") as $c
+          | if ($c | length) == 0 then "NONE"
+            elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
+            elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
+            else "PASS" end),
+        .headRefOid ] | @tsv' 2>/dev/null) > "$key"
+  cat "$key"
+}
+
+# One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
+# plus branch: "git dirty ahead pr state ci in_pr branch".
+git_facts() {
+  local d="$1" branch dirty ahead base pr state ci oid inpr=1 head
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 -"; return; }
+  branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  dirty="$(git -C "$d" status --porcelain 2>/dev/null | wc -l)"
+  base="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+  ahead="$(git -C "$d" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
+  IFS=$'\t' read -r _ pr state ci oid < <(prs_for "$d" | awk -F'\t' -v b="$branch" '$1 == b { print; exit }')
+  if [ -n "${oid:-}" ]; then
+    head="$(git -C "$d" rev-parse HEAD)"
+    # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
+    # remote holds commits this clone lacks, which is also "nothing new here".
+    if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
+       && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
+  fi
+  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--}"
+}
+
+collect() {
+  local now heavy line
+  now="$(date +%s)"
+  heavy="$(heavy_sessions)"
+  "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | while IFS= read -r line; do
+    local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+      (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
+      (.plan_file | if . == "" then "-" else . end)] | @tsv' <<<"$line")
+    tsess="${target#*/}"; tsess="${tsess%:*}"
+    idle=$(( (now - since) / 60 ))
+    asks="$(asks_for "$tsess" "$sid")"
+    hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
+    read -r g dirty ahead pr state ci inpr branch < <(git_facts "$cwd")
+    bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+              "$pr" "$state" "$ci" "$inpr")"
+    fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
+    local n=0; nudged "$sid" "$fact" && n=1
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+      "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}"
+  done
+}
+
+main() {
+  case "${1:-}" in
+    mark) shift; mark "$@"; return ;;
+    -h|--help) sed -n '2,10p' "$0"; return ;;
+  esac
+  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
+  local rows
+  rows="$(collect)"
+  if [ "${1:-}" = --json ]; then
+    [ -n "$rows" ] && jq -cR 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
+      cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
+      plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11],
+      fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
+    return 0
+  fi
+  local b
+  for b in NEEDS STALLED LANDED UNCLEAR WORKING; do
+    awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
+      first=1
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason; do
+        [ "$first" = 1 ] && { echo "$b"; first=0; }
+        printf '  %-44s %-28s %-6s %4sm  %s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
+          "$([ "$n" = 1 ] && echo '  (nudged)')"
+      done
+    }
+  done
+}
+
+# Sourceable for tests (session_bucket, nudged, mark); runs main only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

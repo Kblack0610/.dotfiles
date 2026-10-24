@@ -35,6 +35,7 @@ string rather than `claude` (observed on macOS).
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
 | `agent-panel next` | Cycle to the next attention-needed agent (else next in list) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
+| `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since, context_tokens, model, plan_file (read by `fleet-sessions`) |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 

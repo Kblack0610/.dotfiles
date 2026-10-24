@@ -25,7 +25,11 @@ enum Cmd {
     /// Cycle to the next attention-needed agent (else next in list).
     Next,
     /// Print one plain TSV row per live agent, for other surfaces to consume.
-    List,
+    List {
+        /// One JSON object per line with session and transcript facts (fleet-sessions).
+        #[arg(long)]
+        json: bool,
+    },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
     /// Internal fzf preview callback (not meant to be run by hand).
@@ -42,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List) => chooser::run_list(),
+        Some(Cmd::List { json }) => chooser::run_list(json),
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
