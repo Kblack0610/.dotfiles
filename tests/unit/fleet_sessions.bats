@@ -85,6 +85,20 @@ b() { session_bucket "$@"; }
   assert_failure
 }
 
+@test "escalate pages once per fact, keeps the nudge, and a new nudge clears it" {
+  mark sid-2 'STALLED PR #9 CI red @feat/x'
+  run escalated sid-2 'STALLED PR #9 CI red @feat/x'
+  assert_failure
+  escalate sid-2 'STALLED PR #9 CI red @feat/x'
+  run escalated sid-2 'STALLED PR #9 CI red @feat/x'
+  assert_success
+  run nudged sid-2 'STALLED PR #9 CI red @feat/x'
+  assert_success
+  mark sid-2 'STALLED PR #9 green, not merged @feat/x'
+  run escalated sid-2 'STALLED PR #9 CI red @feat/x'
+  assert_failure
+}
+
 @test "mark refuses a session id that would escape the ledger" {
   run mark ../evil 'x'
   assert_failure 2
@@ -121,5 +135,10 @@ b() { session_bucket "$@"; }
 
   "$REPO_ROOT/.local/bin/fleet-sessions" mark sid-9 'LANDED PR #875 merged, tree clean @feat/x'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+  [ "$(jq -r .escalated <<<"$output")" = false ]
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 'LANDED PR #875 merged, tree clean @feat/x'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .escalated <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
