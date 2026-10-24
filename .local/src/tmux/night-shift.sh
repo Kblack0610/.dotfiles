@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# night-shift.sh - the tmux view of the overnight agent queue (prefix M-n).
+# night-shift.sh - the tmux view of the overnight agent queue (prefix C).
 #
 # Usage: night-shift.sh [verb]
 #
