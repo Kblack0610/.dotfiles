@@ -159,7 +159,7 @@ main() {
   for b in NEEDS STALLED LANDED UNCLEAR WORKING; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
-      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason; do
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _; do
         [ "$first" = 1 ] && { echo "$b"; first=0; }
         printf '  %-44s %-28s %-6s %4sm  %s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
           "$([ "$n" = 1 ] && echo '  (nudged)')"
