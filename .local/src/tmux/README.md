@@ -381,6 +381,64 @@ print it.
 `wt reap` **after** the kill, in the same backgrounded chain. Before the kill it would always
 refuse, correctly.
 
+### What `Prefix+F` does, and what each step costs
+
+Measured on unity-core-playground (5k files in the main tree; `External/asset-library` is 150,185 files, 28,242 of them LFS; `External/unity-core` has no LFS), 2026-10-21 to 2026-10-24. The binding runs `wt new` with `run-shell -b` and discards its output, so until step 4 the status line is the only feedback.
+
+| # | step | where | cost |
+|---|---|---|---|
+| 1 | resolve the repo, take `~/.local/state/wt/new-<repo>.lock` | background | instant |
+| 2 | `wt: finding a free <repo> slot...` | status line | instant |
+| 3 | `wt_next_slot`: walk agent-1, 2, ... and take the first idle one | background | 0.7s (was 4.5 to 9s, #463) |
+| 4 | `wt: recycle\|fresh <name>, opening it`, create the session, switch to it | status line, then the new session | instant |
+| 5 | `git fetch origin` on the main checkout | the new session's first pane | 2.8s, network |
+| 6 | `git switch -C agent-N origin/<trunk>` in the worktree | pane | 0.2s |
+| 7 | copy each moved submodule's new commit from the main checkout into `refs/wt/main` | pane | 8 to 54ms (unity-core over the network was 1079ms, #474) |
+| 8 | `GIT_LFS_SKIP_SMUDGE=1 git submodule update --recursive` | pane | no network when step 7 found the commit |
+| 9 | `git lfs checkout -- <changed files>` in submodules that moved | pane | 0.07s for a real LFS file (a bare `lfs checkout` scanned the whole tree: 20s+, #456 #460) |
+| 10 | delete the old merged branch, `wt: ready.` | pane | instant |
+
+Steps 5 to 10 are `wt_prepare`/`wt_recycle`; a fresh slot replaces 6 to 9 with `git worktree add`. Before these fixes a recycle took 30s or more, nearly all of it step 9; the last full trace measured 7.6s with step 8 at 3.1s, which #474 then removed.
+
+The git and git-lfs behaviour these steps are built around, none of it obvious:
+
+- `git lfs checkout` with no paths walks every file in the tree, even when nothing changed. Given paths, it touches only those. Which files to pass comes from `git diff --name-only <old> HEAD` in each submodule, with the HEADs snapshotted before `submodule update`.
+- `git submodule update` counts a commit as present only when a ref reaches it (`rev-list <commit> --not --all`); having the object in the store is not enough. A local fetch into `FETCH_HEAD` changes nothing; it has to land on a ref.
+- That ref is `refs/wt/main` and never `refs/remotes/*`, because `wt_submodule_pushed` reads "on a remote ref" as "pushed", and a commit borrowed from the main checkout is not known to be pushed.
+- Every worktree has its own submodule object store (agent-1: 88 MB unity-core, 48 MB asset-library). Sharing one through `objects/info/alternates` would be faster still, but a `gc` in the main checkout could then delete objects the worktrees depend on, so step 7 copies instead.
+- In step 3 a slot with a live tmux session is skipped by asking tmux (45ms) before the git work check (~1s a slot, `git status` across the 150k-file submodule). With agent-1 to 9 live, that ordering was the whole silent wait.
+
+#### Troubleshooting
+
+| symptom | cause | fix |
+|---|---|---|
+| Nothing on screen for seconds after `Prefix+F` | step 3 doing git work on busy slots | fixed in #463; if it comes back, time `wt_next_slot` (below) |
+| Pane sits on `fetching and checking out...` for 20s or more | bare `git lfs checkout` over asset-library | fixed in #456 and #460 |
+| `git: 'credential-osxkeychain' is not a git command` (4 times) | the macOS keychain helper set for every OS in `.gitconfig`, and again per host in the private `private.inc` | fixed in #465 and the private repo's #222; the helper is now a no-op off macOS |
+| `Pseudo-terminal will not be allocated because stdin is not a terminal.` | `RequestTTY yes` under `Host *` in `~/.ssh/config`; printed once per git-over-ssh connection | harmless and adds no time; still open |
+| A wt LFS test passes locally but fails in CI | GitHub runners ship `/etc/gitconfig` with `filter.lfs.process`, which outranks a test's stubbed `filter.lfs.smudge` | the test sandbox sets `GIT_CONFIG_NOSYSTEM=1` (`tests/helpers/sandbox.bash`) |
+
+#### Measuring it again
+
+Run these from the repo's main checkout. The slot search is read-only:
+
+```bash
+bash -c 'source ~/.dotfiles/.local/src/tmux/worktree.sh
+main=$(wt_main_repo .); base=$(wt_base_ref "$main" "$(wt_default_branch "$main")")
+s=$(date +%s%3N); wt_next_slot "$(wt_repo_name "$main")" "$main" "$base"; echo "$(( $(date +%s%3N)-s ))ms"'
+```
+
+The slow half, with a timestamp on every command. This really recycles the slot you name, so pick an idle one (`wt_next_slot` says which):
+
+```bash
+bash -c 'source ~/.dotfiles/.local/src/tmux/worktree.sh
+exec 9>/tmp/prepare.log; BASH_XTRACEFD=9; PS4="+\${EPOCHREALTIME} "; set -x
+wt_prepare "$PWD" ~/.worktrees/<repo>-agent-N N recycle'
+awk '{t=substr($1,2); if (p!="") printf "%7.2fs  %s\n", t-pt, p; pt=t; $1=""; p=substr($0,1,120)}' /tmp/prepare.log | sort -rn | head
+```
+
+Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is a zsh filename modifier and silently mangles `"+$c:refs/..."`.
+
 > **Caveat, dotfiles only.** Stow symlinks point at `~/.dotfiles`
 > (`~/.local/src/tmux -> ../../.dotfiles/.local/src/tmux`), so edits made in a *dotfiles*
 > worktree are **not deployed**. You are exercising the repo copy, not the live one. Run
