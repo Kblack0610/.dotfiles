@@ -40,3 +40,34 @@ EOF
   run target 1 False
   assert_output "3"
 }
+
+# is_playground_editor on a tiled editor with <class> and <title>
+editor() {
+  python3 -I - "$ROUTER" "$1" "$2" <<'EOF2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("router", sys.argv[1])
+router = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(router)
+print(router.is_playground_editor({"class": sys.argv[2], "title": sys.argv[3], "floating": False}))
+EOF2
+}
+
+@test "a Unity 6.0 playground editor (Unityhub-unity-editor-<v>) is recognised" {
+  run editor "Unityhub-unity-editor-6000.0.72f1" "Unity - unity-core-playground - Main - Linux"
+  assert_output "True"
+}
+
+@test "a Unity 6.3 playground editor (Unity-<v>) is recognised" {
+  run editor "Unity-6000.3.27f1" "Unity - unity-core-playground - SchoolHD - Windows, Mac, Linux"
+  assert_output "True"
+}
+
+@test "the Unity Hub window is never treated as an editor" {
+  run editor "unityhub" "Unity - unity-core-playground - Main - Linux"
+  assert_output "False"
+}
+
+@test "a game editor is not the playground" {
+  run editor "Unity-6000.3.27f1" "Unity - dodginballs - Main - Linux"
+  assert_output "False"
+}

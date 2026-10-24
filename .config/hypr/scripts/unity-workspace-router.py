@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Route the Unity playground editor to its own workspace.
 
-Every Unity editor shares one class (`Unityhub-unity-editor-<version>`), so the
+Every Unity editor shares one class (`Unityhub-unity-editor-<version>` before
+Unity 6.3, `Unity-<version>` from 6000.3 on), so the
 only thing that tells projects apart is the title, `Unity - <project> - <scene>
 - ...`. A static `workspace` window rule cannot use it: static rules read the
 INITIAL title, and the playground editor maps as `Unity - Unity <version>`
@@ -30,7 +31,7 @@ import subprocess
 
 PLAYGROUND_WORKSPACE = "4"
 GAME_WORKSPACE = "3"
-EDITOR_CLASS = re.compile(r"^[Uu]nity[Hh]ub-")
+EDITOR_CLASS = re.compile(r"^[Uu]nity([Hh]ub)?-")
 PLAYGROUND_PROJECT = re.compile(r"playground", re.IGNORECASE)
 
 
