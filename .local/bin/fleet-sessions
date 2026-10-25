@@ -6,7 +6,9 @@
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #
-# Buckets: WORKING, NEEDS (the human), LANDED (wind it down), STALLED (nudge once), UNCLEAR.
+# Buckets: WORKING, NEEDS (the human), LANDED (wind it down), STALLED (nudge once), UNCLEAR,
+# plus one MAIN row per repo whose default branch is red (the latest decided run of a
+# workflow failed), naming the PRs merged since that workflow was last green.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -14,15 +16,18 @@ set -uo pipefail
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
+: "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
+                             # it (a nightly suite after a busy day) nobody can be told it was theirs
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
-#                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1>
+#                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
+#                [<main_red: workflows this session's merged PR is a suspect for, or ->]
 #   -> "BUCKET reason"
 session_bucket() {
   local st="$1" plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}"
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}"
   case "$st" in
     waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
     busy|shell) echo "WORKING $st"; return ;;
@@ -34,7 +39,9 @@ session_bucket() {
   [ "$git" = 1 ] || { echo "UNCLEAR not in a git repo"; return; }
   case "$state" in
     MERGED)
-      if [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
+      # A merge that may have turned main red is not landed, whatever the tree says.
+      if [ "$red" != - ]; then echo "STALLED main red after PR #$pr: $red"
+      elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else echo "LANDED PR #$pr merged, tree clean"; fi ;;
     OPEN)
@@ -89,11 +96,17 @@ heavy_sessions() {
   "$fa" 2>/dev/null | awk 'f && $5 != "-" { print $5 } /^PID /{ f = 1 }' | sort -u
 }
 
+# repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, MAIN ledger ids).
+repo_slug() {
+  local url
+  url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
+  printf '%s' "$url" | tr -c 'A-Za-z0-9' _
+}
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid".
 prs_for() {
-  local dir="$1" url key
-  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
-  key="$CACHE/$(printf '%s' "$url" | tr -c 'A-Za-z0-9' _)"
+  local dir="$1" key
+  key="$CACHE/$(repo_slug "$dir")" || return 0
   [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
       --json number,state,headRefName,headRefOid,statusCheckRollup -q '.[] | [
         .headRefName, .number, .state,
@@ -104,6 +117,59 @@ prs_for() {
             else "PASS" end),
         .headRefOid ] | @tsv' 2>/dev/null) > "$key"
   cat "$key"
+}
+
+# main_state: gh run list JSON (any order) on stdin -> one line per workflow whose latest
+# decided run failed: "workflow \t red_sha \t last_green_sha|-". Cancelled, skipped and
+# running runs decide nothing, so they are passed over.
+main_state() {
+  jq -r 'map(select(.status == "completed"
+                    and (.conclusion | test("^(success|failure|timed_out|startup_failure)$"))))
+    | group_by(.workflowName)[] | sort_by(.createdAt) | reverse
+    | select(.[0].conclusion != "success")
+    | [.[0].workflowName, .[0].headSha,
+       ((map(select(.conclusion == "success"))[0].headSha) // "-")] | @tsv'
+}
+
+# main_health <dir> -> "RED \t <detail> \t <red sha> \t <suspect PRs, space-separated>", "OK"
+# or "UNKNOWN", cached per repo per pass. A red workflow's range is last-green..red on this
+# clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
+# fewer. No green in the window, or a range the clone lacks, names nobody.
+main_health() {
+  local dir="$1" url key base b runs wf red green wfs="" sha="" prs="" range
+  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
+  key="$CACHE/main_$(repo_slug "$dir")"
+  if [ ! -f "$key" ]; then
+    base="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+    b="${base#origin/}"
+    # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
+    if ! runs="$(cd "$dir" && gh run list --branch "$b" --limit 100 \
+                   --json workflowName,status,conclusion,headSha,createdAt 2>/dev/null)"; then
+      printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
+      cut -f1-4 "$key"; return
+    fi
+    while IFS=$'\t' read -r wf red green; do
+      [ -n "$wf" ] || continue
+      [ -n "$sha" ] || sha="$red"
+      if [ "$green" = - ]; then range="no green in window"
+      elif ! git -C "$dir" cat-file -e "$red^{commit}" 2>/dev/null \
+           || ! git -C "$dir" cat-file -e "$green^{commit}" 2>/dev/null; then range="range not in clone"
+      else
+        range="$(git -C "$dir" log --format=%s "$green..$red" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' | sort -un | tr '\n' ' ')"
+        range="${range% }"
+        if [ -z "$range" ]; then range="no PR in range"
+        elif [ "$(wc -w <<<"$range")" -le "$FLEET_SUSPECTS_MAX" ]; then prs="$prs $range"; range="#${range// / #}"
+        else range="$(wc -w <<<"$range") PRs since green"; fi
+      fi
+      wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"
+    done < <(main_state <<<"$runs")
+    if [ -n "$wfs" ]; then
+      # Every field non-empty: read with a tab IFS folds an empty field into the next.
+      prs="$(tr ' ' '\n' <<<"$prs" | grep . | sort -un | paste -sd' ' -)"
+      printf 'RED\t%s\t%s\t%s\t%s\n' "$wfs" "${sha:0:8}" "${prs:--}" "$(basename "$url" .git)" > "$key"
+    else echo OK > "$key"; fi
+  fi
+  cut -f1-4 "$key"
 }
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
@@ -140,12 +206,40 @@ collect() {
     asks="$(asks_for "$tsess" "$sid")"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
     read -r g dirty ahead pr state ci inpr branch < <(git_facts "$cwd")
+    local red=- mh mwfs msuspects
+    if [ "$g" = 1 ] && [ "$state" = MERGED ]; then
+      IFS=$'\t' read -r mh mwfs _ msuspects < <(main_health "$cwd")
+      if [ "$mh" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$msuspects")"; then
+        red="$mwfs"
+        printf '%s\t%s\n' "$(repo_slug "$cwd")" "$sid" >> "$CACHE/owners"
+      fi
+    elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr")"
+              "$pr" "$state" "$ci" "$inpr" "$red")"
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e"
+  done
+  main_rows
+}
+
+# One MAIN row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
+# escalates a red main once per fact; owners are the live sessions whose merge is a suspect.
+main_rows() {
+  local f slug st wfs sha prs repo sid reason owners e
+  for f in "$CACHE"/main_*; do
+    [ -f "$f" ] || continue
+    IFS=$'\t' read -r st wfs sha prs repo < "$f"
+    slug="${f##*/main_}"; sid="main-$slug"
+    case "$st" in
+      RED) reason="$repo red: $wfs" ;;
+      UNKNOWN) reason="$repo main CI unreadable (gh run list failed)" ;;
+      *) continue ;;
+    esac
+    owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
+    e=0; escalated "$sid" "MAIN $reason" && e=1
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
@@ -162,14 +256,15 @@ main() {
     [ -n "$rows" ] && jq -cR 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
+      owners: (if .[13] == "-" then [] else .[13] | split(",") end),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
     return 0
   fi
   local b
-  for b in NEEDS STALLED LANDED UNCLEAR WORKING; do
+  for b in MAIN NEEDS STALLED LANDED UNCLEAR WORKING; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
-      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _; do
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _; do
         [ "$first" = 1 ] && { echo "$b"; first=0; }
         printf '  %-44s %-28s %-6s %4sm  %s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
           "$([ "$n" = 1 ] && echo '  (nudged)')"
@@ -178,7 +273,7 @@ main() {
   done
 }
 
-# Sourceable for tests (session_bucket, nudged, mark, escalate); runs main only when executed.
+# Sourceable for tests (session_bucket, main_state, nudged, mark, escalate); runs main only when executed.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   main "$@"
 fi

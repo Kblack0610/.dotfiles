@@ -53,6 +53,32 @@ b() { session_bucket "$@"; }
   assert_output --partial LANDED
 }
 
+@test "a merged PR suspected of turning main red is STALLED, not LANDED" {
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 'Tests @f1602292 (#875)'
+  assert_output 'STALLED main red after PR #875: Tests @f1602292 (#875)'
+  # red main wins over a dirty tree: fixing main comes first
+  run b idle 0 0 0 30 1 2 0 875 MERGED PASS 1 'Tests'
+  assert_output --partial 'STALLED main red'
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 -
+  assert_output 'LANDED PR #875 merged, tree clean'
+}
+
+# r <workflow> <conclusion> <sha> <minute>: one gh run list row
+r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "$2" "$3" "$4"; }
+
+@test "main_state names each workflow whose latest decided run failed, with its last green" {
+  run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Checks success c1 3)]"
+  assert_output "$(printf 'Tests\tr1\tg1')"
+  # a red followed by a green is healthy
+  run main_state <<<"[$(r Tests failure r1 1),$(r Tests success g2 2)]"
+  assert_output ''
+  # cancelled and running runs decide nothing; never green in the window reads -
+  run main_state <<<"[$(r Multi failure r1 1),$(r Multi cancelled x 2),{\"workflowName\":\"Multi\",\"status\":\"in_progress\",\"conclusion\":\"\",\"headSha\":\"y\",\"createdAt\":\"2026-10-25T10:09:00Z\"}]"
+  assert_output "$(printf 'Multi\tr1\t-')"
+  run main_state <<<'[]'
+  assert_output ''
+}
+
 @test "an open PR is STALLED when red or green-unmerged, WORKING while CI runs" {
   run b idle 0 0 0 30 1 0 1 9 OPEN FAIL 1
   assert_output 'STALLED PR #9 CI red'
@@ -117,7 +143,7 @@ b() { session_bucket "$@"; }
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\"}" \
     > "$SANDBOX/bin/agent-panel"
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -141,4 +167,40 @@ b() { session_bucket "$@"; }
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .escalated <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
+}
+
+@test "end to end: main red after a merge names the merging session as owner" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  green="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  red="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" fetch -q origin
+  git -C "$SANDBOX/wt" checkout -q -b feat/x "$red"
+  since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  runs="[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo %q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$runs" "$red" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  session="$(jq -c 'select(.bucket != "MAIN")' <<<"$output")"
+  main="$(jq -c 'select(.bucket == "MAIN")' <<<"$output")"
+  [ "$(jq -r .bucket <<<"$session")" = STALLED ]
+  [ "$(jq -r .reason <<<"$session")" = "main red after PR #875: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r .target <<<"$main")" = origin ]
+  [ "$(jq -r '.owners | join(",")' <<<"$main")" = sid-9 ]
+  [ "$(jq -r .fact <<<"$main")" = "MAIN origin red: Tests @${red:0:8} (#875)" ]
+
+  # an unreadable CI is reported, never read as green
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
+  [ "$(jq -r 'select(.bucket != "MAIN") | .bucket' <<<"$output")" = LANDED ]
 }
