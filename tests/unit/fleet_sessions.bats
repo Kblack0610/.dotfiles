@@ -69,6 +69,11 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
 @test "main_state names each workflow whose latest decided run failed, with its last green" {
   run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Checks success c1 3)]"
   assert_output "$(printf 'Tests\tr1\tg1')"
+  # a red streak names its FIRST red, so the fact holds still while the streak runs on
+  run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Tests failure r2 3)]"
+  assert_output "$(printf 'Tests\tr1\tg1')"
+  run main_state <<<"[$(r Cat failure r1 1),$(r Cat failure r2 2)]"
+  assert_output "$(printf 'Cat\tr1\t-')"
   # a red followed by a green is healthy
   run main_state <<<"[$(r Tests failure r1 1),$(r Tests success g2 2)]"
   assert_output ''

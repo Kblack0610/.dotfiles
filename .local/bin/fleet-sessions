@@ -120,15 +120,18 @@ prs_for() {
 }
 
 # main_state: gh run list JSON (any order) on stdin -> one line per workflow whose latest
-# decided run failed: "workflow \t red_sha \t last_green_sha|-". Cancelled, skipped and
-# running runs decide nothing, so they are passed over.
+# decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
+# FIRST failure after the last green (the oldest in the window when there is none), so the
+# fact holds still while a red streak runs on, and the suspect range ends where it broke.
+# Cancelled, skipped and running runs decide nothing, so they are passed over.
 main_state() {
   jq -r 'map(select(.status == "completed"
                     and (.conclusion | test("^(success|failure|timed_out|startup_failure)$"))))
     | group_by(.workflowName)[] | sort_by(.createdAt) | reverse
     | select(.[0].conclusion != "success")
-    | [.[0].workflowName, .[0].headSha,
-       ((map(select(.conclusion == "success"))[0].headSha) // "-")] | @tsv'
+    | (map(.conclusion == "success") | index(true)) as $g
+    | [.[0].workflowName, (if $g == null then .[-1] else .[$g - 1] end).headSha,
+       (if $g == null then "-" else .[$g].headSha end)] | @tsv'
 }
 
 # main_health <dir> -> "RED \t <detail> \t <red sha> \t <suspect PRs, space-separated>", "OK"
@@ -161,7 +164,9 @@ main_health() {
         elif [ "$(wc -w <<<"$range")" -le "$FLEET_SUSPECTS_MAX" ]; then prs="$prs $range"; range="#${range// / #}"
         else range="$(wc -w <<<"$range") PRs since green"; fi
       fi
-      wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"
+      # No green: the oldest red in view slides as runs age out, so that fact names no sha.
+      if [ "$green" = - ]; then wfs="${wfs:+$wfs, }$wf ($range)"
+      else wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"; fi
     done < <(main_state <<<"$runs")
     if [ -n "$wfs" ]; then
       # Every field non-empty: read with a tab IFS folds an empty field into the next.
