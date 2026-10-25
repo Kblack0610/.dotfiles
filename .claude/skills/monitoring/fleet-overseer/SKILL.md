@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-24"
+  reviewed: "2026-10-25"
 ---
 
 # fleet-overseer
@@ -72,25 +72,27 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 
 | Bucket | Means | The shepherd |
 |---|---|---|
+| MAIN | one row per repo whose default branch is red: the latest decided run of a workflow failed (or `gh` could not read it). Names each red workflow, its sha, and its suspects: the PRs since that workflow's last green, when there are `FLEET_SUSPECTS_MAX` (3) or fewer. `owners` are the live sessions whose merged PR is a suspect | owners get the STALLED nudge; with no owner, it goes to the human, paged high |
 | NEEDS | waiting on a prompt or permission, a plan awaiting approval, or a pending ask with its `session:` | lists it for the human |
-| STALLED | idle 20m or more with something unlanded: dirty files or commits and no PR, a red PR, a green PR not merged, work after a merged PR | nudges once |
-| LANDED | idle, PR merged, tree clean, nothing after the PR | asks it to wind down, once |
+| STALLED | idle 20m or more with something unlanded: dirty files or commits and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a red main | nudges once |
+| LANDED | idle, PR merged, tree clean, nothing after the PR, and not a suspect for a red main | sends it on to its next phase, or to wind down, once |
 | UNCLEAR | idle with no PR and nothing on the branch, a closed PR, no git | lists it with the reason |
 | WORKING | busy, a background shell, a heavy child process, CI running, or idle under 20m | leaves it alone |
 
-`FLEET_IDLE_MIN` (20) is the one tuning knob. Say the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
+`FLEET_IDLE_MIN` (20) and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the MAIN rows first, then the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
 
 ## Verb: `shepherd`
 
 One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode: a permission prompt stalls the loop while the human is away, and every pass adds to that session's context. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
 
-1. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`.
+1. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `owners`. MAIN rows come first and lead the report: a red main is the most important thing on the board.
 2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
 3. For each LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
-   - LANDED: "PR #N merged and your tree is clean. If your plan (`<plan_file>`) has another phase, start it now under /my:autopilot rules: new branch off origin/main, then the same landing tail. If the next phase is a human gate or you are unsure what it is, post an agent-ask with `--session <your tmux session>` and stop. Only when the plan is finished: record board done with proof, then /wind-down."
+   - LANDED: "PR #N merged and your tree is clean. Anything the human asked for in this session that has not landed is your next phase (your plan: `<plan_file>`). Run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then post an agent-ask with `--session <your tmux session>`, your recommendation and that reason. Only when everything the human asked for is landed: record board done with proof, then /wind-down."
+   - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
    - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
    The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
-4. Rows for the human: NEEDS and UNCLEAR rows, and LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page.
+4. Rows for the human: NEEDS and UNCLEAR rows, MAIN rows with empty `owners`, and LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page. A MAIN row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
 5. Report, then page (see Reporting).
 
 ### Reporting
@@ -98,8 +100,8 @@ One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in
 The human is usually away while this loop runs, so every pass leaves a record and pages only on news.
 
 - **Log.** When a pass sent a message or escalated a row, append one entry to `~/.agent/shepherd/log.md`: a `## <date time>` heading, the counts per bucket, one line per message sent (session, fact), and one line per new escalation. A pass that did nothing writes nothing. This file is the rundown the human reads on return.
-- **Page on escalation.** If step 4 escalated anything, send one page for the pass: `agent-notify -p normal -t shepherd '<n> need you: <session> <reason>; ...'`. Escalation is once per fact, so the same session never pages twice for the same reason.
-- **Page when settled.** When no row is WORKING, and every LANDED or STALLED row is already nudged, nothing is left for the shepherd to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
+- **Page on escalation.** If step 4 escalated anything, send one page for the pass: `agent-notify -p normal -t shepherd '<n> need you: <session> <reason>; ...'`. A MAIN row escalated this pass makes that page `-p high` and leads it (`main red: <repo> <workflows>, no session owns it`): a red main blocks everyone. Escalation is once per fact, so the same session never pages twice for the same reason.
+- **Page when settled.** When no row is WORKING, no MAIN row is unescalated, and every LANDED or STALLED row is already nudged, nothing is left for the shepherd to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
 - **In the session.** Each pass also prints its report in the shepherd's own session, where `/fleet-overseer status` gives the live table.
 
 The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact and the last escalated fact. A new fact for the same session (its PR went from red to green, or the next phase merged) is nudged again; the same fact never is.

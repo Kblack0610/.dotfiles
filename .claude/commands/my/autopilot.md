@@ -27,7 +27,20 @@ actions only: destructive/data-loss ops, force-push/history rewrite, release tag
 `deploy.sh`, widening rollouts, rollbacks, any human approval gate (the release-coordinator
 **Hard constraints** apply verbatim — `~/.claude/skills/release-coordinator/SKILL.md`),
 money, auth/secrets/tokens, external sends. Propose with rationale, then stop. Everything
-reversible is yours to decide.
+reversible is yours to decide. "Human approval gate" means those release constraints and
+any gate I named myself. Approving your own plan, or splitting my ask into phases, is not one:
+what I asked for already authorizes every phase of it.
+
+**Named-risk stop** - the only other reason to pause. Stop and ask (with your recommendation)
+when you can STATE a concrete risk: it conflicts with another session's open work, it changes
+shared behaviour other games/sessions depend on, it undoes or fights something already landed,
+or it is likely to give a bad result for the player. "Unsure" is not a risk; name it or proceed.
+
+**Sanity check before each new phase** - re-read my ask and your plan (still wanted?);
+`git fetch` and check origin/main has not already done or changed it; check no other live
+session or open PR is on the same files (`gh pr list --state open`, `fleet-sessions`); check
+main is not red (`fleet-sessions` MAIN rows). All pass -> start it. One fails -> that failure is
+your named risk.
 
 **Log assumptions** — each non-obvious choice as `assumed: <X> because <Y>`, persisted into
 the plan/PR body when one exists.
