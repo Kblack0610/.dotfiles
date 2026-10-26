@@ -55,9 +55,10 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # day, so a name retired everywhere else rots here in silence. `lazer-machine=lzr`
 # (a retired work VDI) was dropped on 2026-08-17 when that contract ended; it had
 # been rendering a red `lzr○` that was indistinguishable from a machine that was
-# merely down. Hence the ghost check below: a token naming a host that is in
+# merely down. `~cachy-laptop=lap` went the same way on 2026-10-26: that laptop
+# is razer-laptop now, a k3s node, so `@k3s` draws it. Hence the ghost check below: a token naming a host that is in
 # NEITHER the roster NOR the API is a config bug, and now says so.
-: "${FLEET_DISPLAY:=linux-cachyos=main ~cachy-laptop=lap living-room-pc=lr gp-mac=gp @k3s=k3s}"
+: "${FLEET_DISPLAY:=linux-cachyos=main living-room-pc=lr gp-mac=gp @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
