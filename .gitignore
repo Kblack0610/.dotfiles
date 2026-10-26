@@ -122,6 +122,7 @@ Media/Music
 !.claude/skills/monitoring/sentinel/
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
+!.claude/skills/ops/playground-headless-test/
 !.claude/skills/ops/reaper-ops/
 !.claude/skills/reference/compliance/
 !.claude/skills/reference/hz-immersive-designer/
@@ -134,6 +135,8 @@ Media/Music
 !.claude/skills/research/deep-research/
 !.claude/skills/research/deep-research-code/
 !.claude/skills/research/asset-store-audit/
+!.claude/skills/authoring/playground-ingest/
+!.claude/skills/authoring/playground-new-content/
 !.claude/skills/workstreams/code-hygiene/
 !.claude/skills/workstreams/discuss/
 !.claude/skills/workstreams/dotfiles-land/
