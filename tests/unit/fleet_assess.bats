@@ -19,9 +19,13 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD load 4.0x'
 }
 
-@test "load at exactly 3x cores is HOLD, just under is OK" {
-  [ "$(v 72 80 60 0)" = HOLD ]
-  [ "$(v 71.9 80 60 0)" = OK ]
+@test "load at exactly 1.75x cores is HOLD, just under is OK" {
+  [ "$(v 42 80 60 0)" = HOLD ]
+  [ "$(v 41.9 80 60 0)" = OK ]
+}
+
+@test "the 2026-10-26 miss (load 46.5 on 24 cores, top 0% idle) is HOLD" {
+  [ "$(v 46.5 92.4 57 0)" = HOLD ]
 }
 
 @test "Tctl in the 90s at low load is OK (Zen 4 boosts to 95 by design)" {
@@ -29,8 +33,8 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 }
 
 @test "Tctl at the throttle point with the box saturated is HOLD" {
-  [ "$(v 48 95 60 0)" = HOLD ]
-  [ "$(v 47 95 60 0)" = OK ]
+  [ "$(v 36 95 60 0)" = HOLD ]
+  [ "$(v 35.9 95 60 0)" = OK ]
 }
 
 @test "low memory alone is HOLD" {
@@ -39,13 +43,13 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 }
 
 @test "between the marks: HOLD while held, OK when nothing is held" {
-  [ "$(v 48 80 60 1)" = HOLD ]
-  [ "$(v 48 80 60 0)" = OK ]
+  [ "$(v 30 80 60 1)" = HOLD ]
+  [ "$(v 30 80 60 0)" = OK ]
 }
 
 @test "under the low mark while held is CLEAR; with nothing held it is OK" {
-  [ "$(v 35 80 60 1)" = CLEAR ]
-  [ "$(v 35 80 60 0)" = OK ]
+  [ "$(v 23 80 60 1)" = CLEAR ]
+  [ "$(v 23 80 60 0)" = OK ]
 }
 
 @test "CLEAR also needs memory back over the low mark" {

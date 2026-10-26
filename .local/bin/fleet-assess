@@ -12,12 +12,12 @@
 set -uo pipefail
 
 # --- thresholds (env overrides) --------------------------------------------------------
-: "${FLEET_HOLD_LOAD_X:=3}"      # 1-min load / cores at or above this -> HOLD
-: "${FLEET_CLEAR_LOAD_X:=1.5}"   # below this (and memory below) -> CLEAR
+: "${FLEET_HOLD_LOAD_X:=1.75}"   # 1-min load / cores at or above this -> HOLD (CPU ~0% idle by here)
+: "${FLEET_CLEAR_LOAD_X:=1}"     # below this (and memory below) -> CLEAR
 : "${FLEET_HOLD_MEM_PCT:=10}"    # MemAvailable % below this -> HOLD
 : "${FLEET_CLEAR_MEM_PCT:=25}"   # at or above this -> may CLEAR
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
-: "${FLEET_HOT_LOAD_X:=2}"       # ... with load at least this -> HOLD
+: "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 
