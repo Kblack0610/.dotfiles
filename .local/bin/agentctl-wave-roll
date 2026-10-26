@@ -31,12 +31,26 @@ is_ver() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 ver_ge() { [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
 patch_after() { local v="${1#v}"; printf 'v%s.%s.%s' "${v%%.*}" "$(cut -d. -f2 <<<"$v")" "$(( ${v##*.} + 1 ))"; }
 
+# plausible_next SHIPPED V: V is a version the app could ship next - the same major with
+# at most one minor step, or the next major at minor 0. 2026-10-25 a stray `v1.16.0 (planned)` wave on
+# an app tagged v0.4.0 was promoted, and the sheet ran so far ahead of its tags that no tag
+# could ever roll it again.
+plausible_next() {
+  local s="${1#v}" v="${2#v}"
+  local sa="${s%%.*}" sb va vb
+  sb="$(cut -d. -f2 <<<"$s")" va="${v%%.*}" vb="$(cut -d. -f2 <<<"$v")"
+  { [ "$va" = "$sa" ] && [ "$vb" -le $((sb + 1)) ]; } || { [ "$va" = $((sa + 1)) ] && [ "$vb" = 0 ]; }
+}
+
 # The version to open next: the first PLANNED wave above the shipped tag, so a roadmap the
-# human already laid out is what becomes current; else the patch after the tag.
+# human already laid out is what becomes current; else the patch after the tag. A planned
+# wave too far above the tag to be the next release is skipped, and said so.
 next_after() { # $1=profile $2=project $3=shipped
   local v state
   while IFS=$'\t' read -r v state _; do
-    [ "$state" = planned ] && is_ver "$v" && ! ver_ge "$3" "$v" && { printf '%s' "$v"; return; }
+    [ "$state" = planned ] && is_ver "$v" && ! ver_ge "$3" "$v" || continue
+    if plausible_next "$3" "$v"; then printf '%s' "$v"; return; fi
+    log "skip planned wave $v on $2: too far above tag $3 to be its next release" >&2
   done < <(notes --profile "$1" projects --waves "$2" 2>/dev/null)
   patch_after "$3"
 }

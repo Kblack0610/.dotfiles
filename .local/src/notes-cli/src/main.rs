@@ -243,6 +243,11 @@ enum Cmd {
         /// after the tag in one roll rather than creeping up a patch per roll
         #[arg(long, value_name = "VERSION")]
         next: Option<String>,
+        /// With --roll --next: allow a version BELOW the open one, to realign a sheet whose
+        /// number ran ahead of the app's release tags (it could never be tagged, so tags
+        /// would never roll it). `notes-roll` checks the target is above the newest tag
+        #[arg(long)]
+        renumber: bool,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -789,6 +794,7 @@ fn main() -> Result<()> {
             force,
             carry,
             next,
+            renumber,
             version_of,
             waves,
             stats,
@@ -840,7 +846,7 @@ fn main() -> Result<()> {
                 (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
                 (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
                 (_, _, _, Some(n), ..) => {
-                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref())?
+                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref(), renumber)?
                 },
                 (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,

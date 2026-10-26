@@ -232,3 +232,44 @@ LIB
   assert_failure
   assert_output --partial 'cannot verify'
 }
+
+# -- renumber: a sheet whose number ran ahead of its tags --
+#
+# 2026-10-25 a stray planned wave made a tag roll open v1.16.0 on an app tagged v0.4.x.
+# That number can never be tagged, so the tag guard would pin the sheet forever. A
+# renumber is the way back down, and it only goes where the tags say it may.
+
+@test "renumber reaches notes as --next --renumber, with carry if asked" {
+  with_frozen
+  with_shipping_project demoapp v1.16.0 demoapp-v1.0.0
+  run "$NOTES_ROLL" personal demoapp v1.1.0 carry,renumber
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --roll demoapp --next v1.1.0 --renumber --carry'
+}
+
+@test "renumber needs an exact version" {
+  with_frozen
+  run "$NOTES_ROLL" personal demoapp minor renumber
+  assert_failure 2
+  run notes_calls
+  refute_output --partial '--roll demoapp'
+}
+
+@test "renumber REFUSES to land at or below the newest tag" {
+  with_frozen
+  with_shipping_project demoapp v1.16.0 demoapp-v1.0.0
+  run "$NOTES_ROLL" personal demoapp v1.0.0 renumber
+  assert_failure
+  assert_output --partial 'above the newest tag'
+  run notes_calls
+  refute_output --partial 'projects --roll demoapp'
+}
+
+@test "renumber REFUSES a sheet that did not run ahead of its tags" {
+  with_frozen
+  with_shipping_project demoapp v1.0.0 demoapp-v1.0.0
+  run "$NOTES_ROLL" personal demoapp v1.1.0 renumber
+  assert_failure
+  assert_output --partial 'above the newest tag'
+}

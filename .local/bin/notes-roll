@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # notes-roll - roll a project to its next version, headless, with everything a roll owes.
 #
-#   notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry]
+#   notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
 #
 # Wraps `notes projects --roll` with the tag guard (a shipping app never freezes an
 # untagged version), the agent changelog appended to the frozen note, and the
@@ -9,7 +9,10 @@
 #
 # Defaults to PATCH, because that is what a wave is. `vX.Y.Z` opens that exact version
 # next; `carry` moves the wave's open tasks forward instead of refusing on them (what a
-# release tag closing its version does). Anything else is rejected, never guessed.
+# release tag closing its version does). `renumber` (with `vX.Y.Z`) opens a version BELOW
+# the open one, for a sheet whose number ran ahead of the app's tags: the open number can
+# never be tagged, so the guard accepts it only while the sheet is above the newest tag and
+# the new version is too. Anything else is rejected, never guessed.
 #
 # Exit: 0 rolled, 1 refused or the roll failed, 2 bad arguments.
 
@@ -29,7 +32,8 @@ SELF="$(realpath "$0")"
 declare -F project_repo_name >/dev/null 2>&1 \
   || project_repo_name() { printf '%s' "${1:-}"; }
 
-USAGE="usage: notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry]"
+USAGE="usage: notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
+RENUMBER_TO=""  # set by roll_now: the version a --renumber roll opens
 
 # canon_namespaces <project> -> every ~/.agent namespace this project's sessions can be
 # under, one per line, most specific first: the project, then the repo it belongs to
@@ -42,6 +46,9 @@ canon_namespaces() { # $1=project
   [ -n "$repo" ] && [ "$repo" != "$p" ] && printf '%s\n' "$repo"
   return 0
 }
+
+# ver_above A B: bare-or-v versions, A strictly above B.
+ver_above() { [ "${1#v}" != "${2#v}" ] && [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
 
 # roll_tag_guard <profile> <project> -> 0 proceed, 1 refuse.
 # On a SHIPPING app the version being frozen must already be a git tag: the app owns
@@ -58,6 +65,16 @@ roll_tag_guard() { # $1=profile $2=project
 
   target="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
   [ -n "$target" ] || return 0
+
+  # A renumber freezes a version no tag will ever ship, so the tag check cannot apply.
+  # What it can check: the sheet really ran ahead of the newest tag, and the version it
+  # lands on is still above that tag.
+  if [ -n "$RENUMBER_TO" ]; then
+    ver_above "$target" "$shipped" && ver_above "$RENUMBER_TO" "$shipped" && return 0
+    printf 'roll: refusing to renumber %s to %s - both must be above the newest tag %s.\n' \
+      "$target" "$RENUMBER_TO" "$shipped" >&2
+    return 1
+  fi
 
   # Source the predicate HERE. project_release_version also sources git-release.sh,
   # but only inside a command substitution - a subshell, whose function definitions
@@ -157,7 +174,16 @@ roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
   case "$mode" in
     '') ;;
     carry) flag="${flag:+$flag }--carry" ;;
-    *) echo "notes-roll: unknown mode '$mode' (carry)" >&2; return 2 ;;
+    renumber | carry,renumber | renumber,carry)
+      case "$level" in
+        v[0-9]*.[0-9]*.[0-9]*) ;;
+        *) echo "notes-roll: renumber needs an exact vX.Y.Z, got '$level'" >&2; return 2 ;;
+      esac
+      RENUMBER_TO="$level"
+      flag="$flag --renumber"
+      [ "$mode" = renumber ] || flag="$flag --carry"
+      ;;
+    *) echo "notes-roll: unknown mode '$mode' (carry|renumber|carry,renumber)" >&2; return 2 ;;
   esac
   roll_do "$profile" "$name" "$flag"
 }
