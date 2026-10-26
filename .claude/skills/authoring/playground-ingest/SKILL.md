@@ -21,8 +21,10 @@ Not for judging a pack: that is `asset-store-audit`. Not for a map or character 
 ## Steps
 
 1. Read the runbook in full before touching anything: `docs/authoring/asset-library.md` "Bringing a package in" (steps 0 to 11, Traps, Done when) in the playground checkout, and `docs/ingesting-a-pack.md` in `External/asset-library`.
-2. Step 0 is the audit. If the pack has no `asset-store-audit` verdict yet, run that skill first.
-3. Work in a fresh playground worktree (`wt new`), never the main checkout. Check out the library with `scripts/setup/asset-library.sh`, never a bare `git submodule update` (that starts a full LFS copy).
+2. Step 0 is the audit. If the pack has no `asset-store-audit` verdict yet, run that skill first. A quick shader check needs no Unity: untar the `.unitypackage` and grep each material's `m_Shader` GUID (builtin fileID 211 is `Particles/Standard Unlit`, which ShaderRemap upgrades; a GUID pointing at a `.shader` or `.cfxrshader` inside the pack is a custom shader the ingest will reject).
+3. Work in a fresh playground worktree (`wt new`), never the main checkout. Check out the library with `scripts/setup/asset-library.sh`, never a bare `git submodule update` (that starts a full LFS copy). The ingest itself runs in a library worktree (`git -C <library> worktree add ~/.worktrees/asset-library-<slug> -b <branch> origin/master`, Library reflinked from the shared checkout). If `worktree add` was interrupted, it leaves the branch and a half-made directory behind: remove the directory, `git worktree prune`, then add on the existing branch.
+   - The library compiles against the shared `~/dev/bnb/games/engine/unity-core` checkout by absolute path, not a pin. If that checkout is behind what library master uses, the ingest fails to compile; `git -C <unity-core> pull --ff-only` it while no editor has it open.
+   - `EffectProfiles.IngestCli` (and its siblings) rewrite every profile asset on each run, adding new default fields. Revert the profiles you did not touch before committing.
 4. Follow the runbook steps in order. The ones sessions skip and pay for later:
    - restart Unity after adding the package to `package.json` before running the ingest CLIs;
    - a recipe or humanoid set change lands in unity-core first, then the relink, in the order the runbook gives;
