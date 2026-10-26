@@ -155,9 +155,18 @@ local function is_in_lab()
   return cwd == lab_root or cwd:find(lab_root .. "/", 1, true) == 1
 end
 
--- Pin slot 1 of the cwd's harpoon list: the projects index in lab, today's daily
--- everywhere else in ~/.notes. Lab also sheds every daily note, which the old
--- daily-everywhere rule left behind there one per day. The rest keep their order.
+-- Lab's stage roster for notes.harpoon, or {} when the CLI cannot answer (the list
+-- then keeps only the index pin plus the user's own items).
+local function project_stats()
+  if vim.fn.executable("notes") ~= 1 then return {} end
+  local lines = vim.fn.systemlist({ "notes", "projects", "--stats" })
+  if vim.v.shell_error ~= 0 then return {} end
+  return lines
+end
+
+-- Rebuild the cwd's harpoon list. In lab: the projects index, then every beta and alpha
+-- project sheet, then whatever the user added (order in notes.harpoon.lab_slots).
+-- Everywhere else in ~/.notes: today's daily in slot 1, the rest keep their order.
 local function sync_notes_harpoon_slots()
   if not is_in_notes_dir() then return end
 
@@ -168,26 +177,30 @@ local function sync_notes_harpoon_slots()
     local ok, harpoon = pcall(require, "harpoon")
     if not ok then return end
 
-    local in_lab = is_in_lab()
-    local pin = in_lab and get_projects_anchor() or get_today_journal()
-    local daily_dir = vim.fn.fnamemodify(get_today_journal(), ":h") .. "/"
-
     local list = harpoon:list()
-    local kept = {}
+    local items = {}
     for i = 1, list:length() do
-      local item = list.items[i]
-      if item then
-        local path = vim.fn.fnamemodify(item.value, ":p")
-        local is_daily = path:find(daily_dir, 1, true) == 1
-        if path ~= pin and not (in_lab and is_daily) then
-          table.insert(kept, item)
-        end
+      if list.items[i] then table.insert(items, list.items[i]) end
+    end
+
+    local slots
+    if is_in_lab() then
+      local index = get_projects_anchor()
+      slots = require("notes.harpoon").lab_slots(items, project_stats(), {
+        index = index,
+        lab_root = vim.fn.fnamemodify(index, ":h:h"),
+        daily_dir = vim.fn.fnamemodify(get_today_journal(), ":h") .. "/",
+      })
+    else
+      local pin = get_today_journal()
+      slots = { { value = pin, context = {} } }
+      for _, item in ipairs(items) do
+        if vim.fn.fnamemodify(item.value, ":p") ~= pin then table.insert(slots, item) end
       end
     end
 
     list:clear()
-    list:add({ value = pin, context = {} })
-    for _, item in ipairs(kept) do
+    for _, item in ipairs(slots) do
       list:add(item)
     end
   end, 100)
