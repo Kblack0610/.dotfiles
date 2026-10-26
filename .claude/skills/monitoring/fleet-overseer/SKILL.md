@@ -17,7 +17,7 @@ It owns no product code. It owns two questions: does this machine have room for 
 ## Tools
 
 - `fleet-assess` prints headroom (load against cores, Tctl, memory), active holds, a verdict, and one row per heavy process: pid, CPU, nice, class, tmux session, worktree. `--watch-probe` prints one line and exits 1 on HOLD.
-- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold, and a resource's gate (for Unity tests, `scripts/test/run.sh`'s slot helper) calls `check`.
+- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold. No resource gate calls `check` yet: unity-core-playground's `scripts/test/run.sh` has per-port locks only and nothing caps how many runs go at once, so a hold works only because the sessions read your message, and a `shell`-class loop ignores it.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
 The class column tells you how each consumer can be stopped:
@@ -62,9 +62,9 @@ Report the before and after numbers from `fleet-assess`.
 ## Verb: `go <resource>`
 
 1. Run `fleet-assess`. Continue only on CLEAR. On HOLD, say what is still over the line and stop.
-2. `agent-hold release <resource>`. It prints the roster.
-3. Send GO to each session on that roster with one `fleet-comms` message: "hold `<resource>` released; restart one run at a time" (the slot queue paces Unity runs).
-4. Run `fleet-assess` again a little later, after the restarted runs have had time to begin. If it reads HOLD again, the restart was too wide: set the hold again with a smaller roster and tell the human.
+2. Stage the restart, because nothing paces it for you. Keep the hold set and send GO by message to at most 3 sessions on the roster per pass: "you may restart, one run at a time; the rest of the roster is still held". Pick the sessions whose work unblocks others first (a red main, a red PR). On each later pass that still reads CLEAR, send the next 3.
+3. After the last batch has had GO and a pass still reads CLEAR, `agent-hold release <resource>`. It prints the roster.
+4. If a pass reads HOLD again, the batch was too wide: stop sending GO, tell the sessions that got it to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
 
 ## Verb: `status`
 
