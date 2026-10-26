@@ -30,7 +30,7 @@ AUTO block.
 The regeneration is deterministic, so call the helper rather than hand-editing:
 
 ```bash
-~/.dotfiles/.claude/skills/project-index/regen-anchor.sh [project]
+~/.claude/skills/project-index/regen-anchor.sh [project]
 ```
 
 - `project` omitted -> resolved from `$CLAUDE_PROJECT_DIR`/`$PWD` via `project-name.sh`
