@@ -58,7 +58,7 @@ ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = i
 # merely down. `~cachy-laptop=lap` went the same way on 2026-10-26: that laptop
 # is razer-laptop now, a k3s node, so `@k3s` draws it. Hence the ghost check below: a token naming a host that is in
 # NEITHER the roster NOR the API is a config bug, and now says so.
-: "${FLEET_DISPLAY:=linux-cachyos=main living-room-pc=lr gp-mac=gp @k3s=k3s}"
+: "${FLEET_DISPLAY:=linux-cachyos=main windows-media=win gp-mac=gp @k3s=k3s}"
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
