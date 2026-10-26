@@ -881,6 +881,28 @@ fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
     }
 }
 
+/// Whether `--next` may open `next` after the open version `cur`.
+///
+/// Normally it must step up. `--renumber` lets it step DOWN, for a sheet whose number ran
+/// ahead of the app's release tags (a stray planned wave got promoted): the open number
+/// can never be tagged, so release tags would never roll the sheet again. Equal is refused
+/// either way, since it would freeze the open version and reopen it.
+fn next_target_check(next: (u32, u32, u32), cur: (u32, u32, u32), renumber: bool) -> Result<()> {
+    if next == cur || (next < cur && !renumber) {
+        let hint = if next < cur {
+            " (pass --renumber to realign a sheet that ran ahead of its tags)"
+        } else {
+            ""
+        };
+        bail!(
+            "--next {} is not above the open version {}{hint}",
+            fmt_version(next),
+            fmt_version(cur)
+        );
+    }
+    Ok(())
+}
+
 /// That org's current project by name (case-insensitive), if it has one.
 fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
     indexed(p)
@@ -1298,6 +1320,7 @@ pub fn roll(
     force: bool,
     carry: bool,
     next_at: Option<&str>,
+    renumber: bool,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_roll(&dir, log)? else {
@@ -1307,17 +1330,12 @@ pub fn roll(
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
     let next = match next_at {
+        None if renumber => bail!("--renumber needs --next vX.Y.Z"),
         None => next_version(Some(cur), level),
         Some(v) => {
             let v = parse_version(v.trim())
                 .ok_or_else(|| anyhow::anyhow!("--next wants vX.Y.Z, got '{v}'"))?;
-            if v <= cur {
-                bail!(
-                    "--next {} is not above the open version {}",
-                    fmt_version(v),
-                    fmt_version(cur)
-                );
-            }
+            next_target_check(v, cur, renumber)?;
             v
         }
     };
@@ -2488,6 +2506,25 @@ Version: v1.13.0
     }
 
     // A sheet from before the roadmap existed: one wave, no planned sections, nothing else.
+    #[test]
+    fn next_steps_up_unless_renumbering() {
+        let cur = (1, 16, 0);
+        assert!(next_target_check((1, 17, 0), cur, false).is_ok());
+        assert!(next_target_check((0, 5, 0), cur, false).is_err(), "down needs --renumber");
+        assert!(next_target_check((0, 5, 0), cur, true).is_ok());
+        assert!(next_target_check(cur, cur, true).is_err(), "never reopen the open version");
+    }
+
+    // Renumbering down lands the sheet on the lower version, closed work frozen.
+    #[test]
+    fn a_renumbered_roll_opens_the_lower_version() {
+        let plain = "# d\nVersion: v1.16.0\n\n## Wave: v1.16.0 (current)\n- [x] a\n";
+        let (frozen, sheet) = rebuild_sheet(plain, (1, 16, 0), (0, 5, 0));
+        assert!(frozen.contains("- [x] a"));
+        assert!(sheet.contains("Version: v0.5.0"), "{sheet}");
+        assert!(sheet.contains("## Wave: v0.5.0 (current)"), "{sheet}");
+    }
+
     #[test]
     fn a_plain_single_wave_sheet_rolls_the_way_it_always_did() {
         let plain = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [x] a\n";
