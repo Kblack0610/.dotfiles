@@ -20,6 +20,7 @@ mod focus_sweep;
 mod inbox;
 mod index;
 mod knowledge;
+mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
@@ -657,15 +658,21 @@ fn main() -> Result<()> {
                     project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
-                    (Some(dest), to) => project_tasks::move_to_project(
-                        &prof,
-                        &log,
-                        &name,
-                        &dest,
-                        &query.join(" "),
-                        to.as_deref(),
-                        lane,
-                    )?,
+                    (Some(dest), to) => {
+                        let rc = project_tasks::move_to_project(
+                            &prof,
+                            &log,
+                            &name,
+                            &dest,
+                            &query.join(" "),
+                            to.as_deref(),
+                            lane,
+                        )?;
+                        if rc == 0 {
+                            lab_refresh::kick();
+                        }
+                        rc
+                    }
                     // clap's `required_unless_present` guarantees --to here.
                     (None, Some(to)) => {
                         project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
@@ -822,15 +829,22 @@ fn main() -> Result<()> {
             // name-keyed tuple has no room for.
             if let Some(n) = stage {
                 projects::stage(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             if let Some(n) = group {
                 projects::group(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
             if let (Some(n), Some(dest)) = (move_project, to_profile) {
                 projects::move_to_profile(&prof, &log, &n, &dest)?;
+                lab_refresh::kick();
                 std::process::exit(0);
             }
             if stats {
@@ -842,13 +856,26 @@ fn main() -> Result<()> {
                 new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,
                 name,
             ) {
-                (Some(n), ..) => projects::new_project(&prof, &log, &n)?,
-                (_, Some(n), ..) => projects::archive(&prof, &log, &n)?,
-                (_, _, Some(n), ..) => projects::restore(&prof, &log, &n)?,
+                (Some(n), ..) => {
+                    projects::new_project(&prof, &log, &n)?;
+                    lab_refresh::kick();
+                }
+                (_, Some(n), ..) => {
+                    projects::archive(&prof, &log, &n)?;
+                    lab_refresh::kick();
+                }
+                (_, _, Some(n), ..) => {
+                    projects::restore(&prof, &log, &n)?;
+                    lab_refresh::kick();
+                }
                 (_, _, _, Some(n), ..) => {
-                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref(), renumber)?
-                },
-                (_, _, _, _, Some(n), ..) => projects::migrate(&prof, &log, &n)?,
+                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref(), renumber)?;
+                    lab_refresh::kick();
+                }
+                (_, _, _, _, Some(n), ..) => {
+                    projects::migrate(&prof, &log, &n)?;
+                    lab_refresh::kick();
+                }
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
                 (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
