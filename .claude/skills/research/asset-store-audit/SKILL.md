@@ -18,6 +18,8 @@ Turns a folder of downloaded .unitypackage files into a per-pack verdict (Adopt 
 
 Not for importing or converting a pack - that is the asset-ingest tool in unity-core.
 
+For what the account owns but has not downloaded, read the asset library's `docs/owned-packs.md` (all owned packs, each marked downloaded or not and in the library or not), not the store site.
+
 ## Steps
 
 Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in the session scratchpad (`$OUT`).
