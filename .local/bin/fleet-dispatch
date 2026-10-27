@@ -6,11 +6,13 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch reap              settle ledger entries whose session is gone
 #
-# Facts are code; the judgment (is this row small, clear and agent-only for its project's
-# stage?) is one model call per pass against policy.md, cached per row in verdicts.jsonl
-# until the row's text changes. A picked row is started on its sheet and gets a detached
-# `wt new` session on the lab server running /one-shot, tagged @dispatch, with a ledger
-# entry at live/<session> that fleet-sessions reads. Pause with `agent-hold set dispatch`.
+# A row is only a candidate when the human ASSIGNED it: `#worker/<DISPATCH_WORKER>` plus a
+# `#tier/N` within that worker's max_tier in workers.json (tier meanings: policy.md).
+# Facts are code; the judgment (is this row small, clear, agent-only and really that tier?)
+# is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
+# row's text, the policy or workers.json changes. A picked row is started on its sheet and
+# gets a detached `wt new` session on the lab server running /one-shot, tagged @dispatch,
+# with a ledger entry at live/<session> that fleet-sessions reads. Pause with `agent-hold set dispatch`.
 # Tuning is the DISPATCH_* block, set in the agentctl conf.
 
 set -uo pipefail
@@ -24,12 +26,19 @@ set -uo pipefail
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --role observe}"
 : "${DISPATCH_SERVER:=lab}"
 : "${DISPATCH_POLICY:=$HOME/.config/fleet-dispatch/policy.md}"
+: "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
+: "${DISPATCH_WORKER:=fleet}"   # the name this runner answers to in `#worker/<name>`
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 LIVE="$DIR/live"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
+
+# Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never runs unattended,
+# whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
+# spent 50 minutes on a `ci:` row. Raising this is a conversation, not a config edit.
+UNATTENDED_TIER_CEILING=2
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
 logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
@@ -63,6 +72,36 @@ repo_dir() {
     "$DISPATCH_PROJECT_MAP" 2>/dev/null | head -1
 }
 
+# tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
+# Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
+tag_value() {
+  local body="${1%%<!--*}"
+  grep -oE "(^|[[:space:]])#$2/[A-Za-z0-9_.-]+" <<<"$body" | head -1 | sed "s|.*#$2/||"
+}
+
+# row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A `ci:` or `infra:`
+# row is tier 3 however it is tagged.
+row_tier() {
+  local body
+  body=$(sed 's/^- \[.\] //' <<<"$1" | tr '[:upper:]' '[:lower:]')
+  case "$body" in ci:* | infra:*) echo 3; return ;; esac
+  tag_value "$1" tier | grep -xE '[123]'
+}
+
+# max_tier -> the highest tier this worker may take: workers.json, capped at the ceiling.
+max_tier() {
+  local t
+  t=$(jq -r --arg w "$DISPATCH_WORKER" '.[$w].max_tier // 0 | floor' "$DISPATCH_WORKERS" 2>/dev/null)
+  [[ "$t" =~ ^[0-9]+$ ]] || t=0
+  [ "$t" -gt "$UNATTENDED_TIER_CEILING" ] && t=$UNATTENDED_TIER_CEILING
+  echo "$t"
+}
+
+sig() { sha256sum | cut -c1-12; }
+
+# policy_sig -> changes whenever the policy or the worker registry does, so both re-judge.
+policy_sig() { cat "$DISPATCH_POLICY" "$DISPATCH_WORKERS" 2>/dev/null | sig; }
+
 session_live() { tmux -L "$DISPATCH_SERVER" has-session -t "=$1" 2>/dev/null; }
 
 # live_projects -> the project of every ledger entry whose session is still running
@@ -91,15 +130,23 @@ row_is() {
   grep -qF "$4"$'\t'"- [$5]" <<<"$board"
 }
 
+# judged_keys -> "<project>\t<lane>\t<key>\t<line sig>" for each verdict that still holds: one
+# made under the current policy for the row's current text. A `failed` record holds for the
+# key whatever changed ("*"), so a row whose session died is not picked again on its own.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
-  jq -r '[.project, .lane, .key] | @tsv' "$VERDICTS" 2>/dev/null
+  jq -r --arg sig "$(policy_sig)" '
+    if .verdict == "failed" then [.project, .lane, .key, "*"]
+    elif .policy == $sig then [.project, .lane, .key, (.line // "")]
+    else empty end | @tsv' "$VERDICTS" 2>/dev/null
 }
 
 cmd_candidates() {
-  local judged live prof name sheet _v stage repo lane key text
+  local judged live prof name sheet _v stage repo lane key text tier max line
   judged=$(judged_keys)
   live=$(live_projects)
+  max=$(max_tier)
+  [ "$max" -gt 0 ] || return 0
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -113,12 +160,17 @@ cmd_candidates() {
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
-          grep -qxF "$name"$'\t'"$lane"$'\t'"$key" <<<"$judged" && continue
+          [ "$(tag_value "$text" worker)" = "$DISPATCH_WORKER" ] || continue
+          tier=$(row_tier "$text")
+          [ -n "$tier" ] && [ "$tier" -le "$max" ] || continue
+          line=$(printf '%s' "$text" | sig)
+          grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t'"$line" <<<"$judged" && continue
+          grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t*' <<<"$judged" && continue
           jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
-            --argjson prio "$(prio_rank "$text")" \
+            --arg line "$line" --argjson prio "$(prio_rank "$text")" --argjson tier "$tier" \
             '{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
-              text: $text, repo: $repo, prio: $prio}'
+              text: $text, repo: $repo, prio: $prio, tier: $tier, line: $line}'
         done < <(rows "$prof" "$name" "$lane")
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
@@ -139,12 +191,12 @@ judge() {
 
 ## Rows to judge
 
-$(jq -c '{project, stage, lane, key, text}' <<<"$cands")
+$(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
 
 ## Answer
 
 For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
-{\"project\": ..., \"lane\": ..., \"key\": ..., \"size\": \"S|M|L\", \"clear\": true|false, \"agent_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
+{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"clear\": true|false, \"agent_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
 Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
@@ -156,10 +208,14 @@ Copy project, lane and key exactly as given."
   rm -rf -- "$wd"
   [ "$rc" = 0 ] || { say "judge call failed"; return 1; }
   verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR --arg at "$(date -Iseconds)" 'fromjson? | select(type == "object"
+    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line})' <<<"$cands")" '
+      fromjson? | select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
-      | {project, lane, key, size, clear, agent_only, verdict, reason, at: $at}')
+      | ([.project, .lane, .key] | tostring) as $k
+      | {project, lane, key, tier, size, clear, agent_only, verdict, reason, at: $at,
+         policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first)}')
   # A pass that could not judge must not read as "no row qualifies".
   [ -n "$verdicts" ] || { say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1; }
   mkdir -p "$DIR"
@@ -172,16 +228,20 @@ latest_verdicts() {
   jq -sc 'group_by([.project, .lane, .key]) | map(last) | .[]' "$VERDICTS" 2>/dev/null
 }
 
-# picks <candidates> <room> -> the rows to launch: a dispatch verdict that is also small,
-# clear and agent-only (checked here too, so a lax verdict cannot launch anything), one per
-# project, most urgent first, then prod before beta before alpha.
+# picks <candidates> <room> -> the rows to launch: the row's latest verdict is a dispatch made
+# under the current policy for its current text, small, clear, agent-only, and judged no
+# higher a tier than the row is tagged (all checked here too, so a lax verdict cannot launch
+# anything); one per project, most urgent first, then prod before beta before alpha.
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
-  jq -sc --argjson room "$room" --slurpfile v <(latest_verdicts) '
-    ($v | map(select(.verdict == "dispatch" and .size == "S" and .clear == true
-                     and .agent_only == true) | [.project, .lane, .key] | tostring)) as $ok
-    | map(select(([.project, .lane, .key] | tostring) as $k | $ok | index($k)))
+  jq -sc --argjson room "$room" --arg sig "$(policy_sig)" --argjson max "$(max_tier)" \
+    --slurpfile v <(latest_verdicts) '
+    ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
+      | select($d != null and $d.verdict == "dispatch" and $d.size == "S" and $d.clear == true
+          and $d.agent_only == true and $d.policy == $sig and $d.line == $c.line
+          and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max))
     | map(. + {srank: ({"prod": 0, "beta": 1}[.stage] // 2)})
     | sort_by(.prio, .srank) | unique_by(.project) | sort_by(.prio, .srank)
     | .[:$room] | .[]' <<<"$cands"
@@ -307,8 +367,9 @@ cmd_run() {
 all_open() { VERDICTS=/dev/null cmd_candidates; }
 
 cmd_report() {
-  latest_verdicts | jq -r '[.verdict, .size // "-", .project, .lane, .key, .reason // ""] | @tsv' |
-    sort | awk -F'\t' '{ printf "%-9s %-2s %-16s %-6s %s\n           %s\n", $1, $2, $3, $4, substr($5, 1, 90), $6 }'
+  latest_verdicts | jq -r --arg sig "$(policy_sig)" '[.verdict, .size // "-", (.tier // "-" | tostring),
+      .project, .lane, .key, (.reason // "") + (if .verdict != "failed" and .policy != $sig then " (stale: policy changed)" else "" end)] | @tsv' |
+    sort | awk -F'\t' '{ printf "%-9s %-2s t%-2s %-16s %-6s %s\n           %s\n", $1, $2, $3, $4, $5, substr($6, 1, 90), $7 }'
 }
 
 main() {
@@ -317,7 +378,7 @@ main() {
     candidates) cmd_candidates ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
-    -h | --help) sed -n '2,14p' "$0" ;;
+    -h | --help) sed -n '2,16p' "$0" ;;
     *) sed -n '2,7p' "$0" >&2; return 2 ;;
   esac
 }
