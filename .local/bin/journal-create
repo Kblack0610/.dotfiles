@@ -5,18 +5,13 @@
 # (see ensure_daily_note() in .commonrc). It is NOT profile-aware and still emits
 # the old inline Fun/Carry Over sections. Prefer `notes today`.
 #
-# Creates today's note with Priority/Fun carry-forward and day tracking.
+# Creates today's note with Priority/Fun carry-forward and created-date stamps.
 # Usage: journal-create
 
 set -euo pipefail
 
 NOTES_DIR="$HOME/.notes/journal/daily"
 REFS_DIR="$HOME/.notes/journal/refs"
-
-# Portable date arithmetic (GNU vs BSD)
-date_to_epoch() {
-    date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$1" +%s
-}
 
 TODAY=$(date +%Y-%m-%d)
 NOTE_FILE="$NOTES_DIR/$TODAY.md"
@@ -33,11 +28,9 @@ extract_section() {
     sed -n "/^## ${section}$/,/^## /{/^## /d; p;}" "$file" | sed '/^$/d'
 }
 
-# --- Process carry-forward items: drop checked, stamp day tracking ---
+# --- Process carry-forward items: drop checked, stamp the created tag ---
 stamp_items() {
     local prev_date="$1"
-    local today_epoch
-    today_epoch=$(date_to_epoch "$TODAY")
 
     while IFS= read -r line; do
         # Drop checked items
@@ -52,25 +45,26 @@ stamp_items() {
 
         # Process unchecked task lines
         if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*\[ ]]; then
-            # Origin: the `#cYYMMDD` created tag, else the legacy `<!-- since:DATE -->`
-            # comment, which is rewritten as the tag (same stamp as `md::stamp_line`).
+            # Origin: the `#c1026` created tag (year: this one unless that is still ahead,
+            # then last), the long `#cYYMMDD`, else the legacy `<!-- since:DATE -->` comment.
+            # Rewritten as the month-day tag, the same stamp as `md::stamp_line`.
             local origin=""
-            if [[ "$line" =~ \#c([0-9]{2})([0-9]{2})([0-9]{2})([[:space:]]|$) ]]; then
+            if [[ "$line" =~ \#c([0-9]{2})([0-9]{2})([[:space:]]|$) ]]; then
+                origin="${TODAY:0:4}-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+                [[ "$origin" > "$TODAY" ]] && origin="$(( ${TODAY:0:4} - 1 ))-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+            elif [[ "$line" =~ \#c([0-9]{2})([0-9]{2})([0-9]{2})([[:space:]]|$) ]]; then
                 origin="20${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
             elif [[ "$line" =~ \<!--\ since:([0-9]{4}-[0-9]{2}-[0-9]{2})\ --\> ]]; then
                 origin="${BASH_REMATCH[1]}"
             fi
             if [ -n "$origin" ]; then
-                # Has origin date -- drop the old stamp, recompute (Nd), re-add the tag
-                line=$(echo "$line" | sed -E 's/ \([0-9]+d\)//; s/ <!-- since:[0-9-]+ -->//; s/ #c[0-9]{6}//')
+                # Has origin date -- drop the old stamp (and a legacy day count), re-add the tag
+                line=$(echo "$line" | sed -E 's/ \([0-9]+d\)//; s/ <!-- since:[0-9-]+ -->//; s/ #c([0-9]{2})?[0-9]{4}//')
             else
                 # New carry-forward item -- stamp with prev_date as origin
                 origin="$prev_date"
             fi
-            local origin_epoch
-            origin_epoch=$(date_to_epoch "$origin")
-            local days=$(( (today_epoch - origin_epoch) / 86400 ))
-            line="$line (${days}d) #c${origin:2:2}${origin:5:2}${origin:8:2}"
+            line="$line #c${origin:5:2}${origin:8:2}"
         fi
         # Output the line (task lines stamped, non-task lines like sub-items pass through)
         echo "$line"

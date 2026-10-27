@@ -75,7 +75,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 
 | Command | What it does |
 |---|---|
-| `notes today` | Idempotent daily note. Carries **Priority** forward (day-stamped `(Nd) #cYYMMDD`); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
+| `notes today` | Idempotent daily note. Carries **Priority** forward (stamped with the `#c1026` created tag); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
 | `notes path` | Print today's note path (profile-aware). |
 | `notes link-refs` | Link `refs/<date>/*.md` into today's `## Refs` (idempotent). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
@@ -148,8 +148,8 @@ What syncs (everything else stays notes-only):
 | `- [ ] renew passport @vk` | Vikunja `Inbox` project (opt-in capture for non-project tasks) |
 
 Mechanics:
-- Captured tasks get the `from-notes` label; the created date (`#cYYMMDD`, or a legacy `<!-- since: -->`) lands in the description.
-- Dedup state: `~/.local/state/notes-vikunja/synced.tsv`, keyed on the notes CLI's `task_key` normalisation - carry-forward `(Nd)` re-stamping never duplicates. **No write-back into the note** (stamp_line would clobber it).
+- Captured tasks get the `from-notes` label; the created date (`#c1026`, or a legacy `#c261026` / `<!-- since: -->`) lands in the description.
+- Dedup state: `~/.local/state/notes-vikunja/synced.tsv`, keyed on the notes CLI's `task_key` normalisation - carry-forward re-stamping never duplicates. **No write-back into the note** (stamp_line would clobber it).
 - Checking a previously synced task (`- [x]`) marks it done in Vikunja on the next run.
 - Unknown project names are skipped, never auto-created.
 - Config/token: `~/.config/notes-vikunja.env` (machine-local; `VIKUNJA_API_TOKEN`, falls back to `$VIKUNJA_MCP_TOKEN` for manual shell runs).
@@ -163,8 +163,8 @@ not profile-aware; never prefer it when the binary exists.
 ## Rules
 
 - **Never hand-author a daily note file.** Run `notes today` (Rust CLI, profile-aware) - it handles carry-forward, day-tracking stamps, refs linking, and backlog footers that a manual write would silently break. (`journal-create` is the deprecated bash fallback.)
-- **Never edit the `#cYYMMDD` created tag** on a task (`#c261026` = 2026-10-26; older notes carry it as a `<!-- since:YYYY-MM-DD -->` comment, which the next carry rewrites as the tag). The tool recomputes the `(Nd)` suffix from it each day. Search by date with `rg '#c2610' ~/.notes/journal` (a month) or `notes tags c261026` (a day); `notes tags` leaves these out of its count list.
-- A due date you only want to see is a plain tag, `#due-1030`; it does nothing. `[YYYY-MM-DD]` is the scheduling verb (it defers the task to `schedule.md` until 2 days before).
+- **The created tag `#c1026`** ("c" for created; a tag must start with a letter) is the day a task first appeared, month-day. Saving a daily note in nvim adds it to any open Focus task that lacks one, and every CLI write adds it too. Never edit it by hand. It is the task's age: the cockpit renders it as `(Nd)`, and there is no separate day count any more. The year is the one nearest today; a date more than ~5 months away is written with the year (`#c251026`). Older lines carry `(9d) #c261017` or `(9d) <!-- since:2026-10-17 -->`, which the next carry rewrites. Search with `rg '#c10' ~/.notes/journal` (a month) or `notes tags c1026` (a day); `notes tags` leaves date tags out of its count list.
+- **The due tag `#due1031`** is the one due-date form, and it schedules: a task due more than 2 days out leaves Focus for `schedule.md` at the next carry and comes back 2 days before, still showing `#due1031`. The year is the nearest one, so `#due1020` written on 10-26 is overdue, not next year; give the year for a date more than ~5 months out (`#due270501`). `#due-1031`, `#due261031` and the legacy `[2026-10-31]` are read and rewritten as `#due1031`.
 - For reading notes, it's fine to `cat` / grep / read files directly - they're plain markdown.
 - The user uses **shell + neovim** for notes editing, **never Obsidian**. All Obsidian traces were removed 2026-06-04; the old setup is archived at `~/.notes/_archive/obsidian/` (see its README). Do not reintroduce Obsidian config or plugins.
 - When adding a new daily task mid-day, edit today's note directly; `notes today` is idempotent (one note per day).

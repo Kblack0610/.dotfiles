@@ -101,12 +101,12 @@ fn all_hits(p: &Profile) -> Vec<Hit> {
 pub fn list(p: &Profile) -> Result<()> {
     let hits = all_hits(p);
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    // Created tags (`#c261026`) are a date, one per day: counted here they would bury every
-    // real tag. `notes tags c261026` still finds a day's tasks, and `rg '#c2610'` a month's.
-    for h in hits
-        .iter()
-        .filter(|h| !md::is_created_tag(h.tag.trim_start_matches('#')))
-    {
+    // Created and due tags (`#c1026`, `#due1031`) are dates, one per day: counted here they
+    // would bury every real tag. `notes tags c1026` still finds a day's tasks, `rg '#c10'` a month's.
+    for h in hits.iter().filter(|h| {
+        let t = h.tag.trim_start_matches('#');
+        !md::is_created_tag(t) && !md::is_due_tag(t)
+    }) {
         *counts.entry(h.tag.clone()).or_default() += 1;
     }
     let mut rows: Vec<(&String, &usize)> = counts.iter().collect();

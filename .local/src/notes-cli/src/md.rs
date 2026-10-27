@@ -339,12 +339,13 @@ pub fn strip_cu_marker(line: &str) -> String {
     }
 }
 
-/// The origin date a task line carries: its `#cYYMMDD` created tag, else the legacy
+/// The origin date a task line carries: its `#c1026` created tag, else the legacy
 /// `<!-- since:YYYY-MM-DD -->` comment. The legacy form is still read because archived notes
-/// are never rewritten; only live lines migrate, on their next [`stamp_line`].
-pub fn find_since(line: &str) -> Option<NaiveDate> {
-    if let (_, Some(d)) = split_created(line) {
-        return Some(d);
+/// are never rewritten; only live lines migrate, on their next [`stamp_line`]. `today`
+/// supplies the year a month-day tag leaves off ([`tag_date`]).
+pub fn find_since(line: &str, today: NaiveDate) -> Option<NaiveDate> {
+    if let (_, Some(tag)) = split_created(line) {
+        return created_date(&tag, today);
     }
     let marker = "since:";
     let i = line.find(marker)?;
@@ -414,8 +415,12 @@ fn find_due_span(line: &str) -> Option<(usize, usize, NaiveDate)> {
     None
 }
 
-/// Parse the first inline `[YYYY-MM-DD]` due-date token on a line, if present.
-pub fn find_due(line: &str) -> Option<NaiveDate> {
+/// The due date a task line carries: its `#due1031` tag, else the legacy `[YYYY-MM-DD]`
+/// bracket token (still read; [`stamp_line`] rewrites it as the tag).
+pub fn find_due(line: &str, today: NaiveDate) -> Option<NaiveDate> {
+    if let (_, Some(tag)) = split_due(line) {
+        return due_date(&tag, today);
+    }
     find_due_span(line).map(|(_, _, d)| d)
 }
 
@@ -525,40 +530,111 @@ pub fn split_wave(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(|t| format!("#{t}")))
 }
 
-/// How a created tag spells its date: `#c261026` is 2026-10-26. Six digits, not four, so the
-/// record never goes ambiguous across years and the tags sort and prefix-search by period
-/// (`#c2610` is October 2026). A tag must start with a letter (`for_each_tag`), hence the `c`.
-const CREATED_FMT: &str = "%y%m%d";
+/// How a date tag spells its date: month and day, `#c1026` (created) and `#due1031` (due).
+/// The year is left off because it is nearly always this one and every task line pays for
+/// it; the reader takes the occurrence NEAREST `today` ([`tag_date`]). A date further than
+/// [`SHORT_SPAN_DAYS`] from today is written with the year instead (`#due270501`, YYMMDD),
+/// and that long form is always read. A tag must start with a letter (`for_each_tag`),
+/// hence the `c` (created) and `due` prefixes.
+const SHORT_FMT: &str = "%m%d";
+const LONG_FMT: &str = "%y%m%d";
 
-/// The created tag for `date`, e.g. `#c261026`. THE stamp a task carries for its origin day.
-pub fn created_tag(date: NaiveDate) -> String {
-    format!("#c{}", date.format(CREATED_FMT))
+/// How far from today a date is still written month-day only. The nearest-occurrence read is
+/// exact within half a year; the margin keeps a line that sits uncarried for weeks reading right.
+const SHORT_SPAN_DAYS: i64 = 150;
+
+/// The digits a date tag carries for `date`: `MMDD` near `today`, else `YYMMDD`.
+fn date_digits(date: NaiveDate, today: NaiveDate) -> String {
+    let fmt = if (date - today).num_days().abs() <= SHORT_SPAN_DAYS {
+        SHORT_FMT
+    } else {
+        LONG_FMT
+    };
+    date.format(fmt).to_string()
 }
 
-/// The date a bare tag (`c261026`, no `#`) names, or `None` when it is not a created tag.
-fn created_date(tag: &str) -> Option<NaiveDate> {
-    let digits = tag.strip_prefix('c')?;
-    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+/// True when `digits` is `MMDD` or `YYMMDD` naming a real day (Feb 29 checked against a leap
+/// year). Needs no `today`, so tag detection never depends on the clock.
+fn valid_date_digits(digits: &str) -> bool {
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match digits.len() {
+        4 => NaiveDate::parse_from_str(&format!("00{digits}"), LONG_FMT).is_ok(),
+        6 => NaiveDate::parse_from_str(digits, LONG_FMT).is_ok(),
+        _ => false,
+    }
+}
+
+/// The date `digits` names: `YYMMDD` as written; `MMDD` in whichever of last, this or next
+/// year lies nearest `today`, so `1020` read on 10-26 is overdue and `0103` read on 12-28 is
+/// next January.
+fn tag_date(digits: &str, today: NaiveDate) -> Option<NaiveDate> {
+    if !valid_date_digits(digits) {
         return None;
     }
-    NaiveDate::parse_from_str(digits, CREATED_FMT).ok()
+    if digits.len() == 6 {
+        return NaiveDate::parse_from_str(digits, LONG_FMT).ok();
+    }
+    let (m, d) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
+    (-1..=1)
+        .filter_map(|k| NaiveDate::from_ymd_opt(today.year() + k, m, d))
+        .min_by_key(|c| (*c - today).num_days().abs())
+}
+
+/// The created tag for `date`, e.g. `#c1026`. THE stamp a task carries for its origin day.
+pub fn created_tag(date: NaiveDate, today: NaiveDate) -> String {
+    format!("#c{}", date_digits(date, today))
+}
+
+/// The date a bare created tag (`c1026`, no `#`) names.
+fn created_date(tag: &str, today: NaiveDate) -> Option<NaiveDate> {
+    tag_date(tag.strip_prefix('c')?, today)
 }
 
 /// True when `tag` (bare, no `#`) is a created tag. `notes tags` skips these: one per day
-/// would bury every real tag, and `rg '#c2610'` is the date search.
+/// would bury every real tag, and `rg '#c10'` is the date search.
 pub fn is_created_tag(tag: &str) -> bool {
-    created_date(tag).is_some()
+    tag.strip_prefix('c').is_some_and(valid_date_digits)
 }
 
-/// Strip every created tag from `line` and return the cleaned line plus the FIRST one's date.
-pub fn split_created(line: &str) -> (String, Option<NaiveDate>) {
+/// Strip every created tag from `line` and return the cleaned line plus the FIRST one, bare.
+pub fn split_created(line: &str) -> (String, Option<String>) {
     let (cleaned, found) = cut_tags(line, is_created_tag);
-    (cleaned, found.and_then(created_date))
+    (cleaned, found.map(str::to_string))
+}
+
+/// The due tag for `date`, e.g. `#due1031`.
+pub fn due_tag(date: NaiveDate, today: NaiveDate) -> String {
+    format!("#due{}", date_digits(date, today))
+}
+
+/// The digits of a bare due tag: `due1031`, also the `due-1031` spelling.
+fn due_digits(tag: &str) -> Option<&str> {
+    let rest = tag.strip_prefix("due")?;
+    let rest = rest.strip_prefix('-').unwrap_or(rest);
+    valid_date_digits(rest).then_some(rest)
+}
+
+/// The date a bare due tag (`due1031`, no `#`) names.
+fn due_date(tag: &str, today: NaiveDate) -> Option<NaiveDate> {
+    tag_date(due_digits(tag)?, today)
+}
+
+/// True when `tag` (bare, no `#`) is a due tag.
+pub fn is_due_tag(tag: &str) -> bool {
+    due_digits(tag).is_some()
+}
+
+/// Strip every due tag from `line` and return the cleaned line plus the FIRST one, bare.
+pub fn split_due(line: &str) -> (String, Option<String>) {
+    let (cleaned, found) = cut_tags(line, is_due_tag);
+    (cleaned, found.map(str::to_string))
 }
 
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
-/// The shared half of [`split_wave`] and [`split_created`]; [`split_priority`] ranks its
+/// The shared half of [`split_wave`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
 /// tags instead of taking the first, so it keeps its own loop.
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
@@ -648,9 +724,9 @@ pub fn find_hashtags(line: &str) -> Vec<String> {
     out
 }
 
-/// Remove the first inline `[YYYY-MM-DD]` due token, collapsing the surrounding
+/// Remove the first inline legacy `[YYYY-MM-DD]` due token, collapsing the surrounding
 /// whitespace so no double space is left behind. No-op when the line has no token.
-pub fn strip_due(line: &str) -> String {
+fn strip_due(line: &str) -> String {
     match find_due_span(line) {
         Some((open, close, _)) => {
             let head = line[..open].trim_end();
@@ -984,16 +1060,19 @@ fn reset_status(line: &str) -> String {
     }
 }
 
-/// Stamp a task line with an up-to-date `(Nd) #cYYMMDD` (day count, then [`created_tag`]).
+/// Stamp a task line with its created tag, `#c1026` ([`created_tag`]), and put its date tags
+/// in canonical spelling and order: text, created, due, priority last.
 ///
-/// - If the line already has an origin ([`find_since`]: created tag or legacy comment),
-///   recompute the day count from it. A legacy `<!-- since -->` stamp is rewritten as the
-///   tag here, so live lines migrate on their next carry.
+/// - If the line already has an origin ([`find_since`]: created tag or legacy comment), keep
+///   it. Legacy stamps (`(9d) <!-- since:2026-10-17 -->`, `(9d) #c261017`) are rewritten
+///   here, so live lines migrate on their next carry. There is no day count any more: the
+///   tag is the age, and the cockpit renders it.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
+/// - A due date in any spelling (`#due1031`, `#due-1031`, `#due261031`, `[2026-10-31]`)
+///   becomes `#due1031` ([`due_tag`]).
 ///
-/// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped;
-/// an in-progress `[/]` checkbox is reset to `[ ]` (status is a same-day signal).
-/// Non-task lines pass through unchanged.
+/// A priority tag (`#low` etc.) is normalised to sit last, deduped; an in-progress `[/]`
+/// checkbox is reset to `[ ]` (status is a same-day signal). Non-task lines pass through.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
@@ -1002,34 +1081,33 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
     // the single canonical tag rather than behind a buried one; drop the in-progress mark.
     let line = reset_status(line);
     let (core, prio) = split_priority(&line);
-    let stamped = match find_since(&core) {
-        Some(date) => {
-            // Already stamped: everything from the first comment on goes, as the overnight
-            // carry always has (the legacy since-comment, and a `cu:` marker - see clickup.rs).
-            let (core, _) = split_created(&core);
-            let comment_start = core.find("<!--").unwrap_or(core.len());
-            let before = strip_trailing_day(core[..comment_start].trim_end());
-            let days = (today - date).num_days().max(0);
-            format!("{} ({}d) {}", before, days, created_tag(date))
-        }
-        None => {
-            let days = (today - origin_if_new).num_days().max(0);
-            format!(
-                "{} ({}d) {}",
-                core.trim_end(),
-                days,
-                created_tag(origin_if_new)
-            )
-        }
+    let origin = find_since(&core, today);
+    let due = find_due(&core, today);
+    let (core, _) = split_created(&core);
+    let (core, _) = split_due(&core);
+    let core = strip_due(&core);
+    // Already stamped: everything from the first comment on goes, as the overnight carry
+    // always has (the legacy since-comment, and a `cu:` marker - see clickup.rs).
+    let core = match origin {
+        Some(_) => &core[..core.find("<!--").unwrap_or(core.len())],
+        None => core.as_str(),
     };
+    let mut out = format!(
+        "{} {}",
+        strip_trailing_day(core),
+        created_tag(origin.unwrap_or(origin_if_new), today)
+    );
+    if let Some(d) = due {
+        out = format!("{out} {}", due_tag(d, today));
+    }
     match prio {
-        Some(tag) => format!("{stamped} {tag}"),
-        None => stamped,
+        Some(tag) => format!("{out} {tag}"),
+        None => out,
     }
 }
 
-/// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, created, priority
-/// and wave tags and the trailing day-count stripped, case preserved.
+/// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, created, due,
+/// priority and wave tags and a legacy trailing day-count stripped, case preserved.
 ///
 /// Split out of [`task_key`] because the two jobs had been sharing one function and the
 /// de-duplication job won: `task_key` lower-cases, which is right for matching and wrong for
@@ -1044,10 +1122,11 @@ pub fn task_text(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved. The wave tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
     // matching a task the moment it is pushed to another wave, and the cockpit's
-    // done/start/rm silently no-op on it. The created tag is part of the stamp, so it goes
-    // with the day count - and the tags go FIRST, because the day count is only trailing
-    // once the stamp's tag behind it (`(3d) #c260531`) is gone.
+    // done/start/rm silently no-op on it. The created and due tags are stamps, not text,
+    // so they go too - FIRST, because a legacy day count is only trailing once the tags
+    // behind it (`(3d) #c260531`) are gone.
     let (stripped, _) = split_created(t);
+    let (stripped, _) = split_due(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_wave(&stripped);
     let stripped = strip_trailing_day(&stripped);
@@ -1064,8 +1143,8 @@ pub fn task_text(line: &str) -> String {
 }
 
 /// Replace a task line's text with `text`, keeping everything that is not the text:
-/// indentation, the checkbox state (`[/]` included), priority and wave tags, a trailing
-/// day count and the marker comment. Non-task lines pass through unchanged.
+/// indentation, the checkbox state (`[/]` included), created, due, priority and wave tags,
+/// a legacy trailing day count and the marker comment. Non-task lines pass through unchanged.
 ///
 /// The text [`task_text`] reads is almost always a prefix of the line after the checkbox,
 /// with the tags and stamps behind it; then only that prefix is swapped and the rest stays
@@ -1097,6 +1176,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     let before_marker = marker.map_or(body, |m| body[..body.len() - m.len()].trim_end());
     // The day count is trailing only once the tags behind it are gone (`(3d) #c260531 #high`).
     let (bare, created) = split_created(before_marker);
+    let (bare, due) = split_due(&bare);
     let (bare, _) = split_priority(&bare);
     let (bare, _) = split_wave(&bare);
     let no_day = strip_trailing_day(&bare);
@@ -1105,8 +1185,8 @@ pub fn retext_task(line: &str, text: &str) -> String {
     if !day.is_empty() {
         out = format!("{out} {day}");
     }
-    if let Some(c) = created {
-        out = format!("{out} {}", created_tag(c));
+    for tag in [created, due].into_iter().flatten() {
+        out = format!("{out} #{tag}");
     }
     if let Some(m) = marker {
         out = format!("{out} {m}");
@@ -1313,66 +1393,125 @@ after
     }
 
     #[test]
-    fn stamp_recomputes_existing_since() {
-        let line = "- [ ] ship it (3d) #c260531";
-        let out = stamp_line(line, d("2026-06-03"), d("2026-06-02"));
-        assert_eq!(out, line);
-        // advance today by 7 days -> 10d since 05-31
-        let out2 = stamp_line(line, d("2026-06-10"), d("2026-06-09"));
-        assert_eq!(out2, "- [ ] ship it (10d) #c260531");
+    fn stamp_keeps_an_existing_origin() {
+        let line = "- [ ] ship it #c0531";
+        assert_eq!(stamp_line(line, d("2026-06-03"), d("2026-06-02")), line);
+        // a week later: the tag is the age, so nothing on the line moves
+        assert_eq!(stamp_line(line, d("2026-06-10"), d("2026-06-09")), line);
     }
 
     #[test]
-    fn stamp_migrates_the_legacy_since_comment() {
-        // A line stamped before the created tag keeps its ORIGIN date, not origin_if_new,
-        // and comes out in the tag form with the priority still last.
-        let line = "- [ ] ship it (3d) <!-- since:2026-05-31 --> #high";
-        let out = stamp_line(line, d("2026-06-10"), d("2026-06-09"));
-        assert_eq!(out, "- [ ] ship it (10d) #c260531 #high");
-        assert_eq!(stamp_line(&out, d("2026-06-10"), d("2026-06-09")), out);
+    fn stamp_migrates_every_legacy_stamp() {
+        // Lines stamped by older builds keep their ORIGIN date, not origin_if_new, and come
+        // out month-day with no day count and the priority still last.
+        for line in [
+            "- [ ] ship it (3d) <!-- since:2026-05-31 --> #high",
+            "- [ ] ship it (3d) #c260531 #high",
+        ] {
+            let out = stamp_line(line, d("2026-06-10"), d("2026-06-09"));
+            assert_eq!(out, "- [ ] ship it #c0531 #high", "{line}");
+            assert_eq!(stamp_line(&out, d("2026-06-10"), d("2026-06-09")), out);
+        }
+    }
+
+    #[test]
+    fn stamp_writes_one_due_tag_whatever_the_spelling() {
+        let today = d("2026-10-26");
+        for line in [
+            "- [ ] submit app #due261031 #urgent",
+            "- [ ] submit app #due-1031 #urgent",
+            "- [ ] submit app [2026-10-31] #urgent",
+            "- [ ] submit app #urgent #due1031",
+        ] {
+            let out = stamp_line(line, today, today);
+            assert_eq!(out, "- [ ] submit app #c1026 #due1031 #urgent", "{line}");
+            assert_eq!(stamp_line(&out, today, today), out);
+        }
+    }
+
+    #[test]
+    fn date_tags_take_the_nearest_year() {
+        // created on 12-30, read on 01-05: last year
+        assert_eq!(
+            find_since("- [ ] x #c1230", d("2027-01-05")),
+            Some(d("2026-12-30"))
+        );
+        // due 10-20 read on 10-26: overdue this year, not next October
+        assert_eq!(
+            find_due("- [ ] x #due1020", d("2026-10-26")),
+            Some(d("2026-10-20"))
+        );
+        // due 01-03 read on 12-28: next January
+        assert_eq!(
+            find_due("- [ ] x #due0103", d("2026-12-28")),
+            Some(d("2027-01-03"))
+        );
+        // the long form is read as written
+        assert_eq!(
+            find_due("- [ ] x #due270501", d("2026-10-26")),
+            Some(d("2027-05-01"))
+        );
+    }
+
+    #[test]
+    fn a_date_far_from_today_keeps_its_year() {
+        let today = d("2026-10-26");
+        assert_eq!(due_tag(d("2027-05-01"), today), "#due270501");
+        assert_eq!(due_tag(d("2027-01-15"), today), "#due0115");
+        assert_eq!(created_tag(d("2026-03-01"), today), "#c260301");
+        // and the tag round-trips through the reader
+        for date in [d("2027-05-01"), d("2027-01-15"), d("2026-10-20")] {
+            assert_eq!(
+                find_due(&format!("- [ ] x {}", due_tag(date, today)), today),
+                Some(date)
+            );
+        }
     }
 
     #[test]
     fn created_tag_round_trips_and_rejects_lookalikes() {
-        assert_eq!(created_tag(d("2026-10-26")), "#c261026");
+        let today = d("2026-10-26");
+        assert_eq!(created_tag(today, today), "#c1026");
+        assert_eq!(find_since("- [ ] x #c1026 #low", today), Some(today));
+        assert_eq!(find_since("- [ ] x (0d) #c261026 #low", today), Some(today));
         assert_eq!(
-            find_since("- [ ] x (0d) #c261026 #low"),
-            Some(d("2026-10-26"))
+            find_since("- [ ] x <!-- since:2026-10-26 -->", today),
+            Some(today)
         );
-        assert_eq!(
-            find_since("- [ ] x <!-- since:2026-10-26 -->"),
-            Some(d("2026-10-26"))
-        );
-        // not six digits, not a real day, or glued: not a created tag
+        // not four or six digits, not a real day, or glued: not a created tag
         for not in [
-            "#c2610",
+            "#c261",
             "#c2610261",
             "#c261340",
+            "#c1340",
             "#cat",
-            "#C261026",
-            "x#c261026",
+            "#C1026",
+            "x#c1026",
         ] {
-            assert_eq!(find_since(&format!("- [ ] y {not}")), None, "{not}");
+            assert_eq!(find_since(&format!("- [ ] y {not}"), today), None, "{not}");
         }
-        // the tag is part of the stamp, so it never reaches a task's identity
+        // Feb 29 is a real day to the detector even in a non-leap year
+        assert!(is_created_tag("c0229"));
+        // the date tags are stamps, so they never reach a task's identity
         assert_eq!(task_key("- [/] Ship It (3d) #c260531 #high"), "ship it");
+        assert_eq!(task_key("- [/] Ship It #c0531 #due0601 #high"), "ship it");
         assert_eq!(
-            task_text("- [ ] Ship It (3d) #c260531 #high #v0.1.0"),
+            task_text("- [ ] Ship It #c0531 #due-0601 #high #v0.1.0"),
             "Ship It"
         );
     }
 
     #[test]
-    fn retext_keeps_the_created_tag() {
+    fn retext_keeps_the_date_tags() {
         // prefix path: the stamp after the text stays byte for byte
         assert_eq!(
-            retext_task("- [ ] old words (3d) #c260531 #high", "new words"),
-            "- [ ] new words (3d) #c260531 #high"
+            retext_task("- [ ] old words #c0531 #due0601 #high", "new words"),
+            "- [ ] new words #c0531 #due0601 #high"
         );
-        // rebuild path (a tag typed mid-text): day, created tag and priority all survive
+        // rebuild path (a tag typed mid-text): legacy day, both tags and priority survive
         assert_eq!(
-            retext_task("- [ ] old #high words (3d) #c260531", "new words"),
-            "- [ ] new words (3d) #c260531 #high"
+            retext_task("- [ ] old #high words (3d) #c260531 #due0601", "new words"),
+            "- [ ] new words (3d) #c260531 #due0601 #high"
         );
     }
 
@@ -1380,7 +1519,7 @@ after
     fn stamp_new_item_uses_origin() {
         let line = "- [ ] brand new";
         let out = stamp_line(line, d("2026-06-03"), d("2026-06-01"));
-        assert_eq!(out, "- [ ] brand new (2d) #c260601");
+        assert_eq!(out, "- [ ] brand new #c0601");
     }
 
     #[test]
@@ -1648,7 +1787,7 @@ after
             d("2026-07-14"),
             d("2026-07-13"),
         );
-        assert_eq!(out, "- [ ] get androids onto fleet (1d) #c260713 #low");
+        assert_eq!(out, "- [ ] get androids onto fleet #c0713 #low");
     }
 
     #[test]
@@ -1656,10 +1795,10 @@ after
         // An in-progress task carried to the next day reverts to an open todo, but
         // keeps its priority tag (which does carry).
         let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(out, "- [ ] wire it up (1d) #c260714 #high");
+        assert_eq!(out, "- [ ] wire it up #c0714 #high");
         // Indentation on a nested task is preserved.
         let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(nested, "  - [ ] sub-step (1d) #c260714");
+        assert_eq!(nested, "  - [ ] sub-step #c0714");
     }
 
     #[test]
@@ -1667,8 +1806,8 @@ after
         // Re-stamping the buggy line collapses the two tags into one trailing tag.
         let line = "- [ ] add priority tags #low (1d) <!-- since:2026-07-13 --> #low";
         let out = stamp_line(line, d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(out, "- [ ] add priority tags (2d) #c260713 #low");
-        // Idempotent: stamping the healed line again is stable (bar the day count).
+        assert_eq!(out, "- [ ] add priority tags #c0713 #low");
+        // Idempotent: stamping the healed line again is stable.
         let out2 = stamp_line(&out, d("2026-07-15"), d("2026-07-14"));
         assert_eq!(out2, out);
     }
@@ -1690,32 +1829,35 @@ after
     #[test]
     fn find_due_parses_inline() {
         assert_eq!(
-            find_due("- [ ] pay rent [2026-07-15]"),
+            find_due("- [ ] pay rent [2026-07-15]", d("2026-07-01")),
             Some(d("2026-07-15"))
         );
         assert_eq!(
-            find_due("- [ ] renew [2026-08-01] (2d)"),
+            find_due("- [ ] renew [2026-08-01] (2d)", d("2026-07-01")),
             Some(d("2026-08-01"))
         );
     }
 
     #[test]
     fn find_due_ignores_checkbox() {
-        assert_eq!(find_due("- [ ] todo"), None);
-        assert_eq!(find_due("- [x] done"), None);
-        assert_eq!(find_due("  - [ ] indented"), None);
+        assert_eq!(find_due("- [ ] todo", d("2026-07-01")), None);
+        assert_eq!(find_due("- [x] done", d("2026-07-01")), None);
+        assert_eq!(find_due("  - [ ] indented", d("2026-07-01")), None);
     }
 
     #[test]
     fn find_due_ignores_wikilink() {
-        assert_eq!(find_due("see [[2026-06-30]] note"), None);
-        assert_eq!(find_due("- [ ] x [[journal/2026-06-30]]"), None);
+        assert_eq!(find_due("see [[2026-06-30]] note", d("2026-07-01")), None);
+        assert_eq!(
+            find_due("- [ ] x [[journal/2026-06-30]]", d("2026-07-01")),
+            None
+        );
     }
 
     #[test]
     fn find_due_checkbox_and_date_coexist() {
         assert_eq!(
-            find_due("- [x] done early [2026-01-02]"),
+            find_due("- [x] done early [2026-01-02]", d("2026-07-01")),
             Some(d("2026-01-02"))
         );
     }
@@ -1723,26 +1865,35 @@ after
     #[test]
     fn find_due_accepts_us_and_nonpadded_forms() {
         // US M-D-YY (the author's natural form), M-D-YYYY, slash separator
-        assert_eq!(find_due("- [ ] take exam [7-02-26]"), Some(d("2026-07-02")));
-        assert_eq!(find_due("- [ ] x [7/2/2026]"), Some(d("2026-07-02")));
+        assert_eq!(
+            find_due("- [ ] take exam [7-02-26]", d("2026-07-01")),
+            Some(d("2026-07-02"))
+        );
+        assert_eq!(
+            find_due("- [ ] x [7/2/2026]", d("2026-07-01")),
+            Some(d("2026-07-02"))
+        );
         // non-padded ISO is unambiguous → accepted
-        assert_eq!(find_due("- [ ] x [2026-6-3]"), Some(d("2026-06-03")));
+        assert_eq!(
+            find_due("- [ ] x [2026-6-3]", d("2026-07-01")),
+            Some(d("2026-06-03"))
+        );
     }
 
     #[test]
     fn find_due_rejects_invalid() {
-        assert_eq!(find_due("- [ ] x [2026-13-40]"), None);
-        assert_eq!(find_due("- [ ] x [not-a-date!]"), None);
+        assert_eq!(find_due("- [ ] x [2026-13-40]", d("2026-07-01")), None);
+        assert_eq!(find_due("- [ ] x [not-a-date!]", d("2026-07-01")), None);
         // two-part prose like a section ref must NOT match (year required)
-        assert_eq!(find_due("- [ ] see section [3-4]"), None);
+        assert_eq!(find_due("- [ ] see section [3-4]", d("2026-07-01")), None);
         // single-digit year rejected (avoids [1-1-1]-style false matches)
-        assert_eq!(find_due("- [ ] x [1-1-1]"), None);
+        assert_eq!(find_due("- [ ] x [1-1-1]", d("2026-07-01")), None);
     }
 
     #[test]
     fn find_due_picks_date_past_wikilink() {
         assert_eq!(
-            find_due("[[note]] thing [2026-07-15]"),
+            find_due("[[note]] thing [2026-07-15]", d("2026-07-01")),
             Some(d("2026-07-15"))
         );
     }

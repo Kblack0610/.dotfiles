@@ -77,14 +77,21 @@ local function open_at(file, line)
   pcall(vim.api.nvim_win_set_cursor, 0, { tonumber(line) or 1, 0 })
 end
 
--- Display form of a raw `## Focus` task line: drop the `#cYYMMDD` created tag (or a legacy
--- `<!-- since -->` comment) and the `- [ ] ` checkbox, keep the `(Nd)` age.
--- e.g. "- [ ] buy drive (2d) #c261024 #high" -> "buy drive (2d) #high".
+-- Display form of a raw `## Focus` task line: the created tag (`#c1026`, or a legacy
+-- `(Nd) <!-- since -->` stamp) becomes an age after the text, the checkbox goes.
+-- e.g. "- [ ] buy drive #c1024 #high" on 10-26 -> "buy drive (2d) #high".
 local function task_display(text)
+  local age = require("notes.datetag").age(text, os.date "*t")
   local t = text:gsub("%s*<!%-%-.-%-%->", "") -- strip HTML comments (legacy since-stamp, cu:)
-  t = t:gsub("%s+#c%d%d%d%d%d%d%f[^%w]", "") -- strip the created tag (md::created_tag)
+  t = t:gsub("%s+#c%d%d%d%d%d?%d?%f[^%w]", "") -- strip the created tag (md::created_tag)
+  t = t:gsub("%s+%(%d+d%)", "") -- a legacy day count, re-rendered from the tag below
   t = t:gsub("^%s*%- %[[ xX/]%]%s*", "") -- strip the checkbox
-  return vim.trim(t)
+  t = vim.trim(t)
+  if age then
+    local body, tags = t:match "^(.-)(%s+#.*)$"
+    t = body and string.format("%s (%dd)%s", body, age, tags) or string.format("%s (%dd)", t, age)
+  end
+  return t
 end
 
 -- ── Data: parse `notes focus --all` into per-profile task lists ──────
