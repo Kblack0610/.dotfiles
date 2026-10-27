@@ -136,7 +136,9 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   [ ! -e "$HOME/.agent/evil" ]
 }
 
-@test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
+# landed_fixture: one idle session s1 (sid-9) in a worktree whose PR #875 merged clean.
+landed_fixture() {
+  local oid since
   git init -q --bare "$SANDBOX/origin.git"
   git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
   git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -151,6 +153,10 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+}
+
+@test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
+  landed_fixture
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -208,4 +214,17 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
   [ "$(jq -r 'select(.bucket != "MAIN") | .bucket' <<<"$output")" = LANDED ]
+}
+
+@test "a session fleet-dispatch started carries its row as dispatch; others carry null" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
+
+  mkdir -p "$HOME/.agent/dispatch/live"
+  printf 'project=apociseum\nlabel=apociseum: fix wave save\n' > "$HOME/.agent/dispatch/live/s1"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix wave save' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --index 1 --partial '[dispatch: apociseum: fix wave save]'
 }
