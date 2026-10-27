@@ -153,6 +153,46 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'one three two '
 }
 
+# ── on demand: declared, not booted ──────────────────────────────────────────
+#
+# hub.conf's `?home-config`. The point is that closing it STICKS: every hop runs ensure,
+# so a plain entry came straight back the next time you entered the world.
+
+@test "ensure does not boot a ?name entry, and reports it as on demand" {
+  manifest "$SRV_A" "main $MDIR" "?lazy $MDIR" "other $MDIR"
+  run "$TMX" ensure "$SRV_A"
+  assert_success
+  assert_output --partial '2 created'
+  assert_output --partial '1 on demand'
+  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'main other '
+}
+
+@test "ensure <server> <name> wakes the on-demand session it names, and only that one" {
+  manifest "$SRV_A" "main $MDIR" "?lazy $MDIR" "?sleepy $MDIR"
+  run "$TMX" ensure "$SRV_A" lazy
+  assert_success
+  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'lazy main '
+}
+
+@test "a running on-demand session counts as up, and stays closed once closed" {
+  manifest "$SRV_A" "main $MDIR" "?lazy $MDIR"
+  "$TMX" ensure "$SRV_A" lazy
+  run "$TMX" ensure "$SRV_A"
+  assert_output --partial '2 already up'
+  "${REAL_TMUX}" -L "$SRV_A" kill-session -t '=lazy'
+  run "$TMX" ensure "$SRV_A"
+  assert_output --partial '0 created'
+  assert_equal "$(sessions_of "$SRV_A" | tr '\n' ' ')" 'main '
+}
+
+@test "land <server> <name> creates an on-demand session before attaching" {
+  # The goto / Prefix+f path. Without it, landing on a closed ?name fell back to resume.
+  manifest "$SRV_A" "main $MDIR" "?lazy $MDIR"
+  "$TMX" ensure "$SRV_A"
+  run "$TMX" land "$SRV_A" 'lazy'   # attach fails (no tty); ensure already ran
+  assert_equal "$(sessions_of "$SRV_A" | sort | tr '\n' ' ')" 'lazy main '
+}
+
 @test "ensure reports counts so the repair path is observable" {
   manifest "$SRV_A" "one $MDIR" "two $MDIR"
   run "$TMX" ensure "$SRV_A"

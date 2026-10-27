@@ -12,7 +12,8 @@
 # Reaching outside this world is not lost, it just moves keys: Prefix+f
 # (sessionizer.sh) still fuzzy-finds every directory on the machine.
 #
-# Keep in sync with .config/tmux-servers/hub.conf.
+# Keep in sync with .config/tmux-servers/hub.conf. List its on-demand (`?name`) sessions
+# here too: this picker is how you start one that is not running.
 
 [default_session]
 preview_command = "eza --all --git --icons --color=always {}"

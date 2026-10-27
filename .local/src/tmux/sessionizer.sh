@@ -79,6 +79,7 @@ manifest_rows() {
     while read -r name mdir cmd; do
       case "$name" in '' | '#'* | *:*) continue ;; esac # session:window adds a window, owns no dir
       [ -n "$mdir" ] || continue
+      name="${name#\?}" # `?name` is on demand: not booted, but it still owns its directory
       mdir="${mdir/#\~/$HOME}"
       printf '%s %s %s\n' "$world" "$name" "${mdir%/}"
     done < "$f"

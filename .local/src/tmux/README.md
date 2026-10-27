@@ -164,7 +164,7 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
@@ -172,6 +172,12 @@ Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
 session**: `tmx hop hub` attaches straight to it, so you arrive in today's note
 rather than a bare shell.
+
+A name written `?name` is **on demand**: `ensure` does not boot it, so closing it sticks
+instead of coming back on the next hop in. It is still declared, so `Prefix+f` on its
+directory still routes to this world, and `Prefix+f`, `tmx goto <world> <name>` or the
+world's `Prefix+S` list (`sesh/<world>.toml`) start it. `ensure` reports it as
+`N on demand`. Never mark the landing entry.
 
 Worlds are **discovered** from that directory rather than hardcoded, so dropping in a
 `<name>.conf` creates a world with no code change - which is what makes a per-client
@@ -481,7 +487,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 

@@ -354,6 +354,16 @@ in_world() {
   assert_output 'hub hub'
 }
 
+@test "--route still routes an on-demand ?name entry to its world, under the bare name" {
+  # hub.conf's `?home-config`: not booted, but Prefix+f on it must still hop to hub
+  # rather than build a second session in whatever world you are in.
+  mkdir -p "$HOME/declared-lazy"
+  printf '?lazy ~/declared-lazy\n' >> "$TMUX_SERVERS_DIR/hub.conf"
+  run "$SESSIONIZER" --route "$HOME/declared-lazy"
+  assert_success
+  assert_output 'hub lazy'
+}
+
 @test "--route says here for a directory no manifest declares" {
   run "$SESSIONIZER" --route "$SANDBOX/roots/alpha/proj-one"
   assert_success
