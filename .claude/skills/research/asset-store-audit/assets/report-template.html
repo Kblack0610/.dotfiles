@@ -100,7 +100,7 @@ footer{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:
 
 <div class="wrap">
 <header>
-  <div class="eyebrow">Asset Store shelf / /*COUNT*/ downloaded packs / unity-core URP 6000.0</div>
+  <div class="eyebrow">Asset Store shelf / /*COUNT*/ downloaded packs</div>
   <h1>Which downloaded packs earn a place in the library</h1>
   <p class="lede">Every pack in <span class="mono">~/.local/share/unity3d/Asset Store-5.x</span> was unpacked without importing and judged from its actual files: material shader GUIDs, script namespaces, prefab components, FBX import settings and serialization. The bar is our stack: URP + FlatKit, the catalog contract, and what asset-ingest can convert today.</p>
 </header>
@@ -115,6 +115,7 @@ footer{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:
   <div class="controls">
     <div class="chips" id="vchips" role="group" aria-label="Filter by verdict"></div>
     <label class="meta" for="cat">Category <select id="cat"></select></label>
+    <label class="meta" for="tgt" id="tgtl" hidden>Library <select id="tgt"></select></label>
     <label class="meta" for="sort">Sort <select id="sort">
       <option value="verdict">Verdict</option><option value="size">Size</option><option value="name">Name</option><option value="effort">Effort</option>
     </select></label>
@@ -147,7 +148,7 @@ const gb = mb => mb >= 1024 ? (mb/1024).toFixed(1)+" GB" : Math.round(mb)+" MB";
   document.getElementById("shelf").innerHTML = `<div class="meta">Disk share by verdict, ${gb(tot)} unpacked across ${PACKS.length} packs</div><div class="bar">${bar}</div><div class="legend">${leg}</div>`;
 })();
 
-const state = {v:new Set(), cat:"", sort:"verdict"};
+const state = {v:new Set(), cat:"", tgt:"", sort:"verdict"};
 const vchips = document.getElementById("vchips");
 vchips.innerHTML = VORDER.map((v,i)=>`<button class="chip" id="vc${i}" aria-pressed="false" data-v="${v}">${v} <span class="mono">${PACKS.filter(p=>p.verdict===v).length}</span></button>`).join("");
 vchips.addEventListener("click", e=>{const b=e.target.closest(".chip"); if(!b) return; const v=b.dataset.v; state.v.has(v)?state.v.delete(v):state.v.add(v); b.setAttribute("aria-pressed", state.v.has(v)); render();});
@@ -155,6 +156,14 @@ const cats = [...new Set(PACKS.map(p=>p.category))].sort();
 const catSel = document.getElementById("cat");
 catSel.innerHTML = `<option value="">All</option>` + cats.map(c=>`<option>${esc(c)}</option>`).join("");
 catSel.onchange = ()=>{state.cat=catSel.value; render();};
+// Library target (main / hd / both / none): only runs that judge more than one library set it.
+const tgts = [...new Set(PACKS.map(p=>p.target).filter(Boolean))].sort();
+const tgtSel = document.getElementById("tgt");
+if (tgts.length) {
+  document.getElementById("tgtl").hidden = false;
+  tgtSel.innerHTML = `<option value="">All</option>` + tgts.map(t=>`<option>${esc(t)}</option>`).join("");
+  tgtSel.onchange = ()=>{state.tgt=tgtSel.value; render();};
+}
 document.getElementById("sort").onchange = e=>{state.sort=e.target.value; render();};
 
 const li = a => (a||[]).map(x=>`<li>${esc(x)}</li>`).join("");
@@ -168,7 +177,7 @@ function row(p){
     <span class="eff" title="${esc(p.effort)}">${esc(effKey(p.effort))}</span>
   </summary>
   <div class="body">
-    <p class="meta">${esc(p.publisher)} / confidence ${esc(p.confidence)} / effort ${esc(p.effort)}</p>
+    <p class="meta">${esc(p.publisher)}${p.target ? ` / library ${esc(p.target)}` : ""} / confidence ${esc(p.confidence)} / effort ${esc(p.effort)}</p>
     <p class="reason">${esc(p.what_it_is)}</p>
     <div class="pro-con">
       <div class="pro"><h4>Why bring it in</h4><ul>${li(p.why_bring_in)}</ul></div>
@@ -181,11 +190,12 @@ function row(p){
       <div><h4>Standardization</h4><p>${esc(p.standardization)}</p></div>
       <div><h4>Catalog / ingest fit</h4><p>${esc(p.catalog_fit)}</p></div>
       <div><h4>Style fit</h4><p>${esc(p.style_fit)}</p></div>
+      ${p.hd_fit ? `<div><h4>HD library fit</h4><p>${esc(p.hd_fit)}</p></div>` : ""}
     </div>
   </div></details>`;
 }
 function render(){
-  let xs = PACKS.filter(p=>(!state.v.size||state.v.has(p.verdict)) && (!state.cat||p.category===state.cat));
+  let xs = PACKS.filter(p=>(!state.v.size||state.v.has(p.verdict)) && (!state.cat||p.category===state.cat) && (!state.tgt||(p.target===state.tgt||(p.target==="both"&&state.tgt!=="none"))));
   const s = state.sort;
   xs.sort((a,b)=> s==="size" ? b.size_mb-a.size_mb : s==="name" ? a.pack.localeCompare(b.pack) : s==="effort" ? (EORDER[effKey(a.effort)]??9)-(EORDER[effKey(b.effort)]??9) : (VORDER.indexOf(a.verdict)-VORDER.indexOf(b.verdict)) || a.pack.localeCompare(b.pack));
   document.getElementById("list").innerHTML = xs.map(row).join("");
