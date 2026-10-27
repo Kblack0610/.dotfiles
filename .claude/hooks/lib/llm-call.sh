@@ -109,11 +109,22 @@ _call_backend() {
     return 1
   fi
 
-  # Resolve API key from env var if specified
-  local api_key_env
+  # Resolve the API key: `api_key_file` first, then `api_key_env`. The file form exists
+  # because this runs from a Stop hook and under systemd, where the login-shell env is
+  # absent - an env-only key was unset there, which is half of how 253 evals were lost.
+  # A missing or empty key file is an error for that backend, never an unauthenticated try.
+  local api_key_env api_key_file
+  api_key_file=$(jq -r --arg b "$backend" '.backends[$b].api_key_file // empty' "$CONFIG_FILE")
   api_key_env=$(jq -r --arg b "$backend" '.backends[$b].api_key_env // empty' "$CONFIG_FILE")
-  if [[ -n "$api_key_env" ]]; then
-    api_key="${!api_key_env}"
+  if [[ -n "$api_key_file" ]]; then
+    api_key_file="${api_key_file/#\~/$HOME}"
+    if [[ ! -s "$api_key_file" ]]; then
+      echo "ERROR: $backend key file missing or empty: $api_key_file" >&2
+      return 1
+    fi
+    api_key=$(tr -d '[:space:]' <"$api_key_file")
+  elif [[ -n "$api_key_env" ]]; then
+    api_key="${!api_key_env:-}"
   fi
 
   # Build auth header
