@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# agentctl-session-outcomes - nightly, model-free record of what each session did.
+#
+#   agentctl-session-outcomes [run]                        observe due sessions
+#   agentctl-session-outcomes worst [--project P] [--days N] [-n N]
+#
+# run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
+# resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
+# WORKED = lines written, NOOP = nothing due, STALLED (exit 1) = gh or a write failed,
+# in which case NOTHING is written and the next run catches up. Lib + field meanings:
+# ~/.local/lib/session-outcomes.sh. Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR.
+
+set -uo pipefail
+
+SESSIONS="${SO_SESSIONS:-$HOME/.agent/sessions}"
+OUT="${SO_OUT:-$HOME/.agent/outcomes}"
+NOW="${SO_NOW:-$(date +%s)}"
+FINAL_DAYS="${SO_FINAL_DAYS:-7}"
+PR_LIMIT="${SO_PR_LIMIT:-1000}"   # newest N PRs per repo; one paginated call covers them
+GH="${SO_GH:-gh}"
+NAME=session-outcomes
+
+LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
+
+# shellcheck source=/dev/null
+. "$LIB_DIR/agent-proof.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/session-outcomes.sh"
+
+die_stalled() {
+  echo "$NAME: $1" >&2
+  proof_report "$NAME" STALLED "$1"
+  exit 1
+}
+
+cmd_run() {
+  local work
+  work="$(mktemp -d)" || die_stalled "mktemp failed"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+
+  so_latest "$OUT" > "$work/seen.jsonl" || die_stalled "could not read $OUT"
+
+  # Registry rows due for an observation. A session id can sit in two project files
+  # (it moved project mid-life); the newest Stop wins.
+  if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
+    cat "$SESSIONS"/*/sessions.jsonl
+  fi | jq -cnR --slurpfile seen "$work/seen.jsonl" \
+        --argjson now "$NOW" --argjson days "$FINAL_DAYS" '
+      ($seen | map({key: .session_id, value: .}) | from_entries) as $s
+      | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
+      | group_by(.session_id) | map(max_by(.updated)) | .[]
+      | . + {final: (($now - .updated) >= $days * 86400)}
+      | select(($s[.session_id] // null) as $p
+               | $p == null
+                 or $p.updated_epoch != .updated
+                 or ($p.final == false and .final))
+    ' > "$work/due.jsonl" || die_stalled "could not read the session registry"
+
+  if [ ! -s "$work/due.jsonl" ]; then
+    echo "$NAME: nothing due"
+    proof_report "$NAME" NOOP "nothing due"
+    return 0
+  fi
+
+  # Transcript metrics, one file per due session. A pruned transcript yields null
+  # metrics rather than a skipped session: the registry row (cost, edits) still counts.
+  local row sid tr n=0
+  while IFS= read -r row; do
+    sid="$(jq -r .session_id <<<"$row")"
+    tr="$(jq -r '.transcript // ""' <<<"$row")"
+    if [ -n "$tr" ] && [ -f "$tr" ]; then
+      so_transcript_metrics "$tr" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
+    else
+      printf 'null' > "$work/m.$sid.json"
+    fi
+    n=$((n + 1))
+  done < "$work/due.jsonl"
+
+  # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
+  # what tripped the 403 rate limit.
+  local repo
+  cat "$work"/m.*.json | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
+  printf '{}' > "$work/index.json"
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
+      --json number,state,title,mergedAt > "$work/prs.json" 2>"$work/gh.err" \
+      || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+    so_pr_index "$FINAL_DAYS" < "$work/prs.json" > "$work/idx.json" \
+      || die_stalled "could not index PRs for $repo"
+    jq -c --arg r "$repo" --slurpfile i "$work/idx.json" '. + {($r): $i[0]}' \
+      "$work/index.json" > "$work/index.next" && mv "$work/index.next" "$work/index.json"
+  done < "$work/repos"
+
+  local observed
+  observed="$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)"
+  : > "$work/lines.jsonl"
+  while IFS= read -r row; do
+    sid="$(jq -r .session_id <<<"$row")"
+    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --arg observed "$observed" '
+      . as $m | $idx[0] as $ix
+      | ($m // {}) as $mm
+      | [ ($mm.prs // [])[] | . as $p
+          | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
+          | {repo: $p.repo, number: $p.number, state, merged_at, reverted} ] as $prs
+      | { session_id: $row.session_id,
+          project: $row.project,
+          title: ($row.title // $row.first_prompt // ""),
+          updated: ($row.updated | todate),
+          updated_epoch: $row.updated,
+          observed: $observed,
+          final: $row.final,
+          transcript: ($m != null),
+          edits: ($row.edits // 0),
+          cost_usd: ($row.cost_usd // null),
+          tokens_total: ($row.tokens.total // null),
+          duration_s: ($row.duration_s // null),
+          prs: $prs,
+          prs_merged: ([$prs[] | select(.state == "MERGED")] | length),
+          prs_open: ([$prs[] | select(.state == "OPEN")] | length),
+          prs_closed_unmerged: ([$prs[] | select(.state == "CLOSED")] | length),
+          reverted_7d: ([$prs[] | select(.reverted)] | length),
+          board_done: ($mm.board_done // null),
+          corrections: ($mm.corrections // null),
+          hard_errors: ($mm.hard_errors // null) }
+    ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
+  done < "$work/due.jsonl"
+
+  # Append last, all at once: a run that fails above leaves the output untouched.
+  local line proj month written=0
+  while IFS= read -r line; do
+    proj="$(jq -r .project <<<"$line")"
+    month="$(jq -r '.updated[0:7]' <<<"$line")"
+    mkdir -p "$OUT/$proj" || die_stalled "mkdir $OUT/$proj failed"
+    printf '%s\n' "$line" >> "$OUT/$proj/$month.jsonl" || die_stalled "append to $OUT/$proj/$month.jsonl failed"
+    written=$((written + 1))
+  done < "$work/lines.jsonl"
+
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked"
+  proof_report "$NAME" WORKED "observed $written"
+}
+
+# worst: the sessions to look at first over the last N days, as a markdown table.
+cmd_worst() {
+  local project="" days=7 top=5
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --days) days="${2:-7}"; shift 2 ;;
+      -n) top="${2:-5}"; shift 2 ;;
+      *) echo "$NAME worst: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" \
+      --argjson days "$days" --argjson top "$top" "$(so_friction_def)"'
+    [inputs
+     | select($p == "" or .project == $p)
+     | select(.updated_epoch >= $now - $days * 86400)
+     | . + {f: friction}
+     | select(.f > 0)]
+    | sort_by(-.f, -(.cost_usd // 0)) | .[:$top]
+    | if length == 0 then "_(no session with friction in the last \($days) days)_"
+      else
+        (["| friction | session | project | title | why | cost |",
+          "|---|---|---|---|---|---|"]
+         + map("| \(.f) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
+               + ([ (if .reverted_7d > 0 then "\(.reverted_7d) reverted" else empty end),
+                    (if .prs_closed_unmerged > 0 then "\(.prs_closed_unmerged) PR closed unmerged" else empty end),
+                    (if (.corrections.lessons_written // 0) > 0 then "\(.corrections.lessons_written) lesson(s) written" else empty end),
+                    (if (.corrections.interrupts // 0) > 0 then "\(.corrections.interrupts) interrupt(s)" else empty end),
+                    (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
+                    (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API error(s)" else empty end)
+                  ] | join(", "))
+               + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end) |"))
+        | join("\n")
+      end'
+}
+
+case "${1:-run}" in
+  run) shift || true; cmd_run "$@" ;;
+  worst) shift; cmd_worst "$@" ;;
+  -h|--help) sed -n '2,11p' "$0" ;;
+  *) echo "usage: $NAME [run] | worst [--project P] [--days N] [-n N]" >&2; exit 2 ;;
+esac

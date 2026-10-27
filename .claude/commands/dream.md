@@ -16,9 +16,11 @@ headless `agentctl-dream` wrapper; this command is a thin front-end over it.
 
 Ported from OpenClaw's "Dreaming" (three-phase sleep cycle + evidence-based
 scoring), adapted to this system's substrate. Where OpenClaw scores a *recall
-store*, this scores the corpus the system already produces: scored **evals**
-(`~/.agent/evals/{project}/`), **lessons** (`~/.agent/lessons/{project}.md`),
-**session wind-downs** (`~/.agent/sessions/{project}/`), the notes journal, and git.
+store*, this scores the corpus the system already produces: measured **session
+outcomes** (`~/.agent/outcomes/{project}/`, written nightly by
+`agentctl-session-outcomes`), **lessons** (`~/.agent/lessons/{project}.md`),
+**session wind-downs** (`~/.agent/sessions/{project}/`), judge-scored **evals**
+(`~/.agent/evals/{project}/`, advisory only: 89% read 10/10), the notes journal, and git.
 Recurrence across sessions/projects stands in for OpenClaw's recall-count.
 (The true recall store is a documented v2 — see the `dreaming` skill.)
 
@@ -36,6 +38,9 @@ This is the interactive twin of the headless `agentctl-dream` wrapper the way
 - `--project <name>` — sweep one project (default: the current project, resolved
   via `~/.dotfiles/.config/shared-hooks/project-name.sh` from `$PWD`).
 - `--dry-run` — stage candidates + write the DREAMS.md diary, but **promote nothing**.
+- `--weekly` — also append the worst-5-sessions table to DREAMS.md (automatic on Mondays).
+
+To see the ranking without a sweep: `agentctl-session-outcomes worst --project <name> --days 7`.
 
 ## Fastest path
 
@@ -67,11 +72,12 @@ tail -5  "$HOME/.local/state/agentctl/dream/activity.log" 2>/dev/null
 
 Three phases, in order. See `~/.local/bin/agentctl-dream` for the canonical prompt.
 
-1. **Light** — ingest recent evals/lessons/sessions/notes/git since the last
+1. **Light** — ingest recent outcomes/lessons/sessions/evals/notes/git since the last
    checkpoint; dedupe near-identical candidates; stage to `staging.json`. Promotes nothing.
 2. **REM** — over a 7-day window, surface recurring themes/frictions across sessions.
    Promotes nothing; informs scoring + the diary.
-3. **Deep** — score each candidate with six weighted signals (Relevance .30, Frequency
+3. **Deep** — score each candidate with six weighted signals (Relevance .30, measured
+   outcome first and never an eval score alone; Frequency
    .24, Query-diversity .15, Recency .15, Consolidation .10, Conceptual-richness .06;
    +light/REM boosts), gate on `minScore 0.8 ∧ recurrence ≥ 3 ∧ distinct-sources ≥ 3`,
    cap 10 promotions. Route survivors:
