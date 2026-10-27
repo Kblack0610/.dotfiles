@@ -209,7 +209,7 @@ game_ready() {
   assert_called 'ptask game start fix crash on load'
   grep -qF -- '- [/] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
-  assert_called 'tmux -L lab set-option -t =game-agent-1 @dispatch game: fix crash on load'
+  assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix crash on load'
   assert_equal "$(sed -n 's/^key=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
 }
 

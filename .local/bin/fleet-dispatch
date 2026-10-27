@@ -228,7 +228,9 @@ launch() {
     return 1
   fi
   label="$project: $(cut -c1-60 <<<"$key")"
-  tmux -L "$DISPATCH_SERVER" set-option -t "=$session" @dispatch "$label" 2>/dev/null
+  # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
+  tmux -L "$DISPATCH_SERVER" set-option -t "=$session:" @dispatch "$label" ||
+    say "could not tag $session with @dispatch"
   mkdir -p "$LIVE"
   printf 'project=%s\nprofile=%s\nlane=%s\nkey=%s\nmodel=%s\nlabel=%s\nstarted=%s\n' \
     "$project" "$prof" "$lane" "$key" "${model:-opus}" "$label" "$(date -Iseconds)" > "$LIVE/$session"
