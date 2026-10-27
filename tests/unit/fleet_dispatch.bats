@@ -204,6 +204,17 @@ game_ready() {
   assert_equal "$(sed -n 's/^key=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
 }
 
+@test "run claims a row at the top of a board too big for one pipe buffer" {
+  game_ready
+  # A real board: grep -q stops at the first line while notes is still writing the rest.
+  awk 'BEGIN { for (i = 1; i <= 4000; i++) printf "filler row %d\t- [ ] filler row %d padded to make the board larger\n", i, i }' \
+    >> "$NOTES_FIXTURE/rows.game.human"
+  run launch "$(jq -cn --arg r "$SANDBOX/repos/game" '{profile: "bnb", project: "game", stage: "beta",
+    lane: "human", key: "fix crash on load", text: "- [ ] fix crash on load #high", repo: $r, prio: 1}')"
+  assert_success
+  assert_output --partial 'started game-agent-1'
+}
+
 @test "run starts nothing while dispatch is held" {
   game_ready
   stub agent-hold 'exit 1'
