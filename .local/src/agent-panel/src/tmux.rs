@@ -105,7 +105,7 @@ pub fn list_panes() -> Vec<Pane> {
 
 fn list_server_panes(server: &str) -> Vec<Pane> {
     let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t#{pane_title}\t\
-               #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}";
+               #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}";
     let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", fmt]).output() else {
         return Vec::new();
     };
