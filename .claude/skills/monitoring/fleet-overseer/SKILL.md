@@ -39,6 +39,8 @@ The class column tells you how each consumer can be stopped:
 
 The gap between the marks is deliberate. A hold set at 1.75x and lifted at 1.7x would flap and page on every sample. The high mark is where the CPU runs out of idle time: on 2026-10-26 load 46 on 24 cores (1.9x) read OK against the old 3x mark while `top` showed 0% idle, and the human had to point at it. When you report a pass, check what the human sees (`top`'s idle), not only the verdict. Load is the main signal; temperature alone is not. This box is a Zen 4 part, which boosts until it reaches 95 C, so readings in the 90s with one busy thread are normal. The thresholds are the `FLEET_*` variables at the top of `fleet-assess`, and that block is the one place to change them.
 
+Under-use is a fault too. The human's budget for this box is about 70% of its CPU, with the runner pool as the extra runner for overflow (playground `docs/operations/ci.md`, Who gates what). When `top` idle stays above 30% while sessions wait on queued pool gates, tell those sessions to gate locally; on 2026-10-26 six gates queued for two hours while the box sat 97% idle. A player build (`PlaygroundBuild.Build*`) on the workstation is never in budget: it starts one shader compiler per core.
+
 ## Verb: `assess`
 
 1. Run `fleet-assess`. Quote the headroom line and the verdict to the user as given.
