@@ -122,7 +122,9 @@ cmd_candidates() {
 judge() {
   local cands="$1" prompt out
   [ -n "$cands" ] || return 0
-  cands=$(head -n "$DISPATCH_JUDGE_MAX" <<<"$cands")
+  # Over the cap, prod rows are judged first, then beta, then alpha, each by priority.
+  cands=$(jq -sc 'sort_by((.stage | {prod: 0, beta: 1}[.] // 2), .prio)[]' <<<"$cands" |
+    head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
   prompt="$(cat "$DISPATCH_POLICY")
 
