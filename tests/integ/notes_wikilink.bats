@@ -14,7 +14,9 @@ setup() {
   command -v nvim >/dev/null || skip "nvim not installed"
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   PLUGIN="$REPO_ROOT/.config/nvim/local-plugins/notes.nvim"
-  VAULT="$BATS_TEST_TMPDIR/vault"
+  # Physical path: on macOS the tmpdir sits under /var -> /private/var, and nvim names the
+  # buffer by the resolved path, so an unresolved VAULT never matches.
+  VAULT="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/vault"
   mkdir -p "$VAULT/knowledge/archive" "$VAULT/status" "$VAULT/journal/daily"
   printf '# hit\n' > "$VAULT/knowledge/archive/Hit list for removal.md"
   printf '# watches\n' > "$VAULT/status/watches.md"
