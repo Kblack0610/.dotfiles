@@ -167,3 +167,40 @@ EOF
   assert_output --partial 'm-beta'
   refute_output --partial 'm-alpha'
 }
+
+# The keyed hop. A Stop hook and a systemd unit do not have the login-shell env, so the
+# gateway key is read from a file. Without the file the hop must fail by name - sending
+# the request unauthenticated would look like a gateway fault instead of a missing key.
+@test "api_key_file is sent as the bearer token" {
+  printf 'sk-from-file\n' > "$SANDBOX/judge.key"
+  jq --arg f "$SANDBOX/judge.key" '.backends["keyed-hop"] = {base_url:"http://stub/v1", model:"m-keyed", api_key_file:$f}' \
+    "$HOME/.config/llm-judge/config.json" > "$SANDBOX/c.json" && mv "$SANDBOX/c.json" "$HOME/.config/llm-judge/config.json"
+  cat > "$SANDBOX/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$SANDBOX/curl-argv.txt"
+printf '{"choices":[{"message":{"content":"OK-CONTENT"}}]}'
+EOF
+  chmod +x "$SANDBOX/bin/curl"
+
+  run _call_backend keyed-hop "sys" "usr"
+  assert_success
+
+  run cat "$SANDBOX/curl-argv.txt"
+  assert_output --partial 'Authorization: Bearer sk-from-file'
+}
+
+@test "a missing api_key_file fails that hop by name and sends nothing" {
+  jq '.backends["keyed-hop"] = {base_url:"http://stub/v1", model:"m-keyed", api_key_file:"~/no-such.key"}' \
+    "$HOME/.config/llm-judge/config.json" > "$SANDBOX/c.json" && mv "$SANDBOX/c.json" "$HOME/.config/llm-judge/config.json"
+  cat > "$SANDBOX/bin/curl" <<EOF
+#!/usr/bin/env bash
+touch "$SANDBOX/curl-ran"
+printf '{"choices":[{"message":{"content":"OK-CONTENT"}}]}'
+EOF
+  chmod +x "$SANDBOX/bin/curl"
+
+  run bash -c 'set -uo pipefail; source "$1"; _call_backend keyed-hop "sys" "usr"' _ "$REPO_ROOT/.claude/hooks/lib/llm-call.sh"
+  assert_failure
+  assert_output --partial 'key file missing or empty'
+  [ ! -e "$SANDBOX/curl-ran" ]
+}
