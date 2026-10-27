@@ -12,7 +12,8 @@
 
 set -uo pipefail
 
-# Endpoints are machine-local (this repo is public). Set both in ~/.config/command-center/env:
+# Endpoints stay out of this public repo. Set both in ~/.config/command-center/env (stowed
+# from the private overlay):
 #   CC_PROM_URL=https://prometheus.your.lan
 #   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-command-center
 # shellcheck source=/dev/null
