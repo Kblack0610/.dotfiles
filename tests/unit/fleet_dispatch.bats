@@ -155,9 +155,16 @@ EOF
   assert_equal "$(jq -r .verdict "$FLEET_DISPATCH_DIR/verdicts.jsonl")" dispatch
 }
 
+@test "judge fails loudly when the model returns no verdicts at all" {
+  echo 'UserPromptSubmit operation blocked by hook' > "$NOTES_FIXTURE/judge.out"
+  run judge '{"project":"game","stage":"beta","lane":"human","key":"fix crash","text":"- [ ] fix crash","prio":2}'
+  assert_failure
+  assert_output --partial 'no verdicts for 1 row(s)'
+}
+
 @test "judge sends prod rows before alpha rows when the batch is capped" {
-  : > "$NOTES_FIXTURE/judge.out"
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"'
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'
   DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}
 {"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
   assert_success

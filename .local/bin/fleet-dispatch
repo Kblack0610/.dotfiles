@@ -120,7 +120,7 @@ cmd_candidates() {
 
 # judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache
 judge() {
-  local cands="$1" prompt out
+  local cands="$1" prompt out verdicts
   [ -n "$cands" ] || return 0
   # Over the cap, prod rows are judged first, then beta, then alpha, each by priority.
   cands=$(jq -sc 'sort_by((.stage | {prod: 0, beta: 1}[.] // 2), .prio)[]' <<<"$cands" |
@@ -140,12 +140,15 @@ Copy project, lane and key exactly as given."
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
   out=$(AGENTCTL_MODEL="$DISPATCH_JUDGE_MODEL" $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null) ||
     { say "judge call failed"; return 1; }
-  mkdir -p "$DIR"
-  sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
+  verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
     jq -cR --arg at "$(date -Iseconds)" 'fromjson? | select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
-      | {project, lane, key, size, clear, agent_only, verdict, reason, at: $at}' >> "$VERDICTS"
+      | {project, lane, key, size, clear, agent_only, verdict, reason, at: $at}')
+  # A pass that could not judge must not read as "no row qualifies".
+  [ -n "$verdicts" ] || { say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1; }
+  mkdir -p "$DIR"
+  printf '%s\n' "$verdicts" >> "$VERDICTS"
 }
 
 # latest verdict per row, as JSON lines
