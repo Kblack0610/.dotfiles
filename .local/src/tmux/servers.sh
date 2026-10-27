@@ -35,7 +35,7 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> · ls · pick · pick-all · rows · hop <name>
+# Verbs: <name> · ensure <name> [<session>] · ls · pick · pick-all · rows · hop <name>
 #        · root <name> · goto <name> <session> · land <name> <last|root|session[:window]>
 #        · pick-session · back · reload
 
@@ -131,13 +131,18 @@ cmd_ls() {
   done
 }
 
-# ensure <name> -- create every session in the manifest that is not already there.
+# ensure <name> [<session>] -- create every session in the manifest that is not already there.
 # Idempotent and additive: it never renames, moves or kills an existing session, so
 # running it against a live world is safe and is also how you repair one.
+#
+# A name written `?name` is ON DEMAND: declared (so Prefix+f still routes its directory to
+# this world) but not booted, so closing it sticks instead of coming back on the next hop
+# in. It is created only when asked for by name - the optional <session>, which is how
+# `land`/`goto` wake it.
 cmd_ensure() {
-  local srv="${1:?ensure needs a server name}"
+  local srv="${1:?ensure needs a server name}" want="${2:-}"
   local manifest="$MANIFEST_DIR/$srv.conf"
-  local made=0 kept=0 skipped=0
+  local made=0 kept=0 skipped=0 deferred=0
 
   if [ ! -r "$manifest" ]; then
     # No manifest is not an error: an ad-hoc server just gets its default session.
@@ -147,7 +152,7 @@ cmd_ensure() {
     return 0
   fi
 
-  local name dir cmd sess win
+  local name dir cmd sess win ondemand
   while read -r name dir cmd; do
     case "$name" in ''|'#'*) continue ;; esac
     [ -n "$dir" ] || continue
@@ -170,12 +175,17 @@ cmd_ensure() {
       [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$sess:$win" "$cmd" Enter
       continue
     fi
+    ondemand=0
+    [[ "$name" == '?'* ]] && { name="${name#\?}"; ondemand=1; }
     if tmux -L "$srv" has-session -t "=$name" 2>/dev/null; then
       kept=$((kept + 1))
       continue
     fi
+    if [ "$ondemand" = 1 ] && [ "$name" != "$want" ]; then
+      deferred=$((deferred + 1)); continue
+    fi
     # A declared dir that does not exist means "this session does not belong on this
-    # machine": e.g. hub.conf names ~/dev/home/home-config,
+    # machine": e.g. lab.conf names ~/dev/bnb/platform,
     # which is Linux-only, so a manifest can stay identical on every machine.
     #
     # This used to be `[ -d "$dir" ] || dir="$HOME"`, which created a junk session
@@ -197,8 +207,8 @@ cmd_ensure() {
     [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$name:" "$cmd" Enter
   done < "$manifest"
 
-  printf 'tmx: %s — %d created, %d already up, %d skipped (no dir)\n' \
-    "$srv" "$made" "$kept" "$skipped"
+  printf 'tmx: %s — %d created, %d already up, %d skipped (no dir), %d on demand\n' \
+    "$srv" "$made" "$kept" "$skipped" "$deferred"
 }
 
 # pick-session -- the Prefix+S dispatch. Inside a NAMED server, scope the picker to
@@ -399,9 +409,12 @@ _enter() {
 # Never consults $TMUX, because it is reached from `detach-client -E`, where $TMUX is
 # still set to the OLD server.
 cmd_land() {
-  local target="${1:?land needs a server name}" mode="${2:-last}"
+  local target="${1:?land needs a server name}" mode="${2:-last}" want=""
 
-  cmd_ensure "$target" >/dev/null
+  # An explicit session is passed through so ensure wakes it if it is on demand
+  # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
+  case "$mode" in last|root) ;; *) want="${mode%%:*}" ;; esac
+  cmd_ensure "$target" "$want" >/dev/null
 
   # Every session in the manifest was skipped as not-on-this-machine, so there is
   # nothing to attach to. Say so, rather than falling through to `exec tmux attach`
@@ -673,7 +686,7 @@ main() {
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     back)         cmd_back ;;
-    ensure)       shift; cmd_ensure "${1:-}" ;;
+    ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
     pick-session) cmd_pick_session ;;
     pick)         cmd_pick ;;
     pick-all)     cmd_pick_all ;;
