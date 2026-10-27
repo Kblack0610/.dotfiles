@@ -85,6 +85,15 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 
 `FLEET_IDLE_MIN` (20) and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the MAIN rows first, then the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
 
+### When the human asks "where are we" or for a summary
+
+The bucket counts are not the answer. The human asked (2026-10-27) for this shape, every time:
+
+1. **Done since the last summary.** Every PR merged since then, per repo (`gh pr list --state merged --search "merged:>=<last summary time>"`), with the session that landed it. Take the last summary time from `~/.agent/shepherd/log.md`.
+2. **One row per live session:** what it is for (its plan's title), which phase of its plan it is in and the step inside that phase (from its plan's Results and the pane's last recap line), and what it is waiting on. A session whose plan is finished says so and says it can be wound down.
+3. **Telemetry, where it can be read cleanly:** the open PR and its gate (local or pool, class count, batch N of M), whether it holds a Unity right now and its CPU (`fleet-assess` rows), context used (`context_tokens` in `fleet-sessions --json`), and idle minutes. Leave a field out rather than guess it.
+4. **Room for new work:** current load and idle against the 70% budget, how many Unity runs are live, and how many more would fit.
+
 ## Verb: `shepherd`
 
 One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode: a permission prompt stalls the loop while the human is away, and every pass adds to that session's context. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
