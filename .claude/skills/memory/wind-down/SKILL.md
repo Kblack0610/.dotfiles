@@ -4,7 +4,7 @@ description: Cleanly wrap up and spin down the current Claude session - write a 
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-10-20"
+  reviewed: "2026-10-27"
 ---
 
 # wind-down
@@ -32,7 +32,15 @@ re-run `/wind-down` when that work is finished.
 
 ## Steps
 
-### 1. Write the wrap-up note
+### 0. Winding yourself down? Check you are DONE first
+
+When the human asked for the wind-down, skip this. When you are winding yourself down (the shepherd told you to, or you decided your work is finished), first confirm your own row reads DONE:
+
+```bash
+fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.bucket) \(.reason)"'
+```
+
+DONE means every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. Any other bucket means you are not finished: do the next phase, land what is left, or post an agent-ask, instead of closing. A session idle under 20 minutes reads WORKING, so a fresh finish may need the wait before it reads DONE.
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;
@@ -59,6 +67,9 @@ Write that file with this shape (no frontmatter - plain markdown, like the lesso
 
 ## Verification
 - <what was tested / proven, or "not verified - why">
+
+## Deferred phases
+- <each `[-]` phase in the plan's ## Phases checklist, and the board row it went to; omit the section when there are none>
 
 ## Next step
 - <the single most useful next action, if any>

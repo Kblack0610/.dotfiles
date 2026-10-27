@@ -57,19 +57,97 @@ pub fn row_info(path: &Path) -> RowInfo {
     }
 }
 
-/// What `list --json` adds for fleet-sessions: context size, model, and plan file.
+/// What `list --json` adds for fleet-sessions: context size, model, plan file, when the
+/// session last wrote an entry, and the files it edited.
 pub struct FleetInfo {
     /// input + cache_read + cache_creation tokens on the last main-thread assistant turn.
     pub context_tokens: u64,
     pub model: String,
     /// The session's plan file, empty when it has none.
     pub plan_file: String,
+    /// Epoch seconds of the newest entry `timestamp`, None when no entry carries one.
+    /// The file's mtime is not this: it moves about hourly with no new lines.
+    pub last_entry: Option<u64>,
+    /// Absolute paths the session changed through Edit, Write, MultiEdit or NotebookEdit,
+    /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
+    pub edited_files: Vec<String>,
 }
 
 pub fn fleet_info(path: &Path) -> FleetInfo {
     let text = read(path);
     let (context_tokens, model) = last_usage(&text);
-    FleetInfo { context_tokens, model, plan_file: plan_file(&text) }
+    FleetInfo {
+        context_tokens,
+        model,
+        plan_file: plan_file(&text),
+        last_entry: last_entry(&text),
+        edited_files: edited_files(&text),
+    }
+}
+
+/// The newest top-level `timestamp` among the last 200 lines. Entries written in one
+/// burst land slightly out of order, so this is the max, not the last line's.
+fn last_entry(text: &str) -> Option<u64> {
+    tail_lines(text, 200)
+        .iter()
+        .filter(|l| l.contains("\"timestamp\":\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v.get("timestamp").and_then(Value::as_str).and_then(iso_epoch))
+        .max()
+}
+
+/// `2026-10-27T22:31:45.360Z` (UTC, optional fraction) -> epoch seconds. Anything else is None.
+fn iso_epoch(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || !s.ends_with('Z') {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days from 1970-01-01 to y-m-d (Howard Hinnant's days_from_civil).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
+}
+
+/// Files the session changed with its edit tools, deduplicated, in first-edit order.
+fn edited_files(text: &str) -> Vec<String> {
+    const TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for v in text
+        .lines()
+        .filter(|l| l.contains("\"tool_use\"") && TOOLS.iter().any(|t| l.contains(&format!("\"name\":\"{t}\""))))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("assistant"))
+    {
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        for c in blocks {
+            let name = c.get("name").and_then(Value::as_str).unwrap_or("");
+            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !TOOLS.contains(&name) {
+                continue;
+            }
+            let input = c.get("input");
+            let path = input
+                .and_then(|i| i.get("file_path").or_else(|| i.get("notebook_path")))
+                .and_then(Value::as_str);
+            if let Some(p) = path.filter(|p| !p.is_empty()) {
+                if seen.insert(p.to_string()) {
+                    out.push(p.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Token count and model of the last real assistant turn. Sidechain (subagent) turns
@@ -286,6 +364,36 @@ mod tests {
         assert_eq!(info.context_tokens, 110);
         assert_eq!(info.model, "claude-opus-5-5");
         assert_eq!(info.plan_file, "/h/.claude/plans/mine.md");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn last_entry_is_the_newest_timestamp_not_the_mtime() {
+        let p = tmpfile("stamp", &[
+            r#"{"type":"user","timestamp":"2026-10-27T22:31:45.505Z","message":{"content":"x"}}"#,
+            r#"{"type":"api-request","timestamp":"2026-10-27T22:31:45.595Z"}"#,
+            r#"{"type":"system","timestamp":"2026-10-27T22:31:45.403Z","content":"{\"timestamp\":\"2030-01-01T00:00:00Z\"}"}"#,
+            r#"{"type":"last-prompt"}"#,
+        ]);
+        // 2026-10-27T22:31:45Z, cross-checked with `date -ud @1793140305`.
+        assert_eq!(fleet_info(&p).last_entry, Some(1_793_140_305));
+        fs::remove_file(&p).ok();
+        assert_eq!(fleet_info(Path::new("/no/such/file.jsonl")).last_entry, None);
+        assert_eq!(iso_epoch("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso_epoch("2024-02-29T12:00:00.5Z"), Some(1_709_208_000));
+        assert_eq!(iso_epoch("2026-10-27 22:31:45"), None);
+    }
+
+    #[test]
+    fn edited_files_come_from_edit_tool_inputs_only() {
+        let p = tmpfile("edits", &[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/r/read-only.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Edit","input":{"file_path":"/r/a.rs","old_string":"","new_string":""}},{"type":"tool_use","name":"Write","input":{"file_path":"/r/b.md","content":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"MultiEdit","input":{"file_path":"/r/a.rs","edits":[]}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/r/n.ipynb"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":""name":"Edit" "tool_use" /r/fake.md"}]}}"#,
+        ]);
+        assert_eq!(fleet_info(&p).edited_files, ["/r/a.rs", "/r/b.md", "/r/n.ipynb"]);
         fs::remove_file(&p).ok();
     }
 
