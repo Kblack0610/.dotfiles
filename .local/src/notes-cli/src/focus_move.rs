@@ -21,11 +21,11 @@ use anyhow::{bail, Result};
 use chrono::Local;
 use std::fs;
 
-/// The human text of a task line — checkbox, `(Nd)` day-count, `<!-- since -->` comment
-/// and a trailing priority tag stripped — with ORIGINAL CASE preserved (unlike
+/// The human text of a task line — checkbox, `(Nd)` day-count, `#cYYMMDD` created tag (or
+/// a legacy `<!-- since -->` comment) and a trailing priority tag stripped — with ORIGINAL CASE preserved (unlike
 /// `md::task_key`, which lower-cases for matching). Returns `(text, priority)`.
 fn task_text(line: &str) -> (String, Option<String>) {
-    let mut t = line.trim().to_string();
+    let t = line.trim().to_string();
 
     // Priority FIRST: `stamp_line` pins it after the comment (`... <!-- since --> #high`),
     // so truncating at `<!--` before lifting it would silently drop the tag.
@@ -37,7 +37,9 @@ fn task_text(line: &str) -> (String, Option<String>) {
     // already had to be un-anchored for.
     let (cleaned, prio) = md::split_priority_pub(&t);
     let prio = prio.map(str::to_string);
-    let mut t = cleaned;
+    // The created tag sits between the day count and the priority, so it must go before the
+    // `(Nd)` below can be found trailing. The origin date is re-read from the line by the caller.
+    let (mut t, _) = md::split_created(&cleaned);
 
     if let Some(i) = t.find("<!--") {
         t.truncate(i);
@@ -323,7 +325,7 @@ after
             chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap(),
             origin,
         );
-        assert!(out.contains("<!-- since:2026-07-18 -->"));
+        assert!(out.contains("#c260718"));
         assert!(out.contains("(3d)"));
         assert!(out.contains("#high"));
         assert!(!out.contains("pmp:")); // untagged

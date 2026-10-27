@@ -486,7 +486,7 @@ mod tests {
         let line = new_focus_line(&t, d("2026-07-22"));
         assert_eq!(
             line,
-            "- [/] Wire pin-code flow (0d) <!-- since:2026-07-22 --> #high <!-- cu:abc123 -->"
+            "- [/] Wire pin-code flow (0d) #c260722 #high <!-- cu:abc123 -->"
         );
         // The marker is recoverable, and the dedup key ignores both marker and priority, so a
         // re-sync (or a carried, markerless copy derived from the same title) dedupes cleanly.
@@ -509,10 +509,7 @@ mod tests {
             title: "loose task".into(),
         };
         let line = new_focus_line(&t, d("2026-07-22"));
-        assert_eq!(
-            line,
-            "- [/] loose task (0d) <!-- since:2026-07-22 --> #high <!-- cu:z9 -->"
-        );
+        assert_eq!(line, "- [/] loose task (0d) #c260722 #high <!-- cu:z9 -->");
         assert_eq!(md::task_priority(&line), Some("#high"));
     }
 }

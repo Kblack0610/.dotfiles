@@ -339,8 +339,13 @@ pub fn strip_cu_marker(line: &str) -> String {
     }
 }
 
-/// Parse the `<!-- since:YYYY-MM-DD -->` origin date from a line, if present.
+/// The origin date a task line carries: its `#cYYMMDD` created tag, else the legacy
+/// `<!-- since:YYYY-MM-DD -->` comment. The legacy form is still read because archived notes
+/// are never rewritten; only live lines migrate, on their next [`stamp_line`].
 pub fn find_since(line: &str) -> Option<NaiveDate> {
+    if let (_, Some(d)) = split_created(line) {
+        return Some(d);
+    }
     let marker = "since:";
     let i = line.find(marker)?;
     let tail: String = line[i + marker.len()..].chars().take(10).collect();
@@ -516,16 +521,56 @@ pub fn is_wave_tag(tag: &str) -> bool {
 /// Mirrors [`split_priority`], and for the same reason: a task's identity must not depend on
 /// which wave it sits in, or `ptask done "<query>"` stops matching a task the moment it moves.
 pub fn split_wave(line: &str) -> (String, Option<String>) {
+    let (cleaned, found) = cut_tags(line, is_wave_tag);
+    (cleaned, found.map(|t| format!("#{t}")))
+}
+
+/// How a created tag spells its date: `#c261026` is 2026-10-26. Six digits, not four, so the
+/// record never goes ambiguous across years and the tags sort and prefix-search by period
+/// (`#c2610` is October 2026). A tag must start with a letter (`for_each_tag`), hence the `c`.
+const CREATED_FMT: &str = "%y%m%d";
+
+/// The created tag for `date`, e.g. `#c261026`. THE stamp a task carries for its origin day.
+pub fn created_tag(date: NaiveDate) -> String {
+    format!("#c{}", date.format(CREATED_FMT))
+}
+
+/// The date a bare tag (`c261026`, no `#`) names, or `None` when it is not a created tag.
+fn created_date(tag: &str) -> Option<NaiveDate> {
+    let digits = tag.strip_prefix('c')?;
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    NaiveDate::parse_from_str(digits, CREATED_FMT).ok()
+}
+
+/// True when `tag` (bare, no `#`) is a created tag. `notes tags` skips these: one per day
+/// would bury every real tag, and `rg '#c2610'` is the date search.
+pub fn is_created_tag(tag: &str) -> bool {
+    created_date(tag).is_some()
+}
+
+/// Strip every created tag from `line` and return the cleaned line plus the FIRST one's date.
+pub fn split_created(line: &str) -> (String, Option<NaiveDate>) {
+    let (cleaned, found) = cut_tags(line, is_created_tag);
+    (cleaned, found.and_then(created_date))
+}
+
+/// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
+/// space each leaves behind, and return the cleaned line plus the first such tag, bare.
+/// The shared half of [`split_wave`] and [`split_created`]; [`split_priority`] ranks its
+/// tags instead of taking the first, so it keeps its own loop.
+fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
     let start = scan_start(line);
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut found: Option<String> = None;
+    let mut found: Option<&str> = None;
     for_each_tag(line, |hash_at, tag_start, k, end| {
-        if !is_wave_tag(&line[tag_start..end]) {
+        if !pick(&line[tag_start..end]) {
             return;
         }
         if found.is_none() {
-            found = Some(format!("#{}", &line[tag_start..end]));
+            found = Some(&line[tag_start..end]);
         }
         // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
         // is given back for the same reason `split_priority` gives it back: it is the
@@ -939,9 +984,11 @@ fn reset_status(line: &str) -> String {
     }
 }
 
-/// Stamp a task line with an up-to-date `(Nd) <!-- since:DATE -->`.
+/// Stamp a task line with an up-to-date `(Nd) #cYYMMDD` (day count, then [`created_tag`]).
 ///
-/// - If the line already has a `since:` origin, recompute the day count from it.
+/// - If the line already has an origin ([`find_since`]: created tag or legacy comment),
+///   recompute the day count from it. A legacy `<!-- since -->` stamp is rewritten as the
+///   tag here, so live lines migrate on their next carry.
 /// - Otherwise treat it as a new carry item originating on `origin_if_new`.
 ///
 /// A priority tag (`#low` etc.) is normalised to sit last, after the stamp, deduped;
@@ -957,23 +1004,21 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
     let (core, prio) = split_priority(&line);
     let stamped = match find_since(&core) {
         Some(date) => {
+            // Already stamped: everything from the first comment on goes, as the overnight
+            // carry always has (the legacy since-comment, and a `cu:` marker - see clickup.rs).
+            let (core, _) = split_created(&core);
             let comment_start = core.find("<!--").unwrap_or(core.len());
             let before = strip_trailing_day(core[..comment_start].trim_end());
             let days = (today - date).num_days().max(0);
-            format!(
-                "{} ({}d) <!-- since:{} -->",
-                before,
-                days,
-                date.format("%Y-%m-%d")
-            )
+            format!("{} ({}d) {}", before, days, created_tag(date))
         }
         None => {
             let days = (today - origin_if_new).num_days().max(0);
             format!(
-                "{} ({}d) <!-- since:{} -->",
+                "{} ({}d) {}",
                 core.trim_end(),
                 days,
-                origin_if_new.format("%Y-%m-%d")
+                created_tag(origin_if_new)
             )
         }
     };
@@ -983,8 +1028,8 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
     }
 }
 
-/// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, priority tag and
-/// trailing day-count stripped, case preserved.
+/// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, created, priority
+/// and wave tags and the trailing day-count stripped, case preserved.
 ///
 /// Split out of [`task_key`] because the two jobs had been sharing one function and the
 /// de-duplication job won: `task_key` lower-cases, which is right for matching and wrong for
@@ -995,14 +1040,17 @@ pub fn task_text(line: &str) -> String {
     if let Some(i) = t.find("<!--") {
         t = t[..i].trim_end();
     }
-    let stripped = strip_trailing_day(t);
     // A task's identity is independent of its priority tag (and where it sits), so
     // carried/promoted copies dedupe even if the tag was added or moved. The wave tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
     // matching a task the moment it is pushed to another wave, and the cockpit's
-    // done/start/rm silently no-op on it.
+    // done/start/rm silently no-op on it. The created tag is part of the stamp, so it goes
+    // with the day count - and the tags go FIRST, because the day count is only trailing
+    // once the stamp's tag behind it (`(3d) #c260531`) is gone.
+    let (stripped, _) = split_created(t);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_wave(&stripped);
+    let stripped = strip_trailing_day(&stripped);
     let t = stripped.trim();
     // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
     // in-progress task's key carries the checkbox and never matches its open counterpart.
@@ -1047,11 +1095,18 @@ pub fn retext_task(line: &str, text: &str) -> String {
 
     let marker = body.find("<!--").map(|i| body[i..].trim_end());
     let before_marker = marker.map_or(body, |m| body[..body.len() - m.len()].trim_end());
-    let no_day = strip_trailing_day(before_marker);
-    let day = before_marker[no_day.len()..].trim();
+    // The day count is trailing only once the tags behind it are gone (`(3d) #c260531 #high`).
+    let (bare, created) = split_created(before_marker);
+    let (bare, _) = split_priority(&bare);
+    let (bare, _) = split_wave(&bare);
+    let no_day = strip_trailing_day(&bare);
+    let day = bare[no_day.len()..].trim();
     let mut out = format!("{indent}{checkbox} {text}");
     if !day.is_empty() {
         out = format!("{out} {day}");
+    }
+    if let Some(c) = created {
+        out = format!("{out} {}", created_tag(c));
     }
     if let Some(m) = marker {
         out = format!("{out} {m}");
@@ -1259,19 +1314,73 @@ after
 
     #[test]
     fn stamp_recomputes_existing_since() {
-        let line = "- [ ] ship it (3d) <!-- since:2026-05-31 -->";
+        let line = "- [ ] ship it (3d) #c260531";
         let out = stamp_line(line, d("2026-06-03"), d("2026-06-02"));
-        assert_eq!(out, "- [ ] ship it (3d) <!-- since:2026-05-31 -->");
+        assert_eq!(out, line);
         // advance today by 7 days -> 10d since 05-31
         let out2 = stamp_line(line, d("2026-06-10"), d("2026-06-09"));
-        assert_eq!(out2, "- [ ] ship it (10d) <!-- since:2026-05-31 -->");
+        assert_eq!(out2, "- [ ] ship it (10d) #c260531");
+    }
+
+    #[test]
+    fn stamp_migrates_the_legacy_since_comment() {
+        // A line stamped before the created tag keeps its ORIGIN date, not origin_if_new,
+        // and comes out in the tag form with the priority still last.
+        let line = "- [ ] ship it (3d) <!-- since:2026-05-31 --> #high";
+        let out = stamp_line(line, d("2026-06-10"), d("2026-06-09"));
+        assert_eq!(out, "- [ ] ship it (10d) #c260531 #high");
+        assert_eq!(stamp_line(&out, d("2026-06-10"), d("2026-06-09")), out);
+    }
+
+    #[test]
+    fn created_tag_round_trips_and_rejects_lookalikes() {
+        assert_eq!(created_tag(d("2026-10-26")), "#c261026");
+        assert_eq!(
+            find_since("- [ ] x (0d) #c261026 #low"),
+            Some(d("2026-10-26"))
+        );
+        assert_eq!(
+            find_since("- [ ] x <!-- since:2026-10-26 -->"),
+            Some(d("2026-10-26"))
+        );
+        // not six digits, not a real day, or glued: not a created tag
+        for not in [
+            "#c2610",
+            "#c2610261",
+            "#c261340",
+            "#cat",
+            "#C261026",
+            "x#c261026",
+        ] {
+            assert_eq!(find_since(&format!("- [ ] y {not}")), None, "{not}");
+        }
+        // the tag is part of the stamp, so it never reaches a task's identity
+        assert_eq!(task_key("- [/] Ship It (3d) #c260531 #high"), "ship it");
+        assert_eq!(
+            task_text("- [ ] Ship It (3d) #c260531 #high #v0.1.0"),
+            "Ship It"
+        );
+    }
+
+    #[test]
+    fn retext_keeps_the_created_tag() {
+        // prefix path: the stamp after the text stays byte for byte
+        assert_eq!(
+            retext_task("- [ ] old words (3d) #c260531 #high", "new words"),
+            "- [ ] new words (3d) #c260531 #high"
+        );
+        // rebuild path (a tag typed mid-text): day, created tag and priority all survive
+        assert_eq!(
+            retext_task("- [ ] old #high words (3d) #c260531", "new words"),
+            "- [ ] new words (3d) #c260531 #high"
+        );
     }
 
     #[test]
     fn stamp_new_item_uses_origin() {
         let line = "- [ ] brand new";
         let out = stamp_line(line, d("2026-06-03"), d("2026-06-01"));
-        assert_eq!(out, "- [ ] brand new (2d) <!-- since:2026-06-01 -->");
+        assert_eq!(out, "- [ ] brand new (2d) #c260601");
     }
 
     #[test]
@@ -1539,10 +1648,7 @@ after
             d("2026-07-14"),
             d("2026-07-13"),
         );
-        assert_eq!(
-            out,
-            "- [ ] get androids onto fleet (1d) <!-- since:2026-07-13 --> #low"
-        );
+        assert_eq!(out, "- [ ] get androids onto fleet (1d) #c260713 #low");
     }
 
     #[test]
@@ -1550,10 +1656,10 @@ after
         // An in-progress task carried to the next day reverts to an open todo, but
         // keeps its priority tag (which does carry).
         let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(out, "- [ ] wire it up (1d) <!-- since:2026-07-14 --> #high");
+        assert_eq!(out, "- [ ] wire it up (1d) #c260714 #high");
         // Indentation on a nested task is preserved.
         let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(nested, "  - [ ] sub-step (1d) <!-- since:2026-07-14 -->");
+        assert_eq!(nested, "  - [ ] sub-step (1d) #c260714");
     }
 
     #[test]
@@ -1561,10 +1667,7 @@ after
         // Re-stamping the buggy line collapses the two tags into one trailing tag.
         let line = "- [ ] add priority tags #low (1d) <!-- since:2026-07-13 --> #low";
         let out = stamp_line(line, d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(
-            out,
-            "- [ ] add priority tags (2d) <!-- since:2026-07-13 --> #low"
-        );
+        assert_eq!(out, "- [ ] add priority tags (2d) #c260713 #low");
         // Idempotent: stamping the healed line again is stable (bar the day count).
         let out2 = stamp_line(&out, d("2026-07-15"), d("2026-07-14"));
         assert_eq!(out2, out);

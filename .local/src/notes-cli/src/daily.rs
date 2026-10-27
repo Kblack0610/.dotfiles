@@ -1711,13 +1711,13 @@ mod tests {
         let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         // soon + overdue surface; far + undated stay; Done is never touched
         assert_eq!(promoted.len(), 2);
-        // surfaced lines have the [date] token stripped and a since: stamp added
-        assert!(promoted.iter().any(|l| l.contains("soon")
-            && !l.contains("2026-07-01")
-            && l.contains("since:2026-06-30")));
-        assert!(promoted.iter().any(|l| l.contains("overdue")
-            && !l.contains("2026-06-20")
-            && l.contains("since:2026-06-30")));
+        // surfaced lines have the [date] token stripped and a created tag added
+        assert!(promoted
+            .iter()
+            .any(|l| l.contains("soon") && !l.contains("2026-07-01") && l.contains("#c260630")));
+        assert!(promoted
+            .iter()
+            .any(|l| l.contains("overdue") && !l.contains("2026-06-20") && l.contains("#c260630")));
         // the pen keeps the far-future + undated items and the whole Done section
         assert!(remaining.contains("- [ ] far [2026-07-15]"));
         assert!(remaining.contains("- [ ] undated task"));
@@ -1757,7 +1757,7 @@ mod tests {
         assert!(surfaced.iter().any(|l| l.contains("one-off thing")));
         // triggers stripped, day-stamped
         assert!(!out.iter().any(|l| l.contains("every:") || l.contains("[2026-")));
-        assert!(out.iter().all(|l| l.contains("(0d) <!-- since:2026-07-10 -->")));
+        assert!(out.iter().all(|l| l.contains("(0d) #c260710")));
 
         // the cadence line SURVIVES so it fires again next Friday...
         assert!(remaining.contains("- [ ] timesheets (every:fri)"));

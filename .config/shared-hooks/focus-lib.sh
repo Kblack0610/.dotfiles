@@ -58,8 +58,8 @@ focus_body() {
 # focus_items <state> — reads a Focus body on stdin, emits that state's items as `- text`.
 # <state> is the raw checkbox character: ' ' open, '/' in progress, 'x' done.
 #
-# Strips the `<!-- since:... -->` carry marker and trailing #tags; KEEPS the `(Nd)`
-# staleness age, which is the whole point of surfacing a carried task. The trailing `.`
+# Strips comments (a legacy `<!-- since:... -->`) and every #tag, the `#cYYMMDD` created tag
+# included; KEEPS the `(Nd)` staleness age, which is the whole point of surfacing a carried task. The trailing `.`
 # in the pattern is load-bearing: it drops the empty `- [ ]` line a hand-edit leaves
 # behind, which would otherwise inflate every count by one.
 #
