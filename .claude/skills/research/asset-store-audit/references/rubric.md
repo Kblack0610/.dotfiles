@@ -21,8 +21,10 @@ For EACH pack write verdicts/<Pack>.json (Pack = facts filename stem) with exact
  "style_fit": "low-poly/stylized vs realistic PBR; fit with FlatKit and with other packs",
  "effort": "S|M|L|XL + one line",
  "verdict": "Adopt|Adopt with work|Reference only|Skip",
- "verdict_reason": "one sentence",
- "confidence": "high|medium|low"
+ "verdict_reason": "one sentence, starting [main], [hd] or [both]",
+ "confidence": "high|medium|low",
+ "target": "main|hd|both|none",
+ "hd_fit": "one or two sentences: how it would ingest into asset-library-hd (venue from which scene, prefab count, URP story, what breaks)"
 }
 Write plain ASCII only (no em dashes, no unicode arrows). Be specific and honest; if a pack is great but irrelevant say so; if it is weak say so. Read-only everywhere except writing your verdict files.
 
@@ -34,3 +36,12 @@ Write plain ASCII only (no em dashes, no unicode arrows). Be specific and honest
 - Binary-serialized .mat/.prefab (no %YAML) are old (2017-2020 authoring) and cannot be reviewed as text.
 - Vendor character frameworks (Malbers AC, Invector, PlayMaker demos) overlap character-base; judge whether the art/clips stand alone without the code.
 - Characters, creatures, animation sets and audio have no library path in unity-core yet (catalog is props/weapons only); say what they would need.
+
+## Two libraries: judge every pack for both
+
+Since 2026-10-26 a pack can go to either library, and `verdict` is for the better one (`target`). Earlier verdicts judged only the main library; treat any pre-2026-10-26 run as deprecated.
+
+1. **Main library** (`asset-library`, low-poly / stylized, Synty + FlatKit look): texture caps 512 (1024 for buildings and terrain), a 40 MB package rule, an item per FBX, ShaderRemap required. ShaderRemap has grown past the list above (Legacy and Mobile particles, SpeedTree, the Synty shader graphs, Piloto, GAP, Hovl HS_*, Toon and more): read ShaderRemap.cs and check the facts' shader names against it.
+2. **HD library** (`asset-library-hd`, `~/dev/bnb/games/engine/asset-library-hd/README.md`): realistic PBR is the point. Textures capped at 2048, no size rule, the vendor demo scene becomes the venue (`sceneIncludes`), vendor prefabs are items as built (`prefabIncludes`, colliders kept), nested URP sub-packages taken whole (`subPackage` / `overlayPackages`). Read its `Packages/` for what it already holds; a pack that matches those publishers' look is a strong fit. What matters: a URP version, a demo scene, colliders and LODs, custom shaders the URP pack does not cover, texture weight, binary vs YAML.
+
+Check URP versions against the consumer, not the staging project: HD packages are drawn in unity-core-playground (read its `ProjectSettings/ProjectVersion.txt` and the URP line in `Packages/manifest.json`). A vendor URP sub built for a newer URP than asset-library-hd's own fits when the playground matches it; Fire Smoke's URP 17.3 shaders already render there this way (2026-10-26: LVE 2023 was wrongly called blocked from the staging project's URP 17.0.4).
