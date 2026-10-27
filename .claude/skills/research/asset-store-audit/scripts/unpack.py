@@ -10,7 +10,7 @@ Nested per-pipeline sub-packages (URP variants, effect add-ons) are pulled
 out and unpacked into <out>/pkgs/<Pack>/nested/<sub>/ the same way.
 A .unitypackage is a tar.gz of <guid>/{pathname,asset,asset.meta}.
 """
-import sys, os, re, json, tarfile, argparse
+import sys, os, re, json, shutil, tarfile, argparse
 from concurrent.futures import ProcessPoolExecutor
 
 KEEP = {'.mat', '.cs', '.shader', '.shadergraph', '.shadersubgraph', '.asmdef', '.txt', '.md',
@@ -48,7 +48,7 @@ def extract(src, out, want_guids=None):
             elif kind == 'asset.meta':
                 blobs[g + '.meta'] = t.extractfile(m).read()
     os.makedirs(out, exist_ok=True)
-    manifest, nested = [], []
+    manifest, nested, big = [], [], {}
     for g, p in paths.items():
         ext = os.path.splitext(p)[1].lower()
         manifest.append({'guid': g, 'path': p, 'size': sizes.get(g)})
@@ -60,6 +60,8 @@ def extract(src, out, want_guids=None):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 open(dst, 'wb').write(b)
                 nested.append(dst)
+            elif sizes.get(g):
+                big[g] = os.path.join(out, '_nested_src', os.path.basename(p).replace(' ', '_'))
             continue
         if b is not None and ext in KEEP:
             if ext == '.asset' and not b.startswith(b'%YAML'):
@@ -71,6 +73,17 @@ def extract(src, out, want_guids=None):
             dst = os.path.join(out, 'files', p + '.meta')
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             open(dst, 'wb').write(blobs[g + '.meta'])
+    if big:
+        # Sub-packages over NESTED_MAX (URP variants of 1 GB+) are too big to hold in
+        # memory: stream the archive again and copy just those to disk.
+        os.makedirs(os.path.join(out, '_nested_src'), exist_ok=True)
+        with tarfile.open(src, 'r|gz') as t:
+            for m in t:
+                parts = m.name.lstrip('./').split('/')
+                if m.isfile() and len(parts) == 2 and parts[1] == 'asset' and parts[0] in big:
+                    with open(big[parts[0]], 'wb') as fh:
+                        shutil.copyfileobj(t.extractfile(m), fh, 1 << 20)
+        nested += list(big.values())
     json.dump(manifest, open(os.path.join(out, 'manifest.json'), 'w'), indent=0)
     return nested
 
