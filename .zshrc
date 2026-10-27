@@ -204,3 +204,6 @@ fi
 
 # Bitbucket Cloud headless auth (API token; app passwords deprecated)
 [ -f "$HOME/.config/bitbucket/secrets.env" ] && source "$HOME/.config/bitbucket/secrets.env"
+
+# metavr
+[ -d "$HOME/.metavr/bin" ] && export PATH="$HOME/.metavr/bin:$PATH"
