@@ -168,14 +168,15 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// header rows and alignment padding meant only for fzf.
 ///
 /// `json` prints one object per line instead, with the session and transcript facts
-/// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file).
+/// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file, the last
+/// entry's time as `idle_since`, and `edited_files`).
 pub fn run_list(json: bool) -> Result<()> {
     for a in collect() {
         if !json {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
             continue;
         }
-        let (info, idle_since) = match &a.jsonl {
+        let (info, mtime) = match &a.jsonl {
             Some(p) => (
                 jsonl::fleet_info(p),
                 fs::metadata(p)
@@ -186,6 +187,8 @@ pub fn run_list(json: bool) -> Result<()> {
             ),
             None => (jsonl::fleet_info(Path::new("")), 0),
         };
+        // The last entry's own timestamp; the mtime only when no entry carries one.
+        let idle_since = info.last_entry.unwrap_or(mtime);
         let row = serde_json::json!({
             "target": a.target,
             "pane": a.pane,
@@ -199,6 +202,7 @@ pub fn run_list(json: bool) -> Result<()> {
             "context_tokens": info.context_tokens,
             "model": info.model,
             "plan_file": info.plan_file,
+            "edited_files": info.edited_files,
             "summary": a.summary,
         });
         println!("{row}");

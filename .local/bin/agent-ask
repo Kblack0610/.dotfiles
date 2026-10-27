@@ -5,6 +5,7 @@
 #   agent-ask post [opts] "question"    create a pending ask; print its id
 #     --options a|b|c   the fixed answer vocabulary
 #     --recommend b     which of them YOU recommend; shown marked in the picker
+#     --session s       the asking session; default the caller's tmux session
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
@@ -106,6 +107,11 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   [ -n "$project" ] || project="$(resolve_project)"
+  # An ask from inside tmux names its tmux session unless told otherwise, so fleet-sessions
+  # can tell which session is waiting on it. 11 of 12 pending asks once had this empty.
+  if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
+    session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
+  fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"

@@ -41,6 +41,21 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output --partial 'status: pending'
 }
 
+@test "post inside tmux records the tmux session unless --session names one" {
+  echo agent-10 > "$NOTES_FIXTURE/tmux.session"
+  local id
+  id="$(TMUX=/tmp/s,1,0 TMUX_PANE=%306 post demo 'merge it?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'session: agent-10'
+  id="$(TMUX=/tmp/s,1,0 "$AGENT_ASK" post --project demo --session other 'merge it?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'session: other'
+  # outside tmux nothing is guessed
+  id="$(post demo 'merge it?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'session: '
+}
+
 @test "the question survives the round trip" {
   local id; id="$(post demo 'ship the release?')"
   run "$AGENT_ASK" show "$id"

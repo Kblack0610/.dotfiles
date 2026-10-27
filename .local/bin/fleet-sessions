@@ -6,9 +6,11 @@
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #
-# Buckets: WORKING, NEEDS (the human), LANDED (wind it down), STALLED (nudge once), UNCLEAR,
-# plus one MAIN row per repo whose default branch is red (the latest decided run of a
-# workflow failed), naming the PRs merged since that workflow was last green.
+# Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
+# STALLED (nudge once), UNCLEAR, plus one MAIN row per repo whose default branch is red (the
+# latest decided run of a workflow failed), naming the PRs merged since that workflow was
+# last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
+# nothing it made is unlanded, no ask is open, and it is idle.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -16,6 +18,8 @@ set -uo pipefail
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
+: "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
+                                  # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
@@ -26,15 +30,26 @@ DISPATCH_LIVE="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/live"
 
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
-#                [<main_red: workflows this session's merged PR is a suspect for, or ->]
+#                <main_red: workflows this session's merged PR is a suspect for, or -> \
+#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|->
 #   -> "BUCKET reason"
 session_bucket() {
-  local st="$1" plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}"
+  local st="$1" note=""
   case "$st" in
     waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
-    busy|shell) echo "WORKING $st"; return ;;
+    busy) echo "WORKING busy"; return ;;
+    shell)
+      if [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then echo "WORKING shell"; return; fi
+      # The threshold, not the minutes: a reason that changed every pass would re-nudge every pass.
+      note=", background shell idle over ${FLEET_SHELL_STALE_MIN}m" ;;
   esac
+  echo "$(bucket_facts "$@")$note"
+}
+
+# bucket_facts: session_bucket past the session status, from the same arguments.
+bucket_facts() {
+  local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
   [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
@@ -46,7 +61,7 @@ session_bucket() {
       if [ "$red" != - ]; then echo "STALLED main red after PR #$pr: $red"
       elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
-      else echo "LANDED PR #$pr merged, tree clean"; fi ;;
+      else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next"; fi ;;
     OPEN)
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
@@ -56,9 +71,41 @@ session_bucket() {
     CLOSED) echo "UNCLEAR PR #$pr closed without merging" ;;
     *)
       if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s), no PR"
-      elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead commit(s) ahead, no PR"
-      else echo "UNCLEAR clean, nothing on the branch: done or never started"; fi ;;
+      elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
+      else plan_bucket "clean, nothing on the branch" "$phases" "$next"; fi ;;
   esac
+}
+
+# plan_bucket <reason so far> <phases> <next>: nothing is unlanded, so the plan decides.
+# All phases ticked is DONE; one left is LANDED naming it; no checklist is LANDED asking for
+# one; no plan file at all is the human's call.
+plan_bucket() {
+  local why="$1" phases="$2" next="$3"
+  case "$phases" in
+    -)    echo "UNCLEAR $why, no plan file: done or never started" ;;
+    none) echo "LANDED $why, plan has no ## Phases checklist" ;;
+    *)
+      if [ "${phases%/*}" -ge "${phases#*/}" ]; then echo "DONE $why, all ${phases#*/} phases done"
+      else echo "LANDED $why, next phase: $next"; fi ;;
+  esac
+}
+
+# plan_phases <plan file> -> "done \t total \t first unchecked", from the `## Phases`
+# checklist: `- [x]` landed and `- [-]` deferred count as done, `- [ ]` does not. Only
+# unindented items are phases; an indented item is a step inside one. A missing file, no
+# such section, or a section with no checklist lines prints "- \t - \t -".
+plan_phases() {
+  local out=""
+  [ -f "$1" ] && out="$(awk '
+    /^## / { inp = ($0 ~ /^## Phases([[:space:]]|$)/); next }
+    !inp { next }
+    /^[-*] \[[xX-]\] / { d++; t++; next }
+    /^[-*] \[ \] / {
+      t++
+      if (nx == "") { nx = $0; sub(/^[-*] \[ \] /, "", nx); gsub(/\t/, " ", nx) }
+    }
+    END { if (t) printf "%d\t%d\t%s\n", d, t, (nx == "" ? "-" : nx) }' "$1")"
+  if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
 # nudged <sid> <fact> -> exit 0 when this exact fact was already nudged for this session.
@@ -180,15 +227,42 @@ main_health() {
   cut -f1-4 "$key"
 }
 
+# dirty_count <dir> <edited files, one absolute path per line>: the session's dirty files.
+# In its own worktree (under ~/.worktrees/) every dirty file is its own. A repo's main
+# checkout is shared with the human and other sessions, so there only the files this
+# session edited count: the human's half-done config is not this session's to land.
+dirty_count() {
+  local d="$1" edited="$2" top
+  case "$d/" in
+    "$HOME/.worktrees/"*) git -C "$d" status --porcelain 2>/dev/null | wc -l; return ;;
+  esac
+  [ -n "$edited" ] || { echo 0; return; }
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { echo 0; return; }
+  # -z: no quoting of odd names; -uall: an untracked file inside a new dir is listed by name.
+  git -C "$d" status --porcelain -z --no-renames -uall 2>/dev/null \
+    | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
+    | grep -cxFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .)
+}
+
+# ahead_files <dir> <base>: files the branch changed since the merge base whose content in
+# HEAD still differs from the base tip. A squash-merged branch, or a local merge commit
+# whose content is already on origin, changed files that origin now has, so it counts 0.
+ahead_files() {
+  local d="$1" base="$2" mb
+  mb="$(git -C "$d" merge-base "$base" HEAD 2>/dev/null)" || { echo 0; return; }
+  comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) \
+           <(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort) | wc -l
+}
+
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch: "git dirty ahead pr state ci in_pr branch".
 git_facts() {
-  local d="$1" branch dirty ahead base pr state ci oid inpr=1 head
+  local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  dirty="$(git -C "$d" status --porcelain 2>/dev/null | wc -l)"
+  dirty="$(dirty_count "$d" "$edited")"
   base="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
-  ahead="$(git -C "$d" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
+  ahead="$(ahead_files "$d" "$base")"
   IFS=$'\t' read -r _ pr state ci oid < <(prs_for "$d" | awk -F'\t' -v b="$branch" '$1 == b { print; exit }')
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
@@ -205,15 +279,21 @@ collect() {
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
   "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | while IFS= read -r line; do
-    local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact
+    local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
+          pdone ptotal pnext phases
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end)] | @tsv' <<<"$line")
+    edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     asks="$(asks_for "$tsess" "$sid")"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch < <(git_facts "$cwd")
+    read -r g dirty ahead pr state ci inpr branch < <(git_facts "$cwd" "$edited")
+    IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
+    if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
+    elif [ "$ptotal" = - ]; then phases=none
+    else phases="$pdone/$ptotal"; fi
     local red=- mh mwfs msuspects
     if [ "$g" = 1 ] && [ "$state" = MERGED ]; then
       IFS=$'\t' read -r mh mwfs _ msuspects < <(main_health "$cwd")
@@ -223,12 +303,13 @@ collect() {
       fi
     elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext")"
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\n' "${bucket%% *}" "$target" "$sid" \
-      "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+      "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
+      "$pdone" "$ptotal" "$pnext"
   done
   main_rows
 }
@@ -248,7 +329,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
@@ -267,14 +348,17 @@ main() {
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
       owners: (if .[13] == "-" then [] else .[13] | split(",") end),
       dispatch: (if .[14] == "-" then null else .[14] end),
+      phases_done: (if .[15] == "-" then null else .[15] | tonumber end),
+      phases_total: (if .[16] == "-" then null else .[16] | tonumber end),
+      next_phase: (if .[17] == "-" then null else .[17] end),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
     return 0
   fi
   local b
-  for b in MAIN NEEDS STALLED LANDED UNCLEAR WORKING; do
+  for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
-      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp; do
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _; do
         [ "$first" = 1 ] && { echo "$b"; first=0; }
         printf '  %-44s %-28s %-6s %4sm  %s%s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
           "$([ "$n" = 1 ] && echo '  (nudged)')" "$([ "${dsp:--}" != - ] && echo "  [dispatch: $dsp]")"
