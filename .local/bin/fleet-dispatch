@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# fleet-dispatch - start one session per easy board row, for the shepherd to see through.
+#
+#   fleet-dispatch run [--dry-run]   one pass: gates, candidates, judge new rows, launch picks
+#   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
+#   fleet-dispatch report            latest verdict per row: picked or skipped, and why
+#   fleet-dispatch reap              settle ledger entries whose session is gone
+#
+# Facts are code; the judgment (is this row small, clear and agent-only for its project's
+# stage?) is one model call per pass against policy.md, cached per row in verdicts.jsonl
+# until the row's text changes. A picked row is started on its sheet and gets a detached
+# `wt new` session on the lab server running /one-shot, tagged @dispatch, with a ledger
+# entry at live/<session> that fleet-sessions reads. Pause with `agent-hold set dispatch`.
+# Tuning is the DISPATCH_* block, set in the agentctl conf.
+
+set -uo pipefail
+
+: "${DISPATCH_PROFILES:=bnb}"
+: "${DISPATCH_PER_PASS:=2}"
+: "${DISPATCH_MAX_LIVE:=4}"
+: "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-overseer pace target
+: "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
+: "${DISPATCH_JUDGE_MODEL:=claude-sonnet-5-5}"
+: "${DISPATCH_JUDGE_CMD:=agentctl-run --role observe}"
+: "${DISPATCH_SERVER:=lab}"
+: "${DISPATCH_POLICY:=$HOME/.config/fleet-dispatch/policy.md}"
+: "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${DISPATCH_LOADAVG:=/proc/loadavg}"
+DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
+LIVE="$DIR/live"
+VERDICTS="$DIR/verdicts.jsonl"
+LOG="$DIR/log.md"
+
+say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
+logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
+
+# --- facts ---------------------------------------------------------------------------
+
+# stage_of <sheet> -> draft|alpha|beta|prod, from the tag on its Version: line
+stage_of() { sed -n 's/^Version:.*#\(draft\|alpha\|beta\|prod\)\b.*/\1/p' "$1" 2>/dev/null | head -1; }
+
+stage_rank() { case "$1" in prod) echo 0 ;; beta) echo 1 ;; *) echo 2 ;; esac; }
+
+prio_rank() {
+  case "$1" in
+    *'#urgent'*) echo 0 ;;
+    *'#high'*) echo 1 ;;
+    *'#low'*) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
+
+# repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
+# The registry names the repo (`repo`, null = notes-only, absent = the project's own name),
+# and `paths` maps a checkout to its repo name.
+repo_dir() {
+  local repo
+  repo=$(jq -r --arg p "$1" '.trackers[$p] as $t
+    | if $t == null or ($t | has("repo") | not) then $p else ($t.repo // "") end' \
+    "$DISPATCH_PROJECT_MAP" 2>/dev/null)
+  [ -n "$repo" ] || return 0
+  jq -r --arg r "$repo" '.paths | to_entries[] | select(.value == $r) | .key' \
+    "$DISPATCH_PROJECT_MAP" 2>/dev/null | head -1
+}
+
+session_live() { tmux -L "$DISPATCH_SERVER" has-session -t "=$1" 2>/dev/null; }
+
+# live_projects -> the project of every ledger entry whose session is still running
+live_projects() {
+  local f
+  for f in "$LIVE"/*; do
+    [ -f "$f" ] || continue
+    session_live "${f##*/}" && sed -n 's/^project=//p' "$f"
+  done
+  return 0
+}
+
+# rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the current wave
+rows() {
+  local flag=()
+  [ "$3" = agent ] && flag=(--agent)
+  notes --profile "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3-
+}
+
+judged_keys() {
+  [ -f "$VERDICTS" ] || return 0
+  jq -r '[.project, .lane, .key] | @tsv' "$VERDICTS" 2>/dev/null
+}
+
+cmd_candidates() {
+  local judged live prof name sheet _v stage repo lane key text
+  judged=$(judged_keys)
+  live=$(live_projects)
+  for prof in $DISPATCH_PROFILES; do
+    while IFS=$'\t' read -r name sheet _v _; do
+      [ -n "$name" ] || continue
+      stage=$(stage_of "$sheet")
+      case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+      grep -qxF "$name" <<<"$live" && continue
+      wave-lock check "$name" >/dev/null 2>&1 && continue
+      repo=$(repo_dir "$name")
+      [ -n "$repo" ] && [ -d "$repo" ] || continue
+      for lane in human agent; do
+        while IFS=$'\t' read -r key text; do
+          [ -n "$key" ] || continue
+          case "$text" in '- [ ]'*) ;; *) continue ;; esac
+          grep -qxF "$name"$'\t'"$lane"$'\t'"$key" <<<"$judged" && continue
+          jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
+            --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
+            --argjson prio "$(prio_rank "$text")" \
+            '{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
+              text: $text, repo: $repo, prio: $prio}'
+        done < <(rows "$prof" "$name" "$lane")
+      done
+    done < <(notes --profile "$prof" projects 2>/dev/null)
+  done
+}
+
+# --- judgment ------------------------------------------------------------------------
+
+# judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache
+judge() {
+  local cands="$1" prompt out
+  [ -n "$cands" ] || return 0
+  cands=$(head -n "$DISPATCH_JUDGE_MAX" <<<"$cands")
+  [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
+  prompt="$(cat "$DISPATCH_POLICY")
+
+## Rows to judge
+
+$(jq -c '{project, stage, lane, key, text}' <<<"$cands")
+
+## Answer
+
+For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
+{\"project\": ..., \"lane\": ..., \"key\": ..., \"size\": \"S|M|L\", \"clear\": true|false, \"agent_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
+Copy project, lane and key exactly as given."
+  # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
+  out=$(AGENTCTL_MODEL="$DISPATCH_JUDGE_MODEL" $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null) ||
+    { say "judge call failed"; return 1; }
+  mkdir -p "$DIR"
+  sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
+    jq -cR --arg at "$(date -Iseconds)" 'fromjson? | select(type == "object"
+        and (.project | type) == "string" and (.lane | type) == "string"
+        and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
+      | {project, lane, key, size, clear, agent_only, verdict, reason, at: $at}' >> "$VERDICTS"
+}
+
+# latest verdict per row, as JSON lines
+latest_verdicts() {
+  [ -f "$VERDICTS" ] || return 0
+  jq -sc 'group_by([.project, .lane, .key]) | map(last) | .[]' "$VERDICTS" 2>/dev/null
+}
+
+# picks <candidates> <room> -> the rows to launch: a dispatch verdict that is also small,
+# clear and agent-only (checked here too, so a lax verdict cannot launch anything), one per
+# project, most urgent first, then prod before beta before alpha.
+picks() {
+  local cands="$1" room="$2"
+  [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
+  jq -sc --argjson room "$room" --slurpfile v <(latest_verdicts) '
+    ($v | map(select(.verdict == "dispatch" and .size == "S" and .clear == true
+                     and .agent_only == true) | [.project, .lane, .key] | tostring)) as $ok
+    | map(select(([.project, .lane, .key] | tostring) as $k | $ok | index($k)))
+    | map(. + {srank: ({"prod": 0, "beta": 1}[.stage] // 2)})
+    | sort_by(.prio, .srank) | unique_by(.project) | sort_by(.prio, .srank)
+    | .[:$room] | .[]' <<<"$cands"
+}
+
+# --- launch --------------------------------------------------------------------------
+
+brief_for() {
+  local c="$1" project lane key prof stage text flag=''
+  project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c"); key=$(jq -r .key <<<"$c")
+  prof=$(jq -r .profile <<<"$c"); stage=$(jq -r .stage <<<"$c")
+  text=$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')
+  [ "$lane" = agent ] && flag=' --agent'
+  cat <<EOF
+/one-shot $text
+
+Dispatched by fleet-dispatch from $project ($stage), $lane sheet row "$key".
+You are already in a fresh worktree off the trunk: work here, do not cut another.
+When the PR merges, record done on THAT row: notes --profile $prof ptask $project$flag done "$key" --proof pr:<N>
+If the task needs a decision or clarification from the human, stop, post an agent-ask with your recommendation, and leave this window open.
+EOF
+}
+
+launch() {
+  local c="$1" project lane key prof repo text model brief cmd session label flag=()
+  project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c"); key=$(jq -r .key <<<"$c")
+  prof=$(jq -r .profile <<<"$c"); repo=$(jq -r .repo <<<"$c"); text=$(jq -r .text <<<"$c")
+  [ "$lane" = agent ] && flag=(--agent)
+
+  # Claim: the row must still be open right now, and `start` must leave THIS row started.
+  rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [ ]' ||
+    { say "skip $project: row no longer open: $key"; return 1; }
+  notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+  rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [/]' ||
+    { say "skip $project: could not start row: $key"; return 1; }
+
+  model=$(model-lane classify "$text" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
+  brief=$(brief_for "$c")
+  cmd="claude --model ${model:-opus} --permission-mode bypassPermissions $(printf '%q' "$brief")"
+  session=$(cd "$repo" && WT_NEW_CMD="$cmd" wt new --server "$DISPATCH_SERVER" --detach -c "$repo" | tail -1)
+  if [ -z "$session" ]; then
+    notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+    say "wt new failed for $project; row un-started"
+    return 1
+  fi
+  label="$project: $(cut -c1-60 <<<"$key")"
+  tmux -L "$DISPATCH_SERVER" set-option -t "=$session" @dispatch "$label" 2>/dev/null
+  mkdir -p "$LIVE"
+  printf 'project=%s\nprofile=%s\nlane=%s\nkey=%s\nmodel=%s\nlabel=%s\nstarted=%s\n' \
+    "$project" "$prof" "$lane" "$key" "${model:-opus}" "$label" "$(date -Iseconds)" > "$LIVE/$session"
+  logline "started $session for $project $lane: $key"
+  echo "started $session: $label"
+}
+
+# --- verbs ---------------------------------------------------------------------------
+
+# reap -- a ledger entry whose session is gone: done row -> drop it; row still started ->
+# un-start it and record `failed`, so it is not picked again until its text changes.
+cmd_reap() {
+  local f s project prof lane key flag
+  for f in "$LIVE"/*; do
+    [ -f "$f" ] || continue
+    s="${f##*/}"
+    session_live "$s" && continue
+    project=$(sed -n 's/^project=//p' "$f"); prof=$(sed -n 's/^profile=//p' "$f")
+    lane=$(sed -n 's/^lane=//p' "$f"); key=$(sed -n 's/^key=//p' "$f")
+    flag=(); [ "$lane" = agent ] && flag=(--agent)
+    if rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [/]'; then
+      notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+      jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" \
+        '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "session ended without the row done", at: $at}' >> "$VERDICTS"
+      logline "reaped $s: session gone, row un-started: $project $lane: $key"
+      echo "un-started $project: $key ($s ended without it done)"
+    else
+      logline "reaped $s: $project $lane row no longer open: $key"
+    fi
+    rm -f -- "$f"
+  done
+}
+
+# gate -> why this pass must not start anything, or nothing when it may
+gate() {
+  local load cores
+  agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
+  fleet-assess --watch-probe >/dev/null 2>&1 || { echo "fleet-assess says HOLD"; return; }
+  load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
+  cores=$(nproc 2>/dev/null || echo 1)
+  awk -v l="${load:-0}" -v c="$cores" -v m="$DISPATCH_MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
+    echo "load ${load} on ${cores} cores is over the ${DISPATCH_MAX_LOAD} pace"
+}
+
+cmd_run() {
+  local dry=0 why live room cands picked c
+  [ "${1:-}" = --dry-run ] && dry=1
+  mkdir -p "$DIR"
+  exec 9>"$DIR/.lock"
+  flock -n 9 || { say "another pass is running"; return 0; }
+
+  [ "$dry" = 1 ] || cmd_reap
+  live=$(live_projects | grep -c . || true)
+  room=$(( DISPATCH_MAX_LIVE - live ))
+  [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
+  if [ "$room" -le 0 ]; then say "at $live live dispatched sessions, starting nothing"; return 0; fi
+  if [ "$dry" = 0 ] && why=$(gate) && [ -n "$why" ]; then say "$why, starting nothing"; return 0; fi
+
+  judge "$(cmd_candidates)" || return 1
+  # Every open row again, judged ones included: a row judged on an earlier pass can be picked now.
+  cands=$(all_open)
+  picked=$(picks "$cands" "$room")
+  [ -n "$picked" ] || { say "no row qualifies this pass"; return 0; }
+  while IFS= read -r c; do
+    if [ "$dry" = 1 ]; then
+      echo "would start: $(jq -r '"\(.project) (\(.stage)) \(.lane): \(.key)"' <<<"$c")"
+    else
+      launch "$c"
+    fi
+  done <<<"$picked"
+}
+
+# all_open -- candidates without the judged filter: every open, eligible row
+all_open() { VERDICTS=/dev/null cmd_candidates; }
+
+cmd_report() {
+  latest_verdicts | jq -r '[.verdict, .size // "-", .project, .lane, .key, .reason // ""] | @tsv' |
+    sort | awk -F'\t' '{ printf "%-9s %-2s %-16s %-6s %s\n           %s\n", $1, $2, $3, $4, substr($5, 1, 90), $6 }'
+}
+
+main() {
+  case "${1:-}" in
+    run) shift; cmd_run "$@" ;;
+    candidates) cmd_candidates ;;
+    report) cmd_report ;;
+    reap) cmd_reap ;;
+    -h | --help) sed -n '2,14p' "$0" ;;
+    *) sed -n '2,7p' "$0" >&2; return 2 ;;
+  esac
+}
+
+# Sourceable for tests; runs main only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

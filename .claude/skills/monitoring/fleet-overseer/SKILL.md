@@ -1,7 +1,7 @@
 ---
 name: fleet-overseer
 description: >-
-  Watch every running agent session on this machine: its share of the machine (CPU load, memory, temperature) and where it is in its delivery. Decide when the fleet must stop, stop it with the least force that works, tell each session when to continue, and shepherd idle sessions to the end of their work (wind down what landed, nudge what stalled, list what needs the human). Verbs: assess | hold | go | status | shepherd. Use when the box is hot or slow, when many agents run heavy jobs at once (headless Unity, builds, test suites), when the sentinel fleet-thermal watch trips or clears, or when the user says "the machine is melting", "stop all the agents", "cut the runs", "tell everyone to pause", "can they start again", "who is using all the CPU", "what are my agents doing", "are any of them done", "wind down the finished ones", "make sure they all finish". Not for wave or sprint delivery state - that is wave-overseer and sprint-overseer. Not for how to word a peer message - that is fleet-comms, which this skill uses.
+  Watch every running agent session on this machine: its share of the machine (CPU load, memory, temperature) and where it is in its delivery. Decide when the fleet must stop, stop it with the least force that works, tell each session when to continue, and shepherd idle sessions to the end of their work (wind down what landed, nudge what stalled, list what needs the human), and feed it new work by starting a session for each easy board row (dispatch). Verbs: assess | hold | go | status | shepherd | dispatch. Use when the box is hot or slow, when many agents run heavy jobs at once (headless Unity, builds, test suites), when the sentinel fleet-thermal watch trips or clears, or when the user says "the machine is melting", "stop all the agents", "cut the runs", "tell everyone to pause", "can they start again", "who is using all the CPU", "what are my agents doing", "are any of them done", "wind down the finished ones", "make sure they all finish", "start sessions on the easy rows", "what did dispatch pick". Not for wave or sprint delivery state - that is wave-overseer and sprint-overseer. Not for how to word a peer message - that is fleet-comms, which this skill uses.
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
@@ -14,7 +14,7 @@ This skill is the coordinator role from 2026-10-23, written down. About 15 sessi
 
 The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting at 97% idle while sessions wait on the runner pool is as much a failure as one at 0% idle, and on 2026-10-26 it happened on the same evening as a meltdown. Every pass looks at both directions.
 
-It owns no product code. It owns two questions: does this machine have room for what is running (assess, hold, go), and is every session either working, waiting on the human, or finished and wound down (status, shepherd).
+It owns no product code. It owns three questions: does this machine have room for what is running (assess, hold, go), is every session either working, waiting on the human, or finished and wound down (status, shepherd), and which easy board rows should get a session next (dispatch).
 
 ## Tools
 
@@ -94,7 +94,7 @@ One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in
    - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
    - Sessions stopped on the account's usage limit (the pane shows "weekly limit" or "/login"): escalate once to the human. Only they can log in.
    - Otherwise the pace is fine; say the numbers in one line.
-2. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `owners`. MAIN rows come first and lead the report: a red main is the most important thing on the board.
+2. `fleet-dispatch reap`, which un-starts the row of a dispatched session that ended without it done and drops ledgers whose row is finished. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `owners`, and `dispatch` (the row it was started for, or null). MAIN rows come first and lead the report: a red main is the most important thing on the board.
 3. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
 4. For each LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
    - LANDED: "PR #N merged and your tree is clean. Anything the human asked for in this session that has not landed is your next phase (your plan: `<plan_file>`). Run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then post an agent-ask with `--session <your tmux session>`, your recommendation and that reason. Only when everything the human asked for is landed: record board done with proof, then /wind-down."
@@ -117,6 +117,24 @@ The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact and the
 
 A session in a different permission mode holds a peer message for approval. If a message comes back pending approval, say so in the report and do not count it as delivered.
 
+## Verb: `dispatch`
+
+`fleet-dispatch` feeds the shepherd. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every two hours; this verb is for running it by hand and reading what it decided.
+
+- `fleet-dispatch run --dry-run` prints the picks and starts nothing. `fleet-dispatch run` starts them.
+- `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, and the one-line reason.
+- `fleet-dispatch candidates` lists the open rows it would judge next.
+- `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
+
+A pass, in order:
+1. Bail if `dispatch` is held, `fleet-assess` says HOLD, or the 1-minute load is over `DISPATCH_MAX_LOAD` per core. Room is `DISPATCH_MAX_LIVE` minus live dispatched sessions, capped at `DISPATCH_PER_PASS`.
+2. Candidates: every open `[ ]` row, on the human sheet and the agent board, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, while it already has a dispatched session, or when `project-map.json` has no repo for it.
+3. Judgment: one sonnet call for the rows not judged before, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text changes. To change what gets picked, edit the policy, not the script.
+4. Picks: verdict `dispatch` with size S, clear and agent-only; one per project; `#urgent` first, then prod before beta before alpha.
+5. Launch: re-read the row, `ptask start` it, check it reads `[/]`, then `wt new --server lab --detach` in the project's repo running `claude --permission-mode bypassPermissions "/one-shot <row> ..."`. The session is tagged `@dispatch` (the lab status line shows it) and gets a ledger at `~/.agent/dispatch/live/<session>`, which `fleet-sessions` reads.
+
+A dispatched session is an ordinary session from then on: the shepherd's buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it posts an agent-ask and waits. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`.
+
 ## Do NOT
 
 - Kill anything without the human's say-so, and never an interactive editor.
@@ -128,11 +146,12 @@ A session in a different permission mode holds a peer message for approval. If a
 - Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The one exception is step 1's pace message to a session waiting on the pool.
 - Hold back sessions while the machine is under budget, or report "nothing to act on" while `top` shows the box idle with work queued. Both are pace failures.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
+- Widen dispatch beyond `DISPATCH_PROFILES=bnb`, or relax the policy, without the human asking. It starts conservative on purpose.
 
 ## Related
 
 - `fleet-comms`: channel choice and message wording, used by `hold`, `go` and `shepherd`.
-- `one-shot`: the delivery tail (gate, PR, merge, board done, pull, wind-down) that `shepherd` nudges sessions along.
+- `one-shot`: what every dispatched session runs, and the delivery tail (gate, PR, merge, board done, pull, wind-down) that `shepherd` nudges sessions along.
 - `wind-down`: what a LANDED session runs once its plan is finished.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running this skill acts.
 - `wave-overseer`, `sprint-overseer`: delivery-state watchdogs. Neither of them looks at the machine.
