@@ -173,6 +173,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.local/src/tmux/wind-down.sh disarm"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": "",

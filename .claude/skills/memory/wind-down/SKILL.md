@@ -26,7 +26,9 @@ not kill its own window mid-turn.
 
 The kill is **gated on the Stop checks**: if content checks are FAILING, the teardown is
 deferred (the sentinel stays armed) and fires on the next clean Stop instead. So `/wind-down`
-never closes the window over broken or unpushed work.
+never closes the window over broken or unpushed work. A new prompt from the user disarms it
+(`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session is not done, so
+re-run `/wind-down` when that work is finished.
 
 ## Steps
 
@@ -224,10 +226,9 @@ thing shown before the window closes.
 
 - Sentinel lives at `~/.agent/spin-down/<project>__<session-id>.request` - one per SESSION, not
   per project, so several armed sessions in the same repo do not clobber each other. A sentinel
-  left armed by a deferred run is intentional - it fires on the next clean Stop. If the user
-  changes their mind, cancel with `rm ~/.agent/spin-down/<project>__*.request` (or list the
-  directory and remove the one whose mtime matches this session) - a bare `<project>.request`
-  does not exist and `rm`-ing it silently no-ops.
+  left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
+  prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
+  `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel under any project name.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
 - Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.
