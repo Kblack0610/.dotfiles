@@ -247,7 +247,7 @@ add_wt() {
   [ ! -L "$HOME/.local/state/wt/new-repo.lock" ] || fail "kept the lock after the session claimed the slot"
 
   # ...and the pane's command does the work, then becomes a shell in the worktree.
-  SHELL=/bin/true run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
+  SHELL="$(type -P true)" run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
   assert_success
   assert_output --partial 'ready'
   assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
@@ -269,7 +269,7 @@ add_wt() {
 
 @test "a failed prepare leaves the error on screen and a shell in the main checkout" {
   make_repo
-  SHELL=/bin/true run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 recycle
+  SHELL="$(type -P true)" run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 recycle
   assert_success
   assert_output --partial 'FAILED'
   [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "made a worktree out of a failed recycle"
