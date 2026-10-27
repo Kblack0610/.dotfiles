@@ -283,6 +283,10 @@ test_notifications.sh
 # and every box that pulls it starts reporting under that name - the desktop would
 # claim the laptop's key, which is the collision the separate keys exist to prevent.
 .config/systemd/user/fleet-pulse.service.d/
+# snapclient is per-machine (its --hostID names the room) and owned by the home-config
+# ansible role audio-endpoint, which writes it into this symlinked directory.
+.config/systemd/user/*snapclient*
+.config/systemd/user/*/*snapclient*
 # personal notes/agent systemd units (+ their .target.wants symlinks), both levels
 .config/systemd/user/*notes*
 .config/systemd/user/*agentctl*
