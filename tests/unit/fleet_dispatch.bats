@@ -11,6 +11,8 @@ setup() {
   export DISPATCH_PROFILES=bnb DISPATCH_SERVER=lab
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
+  export DISPATCH_WORKERS="$SANDBOX/workers.json" DISPATCH_WORKER=fleet
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
@@ -70,11 +72,24 @@ project() {
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
 
+# A tagged row the fleet worker may take.
+T='#worker/fleet #tier/1'
+
+# line_of <project> <lane> <key> -> the line signature of that fixture row, as candidates computes it
+# (nothing when there is no such row, as for the synthetic candidates the picks tests build).
+line_of() {
+  local text
+  text=$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2" 2>/dev/null)
+  [ -z "$text" ] || printf '%s' "$text" | sig
+}
+
+# verdict <project> <lane> <key> <verdict> [size] [tier] -- made under the current policy for the row's current text
 verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
-  jq -cn --arg p "$1" --arg l "$2" --arg k "$3" --arg v "$4" --arg s "${5:-S}" \
-    '{project: $p, lane: $l, key: $k, verdict: $v, size: $s, clear: true, agent_only: true, reason: "r"}' \
-    >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -cn --arg p "$1" --arg l "$2" --arg k "$3" --arg v "$4" --arg s "${5:-S}" --argjson t "${6:-1}" \
+    --arg sig "$(policy_sig)" --arg line "$(line_of "$1" "$2" "$3")" \
+    '{project: $p, lane: $l, key: $k, verdict: $v, size: $s, tier: $t, clear: true, agent_only: true,
+      reason: "r", policy: $sig, line: $line}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
 # --- candidates --------------------------------------------------------------------------
@@ -83,22 +98,77 @@ verdict() {
   project game beta "$SANDBOX/repos/game"
   project idea draft "$SANDBOX/repos/app"
   project notesonly prod -
-  row game human 'fix crash' '- [ ] fix crash #high'
-  row game human 'taken row' '- [/] taken row'
-  row game agent 'judged row' '- [ ] judged row'
-  row idea human 'draft row' '- [ ] draft row'
-  row notesonly human 'paper row' '- [ ] paper row'
+  row game human 'fix crash' "- [ ] fix crash #high $T"
+  row game human 'taken row' "- [/] taken row $T"
+  row game agent 'judged row' "- [ ] judged row $T"
+  row idea human 'draft row' "- [ ] draft row $T"
+  row notesonly human 'paper row' "- [ ] paper row $T"
   verdict game agent 'judged row' skip
 
   run cmd_candidates
   assert_success
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
-  assert_equal "$(jq -r '"\(.stage) \(.lane) \(.prio) \(.repo)"' <<<"$output")" "beta human 1 $SANDBOX/repos/game"
+  assert_equal "$(jq -r '"\(.stage) \(.lane) \(.prio) \(.tier) \(.repo)"' <<<"$output")" "beta human 1 1 $SANDBOX/repos/game"
+}
+
+@test "candidates: only rows assigned to this worker, at a tier it may take" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'untagged' '- [ ] untagged #high'
+  row game human 'tier only' '- [ ] tier only #tier/1'
+  row game human 'other worker' '- [ ] other worker #worker/night #tier/1'
+  row game human 'no tier' '- [ ] no tier #worker/fleet'
+  row game human 'too high' '- [ ] too high #worker/fleet #tier/2'
+  row game human 'assigned' "- [ ] assigned $T"
+  row game human 'stamped' '- [ ] stamped <!-- #worker/fleet #tier/1 -->'
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'assigned'
+}
+
+@test "candidates: a ci: or infra: row is tier 3 and never a candidate, however it is tagged" {
+  project game beta "$SANDBOX/repos/game"
+  echo '{"fleet": {"max_tier": 9}}' > "$DISPATCH_WORKERS"   # even a registry that asks for everything
+  row game agent 'ci: suite.sh retries a batch' "- [ ] ci: suite.sh retries a batch $T"
+  row game agent 'infra: bump the runner' "- [ ] INFRA: bump the runner $T"
+  row game agent 'gate row' '- [ ] gate row #worker/fleet #tier/3'
+  row game agent 'tier two' '- [ ] tier two #worker/fleet #tier/2'
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'tier two'
+}
+
+@test "candidates: a worker missing from the registry takes nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'assigned' "- [ ] assigned $T"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run cmd_candidates
+  assert_output ''
+}
+
+@test "candidates: a verdict from an older policy, or for the row's older text, is judged again" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'stale policy' "- [ ] stale policy $T"
+  row game agent 'retagged' "- [ ] retagged $T"
+  row game agent 'current' "- [ ] current $T"
+  row game agent 'died' "- [ ] died $T"
+  verdict game agent 'stale policy' dispatch
+  verdict game agent 'current' skip
+  echo 'policy v2' > "$DISPATCH_POLICY"
+  verdict game agent 'current' skip
+  jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", policy: $sig, line: "old"}' \
+    >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -cn '{project: "game", lane: "agent", key: "died", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
 }
 
 @test "candidates: a project whose wave lock is held is left alone" {
   project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash' '- [ ] fix crash'
+  row game human 'fix crash' "- [ ] fix crash $T"
   stub wave-lock 'exit 0'
   run cmd_candidates
   assert_output ''
@@ -106,7 +176,7 @@ verdict() {
 
 @test "candidates: a project with a live dispatched session is left alone" {
   project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash' '- [ ] fix crash'
+  row game human 'fix crash' "- [ ] fix crash $T"
   mkdir -p "$FLEET_DISPATCH_DIR/live"
   printf 'project=game\n' > "$FLEET_DISPATCH_DIR/live/game-agent-3"
   printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
@@ -118,7 +188,7 @@ verdict() {
 
 @test "picks: only small, clear, agent-only dispatch verdicts, one per project, urgent then prod first" {
   c() { jq -cn --arg p "$1" --arg s "$2" --arg k "$3" --argjson pr "$4" \
-        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, prio: $pr}'; }
+        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, prio: $pr, tier: 1, line: ""}'; }
   cands=$(c alpha1 alpha a 0; c beta1 beta b 1; c beta1 beta b2 1; c prod1 prod p 1; c skipme prod s 0; c big prod L 0)
   verdict alpha1 human a dispatch
   verdict beta1 human b dispatch
@@ -130,6 +200,24 @@ verdict() {
   run picks "$cands" 3
   assert_success
   assert_equal "$(jq -r .project <<<"$output" | paste -sd' ')" 'alpha1 prod1 beta1'
+}
+
+@test "picks: a verdict that judged the row a higher tier than its tag, or gave no tier, does not launch" {
+  c() { jq -cn --arg p "$1" --arg k "$2" '{profile: "bnb", project: $p, stage: "beta", lane: "human", key: $k, prio: 1, tier: 1, line: ""}'; }
+  cands=$(c ok a; c higher b; c notier n)
+  verdict ok human a dispatch S 1
+  verdict higher human b dispatch S 3
+  verdict notier human n dispatch S null
+  run picks "$cands" 3
+  assert_success
+  assert_equal "$(jq -r .project <<<"$output" | paste -sd' ')" 'ok'
+}
+
+@test "picks: a dispatch verdict from an older policy does not launch" {
+  verdict game human k dispatch
+  echo 'policy v2' > "$DISPATCH_POLICY"
+  run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
+  assert_output ''
 }
 
 @test "picks: no room means no picks" {
@@ -144,15 +232,15 @@ verdict() {
   cat > "$NOTES_FIXTURE/judge.out" <<'EOF'
 thinking out loud {"project":"x"}
 DISPATCH-VERDICTS-START
-{"project":"game","lane":"human","key":"fix crash","size":"S","clear":true,"agent_only":true,"verdict":"dispatch","reason":"small bug"}
+{"project":"game","lane":"human","key":"fix crash","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","reason":"small bug"}
 not json
 {"project":"game","lane":"human","key":"other","verdict":"maybe"}
 DISPATCH-VERDICTS-END
 EOF
-  run judge '{"project":"game","stage":"beta","lane":"human","key":"fix crash","text":"- [ ] fix crash"}'
+  run judge '{"project":"game","stage":"beta","lane":"human","key":"fix crash","text":"- [ ] fix crash","tier":1,"line":"abc"}'
   assert_success
   assert_equal "$(wc -l < "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 1
-  assert_equal "$(jq -r .verdict "$FLEET_DISPATCH_DIR/verdicts.jsonl")" dispatch
+  assert_equal "$(jq -r '"\(.verdict) \(.tier) \(.line) \(.policy == "'"$(policy_sig)"'")"' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'dispatch 1 abc true'
 }
 
 @test "judge fails loudly when the model returns no verdicts at all" {
@@ -187,8 +275,28 @@ EOF
 
 game_ready() {
   project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash on load' '- [ ] fix crash on load #high'
+  row game human 'fix crash on load' "- [ ] fix crash on load #high $T"
   verdict game human 'fix crash on load' dispatch
+}
+
+# The two rows that started this: dispatch picked the first on 2026-10-27 under the old,
+# untiered policy, and the second was next. Cached verdicts from then must not launch.
+@test "run: the 2026-10-27 ci rows, with their old cached dispatch verdicts, start nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'ci: suite.sh retries a batch that dies before any class starts' \
+    '- [ ] ci: suite.sh retries a batch that dies before any class starts #high'
+  row game agent 'main rebuild drift: buildall moves prefabs, commit a rebuild on main' \
+    '- [ ] main rebuild drift: buildall moves prefabs, commit a rebuild on main #high'
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  for k in 'ci: suite.sh retries a batch that dies before any class starts' \
+           'main rebuild drift: buildall moves prefabs, commit a rebuild on main'; do
+    jq -cn --arg k "$k" '{project: "game", lane: "agent", key: $k, verdict: "dispatch", size: "S",
+      clear: true, agent_only: true}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial 'no row qualifies'
+  assert_not_called 'judge called'
 }
 
 @test "run --dry-run names the pick and launches, claims and records nothing" {
@@ -218,8 +326,8 @@ game_ready() {
   # A real board: grep -q stops at the first line while notes is still writing the rest.
   awk 'BEGIN { for (i = 1; i <= 4000; i++) printf "filler row %d\t- [ ] filler row %d padded to make the board larger\n", i, i }' \
     >> "$NOTES_FIXTURE/rows.game.human"
-  run launch "$(jq -cn --arg r "$SANDBOX/repos/game" '{profile: "bnb", project: "game", stage: "beta",
-    lane: "human", key: "fix crash on load", text: "- [ ] fix crash on load #high", repo: $r, prio: 1}')"
+  run launch "$(jq -cn --arg r "$SANDBOX/repos/game" --arg t "- [ ] fix crash on load #high $T" '{profile: "bnb",
+    project: "game", stage: "beta", lane: "human", key: "fix crash on load", text: $t, repo: $r, prio: 1}')"
   assert_success
   assert_output --partial 'started game-agent-1'
 }

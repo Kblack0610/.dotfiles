@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-26"
+  reviewed: "2026-10-27"
 ---
 
 # fleet-overseer
@@ -119,18 +119,20 @@ A session in a different permission mode holds a peer message for approval. If a
 
 ## Verb: `dispatch`
 
-`fleet-dispatch` feeds the shepherd. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every two hours; this verb is for running it by hand and reading what it decided.
+`fleet-dispatch` feeds the shepherd. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every two hours (its conf is `fleet-dispatch.conf.disabled` while it is off); this verb is for running it by hand and reading what it decided.
+
+Dispatch only takes rows the human assigned. A row needs `#worker/fleet` (the human puts it there) and a `#tier/N` no higher than `max_tier` for `fleet` in `~/.config/fleet-dispatch/workers.json`, which starts at 1. Tier 3 never runs unattended: CI, gates, runners, build, deploy, harness and tooling. A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier. Tag a row with `notes ptask <project> [--agent] edit "<row>" --append "#worker/fleet #tier/1"`.
 
 - `fleet-dispatch run --dry-run` prints the picks and starts nothing. `fleet-dispatch run` starts them.
-- `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, and the one-line reason.
+- `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, judged tier, and the one-line reason. A verdict made under an older policy is marked stale.
 - `fleet-dispatch candidates` lists the open rows it would judge next.
 - `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
 
 A pass, in order:
 1. Bail if `dispatch` is held, `fleet-assess` says HOLD, or the 1-minute load is over `DISPATCH_MAX_LOAD` per core. Room is `DISPATCH_MAX_LIVE` minus live dispatched sessions, capped at `DISPATCH_PER_PASS`.
-2. Candidates: every open `[ ]` row, on the human sheet and the agent board, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, while it already has a dispatched session, or when `project-map.json` has no repo for it.
-3. Judgment: one sonnet call for the rows not judged before, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text changes. To change what gets picked, edit the policy, not the script.
-4. Picks: verdict `dispatch` with size S, clear and agent-only; one per project; `#urgent` first, then prod before beta before alpha.
+2. Candidates: every open `[ ]` row assigned to `fleet` at an allowed tier, on the human sheet and the agent board, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, while it already has a dispatched session, or when `project-map.json` has no repo for it.
+3. Judgment: one sonnet call for the rows not judged before, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text, the policy or `workers.json` changes. To change what gets picked, edit the policy, not the script.
+4. Picks: verdict `dispatch` with size S, clear and agent-only, judged no higher a tier than the row is tagged, made under the current policy; one per project; `#urgent` first, then prod before beta before alpha.
 5. Launch: re-read the row, `ptask start` it, check it reads `[/]`, then `wt new --server lab --detach` in the project's repo running `claude --permission-mode bypassPermissions "/one-shot <row> ..."`. The session is tagged `@dispatch` (the lab status line shows it) and gets a ledger at `~/.agent/dispatch/live/<session>`, which `fleet-sessions` reads.
 
 A dispatched session is an ordinary session from then on: the shepherd's buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it posts an agent-ask and waits. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`.
@@ -146,7 +148,7 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 - Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The one exception is step 1's pace message to a session waiting on the pool.
 - Hold back sessions while the machine is under budget, or report "nothing to act on" while `top` shows the box idle with work queued. Both are pace failures.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
-- Widen dispatch beyond `DISPATCH_PROFILES=bnb`, or relax the policy, without the human asking. It starts conservative on purpose.
+- Widen dispatch beyond `DISPATCH_PROFILES=bnb`, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. It starts conservative on purpose. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
 
 ## Related
 

@@ -1,0 +1,7 @@
+{
+  "fleet": {
+    "runner": "fleet-dispatch",
+    "what": "/one-shot in a detached lab session on the workstation",
+    "max_tier": 1
+  }
+}
