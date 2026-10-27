@@ -313,7 +313,7 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     let mut keep = Vec::new();
     let mut defer = Vec::new();
     for l in lines {
-        match md::find_due(l) {
+        match md::find_due(l, today) {
             Some(due) if due > horizon => defer.push(l.clone()),
             _ => keep.push(l.clone()),
         }
@@ -332,8 +332,9 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
 /// file it sits in. Two files for one idea is what made the footer list three
 /// "backlogs" for two concepts.
 ///
-/// Surfaced lines have their trigger token stripped and a fresh day-count stamped, so a
-/// surfaced copy is an ordinary task and the master line keeps its trigger.
+/// Surfaced lines get a fresh created stamp and lose an `(every:…)` token, so a surfaced
+/// copy is an ordinary task and the master line keeps its trigger. A date stays on the
+/// surfaced task as its visible `#due` tag ([`md::stamp_line`]).
 fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
     let horizon = today + chrono::Duration::days(LEAD_DAYS);
     let mut promoted = Vec::new();
@@ -347,9 +348,9 @@ fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
         }
         if in_active && md::is_task(line) && !md::is_checked(line) {
             // A `[date]` fires ONCE: emit it and drop the master line.
-            if let Some(due) = md::find_due(line) {
+            if let Some(due) = md::find_due(line, today) {
                 if due <= horizon {
-                    promoted.push(md::stamp_line(&md::strip_due(line), today, today));
+                    promoted.push(md::stamp_line(line, today, today));
                     continue; // consumed
                 }
             }
@@ -1711,13 +1712,9 @@ mod tests {
         let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         // soon + overdue surface; far + undated stay; Done is never touched
         assert_eq!(promoted.len(), 2);
-        // surfaced lines have the [date] token stripped and a created tag added
-        assert!(promoted
-            .iter()
-            .any(|l| l.contains("soon") && !l.contains("2026-07-01") && l.contains("#c260630")));
-        assert!(promoted
-            .iter()
-            .any(|l| l.contains("overdue") && !l.contains("2026-06-20") && l.contains("#c260630")));
+        // surfaced lines carry the date as the visible due tag, plus a created tag
+        assert!(promoted.contains(&"- [ ] soon #c0630 #due0701".to_string()));
+        assert!(promoted.contains(&"- [ ] overdue #c0630 #due0620".to_string()));
         // the pen keeps the far-future + undated items and the whole Done section
         assert!(remaining.contains("- [ ] far [2026-07-15]"));
         assert!(remaining.contains("- [ ] undated task"));
@@ -1755,9 +1752,10 @@ mod tests {
         assert_eq!(surfaced.len(), 2, "friday habit + today's one-off: {surfaced:?}");
         assert!(surfaced.iter().any(|l| l.contains("timesheets")));
         assert!(surfaced.iter().any(|l| l.contains("one-off thing")));
-        // triggers stripped, day-stamped
+        // cadence stripped, the date kept as the due tag, created-stamped
         assert!(!out.iter().any(|l| l.contains("every:") || l.contains("[2026-")));
-        assert!(out.iter().all(|l| l.contains("(0d) #c260710")));
+        assert!(out.iter().all(|l| l.contains("#c0710")));
+        assert!(out.contains(&"- [ ] one-off thing #c0710 #due0710".to_string()));
 
         // the cadence line SURVIVES so it fires again next Friday...
         assert!(remaining.contains("- [ ] timesheets (every:fri)"));

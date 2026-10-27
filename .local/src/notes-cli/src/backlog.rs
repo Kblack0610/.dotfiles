@@ -76,7 +76,7 @@ fn sweep(content: &str, today: NaiveDate) -> String {
         }
         if md::is_checked(line) {
             moved.push(ensure_done_stamp(line, today));
-        } else if md::is_task(line) && md::find_since(line).is_some() {
+        } else if md::is_task(line) && md::find_since(line, today).is_some() {
             // origin_if_new is unused because the line already carries a since: date
             before.push(md::stamp_line(line, today, today));
         } else {
@@ -233,7 +233,7 @@ mod tests {
         let c = "# Fun\n\n## Active\n- [ ] keep me (1d) <!-- since:2026-06-02 -->\n- [x] finished\n\n## Done\n- [x] old (done:2026-05-01)\n";
         let out = sweep(c, d("2026-06-05"));
         // active keeps the unchecked item, restamped
-        assert!(out.contains("- [ ] keep me (3d) #c260602"));
+        assert!(out.contains("- [ ] keep me #c0602"));
         // checked item moved under Done with a done stamp
         assert!(out.contains("- [x] finished (done:2026-06-05)"));
         // existing done preserved

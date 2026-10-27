@@ -5,8 +5,8 @@
 //! section is a `<project>:` prefix on a task in the personal note. So "move this task"
 //! is one of: change the profile, change the prefix, or both. This does all three.
 //!
-//! The original `<!-- since -->` origin is carried over, so a moved task keeps its age
-//! (`(Nd)`) instead of looking brand new — moving work between lanes doesn't reset how
+//! The original created tag is carried over, so a moved task keeps its age instead of
+//! looking brand new — moving work between lanes doesn't reset how
 //! long it has been open. The destination is written BEFORE the source removal, so a
 //! failed write can never lose the task.
 //!
@@ -21,8 +21,8 @@ use anyhow::{bail, Result};
 use chrono::Local;
 use std::fs;
 
-/// The human text of a task line — checkbox, `(Nd)` day-count, `#cYYMMDD` created tag (or
-/// a legacy `<!-- since -->` comment) and a trailing priority tag stripped — with ORIGINAL CASE preserved (unlike
+/// The human text of a task line — checkbox, `#c1026` created tag (or a legacy `(Nd)`
+/// day-count and `<!-- since -->` comment) and a trailing priority tag stripped — with ORIGINAL CASE preserved (unlike
 /// `md::task_key`, which lower-cases for matching). Returns `(text, priority)`.
 fn task_text(line: &str) -> (String, Option<String>) {
     let t = line.trim().to_string();
@@ -162,7 +162,7 @@ pub fn mv(
 
     // Rebuild the line, carrying the ORIGINAL origin date so the age survives the move.
     let today = Local::now().date_naive();
-    let origin = md::find_since(&line).unwrap_or(today);
+    let origin = md::find_since(&line, today).unwrap_or(today);
     let (text, prio) = task_text(&line);
     let new_text = if untag {
         retag(&text, None)
@@ -316,17 +316,14 @@ after
     #[test]
     fn moved_line_keeps_its_original_age() {
         let (_rest, line) = take_first(NOTE, "ship the thing").unwrap();
-        let origin = md::find_since(&line).unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap();
+        let origin = md::find_since(&line, today).unwrap();
         let (text, prio) = task_text(&line);
         let core = format!("- [ ] {} {}", retag(&text, None), prio.unwrap());
-        // re-stamped from the ORIGINAL origin, so the since-date survives the move
-        let out = md::stamp_line(
-            &core,
-            chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap(),
-            origin,
-        );
-        assert!(out.contains("#c260718"));
-        assert!(out.contains("(3d)"));
+        // re-stamped from the ORIGINAL origin, so the created date survives the move
+        let out = md::stamp_line(&core, today, origin);
+        assert!(out.contains("#c0718"));
+        assert!(!out.contains("(3d)"));
         assert!(out.contains("#high"));
         assert!(!out.contains("pmp:")); // untagged
     }

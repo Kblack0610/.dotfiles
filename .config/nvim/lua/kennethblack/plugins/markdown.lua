@@ -680,6 +680,22 @@ return {
         sweep_and_follow(vim.api.nvim_win_get_cursor(0)[1], true)
       end
 
+      -- Date a hand-typed task the day it was written: in a daily note, every open Focus
+      -- task without a created tag gets `#cMMDD` of the note's date (notes.datetag owns the
+      -- format, mirroring md::created_tag). Without this a typed task stayed bare until the
+      -- next carry stamped it with the previous day. Only the stamped rows are rewritten.
+      local function stamp_created(buf, file)
+        local datetag = require "notes.datetag"
+        local date = datetag.note_date(file)
+        if not date then
+          return
+        end
+        local out, changed = datetag.stamp_focus(vim.api.nvim_buf_get_lines(buf, 0, -1, false), date)
+        for _, i in ipairs(changed) do
+          vim.api.nvim_buf_set_lines(buf, i - 1, i, false, { out[i] })
+        end
+      end
+
       -- Cycle the priority tag on a range by `dir` (+1 raise / -1 lower). The next level is
       -- computed from the FIRST line so a selection converges, then the note re-sweeps and the
       -- cursor follows the task to its new lane.
@@ -901,10 +917,14 @@ return {
 
           -- Sweep `## Focus` on save too, so the note lands organized however a task
           -- was edited (typing a #tag by hand, pasting, etc.), not only via the cycles.
-          -- No-op when there is no `## Focus` section or nothing changed.
+          -- No-op when there is no `## Focus` section or nothing changed. New tasks are
+          -- dated first, so the sweep files them already stamped.
           vim.api.nvim_create_autocmd("BufWritePre", {
             buffer = buf,
-            callback = file_focus_done,
+            callback = function(args)
+              stamp_created(args.buf, args.file)
+              file_focus_done()
+            end,
           })
 
           -- After save, push ClickUp status edits up: a `[/]`/`[x]` on a cu-linked Focus
