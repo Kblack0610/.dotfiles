@@ -75,7 +75,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 
 | Command | What it does |
 |---|---|
-| `notes today` | Idempotent daily note. Carries **Priority** forward (day-stamped `(Nd) <!-- since:DATE -->`); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
+| `notes today` | Idempotent daily note. Carries **Priority** forward (day-stamped `(Nd) #cYYMMDD`); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
 | `notes path` | Print today's note path (profile-aware). |
 | `notes link-refs` | Link `refs/<date>/*.md` into today's `## Refs` (idempotent). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
@@ -148,7 +148,7 @@ What syncs (everything else stays notes-only):
 | `- [ ] renew passport @vk` | Vikunja `Inbox` project (opt-in capture for non-project tasks) |
 
 Mechanics:
-- Captured tasks get the `from-notes` label; `<!-- since: -->` dates land in the description.
+- Captured tasks get the `from-notes` label; the created date (`#cYYMMDD`, or a legacy `<!-- since: -->`) lands in the description.
 - Dedup state: `~/.local/state/notes-vikunja/synced.tsv`, keyed on the notes CLI's `task_key` normalisation - carry-forward `(Nd)` re-stamping never duplicates. **No write-back into the note** (stamp_line would clobber it).
 - Checking a previously synced task (`- [x]`) marks it done in Vikunja on the next run.
 - Unknown project names are skipped, never auto-created.
@@ -163,7 +163,8 @@ not profile-aware; never prefer it when the binary exists.
 ## Rules
 
 - **Never hand-author a daily note file.** Run `notes today` (Rust CLI, profile-aware) - it handles carry-forward, day-tracking stamps, refs linking, and backlog footers that a manual write would silently break. (`journal-create` is the deprecated bash fallback.)
-- **Never edit the `<!-- since:YYYY-MM-DD -->` HTML comments** on carried items - the tool uses them to recompute the `(Nd)` suffix each day.
+- **Never edit the `#cYYMMDD` created tag** on a task (`#c261026` = 2026-10-26; older notes carry it as a `<!-- since:YYYY-MM-DD -->` comment, which the next carry rewrites as the tag). The tool recomputes the `(Nd)` suffix from it each day. Search by date with `rg '#c2610' ~/.notes/journal` (a month) or `notes tags c261026` (a day); `notes tags` leaves these out of its count list.
+- A due date you only want to see is a plain tag, `#due-1030`; it does nothing. `[YYYY-MM-DD]` is the scheduling verb (it defers the task to `schedule.md` until 2 days before).
 - For reading notes, it's fine to `cat` / grep / read files directly - they're plain markdown.
 - The user uses **shell + neovim** for notes editing, **never Obsidian**. All Obsidian traces were removed 2026-06-04; the old setup is archived at `~/.notes/_archive/obsidian/` (see its README). Do not reintroduce Obsidian config or plugins.
 - When adding a new daily task mid-day, edit today's note directly; `notes today` is idempotent (one note per day).

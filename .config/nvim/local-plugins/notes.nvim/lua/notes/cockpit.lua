@@ -77,10 +77,12 @@ local function open_at(file, line)
   pcall(vim.api.nvim_win_set_cursor, 0, { tonumber(line) or 1, 0 })
 end
 
--- Display form of a raw `## Focus` task line: drop the `<!-- since -->` comment and the
--- `- [ ] ` checkbox, keep the `(Nd)` age. e.g. "- [ ] buy drive (2d) <!-- … -->" → "buy drive (2d)".
+-- Display form of a raw `## Focus` task line: drop the `#cYYMMDD` created tag (or a legacy
+-- `<!-- since -->` comment) and the `- [ ] ` checkbox, keep the `(Nd)` age.
+-- e.g. "- [ ] buy drive (2d) #c261024 #high" -> "buy drive (2d) #high".
 local function task_display(text)
-  local t = text:gsub("%s*<!%-%-.-%-%->", "") -- strip HTML comment (the since-stamp)
+  local t = text:gsub("%s*<!%-%-.-%-%->", "") -- strip HTML comments (legacy since-stamp, cu:)
+  t = t:gsub("%s+#c%d%d%d%d%d%d%f[^%w]", "") -- strip the created tag (md::created_tag)
   t = t:gsub("^%s*%- %[[ xX/]%]%s*", "") -- strip the checkbox
   return vim.trim(t)
 end

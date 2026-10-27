@@ -233,7 +233,7 @@ mod tests {
         let c = "# Fun\n\n## Active\n- [ ] keep me (1d) <!-- since:2026-06-02 -->\n- [x] finished\n\n## Done\n- [x] old (done:2026-05-01)\n";
         let out = sweep(c, d("2026-06-05"));
         // active keeps the unchecked item, restamped
-        assert!(out.contains("- [ ] keep me (3d) <!-- since:2026-06-02 -->"));
+        assert!(out.contains("- [ ] keep me (3d) #c260602"));
         // checked item moved under Done with a done stamp
         assert!(out.contains("- [x] finished (done:2026-06-05)"));
         // existing done preserved
