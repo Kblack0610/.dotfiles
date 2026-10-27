@@ -162,6 +162,15 @@ EOF
   assert_output --partial 'no verdicts for 1 row(s)'
 }
 
+@test "judge runs the model call outside the caller's directory and cleans up after it" {
+  stub judge-stub 'pwd > "$NOTES_FIXTURE/judge.cwd"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
+  echo 'no markers' > "$NOTES_FIXTURE/judge.out"
+  run judge '{"project":"game","stage":"beta","lane":"human","key":"fix crash","text":"- [ ] fix crash","prio":2}'
+  cwd=$(cat "$NOTES_FIXTURE/judge.cwd")
+  [ "$cwd" != "$PWD" ]
+  [ ! -e "$cwd" ]
+}
+
 @test "judge sends prod rows before alpha rows when the batch is capped" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'

@@ -129,7 +129,7 @@ cmd_candidates() {
 
 # judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache
 judge() {
-  local cands="$1" prompt out verdicts
+  local cands="$1" prompt out verdicts wd rc
   [ -n "$cands" ] || return 0
   # Over the cap, prod rows are judged first, then beta, then alpha, each by priority.
   cands=$(jq -sc 'sort_by((.stage | {prod: 0, beta: 1}[.] // 2), .prio)[]' <<<"$cands" |
@@ -146,9 +146,15 @@ $(jq -c '{project, stage, lane, key, text}' <<<"$cands")
 For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
 {\"project\": ..., \"lane\": ..., \"key\": ..., \"size\": \"S|M|L\", \"clear\": true|false, \"agent_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
 Copy project, lane and key exactly as given."
+  # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
+  # tests after the answer, and the model's last message becomes a reply to the hook instead
+  # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
+  wd=$(mktemp -d)
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(AGENTCTL_MODEL="$DISPATCH_JUDGE_MODEL" $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null) ||
-    { say "judge call failed"; return 1; }
+  out=$(cd "$wd" && AGENTCTL_MODEL="$DISPATCH_JUDGE_MODEL" $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null)
+  rc=$?
+  rm -rf -- "$wd"
+  [ "$rc" = 0 ] || { say "judge call failed"; return 1; }
   verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
     jq -cR --arg at "$(date -Iseconds)" 'fromjson? | select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
