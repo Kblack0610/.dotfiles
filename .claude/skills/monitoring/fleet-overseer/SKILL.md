@@ -5,12 +5,14 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-25"
+  reviewed: "2026-10-26"
 ---
 
 # fleet-overseer
 
 This skill is the coordinator role from 2026-10-23, written down. About 15 sessions each started headless Unity runs, load reached 96 on 24 cores, Tctl reached 95.8 C, and the timing-sensitive test classes went red. Stopping them took an improvised process-tree trace, a hand-built kill, a dozen one-off messages, and a second kill when shell loops respawned the editors. This skill makes that a three-verb routine.
+
+The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting at 97% idle while sessions wait on the runner pool is as much a failure as one at 0% idle, and on 2026-10-26 it happened on the same evening as a meltdown. Every pass looks at both directions.
 
 It owns no product code. It owns two questions: does this machine have room for what is running (assess, hold, go), and is every session either working, waiting on the human, or finished and wound down (status, shepherd).
 
@@ -87,15 +89,20 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 
 One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode: a permission prompt stalls the loop while the human is away, and every pass adds to that session's context. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
 
-1. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `owners`. MAIN rows come first and lead the report: a red main is the most important thing on the board.
-2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
-3. For each LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
+1. **Pace check.** Run `fleet-assess` and read `top -bn1 | sed -n 3p`.
+   - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
+   - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
+   - Sessions stopped on the account's usage limit (the pane shows "weekly limit" or "/login"): escalate once to the human. Only they can log in.
+   - Otherwise the pace is fine; say the numbers in one line.
+2. `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `owners`. MAIN rows come first and lead the report: a red main is the most important thing on the board.
+3. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
+4. For each LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
    - LANDED: "PR #N merged and your tree is clean. Anything the human asked for in this session that has not landed is your next phase (your plan: `<plan_file>`). Run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then post an agent-ask with `--session <your tmux session>`, your recommendation and that reason. Only when everything the human asked for is landed: record board done with proof, then /wind-down."
    - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
    - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
    The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
-4. Rows for the human: NEEDS and UNCLEAR rows, MAIN rows with empty `owners`, and LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page. A MAIN row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
-5. Report, then page (see Reporting).
+5. Rows for the human: NEEDS and UNCLEAR rows, MAIN rows with empty `owners`, and LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page. A MAIN row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
+6. Report, then page (see Reporting). Lead with the pace line: load, idle, and what you did about it.
 
 ### Reporting
 
@@ -118,7 +125,8 @@ A session in a different permission mode holds a peer message for approval. If a
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.
 - Close, kill, or `/wind-down` a session yourself. The shepherd asks; the session winds itself down.
-- Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds.
+- Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The one exception is step 1's pace message to a session waiting on the pool.
+- Hold back sessions while the machine is under budget, or report "nothing to act on" while `top` shows the box idle with work queued. Both are pace failures.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
 
 ## Related
