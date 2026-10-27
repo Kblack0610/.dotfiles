@@ -224,6 +224,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "cleanupPeriodDays": 365,
   "remoteControlAtStartup": true,
   "additionalDirectories": [
     "/root",
