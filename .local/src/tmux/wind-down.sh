@@ -292,6 +292,25 @@ live_session_ids() {
   done
 }
 
+# UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
+# deferred by failing Stop checks otherwise fires at the next clean Stop, even when the
+# human has since started new work. Matched on the session id alone so a sentinel armed
+# from another directory (another project name) is found too. Never blocks a prompt.
+cmd_disarm() {
+  local sid='' payload f removed=0
+  [ ! -t 0 ] && payload=$(cat 2>/dev/null)
+  if [ -n "${payload:-}" ] && command -v jq >/dev/null 2>&1; then
+    sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
+  fi
+  sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
+  is_session_id "$sid" || return 0
+  for f in "$SPIN_DIR"/*__"$sid".request; do
+    [ -f "$f" ] && rm -f -- "$f" && removed=1
+  done
+  [ "$removed" = 1 ] && echo "wind-down disarmed: a new prompt arrived; run /wind-down again when this work is done."
+  return 0
+}
+
 cmd_sweep() {
   local dry=0 a
   for a in "$@"; do
@@ -344,8 +363,9 @@ case "${1:-}" in
   fire)      shift; cmd_fire "$@" ;;
   note-path) shift; cmd_note_path "$@" ;;
   sweep)     shift; cmd_sweep "$@" ;;
+  disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | sweep [-n]}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | sweep [-n] | disarm}" >&2
     exit 2
     ;;
 esac

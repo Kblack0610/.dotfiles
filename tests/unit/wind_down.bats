@@ -459,6 +459,58 @@ mk_scratch() {
   [ -d "$CLAUDE_SCRATCH_ROOT/-home-proj/$DEAD_STALE" ] || fail "swept with no liveness signal"
 }
 
+# -- disarm (the UserPromptSubmit hook) --
+# A new prompt means the work is not over, so a teardown that failing Stop checks
+# deferred must not fire at the next clean Stop.
+
+SID_A=11111111-2222-3333-4444-555555555555
+SID_B=66666666-7777-8888-9999-aaaaaaaaaaaa
+
+disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$1" disarm' _ "$WIND_DOWN" "$1"; }
+
+@test "disarm removes this session's sentinel whatever project it was armed under" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/dotfiles__$SID_A.request" "$SPIN_DIR/elsewhere__$SID_A.request"
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_success
+  assert_output --partial 'wind-down disarmed'
+  [ ! -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "own sentinel survived"
+  [ ! -e "$SPIN_DIR/elsewhere__$SID_A.request" ] || fail "sentinel armed from another dir survived"
+}
+
+@test "disarm leaves another session's sentinel and the legacy project-only one" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/dotfiles__$SID_B.request" "$SPIN_DIR/dotfiles.request"
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_success
+  assert_output ''
+  [ -e "$SPIN_DIR/dotfiles__$SID_B.request" ] || fail "removed another session's sentinel"
+  [ -e "$SPIN_DIR/dotfiles.request" ] || fail "removed the legacy sentinel"
+}
+
+@test "disarm with nothing armed is silent and succeeds" {
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_success
+  assert_output ''
+}
+
+@test "disarm with a malformed session id removes nothing" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/dotfiles__x.request" "$SPIN_DIR/dotfiles__$SID_A.request"
+  disarm '{"session_id":"*"}'
+  assert_success
+  [ -e "$SPIN_DIR/dotfiles__x.request" ] || fail "a glob id reached rm"
+  [ -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "a glob id reached rm"
+}
+
+@test "disarm falls back to CLAUDE_CODE_SESSION_ID when stdin has no payload" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/dotfiles__$SID_A.request"
+  run env CLAUDE_CODE_SESSION_ID="$SID_A" bash "$WIND_DOWN" disarm </dev/null
+  assert_success
+  [ ! -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "env fallback did not disarm"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 @test "an unknown verb is a usage error, not a silent no-op" {
