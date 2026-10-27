@@ -82,6 +82,15 @@ rows() {
   notes --profile "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3-
 }
 
+# row_is <profile> <project> <lane> <key> <mark> -- is that row on the board as `- [<mark>]`?
+# The board is read whole first: piped into `grep -q`, a large board dies of SIGPIPE and
+# pipefail reads the 141 as "not there".
+row_is() {
+  local board
+  board=$(rows "$1" "$2" "$3")
+  grep -qF "$4"$'\t'"- [$5]" <<<"$board"
+}
+
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
   jq -r '[.project, .lane, .key] | @tsv' "$VERDICTS" 2>/dev/null
@@ -197,10 +206,10 @@ launch() {
   [ "$lane" = agent ] && flag=(--agent)
 
   # Claim: the row must still be open right now, and `start` must leave THIS row started.
-  rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [ ]' ||
+  row_is "$prof" "$project" "$lane" "$key" ' ' ||
     { say "skip $project: row no longer open: $key"; return 1; }
   notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-  rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [/]' ||
+  row_is "$prof" "$project" "$lane" "$key" / ||
     { say "skip $project: could not start row: $key"; return 1; }
 
   model=$(model-lane classify "$text" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
@@ -234,7 +243,7 @@ cmd_reap() {
     project=$(sed -n 's/^project=//p' "$f"); prof=$(sed -n 's/^profile=//p' "$f")
     lane=$(sed -n 's/^lane=//p' "$f"); key=$(sed -n 's/^key=//p' "$f")
     flag=(); [ "$lane" = agent ] && flag=(--agent)
-    if rows "$prof" "$project" "$lane" | grep -qF "$key"$'\t''- [/]'; then
+    if row_is "$prof" "$project" "$lane" "$key" /; then
       notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
       jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" \
         '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "session ended without the row done", at: $at}' >> "$VERDICTS"
