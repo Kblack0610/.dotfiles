@@ -4,13 +4,18 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   new [-c <dir>]    cut a fresh worktree off the repo containing <dir> (default $PWD),
+#   new [-c <dir>] [--server <name>] [--detach]
+#                     cut a fresh worktree off the repo containing <dir> (default $PWD),
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
 #                     one is reset onto the trunk in place, keeping its ignored build caches.
 #                     Inside tmux it lands you in the new session AT ONCE; the fetch and
 #                     checkout then run in that session's first pane, where you can watch
 #                     them (and read any error), and the pane becomes your shell.
+#                     --server opens the session on that tmux server instead of the one
+#                     $TMUX points at; --detach opens it without going there. Together they
+#                     let a caller with no tmux of its own (fleet-dispatch, from a timer)
+#                     start a session on the lab server.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -59,6 +64,18 @@ WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
 # The command a new session's first window runs. Empty = a plain shell, which is the honest
 # default: `new` is a worktree primitive, and what you run in it is your business.
 WT_NEW_CMD="${WT_NEW_CMD:-}"
+# The tmux server `new --server` targets. Empty = whichever server $TMUX points at. Every
+# tmux call in this script goes through the function below, so one setting routes them
+# all; a call that names its own server with -L (the cross-server liveness checks) is
+# passed through untouched.
+WT_SERVER=""
+tmux() {
+  if [ -n "$WT_SERVER" ] && [ "${1:-}" != -L ]; then
+    command tmux -L "$WT_SERVER" "$@"
+  else
+    command tmux "$@"
+  fi
+}
 # Repo discovery for --list, so the picker sees worktrees of repos that have none under
 # $WT_ROOT yet (platform's siblings, for one). Same file the hooks resolve projects through.
 WT_PROJECT_MAP="${WT_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
@@ -244,7 +261,7 @@ wt_editor_open() {
 #
 # wt_other_servers -- live servers other than the one $TMUX points at (`default` outside tmux).
 wt_other_servers() {
-  local cur="${TMUX:-}" s
+  local cur="${WT_SERVER:-${TMUX:-}}" s
   cur="${cur%%,*}"
   cur="${cur##*/}"
   while IFS= read -r s; do
@@ -628,12 +645,24 @@ wt_ensure_session() {
 }
 
 cmd_new() {
-  local dir="$PWD"
+  local dir="$PWD" detach=0
   while [ $# -gt 0 ]; do
     case "$1" in
     -c | --cwd)
       dir="${2:-}"
       shift 2 || panel_die "-c needs a directory"
+      ;;
+    --server)
+      WT_SERVER="${2:-}"
+      [ -n "$WT_SERVER" ] || panel_die "--server needs a tmux server name"
+      shift 2
+      # The session goes to that server, not the caller's, so take the outside-tmux path:
+      # prepare here, then create the session detached.
+      unset TMUX
+      ;;
+    -d | --detach)
+      detach=1
+      shift
       ;;
     *) panel_die "new: unknown arg: $1" ;;
     esac
@@ -686,14 +715,14 @@ cmd_new() {
       "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind")" ||
       panel_die "could not create session $name"
     printf '%s\n' "$name"
-    panel_focus_session "$name"
+    [ "$detach" = 1 ] || panel_focus_session "$name"
     return 0
   fi
 
   wt_prepare "$main" "$path" "$n" "$kind" || exit 1
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   printf '%s\n' "$name"
-  panel_focus_session "$name"
+  [ "$detach" = 1 ] || panel_focus_session "$name"
 }
 
 # wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then put

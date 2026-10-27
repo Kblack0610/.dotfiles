@@ -122,6 +122,45 @@ add_wt() {
   assert_called "-c $WT_ROOT/repo-agent-1"
 }
 
+@test "new --server --detach opens the session on that server and focuses nothing" {
+  # fleet-dispatch runs from a timer with no tmux of its own and puts sessions on the lab
+  # server; attaching would grab a terminal it does not have.
+  make_repo
+  WT_NEW_CMD='true' run "$WT" new --server lab --detach -c "$MAIN"
+  assert_success
+  assert_output --partial 'repo-agent-1'
+  assert_called 'tmux -L lab new-session -ds repo-agent-1'
+  assert_not_called 'attach'
+  assert_not_called 'switch-client'
+}
+
+@test "new --detach inside tmux opens the session without switching to it" {
+  make_repo
+  TMUX="/tmp/fake,1,0" run "$WT" new --detach -c "$MAIN"
+  assert_success
+  assert_called 'new-session -ds repo-agent-1'
+  assert_not_called 'switch-client'
+}
+
+@test "new --server still sees a session live on the DEFAULT server" {
+  # Routing calls to lab must not stop the default server being asked: a slot whose
+  # session sits there is taken, so the next slot is cut.
+  command -v python3 >/dev/null || skip "python3 needed to make a socket"
+  make_repo
+  export TMUX_TMPDIR
+  TMUX_TMPDIR="$(mktemp -d /tmp/wtx.XXXXXX)"
+  mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
+  for s in default lab; do
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$s"
+  done
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  WT_NEW_CMD='true' run "$WT" new --server lab --detach -c "$MAIN"
+  rm -rf "$TMUX_TMPDIR"
+  assert_success
+  assert_equal "${lines[-1]}" repo-agent-2
+}
+
 @test "new run INSIDE a worktree cuts the next slot of the same repo" {
   # The bug this exists to prevent: resolving the repo with --show-toplevel instead of
   # --git-common-dir yields `repo-agent-1` as the repo, and the second worktree is called
