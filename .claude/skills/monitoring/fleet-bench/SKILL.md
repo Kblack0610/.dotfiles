@@ -36,6 +36,8 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 - `asks [--page]`: every pending ask from `agent-ask list --all --pending`, joined to the newest sample of the session its `session` field names (a session id or a tmux session name). It prints the digest; `--page` also writes `asks.md` in `BENCH_SCORECARD_DIR` and sends one `agent-notify -p normal -t asks` page with the counts and the top three. The agentctl runner `ask-digest` runs `--page` at 08:00 and 18:00.
 
+- `ledger [--json|--check]`: the consolidation ledger. It counts runner confs (`runners`, `runners_on` without `ENABLED=no`), generated `agentctl-*.timer` files, files with a direct headless `claude -p|--print` outside agentctl-run (`launches_direct`, gitignored build output skipped), distinct `last-outcome` verdicts, pending asks and those older than `ASK_STALE_DAYS` (14), and open agent-board rows. `--check` prints each of `runners`, `timers` and `launches_direct` that is over `~/.config/agentctl/ledger-baseline` and exits 1 (2 with no baseline). To add a runner, timer or launch, retire one or raise the baseline in the same PR with a why. The scorecard carries the counts and the check under "Consolidation ledger". `--launches DIR...` prints the scan's matches; `runner_contract.bats` uses it.
+
 ## How the numbers are made
 
 State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
