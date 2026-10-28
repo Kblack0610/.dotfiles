@@ -1,7 +1,7 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | sample | review | asks | ledger. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a local non-Claude model only once its runner names a route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a local non-Claude model only once its runner names a route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
@@ -36,6 +36,28 @@ Every number here is counted from samples. None is a model's grade, because mode
 - `asks [--write|--page]`: every pending ask from `agent-ask list --all --pending`, joined to the newest sample of the session its `session` field names (a session id or a tmux session name). It prints the digest; `--write` also writes `asks.md` in `BENCH_SCORECARD_DIR` and prints the one-line summary (counts and the top three) with no page and no verdict, for the morning briefing to carry; `--page` writes `asks.md` and sends that line as one `agent-notify -p normal -t asks` page, which the briefing's 18:45 run does.
 
 - `ledger [--json|--check]`: the consolidation ledger. It counts runner confs (`runners`, `runners_on` without `ENABLED=no`), generated `agentctl-*.timer` files, files with a direct headless `claude -p|--print` outside agentctl-run (`launches_direct`, gitignored build output skipped), distinct `last-outcome` verdicts, pending asks and those older than `ASK_STALE_DAYS` (14), and open agent-board rows. `--check` prints each of `runners`, `timers` and `launches_direct` that is over `~/.config/agentctl/ledger-baseline` and exits 1 (2 with no baseline). To add a runner, timer or launch, retire one or raise the baseline in the same PR with a why. The scorecard carries the counts and the check under "Consolidation ledger". `--launches DIR...` prints the scan's matches; `runner_contract.bats` uses it.
+
+- `kpi [--json]`: the KPI table over the last 7 and 28 days (`| KPI | 7d | 28d | threshold | status |`), or one JSON object keyed by KPI; the scorecard carries it under "KPIs", right after the headline.
+
+- `retro`: for each KPI whose 7d value is past its threshold, keeps exactly one open row `kpi: <key> past threshold: 7d <v> (28d <v>, max <t>)` on the agent-runtime agent board (`now <v> (max <t>)` for a count taken now): it adds the row (`#high` when more than 2x past, else `#low`) or refreshes its numbers with `ptask edit`, and touches no other row. WORKED when it wrote, NOOP otherwise, and NOOP with no notes call when there is no thresholds file. The briefing runs it on Mondays.
+
+### KPIs
+
+Windows count human sessions by `updated_epoch` in session-outcomes; a line with `runner: true` or project `_runner` is headless and left out (older lines have no `runner` field and count as human). A ratio over zero is `-` (null in `--json`).
+
+| Key | Value |
+|---|---|
+| `sessions` | human sessions seen in the window |
+| `prs_per_session` | sum `prs_merged` / sessions |
+| `revert_rate` | sum `reverted_7d` / sum `prs_merged` |
+| `interrupts_per_session` | sum `corrections.interrupts` / sessions |
+| `cost_per_pr` | sum `cost_usd` / sum `prs_merged` |
+| `ci_red_per_pr` | sum `ci_red` / rows in `pr-ci.jsonl` by `merged_epoch`, headless sessions' PRs left out |
+| `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
+| `asks_stale` (now) | the ledger's `asks_stale` |
+| `board_open` (now) | the ledger's `board_open` |
+
+Thresholds are data in `KPI_THRESHOLDS` (default `~/.config/agentctl/kpi-thresholds`, private overlay), one `<kpi>_max=` or `<kpi>_min=` line each. A KPI with no line has status `-`; a missing file leaves every status `-` and makes `retro` a NOOP.
 
 ## How the numbers are made
 

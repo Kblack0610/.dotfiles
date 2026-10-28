@@ -57,6 +57,15 @@ setup() {
   assert_line 'verdict_words=2'
 }
 
+@test "verdict words reads each file on its own: last-outcome has no trailing newline" {
+  for n in a b c; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf WORKED > "$AGENTCTL_STATE_DIR/a/last-outcome"
+  printf NOOP > "$AGENTCTL_STATE_DIR/b/last-outcome"
+  printf FAILED > "$AGENTCTL_STATE_DIR/c/last-outcome"
+  run "$SUBJECT" ledger
+  assert_line 'verdict_words=3'
+}
+
 @test "check holds at the baseline" {
   run "$SUBJECT" ledger --check
   assert_success

@@ -412,3 +412,165 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
   assert_output --partial FAILED
 }
+
+# --- kpi and retro ---
+
+# kpi_setup: empty point-in-time sources, a thresholds file, and a `notes` stand-in that
+# keeps a fake agent board as `ptask list` TSV and logs every call
+kpi_setup() {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
+  export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src" LEDGER_BOARDS="$SANDBOX/none.md"
+  export BENCH_ASKS_CMD=true BENCH_NOW=$T0
+  mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
+  printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
+  BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
+  printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
+  printf '#!/usr/bin/env bash\nB=%q; L=%q\n' "$BOARD" "$NLOG" > "$SANDBOX/bin/notes"
+  cat >> "$SANDBOX/bin/notes" <<'NS'
+echo "$*" >> "$L"
+[ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
+case "$4" in
+  list) cat "$B" ;;
+  add) k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
+       printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B" ;;
+  edit) [ "$6" = --text ] || exit 8
+        awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+esac
+NS
+  chmod +x "$SANDBOX/bin/notes"
+}
+
+# out_row <project dir> <jq object, $t is T0>: one session-outcomes line
+out_row() { jq -cn --argjson t "$T0" "$2" >> "$BENCH_OUTCOMES_DIR/$1/2026-10.jsonl"; }
+ci_row() { jq -cn --argjson t "$T0" "$1" >> "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
+
+# h1 inside 7d, h2 only inside 28d, h3 outside both; r1 and r2 are headless and never count
+kpi_fixture() {
+  mkdir -p "$FLEET_BENCH_DIR"
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 4, reverted_7d: 1, cost_usd: 8, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "h2", project: "game", updated_epoch: ($t - 864000), prs_merged: 1, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 0}}'
+  out_row game '{session_id: "h3", project: "game", updated_epoch: ($t - 3456000), prs_merged: 10, reverted_7d: 0, cost_usd: 1, corrections: {interrupts: 9}}'
+  out_row game '{session_id: "r1", project: "game", runner: true, updated_epoch: ($t - 86400), prs_merged: 50, reverted_7d: 50, cost_usd: 100, corrections: null}'
+  out_row _runner '{session_id: "r2", project: "_runner", updated_epoch: ($t - 86400), prs_merged: 30, reverted_7d: 30, cost_usd: 100, corrections: null}'
+  ci_row '{repo: "o/r", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 2}'
+  ci_row '{repo: "o/r", number: 2, session_id: "h2", merged_epoch: ($t - 864000), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 3, session_id: "r1", merged_epoch: ($t - 86400), ci_red: 9}'
+}
+
+@test "kpi: 7d and 28d over human sessions only; runners by flag or _runner project are left out" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1]}'
+  run "$SUBJECT" kpi
+  assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
+  assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
+  assert_line '| prs_per_session | 4 | 2.5 | min 1 | ok |'
+  assert_line '| cost_per_pr | 2 | 2 | - | - |'
+}
+
+@test "kpi: an empty window and zero merged PRs print - and null, never an error" {
+  kpi_setup
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 0, reverted_7d: 0, cost_usd: 3}'
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.sessions["7d"], .revert_rate["7d"], .cost_per_pr["7d"], .ci_red_per_pr["7d"], .interrupts_per_session["7d"], .revert_rate.status]' <<<"$output"
+  assert_output '[1,null,null,null,0,"-"]'
+  rm -r "$BENCH_OUTCOMES_DIR"
+  run "$SUBJECT" kpi
+  assert_success
+  assert_line '| sessions | 0 | 0 | - | - |'
+  assert_line '| revert_rate | - | - | max 0.1 | - |'
+}
+
+@test "kpi: runners_bad counts FAILED or STALLED scheduled runners, not off, hand-fired or retired ones" {
+  kpi_setup
+  printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf 'NAME=beta\nSCHEDULE=hourly\nENABLED=no\n' > "$LEDGER_CONF_DIR/beta.conf"
+  printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
+  printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
+  for n in alpha beta gamma delta gone; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf STALLED > "$AGENTCTL_STATE_DIR/delta/last-outcome"    # like wave: on, never scheduled
+  printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"    # no newline, like proof_report
+  printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
+  printf FAILED > "$AGENTCTL_STATE_DIR/gone/last-outcome"
+  echo runners_bad_max=0 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| runners_bad (now) | 1 | - | max 0 | past |'
+  assert_line '| asks_stale (now) | 0 | - | - | - |'
+}
+
+@test "kpi: no thresholds file leaves every status -" {
+  kpi_setup; kpi_fixture
+  rm "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_success
+  assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
+}
+
+@test "retro adds exactly one row per KPI past its threshold, #high when more than 2x past" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" retro
+  assert_success
+  run cut -f4 "$BOARD"
+  assert_output "$(printf '%s\n' '- [ ] other task #low' \
+    '- [ ] kpi: revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #high' \
+    '- [ ] kpi: interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #low')"
+  run grep -c ' add ' "$NLOG"
+  assert_output 2
+  run grep -c -e '--to' "$NLOG"
+  assert_output 0
+  run outcome
+  assert_output --partial WORKED
+}
+
+@test "a second retro edits the row in place instead of adding a duplicate; unchanged numbers write nothing" {
+  kpi_setup; kpi_fixture
+  "$SUBJECT" retro
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 3600), prs_merged: 4, reverted_7d: 2, cost_usd: 8, corrections: {interrupts: 2}}'
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  assert_success
+  [ "$(wc -l < "$BOARD")" -eq 3 ]
+  run grep -c 'kpi: revert_rate past threshold' "$BOARD"
+  assert_output 1
+  run grep 'revert_rate' "$BOARD"
+  assert_output --partial '7d 0.5 (28d 0.4, max 0.1)'
+  run cat "$NLOG"
+  assert_line 'ptask agent-runtime --agent edit kpi: revert_rate past threshold --text kpi: revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1)'
+  refute_output --partial ' add '
+  refute_output --partial 'interrupts_per_session'
+  run head -1 "$BOARD"
+  assert_output "$(printf 'board.md\t1\tother task\t- [ ] other task #low')"
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -cv ' list$' "$NLOG"
+  assert_output 0
+  run outcome
+  assert_output --partial NOOP
+}
+
+@test "retro with no thresholds file is NOOP and never calls notes" {
+  kpi_setup; kpi_fixture
+  rm "$KPI_THRESHOLDS"
+  run "$SUBJECT" retro
+  assert_success
+  assert_output --partial 'no KPI thresholds'
+  [ ! -e "$NLOG" ]
+  run outcome
+  assert_output --partial NOOP
+}
+
+@test "scorecard carries the KPI table between the headline and the sessions" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run grep -e '^## ' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 0 '## KPIs'
+  assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
+  assert_line --index 2 '## Sessions'
+}
