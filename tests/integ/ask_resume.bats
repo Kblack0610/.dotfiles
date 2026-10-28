@@ -15,12 +15,6 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
 
-  cat > "$SANDBOX/bin/agent-notify" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/agent-notify"
-
   # wave-start is the harness a `/wave` resume goes through (it owns the per-app lock, the
   # log and the status contract). Stub it, and record every invocation.
   cat > "$SANDBOX/bin/wave-start" <<'EOF'

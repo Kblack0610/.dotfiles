@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stub for `agent-notify`, installed for every test by sandbox_init.
+#
+# The real one pages the human's phone over ntfy. Before this stub existed, any subject that
+# paged in a test reached the real script through the inherited PATH, and a Claude session
+# exports NTFY_URL to its tool subprocesses: from 2026-10-28 every Stop-hook run of the suite
+# sent "wave roll failed: demoapp" to the phone at high (wave_roll_outcome.bats).
+#
+# Records the call in calls.log like every other stub, so `assert_called 'agent-notify'`
+# works. A test that counts or fails pages writes its own over this one.
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'agent-notify %s\n' "$*" >> "$FIX/calls.log"
+exit 0

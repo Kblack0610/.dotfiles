@@ -9,12 +9,6 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  # agent-notify is fired on answer; keep it off the real notification bus.
-  cat > "$SANDBOX/bin/agent-notify" <<'EOF'
-#!/usr/bin/env bash
-printf 'agent-notify %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
-EOF
-  chmod +x "$SANDBOX/bin/agent-notify"
 }
 
 post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }

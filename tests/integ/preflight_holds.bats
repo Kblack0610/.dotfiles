@@ -27,8 +27,6 @@ setup() {
      "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$DEPLOY/"
 
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-notify"
-  chmod +x "$SANDBOX/bin/agent-notify"
 }
 
 context() {

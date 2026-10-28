@@ -23,6 +23,8 @@ setup() {
   mkdir -p "$LEAK_DIR"
   export AGENTCTL_STATE="$LEAK_DIR"
   export AGENTCTL_NAME=inherited-runner
+  # A Claude session exports this to every tool subprocess, the Stop-hook suite included.
+  export NTFY_URL=http://127.0.0.1:9/inherited-topic
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -58,4 +60,18 @@ setup() {
 @test "an unset AGENTCTL_NAME falls back to the subject's own default, not the runner's" {
   run bash -c 'printf "%s" "${AGENTCTL_NAME:-wave}"'
   assert_output 'wave'
+}
+
+# From 2026-10-28 every Stop-hook run paged the human's phone: wave_roll_outcome.bats drives a
+# roll that fails, the subject calls agent-notify by name, the real one was next on PATH, and
+# NTFY_URL was inherited. Either half alone sends the page, so both are pinned.
+@test "sandbox_init detaches from an inherited NTFY_URL" {
+  [ -z "${NTFY_URL:-}" ]
+}
+
+@test "agent-notify resolves to the sandbox stub and records, never the real script" {
+  [ "$(command -v agent-notify)" = "$SANDBOX/bin/agent-notify" ]
+  run agent-notify -p high -t probe 'fixture page'
+  assert_success
+  assert_called 'agent-notify -p high -t probe fixture page'
 }
