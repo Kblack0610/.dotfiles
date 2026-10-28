@@ -168,12 +168,22 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
 }
 
 @test "a background shell is WORKING until FLEET_SHELL_STALE_MIN, then the facts decide" {
-  run b shell 0 0 0 119 1 0 0 875 MERGED PASS 1 - 3/3 -
+  run b shell 0 0 0 119 1 0 0 875 MERGED PASS 1 - 2/3 x
   assert_output 'WORKING shell'
-  run b shell 0 0 0 120 1 0 0 875 MERGED PASS 1 - 3/3 -
-  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell idle over 120m'
+  run b shell 0 0 0 120 1 0 0 875 MERGED PASS 1 - 2/3 x
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell idle over 120m'
   FLEET_SHELL_STALE_MIN=30 run b shell 0 0 0 45 1 2 0 - - - 1 - 1/2 x
   assert_output 'STALLED 2 dirty file(s), no PR, background shell idle over 30m'
+}
+
+@test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
+  # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
+  run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
+  run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING shell'
+  run b shell 0 1 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING shell'
 }
 
 @test "plan_phases counts the ## Phases checklist: [x] and [-] done, the first [ ] is next" {

@@ -12,6 +12,7 @@
 # last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn.
+# A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -40,9 +41,15 @@ session_bucket() {
     waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
     busy) echo "WORKING busy"; return ;;
     shell)
-      if [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then echo "WORKING shell"; return; fi
-      # The threshold, not the minutes: a reason that changed every pass would re-nudge every pass.
-      note=", background shell idle over ${FLEET_SHELL_STALE_MIN}m" ;;
+      # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
+      if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then
+        note=", background shell still running"
+      elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then
+        echo "WORKING shell"; return
+      else
+        # The threshold, not the minutes: a reason that changed every pass would re-nudge every pass.
+        note=", background shell idle over ${FLEET_SHELL_STALE_MIN}m"
+      fi ;;
   esac
   echo "$(bucket_facts "$@")$note"
 }
