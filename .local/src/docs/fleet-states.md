@@ -43,7 +43,7 @@ Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first
 | --- | --- | --- |
 | `NEEDS` | Waiting on a prompt, a pending ask, or plan approval | The human |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
-| `STALLED` | Idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
+| `STALLED` | Idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red. An open PR that conflicts with the default branch is STALLED after 20m idle even while busy or running a background shell, so it is checked before WORKING | The shepherd nudges once |
 | `LANDED` | PR merged, tree clean, and the plan has a next phase | The session starts it |
 | `DONE` | Every `## Phases` line ticked, nothing unlanded, no ask open, idle | The shepherd winds it down |
 | `UNCLEAR` | Not in a git repo, or its PR closed unmerged | A human look |
