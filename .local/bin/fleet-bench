@@ -55,6 +55,7 @@ def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
+def key: "\(.repo)#\(.number)";
 # per-phase minutes for each phase whose start and end were both sampled
 def phase_minutes:
   sort_by(.epoch)
@@ -248,12 +249,10 @@ in_window() {
   jq -c --arg f "$2" --argjson since $(( $3 - BENCH_WINDOW_H * 3600 )) 'select(.[$f] >= $since)' "$1"
 }
 
-window_scores() { in_window "$SCORES" done_epoch "$1"; }
-
 cmd_headline() {
   local t; t=$(now)
   [ -s "$PROGRESS" ] || { echo "bench: no samples yet"; return 0; }
-  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(window_scores "$t") \
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(in_window "$SCORES" done_epoch "$t") \
      --slurpfile c <(in_window "$CI" merged_epoch "$t") --slurpfile v <(in_window "$REVIEWS" reviewed_epoch "$t") "$JQ_LIB"'
     def h: . / 60 * 10 | floor / 10;
     def n($sev): map(.[$sev]) | add // 0;
@@ -315,18 +314,18 @@ cmd_nightly() {
   report_outcome WORKED "$path"
 }
 
-# merged_new <now> -> {repo, number, session_id} for every PR session-outcomes says merged in
-# the window that pr-ci.jsonl has not counted yet
+# merged_new <now> -> repo, number and session_id (tab-separated) for every PR session-outcomes
+# says merged in the window that pr-ci.jsonl has not counted yet
 merged_new() {
   local ci="$CI"
   [ -s "$ci" ] || ci=/dev/null
-  outcomes_newest | jq -cs --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --slurpfile c "$ci" '
-    ($c | map("\(.repo)#\(.number)") | INDEX(.)) as $have
+  outcomes_newest | jq -rs --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --slurpfile c "$ci" "$JQ_LIB"'
+    ($c | INDEX(key)) as $have
     | [.[] | .session_id as $sid | (.prs // [])[]
        | select(.state == "MERGED" and .merged_at != null)
        | select((.merged_at | fromdateiso8601) >= $since)
        | {repo, number, session_id: $sid}]
-    | unique_by("\(.repo)#\(.number)") | map(select($have["\(.repo)#\(.number)"] | not)) | .[]'
+    | unique_by(key) | map(select($have[key] | not)) | .[] | [.repo, .number, .session_id] | @tsv'
 }
 
 # pr_ci <repo> <number> <session> -> its size and the CI runs on its branch from its first
@@ -351,11 +350,10 @@ review_picks() {
   [ -s "$CI" ] || return 0
   local rv="$REVIEWS"
   [ -s "$rv" ] || rv=/dev/null
-  jq -cn --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --argjson max "$BENCH_REVIEW_MAX" \
-     --argjson cap "$BENCH_REVIEW_MAX_LINES" --slurpfile c "$CI" --slurpfile v "$rv" '
-    ($v | map("\(.repo)#\(.number)") | INDEX(.)) as $done
-    | $c | map(select(.merged_epoch >= $since and (.additions + .deletions) <= $cap
-                      and ($done["\(.repo)#\(.number)"] | not)))
+  jq -cn --argjson max "$BENCH_REVIEW_MAX" --argjson cap "$BENCH_REVIEW_MAX_LINES" \
+     --slurpfile c <(in_window "$CI" merged_epoch "$1") --slurpfile v "$rv" "$JQ_LIB"'
+    ($v | INDEX(key)) as $done
+    | $c | map(select((.additions + .deletions) <= $cap and ($done[key] | not)))
     | group_by(.session_id) | map(max_by(.additions + .deletions))
     | sort_by(-(.additions + .deletions)) | .[:$max][]'
 }
@@ -389,7 +387,7 @@ review_one() {
 }
 
 cmd_review() {
-  local t new pr row r n=0 red=0 k=0 failed=0 rv
+  local t new repo num sid row r n=0 red=0 k=0 failed=0 rv msg
   mkdir -p "$DIR"
   t=$(now)
   if [ "${1:-}" = --pick ]; then
@@ -397,10 +395,10 @@ cmd_review() {
     return 0
   fi
   new=$(merged_new "$t") || { report_outcome STALLED "outcomes unreadable"; return 1; }
-  while IFS= read -r pr; do
-    [ -n "$pr" ] || continue
-    if ! row=$(pr_ci "$(jq -r .repo <<<"$pr")" "$(jq -r .number <<<"$pr")" "$(jq -r .session_id <<<"$pr")"); then
-      say "gh failed counting $(jq -r '"\(.repo)#\(.number)"' <<<"$pr")"
+  while IFS=$'\t' read -r repo num sid; do
+    [ -n "$repo" ] || continue
+    if ! row=$(pr_ci "$repo" "$num" "$sid"); then
+      say "gh failed counting $repo#$num"
       report_outcome STALLED "gh failed counting CI"
       return 1
     fi
@@ -420,7 +418,8 @@ cmd_review() {
     done < <(review_picks "$t")
     rv="$k reviewed, $failed failed"
   fi
-  say "$n PRs counted, $red CI reds; $rv"
+  msg="$n PRs counted, $red CI reds; $rv"
+  say "$msg"
   if [ "$failed" -gt 0 ]; then
     report_outcome STALLED "$rv"
     return 1
@@ -429,7 +428,7 @@ cmd_review() {
     report_outcome NOOP "nothing new merged in the window"
     return 0
   fi
-  report_outcome WORKED "$n PRs counted, $red CI reds; $rv"
+  report_outcome WORKED "$msg"
 }
 
 # review_section <now> -> the scorecard's review lines

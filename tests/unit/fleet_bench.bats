@@ -224,7 +224,7 @@ iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 # A gh stand-in: pr view/diff and run list served from $GHD, every call logged.
 stub_review() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
-  printf '#!/usr/bin/env bash\nD="%s"\n' "$GHD" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
   cat >> "$SANDBOX/bin/gh" <<'GH'
 echo "gh $*" >> "$D/calls.log"
 [ -e "$D/fail" ] && exit 1
@@ -234,7 +234,7 @@ case "$1 $2" in
   "pr diff") echo "diff --git a/x b/x" ;;
 esac
 GH
-  printf '#!/usr/bin/env bash\nD="%s"\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
+  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "family=$AGENT_AUTHOR_FAMILY $1 $2" >> "$D/reviewer.log"
 cat "$D/reviewer.out"
