@@ -346,6 +346,7 @@ pr_ci() {
 # review_picks <now> -> PRs counted in the window and not yet reviewed, small enough for the
 # reviewer: the largest per session, largest first
 review_picks() {
+  [ -s "$CI" ] || return 0
   local rv="$REVIEWS"
   [ -s "$rv" ] || rv=/dev/null
   jq -cn --argjson max "$BENCH_REVIEW_MAX" --argjson cap "$BENCH_REVIEW_MAX_LINES" \
