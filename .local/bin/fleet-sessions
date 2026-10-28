@@ -5,6 +5,9 @@
 #   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
+#   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
+#   fleet-sessions watch [--every N] [--once]  stage board: one column per delivery stage, plus a
+#                                     log of what changed since the last tick
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
 # STALLED (nudge once), UNCLEAR, plus one MAIN row per repo whose default branch is red (the
@@ -29,6 +32,14 @@ ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # fleet-dispatch writes live/<tmux session> for each session it starts; its label= line is
 # the row that session is working, shown so the shepherd knows which sessions it fed.
 DISPATCH_LIVE="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/live"
+# Labels say what git, gh and the transcript cannot: a human's `hands-off` (the shepherd
+# leaves that session alone), or a session's own `quality:<step>` while a cleanup pass runs.
+# One file per session id, one label per line. Stages are derived every pass, never stored.
+LABELS="$LEDGER/labels"
+# watch: git, gh and the transcripts have no change event to await, so the board samples them
+# on this one cadence. A pass costs ~12s of gh and git, so a minute keeps it well under 10%.
+: "${FLEET_WATCH_EVERY:=60}"
+: "${FLEET_WATCH_LOG_LINES:=12}" # transitions shown above the table
 
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
@@ -143,6 +154,49 @@ ledger_write() {
 }
 mark()     { ledger_write "$1" fact "$2"; }
 escalate() { ledger_write "$1" escalated "$2"; }
+
+# labels_of <sid> -> the session's labels, comma-joined in the order set, or "-".
+labels_of() {
+  local l
+  l="$(paste -sd, "$LABELS/$1" 2>/dev/null)"
+  echo "${l:--}"
+}
+
+# resolve_sid <who> -> a session id: `self` is this session ($CLAUDE_CODE_SESSION_ID); anything
+# else matches a live session's id, target (lab/s1:1), tmux target (s1:1) or tmux session (s1).
+resolve_sid() {
+  local who="$1"
+  if [ "$who" = self ]; then
+    [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || { echo "fleet-sessions: self needs CLAUDE_CODE_SESSION_ID" >&2; return 2; }
+    echo "$CLAUDE_CODE_SESSION_ID"; return
+  fi
+  local sid
+  sid="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -r --arg w "$who" '
+    select(.session_id == $w or .target == $w or (.target | sub("^[^/]*/"; "")) == $w
+           or (.target | sub("^[^/]*/"; "") | sub(":[^:]*$"; "")) == $w) | .session_id' | head -1)"
+  [ -n "$sid" ] || { echo "fleet-sessions: no live session matches '$who'" >&2; return 2; }
+  echo "$sid"
+}
+
+# label <who> [+name|-name ...]: add or remove labels, then print the session's labels.
+label() {
+  local who="${1:-}" sid op name tmp
+  [ -n "$who" ] || { echo "usage: fleet-sessions label <who> [+name|-name ...]" >&2; return 2; }
+  sid="$(resolve_sid "$who")" || return 2
+  case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
+  shift
+  mkdir -p "$LABELS"
+  for op in "$@"; do
+    name="${op#[+-]}"
+    if [ "$name" = "$op" ] || ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9:._-]*$ ]]; then
+      echo "fleet-sessions: label ops are +name or -name ([A-Za-z0-9:._-]), got '$op'" >&2; return 2
+    fi
+    tmp="$(mktemp "$LABELS/.$sid.XXXXXX")" || return 1
+    { grep -vxF -- "$name" "$LABELS/$sid" 2>/dev/null; [ "${op:0:1}" = + ] && echo "$name"; } > "$tmp"
+    if [ -s "$tmp" ]; then mv "$tmp" "$LABELS/$sid"; else rm -f "$tmp" "$LABELS/$sid"; fi
+  done
+  labels_of "$sid"
+}
 
 # --- facts ------------------------------------------------------------------------------
 # Pending asks whose `session:` names this session (tmux session name or session id).
@@ -287,11 +341,34 @@ ahead_files() {
            <(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort) | wc -l
 }
 
+# fetch_once <dir>: with FLEET_FETCH=1 (watch sets it), fetch origin once per repo per pass,
+# so behind and conflicts are measured against the remote tip, not the last manual fetch.
+# Worktrees of one repo share its refs, so one fetch covers them all.
+fetch_once() {
+  [ "${FLEET_FETCH:-0}" = 1 ] || return 0
+  local key
+  key="$CACHE/fetched_$(repo_slug "$1")" || return 0
+  [ -f "$key" ] || { git -C "$1" fetch -q origin 2>/dev/null; : > "$key"; }
+}
+
+# sync_facts <dir> <base> -> "behind conflicts": commits on the base this branch lacks, and
+# whether merging the base in would conflict (yes|no). merge-tree touches no checkout.
+sync_facts() {
+  local d="$1" base="$2" behind conflicts=no
+  behind="$(git -C "$d" rev-list --count "HEAD..$base" 2>/dev/null)" || { echo "- -"; return; }
+  if [ "$behind" -gt 0 ]; then
+    git -C "$d" merge-tree --write-tree --no-messages "$base" HEAD >/dev/null 2>&1
+    case $? in 0) ;; 1) conflicts=yes ;; *) conflicts=- ;; esac
+  fi
+  echo "$behind $conflicts"
+}
+
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
-# plus branch: "git dirty ahead pr state ci in_pr branch".
+# plus branch and sync: "git dirty ahead pr state ci in_pr branch behind conflicts".
 git_facts() {
   local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
-  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 -"; return; }
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - -"; return; }
+  fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   dirty="$(dirty_count "$d" "$edited")"
   base="$(default_base "$d")"
@@ -304,7 +381,7 @@ git_facts() {
     if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
        && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
   fi
-  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--}"
+  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base")"
 }
 
 collect() {
@@ -322,7 +399,7 @@ collect() {
     idle=$(( (now - since) / 60 ))
     asks="$(asks_for "$tsess" "$sid")"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch < <(git_facts "$cwd" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
@@ -342,9 +419,10 @@ collect() {
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
-      "$pdone" "$ptotal" "$pnext" "$fin"
+      "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
+      "$(labels_of "$sid")"
   done
   main_rows
 }
@@ -364,7 +442,120 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+  done
+}
+
+# --- watch: the stage board -------------------------------------------------------------
+# board_cells: collect's rows on stdin -> one line per session, in bucket order:
+#   sid target sync conflicts tree pr ci plan quality stage labels idle reason
+# Columns 3-11 are the stages a transition is read from; idle moves every tick and reason
+# rides along to explain a stage change. MAIN rows are rendered separately.
+board_cells() {
+  awk -F'\t' -v OFS='\t' '
+    BEGIN { n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i }
+    $1 == "MAIN" { next }
+    {
+      t = $2; sub(/^[^\/]*\//, "", t)
+      git = ($5 != "-")
+      sync = !git || $20 == "-" ? "-" : ($20 == 0 ? "current" : $20 " behind")
+      conf = !git ? "-" : ($21 == "yes" ? "CONFLICT" : $21)
+      tree = !git ? "-" : ($24 > 0 ? $24 " dirty" : ($25 > 0 ? $25 " ahead" : "clean"))
+      pr = $6 == "-" ? "-" : "#" $6 " " tolower($22)
+      ci = $23 == "-" ? "-" : tolower($23)
+      plan = $16 == "-" ? "-" : $16 "/" $17
+      q = ""; l = ""
+      m = split($26 == "-" ? "" : $26, ls, ",")
+      for (i = 1; i <= m; i++)
+        if (ls[i] ~ /^quality:/) q = q (q == "" ? "" : ",") substr(ls[i], 9)
+        else l = l (l == "" ? "" : ",") ls[i]
+      print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
+            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", $11
+    }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-
+}
+
+# transitions <previous cells file> <current cells file> -> one line per session that
+# appeared, left, or changed a stage cell: "target  ci pending -> fail, stage ... (reason)".
+transitions() {
+  awk -F'\t' '
+    BEGIN { split("- - sync conflicts tree pr ci plan quality stage labels", name, " ") }
+    NR == FNR { prev[$1] = $0; next }
+    {
+      seen[$1] = 1
+      if (!($1 in prev)) { print $2 "  new: " $10 " (" $13 ")"; next }
+      split(prev[$1], p, "\t"); out = ""
+      for (i = 3; i <= 11; i++)
+        if (p[i] != $i) out = out (out == "" ? "" : ", ") name[i] " " p[i] " -> " $i
+      if (out != "") print $2 "  " out (p[10] != $10 ? " (" $13 ")" : "")
+    }
+    END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
+}
+
+# watch_tick -> one frame: run a pass, log what moved since the last tick (any watcher's: the
+# state file is shared and locked, so two boards log each change once), then the board.
+watch_tick() {
+  local rows cur new f now
+  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT # runs in $(...), so this is its own exit
+  rows="$(collect)"
+  cur="$CACHE/cells"; board_cells <<<"$rows" > "$cur"
+  now="$(date '+%Y-%m-%d %H:%M')"
+  mkdir -p "$LEDGER"
+  (
+    flock 9
+    if [ -f "$LEDGER/watch.state" ]; then
+      new="$(transitions "$LEDGER/watch.state" "$cur")"
+      [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
+    fi
+    cp "$cur" "$LEDGER/watch.state"
+  ) 9>"$LEDGER/watch.lock"
+
+  printf 'fleet watch  %s  %s session(s)\n\n' "$(date +%H:%M:%S)" "$(wc -l < "$cur")"
+  if [ -s "$LEDGER/watch.log" ]; then
+    tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
+  fi
+  f='%-34.34s %-10s %-9s %-9s %-13s %-8s %-5s %-12s %-8s %-16.16s %5s  %.60s\n'
+  # shellcheck disable=SC2059
+  printf "$f" SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY
+  while IFS=$'\t' read -r _ t sync conf tree pr ci plan q stage l idle why; do
+    # shellcheck disable=SC2059
+    printf "$f" "$t" "$sync" "$conf" "$tree" "$pr" "$ci" "$plan" "$q" "$stage" "$l" "$idle" "$why"
+  done < "$cur"
+  awk -F'\t' '$1 == "MAIN" { if (!h++) print "\nMAIN"; print "  " $11 }' <<<"$rows"
+}
+
+# paint: colour the words that need an eye, only on a terminal and without NO_COLOR.
+paint() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    sed -E -e $'s/\\b(STALLED|NEEDS|CONFLICT|fail|red)\\b/\033[31m&\033[0m/g' \
+           -e $'s/\\b(DONE|pass)\\b/\033[32m&\033[0m/g' -e $'s/\\b(LANDED|pending)\\b/\033[33m&\033[0m/g'
+  else cat; fi
+}
+
+# watch [--every N] [--once]: redraw the board every N seconds (FLEET_WATCH_EVERY); on a
+# terminal, n redraws now and q quits. --once draws one frame and exits.
+watch() {
+  local every="$FLEET_WATCH_EVERY" once=0 key frame
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --every) every="${2:-}"; shift 2 || shift ;;
+      --once) once=1; shift ;;
+      *) echo "usage: fleet-sessions watch [--every N] [--once]" >&2; return 2 ;;
+    esac
+  done
+  [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "fleet-sessions: --every takes whole seconds" >&2; return 2; }
+  export FLEET_FETCH=1
+  while :; do
+    frame="$(watch_tick)"
+    [ -t 1 ] && printf '\033[H\033[2J'
+    printf '%s\n' "$frame" | paint
+    [ "$once" = 1 ] && return 0
+    if [ -t 0 ]; then
+      printf '\nnext tick in %ss - n run now - q quit' "$every"
+      key=""; read -rsn1 -t "$every" key
+      [ "$key" = q ] && { echo; return 0; }
+    else
+      sleep "$every"
+    fi
   done
 }
 
@@ -372,7 +563,9 @@ main() {
   case "${1:-}" in
     mark) shift; mark "$@"; return ;;
     escalate) shift; escalate "$@"; return ;;
-    -h|--help) sed -n '2,10p' "$0"; return ;;
+    label) shift; label "$@"; return ;;
+    watch) shift; watch "$@"; return ;;
+    -h|--help) sed -n '2,13p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows
@@ -386,6 +579,12 @@ main() {
       phases_done: (if .[15] == "-" then null else .[15] | tonumber end),
       phases_total: (if .[16] == "-" then null else .[16] | tonumber end),
       next_phase: (if .[17] == "-" then null else .[17] end), finished: (.[18] == "1"),
+      behind: (if .[19] == "-" then null else .[19] | tonumber end),
+      conflicts: (if .[20] == "-" then null else .[20] == "yes" end),
+      pr_state: (if .[21] == "-" then null else .[21] end), ci: (if .[22] == "-" then null else .[22] end),
+      dirty: (if .[23] == "-" then null else .[23] | tonumber end),
+      ahead: (if .[24] == "-" then null else .[24] | tonumber end),
+      labels: (if .[25] == "-" then [] else .[25] | split(",") end),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
     return 0
   fi
@@ -393,10 +592,11 @@ main() {
   for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
-      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _; do
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl; do
         [ "$first" = 1 ] && { echo "$b"; first=0; }
-        printf '  %-44s %-28s %-6s %4sm  %s%s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
-          "$([ "$n" = 1 ] && echo '  (nudged)')" "$([ "${dsp:--}" != - ] && echo "  [dispatch: $dsp]")"
+        printf '  %-44s %-28s %-6s %4sm  %s%s%s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
+          "$([ "$n" = 1 ] && echo '  (nudged)')" "$([ "${dsp:--}" != - ] && echo "  [dispatch: $dsp]")" \
+          "$([ "${lbl:--}" != - ] && echo "  [labels: $lbl]")"
       done
     }
   done

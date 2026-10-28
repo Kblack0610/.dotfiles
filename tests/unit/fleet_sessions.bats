@@ -470,3 +470,90 @@ landed_fixture() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = '3 file(s) not on the default branch, no PR' ]
 }
+
+@test "end to end: behind and conflicts measure the branch against the remote tip" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .behind <<<"$output")" = 0 ]
+  [ "$(jq -r .conflicts <<<"$output")" = false ]
+
+  # origin/main moves on: one file the branch also changed, differently
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo mine > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m mine
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  echo theirs > "$SANDBOX/other/a.txt"
+  git -C "$SANDBOX/other" add a.txt
+  git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m theirs
+  git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
+
+  # without a fetch the clone has not seen it; watch fetches first (FLEET_FETCH=1)
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .behind <<<"$output")" = 0 ]
+  FLEET_FETCH=1 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .behind <<<"$output")" = 1 ]
+  [ "$(jq -r .conflicts <<<"$output")" = true ]
+}
+
+@test "label adds, removes and prints a session's labels, by target, tmux session or self" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 +hands-off
+  assert_output hands-off
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying
+  assert_output hands-off,quality:simplifying
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self -hands-off
+  assert_output quality:simplifying
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .labels <<<"$output")" = '["quality:simplifying"]' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label lab/s1:1 -quality:simplifying
+  [ "$output" = - ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
+}
+
+@test "label refuses an unknown session and a malformed op" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label nope +x
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 hands-off
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 '+../x'
+  assert_failure 2
+  [ ! -d "$FLEET_SHEPHERD_DIR/labels" ] || [ -z "$(ls -A "$FLEET_SHEPHERD_DIR/labels")" ]
+}
+
+# cells <sid> <target> <ci> <stage>: one board_cells line with everything else fixed
+cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
+
+@test "transitions names what appeared, left, or changed a stage cell, and nothing else" {
+  { cells a s-a pending WORKING; cells b s-b pass DONE; } > "$SANDBOX/prev"
+  # a: CI went red and the stage followed; b: only idle moved; c: new; (nothing left yet)
+  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/'; cells c s-c - LANDED; } > "$SANDBOX/cur"
+  run transitions "$SANDBOX/prev" "$SANDBOX/cur"
+  assert_line 's-a  ci pending -> fail, stage WORKING -> STALLED (why STALLED)'
+  assert_line 's-c  new: LANDED (why LANDED)'
+  [ "${#lines[@]}" -eq 2 ]
+  run transitions "$SANDBOX/cur" "$SANDBOX/prev"
+  assert_line 's-c  gone'
+}
+
+@test "end to end: watch --once draws the board and logs a change once, on the next tick" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE +PR +CI +PLAN +QUALITY +STAGE +LABELS +IDLE +WHY$'
+  assert_line --regexp '^s1:1 +current +no +clean +#875 merged +pass +1/2 +- +LANDED +- +60m  PR #875 merged'
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
+  assert_line --regexp '^s1:1 .* simplifying +LANDED '
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
+}
+
+@test "watch refuses a bad --every" {
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every 0
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every
+  assert_failure 2
+}
