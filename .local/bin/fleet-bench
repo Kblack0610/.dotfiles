@@ -6,15 +6,22 @@
 #                                any session whose phase moved, score any that finished
 #   fleet-bench eta [--json]     the latest ETA per live session
 #   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
+#   fleet-bench headline         the last 24h in one line (the popup and the nightly page)
+#   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
+#   fleet-bench nightly          scorecard, then one page with the headline
 #
 # State is ~/.agent/bench/{progress,estimates,scores}.jsonl. Every number is counted from
 # samples, never a model's judgment. Formulas, fields and outcomes: the fleet-bench skill.
-# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_LIB_DIR.
+# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
 
 set -uo pipefail
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --json}"
+: "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
+: "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
+: "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
+: "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -71,9 +78,10 @@ new_estimates() {
   [ -s "$est" ] || est=/dev/null
   jq -cn --argjson t "$t" --argjson def "$BENCH_DEFAULT_PHASE_MIN" \
      --slurpfile p "$PROGRESS" --slurpfile e "$est" "$JQ_LIB"'
-    ($p | group_by(.session_id) | map({key: .[0].session_id, value: (phase_minutes)}) | from_entries) as $bys
+    ($p | group_by(.session_id) | map({key: .[0].session_id,
+          value: (group_by(.plan_file) | map(phase_minutes) | add // [])}) | from_entries) as $bys
     | ($p | group_by(.project) | map({key: .[0].project,
-          value: (group_by(.session_id) | map(phase_minutes) | add // [])}) | from_entries) as $byp
+          value: (group_by([.session_id, .plan_file]) | map(phase_minutes) | add // [])}) | from_entries) as $byp
     | ($e | map("\(.session_id)/\(.phases_done)/\(.phases_total)") | INDEX(.)) as $have
     | $p | map(select(.epoch == $t)) | .[]
     | select(.finished | not) | select(.phases_total != null and .phases_done != null)
@@ -195,12 +203,101 @@ cmd_report() {
   printf 'Sampler last outcome: %s\n' "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
 }
 
+# window_stats -> one JSON object per session seen in the window: phases ticked, minutes
+# per bucket (each sample owns the gap to the next one, capped), nudges, peak context.
+window_stats() {
+  local t="$1"
+  jq -cn --argjson since $(( t - BENCH_WINDOW_H * 3600 )) --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
+     --slurpfile p "$PROGRESS" '
+    def mins($g; $b): [$g[] | select(.b == $b) | .m] | add // 0 | floor;
+    $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
+    | [range(0; length - 1) | {b: $r[.].bucket,
+         m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
+    | {session_id: .[0].session_id, target: (last.target), project: (last.project),
+     phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
+     ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
+     working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
+     nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
+     peak_context: (map(.context_tokens // 0) | max)}'
+}
+
+# outcomes_latest -> the newest session-outcomes line per session_id (its own reader rule)
+outcomes_latest() {
+  if compgen -G "$BENCH_OUTCOMES_DIR/*/*.jsonl" >/dev/null; then
+    cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl
+  fi | jq -cs 'map(select(.session_id)) | group_by(.session_id) | map(last)
+               | map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd}}) | from_entries'
+}
+
+# window_scores -> scores whose session finished inside the window
+window_scores() {
+  [ -s "$SCORES" ] || return 0
+  jq -c --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) 'select(.done_epoch >= $since)' "$SCORES"
+}
+
+cmd_headline() {
+  local t; t=$(now)
+  [ -s "$PROGRESS" ] || { echo "bench: no samples yet"; return 0; }
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(window_scores "$t") "$JQ_LIB"'
+    def h: . / 60 * 10 | floor / 10;
+    "bench \($win)h: \($w | length) sessions, \($w | map(.ticked) | add // 0) phases ticked, "
+    + "\($w | map(.waiting_min) | add // 0 | h)h waiting on you, \($w | map(.stalled_min) | add // 0 | h)h stalled, "
+    + (if ($s | length) == 0 then "no ETA finished yet"
+       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted" end)'
+}
+
+cmd_scorecard() {
+  local t day out
+  t=$(now); day=$(date -d "@$t" +%F)
+  [ -s "$PROGRESS" ] || { say "no samples yet"; return 1; }
+  mkdir -p "$BENCH_SCORECARD_DIR" || return 1
+  out="$BENCH_SCORECARD_DIR/$day.md"
+  {
+    echo "# Fleet bench, $day"
+    echo
+    echo "$(BENCH_NOW=$t cmd_headline)."
+    echo
+    echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
+    echo
+    echo "## Sessions"
+    echo
+    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | Reverts | Cost |"
+    echo "|---|---|---|---|---|---|---|---|---|---|---|"
+    jq -rn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" '
+      def h: . / 60 * 10 | floor / 10;
+      $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
+      | "| \(.target) | \(.phase) | \(.ticked) | \(.working_min | h) | \(.waiting_min | h) | \(.stalled_min | h) | \(.nudges) | \(.peak_context / 1000 | floor)k | \($x.prs_merged // "-") | \($x.reverted_7d // "-") | \(if $x.cost_usd then "$\($x.cost_usd * 100 | floor / 100)" else "-" end) |"'
+    echo
+    echo "## ETA accuracy"
+    echo
+    echo "Error is actual finish minus predicted (positive ran long). Ratio is actual over predicted duration."
+    echo
+    cmd_report | sed -n '/^ETA accuracy/,/^$/p' | sed '1d;/^$/d;s/^  /- /'
+  } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
+  echo "$out"
+}
+
+cmd_nightly() {
+  local path line
+  if ! path=$(cmd_scorecard); then
+    report_outcome STALLED "scorecard not written"
+    return 1
+  fi
+  line=$(cmd_headline)
+  command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t bench "$line; $path"
+  say "$line"
+  report_outcome WORKED "$path"
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
     eta) shift; cmd_eta "$@" ;;
     report) cmd_report ;;
-    -h | --help) sed -n '2,12p' "$0" ;;
+    headline) cmd_headline ;;
+    scorecard) cmd_scorecard ;;
+    nightly) cmd_nightly ;;
+    -h | --help) sed -n '2,15p' "$0" ;;
     *) sed -n '2,9p' "$0" >&2; return 2 ;;
   esac
 }
