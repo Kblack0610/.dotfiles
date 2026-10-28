@@ -110,6 +110,11 @@ sandbox_init() {
   # wave-start and claude stubbed, to assert exactly that behaviour.
   export AGENT_ASK_NO_RESUME=1
 
+  # Detach from every real notification channel. agent-notify is stubbed below, but a few
+  # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
+  # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
+  unset NTFY_URL NTFY_TOKEN SLACK_WEBHOOK_URL DISPLAY
+
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"

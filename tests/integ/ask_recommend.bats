@@ -16,11 +16,6 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  cat > "$SANDBOX/bin/agent-notify" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/agent-notify"
 }
 
 gate() { # [recommended]
