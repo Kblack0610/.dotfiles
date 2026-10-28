@@ -615,6 +615,35 @@ frame_fixture() {
   [ "$n" -eq 1 ] || fail "expected one s1 row, got $n: $output"
 }
 
+# caught <pid> <signo>: the process has a handler installed for that signal (/proc SigCgt).
+caught() {
+  local m; m="$(awk '/^SigCgt:/ { print $2 }' "/proc/$1/status" 2>/dev/null)"
+  [ -n "$m" ] && (( (16#$m >> ($2 - 1)) & 1 ))
+}
+
+@test "wait_key: a resize ends the wait at once, a key comes back" {
+  # bash 5.3 runs a trap during `read -t` and keeps reading, so a WINCH trap in the main shell
+  # never ended the board's wait. The read must sit in a subshell that exits on WINCH.
+  local fifo="$BATS_TEST_TMPDIR/in" pid kid start
+  mkfifo "$fifo"; exec 7<>"$fifo"
+  start=$SECONDS
+  wait_key 30 <&7 > "$BATS_TEST_TMPDIR/out" & pid=$!
+  # Signal only once the subshell's trap is in place: before that a WINCH is simply ignored.
+  for _ in $(seq 200); do
+    for kid in $pid $(pgrep -P "$pid"); do caught "$kid" 28 && break 2; done
+    sleep 0.05
+  done
+  caught "$kid" 28 || fail "no process caught WINCH"
+  kill -WINCH "$kid"
+  wait "$pid"
+  [ $((SECONDS - start)) -lt 10 ] || fail "the wait ran to its timeout"
+  [ ! -s "$BATS_TEST_TMPDIR/out" ]
+  printf n >&7
+  run wait_key 30 <&7
+  assert_output n
+  exec 7>&-
+}
+
 @test "watch refuses a bad --every" {
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every 0
   assert_failure 2

@@ -176,6 +176,14 @@ Above the dispatch, below the definitions. It is **not** a library function beca
 must execute at the script's top-level scope; wrapped in a function it would only exit that
 function. This is the one duplication the library deliberately keeps.
 
+## A redraw wait ends on a resize
+
+```bash
+key="$(trap 'exit 0' WINCH; read -rsn1 -t "$SECS" k && printf '%s' "$k")"
+```
+
+A board that redraws on a timer waits for a key like this, so a resize (a popup opening over it) redraws at once. A trap in the main shell does not do it: bash 5.3 runs the trap during `read -t` and then keeps reading until the timeout, so `trap ':' WINCH` around a plain `read` silently waits the whole tick. Measure the width after the wait, where stdout is the terminal. Tested in `tests/unit/fleet_sessions.bats` (wait_key).
+
 ## Geometry lives in `.tmux.conf`
 
 Three named sizes, as `%hidden` constants:
