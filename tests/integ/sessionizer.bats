@@ -495,3 +495,55 @@ in_world() {
   refute_output --partial 'hub:board'
   assert_output 'here declared-win'
 }
+
+# ── A worktree takes its repo's world ────────────────────────────────────────
+#
+# wt cuts and recycles agent worktrees all day, so no manifest can name them. Before this they
+# routed `here`: picking ~/.worktrees/unity-core-playground-agent-23 from hub built a second
+# session for it on hub while the real one sat on lab.
+
+# real_repo_with_worktree <repo-dir> <worktree-dir> -- a repo with one commit and a linked
+# worktree, because the route asks git which checkout a worktree belongs to.
+real_repo_with_worktree() {
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com
+  export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  git init --quiet -b main "$1"
+  git -C "$1" commit --quiet --allow-empty -m seed
+  git -C "$1" worktree add --quiet "$2" -b "${2##*/}"
+}
+
+@test "--route sends a worktree of a declared repo to that repo's world, under its own name" {
+  real_repo_with_worktree "$HOME/dev/declared-lab" "$HOME/.worktrees/declared-lab-agent-1"
+  run "$SESSIONIZER" --route "$HOME/.worktrees/declared-lab-agent-1"
+  assert_success
+  assert_output 'lab declared-lab-agent-1'
+}
+
+@test "--route leaves a worktree of an UNdeclared repo here" {
+  # The negative control: the inheritance comes from the manifest, not from being a worktree.
+  real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
+  run "$SESSIONIZER" --route "$HOME/.worktrees/undeclared-agent-1"
+  assert_success
+  assert_output 'here undeclared-agent-1'
+}
+
+@test "picking a lab repo's worktree from hub makes its session on lab, then hops there" {
+  real_repo_with_worktree "$HOME/dev/declared-lab" "$HOME/.worktrees/declared-lab-agent-1"
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  in_world hub
+  run "$SESSIONIZER" "$HOME/.worktrees/declared-lab-agent-1"
+  assert_success
+  assert_called 'tmux -L lab new-session -ds declared-lab-agent-1'
+  assert_called 'tmx goto lab declared-lab-agent-1'
+  assert_not_called 'switch-client'
+}
+
+@test "a worktree whose session is already live on its world is hopped to, not remade" {
+  real_repo_with_worktree "$HOME/dev/declared-lab" "$HOME/.worktrees/declared-lab-agent-1"
+  printf 'declared-lab-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  in_world hub
+  run "$SESSIONIZER" "$HOME/.worktrees/declared-lab-agent-1"
+  assert_success
+  assert_called 'tmx goto lab declared-lab-agent-1'
+  assert_not_called 'new-session'
+}

@@ -33,9 +33,10 @@ setup() {
   : > "$NOTES_FIXTURE/tmux.no-session"
 }
 
+# make_repo [dir] -- a repo with one pushed commit, at $SANDBOX/repo unless told otherwise.
 make_repo() {
   ORIGIN="$SANDBOX/origin.git"
-  MAIN="$SANDBOX/repo"
+  MAIN="${1:-$SANDBOX/repo}"
   git init --quiet --bare -b main "$ORIGIN"
   git init --quiet -b main "$MAIN"
   printf 'seed\n' > "$MAIN/file.txt"
@@ -159,6 +160,47 @@ add_wt() {
   rm -rf "$TMUX_TMPDIR"
   assert_success
   assert_equal "${lines[-1]}" repo-agent-2
+}
+
+# A repo a server manifest declares gets its session on that server, whichever world the key
+# was pressed in. 2026-10-28: Prefix+F pressed on hub put three playground agents on hub's
+# socket while their 23 siblings sat on lab, because the repo routed `here`.
+declare_in_lab() {
+  export TMUX_SERVERS_DIR="$SANDBOX/manifests"
+  mkdir -p "$TMUX_SERVERS_DIR"
+  # `~`, because $SANDBOX has a space and the manifest format is whitespace-delimited.
+  printf 'game ~/dev/game\n' > "$TMUX_SERVERS_DIR/lab.conf"
+  make_repo "$HOME/dev/game"
+}
+
+@test "new pressed in hub on a repo lab declares makes the session on lab and hops there" {
+  declare_in_lab
+  export TMUX=/tmp/tmux-stub/hub,1,0
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "${lines[-1]}" game-agent-1
+  assert_called 'tmux -L lab new-session -ds game-agent-1'
+  assert_called 'tmx goto lab game-agent-1'
+  assert_not_called 'switch-client'
+}
+
+@test "new pressed in the declaring world itself stays put, with no hop" {
+  declare_in_lab
+  export TMUX=/tmp/tmux-stub/lab,1,0
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_called 'switch-client -t game-agent-1'
+  assert_not_called 'tmx goto'
+  assert_not_called 'tmux -L lab new-session'
+}
+
+@test "new --server still wins over the world a manifest declares" {
+  declare_in_lab
+  WT_NEW_CMD='true' run "$WT" new --server elsewhere --detach -c "$MAIN"
+  assert_success
+  assert_called 'tmux -L elsewhere new-session -ds game-agent-1'
+  assert_not_called 'tmux -L lab'
+  assert_not_called 'tmx goto'
 }
 
 @test "new run INSIDE a worktree cuts the next slot of the same repo" {

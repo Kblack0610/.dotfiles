@@ -132,11 +132,29 @@ current_world() {
   [ -n "$sock" ] && [ "$sock" != default ] && printf '%s\n' "$sock"
 }
 
+# owner_repo <dir> -- the main checkout a LINKED worktree belongs to, rc 1 for anything else.
+#
+# A linked worktree's .git is a file; so is a submodule's, whose common dir sits under the
+# superproject's .git/modules and so never strips to a checkout a manifest could name.
+owner_repo() {
+  local common
+  [ -f "$1/.git" ] || return 1
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  [ "${common##*/}" = .git ] || return 1
+  printf '%s\n' "${common%/.git}"
+}
+
 # route <dir> -- "<world> <session>", where world is `here` for anything undeclared.
+#
+# A worktree is in no manifest (wt makes and recycles them all day), so it takes the world of
+# the repo it was cut from, under its OWN session name. Without that, picking an agent
+# worktree from another world built a second session for it there.
 cmd_route() {
-  local dir="$1" decl
+  local dir="${1%/}" decl main
   if decl="$(declared_by "$dir")"; then
     printf '%s\n' "$decl"
+  elif main="$(owner_repo "$dir")" && decl="$(declared_by "$main")"; then
+    printf '%s %s\n' "${decl%% *}" "$(session_name "$dir")"
   else
     printf 'here %s\n' "$(session_name "$dir")"
   fi
@@ -280,6 +298,11 @@ go() {
   # (`tmx pick-all`) is a popup that hops worlds exactly this way.
   if [ "$world" != here ] && [ "$world" != "$(current_world)" ]; then
     panel_need tmx
+    # A worktree's session is in no manifest, so tmx's ensure cannot wake it and land would
+    # fall back to that world's last session. Make it on its own server first.
+    declared_by "$dir" >/dev/null ||
+      tmux -L "$world" has-session -t "=$name" 2>/dev/null ||
+      tmux -L "$world" new-session -ds "$name" -c "$dir"
     exec tmx goto "$world" "$name"
   fi
 

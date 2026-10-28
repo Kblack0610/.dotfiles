@@ -12,8 +12,10 @@
 #                     Inside tmux it lands you in the new session AT ONCE; the fetch and
 #                     checkout then run in that session's first pane, where you can watch
 #                     them (and read any error), and the pane becomes your shell.
-#                     --server opens the session on that tmux server instead of the one
-#                     $TMUX points at; --detach opens it without going there. Together they
+#                     A repo a server manifest declares (sessionizer.sh --route) gets its
+#                     session on THAT server, and you hop there, whichever world you
+#                     pressed the key in. --server opens the session on that tmux server
+#                     instead (of the declared one, or the one $TMUX points at); --detach opens it without going there. Together they
 #                     let a caller with no tmux of its own (fleet-dispatch, from a timer)
 #                     start a session on the lab server.
 #                                                                               [Prefix+F]
@@ -259,11 +261,17 @@ wt_editor_open() {
 # under a live agent. wt_tmux_all runs one tmux query on the current server, then on each
 # other live one, and concatenates the answers.
 #
-# wt_other_servers -- live servers other than the one $TMUX points at (`default` outside tmux).
-wt_other_servers() {
-  local cur="${WT_SERVER:-${TMUX:-}}" s
+# wt_current_server -- the server $TMUX points at, by name (`default` outside tmux).
+wt_current_server() {
+  local cur="${TMUX:-}"
   cur="${cur%%,*}"
   cur="${cur##*/}"
+  printf '%s\n' "${cur:-default}"
+}
+
+# wt_other_servers -- live servers other than the one calls go to (WT_SERVER, else $TMUX's).
+wt_other_servers() {
+  local cur="${WT_SERVER:-$(wt_current_server)}" s
   while IFS= read -r s; do
     [ -n "$s" ] && [ "$s" != "${cur:-default}" ] && printf '%s\n' "$s"
   done < <(panel_live_servers)
@@ -682,6 +690,18 @@ cmd_new() {
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
+  # The world whose manifest declares this repo (lab.conf names the playground), so Prefix+F
+  # lands the session there from whichever world it was pressed in. The sessionizer's route
+  # is the one routing table; an explicit --server still wins.
+  local world hop=0
+  if [ -z "$WT_SERVER" ] && panel_in_tmux; then
+    read -r world _ <<< "$("${SELF%/*}/sessionizer.sh" --route "$main")"
+    if [ -n "$world" ] && [ "$world" != here ] && [ "$world" != "$(wt_current_server)" ]; then
+      WT_SERVER="$world"
+      hop=1
+    fi
+  fi
+
   lock="$WT_LOCK_DIR/new-$repo.lock"
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
@@ -689,7 +709,9 @@ cmd_new() {
 
   # Prefix+F runs this with its output thrown away, so until the session exists the status
   # line is the only place to say anything.
-  panel_in_tmux && tmux display-message -d 20000 "wt: finding a free $repo slot..." 2>/dev/null
+  # `command tmux`: the message is for the client that pressed the key, which is on $TMUX's
+  # server even when the session is headed for another.
+  panel_in_tmux && command tmux display-message -d 20000 "wt: finding a free $repo slot..." 2>/dev/null
 
   # The slot is chosen BEFORE the fetch, against the trunk already on disk: that is what makes
   # landing instant. Safe, because the trunk only moves forward -- a worktree landed on the
@@ -708,14 +730,22 @@ cmd_new() {
   # From here the live session is what claims the slot -- wt_next_slot skips any slot with
   # one -- so the lock is released on return and a second press takes the NEXT slot.
   if panel_in_tmux; then
-    tmux display-message "wt: $kind $name, opening it" 2>/dev/null
+    command tmux display-message "wt: $kind $name, opening it" 2>/dev/null
     start="$path"
     [ "$kind" = recycle ] || start="$main"
     tmux new-session -ds "$name" -c "$start" \
       "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind")" ||
       panel_die "could not create session $name"
     printf '%s\n' "$name"
-    [ "$detach" = 1 ] || panel_focus_session "$name"
+    if [ "$detach" = 1 ]; then
+      :
+    elif [ "$hop" = 1 ]; then
+      # switch-client cannot cross servers; tmx owns the hop (detach -E, then attach there).
+      panel_need tmx
+      tmx goto "$WT_SERVER" "$name"
+    else
+      panel_focus_session "$name"
+    fi
     return 0
   fi
 

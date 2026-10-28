@@ -206,14 +206,17 @@ the name that manifest gives it - hopping servers if that is where it lives:
 | Picked | Goes to | Because |
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
-| `~/dev/bnb/platform` | `lab`, session `platform` | lab.conf declares it |
+| `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
+| `~/.worktrees/unity-core-playground-agent-3` | `lab`, session `unity-core-playground-agent-3` | a linked worktree takes its main repo's world, under its own name |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/dev/bnb/platform/apps/web` | wherever you are, session `web` | undeclared: **exact match only** |
+| `~/dev/bnb/games/engine/unity-core-playground/Assets` | wherever you are, session `Assets` | undeclared: **exact match only** |
 
 Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
 session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
+
+`wt new` (`Prefix+F`) asks the same route (`sessionizer.sh --route <main repo>`), so a declared repo's new agent session is created on its world and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
