@@ -557,3 +557,23 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every
   assert_failure 2
 }
+
+@test "end to end: a pass that cannot read agent-panel or gh keeps the last board and logs nothing" {
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" watch --once >/dev/null
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/panel.ok"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  assert_line 'could not read agent-panel this tick: showing the last good board, no changes logged'
+  assert_line --regexp '^s1:1 +current '
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  # gh down: every PR would read "-", which is a blink, not a change
+  cp "$SANDBOX/panel.ok" "$SANDBOX/bin/agent-panel"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_line --partial 'could not read gh pr list (wt) this tick'
+  assert_line --regexp '^s1:1 .* #875 merged '
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+}

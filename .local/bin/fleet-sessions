@@ -236,7 +236,7 @@ prs_for() {
             elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
             elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
             else "PASS" end),
-        .headRefOid ] | @tsv' 2>/dev/null) > "$key"
+        .headRefOid ] | @tsv' 2>/dev/null) > "$key" || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
   cat "$key"
 }
 
@@ -388,7 +388,11 @@ collect() {
   local now heavy line
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
-  "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | while IFS= read -r line; do
+  local panel
+  # A pass that could not read a source says so in $CACHE/unreadable, so watch never logs a
+  # blink (every session "gone", every PR "-") as a change.
+  panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
+  [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
@@ -500,16 +504,22 @@ watch_tick() {
   cur="$CACHE/cells"; board_cells <<<"$rows" > "$cur"
   now="$(date '+%Y-%m-%d %H:%M')"
   mkdir -p "$LEDGER"
+  # A blind pass keeps the last good state: what it could not read did not change.
+  [ -s "$CACHE/unreadable" ] && cp "$LEDGER/watch.state" "$cur" 2>/dev/null
   (
     flock 9
-    if [ -f "$LEDGER/watch.state" ]; then
+    if [ -s "$CACHE/unreadable" ]; then :
+    elif [ -f "$LEDGER/watch.state" ]; then
       new="$(transitions "$LEDGER/watch.state" "$cur")"
       [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
     fi
     cp "$cur" "$LEDGER/watch.state"
   ) 9>"$LEDGER/watch.lock"
 
-  printf 'fleet watch  %s  %s session(s)\n\n' "$(date +%H:%M:%S)" "$(wc -l < "$cur")"
+  printf 'fleet watch  %s  %s session(s)\n' "$(date +%H:%M:%S)" "$(wc -l < "$cur")"
+  [ -s "$CACHE/unreadable" ] && printf 'could not read %s this tick: showing the last good board, no changes logged\n' \
+    "$(sort -u "$CACHE/unreadable" | paste -sd, - | sed 's/,/, /g')"
+  echo
   if [ -s "$LEDGER/watch.log" ]; then
     tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
   fi
