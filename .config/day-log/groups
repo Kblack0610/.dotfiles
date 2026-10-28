@@ -1,0 +1,23 @@
+# day-log groups: where a merged PR sits on the day-log board, read from its title's
+# conventional-commit scope (feat(barrage): ...), or its type when it has none.
+#   <scope>[,<scope>...]  <group>   a scope not listed is a group of its own
+#   @<repo>  <area>                 a repo not listed is an area of its own
+
+@unity-core             Games
+@unity-core-playground  Games
+@.dotfiles              Fleet tooling
+@.dotfiles-private      Fleet tooling
+
+barrage                                     Barrage
+raiders,story                               Raiders
+dodginballs,hometown,townsfolk              DodginBalls and Hometown
+animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics  Engine
+test,ci,bench,scaling,game-eval,eval        Tests, CI and benches
+
+tmux,fleet-sessions,fleet,fleet-shepherd,fleet-dispatch,agent-mqtt   Fleet boards and shepherd
+fleet-bench,briefing,agent-ask              Metrics, asks and briefing
+agentctl,agent-run,agent-proof,board-runner,meeting-ingest  agentctl runners
+session-outcomes,hooks,stop-hook,dream,agent  Hooks, outcomes and dream
+skills,rules,claude,kb                      Skills and rules
+waybar,hypr                                 Desktop
+docs                                        Docs

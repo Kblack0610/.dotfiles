@@ -41,3 +41,9 @@ setup() {
   run awk '$1 == "hub" || $1 == "?hub" { print $1; exit }' "$HUB_CONF"
   assert_output 'hub'
 }
+
+@test "prefix+O goes to the hub:log window, and hub.conf declares it running day-log watch" {
+  assert_equal "$(bind_for O)" 'run-shell "tmx goto hub hub:log"'
+  run awk '$1 == "hub:log" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
+  assert_output 'day-log watch'
+}
