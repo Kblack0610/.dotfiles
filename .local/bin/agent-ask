@@ -109,8 +109,13 @@ cmd_post() {
   [ -n "$project" ] || project="$(resolve_project)"
   # An ask from inside tmux names its tmux session unless told otherwise, so fleet-sessions
   # can tell which session is waiting on it. 11 of 12 pending asks once had this empty.
-  if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
-    session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
+  # The tmux session is shared by every window in it, so a defaulted ask also records the
+  # asking Claude session's id, which fleet-sessions matches first. An explicit --session
+  # names someone else, so the poster's id is not theirs.
+  local owner=""
+  if [ -z "$session" ]; then
+    owner="${CLAUDE_CODE_SESSION_ID:-}"
+    [ -n "${TMUX:-}" ] && session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
   fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
@@ -138,6 +143,7 @@ cmd_post() {
     printf 'project: %s\n'    "$project"
     printf 'profile: %s\n'    "$(oneline "$profile")"
     printf 'session: %s\n'    "$(oneline "$session")"
+    printf 'claude_session: %s\n' "$(oneline "$owner")"
     printf 'agent: %s\n'      "$(oneline "$agent")"
     printf 'task: %s\n'       "$(oneline "$task")"
     printf 'kind: %s\n'       "$kind"

@@ -577,3 +577,19 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   assert_line --regexp '^s1:1 .* #875 merged '
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
+
+@test "an ask counts for the Claude session that asked, not every window of its tmux session" {
+  ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
+  printf 'status: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
+  run asks_for dotfiles sid-asker
+  assert_output 1
+  run asks_for dotfiles sid-neighbour
+  assert_output 0
+  # an ask from before the field still matches by tmux session name
+  printf 'status: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/b.md"
+  run asks_for dotfiles sid-neighbour
+  assert_output 1
+  printf 'status: answered\nsession: dotfiles\nclaude_session: sid-neighbour\n' > "$ASK_ROOT/demo/c.md"
+  run asks_for dotfiles sid-neighbour
+  assert_output 1
+}
