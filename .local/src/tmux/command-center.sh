@@ -190,9 +190,6 @@ fi
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0 # sourced by the test suite
 
 trap 'tput cnorm 2>/dev/null; exit 0' INT TERM
-# A resize must redraw at the new width. bash only interrupts `read` for a signal that
-# has a trap, so the empty trap is what makes WINCH end the wait below.
-trap ':' WINCH
 tput civis 2>/dev/null
 while :; do
   # Measured HERE, where stdout is the terminal. Inside $(frame) tput sees a pipe and
@@ -202,8 +199,8 @@ while :; do
   export COLUMNS LINES
   out="$(frame)"
   printf '\033[H\033[2J%s' "$out"
-  # One wait per frame: a keypress or a resize ends it early (q quits).
-  if read -rsn1 -t "$REFRESH_SECS" key; then
-    [ "$key" = q ] && { tput cnorm 2>/dev/null; exit 0; }
-  fi
+  # One wait per frame: a keypress or a resize ends it early (q quits). The read is in a
+  # subshell whose WINCH trap exits it, because bash 5.3 keeps reading after a trap runs.
+  key="$(trap 'exit 0' WINCH; read -rsn1 -t "$REFRESH_SECS" k && printf '%s' "$k")"
+  [ "$key" = q ] && { tput cnorm 2>/dev/null; exit 0; }
 done

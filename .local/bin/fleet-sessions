@@ -596,6 +596,13 @@ term_width() {
   [ "${w:-0}" -gt 0 ] 2>/dev/null && echo "$w"
 }
 
+# wait_key <secs> -> the key pressed, or nothing on a timeout or a resize. bash 5.3 runs a
+# trap during `read -t` and then keeps reading, so the read sits in a subshell whose WINCH
+# trap exits it: that is what lets a resize end the wait at once (CONVENTIONS.md).
+wait_key() {
+  (trap 'exit 0' WINCH; read -rsn1 -t "$1" k && printf '%s' "$k")
+}
+
 # paint: colour the words that need an eye, only on a terminal and without NO_COLOR.
 paint() {
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -629,8 +636,8 @@ watch() {
     [ "$once" = 1 ] && return 0
     if [ -t 0 ]; then
       printf '\nnext tick in %ss - n run now - q quit' "$((deadline - SECONDS))"
-      key=""; resized=0
-      read -rsn1 -t "$((deadline > SECONDS ? deadline - SECONDS : 1))" key
+      resized=0
+      key="$(wait_key "$((deadline > SECONDS ? deadline - SECONDS : 1))")"
       [ "$key" = q ] && { echo; return 0; }
       tick=1; [ "$resized" = 1 ] && [ -z "$key" ] && [ "$SECONDS" -lt "$deadline" ] && tick=0
     else
