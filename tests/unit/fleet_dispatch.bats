@@ -351,8 +351,10 @@ game_ready() {
 @test "run starts nothing once the live cap is reached" {
   game_ready
   export DISPATCH_MAX_LIVE=1
+  project other beta "$SANDBOX/repos/other"
+  row other human 'other work' '- [/] other work'
   mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=other\n' > "$FLEET_DISPATCH_DIR/live/other-agent-1"
+  printf 'project=other\nprofile=bnb\nlane=human\nkey=other work\n' > "$FLEET_DISPATCH_DIR/live/other-agent-1"
   printf 'other-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'live dispatched sessions'
@@ -392,4 +394,15 @@ game_ready() {
   run cmd_reap
   [ -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "reaped a live session"
   assert_not_called 'start'
+}
+
+@test "reap drops the ledger of a finished row even while its tmux session is still up" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [x] fix crash'
+  mkdir -p "$FLEET_DISPATCH_DIR/live"
+  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  assert_not_called 'start'
+  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "a done row kept its project's dispatch slot"
 }

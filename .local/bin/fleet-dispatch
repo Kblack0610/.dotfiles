@@ -300,16 +300,24 @@ launch() {
 
 # --- verbs ---------------------------------------------------------------------------
 
-# reap -- a ledger entry whose session is gone: done row -> drop it; row still started ->
-# un-start it and record `failed`, so it is not picked again until its text changes.
+# reap -- a ledger entry whose row is no longer started, or whose session is gone: done row ->
+# drop it; row still started with the session gone -> un-start it and record `failed`, so it
+# is not picked again until its text changes. A live session whose row is done is dropped too:
+# the human may reuse its tmux session after the dispatched Claude ends, and that must not
+# hold the project's dispatch slot.
 cmd_reap() {
   local f s project prof lane key flag
   for f in "$LIVE"/*; do
     [ -f "$f" ] || continue
     s="${f##*/}"
-    session_live "$s" && continue
     project=$(sed -n 's/^project=//p' "$f"); prof=$(sed -n 's/^profile=//p' "$f")
     lane=$(sed -n 's/^lane=//p' "$f"); key=$(sed -n 's/^key=//p' "$f")
+    if session_live "$s"; then
+      row_is "$prof" "$project" "$lane" "$key" / && continue
+      logline "reaped $s: $project $lane row no longer open (session still up): $key"
+      rm -f -- "$f"
+      continue
+    fi
     flag=(); [ "$lane" = agent ] && flag=(--agent)
     if row_is "$prof" "$project" "$lane" "$key" /; then
       notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
