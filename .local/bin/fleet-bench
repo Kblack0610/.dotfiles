@@ -23,12 +23,14 @@ NAME=fleet-bench
 
 say() { printf 'fleet-bench: %s\n' "$*" >&2; }
 
-report_outcome() {
+# agent-proof.sh owns the agentctl state dir and the last-outcome contract.
+proof_lib() {
   local lib="${BENCH_LIB_DIR:-$HOME/.local/lib}/agent-proof.sh"
-  [ -f "$lib" ] || return 0
   # shellcheck source=/dev/null
-  . "$lib" && proof_report "$NAME" "$@"
+  [ -f "$lib" ] && . "$lib"
 }
+
+report_outcome() { proof_lib && proof_report "$NAME" "$@"; }
 
 now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
@@ -188,7 +190,8 @@ cmd_report() {
     ' "$SCORES"
   fi
   echo
-  local st="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/$NAME/last-outcome"
+  local st=
+  proof_lib && st="$(proof_state_dir)/$NAME/last-outcome"
   printf 'Sampler last outcome: %s\n' "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
 }
 
