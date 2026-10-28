@@ -123,6 +123,17 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   assert_equal "$(windows_of "$SRV_A" main | grep -cx board)" 1
 }
 
+@test "a declared window renamed after creation is still found, not rebuilt" {
+  # The zsh prompt hook renamed declared windows to the git branch, so ensure's by-name
+  # lookup missed them and every Prefix o made another board. Identity is @tmx_window.
+  manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" rename-window -t 'main:board' feat/x
+  run "$TMX" ensure "$SRV_A"
+  assert_output --partial '0 created'
+  assert_equal "$(windows_of "$SRV_A" main | wc -l | tr -d ' ')" 2
+}
+
 @test "a window line whose session is not declared is skipped, not invented" {
   manifest "$SRV_A" "main $MDIR" "ghost:board $MDIR"
   run "$TMX" ensure "$SRV_A"

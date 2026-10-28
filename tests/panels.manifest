@@ -38,3 +38,4 @@ root    p     script       WIDE     .local/src/tmux/pr-viewer.sh          -
 root    P     script       SMALL    .local/src/tmux/projects.sh           -
 tags    l     bin-symlink  SMALL    .local/src/tmux/tags.sh               ls
 root    W     bin-symlink  SMALL    .local/src/tmux/tags.sh               pick
+root    o     bin-symlink  FULL     .local/src/tmux/servers.sh            peek hub watch
