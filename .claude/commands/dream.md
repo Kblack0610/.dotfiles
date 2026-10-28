@@ -1,112 +1,60 @@
 ---
-description: Dreaming — consolidate the agent corpus (outcomes/lessons/sessions) into lessons, memory/, and a staged mem0 queue, with a DREAMS.md diary
-allowed-tools: Bash, Read, Write, Glob, Grep
+description: Dreaming - run the nightly memory-consolidation sweep now for one project (outcomes/lessons/sessions -> lessons, memory/, a staged mem0 queue, and a DREAMS.md diary)
+allowed-tools: Bash, Read
 ---
 
-# /dream — On-Demand Memory Consolidation (Dreaming)
+# /dream - run a Dreaming sweep now
 
-Manually run a **Dreaming** sweep. Complements the scheduled nightly run
-(`agentctl-dream.timer` at 03:00) — use this when you've just finished a meaty
-stretch of work and want to consolidate now, not wait for the night.
+Runs the same sweep the nightly timer runs (`agentctl@dream`, 03:00), for one project, now. Use it after a long stretch of work you want consolidated before tomorrow's sessions start.
 
-The sweep is voiced by **Mnemosyne 🌙, the Dreamer** — the persistent identity that
-owns the `DREAMS.md` diary and the human-gated mem0 promotion gate (registry:
-`~/.dotfiles/.claude/PERSONAS.md`). Her canonical persona + prompt live in the
-headless `agentctl-dream` wrapper; this command is a thin front-end over it.
-
-Ported from OpenClaw's "Dreaming" (three-phase sleep cycle + evidence-based
-scoring), adapted to this system's substrate. Where OpenClaw scores a *recall
-store*, this scores the corpus the system already produces: measured **session
-outcomes** (`~/.agent/outcomes/{project}/`, written nightly by
-`agentctl-session-outcomes`), **lessons** (`~/.agent/lessons/{project}.md`),
-**session wind-downs** (`~/.agent/sessions/{project}/`), the notes journal, and git.
-The judge-scored evals (`~/.agent/evals/`) are an archive as of 2026-10-28, not an input.
-Recurrence across sessions/projects stands in for OpenClaw's recall-count.
-(The true recall store is a documented v2 — see the `dreaming` skill.)
-
-This is the interactive twin of the headless `agentctl-dream` wrapper the way
-`/remember` pairs with `agentctl-nightly-sync`. Both encode the same logic.
-
-**Split vs the other memory jobs (don't duplicate):**
-- `nightly-sync` (23:00) — raw **notes → mem0** (external daily facts).
-- **`dream` (03:00) — agent corpus → lessons / memory/ / staged mem0 queue** (reflection on the agent's own work).
-- `/remember` — on-demand notes+git → mem0 + Serena.
+This command holds no procedure. The sweep, Mnemosyne's voice and every gate live in one place, the `PROMPT` heredoc of `~/.local/bin/agentctl-dream`; the runbook is `~/.config/agentctl/DREAMING.md`. If an interactive run needs something the sweep lacks, add it to the script.
 
 ## Arguments
 
 `$ARGUMENTS` may contain:
-- `--project <name>` — sweep one project (default: the current project, resolved
-  via `~/.dotfiles/.config/shared-hooks/project-name.sh` from `$PWD`).
-- `--dry-run` — stage candidates + write the DREAMS.md diary, but **promote nothing**.
-- `--weekly` — also append the worst-5-sessions table to DREAMS.md (automatic on Mondays).
 
-To see the ranking without a sweep: `agentctl-session-outcomes worst --project <name> --days 7`.
+- `--project <name>`: the project to sweep. Default: the current one, from `$PWD`.
+- `--dry-run`: stage candidates and write the diary, promote nothing.
+- `--weekly`: also append the worst-5-sessions table to `DREAMS.md` (automatic on Mondays).
 
-## Fastest path
-
-This command is a thin front-end over the headless executor, which holds the full
-three-phase prompt. Just run it with the parsed flags:
+## Run
 
 ```bash
-~/.local/bin/agentctl-dream $ARGUMENTS
+if [[ " $ARGUMENTS " == *" --project"* ]]; then
+  args=($ARGUMENTS)
+else
+  . ~/.dotfiles/.config/shared-hooks/project-name.sh
+  args=(--project "$(resolve_project_name "$PWD")" $ARGUMENTS)
+fi
+~/.local/bin/agentctl-dream "${args[@]}"
 ```
 
-If no `--project` is given and you want the current repo, resolve it first:
+A sweep runs a headless model and takes several minutes: start it with `run_in_background` and wait for it to exit. Its output, including the verdict line and per-store counts, is also appended to `~/.local/log/dream.log`.
 
-```bash
-. ~/.dotfiles/.config/shared-hooks/project-name.sh
-proj=$(resolve_project_name "$PWD")
-~/.local/bin/agentctl-dream --project "$proj" ${ARGUMENTS}
-```
+## What it writes
 
-Then read back the result so you can summarize it to the user:
+Under `~/.agent/dreams/<project>/`:
 
-```bash
-state="$HOME/.agent/dreams/$proj"
-tail -40 "$state/DREAMS.md" 2>/dev/null            # latest diary entry
-cat "$state/mem0-queue.md" 2>/dev/null             # proposed cross-project writes (NOT posted)
-tail -5  "$HOME/.local/state/agentctl/dream/activity.log" 2>/dev/null
-```
+- `DREAMS.md`: the diary, one dated Light / REM / Deep Sleep entry per sweep.
+- `insights.md`: cited question-and-answer pairs and Lane B hypotheses, re-read by the next sweep.
+- `mem0-queue.md`: cross-project facts staged for you, each with a ready `curl`. Never posted for you.
+- `mem0-queue.expired.md`: queue blocks nobody approved within `MEM0_QUEUE_TTL_DAYS` (30), moved there by the script before the model runs.
 
-## What it does (reference — same logic as the wrapper)
-
-Three phases, in order. See `~/.local/bin/agentctl-dream` for the canonical prompt.
-
-1. **Light** — ingest recent outcomes/lessons/sessions/notes/git since the last
-   checkpoint; dedupe near-identical candidates; stage to `staging.json`. Promotes nothing.
-2. **REM** — over a 7-day window, surface recurring themes/frictions across sessions.
-   Promotes nothing; informs scoring + the diary.
-3. **Deep** — score each candidate with six weighted signals (Relevance .30, measured
-   outcome first; Frequency
-   .24, Query-diversity .15, Recency .15, Consolidation .10, Conceptual-richness .06;
-   +light/REM boosts), gate on `minScore 0.8 ∧ recurrence ≥ 3 ∧ distinct-sources ≥ 3`,
-   cap 10 promotions. Route survivors:
-   - project correction/pattern → append to `~/.agent/lessons/{project}.md`
-   - durable project fact → new `memory/` file (frontmatter schema) + **one** `MEMORY.md`
-     pointer line under an existing thematic section (see the index budget below)
-   - cross-project/user fact → **staged** to `~/.agent/dreams/{project}/mem0-queue.md`
-     with a ready-to-run `curl` (NEVER auto-posted to mem0)
-   - always: append an 80–180-word `## Light/REM/Deep Sleep` entry to `DREAMS.md`.
-
-**The `MEMORY.md` index budget.** The index is pointers, never content, and it is read
-with a hard size cap - past ~24KB the tail is dropped silently, so the oldest entries stop
-existing without anything going red. Three rules, all of which this sweep broke between
-2026-08-11 and 2026-09-15 until the index reached 51KB with 70 lines invisible:
-
-  1. **One line per memory file**, `- [Short label](file.md) - one clause`, under an existing
-     thematic heading. Never open a `## Added <date>` section, and never paste the sweep's
-     paragraph - that prose is what the memory file is for.
-  2. **A corroboration or correction edits the existing line and the existing file.** It does
-     not append a second line for the same file. Four files had four lines each this way.
-  3. **Check the size before writing.** If `MEMORY.md` is over 16KB, prune it in the same
-     sweep before adding: shorten hooks, merge sibling entries, retire superseded ones. An
-     index that cannot be read in full is worse than a short one.
-
-**Safety:** append-only, never destructive; dedupe before every write; mem0 stays
-human-gated. After reviewing `mem0-queue.md`, the user (or you, on explicit request)
-runs the staged `curl` lines to actually post.
+Outside it, a live sweep may append to `~/.agent/lessons/<project>.md` and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
 
 ## Report back
 
-Summarize: which project(s) swept, counts per store (lessons / memory / mem0-queued),
-the headline of the latest DREAMS.md entry, and how many mem0 proposals await approval.
+```bash
+state="$HOME/.agent/dreams/<project>"
+awk '/^# [0-9]{4}-[0-9]{2}-[0-9]{2}/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$state/DREAMS.md"
+grep -c '^curl ' "$state/mem0-queue.md"
+tail -3 ~/.local/state/agentctl/dream/activity.log
+```
+
+Tell the user: the project swept, counts per store (lessons, memory, mem0 queued), the question REM asked, and how many mem0 proposals await approval. To approve one, they run its `curl`.
+
+## Where it sits among the memory jobs
+
+- `nightly-sync` (23:00): raw notes -> mem0.
+- `dream` (03:00, or `/dream`): the agent's own corpus -> lessons, memory/, a staged mem0 queue.
+- `/remember` (on demand): notes and git -> mem0 and Serena.
