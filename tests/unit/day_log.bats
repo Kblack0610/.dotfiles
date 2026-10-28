@@ -163,3 +163,19 @@ rec() { local day="${*: -1}"; jq "${@:1:$#-1}" "$DAYLOG_DIR/$day.json"; }
   run awk 'length > 80' <<<"$output"
   assert_output ''
 }
+
+@test "a short pane keeps the summary: each table is cut to its share and says how many more" {
+  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
+  LINES=34 COLUMNS=100 run "$SUBJECT" watch --once
+  assert_success
+  assert_line --index 0 --partial 'day log  Wed 2026-10-28'
+  assert_output --partial '+26 more (l lists everything)'
+  [ "${#lines[@]}" -le 32 ]
+}
+
+@test "negative control: with no height every merged group is drawn" {
+  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
+  COLUMNS=100 run "$SUBJECT" watch --once
+  refute_output --partial 'more (l lists everything)'
+  assert_output --partial 'g30'
+}

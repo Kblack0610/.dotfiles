@@ -186,9 +186,20 @@ def spend: (.usage // []) | {cost: (map(.cost_usd) | add // 0), tokens: (map(.to
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 
-# frame <record> <width>: one board frame.
+# rows <n>: a fitted table's header and its first n rows, then a count of the rest; 0 keeps all.
+rows() {
+  awk -v n="$1" 'n == 0 || NR <= n + 1 { print; next } { more++ }
+    END { if (more) printf "  +%d more (l lists everything)\n", more }'
+}
+
+# frame <record> <width> [height]: one board frame. With a height, each table gets a share
+# of the rows left after the fixed lines (MERGED two shares) so the summary stays on screen.
 frame() {
-  local f="$1" w="$2" t; t="$(now)"
+  local f="$1" w="$2" h="${3:-0}" t share=0 tl="$DAYLOG_TIMELINE"; t="$(now)"
+  if [ "$h" -gt 0 ]; then
+    share=$(( (h - 29) / 6 )); [ "$share" -lt 2 ] && share=2
+    [ "$tl" -gt "$share" ] && tl="$share"
+  fi
   jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
     spend as $u
     | "day log  \(.date | strptime("%Y-%m-%d") | mktime | strftime("%a %Y-%m-%d"))  "
@@ -222,16 +233,16 @@ frame() {
     | .[]' "$f")"
   printf 'WAITING ON YOU (%s)\n' "$(grep -c . <<<"$wait")"
   if [ -n "$wait" ]; then
-    { printf '\t%s' KIND WHO WHY; echo; printf '%s\n' "$wait"; } | table_fit "$w" keep="1 2" flex=3 flexmin=20 cap="2:30"
+    { printf '\t%s' KIND WHO WHY; echo; printf '%s\n' "$wait"; } | table_fit "$w" keep="1 2" flex=3 flexmin=20 cap="2:30" | rows "$share"
   else echo "  nothing"; fi
   echo
 
   printf 'MERGED BY GROUP  (l: every PR)\n'
   jq -r "$JQ_VIEW"'
     "\tAREA\tGROUP\tN\tLAST\tLATEST",
-    (.merged | group_by(.area + "\u0000" + .group) | sort_by(.[0].area, -length)[]
+    (.merged | group_by(.area + "\u0000" + .group) | sort_by(-length, .[0].area)[]
      | last as $l | "\t\(.[0].area)\t\(.[0].group)\t\(length)\t\($l.merged_at | hm)\t#\($l.number) \($l | subject)")
-  ' "$f" | table_fit "$w" keep="2 3 4 1" flex=5 flexmin=16 right="3" cap="1:14 2:28"
+  ' "$f" | table_fit "$w" keep="2 3 4 1" flex=5 flexmin=16 right="3" cap="1:14 2:28" | rows "$((share * 2))"
   echo
 
   if jq -e '.open != null' "$f" >/dev/null; then
@@ -240,7 +251,7 @@ frame() {
       "\tPR\tREPO\tAGE\tCI\tBY\tTITLE",
       (.open[] | select(recent($now; $days))
        | "\t#\(.number)\t\(.repo)\t\(($now - (.created_at | fromdateiso8601)) / 3600 | floor)h\t\(if .draft then "draft" else (.ci // "-") end)\t\(.by // "-")\t\(subject)")
-    ' "$f" | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=16 right="3" opt="5" cap="2:22"
+    ' "$f" | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=16 right="3" opt="5" cap="2:22" | rows "$share"
     echo
   fi
 
@@ -250,12 +261,12 @@ frame() {
     jq -r "$JQ_VIEW"'
       "\tSESSION\tPLAN\tPHASE\tWORK h\tWAIT h\tPRS\tREDS\tCOST",
       (.bench.sessions[] | "\t\(.target | sub("^[^/]*/"; "") | sub(":1$"; ""))\t\(if (.plan // "") == "" then "-" else .plan end)\t\(.phase)\t\(.working_h)\t\(.waiting_h)\t\(.prs_merged // "-")\t\(.ci_reds // "-")\t\(.cost_usd | money)")
-    ' "$f" | table_fit "$w" keep="1 3 4 5 6 8 7 2" right="4 5 6 7 8" opt="2" cap="1:32 2:28"
+    ' "$f" | table_fit "$w" keep="1 3 4 5 6 8 7 2" right="4 5 6 7 8" opt="2" cap="1:32 2:28" | rows "$share"
     echo
   fi
 
   printf 'TIMELINE\n'
-  jq -r --argjson n "$DAYLOG_TIMELINE" '.timeline[-$n:] | reverse | .[] | "  " + .[11:]' "$f" | table_fit "$w"
+  jq -r --argjson n "$tl" '.timeline[-$n:] | reverse | .[] | "  " + .[11:]' "$f" | table_fit "$w"
 }
 
 # markdown <record>: the day with every PR, for the notes ref and the board's full list.
@@ -299,10 +310,11 @@ wait_key() {
   (trap 'exit 0' WINCH; read -rsn1 -t "$1" k && printf '%s' "$k")
 }
 
-term_width() {
-  local w
-  w="$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2)"
-  [ "${w:-0}" -gt 0 ] 2>/dev/null && echo "$w"
+# term_size -> "<rows> <cols>" of the controlling terminal, or nothing.
+term_size() {
+  local s
+  s="$(stty size 2>/dev/null </dev/tty)"
+  [[ "$s" =~ ^[1-9][0-9]*\ [1-9][0-9]*$ ]] && echo "$s"
 }
 
 paint() {
@@ -313,7 +325,7 @@ paint() {
 }
 
 watch() {
-  local every="$DAYLOG_EVERY" once=0 day="" key f="" width deadline=0 tick=1 resized=0
+  local every="$DAYLOG_EVERY" once=0 day="" key f="" size width height deadline=0 tick=1 resized=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --every) every="${2:-}"; shift 2 || shift ;;
@@ -328,9 +340,11 @@ watch() {
   trap 'resized=1' WINCH
   while :; do
     if [ "$tick" = 1 ]; then f="$(record "$day")"; deadline=$((SECONDS + every)); fi
-    width=""; [ -t 1 ] && width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
+    size=""; [ -t 1 ] && size="$(term_size)"
+    height="${size% *}"; width="${size#* }"; height="${height:-${LINES:-0}}"; width="${width:-${COLUMNS:-0}}"
     [ -t 1 ] && printf '\033[H\033[2J'
-    if [ -n "$f" ]; then frame "$f" "$width" | table_fit "$width" | paint
+    # the key line below takes two rows; whatever still does not fit is cut from the bottom
+    if [ -n "$f" ]; then frame "$f" "$width" "$height" | table_fit "$width" | { if [ "$height" -gt 2 ]; then head -n $((height - 2)); else cat; fi; } | paint
     else printf 'day log  %s\nno record for this day: [ and ] step, t today\n' "$day"; fi
     [ "$once" = 1 ] && return 0
     if [ -t 0 ]; then
