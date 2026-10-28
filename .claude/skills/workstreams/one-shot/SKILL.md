@@ -45,8 +45,8 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    ```
    `#low` stops the CLI defaulting the row to `#high`. Quote it, or zsh reads it as a comment. With `--pr-only`, add the `#oneshot` row but leave it open with the PR in the title, and leave the agent row started. If the project has no sheet (`no current project named ...`), say so in the wind-down note and skip it.
 
-8. **Wind down.** Invoke the `wind-down` skill. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
-   - **`--pr-only`**: the open PR is the end the human asked for, so skip wind-down's step 0 (it would read the open PR as unlanded and refuse).
+8. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
+   - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
    - **Blocked mode** (hard gate or red gate): write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
 
 ## Do NOT
