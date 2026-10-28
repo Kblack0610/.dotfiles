@@ -12,7 +12,7 @@ setup() {
   sandbox_init basic
   mkdir -p "$HOME/.config/agentctl/agents"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\nCOMMAND=true\nSCHEDULE=daily\n' "$n" \
+    printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047purpose of %s\047\nCOMMAND=true\nSCHEDULE=daily\n' "$n" "$n" \
       > "$HOME/.config/agentctl/agents/$n.conf"
   done
   # The matches come first, then far more than a pipe buffer of other timers.
@@ -28,6 +28,35 @@ setup() {
 @test "list survives a large list-timers output and shows every runner with its next run" {
   run "$AGENTCTL_BIN" list
   assert_success
-  assert_line --regexp '^alpha +oneshot .* Fri 01:00:00$'
-  assert_line --regexp '^beta +oneshot .* Fri 02:00:00$'
+  assert_line --regexp '^  alpha +idle +- +Fri 01:00:00 +purpose of alpha$'
+  assert_line --regexp '^  beta +idle +- +Fri 02:00:00 +purpose of beta$'
+}
+
+@test "list groups runners under their lane, in lane order, with the last verdict" {
+  sed -i 's/^LANE=observe/LANE=deliver/' "$HOME/.config/agentctl/agents/beta.conf"
+  mkdir -p "$AGENTCTL_STATE_DIR/alpha"
+  printf WORKED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --index 1 'deliver'
+  assert_line --index 2 --regexp '^  beta '
+  assert_line --index 3 'observe'
+  assert_line --index 4 --regexp '^  alpha +idle +WORKED [0-9]+s +Fri 01:00:00 '
+  refute_line 'learn'
+}
+
+@test "a conf with no LANE, or one outside the four, is listed as invalid with the reason (negative control)" {
+  sed -i '/^LANE=/d' "$HOME/.config/agentctl/agents/alpha.conf"
+  sed -i 's/^LANE=observe/LANE=misc/' "$HOME/.config/agentctl/agents/beta.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line 'invalid (reload skips these)'
+  assert_line --regexp '^  alpha +.*missing LANE'
+  assert_line --regexp '^  beta +invalid LANE=misc'
+}
+
+@test "a conf with no DESCRIPTION is invalid (negative control)" {
+  sed -i '/^DESCRIPTION=/d' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" list
+  assert_line --regexp '^  alpha +.*missing DESCRIPTION'
 }

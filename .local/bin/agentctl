@@ -33,6 +33,11 @@ PAUSE_FILE="$STATE_DIR/PAUSED"
 
 die() { printf 'agentctl: %s\n' "$*" >&2; exit 1; }
 
+# The four lanes, in the order `agentctl list` shows them. deliver ships work, observe
+# reports on state, learn turns activity into knowledge, maintain keeps the fleet's own
+# files tidy. README.md says which lane a new runner belongs in.
+AGENTCTL_LANES='deliver observe learn maintain'
+
 list_agent_names() {
     [ -d "$CONFIG_DIR" ] || return 0
     for f in "$CONFIG_DIR"/*.conf; do
@@ -58,7 +63,14 @@ load_agent() {
             *) printf 'invalid KIND=%s\n' "$KIND" >&2; exit 1 ;;
         esac
         [ "$NAME" = "$name" ] || { printf 'NAME=%s does not match filename %s\n' "$NAME" "$name" >&2; exit 1; }
-        : "${DESCRIPTION:=}"
+        # Every runner says which lane it is in and what it is for, so `agentctl list` can
+        # answer "what are all these" from the confs instead of from a README that drifts.
+        : "${LANE:?missing LANE ($AGENTCTL_LANES)}"
+        case " $AGENTCTL_LANES " in
+            *" $LANE "*) ;;
+            *) printf 'invalid LANE=%s (%s)\n' "$LANE" "$AGENTCTL_LANES" >&2; exit 1 ;;
+        esac
+        : "${DESCRIPTION:?missing DESCRIPTION (one line: what it is for)}"
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -70,6 +82,7 @@ load_agent() {
         printf 'NAME=%s\n' "$NAME"
         printf 'KIND=%s\n' "$KIND"
         printf 'COMMAND=%s\n' "$COMMAND"
+        printf 'LANE=%s\n' "$LANE"
         printf 'DESCRIPTION=%s\n' "$DESCRIPTION"
         printf 'SCHEDULE=%s\n' "$SCHEDULE"
         printf 'AUTOSTART=%s\n' "$AUTOSTART"
@@ -307,26 +320,62 @@ cmd_report() {
 # Subcommands
 # ----------------------------------------------------------------------
 
+# kv_get <KEY> - read one key from load_agent output on stdin.
+kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); exit}'; }
+
 cmd_list() {
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
-    printf '%-12s %-10s %-10s %-7s %-10s %s\n' NAME KIND STATE PID UPTIME NEXT
-    local found=0
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        found=1
-        local kind state pid uptime nextrun
-        kind=$(agent_field "$name" KIND)
-        [ -z "$kind" ] && kind="?"
-        state=$(unit_state "$name"); [ -z "$state" ] && state="-"
-        [ "$(agent_field "$name" ENABLED)" = no ] && [ "$state" != active ] && state="off"
-        pid=$(unit_pid "$name");     [ -z "$pid" ]   && pid="-"
-        uptime=$(unit_uptime "$name"); [ -z "$uptime" ] && uptime="-"
-        nextrun=$(unit_next_run "$name"); [ -z "$nextrun" ] && nextrun="-"
-        printf '%-12s %-10s %-10s %-7s %-10s %s\n' "$name" "$kind" "$state" "$pid" "$uptime" "$nextrun"
-    done < <(list_agent_names)
-    if [ "$found" -eq 0 ]; then
+    local -a names=()
+    mapfile -t names < <(list_agent_names)
+    if [ "${#names[@]}" -eq 0 ]; then
         printf '(no agents configured at %s)\n' "$CONFIG_DIR"
+        return 0
+    fi
+
+    # Load each conf once; a conf that does not load is listed under "invalid" with the
+    # reason, because reload skips it and nothing else would say so.
+    local name conf w=4
+    declare -A confs=() bad=()
+    for name in "${names[@]}"; do
+        [ "${#name}" -gt "$w" ] && w=${#name}
+        if conf=$(load_agent "$name" 2>&1); then confs[$name]=$conf; else bad[$name]=$conf; fi
+    done
+
+    local fmt="  %-${w}s  %-8s %-14s %-13s %s\n" cols="${COLUMNS:-160}"
+    # shellcheck disable=SC2059
+    printf "$fmt" NAME STATE LAST NEXT PURPOSE
+    local lane state last next desc out age now
+    now=$(date +%s)
+    for lane in $AGENTCTL_LANES; do
+        local header=0
+        for name in "${names[@]}"; do
+            [ -n "${confs[$name]:-}" ] || continue
+            conf=${confs[$name]}
+            [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
+            [ "$header" -eq 1 ] || { printf '%s\n' "$lane"; header=1; }
+            state=$(unit_state "$name")
+            case "$state" in active) state=running ;; inactive|"") state=idle ;; esac
+            [ "$(kv_get ENABLED <<<"$conf")" = no ] && [ "$state" != running ] && state=off
+            last=-
+            out=$(_outcome_file "$name")
+            if [ -s "$out" ]; then
+                age=$(( now - $(stat -c %Y "$out") ))
+                last="$(head -c 12 "$out") $(fmt_dur "$age")"
+            fi
+            next=$(unit_next_run "$name"); [ -z "$next" ] && next=-
+            desc=$(kv_get DESCRIPTION <<<"$conf")
+            # One row per runner, even under `watch`: the purpose is cut to the terminal.
+            desc=${desc:0:$(( cols > w + 44 ? cols - w - 44 : 20 ))}
+            # shellcheck disable=SC2059
+            printf "$fmt" "$name" "$state" "$last" "$next" "$desc"
+        done
+    done
+    if [ "${#bad[@]}" -gt 0 ]; then
+        printf 'invalid (reload skips these)\n'
+        for name in "${names[@]}"; do
+            [ -n "${bad[$name]:-}" ] && printf "  %-${w}s  %s\n" "$name" "$(tail -1 <<<"${bad[$name]}" | sed 's/^.*: line [0-9]*: //')"
+        done
     fi
     return 0
 }
@@ -599,7 +648,7 @@ cmd_help() {
 agentctl — manage named long-running Claude agents via systemd
 
 Usage:
-  agentctl list                  List all configured agents and their state
+  agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl status <name>         Detailed status for one agent
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
   agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)

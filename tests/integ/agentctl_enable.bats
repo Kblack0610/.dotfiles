@@ -13,7 +13,7 @@ setup() {
   sandbox_init basic
   TIMERS="$HOME/.config/systemd/user"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\nCOMMAND=/bin/true\nSCHEDULE=daily\n' "$n" > "$AGENTCTL_CONF_DIR/$n.conf"
+    printf 'NAME=%s\nKIND=oneshot\nLANE=maintain\nDESCRIPTION=\047test runner %s\047\nCOMMAND=/bin/true\nSCHEDULE=daily\n' "$n" "$n" > "$AGENTCTL_CONF_DIR/$n.conf"
   done
 }
 
@@ -89,8 +89,8 @@ setup() {
   echo 'ENABLED=no' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   run "$AGENTCTL_BIN" list
   assert_success
-  assert_line --regexp '^alpha +oneshot +off '
-  refute_line --regexp '^beta +oneshot +off '
+  assert_line --regexp '^  alpha +off '
+  refute_line --regexp '^  beta +off '
 }
 
 @test "pause and resume: one file, and list says so while it exists" {
