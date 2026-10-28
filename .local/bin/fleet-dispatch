@@ -18,7 +18,7 @@
 set -uo pipefail
 
 : "${DISPATCH_PROFILES:=bnb}"
-: "${DISPATCH_PER_PASS:=2}"
+: "${DISPATCH_PER_PASS:=1}"   # one new session a pass: each is easy to evaluate before the next
 : "${DISPATCH_MAX_LIVE:=4}"
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-overseer pace target
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
