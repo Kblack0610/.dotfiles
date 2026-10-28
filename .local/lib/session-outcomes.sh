@@ -89,26 +89,30 @@ so_transcript_metrics() {
 # word, and "reverted in #N" names the reverter (a re-apply PR says it). A revert pushed
 # without a PR is not seen.
 so_pr_index() {
+  # Each revert is parsed once into what it names, so matching a PR is comparisons only:
+  # regexes per (PR, revert) pair took 85 s over 561 PRs.
   jq -c --argjson days "$1" '
-    def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])";
-    (map(select(.state == "MERGED")
-         | . + {text: ((.title // "") + "\n" + (.body // ""))}
-         | select(.text | test(revert_re)))) as $rev
+    def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])(?!\\s+(in|by)\\b)";
+    [ .[] | select(.state == "MERGED")
+      | ((.title // "") + "\n" + (.body // "")) as $t
+      | select($t | test(revert_re))
+      | { number, at: (.mergedAt | fromdateiso8601),
+          title: ((.title // "") | capture("^Revert \"(?<t>.*)\"$").t // null),
+          refs: [ $t | split("\n")[] | capture(revert_re + "(?<rest>.*)").rest
+                  | scan("#([0-9]+)\\b")[0] | tonumber ],
+          shas: [ $t | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0] ] } ] as $rev
     | map(. as $p
         | { key: ($p.number | tostring),
             value: { state: $p.state, merged_at: $p.mergedAt,
                      reverted: ( $p.state == "MERGED" and $p.mergedAt != null
-                       and ([ $rev[]
-                              | select(.number != $p.number)
-                              | select(.title == ("Revert \"" + $p.title + "\"")
-                                       or (.text | split("\n")
-                                           | any(test(revert_re + "(?!\\s+(in|by)\\b)[^\\n]*#\($p.number)\\b")))
-                                       or ($p.mergeCommit.oid != null
-                                           and ([.text | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0]]
-                                                | any(. as $sha | $p.mergeCommit.oid | startswith($sha)))))
-                              | select(((.mergedAt | fromdateiso8601) - ($p.mergedAt | fromdateiso8601))
-                                       as $d | $d >= 0 and $d <= $days * 86400) ]
-                            | length > 0) ) } })
+                       and (($p.mergedAt | fromdateiso8601) as $at
+                            | ($p.mergeCommit.oid // "") as $oid
+                            | any($rev[];
+                                .number != $p.number
+                                and (.at - $at) >= 0 and (.at - $at) <= $days * 86400
+                                and (.title == $p.title
+                                     or (.refs | index($p.number)) != null
+                                     or ($oid != "" and any(.shas[]; . as $s | $oid | startswith($s))))))) } })
     | from_entries'
 }
 
