@@ -19,16 +19,18 @@
 # is "after ANY correction, update lessons"); most land as `cat >>` through Bash, not
 # Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
+# entrypoint is the first one a record carries: "sdk-cli" is a headless `claude -p`.
 so_transcript_metrics() {
   jq -nR '
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
     reduce (inputs | fromjson? | select(type == "object")) as $r (
-      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [],
+      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0 };
-      if $r.type == "assistant" then
+      (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
+      | if $r.type == "assistant" then
         (if $r.isApiErrorMessage == true then .api_error += 1 else . end)
         | reduce ($r.message.content | if type == "array" then .[] else empty end
                   | select(.type == "tool_use")) as $u (.;
@@ -71,20 +73,26 @@ so_transcript_metrics() {
         end
       else . end)
     | { prs: (.prs | unique),
+        entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors } }
   ' < "$1"
 }
 
-# so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt`
+# so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
 # array for ONE repo. stdout: {"<number>": {state, merged_at, reverted}}.
-# reverted = a merged PR titled `Revert "<title>"` (GitHub's button) or naming `(#N)`
-# (a `git revert` of a squash commit), merged within FINAL_DAYS after this one. Both
-# parens so #5 never matches #50. A revert pushed without a PR is not seen.
+# reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
+# `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
+# before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
+# this PR's merge commit. `#N\b` so #5 never matches #50; "revert-safe" is not a revert
+# word. A revert pushed without a PR is not seen.
 so_pr_index() {
   jq -c --argjson days "$1" '
-    (map(select(.state == "MERGED" and (.title | startswith("Revert \"")))) ) as $rev
+    def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])";
+    (map(select(.state == "MERGED")
+         | . + {text: ((.title // "") + "\n" + (.body // ""))}
+         | select(.text | test(revert_re)))) as $rev
     | map(. as $p
         | { key: ($p.number | tostring),
             value: { state: $p.state, merged_at: $p.mergedAt,
@@ -92,7 +100,11 @@ so_pr_index() {
                        and ([ $rev[]
                               | select(.number != $p.number)
                               | select(.title == ("Revert \"" + $p.title + "\"")
-                                       or (.title | contains("(#\($p.number))")))
+                                       or (.text | split("\n")
+                                           | any(test(revert_re + "[^\\n]*#\($p.number)\\b")))
+                                       or ($p.mergeCommit.oid != null
+                                           and ([.text | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0]]
+                                                | any(. as $sha | $p.mergeCommit.oid | startswith($sha)))))
                               | select(((.mergedAt | fromdateiso8601) - ($p.mergedAt | fromdateiso8601))
                                        as $d | $d >= 0 and $d <= $days * 86400) ]
                             | length > 0) ) } })

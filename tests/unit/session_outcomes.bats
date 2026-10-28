@@ -4,8 +4,9 @@
 #
 # Fixture: three registry sessions in one project. A opened PR #10 (merged, kept) and
 # closed a board row with --proof. B opened #11, which #12 reverted a day later. C hit an
-# API error, was interrupted, had a tool call rejected, and wrote a lesson. `gh` is the
-# sandbox stub serving canned `pr list` JSON; nothing here reaches the network.
+# API error, was interrupted, had a tool call rejected, and wrote a lesson. D is a headless
+# runner (entrypoint sdk-cli) that wrote a lesson. `gh` is the sandbox stub serving canned
+# `pr list` JSON; nothing here reaches the network.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -51,10 +52,17 @@ EOF
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w2","content":""}]}}
 {"type":"assistant","message":{"content":[{"ty
 EOF
+  # D: a dream sweep promoting a lesson, as `claude -p` records it.
+  cat > "$TR/d.jsonl" <<'EOF'
+{"type":"queue-operation"}
+{"type":"user","entrypoint":"sdk-cli","message":{"content":"sweep"}}
+{"type":"assistant","entrypoint":"sdk-cli","message":{"content":[{"type":"tool_use","id":"x1","name":"Bash","input":{"command":"cat >> ~/.agent/lessons/proj.md <<'X'\n- promoted\nX"}}]}}
+{"type":"user","entrypoint":"sdk-cli","message":{"content":[{"type":"tool_result","tool_use_id":"x1","content":""}]}}
+EOF
 
   # B and C both score friction 5, so cost (B 3, C 2) decides the order in `worst`.
   local s cost
-  for s in a:1 b:3 c:2; do
+  for s in a:1 b:3 c:2 d:0; do
     cost="${s#*:}" s="${s%:*}"
     jq -cn --arg s "$s" --arg t "$TR/$s.jsonl" --argjson u "$STOP" --argjson c "$cost" \
       '{session_id: ("sess-" + $s), project: "proj", transcript: $t, title: ("title " + $s),
@@ -72,7 +80,24 @@ EOF
 outcome() { cat "$AGENTCTL_STATE_DIR/session-outcomes/last-outcome"; }
 lines() { cat "$SO_OUT"/proj/*.jsonl; }
 # field <session-letter> <jq-path> - from the newest observation of that session
-field() { lines | jq -rs --arg s "sess-$1" "map(select(.session_id == \$s)) | last | $2"; }
+field() { cat "$SO_OUT"/*/*.jsonl | jq -rs --arg s "sess-$1" "map(select(.session_id == \$s)) | last | $2"; }
+# reverted <number> - so_pr_index over the shared revert fixture
+reverted() { (. "$REPO_ROOT/.local/lib/session-outcomes.sh"; so_pr_index 7 < "$BATS_TEST_TMPDIR/revs.json") | jq -r --arg n "$1" '.[$n].reverted'; }
+
+# The shapes the old title-only rule missed. 241 is private #241, which undid #240 by
+# re-arming a timer with "Reverts #240" in its body and no revert in its title.
+revert_fixture() {
+  cat > "$BATS_TEST_TMPDIR/revs.json" <<'EOF'
+[{"number":240,"state":"MERGED","title":"chore(agentctl): park the fleet-dispatch timer","body":"","mergedAt":"2026-10-27T14:55:14Z","mergeCommit":{"oid":"1111111aaaa"}},
+ {"number":241,"state":"MERGED","title":"chore(agentctl): re-arm the fleet-dispatch timer","body":"Reverts #240: the 2h dispatch loop stays on.","mergedAt":"2026-10-27T14:59:28Z","mergeCommit":{"oid":"2222222bbbb"}},
+ {"number":5,"state":"MERGED","title":"feat: five","body":"","mergedAt":"2026-10-27T10:00:00Z","mergeCommit":{"oid":"abcdef1234567"}},
+ {"number":50,"state":"MERGED","title":"feat: fifty","body":"","mergedAt":"2026-10-27T10:00:00Z","mergeCommit":{"oid":"5555555cccc"}},
+ {"number":60,"state":"MERGED","title":"fix: undo five","body":"This reverts commit abcdef1.","mergedAt":"2026-10-27T12:00:00Z","mergeCommit":{"oid":"6666666dddd"}},
+ {"number":61,"state":"MERGED","title":"feat: sixty-one","body":"","mergedAt":"2026-10-27T10:00:00Z","mergeCommit":{"oid":"7777777eeee"}},
+ {"number":62,"state":"MERGED","title":"docs: revert-safe parsing","body":"Follows #61.\nWe may revert this later.","mergedAt":"2026-10-27T12:00:00Z","mergeCommit":{"oid":"8888888ffff"}},
+ {"number":63,"state":"MERGED","title":"chore: tidy","body":"reverting #50 would break nothing","mergedAt":"2026-10-20T12:00:00Z","mergeCommit":{"oid":"9999999aaaa"}}]
+EOF
+}
 
 @test "three sessions -> three lines, WORKED, one gh call for the one repo" {
   run "$SUBJECT" run
@@ -80,6 +105,7 @@ field() { lines | jq -rs --arg s "sess-$1" "map(select(.session_id == \$s)) | la
   assert_equal "$(lines | wc -l)" 3
   assert_equal "$(outcome)" WORKED
   assert_equal "$(grep -c '^gh pr list -R o/r' "$GH_FIXTURE/calls.log")" 1
+  grep -q -- '--json number,state,title,mergedAt,body,mergeCommit' "$GH_FIXTURE/calls.log"
   [ -f "$SO_OUT/proj/2026-10.jsonl" ]
 }
 
@@ -104,6 +130,33 @@ field() { lines | jq -rs --arg s "sess-$1" "map(select(.session_id == \$s)) | la
   assert_equal "$(field c .corrections.interrupts)" 1
   assert_equal "$(field c .corrections.lessons_written)" 1
   assert_equal "$(field c '.prs | length')" 0
+}
+
+@test "a headless runner files under _runner and its lesson is not a correction" {
+  "$SUBJECT" run
+  [ -f "$SO_OUT/_runner/2026-10.jsonl" ]
+  assert_equal "$(field d .project)" _runner
+  assert_equal "$(field d .runner)" true
+  assert_equal "$(field d .corrections)" null
+  assert_equal "$(field c .runner)" false
+}
+
+@test "revert in a body: #241 Reverts #240" {
+  revert_fixture
+  assert_equal "$(reverted 240)" true
+  assert_equal "$(reverted 241)" false
+}
+
+@test "revert by commit: This reverts commit <sha> of #5's merge commit, not #50" {
+  revert_fixture
+  assert_equal "$(reverted 5)" true
+  assert_equal "$(reverted 50)" false
+}
+
+@test "not a revert: revert-safe, a revert word on another line, a revert outside the window" {
+  revert_fixture
+  assert_equal "$(reverted 61)" false
+  assert_equal "$(reverted 62)" false
 }
 
 @test "second run is NOOP and writes nothing" {
