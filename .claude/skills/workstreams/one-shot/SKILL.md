@@ -4,7 +4,7 @@ description: Take one task from description to landed and wound down with no che
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
-  reviewed: "2026-10-14"
+  reviewed: "2026-10-27"
 ---
 
 # one-shot
@@ -20,7 +20,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 ## Steps
 
-1. **Posture.** Follow `~/.claude/commands/my/autopilot.md` for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait. Write a short plan inline (or to `~/.claude/plans/` if the task has 3+ steps) and proceed.
+1. **Posture.** Follow `~/.claude/commands/my/autopilot.md` for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads UNCLEAR, `finished` stays false, and the session can never close itself.
 
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
@@ -39,13 +39,14 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    ```
    One landing step per call, absolute paths, no `;` or pipes after a push or merge. Then reap the worktree (`wt done`, or `git worktree remove`) and do the project's post-land step (unity-core-playground: pull the main checkout only when the editor is not playing, otherwise report "pull waiting").
 
-7. **Record.** Close the agent-board row: `notes ptask <project> --agent done "<title>" --proof pr:<N>`. Then put the result on the human's sheet too, because a one-shot is always an ask the human wrote. If a sheet row already asked for this work, `done --proof pr:<N>` it. Otherwise add one tagged `#oneshot` and close it straight away:
+7. **Record.** Tick the plan's phase (`- [x] <task> (#N)`). Close the agent-board row: `notes ptask <project> --agent done "<title>" --proof pr:<N>`. Then put the result on the human's sheet too, because a one-shot is always an ask the human wrote. If a sheet row already asked for this work, `done --proof pr:<N>` it. Otherwise add one tagged `#oneshot` and close it straight away:
    ```bash
    notes ptask <project> add "<title> #oneshot" '#low' && notes ptask <project> done "<title> #oneshot" --proof pr:<N>
    ```
    `#low` stops the CLI defaulting the row to `#high`. Quote it, or zsh reads it as a comment. With `--pr-only`, add the `#oneshot` row but leave it open with the PR in the title, and leave the agent row started. If the project has no sheet (`no current project named ...`), say so in the wind-down note and skip it.
 
 8. **Wind down.** Invoke the `wind-down` skill. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
+   - **`--pr-only`**: the open PR is the end the human asked for, so skip wind-down's step 0 (it would read the open PR as unlanded and refuse).
    - **Blocked mode** (hard gate or red gate): write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
 
 ## Do NOT
