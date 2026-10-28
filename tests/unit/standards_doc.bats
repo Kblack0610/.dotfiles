@@ -31,7 +31,7 @@ check() {
 }
 
 @test "a renamed test is caught (negative control)" {
-  sed 's/no post script calls a model/no post script calls a modle/' "$DOC" > "$BATS_TEST_TMPDIR/doc.md"
+  sed 's/no post script calls a model:/no post script calls a modle:/' "$DOC" > "$BATS_TEST_TMPDIR/doc.md"
   run check "$BATS_TEST_TMPDIR/doc.md"
   assert_failure
   assert_output --partial 'missing test in tests/integ/stop_hook_quiet.bats'
