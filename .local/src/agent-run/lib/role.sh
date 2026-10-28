@@ -115,8 +115,8 @@ role_family_of() {
 }
 
 # role_run_model - the model this invocation will actually run on.
-# Precedence: the role's pin > an explicit override > the harness transport's
-# model. Empty when nothing names one.
+# Precedence: the role's pin > AGENTCTL_MODEL (or the runner conf's MODEL) > the
+# route's model. Empty when nothing names one. agentctl-run exports the result.
 role_run_model() {
   printf '%s' "${ROLE_MODEL:-${AGENTCTL_MODEL:-${ANTHROPIC_MODEL:-}}}"
 }

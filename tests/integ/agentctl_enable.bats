@@ -68,6 +68,17 @@ setup() {
   grep -qx 'ENABLED=yes' "$HOME/alpha.real"
 }
 
+@test "reload replaces a symlinked timer instead of writing through it" {
+  # A stowed timer pointed into a tracked repo, so every reload dirtied that repo.
+  mkdir -p "$TIMERS"
+  printf 'tracked\n' > "$HOME/tracked.timer"
+  ln -s "$HOME/tracked.timer" "$TIMERS/agentctl-alpha.timer"
+  "$AGENTCTL_BIN" reload
+  [ ! -L "$TIMERS/agentctl-alpha.timer" ]
+  grep -q 'Unit=agentctl@alpha.service' "$TIMERS/agentctl-alpha.timer"
+  assert_equal "$(cat "$HOME/tracked.timer")" "tracked"
+}
+
 @test "an ENABLED value other than yes or no is an invalid conf, not a guess" {
   echo 'ENABLED=maybe' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   run "$AGENTCTL_BIN" reload

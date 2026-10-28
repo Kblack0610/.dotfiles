@@ -21,7 +21,6 @@ export PATH="$HOME/.local/bin:$PATH"
 NS_DIR="${NIGHT_SHIFT_DIR:-$HOME/.agent/night}"
 NS_LOGS="${NIGHT_SHIFT_LOGS:-${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/night-shift}}"
 NS_NAME="${AGENTCTL_NAME:-night-shift}"
-NS_MODEL="${NIGHT_SHIFT_MODEL:-claude-opus-5-5}"
 NS_MAX_TURNS="${NIGHT_SHIFT_MAX_TURNS:-200}"
 # A timeout GUARD on the external call, not a wait: a task that wedges must not eat the
 # rest of the queue. 5h covers a Unity reimport plus a full test pass.
@@ -249,8 +248,9 @@ run_one() { # task-file night-dir
   echo "$NS_NAME: running $slug in $repo"
   (
     cd "$repo" || exit 1
-    timeout --kill-after=60 "$NS_TASK_TIMEOUT" "$NS_RUN" --role build --data-class "${dc:-personal}" \
-      -p "$(prompt_for "$task")" --model "${model:-$NS_MODEL}" --max-turns "${turns:-$NS_MAX_TURNS}" \
+    # A task's own model wins; otherwise MODEL in the runner conf (agentctl-run).
+    AGENTCTL_MODEL="${model:-}" timeout --kill-after=60 "$NS_TASK_TIMEOUT" "$NS_RUN" --role build --data-class "${dc:-personal}" \
+      -p "$(prompt_for "$task")" --max-turns "${turns:-$NS_MAX_TURNS}" \
       --output-format stream-json --verbose
   ) 2>>"$NS_LOGS/$slug.stderr" | tee "$NS_LOGS/$slug.jsonl" | jq -rR --unbuffered "$NS_FORMAT" >> "$NS_LOGS/$slug.log"
   rc="${PIPESTATUS[0]}"
