@@ -80,9 +80,8 @@ gate() { # [recommended]
 }
 
 @test "list carries recommend as the eleventh field" {
+  # the field count is pinned in agent_ask.bats
   local id; id="$(gate approve)"
-  run bash -c '"$AGENT_ASK" list alpha | awk -F"\t" "{print NF; exit}"'
-  assert_output '11'
   run bash -c '"$AGENT_ASK" list alpha | cut -f11'
   assert_output 'approve'
 }
