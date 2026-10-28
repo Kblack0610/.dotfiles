@@ -42,7 +42,7 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # A `/wave <app> <verb>` resume goes through `wave-start`, NOT through a bare `claude -p`.
 # wave-start owns the per-app lock, the log, the pid file and the runner status contract —
 # bypassing it is how you end up with two concurrent scope-outs filing duplicate tickets
-# for the same items. Anything else falls back to a plain headless claude.
+# for the same items. Anything else runs headless through agentctl-run (build role).
 #
 # The Anthropic transport env is scrubbed first. A caller may be `delivery-loop`, which
 # exports ANTHROPIC_BASE_URL pointing at the LiteLLM gateway's Lazer route; inheriting
@@ -66,13 +66,15 @@ run_resume() { # $1=id $2=project $3=command
     return $?
   fi
 
-  if [ "$DRY" = 1 ]; then echo "would run: claude -p '$cmd'   (ask $id)"; return 0; fi
-  command -v claude >/dev/null 2>&1 || { echo "ask-resume: claude not on PATH" >&2; return 1; }
+  if [ "$DRY" = 1 ]; then echo "would run: agentctl-run --role build -p '$cmd'   (ask $id)"; return 0; fi
+  command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
   mkdir -p "$log"
-  setsid -f claude -p "$cmd" --dangerously-skip-permissions \
+  # agentctl-run applies the build role and route; the scrub above stays because
+  # wave-start, the other branch, does not go through it.
+  setsid -f agentctl-run --role build -p "$cmd" \
     --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }

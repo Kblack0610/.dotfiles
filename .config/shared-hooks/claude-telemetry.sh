@@ -69,7 +69,7 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # Lets one Langfuse project separate machines without a second exporter.
     #
     # `service.name` distinguishes an unattended runner from a session you are sitting in
-    # front of. Without it every agentctl run lands in the same bucket as interactive work
+    # front of. Without it every runner lands in the same bucket as interactive work
     # and the one question this whole extraction exists to answer — "what is the poll loop
     # actually costing me" — stays unanswerable even with the metrics flowing.
     export OTEL_RESOURCE_ATTRIBUTES="service.name=${CLAUDE_TELEMETRY_SERVICE:-claude-code},host.name=$(hostname)"

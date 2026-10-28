@@ -124,3 +124,38 @@ EOF
     esac
   done
 }
+
+# ── one launcher ─────────────────────────────────────────────────────────────
+#
+# agentctl-run is the only headless claude entry: it applies the role, the route and
+# the transport scrub. A `claude -p` anywhere else skips all three, which is how
+# ask-resume and `sessions compact` ran for months on no role at all.
+#
+# headless_launches <dir> - print file:line for every executable line that starts a
+# headless claude. Comments, docs and tests are not call sites.
+headless_launches() {
+  grep -rniE '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")' "$1" \
+    --include='*' --exclude='*.md' --exclude-dir=tests --exclude-dir=.git 2>/dev/null \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*echo '
+}
+
+@test "nothing in the repo launches a headless claude except agentctl-run" {
+  run headless_launches "$REPO_ROOT/.local"
+  assert_output ''
+  run headless_launches "$REPO_ROOT/.config"
+  assert_output ''
+  run headless_launches "$REPO_ROOT/.claude/hooks"
+  assert_output ''
+}
+
+@test "the launcher scan catches a direct claude -p (negative control)" {
+  local d="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$d"
+  printf '#!/bin/sh\n# claude -p in a comment is fine\nclaude -p "do it" --max-turns 5\n' > "$d/runner"
+  printf '#!/bin/sh\nprintf x | "$CLAUDE_BIN" --print\n' > "$d/piped"
+  run headless_launches "$d"
+  assert_line --partial 'runner:3:'
+  assert_line --partial 'piped:2:'
+  refute_output --partial 'runner:2:'
+}

@@ -28,7 +28,7 @@ failure; a wrong route is a quiet one.
 | `subscription` | `anthropic-native` | the personal Max seat, OAuth, no host to name. The built-in default. |
 
 Site-specific routes (`free-local`, `client`, ...) are in the overlay. Run
-`agentctl run --explain --role <r>` to see which one resolves and from where --
+`agentctl-run --explain <r>` to see which one resolves and from where --
 it costs no tokens and prints the provenance, not just the value.
 
 ## Adding one
