@@ -95,7 +95,7 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 The bucket counts are not the answer. The human asked (2026-10-27) for this shape, every time:
 
 1. **Done since the last summary.** Every PR merged since then, per repo (`gh pr list --state merged --search "merged:>=<last summary time>"`), with the session that landed it. Take the last summary time from `~/.agent/shepherd/log.md`.
-2. **One row per live session:** what it is for (its plan's title), which phase of its plan it is in (`phases_done` of `phases_total`, and `next_phase`, from `fleet-sessions --json`; null means the plan has no `## Phases` checklist, so say so) and the step inside that phase (the pane's last recap line), and what it is waiting on. A DONE session says its plan is finished and it is winding down.
+2. **One row per live session:** what it is for (its plan's title), which phase of its plan it is in (`phases_done` of `phases_total`, and `next_phase`, from `fleet-sessions --json`; null means the plan has no `## Phases` checklist, so say so) and the step inside that phase (the pane's last recap line), and what it is waiting on. A DONE session says its plan is finished and it is winding down. Its expected finish time comes from `fleet-bench eta` (ETA and its basis), never from a guess; if the bench has no estimate for it, say there is none.
 3. **Telemetry, where it can be read cleanly:** the open PR and its gate (local or pool, class count, batch N of M), whether it holds a Unity right now and its CPU (`fleet-assess` rows), context used (`context_tokens` in `fleet-sessions --json`), and idle minutes. Leave a field out rather than guess it.
 4. **Room for new work:** current load and idle against the 70% budget, how many Unity runs are live, and how many more would fit.
 
@@ -169,6 +169,7 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 ## Related
 
 - `fleet-comms`: channel choice and message wording, used by `hold`, `go` and `shepherd`.
+- `fleet-bench`: the ETAs the summary quotes, and how accurate past ones were (`fleet-bench report`).
 - `one-shot`: what every dispatched session runs, and the delivery tail (gate, PR, merge, board done, pull, wind-down) that `shepherd` nudges sessions along.
 - `wind-down`: what a DONE session runs as `/wind-down auto`; it checks its row reads `finished` and that no question to the human is open before closing. A human-asked wind-down skips both checks.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running this skill acts.
