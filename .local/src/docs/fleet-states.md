@@ -37,13 +37,13 @@ The document holds `activity` as of `generated_at`. A view that needs it live (t
 
 ### bucket
 
-Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first match wins). The `reason` field carries the detail.
+Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first match wins). The `reason` field carries the detail. A pending ask and an open PR that conflicts with the default branch decide before `activity`: a session busy on other work still waits on its ask, and every run on a PR that cannot merge is wasted.
 
 | Value | Meaning | Who acts |
 | --- | --- | --- |
-| `NEEDS` | Waiting on a prompt, a pending ask, or plan approval | The human |
+| `NEEDS` | Waiting on a prompt, a pending ask (even while busy), or plan approval | The human |
+| `STALLED` | An open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
-| `STALLED` | Idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
 | `LANDED` | PR merged, tree clean, and the plan has a next phase | The session starts it |
 | `DONE` | Every `## Phases` line ticked, nothing unlanded, no ask open, idle | The shepherd winds it down |
 | `UNCLEAR` | Not in a git repo, or its PR closed unmerged | A human look |
@@ -64,7 +64,7 @@ main[]            {repo, id, reason, escalated, owners[]}: a default branch whos
 asks[]            pending asks: {id, project, kind, question (160 chars), task, created, session}
 ```
 
-A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, the key the shepherd nudges once per), `activity`, `target`, `pane`, `session_id`, `cwd`, `branch`, `pr`, `pr_state`, `ci`, `behind`, `conflicts`, `dirty`, `ahead`, `idle_min`, `context_tokens`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished`, `labels[]`, `dispatch`, `nudged`, `escalated`, `owners[]`. A fact the pass could not establish is `null`.
+A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, the key the shepherd nudges once per), `activity`, `target`, `pane`, `session_id`, `cwd`, `branch`, `pr`, `pr_state`, `ci`, `behind`, `conflicts`, `dirty`, `ahead`, `idle_min`, `context_tokens`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished`, `labels[]`, `dispatch`, `nudged`, `escalated`, `owners[]`, `asks` (pending asks this session posted). A fact the pass could not establish is `null`.
 
 Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
