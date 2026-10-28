@@ -19,7 +19,7 @@ It owns no product code. It owns three questions: does this machine have room fo
 ## Tools
 
 - `fleet-assess` prints headroom (load against cores, Tctl, memory), active holds, a verdict, and one row per heavy process: pid, CPU, nice, class, tmux session, worktree. `--watch-probe` prints one line and exits 1 on HOLD.
-- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold. No resource gate calls `check` yet: unity-core-playground's `scripts/test/run.sh` has per-port locks only and nothing caps how many runs go at once, so a hold works only because the sessions read your message, and a `shell`-class loop ignores it.
+- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
 The class column tells you how each consumer can be stopped:
