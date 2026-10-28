@@ -15,9 +15,12 @@
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
+#   fleet-bench kpi [--json]     KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS
+#   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade; a review
 # only counts the findings it lists. Formulas, fields and outcomes: the fleet-bench skill.
-# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
+# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
+# BENCH_NOTES_CMD.
 
 set -uo pipefail
 
@@ -37,6 +40,9 @@ set -uo pipefail
 : "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
+: "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
+: "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
+: "${BENCH_NOTES_CMD:=notes}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -277,19 +283,26 @@ cmd_headline() {
 }
 
 cmd_scorecard() {
-  local t day out
+  local t day out counts
   t=$(now); day=$(date -d "@$t" +%F)
   [ -s "$PROGRESS" ] || { say "no samples yet"; return 1; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/$day.md"
+  counts=$(ledger_counts)
   {
     echo "# Fleet bench, $day"
     echo
     echo "$(BENCH_NOW=$t cmd_headline)."
     echo
-    echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
+    echo "## KPIs"
+    echo
+    echo "Human sessions by when session-outcomes last saw them; (now) is a count taken at this run. Thresholds: $KPI_THRESHOLDS. \`fleet-bench retro\` files a board row for each one past it."
+    echo
+    kpi_table "$(kpi_json "$t" "$counts")"
     echo
     echo "## Sessions"
+    echo
+    echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
     echo
     echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost |"
     echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
@@ -313,14 +326,13 @@ cmd_scorecard() {
     echo
     echo "Runners, timers and direct headless launches may only shrink; the baseline is ~/.config/agentctl/ledger-baseline."
     echo
-    ledger_section
+    ledger_section "$counts"
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
 }
 
 ledger_section() {
-  local counts over
-  counts=$(ledger_counts)
+  local counts="$1" over
   sed 's/^\(.*\)=\(.*\)$/- \1: \2/' <<<"$counts"
   if over=$(ledger_check "$counts" 2>&1); then
     echo "- baseline: held"
@@ -584,18 +596,25 @@ headless_launches() {
 
 # ledger_counts -> key=value lines
 ledger_counts() {
-  local c n_conf=0 n_on=0 t rows src
+  local c n_conf=0 n_on=0 n_bad=0 t rows src sd="" name
+  proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
     n_conf=$((n_conf + 1))
-    grep -qE '^ENABLED=["'"'"']?no' "$c" || n_on=$((n_on + 1))
+    grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
+    n_on=$((n_on + 1))
+    # a retired runner keeps its state dir, so only a switched-on conf can count as bad
+    name=$(sed -n 's/^NAME=//p' "$c" | head -1); name="${name:-$(basename "$c" .conf)}"
+    [ -n "$sd" ] && grep -qE '^(FAILED|STALLED)' "$sd/$name/last-outcome" 2>/dev/null && n_bad=$((n_bad + 1))
   done
   echo "runners=$n_conf"
   echo "runners_on=$n_on"
+  echo "runners_bad=$n_bad"
   echo "timers=$(find "$LEDGER_TIMER_DIR" -maxdepth 1 -name 'agentctl-*.timer' 2>/dev/null | wc -l)"
   IFS=: read -ra src <<<"$LEDGER_SRC"
   echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
-  echo "verdict_words=$(proof_lib && cat "$(proof_state_dir)"/*/last-outcome 2>/dev/null | awk '{print $1}' | sort -u | grep -c .)"
+  # awk, not cat: last-outcome has no trailing newline, so cat runs every verdict into one word
+  echo "verdict_words=$([ -n "$sd" ] && awk '{print $1}' "$sd"/*/last-outcome 2>/dev/null | sort -u | grep -c .)"
   t=$(now)
   if rows=$(ask_rows "$t" 2>/dev/null); then
     jq -r --argjson d "$ASK_STALE_DAYS" '"asks_pending=\(length)", "asks_stale=\(map(select(.age_h > $d * 24)) | length)"' <<<"$rows"
@@ -635,6 +654,112 @@ cmd_ledger() {
   esac
 }
 
+# KPIs: ratios over the human sessions session-outcomes saw in the last 7 and 28 days, plus three
+# counts taken now. Headless runs are left out: they have no human to interrupt and their
+# cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
+
+KPI_NOW="runners_bad asks_stale board_open"
+
+# kpi_json <now> <ledger counts> -> one object keyed by KPI, in table order
+kpi_json() {
+  local ci="$CI" lim='{}'
+  [ -s "$ci" ] || ci=/dev/null
+  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
+  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$ci" \
+     --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" '
+    def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;
+    def total(f): map(f // 0) | add // 0;
+    def win($d; $human; $bot): ($t - $d * 86400) as $since
+      | ($human | map(select(.updated_epoch != null and .updated_epoch > $since and .updated_epoch <= $t))) as $s
+      | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id // ""] | not)))) as $ci
+      | ($s | total(.prs_merged)) as $prs
+      | {sessions: ($s | length), prs_per_session: ratio($prs; $s | length),
+         revert_rate: ratio(($s | total(.reverted_7d)); $prs),
+         interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
+         cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
+         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length)};
+    # older lines have no runner field; _runner is where headless runs are filed
+    ($o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.)) as $bot
+    | ($o | map(select($bot[.session_id] | not))) as $human
+    | win(7; $human; $bot) as $w7 | win(28; $human; $bot) as $w28
+    | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
+       ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
+    | map(.key as $k | .value |= (
+        (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
+        | . + {threshold: ($max // $min),
+               bound: (if $max != null then "max" elif $min != null then "min" else null end)}
+        | . + {status: (if .threshold == null or .["7d"] == null then "-"
+                        elif (.bound == "max" and .["7d"] > .threshold)
+                          or (.bound == "min" and .["7d"] < .threshold) then "past"
+                        else "ok" end)}))
+    | from_entries'
+}
+
+# kv_json -> key=value lines on stdin as one object; a value that is not a number is null
+kv_json() { jq -Rn '[inputs | split("=") | {key: .[0], value: (.[1] | tonumber? // null)}] | from_entries'; }
+
+# kpi_table <kpi json> -> the markdown table kpi prints and the scorecard carries
+kpi_table() {
+  jq -r '"| KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|",
+    (to_entries[] | .value as $v
+     | "| \(.key)\(if $v.now then " (now)" else "" end) | \($v["7d"] // "-") | \($v["28d"] // "-") | \(if $v.bound then "\($v.bound) \($v.threshold)" else "-" end) | \($v.status) |")' <<<"$1"
+}
+
+cmd_kpi() {
+  local json
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench kpi [--json]"; return 2 ;; esac
+  json=$(kpi_json "$(now)" "$(ledger_counts)") || return 1
+  if [ "${1:-}" = --json ]; then jq -c . <<<"$json"; else kpi_table "$json"; fi
+}
+
+# retro_rows <kpi json> -> key, row text and priority (tab-separated) for each KPI past its
+# threshold; more than 2x past it is #high
+retro_rows() {
+  jq -r 'to_entries[] | select(.value.status == "past") | .key as $k | .value
+    | (if .bound == "max" then .["7d"] > 2 * .threshold else .["7d"] < .threshold / 2 end) as $far
+    | [$k, "kpi: \($k) past threshold: "
+        + (if .now then "now \(.["7d"]) (\(.bound) \(.threshold))"
+           else "7d \(.["7d"]) (28d \(.["28d"] // "-"), \(.bound) \(.threshold))" end),
+       (if $far then "#high" else "#low" end)] | @tsv' <<<"$1"
+}
+
+# One open row per KPI, folded by its title prefix: the numbers are refreshed in place, and
+# rows for a KPI back inside its threshold are left for whoever owns them.
+cmd_retro() {
+  local json rows board k text pri have added=0 edited=0
+  if [ ! -r "$KPI_THRESHOLDS" ]; then
+    say "no KPI thresholds at $KPI_THRESHOLDS; retro checks nothing"
+    report_outcome NOOP "no KPI thresholds file"
+    return 0
+  fi
+  json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
+  rows=$(retro_rows "$json")
+  if [ -z "$rows" ]; then
+    say "every KPI is inside its threshold"
+    report_outcome NOOP "every KPI inside its threshold"
+    return 0
+  fi
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  while IFS=$'\t' read -r k text pri; do
+    have=$(awk -F'\t' -v p="kpi: $k past threshold" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
+    if [ -z "$have" ]; then
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null \
+        || { report_outcome FAILED "add failed for $k"; return 1; }
+      added=$((added + 1))
+    elif [ "$have" != "${text,,}" ]; then
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "kpi: $k past threshold" --text "$text" >/dev/null \
+        || { report_outcome FAILED "edit failed for $k"; return 1; }
+      edited=$((edited + 1))
+    fi
+  done <<<"$rows"
+  say "$(grep -c . <<<"$rows") KPIs past threshold: $added added, $edited refreshed"
+  if [ $((added + edited)) -eq 0 ]; then
+    report_outcome NOOP "every row already current"
+  else
+    report_outcome WORKED "$added added, $edited refreshed"
+  fi
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -645,8 +770,10 @@ main() {
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
-    -h | --help) sed -n '2,20p' "$0" ;;
-    *) sed -n '2,17p' "$0" >&2; return 2 ;;
+    kpi) shift; cmd_kpi "$@" ;;
+    retro) cmd_retro ;;
+    -h | --help) sed -n '2,23p' "$0" ;;
+    *) sed -n '2,19p' "$0" >&2; return 2 ;;
   esac
 }
 
