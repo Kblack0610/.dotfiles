@@ -25,6 +25,13 @@
 
 set -uo pipefail
 
+# The shared column fitter (layout below wraps it).
+# shellcheck source=/dev/null
+. "${TABLE_FIT_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/table-fit.sh" 2>/dev/null \
+  || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \
+  || { echo "fleet-sessions: table-fit.sh not found" >&2; exit 1; }
+
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
@@ -555,49 +562,8 @@ watch_tick() {
 # least important end until the rest fit. WHY takes whatever is left and goes once that is
 # under 12. Every line, table or not, is then clipped to <width> with a trailing ~.
 layout() {
-  awk -F'\t' -v W="${1:-0}" '
-    function clip(s, w) { return (w > 0 && length(s) > w) ? substr(s, 1, w - 1) "~" : s }
-    BEGIN {
-      GAP = 2; WHY = 12; SESS_MAX = 34
-      # Most important first; SESSION is never dropped. WHY is not in the list: it flexes.
-      n_keep = split("1 9 7 5 6 4 2 11 12 3 8 10", keep, " ")
-      split("3 8 10", c, " "); for (i in c) optional[c[i]] = 1
-    }
-    { line[NR] = $0 }
-    /^\t/ {
-      is_row[NR] = 1; hdr = !rows++
-      for (j = 1; j <= 13; j++) {
-        v = $(j + 1); if (j == 1 && !hdr) sub(/:1$/, "", v)
-        cell[NR, j] = v
-        if (length(v) > wid[j]) wid[j] = length(v)
-        if (!hdr && j in optional && v != "-" && v != "no") used[j] = 1
-      }
-    }
-    END {
-      if (wid[1] > SESS_MAX) wid[1] = SESS_MAX
-      total = -GAP
-      for (k = 1; k <= n_keep; k++) {
-        j = keep[k]
-        if (j in optional && !used[j]) continue
-        on[j] = 1; total += wid[j] + GAP
-      }
-      for (k = n_keep; W > 0 && total > W && k > 1; k--)
-        if (keep[k] in on) { delete on[keep[k]]; total -= wid[keep[k]] + GAP }
-      on[13] = W == 0 || W - total - GAP >= WHY
-      for (r = 1; r <= NR; r++) {
-        if (!is_row[r]) { print clip(line[r], W); continue }
-        out = ""
-        for (j = 1; j <= 13; j++) {
-          if (!on[j]) continue
-          v = clip(cell[r, j], wid[j])
-          if (j == 13) v = cell[r, j]
-          else if (j == 11 || j == 12) v = sprintf("%" wid[j] "s", v)
-          else v = sprintf("%-" wid[j] "s", v)
-          out = out (out == "" ? "" : sprintf("%" GAP "s", "")) v
-        }
-        sub(/ +$/, "", out); print clip(out, W)
-      }
-    }'
+  awk -F'\t' 'BEGIN { OFS = FS } /^\t/ && seen++ { sub(/:1$/, "", $2) } 1' |
+    table_fit "${1:-0}" keep="1 9 7 5 6 4 2 11 12 3 8 10" flex=13 flexmin=12 opt="3 8 10" right="11 12" cap="1:34"
 }
 
 # term_width -> the controlling terminal's columns, or nothing when there is none or it
