@@ -8,7 +8,7 @@ get_session_status() {
     local target_session="$1"
     local attention=0
     local working=0
-    local done=0
+    local idle=0
     local total=0
 
     # A newline-delimited set, NOT an associative array. tmux runs status-left through
@@ -59,16 +59,16 @@ get_session_status() {
             elif echo "$last_lines" | grep -qE '^> |^❯ '; then
                 # Has prompt - check if it's waiting (not mid-typing with recent activity)
                 if echo "$last_lines" | grep -qE 'bypass permissions|Context left'; then
-                    ((done++))
+                    ((idle++))
                 else
-                    ((done++))
+                    ((idle++))
                 fi
             # Priority 5: Shows status bar indicators (Claude is idle/waiting)
             elif echo "$last_lines" | grep -qE '⏵⏵|bypass permissions|Context left until'; then
-                ((done++))
-            # Fallback: If no recent activity, assume done
+                ((idle++))
+            # Fallback: If no recent activity, assume idle
             elif [ $activity_diff -gt 10 ]; then
-                ((done++))
+                ((idle++))
             else
                 ((working++))
             fi
@@ -84,9 +84,9 @@ get_session_status() {
     elif [ $working -gt 0 ]; then
         # Working - show spinner-like indicator
         echo "~${working}"
-    elif [ $done -gt 0 ]; then
-        # Done/idle - show checkmark count
-        echo "✓${done}"
+    elif [ $idle -gt 0 ]; then
+        # Idle (between turns, nothing to approve) - show checkmark count
+        echo "✓${idle}"
     else
         # Unknown state - just show count
         echo "·${total}"

@@ -533,4 +533,5 @@ directory belongs to" below.
 `claude-status.sh` runs every 3 seconds to display agent status:
 - `!n` = needs attention (n agents)
 - `~n` = working (n agents)
-- `·n` = idle (n agents)
+- `✓n` = idle between turns (n agents). This is the live `activity`, not the delivery `bucket`: a session that is idle here can still be NEEDS or STALLED in `fleet-sessions` (vocabulary: `.local/src/docs/fleet-states.md`)
+- `·n` = Claude panes found but none classified

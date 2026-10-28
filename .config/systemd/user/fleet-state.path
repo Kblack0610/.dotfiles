@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the fleet state document when the ask queue changes
+
+# agent-ask rewrites ~/.agent/asks/.changed on every post, answer and cancel, so an ask shows
+# as NEEDS within seconds. fleet-bench's 10-minute sample is the backstop writer.
+[Path]
+PathChanged=%h/.agent/asks/.changed
+Unit=fleet-state.service
+
+[Install]
+WantedBy=default.target
