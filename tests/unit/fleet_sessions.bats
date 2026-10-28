@@ -599,6 +599,22 @@ frame_fixture() {
   assert_line --regexp '^s1 +.*LANDED'
 }
 
+@test "end to end: on a terminal the board fits the terminal, whatever COLUMNS says" {
+  # The width is read inside $(...), where stdout is a pipe; a [ -t 1 ] there never fired
+  # and the live board laid itself out unlimited and wrapped. Only a real pty shows that.
+  landed_fixture
+  run env SHELL=/bin/bash script -qec \
+    "stty cols 50 rows 40; COLUMNS=200 '$REPO_ROOT/.local/bin/fleet-sessions' watch --once" /dev/null
+  assert_success
+  local l n=0
+  while IFS= read -r l; do
+    l="$(sed -E $'s/\033\\[[0-9;]*[A-Za-z]//g; s/\r$//' <<<"$l")"
+    [ "${#l}" -le 50 ] || fail "over 50: $l"
+    [[ "$l" =~ ^s1\  ]] && n=$((n + 1))
+  done <<<"$output"
+  [ "$n" -eq 1 ] || fail "expected one s1 row, got $n: $output"
+}
+
 @test "watch refuses a bad --every" {
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every 0
   assert_failure 2
