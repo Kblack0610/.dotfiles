@@ -6,21 +6,18 @@ One Stop entry, one entrypoint:
 
 | File | Job |
 |------|-----|
-| `~/.claude/hooks/pre-stop-checks.sh` | Coordinator — runs `stop-pre.d/`, then parallel `stop-checks.d/`, then `stop-post.d/`. Single source of all Stop-time behavior. |
+| `~/.claude/hooks/pre-stop-checks.sh` | Coordinator: runs parallel `stop-checks.d/`, then `stop-post.d/`. Single source of all Stop-time behavior. |
 
-The coordinator runs three phases:
+The coordinator runs two phases:
 
 ```
-phase 1  stop-pre.d/   sequential, non-blocking, runs ALWAYS (incl. no-changes)
-phase 2  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2)
-phase 3  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2)
+phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skipped on a clean tree
+phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
 Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to all `*.d/` children via stdin so they can self-loop-guard.
 
-### `stop-pre.d/` — runs on every Stop, even no-changes
-
-Each `*.sh` runs sequentially before the no-changes early exit. Exit-code semantics: 0 = ok, anything else = warn (logged, never blocks). Use this phase for snapshots, telemetry, or anything that must fire on pure Q&A turns.
+Anything that must fire on every Stop, including a pure Q&A turn with a clean tree, goes in `stop-post.d/`: it runs after the checks or after the clean-tree early exit.
 
 ### `stop-checks.d/` — content checks (parallel)
 
@@ -35,16 +32,21 @@ Each `*.sh` is one independent check. The coordinator fans them out in parallel 
 
 Project-type detection lives **inside each check** (e.g. `[ -f package.json ] || exit 0`), so the coordinator stays project-agnostic. To add a check, drop `<NN>-<name>.sh` into `stop-checks.d/` and `chmod +x`. Checks run in parallel — order is informational only.
 
-Current checks: `10-git-workflow.sh` (unpushed commits, open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint).
+Current checks: `10-git-workflow.sh` (unpushed commits, open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier).
 
-The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<proj>-<date>.txt`, which `stop-post.d/90-eval-gate.sh` reads.
+The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<session_id>.txt` (`ci-result-<proj>-<date>.txt` only when the payload has no session id) and exports the path as `CI_RESULT_FILE` to the post scripts. `90-eval-gate.sh` and `95-wind-down.sh` read it from there and never build the name themselves. Files older than a week are pruned.
 
 ### `stop-post.d/` — runs after content checks (sequential, can block)
 
 Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check *could* block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message — same protocol as a top-level Stop hook. The current post-check chooses NOT to block.
 
-Current post-checks:
-- `90-eval-gate.sh` — non-blocking. Skips pure Q&A. Reads CI status from the file the content-check phase writes, then spawns `llm-judge.sh --mode eval` detached (`setsid nohup ... & disown`) and exits 0. The async judge appends a `## Session N` entry to `~/.agent/evals/<proj>/<date>.md` ~10–30s later. Judge logs land at `${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/judge.log`. Distinct from the manual `/my:judge` audit-mode invocation below — same script, different mode flag.
+Current post-checks, in order:
+- `80-session-register.sh`: records the session in the session registry.
+- `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
+- `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked on a board.
+- `87-regen-anchor.sh`: regenerates the project anchor's auto block.
+- `90-eval-gate.sh`: non-blocking. Skips pure Q&A. Reads CI status from `$CI_RESULT_FILE`, then spawns `llm-judge.sh --mode eval` detached (`setsid nohup ... & disown`) and exits 0. The async judge appends a `## Session N` entry to `~/.agent/evals/<proj>/<date>.md` ~10-30s later. Judge logs land at `${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/judge.log`. Distinct from the manual `/my:judge` audit-mode invocation below: same script, different mode flag.
+- `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. It also deletes any request older than a day, whose session ended without a Stop to consume it.
 
 ## Manual compliance audit (not Stop-time)
 

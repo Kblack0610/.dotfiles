@@ -222,3 +222,57 @@ stderr() { cat "$ERRF"; }
   [ ! -e "$dir/ci-result-old-2020-01-01.txt" ]
   [ -e "$dir/ci-result-recent-2020-01-02.txt" ]
 }
+
+# post <name> -- a fake post script that records the CI file it was handed and its status.
+post() {
+  mkdir -p "$HOOK_DIR/stop-post.d"
+  cat > "$HOOK_DIR/stop-post.d/$1.sh" <<'EOS'
+#!/bin/bash
+{ echo "file=$CI_RESULT_FILE"; grep '^status=' "$CI_RESULT_FILE"; } > "$HOME/post.seen"
+EOS
+  chmod +x "$HOOK_DIR/stop-post.d/$1.sh"
+}
+
+# run_session <sid> -- one Stop from session <sid>.
+run_session() {
+  STATUS=0
+  bash "$HOOK" <<< "{\"stop_hook_active\":false,\"session_id\":\"$1\"}" >"$OUTF" 2>"$ERRF" || STATUS=$?
+}
+
+@test "two sessions in one project keep separate CI results, and post scripts are handed their own" {
+  # Keyed by project and day, a later SKIPPED stop in another window overwrote this
+  # session's FAIL, and 95-wind-down then closed a window over failing checks.
+  dirty
+  check red 2
+  post 50-seen
+  run_session aaa
+  assert_equal "$STATUS" 2
+  rm "$HOOK_DIR/stop-checks.d/red.sh"
+  git -C "$REPO" checkout -q -- a.txt; rm -f "$REPO/untracked.txt"
+  run_session bbb
+  local dir="$HOME/.cache/claude-stop-hook"
+  run cat "$dir/ci-result-aaa.txt"
+  assert_output --partial "status=FAIL"
+  run cat "$dir/ci-result-bbb.txt"
+  assert_output --partial "status=SKIPPED"
+  run cat "$HOME/post.seen"
+  assert_output --partial "file=$dir/ci-result-bbb.txt"
+  assert_output --partial "status=SKIPPED"
+}
+
+@test "95-wind-down reaps spin-down requests a day old and defers on its own session's FAIL" {
+  local spin="$HOME/.agent/spin-down"
+  mkdir -p "$spin" "$HOOK_DIR/stop-post.d"
+  cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
+  echo 'target=%1' > "$spin/alpha__old.request"
+  touch -d '2 days ago' "$spin/alpha__old.request"
+  echo 'target=%2' > "$spin/alpha__aaa.request"
+  dirty
+  check red 2
+  run_session aaa
+  [ ! -e "$spin/alpha__old.request" ]
+  # Its own checks failed, so the request waits for a clean Stop.
+  [ -e "$spin/alpha__aaa.request" ]
+  run stderr
+  assert_output --partial "wind-down deferred"
+}

@@ -32,6 +32,10 @@ SID=""
 if [ -n "$STDIN_JSON" ] && command -v jq >/dev/null 2>&1; then
   SID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null)
 fi
+# A request is consumed by its own session's next Stop. One whose session ended first
+# (window closed by hand, process killed) is never consumed; 54 of 65 had piled up by
+# 2026-10-28, back to July. A day is long past any real deferral, so reap those here.
+find "$HOME/.agent/spin-down" -maxdepth 1 -name '*.request' -mmin +1440 -delete 2>/dev/null || true
 if [ -n "$SID" ]; then
   SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}__${SID}.request"
 else
@@ -41,10 +45,10 @@ fi
 [ -f "$SENTINEL" ] || exit 0
 
 # --- CI gate: don't tear down while content checks are failing ---
-DATE_STAMP=$(date +%Y-%m-%d)
-CI_RESULT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/ci-result-${PROJECT_NAME}-${DATE_STAMP}.txt"
+# Named and exported by pre-stop-checks.sh, which writes it (keyed by session id).
+CI_RESULT_FILE="${CI_RESULT_FILE:-}"
 CI_STATUS_VAL=""
-if [ -f "$CI_RESULT_FILE" ]; then
+if [ -n "$CI_RESULT_FILE" ] && [ -f "$CI_RESULT_FILE" ]; then
   CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 fi
 if [ "$CI_STATUS_VAL" = "FAIL" ]; then
