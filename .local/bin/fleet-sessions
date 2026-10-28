@@ -20,6 +20,8 @@
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
+# An open PR that conflicts with the default branch is STALLED past FLEET_IDLE_MIN, busy turn,
+# background shell or heavy child notwithstanding: a gate on a tree that cannot merge is wasted.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -56,17 +58,24 @@ LABELS="$LEDGER/labels"
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
-#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|->
+#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
+#                <conflicts: yes|no|-, merging the default branch in> <default branch, e.g. main>
 #   -> "BUCKET reason"
 session_bucket() {
   local st="$1" note=""
   case "$st" in
     waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
-    busy) echo "WORKING busy"; return ;;
+    # A turn quiet for FLEET_IDLE_MIN is a long tool call (a test run); on a PR that cannot
+    # merge it is wasted, so the facts decide and say so.
+    busy) pr_conflicted "$@" || { echo "WORKING busy"; return; } ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
       if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then
         note=", background shell still running"
+      elif pr_conflicted "$@"; then
+        # A local gate on a tree that cannot merge proves nothing. No shell note: the fact
+        # must read the same busy, shell or idle, or every change of state re-nudges it.
+        :
       elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then
         echo "WORKING shell"; return
       else
@@ -77,11 +86,16 @@ session_bucket() {
   echo "$(bucket_facts "$@")$note"
 }
 
+# pr_conflicted: session_bucket's arguments -> exit 0 when its PR is open, merging the
+# default branch in would conflict, and it has been idle FLEET_IDLE_MIN or more.
+pr_conflicted() { [ "${10}" = OPEN ] && [ "${16:--}" = yes ] && [ "$5" -ge "$FLEET_IDLE_MIN" ]; }
+
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}"
-  [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" \
+        conflicts="${16:--}" base="${17:-main}"
+  [ "$heavy" = 1 ] && ! pr_conflicted "$@" && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
   [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
   [ "$idle" -lt "$FLEET_IDLE_MIN" ] && { echo "WORKING idle ${idle}m"; return; }
@@ -94,6 +108,8 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next"; fi ;;
     OPEN)
+      # A conflict comes first: CI on a PR that cannot merge proves nothing, and may never run.
+      if [ "$conflicts" = yes ]; then echo "STALLED PR #$pr conflicts with $base"; return; fi
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
@@ -383,10 +399,10 @@ sync_facts() {
 }
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
-# plus branch and sync: "git dirty ahead pr state ci in_pr branch behind conflicts".
+# plus branch, sync and base: "git dirty ahead pr state ci in_pr branch behind conflicts base".
 git_facts() {
   local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
-  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - -"; return; }
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - -"; return; }
   fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   dirty="$(dirty_count "$d" "$edited")"
@@ -400,7 +416,7 @@ git_facts() {
     if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
        && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
   fi
-  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base")"
+  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${base#origin/}"
 }
 
 collect() {
@@ -423,7 +439,7 @@ collect() {
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     asks="$(asks_for "$tsess" "$sid")"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch behind conflicts < <(git_facts "$cwd" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts base < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
@@ -437,9 +453,9 @@ collect() {
       fi
     elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$base")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$base" && fin=1
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"

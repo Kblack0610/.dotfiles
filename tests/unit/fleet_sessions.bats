@@ -95,6 +95,41 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   assert_output 'WORKING PR #9 CI running'
 }
 
+@test "an open PR that conflicts with the default branch is STALLED past FLEET_IDLE_MIN, busy or shell" {
+  # 2026-10-29: five playground PRs conflicted on the unity-core pin and read WORKING shell,
+  # two of them spending Unity test runs on trees that could not merge.
+  run b shell 0 0 0 30 1 0 1 9 OPEN PASS 1 - 1/2 x yes main
+  assert_output 'STALLED PR #9 conflicts with main'
+  run b busy 0 0 0 30 1 0 1 9 OPEN PENDING 1 - 1/2 x yes main
+  assert_output 'STALLED PR #9 conflicts with main'
+  run b idle 0 0 1 30 1 0 1 9 OPEN FAIL 1 - 1/2 x yes develop
+  assert_output 'STALLED PR #9 conflicts with develop'
+  # one fact busy, shell or idle, and past FLEET_SHELL_STALE_MIN: no re-nudge on a state change
+  run b shell 0 0 0 200 1 0 1 9 OPEN PASS 1 - 1/2 x yes main
+  assert_output 'STALLED PR #9 conflicts with main'
+  # a session still at it is left alone, and an ask still goes to the human
+  run b busy 0 0 0 19 1 0 1 9 OPEN PASS 1 - 1/2 x yes main
+  assert_output 'WORKING busy'
+  run b shell 0 0 0 19 1 0 1 9 OPEN PASS 1 - 1/2 x yes main
+  assert_output 'WORKING shell'
+  run b shell 0 1 0 30 1 0 1 9 OPEN PASS 1 - 1/2 x yes main
+  assert_output 'NEEDS 1 pending ask(s)'
+}
+
+@test "a clean or merged PR with a background shell reads as before the conflict check" {
+  run b shell 0 0 0 30 1 0 1 9 OPEN PASS 1 - 1/2 x no main
+  assert_output 'WORKING shell'
+  run b shell 0 0 0 30 1 0 1 9 OPEN PASS 1 - 1/2 x - main
+  assert_output 'WORKING shell'
+  run b busy 0 0 0 30 1 0 1 9 OPEN PASS 1 - 1/2 x no main
+  assert_output 'WORKING busy'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PENDING 1 - 1/2 x no main
+  assert_output 'WORKING PR #9 CI running'
+  # only an open PR: a merged branch behind main is LANDED's business
+  run b shell 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/2 x yes main
+  assert_output 'WORKING shell'
+}
+
 @test "no PR: dirty or ahead is STALLED, clean is UNCLEAR, closed PR is UNCLEAR" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
@@ -494,6 +529,13 @@ landed_fixture() {
   FLEET_FETCH=1 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .behind <<<"$output")" = 1 ]
   [ "$(jq -r .conflicts <<<"$output")" = true ]
+
+  # the same conflict on an open PR with a background shell is STALLED, named against main
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t876\\tOPEN\\tPASS\\t%s\\n"\n' \
+    "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$SANDBOX/bin/gh"
+  PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED PR #876 conflicts with main @feat/x' ]
 }
 
 @test "label adds, removes and prints a session's labels, by target, tmux session or self" {
