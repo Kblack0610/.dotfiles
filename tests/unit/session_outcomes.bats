@@ -95,7 +95,8 @@ revert_fixture() {
  {"number":60,"state":"MERGED","title":"fix: undo five","body":"This reverts commit abcdef1.","mergedAt":"2026-10-27T12:00:00Z","mergeCommit":{"oid":"6666666dddd"}},
  {"number":61,"state":"MERGED","title":"feat: sixty-one","body":"","mergedAt":"2026-10-27T10:00:00Z","mergeCommit":{"oid":"7777777eeee"}},
  {"number":62,"state":"MERGED","title":"docs: revert-safe parsing","body":"Follows #61.\nWe may revert this later.","mergedAt":"2026-10-27T12:00:00Z","mergeCommit":{"oid":"8888888ffff"}},
- {"number":63,"state":"MERGED","title":"chore: tidy","body":"reverting #50 would break nothing","mergedAt":"2026-10-20T12:00:00Z","mergeCommit":{"oid":"9999999aaaa"}}]
+ {"number":63,"state":"MERGED","title":"chore: tidy","body":"reverting #50 would break nothing","mergedAt":"2026-10-20T12:00:00Z","mergeCommit":{"oid":"9999999aaaa"}},
+ {"number":64,"state":"MERGED","title":"feat: x again","body":"Re-applies #61 (reverted in #62) without the menu change.","mergedAt":"2026-10-27T13:00:00Z","mergeCommit":{"oid":"aaaaaaa1111"}}]
 EOF
 }
 
@@ -153,7 +154,7 @@ EOF
   assert_equal "$(reverted 50)" false
 }
 
-@test "not a revert: revert-safe, a revert word on another line, a revert outside the window" {
+@test "not a revert: revert-safe, a revert word on another line, reverted in #N, outside the window" {
   revert_fixture
   assert_equal "$(reverted 61)" false
   assert_equal "$(reverted 62)" false

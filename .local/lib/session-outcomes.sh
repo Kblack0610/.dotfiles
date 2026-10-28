@@ -86,7 +86,8 @@ so_transcript_metrics() {
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
 # this PR's merge commit. `#N\b` so #5 never matches #50; "revert-safe" is not a revert
-# word. A revert pushed without a PR is not seen.
+# word, and "reverted in #N" names the reverter (a re-apply PR says it). A revert pushed
+# without a PR is not seen.
 so_pr_index() {
   jq -c --argjson days "$1" '
     def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])";
@@ -101,7 +102,7 @@ so_pr_index() {
                               | select(.number != $p.number)
                               | select(.title == ("Revert \"" + $p.title + "\"")
                                        or (.text | split("\n")
-                                           | any(test(revert_re + "[^\\n]*#\($p.number)\\b")))
+                                           | any(test(revert_re + "(?!\\s+(in|by)\\b)[^\\n]*#\($p.number)\\b")))
                                        or ($p.mergeCommit.oid != null
                                            and ([.text | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0]]
                                                 | any(. as $sha | $p.mergeCommit.oid | startswith($sha)))))
