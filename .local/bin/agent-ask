@@ -107,6 +107,10 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   [ -n "$project" ] || project="$(resolve_project)"
+  # A supervised runner names itself, so its pass can be scored BLOCKED: agent-proof.sh's
+  # proof_blocked matches a pending ask on this field, which is how "waiting on the human"
+  # stops reading as WORKED or NOOP.
+  [ -n "$agent" ] || agent="${AGENTCTL_NAME:-}"
   # An ask from inside tmux names its tmux session unless told otherwise, so fleet-sessions
   # can tell which session is waiting on it. 11 of 12 pending asks once had this empty.
   # The tmux session is shared by every window in it, so a defaulted ask also records the

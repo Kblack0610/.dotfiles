@@ -138,7 +138,7 @@ cmd_sample() {
   t=$(now)
   if ! rows=$(sample_rows "$t"); then
     say "fleet-sessions failed; nothing written"
-    report_outcome STALLED "fleet-sessions failed"
+    report_outcome FAILED "fleet-sessions failed"
     return 1
   fi
   if [ -z "$rows" ]; then
@@ -147,9 +147,9 @@ cmd_sample() {
     return 0
   fi
   printf '%s\n' "$rows" >> "$PROGRESS"
-  est=$(new_estimates "$t") || { report_outcome STALLED "estimate step failed"; return 1; }
+  est=$(new_estimates "$t") || { report_outcome FAILED "estimate step failed"; return 1; }
   [ -n "$est" ] && printf '%s\n' "$est" >> "$ESTIMATES"
-  sc=$(new_scores) || { report_outcome STALLED "score step failed"; return 1; }
+  sc=$(new_scores) || { report_outcome FAILED "score step failed"; return 1; }
   [ -n "$sc" ] && printf '%s\n' "$sc" >> "$SCORES"
   local n e s
   n=$(grep -c . <<<"$rows"); e=$(grep -c . <<<"$est"); s=$(grep -c . <<<"$sc")
@@ -305,7 +305,7 @@ cmd_scorecard() {
 cmd_nightly() {
   local path line
   if ! path=$(cmd_scorecard); then
-    report_outcome STALLED "scorecard not written"
+    report_outcome FAILED "scorecard not written"
     return 1
   fi
   line=$(cmd_headline)
@@ -394,12 +394,12 @@ cmd_review() {
     review_picks "$t" | jq -r '"\(.repo)#\(.number)\t\(.additions + .deletions) lines\t\(.ci_red)/\(.ci_runs) CI red"'
     return 0
   fi
-  new=$(merged_new "$t") || { report_outcome STALLED "outcomes unreadable"; return 1; }
+  new=$(merged_new "$t") || { report_outcome FAILED "outcomes unreadable"; return 1; }
   while IFS=$'\t' read -r repo num sid; do
     [ -n "$repo" ] || continue
     if ! row=$(pr_ci "$repo" "$num" "$sid"); then
       say "gh failed counting $repo#$num"
-      report_outcome STALLED "gh failed counting CI"
+      report_outcome FAILED "gh failed counting CI"
       return 1
     fi
     printf '%s\n' "$row" >> "$CI"
@@ -421,7 +421,7 @@ cmd_review() {
   msg="$n PRs counted, $red CI reds; $rv"
   say "$msg"
   if [ "$failed" -gt 0 ]; then
-    report_outcome STALLED "$rv"
+    report_outcome FAILED "$rv"
     return 1
   fi
   if [ "$n" -eq 0 ] && [ "$k" -eq 0 ]; then
@@ -519,14 +519,14 @@ cmd_asks() {
   t=$(now)
   if ! rows=$(ask_rows "$t"); then
     say "agent-ask list failed"
-    [ "${1:-}" = --page ] && report_outcome STALLED "agent-ask list failed"
+    [ "${1:-}" = --page ] && report_outcome FAILED "agent-ask list failed"
     return 1
   fi
   [ "${1:-}" = --page ] || { asks_md "$rows"; return 0; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/asks.md"
   if ! { asks_md "$rows" > "$out.tmp" && mv "$out.tmp" "$out"; }; then
-    report_outcome STALLED "asks.md not written"
+    report_outcome FAILED "asks.md not written"
     return 1
   fi
   if [ "$(jq length <<<"$rows")" = 0 ]; then

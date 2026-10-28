@@ -82,6 +82,21 @@ result_of() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print su
   [ "$(result_of b status)" = skipped ]
 }
 
+@test "the night's verdict: needs the human is BLOCKED, all erroring is FAILED, all ok WORKED" {
+  "$NS" queue "$REPO" "a" --slug a
+  STUB_STATUS=blocked run "$NS" run
+  run cat "$AGENTCTL_STATE_DIR/ns-test/last-outcome"
+  assert_output BLOCKED
+  "$NS" queue "$REPO" "b" --slug b
+  STUB_STATUS=noblock STUB_RC=3 run "$NS" run
+  run cat "$AGENTCTL_STATE_DIR/ns-test/last-outcome"
+  assert_output FAILED
+  "$NS" queue "$REPO" "c" --slug c
+  run "$NS" run
+  run cat "$AGENTCTL_STATE_DIR/ns-test/last-outcome"
+  assert_output WORKED
+}
+
 @test "a task orphaned in running/ is reported failed on the next run" {
   "$NS" queue "$REPO" "o" --slug o
   mkdir -p "$NIGHT_SHIFT_DIR/running"

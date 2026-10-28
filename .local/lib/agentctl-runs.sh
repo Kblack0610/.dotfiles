@@ -16,7 +16,7 @@
 #   $STATE_DIR/runs/<id>/
 #       meta           id/label/role/harness/model/project/cwd/pid/unit/mode/started
 #       status         the SAME five-key contract runners publish, byte for byte
-#       last-outcome   PENDING | WORKED | NOOP | STALLED | UNKNOWN
+#       last-outcome   PENDING | WORKED | NOOP | FAILED | STALLED | UNKNOWN
 #       output.log     harness stdout+stderr (headless only)
 #       prompt         argv, one %q-quoted arg per line, mode 0600
 #   $STATE_DIR/runs/ledger    append-only TSV, two rows per run, reduced on read
@@ -203,7 +203,7 @@ runs_verdict() {
     printf 'STALLED'; return 0
   fi
 
-  [ "${rc:-0}" -ne 0 ] && { printf 'STALLED'; return 0; }
+  [ "${rc:-0}" -ne 0 ] && { printf 'FAILED'; return 0; }
 
   # Tier 1: an explicit working set. Best signal; scripts should pass --watch.
   if [ "$#" -gt 0 ]; then

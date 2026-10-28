@@ -385,6 +385,33 @@ SH
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'STALLED'
 }
 
+@test "a pass held at its gate reports BLOCKED on the proof contract" {
+  # Waiting on the human is neither NOOP (nothing to do) nor WORKED: it was NOOP once,
+  # so a wave parked at its gate for days read as a healthy idle runner.
+  stub_agentctl
+  cat > "$SANDBOX/bin/agent-ask" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = list ] && printf 'ASK123\tdemoapp\t\tpending\tgate\tcreate them?\tapprove|hold\t-\n'
+SH
+  chmod +x "$SANDBOX/bin/agent-ask"
+  cat > "$SANDBOX/bin/agentctl-run" <<SH
+#!/usr/bin/env bash
+echo "proposed 2 tickets, waiting"
+mkdir -p "$HOME/.agent/plans/demoapp"
+printf '# board\n- Approval: PENDING\n' > "$HOME/.agent/plans/demoapp/sprint-2026-01-01.md"
+SH
+  chmod +x "$SANDBOX/bin/agentctl-run"
+  run "$WAVE_START" demoapp --now
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'BLOCKED'
+}
+
+@test "a pass whose runner exits non-zero reports FAILED on the proof contract" {
+  stub_agentctl
+  stub_run 1 'Error: Reached max turns'
+  run "$WAVE_START" demoapp --now
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/wave/last-outcome" 2>/dev/null)" 'FAILED'
+}
+
 @test "a board with NO Approval line at all still reports blocked when an ask is pending" {
   # The polarity bug. `grep -q '^- Approval: PENDING'` and `board_approved` are NOT
   # inverses: PENDING is only one of the ways a board can be un-approved, and a board
