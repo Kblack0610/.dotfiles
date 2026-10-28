@@ -19,6 +19,7 @@ set -uo pipefail
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
+: "${FLEET_NOT_LOAD_HOLDS:=dispatch}"  # holds that pause work, not the machine: no effect on the verdict
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
@@ -62,7 +63,20 @@ read_mem_pct() {
        END { if (t > 0) printf "%d\n", a * 100 / t; else print 100 }' /proc/meminfo 2>/dev/null || echo 100
 }
 
-holds_set() { [ -d "$HOLD_ROOT" ] && compgen -G "$HOLD_ROOT/*" >/dev/null; }
+# A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
+# that only pauses a workflow (dispatch) says nothing about load, so it does not count: on
+# 2026-10-27 the dispatch hold dropped the trip line from 1.75x to 1x and fleet-thermal paged
+# high 36 times in 8 hours, flapping around load 24.
+holds_set() {
+  local f
+  [ -d "$HOLD_ROOT" ] || return 1
+  for f in "$HOLD_ROOT"/*; do
+    [ -e "$f" ] || continue
+    case " $FLEET_NOT_LOAD_HOLDS " in *" ${f##*/} "*) continue ;; esac
+    return 0
+  done
+  return 1
+}
 
 # --- process rows -----------------------------------------------------------------------
 # Who drives a process decides how it can be stopped: a `claude` ancestor can take a
