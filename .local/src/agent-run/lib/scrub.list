@@ -84,7 +84,6 @@ CLAUDE_CODE_ENHANCED              # in tests/unit/claude_telemetry.bats:24
 LLM_MAXTOK                        # token budget, not a destination
 LLM_MAXTOK_REWRITE
 LLM_JUDGE_DRY_RUN                 # behaviour flag
-OPENCODE_DB                       # sqlite path read by favourites.sh; runtime state
 OPENCODE_DATA_DIR
 OPENCODE_AGENTS_DIR               # asset locations for the binks-fork sync tooling,
 OPENCODE_COMMANDS_DIR             # all of which describe WHERE FILES ARE, never

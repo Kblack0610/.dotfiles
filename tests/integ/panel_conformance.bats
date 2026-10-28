@@ -198,7 +198,7 @@ setup() {
   # %hidden FULL/WIDE/SMALL in one late pass, deliberately AFTER every script owns its own
   # --border, so that adding -B cannot leave a surface frameless.
   #
-  # Remaining: f and S (80%x80%), C-s (60%x50%), tags:l (70%x50%). The 90%x85% four are
+  # Remaining: f and S (80%x80%), C-s (60%x50%), tags:l (70%x50%). The 90%x85% ones are
   # already WIDE. Lower this number by exactly what you normalise.
   local max=4
   local table key w h cmd resolved rw rh offenders=() n

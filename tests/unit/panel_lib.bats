@@ -369,7 +369,6 @@ load_lib() {
 
 @test "the skeleton produces identical output when invoked by a relative path" {
   # fzf re-invokes $SELF from inside the picker, so a relative launch must behave the same.
-  # favourites.sh:26 fails exactly this today.
   local abs rel
   abs="$("$SKELETON" --list)"
   rel="$(cd "$REPO_ROOT/.local/src/tmux" && ./_skeleton.sh --list)"
