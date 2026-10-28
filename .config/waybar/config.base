@@ -78,8 +78,8 @@
     // Only connected or not on the bar; the interface, address and gateway are on hover.
     "network": {
         "format-wifi": "\uf1eb",
-        "format-ethernet": "\uf796",
-        "format-linked": "\uf796 no IP",
+        "format-ethernet": "\udb80\ude00",
+        "format-linked": "\udb80\ude00 no IP",
         "format-disconnected": "offline \u26a0",
         "tooltip-format-wifi": "{essid} ({signalStrength}%)\n{ifname}: {ipaddr}/{cidr}\nvia {gwaddr}",
         "tooltip-format-ethernet": "{ifname}: {ipaddr}/{cidr}\nvia {gwaddr}",
