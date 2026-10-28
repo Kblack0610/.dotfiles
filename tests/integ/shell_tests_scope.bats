@@ -47,9 +47,38 @@ foreign_repo() {
 }
 
 @test "runs when the project IS this repo" {
-  CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  SHELL_TESTS_CHANGED=tests/helpers/sandbox.bash CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
   assert_output --partial 'DISPATCHED: make'
   assert_output --partial "$REPO_ROOT/tests"
+}
+
+# WHICH files run. The whole tier outgrew the 300s Stop budget, so the hook picks the files
+# a change can affect and CI runs the rest. The dispatched FILES list is the assertion.
+fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats | wc -l; }
+
+@test "picker: a change to the shared harness picks every fast-tier file" {
+  SHELL_TESTS_CHANGED=tests/helpers/sandbox.bash CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_output --partial "$(fast_files) of $(fast_files) fast-tier files picked"
+  assert_output --partial 'test-files FILES='
+}
+
+@test "picker: a script change picks the tests that name it, and only those" {
+  SHELL_TESTS_CHANGED=.local/bin/fleet-bench CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_output --partial "tests/unit/fleet_bench.bats"
+  refute_output --partial "tests/unit/theme_generated.bats"
+}
+
+@test "picker: a changed test file picks itself" {
+  SHELL_TESTS_CHANGED=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_output --partial "tests/integ/shell_tests_scope.bats"
+}
+
+@test "picker: a change no test names runs nothing, and says so" {
+  # Built at runtime: written out literally, this file would name it and pick itself.
+  SHELL_TESTS_CHANGED="docs/$(printf 'unnamed%s' -doc).md" CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_success
+  refute_output --partial 'DISPATCHED'
+  assert_output --partial 'no fast-tier test names a changed file (1 changed)'
 }
 
 # THE REGRESSION. A directory that is not a repo but carries a `tests` symlink into this
