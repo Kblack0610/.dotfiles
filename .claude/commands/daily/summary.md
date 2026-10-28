@@ -16,13 +16,14 @@ preference: `gh` CLI over MCP).
 
 Fetch data from all available sources in parallel:
 
-### 1. GitHub Pull Requests
+### 1. Pull Requests (the day-log record)
 ```bash
-gh pr list --author=@me --state=all \
-  --search "updated:>=$(date +%Y-%m-%d)" \
-  --json number,title,state,url,headRefName,reviewDecision
+day-log json ${ARGUMENTS:+--date $ARGUMENTS}
 ```
-Show: open PRs, merged today, review-requested.
+Every PR merged that local day in every repo (`.merged[]`, with group, area and the session
+in `.by`), what is open (`.open[]`), and what waits on the user (`.waiting`). Do not call
+`gh` for these: `day-log` is the one producer, and the `day-log` skill lists the fields.
+Show: merged by area and group, open PRs, what waits on the user.
 
 ### 2. GitHub Commits
 ```bash
@@ -129,7 +130,7 @@ Actions: {prs} PRs created, {issues} GitHub issues created
 
 ## Notes
 
-- Uses `gh` CLI (per `gh-workflows` skill) + git + filesystem reads
+- PRs come from `day-log` (one record per day, same data as the hub:log board); reviews use the `gh` CLI (per `gh-workflows` skill) + git + filesystem reads
 - `gh` auth comes from `gh auth login` state, not MCP server config
 - Notes activity reads `~/.notes/journal/daily/<date>.md` + `~/.notes/inbox/<date>.md`
 - Analysis data from `/daily:analysis` is automatically included if available
