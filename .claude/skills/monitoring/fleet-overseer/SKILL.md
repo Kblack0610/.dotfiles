@@ -82,13 +82,13 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 | DONE | nothing unlanded or open (as LANDED), and every line of its plan's `## Phases` checklist is `[x]` or `[-]` | tells it to wind down, once |
 | LANDED | idle, its PR merged (or it never had one) and the tree clean, nothing after the PR, not a suspect for a red main, and its plan has an unchecked phase (`next_phase`) or no `## Phases` checklist | sends it on to its next phase, once |
 | UNCLEAR | as LANDED but with no plan file, a closed PR, no git | lists it with the reason |
-| WORKING | busy, a background shell idle under 120m, a heavy child process, CI running, or idle under 20m | leaves it alone |
+| WORKING | busy, a background shell idle under 120m (unless its plan is finished: then DONE after 20m), a heavy child process, CI running, or idle under 20m | leaves it alone |
 
 **The rule.** A session is DONE when its plan's `## Phases` checklist has no `- [ ]` left (`[x] <name> (#PR)` landed, `[-] <name>: <why>, <board row>` deferred by the human), no ask, prompt or plan approval of its own is open, and nothing it made is unlanded. Then, and only then, it winds down. Until then a merged phase is LANDED and the session carries on with the next one in the same session.
 
 Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every dirty file is its own, but in a repo's main checkout only the files it edited count (`edited_files` from agent-panel), so the human's half-done config does not stall every session in that checkout. Ahead counts files whose content is not on the default branch, not commits, so a squash merge or a local merge of landed work reads 0.
 
-`FLEET_IDLE_MIN` (20), `FLEET_SHELL_STALE_MIN` (120: a background shell older than this is bucketed on its facts, with "background shell idle over 120m" on the reason) and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the MAIN rows first, then the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
+`FLEET_IDLE_MIN` (20), `FLEET_SHELL_STALE_MIN` (120: a background shell older than this is bucketed on its facts, with "background shell idle over 120m" on the reason; a finished plan reads DONE after `FLEET_IDLE_MIN` with "background shell still running") and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the MAIN rows first, then the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
 
 ### When the human asks "where are we" or for a summary
 
