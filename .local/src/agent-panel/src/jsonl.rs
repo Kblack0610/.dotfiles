@@ -174,7 +174,12 @@ fn last_usage(text: &str) -> (u64, String) {
 }
 
 /// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the
-/// `~/.claude/plans/*.md` path the transcript names most often (a plan handed in by prompt).
+/// `~/.claude/plans/*.md` name the session's own turns (its text and tool calls) name most.
+/// Nothing else in the transcript is the session's word: the SessionStart preflight (hook
+/// attachments) lists other sessions' plans, and a prompt can be a pasted screen or a
+/// shepherd nudge quoting another session's plan (2026-10-28, dotfiles-4c read as the
+/// day-log plan). Only before the session's first reply does its prompt decide, since a
+/// plan handed in by prompt is all a fresh session has; once it works the plan, it reads it.
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     if let Some(i) = text.rfind(KEY) {
@@ -184,7 +189,46 @@ fn plan_file(text: &str) -> String {
         }
     }
     const DIR: &str = "/.claude/plans/";
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    const ASSISTANT: &str = "\"type\":\"assistant\"";
+    let own_turn = |v: &Value| {
+        v.get("type").and_then(Value::as_str) == Some("assistant")
+            && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+    };
+    let mut own: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut prompt = own.clone();
+    let mut replied = false;
+    for line in text.lines() {
+        let named = line.contains(DIR);
+        if !named && (replied || !line.contains(ASSISTANT)) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if own_turn(&v) {
+            replied = true;
+            if named {
+                count_plans(&v.pointer("/message/content").map(Value::to_string).unwrap_or_default(), &mut own);
+            }
+        } else if named
+            && v.get("type").and_then(Value::as_str) == Some("user")
+            && v.get("isMeta").and_then(Value::as_bool) != Some(true)
+        {
+            // A typed prompt is a string; a tool result is an array, and is not the prompt.
+            if let Some(s) = v.pointer("/message/content").and_then(Value::as_str) {
+                count_plans(s, &mut prompt);
+            }
+        }
+    }
+    let counts = if replied { own } else { prompt };
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(name, _)| crate::session::home().join(".claude/plans").join(name).to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Count each `~/.claude/plans/<name>.md` that `text` names into `counts`.
+fn count_plans(text: &str, counts: &mut std::collections::HashMap<String, usize>) {
+    const DIR: &str = "/.claude/plans/";
     for (i, _) in text.match_indices(DIR) {
         let rest = &text[i + DIR.len()..];
         let name_len = rest
@@ -192,14 +236,9 @@ fn plan_file(text: &str) -> String {
             .unwrap_or(rest.len());
         let name = &rest[..name_len];
         if name.ends_with(".md") && name.len() > 3 {
-            *counts.entry(name).or_default() += 1;
+            *counts.entry(name.to_string()).or_default() += 1;
         }
     }
-    counts
-        .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
-        .map(|(name, _)| crate::session::home().join(".claude/plans").join(name).to_string_lossy().into_owned())
-        .unwrap_or_default()
 }
 
 /// One-line summary of the most recent turn, for the chooser row.
@@ -406,5 +445,38 @@ mod tests {
         fs::remove_file(&p).ok();
         let none = fleet_info(Path::new("/no/such/file.jsonl"));
         assert_eq!((none.context_tokens, none.plan_file.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn plan_file_ignores_plans_only_the_preflight_and_others_name() {
+        // The SessionStart preflight lists other sessions' plans in a hook attachment, a
+        // reminder and a tool result echo them; the session's own Read is its plan.
+        let preflight = r#"{"type":"attachment","attachment":{"type":"hook_additional_context","content":["Plans: ~/.claude/plans/theirs.md, ~/.claude/plans/theirs.md"]}}"#;
+        let p = tmpfile("preflight", &[
+            preflight,
+            r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/mine.md"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
+            r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
+        fs::remove_file(&p).ok();
+
+        // Named only there, the session has no plan of its own: not someone else's.
+        let p = tmpfile("preflight-only", &[
+            preflight,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#,
+        ]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+
+        // 2026-10-28, dotfiles-4c: a pasted screen quoting a shepherd nudge to another
+        // session named its plan; once the session has replied without touching it, it is not its plan.
+        let p = tmpfile("pasted", &[
+            r#"{"type":"user","message":{"content":"Message from @other: every phase in /h/.claude/plans/theirs.md is ticked"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"checking the log"}]}}"#,
+        ]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
     }
 }
