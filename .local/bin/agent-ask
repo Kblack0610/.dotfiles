@@ -6,12 +6,15 @@
 #     --options a|b|c   the fixed answer vocabulary
 #     --recommend b     which of them YOU recommend; shown marked in the picker
 #     --session s       the asking session; default the caller's tmux session
-#   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
+#   agent-ask list [project|--all] [--pending|--answered|--stale] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify;
 #                                       run its `resume` command (via ask-resume)
-#   agent-ask cancel <id>               flip to cancelled
+#   agent-ask cancel <id> [reason...]   flip to cancelled
+#   agent-ask stale <id> [reason...]    flip a pending ask to stale (still answerable)
+#   agent-ask expire [--days N]         flip pending asks older than N days to stale and
+#                                       print them (default $AGENT_ASK_STALE_DAYS, 14)
 #   agent-ask count [project|--all]     number of pending asks (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
@@ -38,9 +41,17 @@
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
 # "PR #1036 is green, merge it?" - the loop's common ask under AUTONOMY=pr.
 
+# LIFECYCLE: pending -> answered | cancelled | stale. Every reader of "waiting on you" asks
+# for --pending, so a stale ask leaves the human's queue without anyone deciding it: it is
+# still answerable, and the morning briefing lists it once, the day it went stale. An ask goes
+# stale after AGENT_ASK_STALE_DAYS unanswered (`expire`, run by the briefing), or when the wave
+# its `task: wave/<app>/<version>` names has shipped (`stale`, run by agentctl-wave-roll).
+# cancel and stale stamp `closed_at` and, when given, `closed_reason`.
+
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
+: "${AGENT_ASK_STALE_DAYS:=14}"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 
 # --- helpers ---------------------------------------------------------------
@@ -111,7 +122,25 @@ cmd_post() {
     esac
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
-  [ -n "$project" ] || project="$(resolve_project)"
+  if [ -n "$project" ]; then
+    # An explicit --project must be the canonical name, or the ask files where no reader looks
+    # for it. The resolver's own answer (no --project) is canonical by construction.
+    if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
+      # shellcheck disable=SC1091
+      . "$SHARED_HOOKS/project-name.sh"
+      project_known "$project"
+      [ $? = 1 ] && { echo "agent-ask post: '$project' is not a canonical project (project-map.json)" >&2; return 2; }
+    fi
+  else
+    project="$(resolve_project)"
+  fi
+  # A wave gate belongs to the wave's app. One release's six gates were each posted twice, once
+  # under the app and once under its monorepo, and the second copy could never be resolved.
+  case "$task" in
+    wave/*/*)
+      local wapp="${task#wave/}"; wapp="${wapp%%/*}"
+      [ "$wapp" = "$project" ] || { echo "agent-ask post: task $task belongs to $wapp, not $project" >&2; return 2; } ;;
+  esac
   # A supervised runner names itself, so its pass can be scored BLOCKED: agent-proof.sh's
   # proof_blocked matches a pending ask on this field, which is how "waiting on the human"
   # stops reading as WORKED or NOOP.
@@ -207,6 +236,7 @@ cmd_list() {
     case "$1" in
       --pending)  want=pending; shift ;;
       --answered) want=answered; shift ;;
+      --stale)    want=stale; shift ;;
       --since)    since="$2"; shift 2 ;;
       --all)      key="--all"; shift ;;
       *)          key="$1"; shift ;;
@@ -222,7 +252,8 @@ cmd_list() {
   fi
 
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
-  #      resumed_at, recommend, created, session (append new columns at the end only)
+  #      resumed_at, recommend, created, session, closed_at, closed_reason
+  #      (append new columns at the end only)
   local f st at
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -231,12 +262,13 @@ cmd_list() {
     at="$(field "$f" answered_at)"
     # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
     [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
       "$(field "$f" options)" "$(field "$f" task)" \
       "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)" \
-      "$(field "$f" created)" "$(field "$f" session)"
+      "$(field "$f" created)" "$(field "$f" session)" \
+      "$(field "$f" closed_at)" "$(field "$f" closed_reason)"
   done < <(ask_files "$key")
 }
 
@@ -278,13 +310,48 @@ cmd_answer() {
   fi
 }
 
-cmd_cancel() {
-  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask cancel <id>" >&2; return 2; }
+# close_ask <status> <id> [reason...]: the shared body of cancel and stale.
+close_ask() {
+  local to="$1" id="${2:-}"; shift 2 2>/dev/null || shift $#
+  [ -n "$id" ] || { echo "usage: agent-ask cancel|stale <id> [reason...]" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
-  set_field "$f" status cancelled
+  # Only a pending ask goes stale: an answer or a cancel is a decision, and staleness is not.
+  if [ "$to" = stale ] && [ "$(field "$f" status)" != pending ]; then
+    echo "agent-ask: $id is $(field "$f" status), not pending" >&2; return 1
+  fi
+  set_field "$f" status "$to"
+  set_field "$f" closed_at "$(now_iso)"
+  [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
   queue_changed
-  echo "cancelled $id" >&2
+  echo "$to $id" >&2
+}
+
+cmd_cancel() { close_ask cancelled "$@"; }
+cmd_stale() { close_ask stale "$@"; }
+
+# expire [--days N]: every pending ask created more than N days ago goes stale; print the
+# list rows of the ones this call changed. `created` is local ISO with an offset, and a
+# lexical compare is only safe within one offset, so each is parsed by date(1).
+cmd_expire() {
+  local days="$AGENT_ASK_STALE_DAYS"
+  case "${1:-}" in
+    --days) days="${2:-}"; shift 2 ;;
+    "") ;;
+    *) echo "usage: agent-ask expire [--days N]" >&2; return 2 ;;
+  esac
+  [[ "$days" =~ ^[0-9]+$ ]] || { echo "agent-ask expire: --days takes a whole number" >&2; return 2; }
+  local cutoff f c id
+  cutoff=$(( $(date +%s) - days * 86400 ))
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$(field "$f" status)" = pending ] || continue
+    c="$(date -d "$(field "$f" created)" +%s 2>/dev/null)" || continue
+    [ "$c" -lt "$cutoff" ] || continue
+    id="$(field "$f" id)"
+    close_ask stale "$id" "no answer in ${days}d" 2>/dev/null || continue
+    cmd_list --all --stale | awk -F'\t' -v id="$id" '$1 == id'
+  done < <(ask_files --all)
 }
 
 cmd_recommend() {
@@ -364,6 +431,8 @@ case "$sub" in
   show)   cmd_show "$@" ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
+  stale)  cmd_stale "$@" ;;
+  expire) cmd_expire "$@" ;;
   recommend)    cmd_recommend "$@" ;;
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;

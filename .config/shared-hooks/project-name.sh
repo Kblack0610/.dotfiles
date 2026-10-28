@@ -181,6 +181,19 @@ project_lab_names() {
   ' "$map_file" 2>/dev/null || true
 }
 
+# project_known <name> -> 0 when <name> is a canonical project in the registry (a repo's
+# project, a tracker, an app, or what an alias resolves to), 1 when it is not (an alias
+# itself, such as monorepo or waybar, or an unknown name), 2 when there is no registry.
+project_known() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 2
+  jq -e --arg n "$1" '
+    [(.paths // {} | .[]),
+     (.trackers // {} | to_entries[] | select(.value | type == "object") | .key),
+     (.apps // {} | .[] | objects | .[]),
+     (.aliases // {} | .[])] | index($n) != null' "$map_file" >/dev/null 2>&1
+}
+
 resolve_project_name() {
   local abs_path="$1"
   local map_file; map_file="$(project_map_file)"
