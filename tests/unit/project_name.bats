@@ -220,6 +220,18 @@ APPS='{ "apps/alpha": "alpha", "apps/beta": "beta" }'
   assert_output 'stranger'
 }
 
+@test "a worktree or subdir of an unregistered repo resolves to the repo's basename" {
+  write_map "$APPS"
+  mkdir -p "$SANDBOX/repos/.stranger/sub"
+  git -C "$SANDBOX/repos/.stranger" init -q -b main
+  git -C "$SANDBOX/repos/.stranger" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/repos/.stranger" worktree add -q -b wt "$SANDBOX/repos/stranger-wt" >/dev/null 2>&1
+  run resolve_project_name "$SANDBOX/repos/stranger-wt"
+  assert_output 'stranger'
+  run resolve_project_name "$SANDBOX/repos/.stranger/sub"
+  assert_output 'stranger'
+}
+
 # -- the inverse relation: project -> repo, and repo -> projects --------------
 #
 # These three read `trackers.<project>.repo`, the registry relation that four

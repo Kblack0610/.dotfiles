@@ -28,6 +28,13 @@ TRANSCRIPT=$(echo "$STDIN_JSON" | jq -r '.transcript_path // empty' 2>/dev/null)
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
 . "$HOME/.config/shared-hooks/project-name.sh"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
+# A worktree reaped before this Stop (`wt done`) cannot be collapsed to its repo any more,
+# so its basename would mint a namespace; the project an earlier Stop recorded stands.
+if [ ! -d "$PROJECT_DIR" ]; then
+  PRIOR=$(grep -l -F "\"session_id\":\"$SID\"" "$HOME"/.agent/sessions/*/sessions.jsonl 2>/dev/null \
+          | grep -v -F "/$PROJECT_NAME/sessions.jsonl" | head -1)
+  [ -n "$PRIOR" ] && PROJECT_NAME=$(basename "$(dirname "$PRIOR")")
+fi
 
 # --- meaningful gate: real work only, else skip silently ---
 # grep -c prints "0" and exits 1 on no match; capture stdout only, default empty->0.

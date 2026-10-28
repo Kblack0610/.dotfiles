@@ -68,6 +68,14 @@ run_hook() {
   assert_output --partial '"session_id":"self"'
 }
 
+@test "a Stop after its worktree is reaped stays under the project an earlier Stop recorded" {
+  jq -nc --arg t "$TRANSCRIPT" '{session_id:"self", transcript:$t, project:"alpha"}' > "$REG"
+  CLAUDE_PROJECT_DIR="$SANDBOX/alpha-wt-reaped" run_hook
+  run jq -r '.session_id' "$REG"
+  assert_output self
+  [ ! -e "$HOME/.agent/sessions/alpha-wt-reaped" ]
+}
+
 @test "the first Stop of a project creates the registry with one line" {
   run_hook
   run wc -l < "$REG"
