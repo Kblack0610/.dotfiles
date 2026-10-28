@@ -56,6 +56,16 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'session: '
 }
 
+@test "post records the asking Claude session, unless --session names someone else" {
+  local id
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'claude_session: sid-1'
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session other 'merge it?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'claude_session: '
+}
+
 @test "the question survives the round trip" {
   local id; id="$(post demo 'ship the release?')"
   run "$AGENT_ASK" show "$id"

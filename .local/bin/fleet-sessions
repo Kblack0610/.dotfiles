@@ -199,13 +199,20 @@ label() {
 }
 
 # --- facts ------------------------------------------------------------------------------
-# Pending asks whose `session:` names this session (tmux session name or session id).
+# Pending asks for this session: by claude_session when the ask has one, else by `session:` (tmux session name or session id).
 asks_for() {
-  local f n=0
+  local f n=0 owner
   for f in "$ASK_ROOT"/*/*.md; do
     [ -f "$f" ] || continue
     grep -q '^status: pending$' "$f" || continue
-    grep -qxF -e "session: $1" -e "session: $2" "$f" && n=$((n + 1))
+    # claude_session names the one asking session; the tmux session name is shared by every
+    # window in it, so it is only the fallback for asks that predate the field.
+    owner="$(sed -n 's/^claude_session: //p' "$f")"
+    if [ -n "$owner" ]; then
+      [ "$owner" = "$2" ] && n=$((n + 1))
+    elif grep -qxF -e "session: $1" -e "session: $2" "$f"; then
+      n=$((n + 1))
+    fi
   done
   echo "$n"
 }
