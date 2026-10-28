@@ -76,8 +76,10 @@ cmd_set() {
   # Re-setting an existing hold replaces it (new reason, new roster), atomically, so a
   # reader never sees half a file.
   mv "$tmp" "$f"
-  # High on set, normal on release: the held state is the one that needs the human.
-  notify -p high -t "hold: $resource" "$(oneline "$reason") (by $(oneline "$by"))"
+  # Low on set and on release: fleet-overseer sets and lifts holds itself, so a hold is the
+  # fleet pacing itself, not something the human acts on. At high it was 10 of the phone's
+  # 270 pages in 48h (2026-10-28). The hold still shows in the briefing and the preflight.
+  notify -p low -t "hold: $resource" "$(oneline "$reason") (by $(oneline "$by"))"
   echo "held: $resource"
 }
 
@@ -89,7 +91,7 @@ cmd_release() {
   local reason roster
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
   rm -f "$f"
-  notify -p normal -t "go: $resource" "released (was: $reason)"
+  notify -p low -t "go: $resource" "released (was: $reason)"
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"

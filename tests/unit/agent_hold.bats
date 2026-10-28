@@ -54,12 +54,12 @@ setup() {
   assert_success
 }
 
-@test "set pages high and release pages normal" {
+@test "set and release both page low: the overseer acts on holds itself" {
   "$HOLD" set unity-tests --by c "hot"
   "$HOLD" release unity-tests
   run cat "$NOTIFY_LOG"
-  assert_line --index 0 --partial '-p high -t hold: unity-tests'
-  assert_line --index 1 --partial '-p normal -t go: unity-tests'
+  assert_line --index 0 --partial '-p low -t hold: unity-tests'
+  assert_line --index 1 --partial '-p low -t go: unity-tests'
 }
 
 @test "release of a resource that is not held fails" {
