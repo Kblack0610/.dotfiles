@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fleet-bench - record where every live session is, predict when it finishes, and score
-# the prediction once it does. Model-free; the shepherd reads it and gains no duties.
+# the prediction once it does. Model-free but `review`; the shepherd only reads it.
 #
 #   fleet-bench sample           one sample: progress line per live session, a new ETA for
 #                                any session whose phase moved, score any that finished
@@ -9,9 +9,10 @@
 #   fleet-bench headline         the last 24h in one line (the popup and the nightly page)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench nightly          scorecard, then one page with the headline
+#   fleet-bench review [--pick]  count CI reds on PRs merged in the window, review a sample
 #
-# State is ~/.agent/bench/{progress,estimates,scores}.jsonl. Every number is counted from
-# samples, never a model's judgment. Formulas, fields and outcomes: the fleet-bench skill.
+# State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade; a review
+# only counts the findings it lists. Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
 
 set -uo pipefail
@@ -22,10 +23,15 @@ set -uo pipefail
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
+: "${BENCH_REVIEW_MAX:=5}"           # PRs one review pass reads, at most one per session
+: "${BENCH_REVIEW_MAX_LINES:=2000}"  # diff lines the local reviewer model holds with room to reason
+: "${BENCH_REVIEW_TIMEOUT_S:=900}"   # guard on each reviewer call
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
+CI="$DIR/pr-ci.jsonl"
+REVIEWS="$DIR/reviews.jsonl"
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 
 say() { printf 'fleet-bench: %s\n' "$*" >&2; }
@@ -200,7 +206,7 @@ cmd_report() {
   echo
   local r st
   proof_lib || return 0
-  for r in fleet-bench fleet-bench-nightly; do
+  for r in fleet-bench fleet-bench-nightly fleet-review; do
     st="$(proof_state_dir)/$r/last-outcome"
     printf '%s last outcome: %s\n' "$r" "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
   done
@@ -224,29 +230,40 @@ window_stats() {
      peak_context: (map(.context_tokens // 0) | max)}'
 }
 
-# outcomes_latest -> the newest session-outcomes line per session_id (its own reader rule)
-outcomes_latest() {
+# outcomes_newest -> the newest session-outcomes line per session_id (its own reader rule)
+outcomes_newest() {
   if compgen -G "$BENCH_OUTCOMES_DIR/*/*.jsonl" >/dev/null; then
     cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl
-  fi | jq -cs 'map(select(.session_id)) | group_by(.session_id) | map(last)
-               | map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd}}) | from_entries'
+  fi | jq -c -s 'map(select(.session_id)) | group_by(.session_id) | map(last) | .[]'
 }
 
-# window_scores -> scores whose session finished inside the window
-window_scores() {
-  [ -s "$SCORES" ] || return 0
-  jq -c --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) 'select(.done_epoch >= $since)' "$SCORES"
+outcomes_latest() {
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd}}) | from_entries'
 }
+
+# in_window <file> <epoch field> <now> -> the file's rows whose field falls in the window
+in_window() {
+  [ -s "$1" ] || return 0
+  jq -c --arg f "$2" --argjson since $(( $3 - BENCH_WINDOW_H * 3600 )) 'select(.[$f] >= $since)' "$1"
+}
+
+window_scores() { in_window "$SCORES" done_epoch "$1"; }
 
 cmd_headline() {
   local t; t=$(now)
   [ -s "$PROGRESS" ] || { echo "bench: no samples yet"; return 0; }
-  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(window_scores "$t") "$JQ_LIB"'
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(window_scores "$t") \
+     --slurpfile c <(in_window "$CI" merged_epoch "$t") --slurpfile v <(in_window "$REVIEWS" reviewed_epoch "$t") "$JQ_LIB"'
     def h: . / 60 * 10 | floor / 10;
+    def n($sev): map(.[$sev]) | add // 0;
     "bench \($win)h: \($w | length) sessions, \($w | map(.ticked) | add // 0) phases ticked, "
     + "\($w | map(.waiting_min) | add // 0 | h)h waiting on you, \($w | map(.stalled_min) | add // 0 | h)h stalled, "
     + (if ($s | length) == 0 then "no ETA finished yet"
-       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted" end)'
+       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted" end)
+    + (if ($c | length) == 0 then ""
+       else ", \($c | map(.ci_red) | add) CI reds before merge in \($c | length) PRs" end)
+    + ($v | map(select(.status == "ok")) | if length == 0 then ""
+       else ", review: \(n("block")) BLOCK \(n("flag")) FLAG in \(length) PRs" end)'
 }
 
 cmd_scorecard() {
@@ -264,18 +281,23 @@ cmd_scorecard() {
     echo
     echo "## Sessions"
     echo
-    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | Reverts | Cost |"
-    echo "|---|---|---|---|---|---|---|---|---|---|---|"
-    jq -rn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" '
+    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost |"
+    echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
+    jq -rn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" --slurpfile c <(in_window "$CI" merged_epoch "$t") '
       def h: . / 60 * 10 | floor / 10;
-      $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
-      | "| \(.target) | \(.phase) | \(.ticked) | \(.working_min | h) | \(.waiting_min | h) | \(.stalled_min | h) | \(.nudges) | \(.peak_context / 1000 | floor)k | \($x.prs_merged // "-") | \($x.reverted_7d // "-") | \(if $x.cost_usd then "$\($x.cost_usd * 100 | floor / 100)" else "-" end) |"'
+      ($c | group_by(.session_id) | map({key: .[0].session_id, value: (map(.ci_red) | add)}) | from_entries) as $red
+      | $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
+      | "| \(.target) | \(.phase) | \(.ticked) | \(.working_min | h) | \(.waiting_min | h) | \(.stalled_min | h) | \(.nudges) | \(.peak_context / 1000 | floor)k | \($x.prs_merged // "-") | \($red[.session_id] // "-") | \($x.reverted_7d // "-") | \(if $x.cost_usd then "$\($x.cost_usd * 100 | floor / 100)" else "-" end) |"'
     echo
     echo "## ETA accuracy"
     echo
     echo "Error is actual finish minus predicted (positive ran long). Ratio is actual over predicted duration."
     echo
     cmd_report | sed -n '/^ETA accuracy/,/^$/p' | sed '1d;/^$/d;s/^  /- /'
+    echo
+    echo "## Review sample"
+    echo
+    review_section "$t"
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
 }
@@ -292,6 +314,139 @@ cmd_nightly() {
   report_outcome WORKED "$path"
 }
 
+# merged_new <now> -> {repo, number, session_id} for every PR session-outcomes says merged in
+# the window that pr-ci.jsonl has not counted yet
+merged_new() {
+  local ci="$CI"
+  [ -s "$ci" ] || ci=/dev/null
+  outcomes_newest | jq -cs --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --slurpfile c "$ci" '
+    ($c | map("\(.repo)#\(.number)") | INDEX(.)) as $have
+    | [.[] | .session_id as $sid | (.prs // [])[]
+       | select(.state == "MERGED" and .merged_at != null)
+       | select((.merged_at | fromdateiso8601) >= $since)
+       | {repo, number, session_id: $sid}]
+    | unique_by("\(.repo)#\(.number)") | map(select($have["\(.repo)#\(.number)"] | not)) | .[]'
+}
+
+# pr_ci <repo> <number> <session> -> its size and the CI runs on its branch from its first
+# commit to merge (earlier runs are a reused branch name); red is failure, timed_out or
+# startup_failure, and cancelled is superseded, not red
+pr_ci() {
+  local pr runs
+  pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits) || return 1
+  runs=$(gh run list -R "$1" --branch "$(jq -r .headRefName <<<"$pr")" --limit 100 --json conclusion,createdAt) || return 1
+  jq -cn --argjson pr "$pr" --argjson runs "$runs" --arg repo "$1" --argjson n "$2" --arg sid "$3" "$JQ_LIB"'
+    ([$pr.createdAt, ($pr.commits // [])[].committedDate] | map(fromdateiso8601) | min) as $start
+    | ($pr.mergedAt | fromdateiso8601) as $merged
+    | ($runs | map(select((.createdAt | fromdateiso8601) as $c | $c >= $start and $c <= $merged))) as $r
+    | {repo: $repo, number: $n, session_id: $sid, merged_epoch: $merged, merged_at: ($merged | iso),
+       additions: ($pr.additions), deletions: ($pr.deletions), ci_runs: ($r | length),
+       ci_red: ($r | map(select(.conclusion | IN("failure", "timed_out", "startup_failure"))) | length)}'
+}
+
+# review_picks <now> -> PRs counted in the window and not yet reviewed, small enough for the
+# reviewer: the largest per session, largest first
+review_picks() {
+  [ -s "$CI" ] || return 0
+  local rv="$REVIEWS"
+  [ -s "$rv" ] || rv=/dev/null
+  jq -cn --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --argjson max "$BENCH_REVIEW_MAX" \
+     --argjson cap "$BENCH_REVIEW_MAX_LINES" --slurpfile c "$CI" --slurpfile v "$rv" '
+    ($v | map("\(.repo)#\(.number)") | INDEX(.)) as $done
+    | $c | map(select(.merged_epoch >= $since and (.additions + .deletions) <= $cap
+                      and ($done["\(.repo)#\(.number)"] | not)))
+    | group_by(.session_id) | map(max_by(.additions + .deletions))
+    | sort_by(-(.additions + .deletions)) | .[:$max][]'
+}
+
+REVIEW_ASK='Review one merged pull request, read-only, using the rubric in ~/.claude/agents/kb-reviewer.md: BLOCK is a bug, a security hole or a broken contract; FLAG is a likely defect or a missing test; NIT is style. Change nothing. Put each finding on its own line exactly as
+FINDING <BLOCK|FLAG|NIT> <file>:<line> <one sentence naming the defect>
+then end with the line REVIEW DONE. A clean PR is the single line REVIEW DONE.'
+
+# review_one <pr-ci row> -> one reviews row. The reviewer runs in the agentctl `review` role,
+# which refuses the author's model family; every fleet session is Claude, hence anthropic.
+review_one() {
+  local row="$1" repo n diff out rc=0 t
+  repo=$(jq -r .repo <<<"$row"); n=$(jq -r .number <<<"$row")
+  if diff=$(gh pr diff "$n" -R "$repo"); then
+    out=$(cd "$DIR" && AGENT_AUTHOR_FAMILY="${AGENT_AUTHOR_FAMILY:-anthropic}" \
+          timeout "$BENCH_REVIEW_TIMEOUT_S" agentctl-run --role review \
+          -p "$REVIEW_ASK"$'\n\n'"Pull request $repo#$n:"$'\n'"$diff" 2>&1) || rc=$?
+  else
+    rc=1; out="gh pr diff failed"
+  fi
+  t=$(now)
+  printf '%s\n' "$out" | jq -Rcs --argjson row "$row" --argjson t "$t" --argjson rc "$rc" --arg route "${ROUTE:-}" "$JQ_LIB"'
+    def count($s): map(select(.severity == $s)) | length;
+    split("\n") as $l
+    | [$l[] | capture("^[-*` ]*FINDING (?<severity>BLOCK|FLAG|NIT) (?<where>[^ ]+) (?<summary>.*)$")] as $f
+    | {repo: ($row.repo), number: ($row.number), session_id: ($row.session_id), reviewed_epoch: $t,
+     reviewed_at: ($t | iso), route: $route, exit: $rc,
+     status: (if $rc == 0 and ($l | any(test("^[`* ]*REVIEW DONE[`* ]*$"))) then "ok" else "failed" end),
+     block: ($f | count("BLOCK")), flag: ($f | count("FLAG")), nit: ($f | count("NIT")), findings: $f,
+     tail: (if $rc == 0 then null else ($l | map(select(length > 0)) | .[-3:] | join(" / ")) end)}'
+}
+
+cmd_review() {
+  local t new pr row r n=0 red=0 k=0 failed=0 rv
+  mkdir -p "$DIR"
+  t=$(now)
+  if [ "${1:-}" = --pick ]; then
+    review_picks "$t" | jq -r '"\(.repo)#\(.number)\t\(.additions + .deletions) lines\t\(.ci_red)/\(.ci_runs) CI red"'
+    return 0
+  fi
+  new=$(merged_new "$t") || { report_outcome STALLED "outcomes unreadable"; return 1; }
+  while IFS= read -r pr; do
+    [ -n "$pr" ] || continue
+    if ! row=$(pr_ci "$(jq -r .repo <<<"$pr")" "$(jq -r .number <<<"$pr")" "$(jq -r .session_id <<<"$pr")"); then
+      say "gh failed counting $(jq -r '"\(.repo)#\(.number)"' <<<"$pr")"
+      report_outcome STALLED "gh failed counting CI"
+      return 1
+    fi
+    printf '%s\n' "$row" >> "$CI"
+    n=$((n + 1)); red=$((red + $(jq .ci_red <<<"$row")))
+  done <<<"$new"
+  if [ -z "${ROUTE:-}" ]; then
+    rv="review off: the fleet-review conf has no ROUTE"
+  else
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      r=$(review_one "$row") || r=
+      [ -n "$r" ] || { failed=$((failed + 1)); continue; }
+      printf '%s\n' "$r" >> "$REVIEWS"
+      k=$((k + 1))
+      [ "$(jq -r .status <<<"$r")" = ok ] || failed=$((failed + 1))
+    done < <(review_picks "$t")
+    rv="$k reviewed, $failed failed"
+  fi
+  say "$n PRs counted, $red CI reds; $rv"
+  if [ "$failed" -gt 0 ]; then
+    report_outcome STALLED "$rv"
+    return 1
+  fi
+  if [ "$n" -eq 0 ] && [ "$k" -eq 0 ]; then
+    report_outcome NOOP "nothing new merged in the window"
+    return 0
+  fi
+  report_outcome WORKED "$n PRs counted, $red CI reds; $rv"
+}
+
+# review_section <now> -> the scorecard's review lines
+review_section() {
+  local v
+  v=$(in_window "$REVIEWS" reviewed_epoch "$1")
+  if [ -z "$v" ]; then
+    echo "No PR was reviewed in the window. The review stays off until the fleet-review conf names a ROUTE whose model is not Claude; \`fleet-bench review --pick\` shows what it would read."
+    return 0
+  fi
+  echo "A local model, never the author's family, read each PR's diff. Only the findings it lists are counted."
+  echo
+  jq -rs '.[] | if .status == "ok"
+      then "- \(.repo)#\(.number): \(.block) BLOCK, \(.flag) FLAG, \(.nit) NIT"
+           + ([.findings[] | select(.severity == "BLOCK") | "\n  - BLOCK \(.where) \(.summary)"] | join(""))
+      else "- \(.repo)#\(.number): review failed (exit \(.exit)): \(.tail // "")" end' <<<"$v"
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -300,8 +455,9 @@ main() {
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
     nightly) cmd_nightly ;;
-    -h | --help) sed -n '2,15p' "$0" ;;
-    *) sed -n '2,9p' "$0" >&2; return 2 ;;
+    review) shift; cmd_review "$@" ;;
+    -h | --help) sed -n '2,16p' "$0" ;;
+    *) sed -n '2,12p' "$0" >&2; return 2 ;;
   esac
 }
 
