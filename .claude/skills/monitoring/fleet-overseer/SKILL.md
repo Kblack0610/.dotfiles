@@ -35,7 +35,7 @@ The class column tells you how each consumer can be stopped:
 
 | Verdict | Meaning |
 |---|---|
-| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or Tctl at 95 with load at 1.5x), or between the marks while a hold is set |
+| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch`, which pauses work and says nothing about load) |
 | CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more). Safe to send GO |
 | OK | Nothing held, nothing over the line |
 
