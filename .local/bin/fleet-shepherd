@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# fleet-shepherd - the shepherd as a scheduled runner, gated on the fleet state document.
+#
+#   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): defer to a live
+#                          interactive shepherd, refresh the state document, and run a headless
+#                          `/fleet-overseer shepherd` pass only when the document holds
+#                          something to move
+#   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
+#                          1 if nothing. Reads the document as it is, writes nothing
+#   fleet-shepherd lease   record that a shepherd pass is running now; every pass calls it
+#                          first (fleet-overseer, shepherd step 0)
+#
+# Most passes find nothing to move, and deciding that is a jq query, not a model run. An
+# interactive shepherd loop holds the human's latest word in context, so its lease wins.
+# Lease and orders: fleet-overseer SKILL.md, "Verb: shepherd".
+
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+: "${FLEET_SHEPHERD_LEASE_MIN:=30}" # two loop intervals: one missed pass does not hand over
+NAME="${AGENTCTL_NAME:-shepherd}"
+LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
+STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+LEASE="$LEDGER/.lease"
+MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
+
+die() { echo "fleet-shepherd: $*" >&2; exit 2; }
+
+publish() {
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
+  proof_report "$NAME" "$1" "$2" 2>/dev/null || true
+}
+
+# lease: "<holder> <epoch>". The runner exports FLEET_SHEPHERD_HOLDER=runner to its pass, so
+# the step-0 call inside a headless pass never reads as a human's loop.
+cmd_lease() {
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  printf '%s %s\n' "${FLEET_SHEPHERD_HOLDER:-interactive}" "$(date +%s)" > "$LEASE"
+}
+
+# interactive_age -> minutes since a live interactive pass, or nothing when there is none.
+interactive_age() {
+  local holder at
+  read -r holder at < "$LEASE" 2>/dev/null || return 0
+  [ "$holder" = interactive ] && [[ "$at" =~ ^[0-9]+$ ]] || return 0
+  echo $(( ($(date +%s) - at) / 60 ))
+}
+
+# The same rules as the skill's steps 4 and 5, over the document: a hands-off row is never
+# moved; DONE, LANDED and STALLED are nudged once; a row for the human is escalated once.
+cmd_due() {
+  [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
+  local out
+  out="$(jq -r '
+    ( (.main // [])[] | select(.escalated | not) | "main red: \(.repo) (\(.reason // "-"))" )
+  , ( (.sessions // [])[]
+      | select((.labels // []) | index("hands-off") | not)
+      | if (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
+          "nudge \(.bucket): \(.target) \(.fact // "")"
+        elif ((.bucket | IN("NEEDS","UNCLEAR")) or ((.bucket | IN("DONE","LANDED","STALLED")) and .nudged))
+             and (.escalated | not) then
+          "escalate \(.bucket): \(.target) \(.reason // "")"
+        else empty end )
+  ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
+  # A hold the machine no longer needs is a GO decision, and a machine over budget with no
+  # hold is a hold decision; both are the shepherd's step 1.
+  local verdict holds
+  verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
+  holds="$(agent-hold list 2>/dev/null | cut -f1 | paste -sd, -)"
+  if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
+    out+="${out:+$'\n'}pace: hold $holds while the machine reads CLEAR"
+  elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
+    out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
+  fi
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# Nothing to move and nothing working is the settled fleet: page that once, as the skill's
+# settled rule does, so a quiet fleet still says it is quiet.
+settle() {
+  local working
+  working="$(jq '[(.sessions // [])[] | select(.bucket == "WORKING")] | length' "$STATE_FILE" 2>/dev/null)"
+  if [ "${working:-1}" -gt 0 ]; then rm -f "$LEDGER/.settled"; return 0; fi
+  [ -e "$LEDGER/.settled" ] && return 0
+  : > "$LEDGER/.settled"
+  local n
+  n="$(jq '[(.sessions // [])[] | select(.bucket | IN("NEEDS","UNCLEAR"))] | length' "$STATE_FILE")"
+  agent-notify -p normal -t shepherd "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
+}
+
+cmd_run() {
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  local age
+  age="$(interactive_age)"
+  if [ -n "$age" ] && [ "$age" -lt "$FLEET_SHEPHERD_LEASE_MIN" ]; then
+    echo "$NAME: an interactive shepherd passed ${age}m ago - standing down."
+    publish NOOP "interactive shepherd live (${age}m)"
+    return 0
+  fi
+  fleet-sessions --write >/dev/null || { publish FAILED "fleet-sessions --write failed"; return 1; }
+  local due
+  if ! due="$(cmd_due)"; then
+    settle
+    echo "$NAME: nothing to move."
+    publish NOOP "nothing to move"
+    return 0
+  fi
+  rm -f "$LEDGER/.settled"
+  printf '%s: due\n%s\n' "$NAME" "$due"
+  export FLEET_SHEPHERD_HOLDER=runner
+  # Scored here, by the shared verdict: a pass that was due moves something, and every
+  # move is logged, so log.md is the artifact. Unchanged after a due pass is STALLED.
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md"
+  local rc=0 log verdict
+  log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+  agentctl-run --role observe -p "/fleet-overseer shepherd
+
+Due this pass (from fleet-shepherd due):
+$due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
+  verdict="$(proof_verdict "$log" "$rc" 2>/dev/null)" || true
+  publish "${verdict:-FAILED}" "$(printf '%s' "$due" | wc -l | tr -d ' ') due$([ "$rc" = 0 ] || printf ' (exit %s)' "$rc")"
+  return "$rc"
+}
+
+case "${1:-}" in
+  run)   cmd_run ;;
+  due)   cmd_due ;;
+  lease) cmd_lease ;;
+  -h|--help|"") sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (run|due|lease)" ;;
+esac

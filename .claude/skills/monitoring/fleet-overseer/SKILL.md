@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-27"
+  reviewed: "2026-10-28"
 ---
 
 # fleet-overseer
@@ -105,8 +105,14 @@ The bucket counts are not the answer. The human asked (2026-10-27) for this shap
 
 ## Verb: `shepherd`
 
-One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode: a permission prompt stalls the loop while the human is away, and every pass adds to that session's context. SendMessage is a Claude tool, so a sentinel watch cannot deliver these messages, and nothing emits an event when a session goes idle; the loop interval is the poll.
+One pass. It runs two ways, and only one acts at a time:
 
+- **The runner.** The agentctl runner `shepherd` fires `fleet-shepherd run` every 15 minutes. It refreshes the fleet state document, asks `fleet-shepherd due` whether anything is there to move (the rules of steps 1, 4 and 5 over `state.json`), and starts a headless pass of this verb only when something is, with the due lines appended to the prompt. A pass with nothing due costs no model call, and pages "fleet settled" once when nothing is working either.
+- **A loop the human drives.** `/loop 15m /fleet-overseer shepherd` from a fresh session in bypass-permissions mode, when the human wants to steer the fleet by talking to it. Every pass, including the runner's, starts with `fleet-shepherd lease`; the runner stands down while a lease from a human-driven loop is under 30 minutes old, so the loop wins while it is alive and the runner takes over when its session dies.
+
+**Standing orders.** When the human gives an order that should outlive this pass ("Barrage first: freed Unity slots go to agent-11 and agent-12"), write it to `~/.agent/shepherd/orders.md`, one line with the date, and delete the line when it is done or withdrawn. Read that file at the start of every pass and follow it; a headless pass has nothing else to learn the human's word from.
+
+0. `fleet-shepherd lease`, then read `~/.agent/shepherd/orders.md`.
 1. **Pace check.** Run `fleet-assess` and read `top -bn1 | sed -n 3p`.
    - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
    - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
