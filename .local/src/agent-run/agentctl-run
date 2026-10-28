@@ -36,6 +36,9 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/route.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
+# MODEL is the conf key (it arrives as environment on a supervised runner);
+# AGENTCTL_MODEL is the per-call override and wins over it.
+AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
 
@@ -126,8 +129,10 @@ fi
 # tell which family this is" - see lib/role.sh.
 role_family_check
 
-# A role that pins its model pins it for the harness too, or the pin is decoration.
-[ -n "$ROLE_MODEL" ] && export ANTHROPIC_MODEL="$ROLE_MODEL"
+# The model the family check approved is the model the harness runs, or the check
+# is decoration: role pin > AGENTCTL_MODEL / conf MODEL > the route's model.
+_model="$(role_run_model)"
+[ -n "$_model" ] && export ANTHROPIC_MODEL="$_model"
 
 if [ -n "$AGENTCTL_EXPLAIN" ]; then
   printf 'role:        %s\n'  "$ROLE_NAME"

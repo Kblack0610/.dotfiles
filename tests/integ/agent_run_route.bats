@@ -254,3 +254,36 @@ EOF
   assert_output --partial 'route:       subscription'
   assert_output --partial 'built-in default'
 }
+
+# ---------------------------------------------------------------- model
+
+# One place per setting: a runner's model is MODEL in its conf. Before this,
+# AGENTCTL_MODEL reached the family check and --explain but never the harness, so
+# fleet-dispatch's judge ran on the CLI default while --explain named another model.
+model_seen() {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${ANTHROPIC_MODEL:-<unset>}" > "%s/model.txt"\n' "$SANDBOX" > "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/claude"
+}
+
+@test "a conf MODEL reaches the harness as ANTHROPIC_MODEL" {
+  model_seen
+  MODEL=claude-test-1 run "$RUN" --role fixture --route safe -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/model.txt")" "claude-test-1"
+}
+
+@test "AGENTCTL_MODEL beats the conf MODEL, and the route model is the fallback" {
+  model_seen
+  route gw 'anthropic-gateway' 'https://gw.example' no yes no client 'ROUTE_MODEL_CLAUDE="claude-route-1"'
+  MODEL=claude-conf-1 AGENTCTL_MODEL=claude-call-1 run "$RUN" --role fixture --route gw --data-class work -p hi
+  assert_equal "$(cat "$SANDBOX/model.txt")" "claude-call-1"
+  run "$RUN" --role fixture --route gw --data-class work -p hi
+  assert_equal "$(cat "$SANDBOX/model.txt")" "claude-route-1"
+}
+
+@test "no model anywhere leaves ANTHROPIC_MODEL unset (the CLI default)" {
+  model_seen
+  run "$RUN" --role fixture --route safe -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/model.txt")" "<unset>"
+}

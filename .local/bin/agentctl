@@ -483,6 +483,9 @@ cmd_logs() {
 write_timer_file() {
     local name="$1" schedule="$2"
     local timer="$SYSTEMD_USER_DIR/agentctl-${name}.timer"
+    # Replace, never write through: a stowed symlink here would put generated
+    # output into a tracked file.
+    rm -f "$timer"
     cat > "$timer" <<EOF
 [Unit]
 Description=agentctl schedule: $name
