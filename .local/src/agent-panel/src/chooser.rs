@@ -30,6 +30,8 @@ pub struct Agent {
     pub status: String,
     /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
     pub plan: bool,
+    /// Epoch seconds the session opened (the Claude process start), when Claude recorded it.
+    pub started_at: Option<u64>,
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
@@ -95,6 +97,7 @@ pub fn collect() -> Vec<Agent> {
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
             plan,
+            started_at: sess.started_at.map(|ms| ms / 1000),
         });
     }
     agents
@@ -169,7 +172,7 @@ pub fn run_jump(target: &str) -> Result<()> {
 ///
 /// `json` prints one object per line instead, with the session and transcript facts
 /// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file, the last
-/// entry's time as `idle_since`, and `edited_files`).
+/// entry's time as `idle_since`, the process start as `started_at`, and `edited_files`).
 pub fn run_list(json: bool) -> Result<()> {
     for a in collect() {
         if !json {
@@ -199,6 +202,7 @@ pub fn run_list(json: bool) -> Result<()> {
             "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
             "plan_mode": a.plan,
             "idle_since": idle_since,
+            "started_at": a.started_at,
             "context_tokens": info.context_tokens,
             "model": info.model,
             "plan_file": info.plan_file,

@@ -406,13 +406,14 @@ collect() {
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
-          pdone ptotal pnext phases fin
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+          pdone ptotal pnext phases fin started age
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
-      (.plan_file | if . == "" then "-" else . end)] | @tsv' <<<"$line")
+      (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
+    age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     asks="$(asks_for "$tsess" "$sid")"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
     read -r g dirty ahead pr state ci inpr branch behind conflicts < <(git_facts "$cwd" "$edited")
@@ -435,10 +436,10 @@ collect() {
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")" "${status:--}"
+      "$(labels_of "$sid")" "${status:--}" "$age"
   done
   main_rows
 }
@@ -458,17 +459,24 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
 # --- watch: the stage board -------------------------------------------------------------
 # board_cells: collect's rows on stdin -> one line per session, in bucket order:
-#   sid target sync conflicts tree pr ci plan quality stage labels idle reason
-# Columns 3-11 are the stages a transition is read from; idle moves every tick and reason
+#   sid target sync conflicts tree pr ci plan quality stage labels idle age reason
+# Columns 3-11 are the stages a transition is read from; idle and age move every tick and reason
 # rides along to explain a stage change. MAIN rows are rendered separately.
 board_cells() {
   awk -F'\t' -v OFS='\t' '
+    # minutes -> 45m, 3h12m, 2d4h; "-" when the session start is unknown
+    function dur(m) {
+      if (m !~ /^[0-9]+$/) return "-"
+      if (m < 60) return m "m"
+      if (m < 1440) return int(m / 60) "h" (m % 60) "m"
+      return int(m / 1440) "d" int((m % 1440) / 60) "h"
+    }
     BEGIN { n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i }
     $1 == "MAIN" { next }
     {
@@ -486,7 +494,7 @@ board_cells() {
         if (ls[i] ~ /^quality:/) q = q (q == "" ? "" : ",") substr(ls[i], 9)
         else l = l (l == "" ? "" : ",") ls[i]
       print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
-            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", $11
+            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11
     }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-
 }
 
@@ -498,11 +506,11 @@ transitions() {
     NR == FNR { prev[$1] = $0; next }
     {
       seen[$1] = 1
-      if (!($1 in prev)) { print $2 "  new: " $10 " (" $13 ")"; next }
+      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ")"; next }
       split(prev[$1], p, "\t"); out = ""
       for (i = 3; i <= 11; i++)
         if (p[i] != $i) out = out (out == "" ? "" : ", ") name[i] " " p[i] " -> " $i
-      if (out != "") print $2 "  " out (p[10] != $10 ? " (" $13 ")" : "")
+      if (out != "") print $2 "  " out (p[10] != $10 ? " (" $14 ")" : "")
     }
     END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
 }
@@ -536,7 +544,7 @@ watch_tick() {
     tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
   fi
   # The table goes out as tab-led TSV; layout fits it to the terminal at draw time.
-  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY; echo
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE AGE WHY; echo
   cut -f2- "$cur" | sed 's/^/\t/'
   awk -F'\t' '$1 == "MAIN" { if (!h++) print "\nMAIN"; print "  " $11 }' <<<"$rows"
 }
@@ -552,13 +560,13 @@ layout() {
     BEGIN {
       GAP = 2; WHY = 12; SESS_MAX = 34
       # Most important first; SESSION is never dropped. WHY is not in the list: it flexes.
-      n_keep = split("1 9 7 5 6 4 2 11 3 8 10", keep, " ")
+      n_keep = split("1 9 7 5 6 4 2 11 12 3 8 10", keep, " ")
       split("3 8 10", c, " "); for (i in c) optional[c[i]] = 1
     }
     { line[NR] = $0 }
     /^\t/ {
       is_row[NR] = 1; hdr = !rows++
-      for (j = 1; j <= 12; j++) {
+      for (j = 1; j <= 13; j++) {
         v = $(j + 1); if (j == 1 && !hdr) sub(/:1$/, "", v)
         cell[NR, j] = v
         if (length(v) > wid[j]) wid[j] = length(v)
@@ -575,15 +583,15 @@ layout() {
       }
       for (k = n_keep; W > 0 && total > W && k > 1; k--)
         if (keep[k] in on) { delete on[keep[k]]; total -= wid[keep[k]] + GAP }
-      on[12] = W == 0 || W - total - GAP >= WHY
+      on[13] = W == 0 || W - total - GAP >= WHY
       for (r = 1; r <= NR; r++) {
         if (!is_row[r]) { print clip(line[r], W); continue }
         out = ""
-        for (j = 1; j <= 12; j++) {
+        for (j = 1; j <= 13; j++) {
           if (!on[j]) continue
           v = clip(cell[r, j], wid[j])
-          if (j == 12) v = cell[r, j]
-          else if (j == 11) v = sprintf("%" wid[j] "s", v)
+          if (j == 13) v = cell[r, j]
+          else if (j == 11 || j == 12) v = sprintf("%" wid[j] "s", v)
           else v = sprintf("%-" wid[j] "s", v)
           out = out (out == "" ? "" : sprintf("%" GAP "s", "")) v
         }
@@ -667,6 +675,7 @@ json_rows() {
       ahead: (if .[24] == "-" then null else .[24] | tonumber end),
       labels: (if .[25] == "-" then [] else .[25] | split(",") end),
       activity: (if .[26] == "-" then null else .[26] end),
+      age_min: (if (.[27] // "-") == "-" then null else .[27] | tonumber end),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}'
 }
 
