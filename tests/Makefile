@@ -32,14 +32,15 @@ BATS_FLAGS ?= --print-output-on-failure --timing
 # runner, short enough that a blocked test fails the job instead of hanging it.
 UI_TIMEOUT  ?= 420
 
-.PHONY: test test-fast test-unit test-integ test-ui test-ui-inner test-container \
+.PHONY: test test-fast test-unit test-integ test-files test-ui test-ui-inner test-container \
         test-docker test-rust lint fmt corpus-check bootstrap clean clean-vendor help
 
 help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-fast    unit + integ            <- stop-hook gate"
+	@echo "  make test-fast    unit + integ (CI fast job)"
+	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
@@ -74,6 +75,10 @@ test-unit: $(BATS)
 
 test-integ: $(BATS)
 	@$(BATS) $(BATS_FLAGS) $(HERE)integ
+
+# The Stop hook's entry: only the fast-tier files 60-shell-tests.sh picked for the change.
+test-files: $(BATS)
+	@$(BATS) $(BATS_FLAGS) $(FILES)
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.
