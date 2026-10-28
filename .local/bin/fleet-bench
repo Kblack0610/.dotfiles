@@ -209,14 +209,14 @@ window_stats() {
   local t="$1"
   jq -cn --argjson since $(( t - BENCH_WINDOW_H * 3600 )) --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
      --slurpfile p "$PROGRESS" '
+    def mins($g; $b): [$g[] | select(.b == $b) | .m] | add // 0 | floor;
     $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
     | [range(0; length - 1) | {b: $r[.].bucket,
-         m: ([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60}] as $gaps
-    | def mins($b): [$gaps[] | select(.b == $b) | .m] | add // 0 | floor;
-    {session_id: .[0].session_id, target: (last.target), project: (last.project),
+         m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
+    | {session_id: .[0].session_id, target: (last.target), project: (last.project),
      phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
      ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
-     working_min: mins("WORKING"), waiting_min: mins("NEEDS"), stalled_min: mins("STALLED"),
+     working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
      nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
      peak_context: (map(.context_tokens // 0) | max)}'
 }
