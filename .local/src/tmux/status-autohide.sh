@@ -34,8 +34,6 @@ autohide_apply() {
     done < <(tmux list-clients -F '#{client_session}|#{client_height}' 2>/dev/null)
 
     for session in "${!min[@]}"; do
-        # A session shown in a popup (tmx peek) is a board, not a workspace: no bar.
-        [ -n "$(tmux show-options -qv -t "$session" @peek 2>/dev/null)" ] && continue
         if [ "${min[$session]}" -lt "$THRESHOLD" ]; then
             tmux set-option -t "$session" status off 2>/dev/null || true
         else
