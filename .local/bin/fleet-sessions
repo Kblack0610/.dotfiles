@@ -10,7 +10,8 @@
 # STALLED (nudge once), UNCLEAR, plus one MAIN row per repo whose default branch is red (the
 # latest decided run of a workflow failed), naming the PRs merged since that workflow was
 # last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
-# nothing it made is unlanded, no ask is open, and it is idle.
+# nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
+# is DONE without the idle and status checks, so a session can check its own row mid-turn.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -74,6 +75,15 @@ bucket_facts() {
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
       else plan_bucket "clean, nothing on the branch" "$phases" "$next"; fi ;;
   esac
+}
+
+# session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
+# (phases all ticked, no ask, nothing unlanded, not a red-main suspect). It skips status,
+# plan mode, a heavy child and the idle threshold, so a session can check its own row
+# mid-turn, when that row always reads WORKING busy.
+session_finished() {
+  case "$(bucket_facts - 0 "$3" 0 "$FLEET_IDLE_MIN" "${@:6}")" in DONE*) return 0 ;; esac
+  return 1
 }
 
 # plan_bucket <reason so far> <phases> <next>: nothing is unlanded, so the plan decides.
@@ -169,6 +179,22 @@ prs_for() {
   cat "$key"
 }
 
+# default_base <dir> -> origin/<default branch>, cached per repo per pass. GitHub's answer
+# wins: origin/HEAD is set at clone time and goes stale when the default branch changes.
+# The symref is the offline fallback, and a name this clone has no remote ref for is unused.
+default_base() {
+  local d="$1" key b
+  key="$CACHE/base_$(repo_slug "$d")" || { echo origin/main; return; }
+  if [ ! -f "$key" ]; then
+    b="$(cd "$d" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
+    if [ -z "$b" ] || ! git -C "$d" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1; then
+      b="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; b="${b#origin/}"
+    fi
+    echo "origin/${b:-main}" > "$key"
+  fi
+  cat "$key"
+}
+
 # main_state: gh run list JSON (any order) on stdin -> one line per workflow whose latest
 # decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
 # FIRST failure after the last green (the oldest in the window when there is none), so the
@@ -193,7 +219,7 @@ main_health() {
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
   key="$CACHE/main_$(repo_slug "$dir")"
   if [ ! -f "$key" ]; then
-    base="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+    base="$(default_base "$dir")"
     b="${base#origin/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
     if ! runs="$(cd "$dir" && gh run list --branch "$b" --limit 100 \
@@ -261,7 +287,7 @@ git_facts() {
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   dirty="$(dirty_count "$d" "$edited")"
-  base="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+  base="$(default_base "$d")"
   ahead="$(ahead_files "$d" "$base")"
   IFS=$'\t' read -r _ pr state ci oid < <(prs_for "$d" | awk -F'\t' -v b="$branch" '$1 == b { print; exit }')
   if [ -n "${oid:-}" ]; then
@@ -280,7 +306,7 @@ collect() {
   heavy="$(heavy_sessions)"
   "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
-          pdone ptotal pnext phases
+          pdone ptotal pnext phases fin
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end)] | @tsv' <<<"$line")
@@ -304,12 +330,14 @@ collect() {
     elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext")"
+    fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" && fin=1
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
-      "$pdone" "$ptotal" "$pnext"
+      "$pdone" "$ptotal" "$pnext" "$fin"
   done
   main_rows
 }
@@ -329,7 +357,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
@@ -350,7 +378,7 @@ main() {
       dispatch: (if .[14] == "-" then null else .[14] end),
       phases_done: (if .[15] == "-" then null else .[15] | tonumber end),
       phases_total: (if .[16] == "-" then null else .[16] | tonumber end),
-      next_phase: (if .[17] == "-" then null else .[17] end),
+      next_phase: (if .[17] == "-" then null else .[17] end), finished: (.[18] == "1"),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
     return 0
   fi

@@ -32,15 +32,15 @@ re-run `/wind-down` when that work is finished.
 
 ## Steps
 
-### 0. Winding yourself down? Check you are DONE first
+### 0. Winding yourself down? Check you are finished first
 
-When the human asked for the wind-down, skip this. When you are winding yourself down (the shepherd told you to, or you decided your work is finished), first confirm your own row reads DONE:
+When the human asked for the wind-down, skip this. When you are winding yourself down (the shepherd told you to, or you decided your work is finished), first confirm your own row reads `finished: true`:
 
 ```bash
-fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.bucket) \(.reason)"'
+fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.finished) \(.bucket) \(.reason)"'
 ```
 
-DONE means every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. Any other bucket means you are not finished: do the next phase, land what is left, or post an agent-ask, instead of closing. A session idle under 20 minutes reads WORKING, so a fresh finish may need the wait before it reads DONE.
+Read `finished`, not `bucket`: you run this mid-turn, so your own bucket always reads WORKING busy, and `finished` is the DONE test without the status and idle checks. It is true when every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. `false` means you are not finished: do the next phase, land what is left, or post an agent-ask, instead of closing.
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;

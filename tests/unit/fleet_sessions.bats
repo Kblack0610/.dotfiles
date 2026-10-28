@@ -140,6 +140,33 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   assert_output 'WORKING idle 19m'
 }
 
+@test "session_finished is DONE's work half: it ignores status, plan mode, heavy and idle" {
+  # mid-turn self-check: the row reads WORKING busy, the work is finished all the same
+  run b busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING busy'
+  run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_success
+  run session_finished waiting 1 0 1 0 1 0 0 - - - 1 - 2/2 -
+  assert_success
+  # the work conditions still block it
+  run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - 2/3 'Phase 3'
+  assert_failure
+  run session_finished busy 0 1 0 0 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 1 0 875 MERGED PASS 1 - 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 0 2 - - - 1 - 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 0 - 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 1 'Tests' 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 0 0 9 OPEN PASS 1 - 3/3 -
+  assert_failure
+  run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - none -
+  assert_failure
+}
+
 @test "a background shell is WORKING until FLEET_SHELL_STALE_MIN, then the facts decide" {
   run b shell 0 0 0 119 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'WORKING shell'
@@ -240,12 +267,12 @@ MD
   [ ! -e "$HOME/.agent/evil" ]
 }
 
-# panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one idle session
-# s1 (sid-9, pane %7), idle for an hour.
+# panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
+# s1 (sid-9, pane %7), idle for an hour, with status $PANEL_STATUS (default idle).
 panel() {
   local since=$(( $(date +%s) - 3600 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -390,4 +417,46 @@ landed_fixture() {
   panel "$HOME/.worktrees/wt-x" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+}
+
+@test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#876)'
+  PANEL_STATUS=busy panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '{bucket, finished}' <<<"$output")" = '{"bucket":"WORKING","finished":true}' ]
+
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '{bucket, finished}' <<<"$output")" = '{"bucket":"WORKING","finished":false}' ]
+}
+
+@test "end to end: the default branch is GitHub's, not a stale origin/HEAD; the symref is the offline fallback" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  "${g[@]}" commit -q --allow-empty -m init
+  "${g[@]}" push -q origin HEAD:main 2>/dev/null
+  "${g[@]}" checkout -q -b develop
+  for f in a b c; do echo "$f" > "$SANDBOX/wt/$f"; done
+  "${g[@]}" add a b c; "${g[@]}" commit -q -m 'develop work'
+  "${g[@]}" commit -q --allow-empty -m 'one more'
+  "${g[@]}" push -q origin develop 2>/dev/null
+  # the clone's main checkout is one behind origin/develop, and origin/HEAD went stale on main
+  "${g[@]}" reset -q --hard HEAD~1
+  "${g[@]}" remote set-head origin main
+  panel "$SANDBOX/wt"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo develop ;; run) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file: done or never started' ]
+
+  # gh unreachable: the symref decides, stale or not
+  printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; run) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '3 file(s) not on the default branch, no PR' ]
 }
