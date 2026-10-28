@@ -113,7 +113,7 @@ One pass. It runs two ways, and only one acts at a time:
 **Standing orders.** When the human gives an order that should outlive this pass ("Barrage first: freed Unity slots go to agent-11 and agent-12"), write it to `~/.agent/shepherd/orders.md`, one line with the date, and delete the line when it is done or withdrawn. Read that file at the start of every pass and follow it; a headless pass has nothing else to learn the human's word from.
 
 0. `fleet-shepherd lease`, then read `~/.agent/shepherd/orders.md`.
-1. **Pace check.** Run `fleet-assess` and read `top -bn1 | sed -n 3p`.
+1. **Pace check.** Run `fleet-assess` and read idle from a real sample: `top -bn2 -d2 | grep '^%Cpu' | tail -1`. Never `top -bn1`: its only frame averages since boot, and on 2026-10-28 it read 50-57% idle while a 2-second sample read 12-19%, so two passes sent sessions to gate locally into a box that was already full (load 25.8 then 38.8 on 24 cores).
    - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
    - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
    - Sessions stopped on the account's usage limit (the pane shows "weekly limit" or "/login"): escalate once to the human. Only they can log in.
