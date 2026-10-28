@@ -88,3 +88,26 @@ HOOKS
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'v0.4.0 -> v1.0.0'
 }
+
+# -- asks for a shipped wave --
+# A gate for a wave that has shipped can gate nothing. v1.13 to v1.16 gates sat in the
+# human's queue for two months after their releases.
+
+@test "asks for a wave the tag has reached go stale; a later wave's ask stays pending" {
+  git -C "$REPO" remote add origin "$SANDBOX/origin.git"
+  printf 'project_release_version() { printf v1.2.0; }\n' >> "$WAVE_ROLL_HOOKS"
+  local shipped later other
+  shipped="$("$AGENT_ASK" post --project demoapp --task wave/demoapp/v1.1.0 --kind gate 'ship 1.1?')"
+  later="$("$AGENT_ASK" post --project demoapp --task wave/demoapp/v1.3.0 --kind gate 'ship 1.3?')"
+  other="$("$AGENT_ASK" post --project demoapp --task 665 'a question')"
+
+  run "$WAVE_ROLL" --dry-run
+  assert_output --partial "would mark ask $shipped stale"
+  grep -q '^status: pending$' "$HOME/.agent/asks/demoapp/$shipped.md"
+
+  run "$WAVE_ROLL"
+  grep -q '^status: stale$' "$HOME/.agent/asks/demoapp/$shipped.md"
+  grep -q '^closed_reason: wave v1.1.0 shipped (tag v1.2.0)$' "$HOME/.agent/asks/demoapp/$shipped.md"
+  grep -q '^status: pending$' "$HOME/.agent/asks/demoapp/$later.md"
+  grep -q '^status: pending$' "$HOME/.agent/asks/demoapp/$other.md"
+}

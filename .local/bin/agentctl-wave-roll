@@ -55,6 +55,23 @@ next_after() { # $1=profile $2=project $3=shipped
   patch_after "$3"
 }
 
+# A gate for a wave that has shipped can no longer gate anything, so it leaves the human's
+# queue as stale (the briefing lists it once). Never cancelled: the human may still want to
+# read it, and a question filed under a wave task is not always about the wave itself.
+stale_shipped_asks() { # $1=project $2=shipped tag
+  local id task v
+  while IFS=$'\t' read -r id task; do
+    v="${task##*/}"
+    is_ver "$v" && ver_ge "$2" "$v" || continue
+    if [ "$DRY" = 1 ]; then
+      printf 'would mark ask %s stale: wave %s shipped (tag %s)\n' "$id" "$v" "$2"
+    elif agent-ask stale "$id" "wave $v shipped (tag $2)" 2>/dev/null; then
+      log "ask $id stale: wave $v shipped (tag $2)"
+    fi
+  done < <(agent-ask list "$1" --pending 2>/dev/null \
+             | awk -F'\t' -v t="wave/$1/" 'index($8, t) == 1 { print $1 "\t" $8 }')
+}
+
 log() {
   [ "$DRY" = 1 ] || printf '[%s] wave-roll: %s\n' "$(date -Is)" "$*" >> "$INBOX/activity.log"
   printf '%s\n' "$*"
@@ -87,6 +104,7 @@ while read -r profile; do
     fetch_tags "$name"
     shipped="$(project_release_version "$name" "$(dirname "$sheet")/summary.md" 2>/dev/null)"
     [ -n "$shipped" ] || continue                    # notes-only: the wave rolls its own patch
+    stale_shipped_asks "$name" "$shipped"
     if ! is_ver "$ver" || [ "$(basename "$sheet")" = summary.md ]; then
       log "skip $name: no versioned sheet (shipped $shipped)"
       continue

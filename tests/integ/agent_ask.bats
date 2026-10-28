@@ -89,10 +89,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 13 tab-separated fields per ask" {
+@test "list emits 15 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '13'
+  assert_output '15'
 }
 
 @test "the last two fields are created and session, for fleet-bench's ask digest" {
@@ -295,4 +295,93 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   "$AGENT_ASK" list --all >/dev/null
   "$AGENT_ASK" count --all >/dev/null
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
+}
+
+# ── lifecycle: stale ─────────────────────────────────────────────────────────
+# Every "waiting on you" surface reads --pending, so stale is how an ask nobody will answer
+# leaves the human's queue without anyone deciding it.
+
+ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
+age_days() { sed -i "s/^created: .*/created: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$1")"; }
+
+@test "stale: leaves --pending and the count, keeps the reason, and can still be answered" {
+  local id; id="$(post demo 'ship it?')"
+  run "$AGENT_ASK" stale "$id" wave v1.0.0 shipped
+  assert_success
+  assert_equal "$("$AGENT_ASK" count demo)" 0
+  run "$AGENT_ASK" list demo --stale
+  assert_output --partial "$id"
+  [ "$(cut -f15 <<<"$output")" = 'wave v1.0.0 shipped' ]
+  [ -n "$(cut -f14 <<<"$output")" ]
+  AGENT_ASK_NO_RESUME=1 run "$AGENT_ASK" answer "$id" yes
+  assert_success
+  grep -q '^status: answered$' "$(ask_file "$id")"
+}
+
+@test "stale refuses an ask that was already decided" {
+  local id; id="$(post demo 'ship it?')"
+  "$AGENT_ASK" cancel "$id" 2>/dev/null
+  run "$AGENT_ASK" stale "$id"
+  assert_failure
+  grep -q '^status: cancelled$' "$(ask_file "$id")"
+}
+
+@test "cancel records its reason" {
+  local id; id="$(post demo 'ship it?')"
+  "$AGENT_ASK" cancel "$id" superseded by the v1.19 gate 2>/dev/null
+  grep -q '^closed_reason: superseded by the v1.19 gate$' "$(ask_file "$id")"
+}
+
+@test "expire: an ask older than the TTL goes stale and is printed; a younger one stays pending" {
+  local old young
+  old="$(post demo 'old?')"; young="$(post demo 'young?')"
+  age_days "$old" 20; age_days "$young" 3
+  run "$AGENT_ASK" expire
+  assert_success
+  assert_equal "$(cut -f1 <<<"$output")" "$old"
+  grep -q '^status: stale$' "$(ask_file "$old")"
+  grep -q '^status: pending$' "$(ask_file "$young")"
+  grep -q '^closed_reason: no answer in 14d$' "$(ask_file "$old")"
+  # a second pass changes nothing and prints nothing
+  run "$AGENT_ASK" expire
+  assert_output ''
+  # the TTL is a knob
+  AGENT_ASK_STALE_DAYS=2 run "$AGENT_ASK" expire
+  assert_equal "$(cut -f1 <<<"$output")" "$young"
+}
+
+@test "expire --days takes a number" {
+  run "$AGENT_ASK" expire --days soon
+  assert_failure 2
+}
+
+# ── post: where an ask is filed ──────────────────────────────────────────────
+
+registry() {
+  mkdir -p "$HOME/.config/shared-hooks"
+  ln -sf "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  printf '%s\n' '{"paths":{"/r/big":"big-platform"},"aliases":{"monorepo":"big-platform"},
+    "apps":{"big-platform":{"apps/shop":"shop"}},
+    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"}}}' > "$PROJECT_MAP_FILE"
+}
+
+@test "post refuses an explicit project the registry does not know, or an alias" {
+  registry
+  run "$AGENT_ASK" post --project shpo 'typo?'
+  assert_failure 2
+  run "$AGENT_ASK" post --project monorepo 'alias?'
+  assert_failure 2
+  # negative control: canonical names from every part of the registry are accepted
+  for p in big-platform shop notes-cockpit; do
+    run "$AGENT_ASK" post --project "$p" 'ok?'
+    assert_success
+  done
+}
+
+@test "post refuses a wave gate filed under another project than the wave's app" {
+  run "$AGENT_ASK" post --project big-platform --task wave/shop/v1.16.0 --kind gate 'ship?'
+  assert_failure 2
+  run "$AGENT_ASK" post --project shop --task wave/shop/v1.16.0 --kind gate 'ship?'
+  assert_success
 }
