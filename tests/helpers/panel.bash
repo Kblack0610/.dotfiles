@@ -103,6 +103,9 @@ panel_conf_bindings() {
       if (match(cmd, /"[^"]*"[[:space:]]*$/))      { cmd = substr(cmd, RSTART + 1, RLENGTH - 2); sub(/[[:space:]]+$/, "", cmd) }
       else if (match(cmd, /'"'"'[^'"'"']*'"'"'[[:space:]]*$/)) { cmd = substr(cmd, RSTART + 1, RLENGTH - 2); sub(/[[:space:]]+$/, "", cmd) }
       else cmd = "-"
+      # An if-shell bind quotes the whole display-popup branch; the command is the quoted
+      # string inside that branch.
+      if (cmd ~ /^display-popup/ && match(cmd, /"[^"]*"[[:space:]]*$/)) { cmd = substr(cmd, RSTART + 1, RLENGTH - 2); sub(/[[:space:]]+$/, "", cmd) }
 
       printf "%s\t%s\t%s\t%s\t%s\n", table, key, w, h, cmd
     }

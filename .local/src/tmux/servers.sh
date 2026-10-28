@@ -37,7 +37,7 @@
 #
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · pick-all · rows · hop <name>
 #        · root <name> · goto <name> <session> · land <name> <last|root|session[:window]>
-#        · pick-session · back · reload
+#        · pick-session · back · reload · peek <name> <session>
 
 set -uo pipefail
 
@@ -165,14 +165,21 @@ cmd_ensure() {
       if ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null || [ ! -d "$dir" ]; then
         skipped=$((skipped + 1)); continue
       fi
-      if tmux -L "$srv" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null | grep -qxF -- "$win"; then
+      # Found by @tmx_window, not by name. A name is not identity: the zsh prompt hook
+      # renames windows to the git branch, and while that hook renamed the ACTIVE window
+      # rather than its own, a just-selected declared window became `main` and the next
+      # ensure built a second one. The name is the fallback for windows made before the tag.
+      if tmux -L "$srv" list-windows -t "=$sess" -F '#{?@tmx_window,#{@tmx_window},#{window_name}}' 2>/dev/null |
+          grep -qxF -- "$win"; then
         kept=$((kept + 1)); continue
       fi
-      # -n also turns automatic-rename off for this window, so the name stays put and the
-      # next ensure still finds it.
-      tmux -L "$srv" new-window -d -t "$sess:" -n "$win" -c "$dir" 2>/dev/null || continue
+      local wid
+      wid="$(tmux -L "$srv" new-window -d -P -F '#{window_id}' -t "$sess:" -n "$win" -c "$dir" 2>/dev/null)" || continue
+      # Before the startup command, so the shell's first prompt already sees it and the
+      # rename hook leaves the declared name alone.
+      tmux -L "$srv" set-option -w -t "$wid" @tmx_window "$win"
       made=$((made + 1))
-      [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$sess:$win" "$cmd" Enter
+      [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$wid" "$cmd" Enter
       continue
     fi
     ondemand=0
@@ -508,6 +515,22 @@ cmd_goto() {
   _enter "${1:?goto needs a server name}" "${2:?goto needs a session name}"
 }
 
+# peek <server> <session> -- Prefix+o. Attach THIS terminal to one session of a world, so a
+# display-popup shows that session full screen: a board that is already running opens
+# instantly, where a popup that started it would sit blank through its first pass.
+#
+# The session's status bar goes off and @peek marks it, so status-autohide.sh does not turn
+# the bar back on at attach. unset TMUX because a popup inherits the outer client's, and
+# attach refuses to nest while it is set; -L picks the server, so nothing else needs it.
+cmd_peek() {
+  local srv="${1:?peek needs a server name}" sess="${2:?peek needs a session name}"
+  cmd_ensure "$srv" "$sess" >/dev/null
+  tmux -L "$srv" has-session -t "=$sess" 2>/dev/null || die "$srv has no session '$sess' on this machine"
+  tmux -L "$srv" set-option -t "=$sess" @peek 1 \; set-option -t "=$sess" status off
+  unset TMUX
+  exec tmux -L "$srv" attach -t "=$sess"
+}
+
 # back -- Prefix+L. tmux's own last-session FIRST; the crumb only when tmux has none.
 #
 # The crumb is written by hops only, so it goes stale the moment you switch sessions any
@@ -692,6 +715,7 @@ main() {
     pick-all)     cmd_pick_all ;;
     rows)         _all_rows ;;
     reload)       cmd_reload ;;
+    peek)         shift; cmd_peek "${1:-}" "${2:-}" ;;
     -h|--help)    sed -n '2,40p' "$SELF" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac

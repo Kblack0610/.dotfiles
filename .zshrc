@@ -96,21 +96,10 @@ eval "$(starship init zsh)"
 eval "$(zoxide init zsh)"
 
 # --- Tmux Window Naming ---
-# Show git branch if in repo, otherwise directory name
-# Uses precmd so it updates after git checkout, not just cd
-_tmux_rename_window() {
-    [[ -n "$TMUX" ]] || return
-    local name
-    if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
-        name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-    else
-        name=${PWD##*/}
-    fi
-    tmux rename-window "$name"
-}
-
+# Window named after the git branch, else the dir (function and why: window-name.sh).
+[[ -r "$HOME/.local/src/tmux/window-name.sh" ]] && source "$HOME/.local/src/tmux/window-name.sh"
 autoload -Uz add-zsh-hook
-add-zsh-hook precmd _tmux_rename_window
+(( $+functions[_tmux_rename_window] )) && add-zsh-hook precmd _tmux_rename_window
 
 # --- Tmux Servers ---
 # hub and lab are separate tmux SERVERS (see `tmx`, .local/src/tmux/servers.sh).

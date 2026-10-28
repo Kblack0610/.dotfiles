@@ -19,7 +19,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens a project's tasks: `a` add, `m` move to another project, `x` done, `+`/`-` change wave, `o` open the sheet. `/` searches. Also nvim `<leader>np`. |
-| `fleet-sessions watch` | `Prefix+o` | The fleet watch, in window `hub:watch`: one row per agent session with its stages (behind main, conflicts, tree, PR, CI, plan phases, bucket, labels, idle) and a log of every change since the last tick. A declared window, so it is always running and its log keeps building while you are elsewhere; `Prefix+o` reaches it from any world and rebuilds it if it was killed. `n` refreshes now, `q` quits. |
+| `fleet-sessions watch` | `Prefix+o` | The fleet watch, in its own hub session `watch`: one row per agent session with its stages (behind main, conflicts, tree, PR, CI, plan phases, bucket, labels, idle) and a log of every change since the last tick. A declared session, so it is always running and its log keeps building while you are elsewhere. `Prefix+o` opens it full screen in a popup from any world (`tmx peek hub watch`, which rebuilds it if it was killed); `Prefix+o` inside closes it. `n` refreshes now, `q` quits the board itself. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). |
 | `night-shift.sh` | `Prefix+C` | The overnight agent queue (`night-shift`): a `night-shift` session with the board on top (queued, running, last night's results with PRs and pending asks) and the running task's live log below. Both redraw on inotify events. Queue work with `night-shift queue <repo> <task>`. |
 | `command-center.sh` | window `hub:infra` | The glance board: one tile per domain (cluster, machines, prod, LLM, CI, agents, spend, agent platform), coloured by the `cc:*` recording rules in home-config `apps/monitoring/prometheus-rules-command-center.yaml`. Same series as the Grafana Command Center, so the two cannot disagree. Read-only; actions stay in `fleet.sh`. |
@@ -42,7 +42,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows
-- **Fleet watch**: `Prefix+o` → every session's stages and what just changed (`hub:watch`)
+- **Fleet watch**: `Prefix+o` → every session's stages and what just changed (popup over the hub `watch` session; `Prefix+o` again closes it)
 - **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
 - **Tag a window**: `Prefix+a` then `i`/`p`/`a`/`g` → important / pinned / agent / group
 - **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
@@ -164,7 +164,7 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ windows `infra`: command-center.sh, `watch`: fleet-sessions watch), dotfiles, home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, watch (fleet-sessions watch), home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
@@ -487,7 +487,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ windows `infra`: command-center.sh, `watch`: fleet-sessions watch), dotfiles, home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `infra`: command-center.sh), dotfiles, watch (fleet-sessions watch), home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
