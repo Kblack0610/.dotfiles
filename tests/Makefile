@@ -39,8 +39,8 @@ help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-fast    unit + integ (CI fast job)
-  make test-files FILES=..  the files the stop-hook picked"
+	@echo "  make test-fast    unit + integ (CI fast job)"
+	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
