@@ -61,7 +61,7 @@ Do not accept a `DEADPATH` at face value - find where the file actually went (`f
 
 **2. Lessons + evals - where a skill gave wrong guidance.**
 
-Read `~/.agent/lessons/{project}.md` and `~/.agent/evals/{project}/`. Look for:
+Read `~/.agent/lessons/{project}.md` and `~/.agent/evals/{project}/` (an archive since 2026-10-28; nothing new lands there). Look for:
 - A correction whose root cause was a skill saying something untrue. That is a skill bug, not just a lesson - patch the source, per the skill self-repair rule in CLAUDE.md.
 - The same multi-step manual workflow recurring 3+ times with no skill covering it -> a `propose` candidate.
 - A lesson that contradicts a skill's stated procedure.

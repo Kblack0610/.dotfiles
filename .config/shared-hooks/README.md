@@ -9,7 +9,7 @@ The cross-tool session hooks. Claude Code is the main consumer, but nothing here
 | `project-name.sh` | sourced | Resolves a directory to its canonical project name via `project-map.json`. |
 | `worktree-create.sh` / `worktree-remove.sh` | WorktreeCreate / WorktreeRemove | Put harness-made worktrees (Agent `isolation: "worktree"`, `--worktree`, background sessions) at `~/.worktrees/<repo>-<name>` instead of `<repo>/.claude/worktrees/`. Remove never forces, so a dirty tree survives. |
 | `compact-prep.sh` | PreCompact | Archives the transcript and drops the pending marker the `/compact-prep` skill reconciles against. |
-| `eval-report.sh` | manual | Reads the eval corpus. |
+| `eval-report.sh` | manual | Reads the eval corpus, an archive since 2026-10-28. Current session quality: `agentctl-session-outcomes worst`. |
 | `archive-stale-plans.sh` | manual | Archives stale per-project plan dirs. |
 
 The Stop side lives in `.claude/hooks/` (`pre-stop-checks.sh` plus `stop-checks.d/` and `stop-post.d/`), not here.

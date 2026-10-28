@@ -1,5 +1,5 @@
 ---
-description: Dreaming — consolidate the agent corpus (evals/lessons/sessions) into lessons, memory/, and a staged mem0 queue, with a DREAMS.md diary
+description: Dreaming — consolidate the agent corpus (outcomes/lessons/sessions) into lessons, memory/, and a staged mem0 queue, with a DREAMS.md diary
 allowed-tools: Bash, Read, Write, Glob, Grep
 ---
 
@@ -19,8 +19,8 @@ scoring), adapted to this system's substrate. Where OpenClaw scores a *recall
 store*, this scores the corpus the system already produces: measured **session
 outcomes** (`~/.agent/outcomes/{project}/`, written nightly by
 `agentctl-session-outcomes`), **lessons** (`~/.agent/lessons/{project}.md`),
-**session wind-downs** (`~/.agent/sessions/{project}/`), judge-scored **evals**
-(`~/.agent/evals/{project}/`, advisory only: 89% read 10/10), the notes journal, and git.
+**session wind-downs** (`~/.agent/sessions/{project}/`), the notes journal, and git.
+The judge-scored evals (`~/.agent/evals/`) are an archive as of 2026-10-28, not an input.
 Recurrence across sessions/projects stands in for OpenClaw's recall-count.
 (The true recall store is a documented v2 — see the `dreaming` skill.)
 
@@ -72,12 +72,12 @@ tail -5  "$HOME/.local/state/agentctl/dream/activity.log" 2>/dev/null
 
 Three phases, in order. See `~/.local/bin/agentctl-dream` for the canonical prompt.
 
-1. **Light** — ingest recent outcomes/lessons/sessions/evals/notes/git since the last
+1. **Light** — ingest recent outcomes/lessons/sessions/notes/git since the last
    checkpoint; dedupe near-identical candidates; stage to `staging.json`. Promotes nothing.
 2. **REM** — over a 7-day window, surface recurring themes/frictions across sessions.
    Promotes nothing; informs scoring + the diary.
 3. **Deep** — score each candidate with six weighted signals (Relevance .30, measured
-   outcome first and never an eval score alone; Frequency
+   outcome first; Frequency
    .24, Query-diversity .15, Recency .15, Consolidation .10, Conceptual-richness .06;
    +light/REM boosts), gate on `minScore 0.8 ∧ recurrence ≥ 3 ∧ distinct-sources ≥ 3`,
    cap 10 promotions. Route survivors:
