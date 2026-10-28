@@ -101,3 +101,59 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_failure 1
   assert_output --partial 'HOLD held'
 }
+
+# --- --textfile: what node_exporter publishes for the hub:infra board ---------------------
+# gate_rows, session_of and agent_count read /proc and tmux; stubbed here so the rows are
+# fixtures, not whatever this machine is running.
+textfile_fixture() {
+  PROJ="$BATS_TEST_TMPDIR/wt/unity-core-playground-agent-7"
+  git init -q -b feat/dodge-feel "$PROJ"
+  gate_rows() {
+    printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102 \
+      600 "$BATS_TEST_TMPDIR/nogit" build 103
+  }
+  session_of() { case "$1" in 103) echo 'odd "name"' ;; *) echo agent-7 ;; esac; }
+  agent_count() { echo 14; }
+  OUT="$BATS_TEST_TMPDIR/textfile"; mkdir -p "$OUT"
+}
+
+@test "textfile: one gate per session/worktree/branch/platform, the older run's age wins" {
+  textfile_fixture
+  run write_textfile "$OUT"
+  assert_success
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_gate{session="agent-7",worktree="unity-core-playground-agent-7",branch="feat/dodge-feel",platform="PlayMode"} 2160'
+  refute_output --partial '} 30'
+  assert_line 'fleet_agent_sessions 14'
+}
+
+@test "textfile: no git branch reads -, and quotes in a label are escaped" {
+  textfile_fixture
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_gate{session="odd \"name\"",worktree="nogit",branch="-",platform="build"} 600'
+}
+
+@test "textfile: readable by node_exporter's user, and no temp file left behind" {
+  textfile_fixture
+  write_textfile "$OUT"
+  assert_equal "$(stat -c %a "$OUT/fleet_local.prom")" 644
+  assert_equal "$(find "$OUT" -name '.fleet_local*' | wc -l)" 0
+}
+
+@test "textfile: a missing directory fails loudly and writes nothing" {
+  textfile_fixture
+  run write_textfile "$BATS_TEST_TMPDIR/absent"
+  assert_failure
+  assert_output --partial 'is not a directory'
+}
+
+@test "textfile: no gates still publishes the session count, so 0 gates reads 0, not stale" {
+  textfile_fixture
+  gate_rows() { :; }
+  write_textfile "$OUT"
+  run grep -c '^fleet_local_gate{' "$OUT/fleet_local.prom"
+  assert_output 0
+  run grep -c '^fleet_agent_sessions 14$' "$OUT/fleet_local.prom"
+  assert_output 1
+}

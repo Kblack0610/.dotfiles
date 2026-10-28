@@ -23,6 +23,7 @@ case "$*" in
   *github_actions_job_waiting*) cat "$FX/waiting.json" ;;
   *github_actions_run_recent*) cat "$FX/recent.json" ;;
   *github_runner_exporter_api_ok*) cat "$FX/api.json" ;;
+  *cc:host_local_gate*) cat "$FX/local.json" ;;
   *mqtt_tripped*) printf '{"status":"success","data":{"result":[{"metric":{"item":"watch mac_studio_mlx"},"value":[0,"1"]}]}}' ;;
   *) exit 22 ;;
 esac
@@ -63,6 +64,7 @@ now = int(time.time())
 out("recent", [({"conclusion": "failure", "repo": "unity-core-playground", "workflow": "Tests",
                  "branch": "feat/x"}, str(now - 240))])
 out("api", [({}, "1")])
+out("local", [])
 PY
 }
 
@@ -145,4 +147,32 @@ PY
   run "$CC" --once
   assert_failure
   assert_output --partial 'recording rules not loaded'
+}
+
+@test "a machine that is not a runner lists its local gates under its row" {
+  python3 - "$FX/local.json" <<'PY'
+import json, sys
+g = lambda wt, br, plat, v: {"metric": {"__name__": "cc:host_local_gate", "host": "workstation", "worktree": wt,
+                                      "branch": br, "platform": plat}, "value": [0, v]}
+json.dump({"status": "success", "data": {"result": [g("unity-core-playground-agent-7", "feat/dodge-feel", "PlayMode", "2160"),
+                                                    g("unity-core-playground-agent-9", "fix/x", "EditMode", "45")]}},
+          open(sys.argv[1], "w"))
+PY
+  run "$CC" --once
+  assert_success
+  assert_line --regexp '^workstation +- +- +- +- +2 gates +local +unity-core-playground-agent-7 +- +PlayMode +36m +feat/dodge-feel$'
+  assert_line --regexp '^ +local +unity-core-playground-agent-9 +- +EditMode +45s +fix/x$'
+}
+
+@test "the agent session count shows only when the rule has a value" {
+  run "$CC" --once
+  refute_output --partial 'agent sessions'
+  python3 - "$FX/cc.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["data"]["result"].append({"metric": {"__name__": "cc:agent_sessions_running"}, "value": [0, "26"]})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$CC" --once
+  assert_output --partial 'agent sessions 26'
 }
