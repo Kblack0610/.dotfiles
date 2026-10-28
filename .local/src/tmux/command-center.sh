@@ -45,7 +45,7 @@ else
 fi
 
 declare -A V # "cc:name", "cc:domain_status/<domain>" or "cc:host_x/<host>" -> value
-RED_ITEMS=() RUNNERS=() WAITING=() RECENT=()
+RED_ITEMS=() RUNNERS=() WAITING=() RECENT=() LOCAL=()
 API_OK='' FETCH_ERR=''
 
 # _q <promql> -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
@@ -66,13 +66,14 @@ _rows() {
 }
 
 fetch() {
-  V=() RED_ITEMS=() RUNNERS=() WAITING=() RECENT=() API_OK='' FETCH_ERR=''
-  local cc red runners waiting recent api key val
-  cc="$(_q '{__name__=~"cc:.+",__name__!="cc:host_instance"}')" \
+  V=() RED_ITEMS=() RUNNERS=() WAITING=() RECENT=() LOCAL=() API_OK='' FETCH_ERR=''
+  local cc red runners waiting recent api gates key val
+  cc="$(_q '{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate"}')" \
     && runners="$(_q "$W (github_runner_state)")" \
     && waiting="$(_q "$W (github_actions_job_waiting)")" \
     && recent="$(_q "topk(5, $W (github_actions_run_recent))")" \
     && api="$(_q 'min(github_runner_exporter_api_ok)')" \
+    && gates="$(_q 'cc:host_local_gate')" \
     || { FETCH_ERR="cannot read $PROM_URL"; return 1; }
   while IFS=$'\t' read -r key val; do
     [ -n "$key" ] && V["$key"]="$val"
@@ -83,6 +84,7 @@ fetch() {
   mapfile -t RUNNERS < <(_rows "$runners" host state pool name repo pr branch job_name workflow title | sort)
   mapfile -t WAITING < <(_rows "$waiting" labels repo pr branch)
   mapfile -t RECENT < <(_rows "$recent" conclusion repo workflow branch | sort -t$'\t' -k5,5nr)
+  mapfile -t LOCAL < <(_rows "$gates" host worktree branch platform | sort)
   API_OK="$(jq -r '.data.result[0].value[1] // ""' <<< "$api")"
   # The same three sources as the dashboard's "What is red" table.
   red="$(_q 'label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
@@ -146,10 +148,12 @@ header() {
     strip+="$(_tag "$s" "$d") "
   done
   printf '%s\n' "$strip"
-  printf '%snodes %s/%s  heartbeats %s/%s  ci slots %s/%s  agent runners %s failed  watches %s/%s tripped  lazer %s/%s  claude 24h %s%s\n' \
+  local here=''
+  [ -n "${V[cc:agent_sessions_running]:-}" ] && here="  agent sessions $(_num cc:agent_sessions_running)"
+  printf '%snodes %s/%s  heartbeats %s/%s  ci slots %s/%s  agent runners %s failed  watches %s/%s tripped  lazer %s/%s  claude 24h %s%s%s\n' \
     "$C_DIM" "$(_num cc:k3s_nodes_ready)" "$(_num cc:k3s_nodes_total)" "$(_num cc:machines_up)" "$(_num cc:machines_total)" \
     "$(_num cc:ci_online)" "$(_num cc:ci_expected)" "$(_num cc:runners_failed)" "$(_num cc:watches_tripped)" \
-    "$(_num cc:watches_total)" "$(_usd cc:lazer_spend_usd)" "$(_usd cc:lazer_budget_usd)" "$(_usd cc:claude_code_cost_24h_usd)" "$C_OFF"
+    "$(_num cc:watches_total)" "$(_usd cc:lazer_spend_usd)" "$(_usd cc:lazer_budget_usd)" "$(_usd cc:claude_code_cost_24h_usd)" "$here" "$C_OFF"
 }
 
 # machines <width>: one block per machine. Its first row carries the load; each busy runner
@@ -170,6 +174,16 @@ machines() {
     for='-'; [ "${val%%.*}" -gt 0 ] 2>/dev/null && for="$(_dur "$val")"
     jobs[$host]+="$pool"$'\t'"$repo"$'\t'"$pr"$'\t'"$job"$'\t'"$for"$'\t'"$branch"$'\t'"${val%%.*}"$'\n'
   done
+  # A machine that is not a runner (the workstation) runs its gates locally: same rows,
+  # pool "local", the worktree where the repo goes.
+  local wt plat
+  declare -A gates
+  for line in "${LOCAL[@]}"; do
+    IFS=$'\t' read -r host wt branch plat val <<< "$line"
+    [ -n "${seen[$host]:-}" ] || { seen[$host]=1; hosts+=("$host"); }
+    gates[$host]=$(( ${gates[$host]:-0} + 1 ))
+    jobs[$host]+="local"$'\t'"$wt"$'\t'"-"$'\t'"$plat"$'\t'"$(_dur "$val")"$'\t'"$branch"$'\t'"${val%%.*}"$'\n'
+  done
   {
     printf '\tMACHINE\tCPU\tLOAD\tMEM\tTEMP\tRUNNERS\tPOOL\tREPO\tPR\tJOB\tFOR\tBRANCH - PR TITLE\n'
     for h in "${hosts[@]}"; do
@@ -179,6 +193,7 @@ machines() {
       mem="$(_pct "cc:host_mem_used_ratio/$h")"
       temp='-'; [ -n "${V[cc:host_temp_c/$h]:-}" ] && temp="$(printf '%.0fC' "${V[cc:host_temp_c/$h]}")"
       run='-'; [ -n "${slots[$h]:-}" ] && run="${busy[$h]:-0}/${slots[$h]} busy"
+      [ -n "${gates[$h]:-}" ] && { [ "$run" = - ] && run="${gates[$h]} gates" || run="$run +${gates[$h]}"; }
       if [ -z "${jobs[$h]:-}" ]; then
         printf '\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\n' "$h" "$cpu" "$load" "$mem" "$temp" "$run"
         continue

@@ -3,6 +3,7 @@
 #
 #   fleet-assess                 headroom, holds, verdict, and one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (the sentinel `fleet-thermal` probe)
+#   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
 #
 # Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
 # (under the low mark while a hold is set: safe to send GO), OK (nothing to do).
@@ -127,7 +128,57 @@ rows() {
       done
 }
 
+# --- textfile ---------------------------------------------------------------------------
+# This machine is not a runner, so its CI is the headless Unity gates agents run here.
+# Published through node_exporter's textfile collector, they sit under the workstation's
+# row on the hub:infra board and in Grafana, beside the runner pools.
+
+# gate_rows -> per headless Unity run: <seconds running> TAB <projectPath> TAB <platform> TAB <pid>
+gate_rows() {
+  ps -eo pid=,etimes=,comm=,args= 2>/dev/null | awk '$3 == "Unity" && / -batchmode/ {
+    proj = "-"; plat = "build"
+    for (i = 4; i < NF; i++) { if ($i == "-projectPath") proj = $(i + 1); if ($i == "-testPlatform") plat = $(i + 1) }
+    print $2 "\t" proj "\t" plat "\t" $1 }'
+}
+
+# agent_count -> claude processes whose parent is not claude: one per session.
+agent_count() {
+  local p n=0
+  for p in $(pgrep -x claude 2>/dev/null); do
+    [ "$(cat "/proc/$(ps -o ppid= -p "$p" | tr -d ' ')/comm" 2>/dev/null)" = claude ] || n=$((n + 1))
+  done
+  echo "$n"
+}
+
+_label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ }"; }
+
+# write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
+# Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
+write_textfile() {
+  local dir="$1" tmp secs proj plat pid wt branch
+  [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
+  tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
+  {
+    echo '# HELP fleet_local_gate Headless Unity run on this machine; value is seconds since it started.'
+    echo '# TYPE fleet_local_gate gauge'
+    gate_rows | while IFS=$'\t' read -r secs proj plat pid; do
+      wt="${proj%/}"; wt="${wt##*/}"
+      branch="$(git -C "$proj" branch --show-current 2>/dev/null)"
+      printf 'fleet_local_gate{session="%s",worktree="%s",branch="%s",platform="%s"} %s\n' \
+        "$(_label "$(session_of "$pid")")" "$(_label "$wt")" "$(_label "${branch:--}")" "$(_label "$plat")" "$secs"
+    done | awk '{ v = $NF; k = substr($0, 1, length($0) - length(v) - 1); if (!(k in m) || v + 0 > m[k] + 0) m[k] = v }
+                END { for (k in m) print k, m[k] }' | sort
+    echo '# HELP fleet_agent_sessions Claude agent sessions running on this machine.'
+    echo '# TYPE fleet_agent_sessions gauge'
+    echo "fleet_agent_sessions $(agent_count)"
+  } > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$dir/fleet_local.prom" || { rm -f "$tmp"; return 1; }
+}
+
 main() {
+  if [ "${1:-}" = --textfile ]; then
+    write_textfile "${2:?usage: fleet-assess --textfile <dir>}"
+    return
+  fi
   local load cores tctl mem held=0 verdict
   load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"
   holds_set && held=1

@@ -1,0 +1,10 @@
+[Unit]
+Description=Publish this machine's local Unity gates and agent sessions for node_exporter
+# The directory comes from home-config's node-exporter-linux role (workstation play).
+# Until that has run there is nowhere to write, so the unit skips instead of failing.
+ConditionPathIsDirectory=/var/lib/node_exporter/textfile
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fleet-assess --textfile /var/lib/node_exporter/textfile
+TimeoutStartSec=30
