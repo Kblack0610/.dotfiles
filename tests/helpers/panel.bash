@@ -267,3 +267,31 @@ panel_ratchet() {
     return 1
   fi
 }
+
+# Every root-table binding, as "<key><TAB><command>". Flags other than -n are not used by
+# the binds under test, so this stays deliberately small rather than duplicating
+# panel_conf_bindings' full parser.
+#
+# "Is this a table bind" is decided by WHERE -T sits, not by whether the line contains one.
+# `bind -T tags i ...` binds INTO a table; `bind a switch-client -T tags` is an ordinary root
+# bind whose COMMAND happens to name one. A naive !/-T/ filter drops the second, which made
+# prefix+a look unbound and this file report that the editor had displaced it.
+root_binds() {
+  awk '
+    /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
+      line = $0
+      if (line ~ /^[[:space:]]*(bind|bind-key)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-T[[:space:]]/) next
+      n = split(line, F, /[[:space:]]+/)
+      key = ""
+      for (i = 2; i <= n; i++) {
+        if (F[i] == "-n" || F[i] ~ /^-/) continue
+        key = F[i]; break
+      }
+      cmd = line
+      sub(/^[[:space:]]*(bind|bind-key)[[:space:]]+(-n[[:space:]]+)?[^[:space:]]+[[:space:]]+/, "", cmd)
+      printf "%s\t%s\n", key, cmd
+    }
+  ' "$TMUX_CONF"
+}
+
+bind_for() { root_binds | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
