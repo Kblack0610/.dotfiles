@@ -285,6 +285,13 @@ agents() {
   [ -n "$sock" ] && [ -n "$here" ] && here="${sock##*/}/$here"
   rows="$(agent-panel list 2>/dev/null)"
   [ -z "$rows" ] && { hint_row 'no live agent panes'; return 0; }
+  # The glyph is live activity (agent-panel); the bucket is where the session is in its
+  # delivery, read from the fleet state document by target, never derived here. Two
+  # fields, never one word: .local/src/docs/fleet-states.md.
+  local -A bucket=()
+  local t b bcol state="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+  while IFS=$'\t' read -r t b; do bucket[$t]=$b; done \
+    < <(jq -r '.sessions[]? | [.target, .bucket] | @tsv' "$state" 2>/dev/null)
   # agent-panel list is TSV: target glyph project summary
   while IFS=$'\t' read -r target glyph project summary; do
     [ -n "$target" ] || continue
@@ -297,11 +304,14 @@ agents() {
       "$G_BUSY") col="$C_SEL" ;;
       *)         col="$C_DIM" ;;
     esac
+    b="${bucket[$target]:--}"
+    case "$b" in NEEDS|STALLED) bcol="$C_INP" ;; *) bcol="$C_DIM" ;; esac
     row agent "$target" "$target" "$glyph" \
-      "$(printf '  %s%s %-18s%s %s%-14s%s %s%s%s' \
+      "$(printf '  %s%s %-18s%s %s%-8s%s %s%-14s%s %s%s%s' \
         "$col" "$glyph" "$target" "$C_OFF" \
+        "$bcol" "$b" "$C_OFF" \
         "$C_DIM" "$project" "$C_OFF" \
-        "$C_DIM" "${summary:0:52}" "$C_OFF")"
+        "$C_DIM" "${summary:0:44}" "$C_OFF")"
   done <<< "$rows"
   [ "$any" -eq 0 ] && hint_row 'every live agent is in this session'
   return 0
