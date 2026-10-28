@@ -1,0 +1,8 @@
+[Unit]
+Description=Write the fleet state document (fleet-sessions --write)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fleet-sessions --write
+StandardOutput=null
+TimeoutStartSec=120

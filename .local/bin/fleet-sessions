@@ -3,6 +3,9 @@
 #
 #   fleet-sessions                    one row per session, grouped by bucket
 #   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
+#   fleet-sessions --write            --json, and the fleet state document every view renders
+#                                     ($FLEET_STATE_FILE; schema and vocabulary in
+#                                     .local/src/docs/fleet-states.md)
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
@@ -29,6 +32,7 @@ set -uo pipefail
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
+STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # fleet-dispatch writes live/<tmux session> for each session it starts; its label= line is
 # the row that session is working, shown so the shepherd knows which sessions it fed.
@@ -431,10 +435,10 @@ collect() {
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")"
+      "$(labels_of "$sid")" "${status:--}"
   done
   main_rows
 }
@@ -454,7 +458,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
@@ -646,19 +650,9 @@ watch() {
   done
 }
 
-main() {
-  case "${1:-}" in
-    mark) shift; mark "$@"; return ;;
-    escalate) shift; escalate "$@"; return ;;
-    label) shift; label "$@"; return ;;
-    watch) shift; watch "$@"; return ;;
-    -h|--help) sed -n '2,14p' "$0"; return ;;
-  esac
-  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
-  local rows
-  rows="$(collect)"
-  if [ "${1:-}" = --json ]; then
-    [ -n "$rows" ] && jq -cR 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
+# json_rows: collect's rows on stdin -> one JSON object per row (the --json contract).
+json_rows() {
+  jq -cR 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
       owners: (if .[13] == "-" then [] else .[13] | split(",") end),
@@ -672,14 +666,64 @@ main() {
       dirty: (if .[23] == "-" then null else .[23] | tonumber end),
       ahead: (if .[24] == "-" then null else .[24] | tonumber end),
       labels: (if .[25] == "-" then [] else .[25] | split(",") end),
-      fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}' <<<"$rows"
-    return 0
+      activity: (if .[26] == "-" then null else .[26] end),
+      fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}'
+}
+
+# write_state <started epoch> <rows>: print the rows as --json does, and replace the state
+# document with them. The document is built beside the target and renamed into place, so a
+# reader never sees half of one, and a pass that started before the one already written
+# (a slow 10-minute pass finishing after an ask-event pass) leaves the newer document alone.
+write_state() {
+  local t="$1" rows="$2" json dir tmp asks prev
+  json="$( [ -n "$rows" ] && json_rows <<<"$rows")"
+  [ -n "$json" ] && printf '%s\n' "$json"
+  dir="$(dirname "$STATE_FILE")"
+  mkdir -p "$dir" || return 1
+  asks="$(agent-ask list --all --pending 2>/dev/null)" || echo agent-ask >> "$CACHE/unreadable"
+  tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
+  if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
+       --arg asks "$asks" --arg rows "$json" '
+      ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
+      | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
+         unreadable: ($unread | split("\n") | map(select(length > 0))),
+         sessions: ($r | map(select(.bucket != "MAIN"))),
+         main: ($r | map(select(.bucket == "MAIN")
+                     | {repo: .target, id: .session_id, reason, escalated, owners})),
+         asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
+                | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
+                   task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
+                   session: (if (.[12] // "") == "" then null else .[12] end)}]}' > "$tmp"; then
+    rm -f "$tmp"; echo "fleet-sessions: could not build $STATE_FILE" >&2; return 1
   fi
+  exec 8>"$dir/.lock"
+  flock -w 30 8 || { rm -f "$tmp"; echo "fleet-sessions: $dir/.lock busy" >&2; return 1; }
+  prev="$(jq -r '.generated_epoch // 0' "$STATE_FILE" 2>/dev/null)"
+  if [ "${prev:-0}" -gt "$t" ] 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  mv -f "$tmp" "$STATE_FILE"
+}
+
+main() {
+  case "${1:-}" in
+    mark) shift; mark "$@"; return ;;
+    escalate) shift; escalate "$@"; return ;;
+    label) shift; label "$@"; return ;;
+    watch) shift; watch "$@"; return ;;
+    -h|--help) sed -n '2,17p' "$0"; return ;;
+  esac
+  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
+  local rows t0
+  t0="$(date +%s)"
+  rows="$(collect)"
+  case "${1:-}" in
+    --json) [ -n "$rows" ] && json_rows <<<"$rows"; return 0 ;;
+    --write) write_state "$t0" "$rows"; return ;;
+  esac
   local b
   for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
-      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl; do
+      while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do
         [ "$first" = 1 ] && { echo "$b"; first=0; }
         printf '  %-44s %-28s %-6s %4sm  %s%s%s%s\n' "${target#*/}" "$branch" "$pr" "$idle" "$reason" \
           "$([ "$n" = 1 ] && echo '  (nudged)')" "$([ "${dsp:--}" != - ] && echo "  [dispatch: $dsp]")" \

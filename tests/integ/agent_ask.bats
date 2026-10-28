@@ -269,3 +269,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ -d "$HOME/.agent/asks" ]
   [[ "$HOME" == *"$BATS_TEST_TMPDIR"* ]]
 }
+
+# ── change signal ────────────────────────────────────────────────────────────
+# fleet-state.path watches ~/.agent/asks/.changed: without the rewrite a new ask waits up to
+# 10 minutes to reach the fleet state document and the phone.
+
+
+@test "post, answer and cancel each rewrite the queue's change signal" {
+  local id id2
+  [ ! -e "$HOME/.agent/asks/.changed" ]
+  id="$(post demo 'ship it?')"
+  assert [ -f "$HOME/.agent/asks/.changed" ]
+  rm "$HOME/.agent/asks/.changed"
+  AGENT_ASK_NO_RESUME=1 "$AGENT_ASK" answer "$id" yes 2>/dev/null
+  assert [ -f "$HOME/.agent/asks/.changed" ]
+  id2="$(post demo 'and this?')"
+  rm "$HOME/.agent/asks/.changed"
+  "$AGENT_ASK" cancel "$id2" 2>/dev/null
+  assert [ -f "$HOME/.agent/asks/.changed" ]
+}
+
+@test "negative control: reading the queue does not signal a change" {
+  post demo 'ship it?' >/dev/null
+  rm "$HOME/.agent/asks/.changed"
+  "$AGENT_ASK" list --all >/dev/null
+  "$AGENT_ASK" count --all >/dev/null
+  assert [ ! -e "$HOME/.agent/asks/.changed" ]
+}

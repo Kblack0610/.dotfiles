@@ -72,6 +72,11 @@ find_ask() {
   [ -n "$f" ] && printf '%s\n' "$f"
 }
 
+# queue_changed: the queue's one change signal. fleet-state.path watches this file, so a post,
+# answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
+# the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
+queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
+
 # set_field <file> <key> <value> - update an existing key in place (in-place rewrite)
 set_field() {
   local f="$1" k="$2" v="$3" tmp
@@ -167,6 +172,7 @@ cmd_post() {
     # resumed is a decision the system has not acted on yet - see the header.
     printf 'resumed_at: \n'
   } > "$file"
+  queue_changed
 
   if [ "$wait" -eq 1 ]; then
     # SECONDARY path: block until answered, then print the answer to stdout.
@@ -258,6 +264,7 @@ cmd_answer() {
   set_field "$f" status answered
   set_field "$f" answer "$answer"
   set_field "$f" answered_at "$(now_iso)"
+  queue_changed
 
   # let a watching resume / the producer's next fire know the answer landed
   local project; project="$(field "$f" project)"
@@ -276,6 +283,7 @@ cmd_cancel() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   set_field "$f" status cancelled
+  queue_changed
   echo "cancelled $id" >&2
 }
 

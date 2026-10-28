@@ -22,7 +22,7 @@
 set -uo pipefail
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
-: "${BENCH_SESSIONS_CMD:=fleet-sessions --json}"
+: "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
 : "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent

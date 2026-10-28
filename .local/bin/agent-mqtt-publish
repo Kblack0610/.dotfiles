@@ -8,7 +8,7 @@
 # Entities use HA MQTT discovery: runners, watches, open asks and live sessions appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
 # Triggers: agentctl after every status write, sentinel on a watch state change,
-# agent-mqtt-sessions.path on ~/.claude/sessions, and agent-mqtt-publish.timer (--full).
+# agent-mqtt-sessions.path on the fleet state document, and agent-mqtt-publish.timer (--full).
 # Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
 set -uo pipefail
 
@@ -158,15 +158,24 @@ snapshot() {
     # Interactive sessions: live Claude panes, the same `agent-panel list` the waybar
     # ai-agents module reads. Glyphs are agent-panel's own: `~` working, `!` needs you,
     # anything else idle. One summary sensor, plus one sensor per project (the bar's groups).
+    # The delivery bucket (NEEDS, LANDED, STALLED, ...) is read from the fleet state document,
+    # never worked out here: agent-panel is the live tier, the document the slower one, and
+    # a session the document has not seen yet has bucket null.
     if command -v agent-panel >/dev/null 2>&1; then
-        local sessions proj
-        sessions="$(agent-panel list 2>/dev/null | jq -cR -s '
+        local sessions proj fleet buckets
+        fleet="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+        buckets="$(jq -c '{at: .generated_at, by: (.sessions | map({key: .target, value: .bucket}) | from_entries)}' \
+            "$fleet" 2>/dev/null)" || buckets='{"at":null,"by":{}}'
+        sessions="$(agent-panel list 2>/dev/null | jq -cR -s --argjson f "$buckets" '
             [split("\n")[] | select(length > 0) | split("\t")
              | {target: .[0], glyph: .[1], project: .[2], title: .[3],
-                status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end)}]')"
-        emit summary sessions mdi:console "$(jq -c '
+                status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end),
+                bucket: ($f.by[.[0]] // null)}]')"
+        emit summary sessions mdi:console "$(jq -c --argjson f "$buckets" '
             {state: length, working: map(select(.status == "working")) | length,
-             attention: map(select(.status == "attention")) | length, sessions: .}' <<< "$sessions")" \
+             attention: map(select(.status == "attention")) | length,
+             buckets: (map(.bucket // "unknown") | group_by(.) | map({(.[0]): length}) | add // {}),
+             fleet_state_at: $f.at, sessions: .}' <<< "$sessions")" \
             '{"state_class":"measurement"}'
         # State is the group's most urgent status, so a widget or automation can key on it.
         while IFS= read -r proj; do
@@ -177,7 +186,8 @@ snapshot() {
                    project: $p, glyphs: ($g | map(.glyph) | join("")), count: ($g | length),
                    working: ($g | map(select(.status == "working")) | length),
                    attention: ($g | map(select(.status == "attention")) | length),
-                   sessions: ($g | map({target, status, title}))}' <<< "$sessions")"
+                   needs: ($g | map(select(.bucket == "NEEDS")) | length),
+                   sessions: ($g | map({target, status, bucket, title}))}' <<< "$sessions")"
         done < <(jq -r 'map(.project) | unique[]' <<< "$sessions")
     fi
 }

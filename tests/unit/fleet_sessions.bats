@@ -686,3 +686,46 @@ caught() {
   run asks_for dotfiles sid-neighbour
   assert_output 1
 }
+
+@test "--write: the state document holds the --json rows, their activity, and pending asks" {
+  landed_fixture
+  PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  # stdout is the --json contract, so fleet-bench sample can read it unchanged
+  [ "$(jq -r .session_id <<<"$output")" = sid-9 ]
+  [ "$(jq -r .activity <<<"$output")" = shell ]
+  [ "$(jq -r .schema "$doc")" = 1 ]
+  [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
+  [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
+  [ "$(jq -r '.sessions[0].bucket' "$doc")" = WORKING ]
+  [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
+  [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
+  # no temp file left beside it
+  [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
+}
+
+@test "--write: a pass older than the document on disk leaves it alone" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  mkdir -p "${doc%/*}"
+  echo '{"schema":1,"generated_epoch":9999999999,"sessions":[]}' > "$doc"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r .generated_epoch "$doc")" = 9999999999 ]
+  # negative control: an older document is replaced
+  echo '{"schema":1,"generated_epoch":1,"sessions":[]}' > "$doc"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
+}
+
+@test "--write: an unreadable agent-panel is named, not passed off as an empty fleet" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.unreadable[0]' "$XDG_STATE_HOME/fleet/state.json")" = agent-panel ]
+}

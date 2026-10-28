@@ -99,6 +99,31 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .default_entity_id <<< "$c")" sensor.agent_sessions_platform
 }
 
+@test "each session carries its bucket from the fleet state document, joined by target" {
+  printf 'a:1\t\xe2\x9c\x93\tplatform\tt1\na:2\t~\tplatform\tt2\n' > "$NOTES_FIXTURE/agent-panel.list"
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  echo '{"schema":1,"generated_at":"2026-10-28T20:00:00Z","sessions":[{"target":"a:1","bucket":"NEEDS"}]}' \
+    > "$XDG_STATE_HOME/fleet/state.json"
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/sessions)"
+  assert_equal "$(jq -r '.sessions[0].bucket' <<< "$p")" NEEDS
+  # a session the document has not seen yet has no bucket; it is never guessed
+  assert_equal "$(jq -r '.sessions[1].bucket' <<< "$p")" null
+  assert_equal "$(jq -c .buckets <<< "$p")" '{"NEEDS":1,"unknown":1}'
+  assert_equal "$(jq -r .fleet_state_at <<< "$p")" 2026-10-28T20:00:00Z
+  assert_equal "$(jq -r .needs <<< "$(payload agents/testhost/sessions/platform)")" 1
+}
+
+@test "no fleet state document: sessions still publish, with no bucket" {
+  printf 'a:1\t~\tplatform\tt1\n' > "$NOTES_FIXTURE/agent-panel.list"
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/sessions)"
+  assert_equal "$(jq -r .state <<< "$p")" 1
+  assert_equal "$(jq -r '.sessions[0].bucket' <<< "$p")" null
+}
+
 @test "a project whose last session closed is deleted from HA" {
   printf 'a:1\t~\tplatform\tt1\nb:1\t~\tdotfiles\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
   "$PUB" --quiet
