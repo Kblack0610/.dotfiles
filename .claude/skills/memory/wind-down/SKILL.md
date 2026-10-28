@@ -1,10 +1,10 @@
 ---
 name: wind-down
-description: Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. The note is written even when not in tmux (kill is simply skipped).
+description: Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-10-27"
+  reviewed: "2026-10-28"
 ---
 
 # wind-down
@@ -32,15 +32,22 @@ re-run `/wind-down` when that work is finished.
 
 ## Steps
 
-### 0. Winding yourself down? Check you are finished first
+### 0. Who asked decides the mode
 
-When the human asked for the wind-down, skip this. When you are winding yourself down (the shepherd told you to, or you decided your work is finished), first confirm your own row reads `finished: true`:
+**The human asked** (they typed `/wind-down`, or said "wind down", "close up", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again.
 
-```bash
-fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.finished) \(.bucket) \(.reason)"'
-```
+**You are winding yourself down** (`/wind-down auto`: the shepherd's DONE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
 
-Read `finished`, not `bucket`: you run this mid-turn, so your own bucket always reads WORKING busy, and `finished` is the DONE test without the status and idle checks. It is true when every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. `false` means you are not finished: do the next phase, land what is left, or post an agent-ask, instead of closing.
+1. Your own row reads `finished: true`:
+
+   ```bash
+   fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.finished) \(.bucket) \(.reason)"'
+   ```
+
+   Read `finished`, not `bucket`: you run this mid-turn, so your own bucket always reads WORKING busy, and `finished` is the DONE test without the status and idle checks. It is true when every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. `false` means you are not finished: do the next phase, land what is left, or post an agent-ask, instead of closing.
+2. Your last message to the human did not end with a question or an offer they have not answered ("want me to...", "should I...", a choice between options). `fleet-sessions` cannot see this and reads such a session as DONE. If it did, the human is the next step: reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
+
+### 1. Write the wrap-up note
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;

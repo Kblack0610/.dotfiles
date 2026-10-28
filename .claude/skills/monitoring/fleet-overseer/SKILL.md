@@ -111,7 +111,7 @@ One pass. Run it as `/loop 15m /fleet-overseer shepherd` from a fresh session in
 2. `fleet-dispatch reap`, which un-starts the row of a dispatched session that ended without it done and drops ledgers whose row is finished. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished` (DONE's work conditions alone, ignoring status and idle, so a session can check its own row mid-turn; wind-down step 0 reads it), `owners`, and `dispatch` (the row it was started for, or null). MAIN rows come first and lead the report: a red main is the most important thing on the board.
 3. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
 4. For each DONE, LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
-   - DONE: "Your plan is finished and nothing is open: every phase in `<plan_file>` is ticked or deferred. Stop any background shell you started, record board done with proof, then run /wind-down."
+   - DONE: "Your plan is finished and nothing is open: every phase in `<plan_file>` is ticked or deferred. Stop any background shell you started, record board done with proof, then run /wind-down auto."
    - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then post an agent-ask with your recommendation and that reason (it records your tmux session itself)."
    - LANDED with no checklist (`phases_total` null): "PR #N merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then start the first unchecked phase under the same /my:autopilot rules."
    - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
@@ -160,7 +160,7 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.
-- Close, kill, or `/wind-down` a session yourself. The shepherd asks; the session winds itself down.
+- Close, kill, or `/wind-down` a session yourself. The shepherd asks; the session winds itself down with `/wind-down auto`, which refuses when its plan is unfinished or its last message is an open question to the human.
 - Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The one exception is step 1's pace message to a session waiting on the pool.
 - Hold back sessions while the machine is under budget, or report "nothing to act on" while `top` shows the box idle with work queued. Both are pace failures.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
@@ -170,6 +170,6 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 
 - `fleet-comms`: channel choice and message wording, used by `hold`, `go` and `shepherd`.
 - `one-shot`: what every dispatched session runs, and the delivery tail (gate, PR, merge, board done, pull, wind-down) that `shepherd` nudges sessions along.
-- `wind-down`: what a DONE session runs; it checks its own row reads DONE before closing itself.
+- `wind-down`: what a DONE session runs as `/wind-down auto`; it checks its row reads `finished` and that no question to the human is open before closing. A human-asked wind-down skips both checks.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running this skill acts.
 - `wave-overseer`, `sprint-overseer`: delivery-state watchdogs. Neither of them looks at the machine.
