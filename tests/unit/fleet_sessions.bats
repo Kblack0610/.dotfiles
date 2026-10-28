@@ -8,6 +8,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
+  unset COLUMNS # the board fits a width only when one is given
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
@@ -539,16 +540,63 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_success
-  assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE +PR +CI +PLAN +QUALITY +STAGE +LABELS +IDLE +WHY$'
-  assert_line --regexp '^s1:1 +current +no +clean +#875 merged +pass +1/2 +- +LANDED +- +60m  PR #875 merged'
+  # CONFLICTS, QUALITY and LABELS are hidden while every cell is the default
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +IDLE  WHY$'
+  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +LANDED +60m  PR #875 merged'
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
   "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
-  assert_line --regexp '^s1:1 .* simplifying +LANDED '
+  assert_line --regexp '^SESSION .* QUALITY +STAGE '
+  assert_line --regexp '^s1 .* simplifying +LANDED '
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
+}
+
+# frame_fixture -> a watch frame as watch_tick emits it: plain lines, then the tab-led table.
+frame_fixture() {
+  printf 'fleet watch  12:00:00  2 session(s)  %s\n\n' "$(printf 'x%.0s' {1..120})"
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY; echo
+  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 - WORKING - 5m \
+    "busy $(printf 'y%.0s' {1..150})"; echo
+  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - DONE hands-off 40m 'plan finished'; echo
+}
+
+@test "layout: at a width every line fits, and a long WHY is clipped with ~" {
+  local w l
+  for w in 120 80; do
+    run layout "$w" < <(frame_fixture)
+    assert_success
+    for l in "${lines[@]}"; do [ "${#l}" -le "$w" ] || fail "over $w: $l"; done
+    assert_line --regexp '^fleet watch .*~$'
+  done
+  run layout 120 < <(frame_fixture)
+  assert_line --regexp '^unity-core-playground-agent-12 .* busy y+~$'
+}
+
+@test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {
+  run layout 50 < <(frame_fixture)
+  assert_line --regexp '^SESSION +PLAN +STAGE$'
+  refute_line --partial 'SYNC'
+  refute_line --partial 'WHY'
+}
+
+@test "layout: with no width nothing is clipped, defaults are hidden, :1 is stripped" {
+  run layout 0 < <(frame_fixture)
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +LABELS +IDLE  WHY$'
+  assert_line --regexp '^unity-core-playground-agent-12 .*  busy y{150}$'
+  run layout 0 < <(frame_fixture CONFLICT)
+  assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE '
+  assert_line --regexp '^dotfiles:4 +current +CONFLICT +clean '
+}
+
+@test "end to end: watch --once with COLUMNS fits the board to it" {
+  landed_fixture
+  COLUMNS=60 run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  local l; for l in "${lines[@]}"; do [ "${#l}" -le 60 ] || fail "over 60: $l"; done
+  assert_line --regexp '^s1 +.*LANDED'
 }
 
 @test "watch refuses a bad --every" {
@@ -566,7 +614,7 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_success
   assert_line 'could not read agent-panel this tick: showing the last good board, no changes logged'
-  assert_line --regexp '^s1:1 +current '
+  assert_line --regexp '^s1 +current '
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
   # gh down: every PR would read "-", which is a blink, not a change
@@ -574,7 +622,7 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_line --partial 'could not read gh pr list (wt) this tick'
-  assert_line --regexp '^s1:1 .* #875 merged '
+  assert_line --regexp '^s1 .* #875 merged '
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
 

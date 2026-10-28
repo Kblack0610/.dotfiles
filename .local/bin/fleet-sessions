@@ -8,6 +8,7 @@
 #   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
 #   fleet-sessions watch [--every N] [--once]  stage board: one column per delivery stage, plus a
 #                                     log of what changed since the last tick
+#                                     (fitted to the terminal, or to $COLUMNS off one)
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
 # STALLED (nudge once), UNCLEAR, plus one MAIN row per repo whose default branch is red (the
@@ -530,14 +531,66 @@ watch_tick() {
   if [ -s "$LEDGER/watch.log" ]; then
     tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
   fi
-  f='%-34.34s %-10s %-9s %-9s %-13s %-8s %-5s %-12s %-8s %-16.16s %5s  %.60s\n'
-  # shellcheck disable=SC2059
-  printf "$f" SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY
-  while IFS=$'\t' read -r _ t sync conf tree pr ci plan q stage l idle why; do
-    # shellcheck disable=SC2059
-    printf "$f" "$t" "$sync" "$conf" "$tree" "$pr" "$ci" "$plan" "$q" "$stage" "$l" "$idle" "$why"
-  done < "$cur"
+  # The table goes out as tab-led TSV; layout fits it to the terminal at draw time.
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY; echo
+  cut -f2- "$cur" | sed 's/^/\t/'
   awk -F'\t' '$1 == "MAIN" { if (!h++) print "\nMAIN"; print "  " $11 }' <<<"$rows"
+}
+
+# layout <width|0>: a watch frame on stdin -> the frame fitted to <width> columns (0: no
+# limit). Tab-led lines are the table: each column takes its content's width, CONFLICTS,
+# QUALITY and LABELS are hidden while every cell is the default, and columns drop from the
+# least important end until the rest fit. WHY takes whatever is left and goes once that is
+# under 12. Every line, table or not, is then clipped to <width> with a trailing ~.
+layout() {
+  awk -F'\t' -v W="${1:-0}" '
+    function clip(s, w) { return (w > 0 && length(s) > w) ? substr(s, 1, w - 1) "~" : s }
+    BEGIN {
+      GAP = 2; WHY = 12; SESS_MAX = 34
+      # Most important first; SESSION is never dropped. WHY is not in the list: it flexes.
+      n_keep = split("1 9 7 5 6 4 2 11 3 8 10", keep, " ")
+      split("3 8 10", c, " "); for (i in c) optional[c[i]] = 1
+    }
+    { line[NR] = $0 }
+    /^\t/ {
+      is_row[NR] = 1; hdr = !rows++
+      for (j = 1; j <= 12; j++) {
+        v = $(j + 1); if (j == 1 && !hdr) sub(/:1$/, "", v)
+        cell[NR, j] = v
+        if (length(v) > wid[j]) wid[j] = length(v)
+        if (!hdr && j in optional && v != "-" && v != "no") used[j] = 1
+      }
+    }
+    END {
+      if (wid[1] > SESS_MAX) wid[1] = SESS_MAX
+      total = -GAP
+      for (k = 1; k <= n_keep; k++) {
+        j = keep[k]
+        if (j in optional && !used[j]) continue
+        on[j] = 1; total += wid[j] + GAP
+      }
+      for (k = n_keep; W > 0 && total > W && k > 1; k--)
+        if (keep[k] in on) { delete on[keep[k]]; total -= wid[keep[k]] + GAP }
+      on[12] = W == 0 || W - total - GAP >= WHY
+      for (r = 1; r <= NR; r++) {
+        if (!is_row[r]) { print clip(line[r], W); continue }
+        out = ""
+        for (j = 1; j <= 12; j++) {
+          if (!on[j]) continue
+          v = clip(cell[r, j], wid[j])
+          if (j == 12) v = cell[r, j]
+          else if (j == 11) v = sprintf("%" wid[j] "s", v)
+          else v = sprintf("%-" wid[j] "s", v)
+          out = out (out == "" ? "" : sprintf("%" GAP "s", "")) v
+        }
+        sub(/ +$/, "", out); print clip(out, W)
+      }
+    }'
+}
+
+# term_width -> the terminal's columns, when stdout is one.
+term_width() {
+  [ -t 1 ] && stty size 2>/dev/null </dev/tty | cut -d' ' -f2
 }
 
 # paint: colour the words that need an eye, only on a terminal and without NO_COLOR.
@@ -561,15 +614,22 @@ watch() {
   done
   [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "fleet-sessions: --every takes whole seconds" >&2; return 2; }
   export FLEET_FETCH=1
+  # A resize (the Prefix+o popup opening or closing) ends the wait early, and the frame
+  # already in hand is re-fitted to the new width: no pass is run for it.
+  trap 'resized=1' WINCH
+  local width tick=1 deadline=0 resized=0
   while :; do
-    frame="$(watch_tick)"
+    [ "$tick" = 1 ] && { frame="$(watch_tick)"; deadline=$((SECONDS + every)); }
+    width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
     [ -t 1 ] && printf '\033[H\033[2J'
-    printf '%s\n' "$frame" | paint
+    printf '%s\n' "$frame" | layout "$width" | paint
     [ "$once" = 1 ] && return 0
     if [ -t 0 ]; then
-      printf '\nnext tick in %ss - n run now - q quit' "$every"
-      key=""; read -rsn1 -t "$every" key
+      printf '\nnext tick in %ss - n run now - q quit' "$((deadline - SECONDS))"
+      key=""; resized=0
+      read -rsn1 -t "$((deadline > SECONDS ? deadline - SECONDS : 1))" key
       [ "$key" = q ] && { echo; return 0; }
+      tick=1; [ "$resized" = 1 ] && [ -z "$key" ] && [ "$SECONDS" -lt "$deadline" ] && tick=0
     else
       sleep "$every"
     fi
@@ -582,7 +642,7 @@ main() {
     escalate) shift; escalate "$@"; return ;;
     label) shift; label "$@"; return ;;
     watch) shift; watch "$@"; return ;;
-    -h|--help) sed -n '2,13p' "$0"; return ;;
+    -h|--help) sed -n '2,14p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows
