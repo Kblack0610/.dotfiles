@@ -1,8 +1,7 @@
 #!/bin/bash
 # Stop-post: fire an armed self-teardown of Claude's tmux window. Never blocks.
 #
-# Runs AFTER 90-eval-gate.sh so the detached eval judge is already spawned and
-# survives the window dying. Logic:
+# Runs last, so every other post script has finished before the window dies. Logic:
 #   1. Loop guard (stop_hook_active) — exit 0 on the second call this turn.
 #   2. Look for a spin-down sentinel for this project; none -> exit 0.
 #   3. CI gate: if the content-check phase FAILED, DEFER (leave sentinel, exit 0)

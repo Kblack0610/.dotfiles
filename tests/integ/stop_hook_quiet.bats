@@ -186,7 +186,7 @@ stderr() { cat "$ERRF"; }
   assert_output --partial "note=no executable checks"
 }
 
-@test "the CI result file contract with 90-eval-gate.sh is unchanged" {
+@test "the CI result file contract with 95-wind-down.sh is unchanged" {
   dirty
   check green 0
   run_hook
@@ -275,4 +275,9 @@ run_session() {
   [ -e "$spin/alpha__aaa.request" ]
   run stderr
   assert_output --partial "wind-down deferred"
+}
+
+@test "no post script calls a model: the session eval is session-outcomes, not a Stop-time judge" {
+  run grep -l -E 'llm-judge|llm-call|claude -p|agentctl-run' "$REPO_ROOT"/.claude/hooks/stop-post.d/*.sh
+  assert_failure
 }

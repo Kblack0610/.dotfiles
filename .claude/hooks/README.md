@@ -34,7 +34,7 @@ Project-type detection lives **inside each check** (e.g. `[ -f package.json ] ||
 
 Current checks: `10-git-workflow.sh` (unpushed commits, open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier).
 
-The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<session_id>.txt` (`ci-result-<proj>-<date>.txt` only when the payload has no session id) and exports the path as `CI_RESULT_FILE` to the post scripts. `90-eval-gate.sh` and `95-wind-down.sh` read it from there and never build the name themselves. Files older than a week are pruned.
+The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<session_id>.txt` (`ci-result-<proj>-<date>.txt` only when the payload has no session id) and exports the path as `CI_RESULT_FILE` to the post scripts. `95-wind-down.sh` reads it from there and never build the name themselves. Files older than a week are pruned.
 
 ### `stop-post.d/` — runs after content checks (sequential, can block)
 
@@ -45,19 +45,18 @@ Current post-checks, in order:
 - `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
 - `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked on a board.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
-- `90-eval-gate.sh`: non-blocking. Skips pure Q&A. Reads CI status from `$CI_RESULT_FILE`, then spawns `llm-judge.sh --mode eval` detached (`setsid nohup ... & disown`) and exits 0. The async judge appends a `## Session N` entry to `~/.agent/evals/<proj>/<date>.md` ~10-30s later. Judge logs land at `${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/judge.log`. Distinct from the manual `/my:judge` audit-mode invocation below: same script, different mode flag.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. It also deletes any request older than a day, whose session ended without a Stop to consume it.
 
 ## Manual compliance audit (not Stop-time)
 
-Separate from the automated Stop-time eval-gate, there's a manual rules-compliance LLM judge available on demand:
+There is no Stop-time judge: the per-turn transcript eval was retired 2026-10-28, because a score from the last 80 lines of a transcript could not be checked and read 10/10 on most turns. The session eval is `agentctl-session-outcomes` (nightly, from transcript structure, git and gh) plus the `fleet-bench` scorecard in the daily briefing. A manual rules-compliance LLM judge stays available on demand:
 
 | Surface | Invocation | Backing script |
 |---------|-----------|----------------|
 | Claude slash command | `/my:judge` | `~/.claude/hooks/llm-judge.sh` (+ `lib/`) |
 | Codex skill | `/llm-judge` | `~/.dotfiles/.config/codex/skills/llm-judge/judge.sh` |
 
-These read the project transcript and produce a deeper compliance audit than the Stop-hook eval-gate. They're **not** wired into Stop — invoke when you want them. Configuration lives at `~/.dotfiles/.config/llm-judge/`.
+These read the project transcript and print a compliance audit. They are not wired into Stop. Configuration lives at `~/.dotfiles/.config/llm-judge/`.
 
 ## SessionStart hooks (user-global)
 

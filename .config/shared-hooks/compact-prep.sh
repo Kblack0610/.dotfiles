@@ -82,7 +82,7 @@ cmd_precompact() {
   # copy a prefix of the next. 58 MB, zero unique bytes.
   #
   # The marker now points at the transcript itself. That is the same file the reconcile
-  # actually wants, and `claude-recall`, 80-session-register.sh and 90-eval-gate.sh all
+  # actually wants, and `claude-recall` and 80-session-register.sh both
   # already depend on ~/.claude/projects/ being there, so this adds no new dependency.
 
   # Drop the capture-check marker so the next SessionStart (source=compact) can

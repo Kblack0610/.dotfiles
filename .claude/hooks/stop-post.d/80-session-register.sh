@@ -2,7 +2,7 @@
 # Stop-post: register a MEANINGFUL session into an agent-facing registry so an
 # agent (or the user) can later list / resume / compact it. Never blocks.
 #
-# Sibling of 90-eval-gate.sh, same skeleton. Key differences:
+# Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
 #     never the human ~/.notes/inbox (low-noise, agent-facing by design).
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in

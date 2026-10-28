@@ -9,7 +9,7 @@
 # Per-check exit codes (checks + post): 0 pass, 1 warn, 2 block, * block.
 # Pre-checks: 0 ok, anything else = warn (non-blocking).
 #
-# Contract with stop-post.d/ (90-eval-gate.sh, 95-wind-down.sh):
+# Contract with stop-post.d/ (95-wind-down.sh):
 #   Writes status=PASS|FAIL|SKIPPED and note=... to $CI_RESULT_FILE, and exports that path
 #   to the post scripts, so the file name is decided here and nowhere else.
 #
@@ -30,7 +30,7 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 
 PAYLOAD=$(cat 2>/dev/null || echo '{}')
 
-# --- CI result file (consumed by stop-post.d/90-eval-gate.sh) + the full-firehose log ---
+# --- CI result file (consumed by stop-post.d/95-wind-down.sh) + the full-firehose log ---
 . "$HOME/.config/shared-hooks/project-name.sh"
 PROJ=$(resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}")
 DATE=$(date +%Y-%m-%d)
@@ -100,7 +100,7 @@ run_post() {
 }
 
 
-# --- no-changes early-exit (still run post phase so eval-gate can skip cleanly) ---
+# --- no-changes early-exit (still run the post phase: the register and wind-down run on every Stop) ---
 if git rev-parse --git-dir >/dev/null 2>&1 \
    && git diff --quiet HEAD 2>/dev/null \
    && git diff --cached --quiet 2>/dev/null; then
@@ -207,7 +207,7 @@ else
   fi
 fi
 
-# --- Phase 2: post-d (eval-gate, etc.) - runs after PASS or FAIL ---
+# --- Phase 2: post-d (register, plans, wind-down) - runs after PASS or FAIL ---
 run_post "$POST_DIR"
 POST_RC=$?
 
