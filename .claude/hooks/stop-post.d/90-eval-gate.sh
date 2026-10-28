@@ -28,14 +28,15 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 DATE_STAMP=$(date +%Y-%m-%d)
 EVAL_FILE="$HOME/.agent/evals/$PROJECT_NAME/${DATE_STAMP}.md"
-CI_RESULT_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/ci-result-${PROJECT_NAME}-${DATE_STAMP}.txt"
+# Named and exported by pre-stop-checks.sh, which writes it (keyed by session id).
+CI_RESULT_FILE="${CI_RESULT_FILE:-}"
 JUDGE_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook/judge.log"
 
 mkdir -p "$(dirname "$EVAL_FILE")" "$(dirname "$JUDGE_LOG")" 2>/dev/null || true
 
 # --- CI status from coordinator's content-check phase ---
 CI_STATUS_VAL=""
-if [ -f "$CI_RESULT_FILE" ]; then
+if [ -n "$CI_RESULT_FILE" ] && [ -f "$CI_RESULT_FILE" ]; then
   CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 fi
 

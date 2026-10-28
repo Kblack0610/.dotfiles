@@ -1,18 +1,17 @@
 #!/bin/bash
-# Stop-hook coordinator. Single Stop hook entrypoint, three phases:
+# Stop-hook coordinator. Single Stop hook entrypoint, two phases:
 #
-#   pre-d   sequential, non-blocking, runs ALWAYS (incl. no-changes)
-#           - session snapshots, anything that should fire even on Q&A turns
 #   checks  parallel, exit-code aggregated, may BLOCK (exit 2)
 #           - lint / typecheck / etc.; runs only when there are local changes
-#   post-d  sequential, stdout/stderr passed through verbatim, may BLOCK
-#           - eval-gate (emits JSON {decision:block,...} on stdout)
+#   post-d  sequential, stdout/stderr passed through verbatim, may BLOCK; runs ALWAYS
+#           (incl. no-changes), so anything that must fire on a Q&A turn goes here
 #
 # Per-check exit codes (checks + post): 0 pass, 1 warn, 2 block, * block.
 # Pre-checks: 0 ok, anything else = warn (non-blocking).
 #
-# Contract preserved with stop-post.d/90-eval-gate.sh:
-#   Writes status=PASS|FAIL|SKIPPED and note=... to $CI_RESULT_FILE.
+# Contract with stop-post.d/ (90-eval-gate.sh, 95-wind-down.sh):
+#   Writes status=PASS|FAIL|SKIPPED and note=... to $CI_RESULT_FILE, and exports that path
+#   to the post scripts, so the file name is decided here and nowhere else.
 #
 # Output policy - why this script is almost entirely silent:
 #   A Stop hook's stderr is not a log. Per the hook contract, stderr from a hook that
@@ -36,10 +35,16 @@ PAYLOAD=$(cat 2>/dev/null || echo '{}')
 PROJ=$(resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}")
 DATE=$(date +%Y-%m-%d)
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook"
-CI_RESULT_FILE="$CACHE_DIR/ci-result-${PROJ}-${DATE}.txt"
+# Keyed by the Stop payload's session id. Keyed by project and day, two sessions in one
+# project shared a file, so one session's FAIL deferred another's wind-down and one
+# session's SKIPPED hid another's FAIL from it. project-day stays only for a payload
+# with no id.
+SID=""
+command -v jq >/dev/null 2>&1 && SID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
+export CI_RESULT_FILE="$CACHE_DIR/ci-result-${SID:-${PROJ}-${DATE}}.txt"
 LOG="$CACHE_DIR/last-stop-${PROJ}.log"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
-# One ci-result file per project per day, and nothing else ever deletes them.
+# One ci-result file per session, and nothing else ever deletes them.
 find "$CACHE_DIR" -maxdepth 1 -name 'ci-result-*.txt' -mtime +7 -delete 2>/dev/null || true
 
 VERBOSE="${CLAUDE_STOP_VERBOSE:-0}"
@@ -77,7 +82,6 @@ write_result() {
 
 SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
 HOOK_DIR="$(dirname "$SELF")"
-PRE_DIR="$HOOK_DIR/stop-pre.d"
 CHECKS_DIR="$HOOK_DIR/stop-checks.d"
 POST_DIR="$HOOK_DIR/stop-post.d"
 
@@ -95,24 +99,8 @@ run_post() {
   return "$worst"
 }
 
-# --- run_pre: sequential, never blocks. Just logs warnings. ---
-run_pre() {
-  local dir="$1" rc
-  [ -d "$dir" ] || return 0
-  for s in "$dir"/*.sh; do
-    [ -x "$s" ] || continue
-    bash "$s" < <(printf '%s' "$PAYLOAD") || {
-      rc=$?
-      note "[pre-warn] $(basename "$s" .sh) exit=$rc"
-    }
-  done
-  return 0
-}
 
-# --- Phase 1: pre-d (always runs) ---
-run_pre "$PRE_DIR"
-
-# --- Phase 2: no-changes early-exit (still run post phase so eval-gate can skip cleanly) ---
+# --- no-changes early-exit (still run post phase so eval-gate can skip cleanly) ---
 if git rev-parse --git-dir >/dev/null 2>&1 \
    && git diff --quiet HEAD 2>/dev/null \
    && git diff --cached --quiet 2>/dev/null; then
@@ -130,7 +118,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   [ -n "$UNTRACKED" ] && note "untracked:" && note "$UNTRACKED"
 fi
 
-# --- Phase 3: parallel content checks ---
+# --- Phase 1: parallel content checks ---
 note "=== Running stop-hook checks in parallel ==="
 
 OUT_DIR=$(mktemp -d)
@@ -219,11 +207,11 @@ else
   fi
 fi
 
-# --- Phase 4: post-d (eval-gate, etc.) - runs after PASS or FAIL ---
+# --- Phase 2: post-d (eval-gate, etc.) - runs after PASS or FAIL ---
 run_post "$POST_DIR"
 POST_RC=$?
 
-# --- Phase 5: aggregated exit ---
+# --- Phase 3: aggregated exit ---
 if [ $CONTENT_BLOCKED -eq 1 ]; then exit 2; fi
 [ "$POST_RC" -gt 1 ] && exit "$POST_RC"
 exit 0
