@@ -139,7 +139,7 @@ A session in a different permission mode holds a peer message for approval. If a
 
 ## Verb: `dispatch`
 
-`fleet-dispatch` feeds the shepherd. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every two hours (its conf is `fleet-dispatch.conf.disabled` while it is off); this verb is for running it by hand and reading what it decided.
+`fleet-dispatch` feeds the shepherd. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every two hours (off while its conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this verb is for running it by hand and reading what it decided.
 
 Dispatch only takes rows the human assigned. A row needs `#worker/fleet` (the human puts it there) and a `#tier/N` no higher than `max_tier` for `fleet` in `~/.config/fleet-dispatch/workers.json`, which starts at 1. Tier 3 never runs unattended: CI, gates, runners, build, deploy, harness and tooling. A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier. Tag a row with `notes ptask <project> [--agent] edit "<row>" --append "#worker/fleet #tier/1"`.
 

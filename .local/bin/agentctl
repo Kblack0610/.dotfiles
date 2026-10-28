@@ -25,6 +25,12 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-${HOME}/.local/state/agentctl
 
 mkdir -p "$STATE_DIR"
 
+# The fleet-wide stop switch. agentctl@.service's ExecCondition skips every oneshot start
+# while this file exists, so a timer fire, `agentctl start` and a Restart= all honour it;
+# persistent runners (sentinel) keep running so the fleet is still watched while paused.
+# It is runtime state, not config: pausing must not dirty a tracked conf.
+PAUSE_FILE="$STATE_DIR/PAUSED"
+
 die() { printf 'agentctl: %s\n' "$*" >&2; exit 1; }
 
 list_agent_names() {
@@ -55,6 +61,11 @@ load_agent() {
         : "${DESCRIPTION:=}"
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
+        : "${ENABLED:=yes}"
+        case "$ENABLED" in
+            yes|no) ;;
+            *) printf 'invalid ENABLED=%s (yes|no)\n' "$ENABLED" >&2; exit 1 ;;
+        esac
         : "${INBOX:=$STATE_DIR/$NAME}"
         printf 'NAME=%s\n' "$NAME"
         printf 'KIND=%s\n' "$KIND"
@@ -62,6 +73,7 @@ load_agent() {
         printf 'DESCRIPTION=%s\n' "$DESCRIPTION"
         printf 'SCHEDULE=%s\n' "$SCHEDULE"
         printf 'AUTOSTART=%s\n' "$AUTOSTART"
+        printf 'ENABLED=%s\n' "$ENABLED"
         printf 'INBOX=%s\n' "$INBOX"
     )
 }
@@ -70,6 +82,19 @@ agent_field() {
     local name="$1" field="$2"
     load_agent "$name" 2>/dev/null \
         | awk -F= -v k="$field" 'BEGIN{IGNORECASE=0} !f && substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); f=1}'
+}
+
+# conf_set <name> <KEY> <value> - write one key into the agent's conf, replacing the line
+# if present. --follow-symlinks because a stowed conf may itself be a link, and a plain
+# sed -i would replace the link with a copy that the repo no longer tracks.
+conf_set() {
+    local conf="$CONFIG_DIR/$1.conf" key="$2" val="$3"
+    [ -f "$conf" ] || die "no such agent: $1"
+    if grep -q "^${key}=" "$conf"; then
+        sed -i --follow-symlinks "s|^${key}=.*|${key}=${val}|" "$conf"
+    else
+        printf '%s=%s\n' "$key" "$val" >> "$(readlink -f "$conf")"
+    fi
 }
 
 systemd_show() {
@@ -270,7 +295,10 @@ cmd_report() {
         stop)
             # systemd sets these for ExecStopPost only. Anything but `success` is a fault
             # worth a glyph, which is the distinction `inactive` alone can never make.
-            if [ -n "${SERVICE_RESULT:-}" ] && [ "${SERVICE_RESULT}" != success ]; then
+            # exec-condition is the pause switch skipping this start: not a fault.
+            if [ "${SERVICE_RESULT:-}" = exec-condition ]; then
+                kvs+=(state=idle detail=paused)
+            elif [ -n "${SERVICE_RESULT:-}" ] && [ "${SERVICE_RESULT}" != success ]; then
                 kvs+=(state=error "detail=result=${SERVICE_RESULT} exit=${EXIT_STATUS:-?}")
             else
                 kvs+=(state=idle detail=)
@@ -293,6 +321,8 @@ cmd_report() {
 # ----------------------------------------------------------------------
 
 cmd_list() {
+    [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
+        "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     printf '%-12s %-10s %-10s %-7s %-10s %s\n' NAME KIND STATE PID UPTIME NEXT
     local found=0
     while IFS= read -r name; do
@@ -302,6 +332,7 @@ cmd_list() {
         kind=$(agent_field "$name" KIND)
         [ -z "$kind" ] && kind="?"
         state=$(unit_state "$name"); [ -z "$state" ] && state="-"
+        [ "$(agent_field "$name" ENABLED)" = no ] && [ "$state" != active ] && state="off"
         pid=$(unit_pid "$name");     [ -z "$pid" ]   && pid="-"
         uptime=$(unit_uptime "$name"); [ -z "$uptime" ] && uptime="-"
         nextrun=$(unit_next_run "$name"); [ -z "$nextrun" ] && nextrun="-"
@@ -400,17 +431,15 @@ cmd_restart() {
     systemctl --user restart "agentctl@${name}.service"
 }
 
+# enable/disable write ENABLED into the conf, then reload. The conf is the one place a
+# runner is switched: `systemctl disable` alone was undone by the next `agentctl reload`,
+# which re-armed every timer it found a SCHEDULE for.
 cmd_enable() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl enable <name>"
-    [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
-    local kind
-    kind=$(agent_field "$name" KIND)
-    if [ "$kind" = "oneshot" ]; then
-        [ -f "$SYSTEMD_USER_DIR/agentctl-${name}.timer" ] \
-            || die "no timer for $name; run 'agentctl reload' first"
-        systemctl --user enable --now "agentctl-${name}.timer"
-    else
+    conf_set "$name" ENABLED yes
+    cmd_reload
+    if [ "$(agent_field "$name" KIND)" = persistent ]; then
         systemctl --user enable --now "agentctl@${name}.service"
     fi
 }
@@ -418,13 +447,19 @@ cmd_enable() {
 cmd_disable() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl disable <name>"
-    local kind
-    kind=$(agent_field "$name" KIND 2>/dev/null || echo "")
-    if [ "$kind" = "oneshot" ]; then
-        systemctl --user disable --now "agentctl-${name}.timer" 2>/dev/null || true
-    else
-        systemctl --user disable --now "agentctl@${name}.service" 2>/dev/null || true
-    fi
+    conf_set "$name" ENABLED no
+    cmd_reload
+}
+
+# pause [reason] / resume - the one switch for the whole fleet. See PAUSE_FILE.
+cmd_pause() {
+    printf '%s%s\n' "$(date -Is)" "${1:+ $*}" > "$PAUSE_FILE"
+    printf 'agentctl: paused - no oneshot runner starts until: agentctl resume\n'
+}
+
+cmd_resume() {
+    rm -f "$PAUSE_FILE"
+    printf 'agentctl: resumed\n'
 }
 
 cmd_logs() {
@@ -487,6 +522,7 @@ cmd_reload() {
 
     local configured_oneshots=()
     local configured_persistent_autostart=()
+    local disabled=()
     local count=0 errors=0
     while IFS= read -r name; do
         [ -n "$name" ] || continue
@@ -498,12 +534,19 @@ cmd_reload() {
             continue
         fi
         count=$((count + 1))
-        local kind sched autostart
+        local kind sched autostart enabled
         kind=$(agent_field "$name" KIND)
         sched=$(agent_field "$name" SCHEDULE)
         autostart=$(agent_field "$name" AUTOSTART)
+        enabled=$(agent_field "$name" ENABLED)
 
-        if [ "$kind" = "oneshot" ] && [ -n "$sched" ]; then
+        if [ "$enabled" = no ]; then
+            # Off: no timer is written, so the orphan sweep below disables and removes any
+            # existing one; a persistent runner is stopped here.
+            [ "$kind" = persistent ] \
+                && systemctl --user disable --now "agentctl@${name}.service" >/dev/null 2>&1 || true
+            disabled+=("$name")
+        elif [ "$kind" = "oneshot" ] && [ -n "$sched" ]; then
             write_timer_file "$name" "$sched"
             configured_oneshots+=("$name")
         elif [ "$kind" = "persistent" ] && [ "$autostart" = "yes" ]; then
@@ -523,7 +566,10 @@ cmd_reload() {
             if [ "$found" -eq 0 ]; then
                 systemctl --user disable --now "agentctl-${t}.timer" 2>/dev/null || true
                 rm -f "$SYSTEMD_USER_DIR/agentctl-${t}.timer"
-                printf 'agentctl: removed orphan timer: %s\n' "$t" >&2
+                case " ${disabled[*]-} " in
+                    *" $t "*) printf 'agentctl: off (ENABLED=no): %s\n' "$t" >&2 ;;
+                    *)        printf 'agentctl: removed orphan timer: %s\n' "$t" >&2 ;;
+                esac
             fi
         done
     fi
@@ -548,6 +594,7 @@ cmd_reload() {
     fi
 
     printf 'agentctl: loaded %d agent(s)' "$count"
+    [ "${#disabled[@]}" -gt 0 ] && printf ', %d off' "${#disabled[@]}"
     [ "$errors" -gt 0 ] && printf ', %d error(s)' "$errors"
     printf '\n'
 }
@@ -825,8 +872,10 @@ Usage:
   agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
-  agentctl enable <name>         Enable agent (autostart on boot, or arm timer)
-  agentctl disable <name>        Disable agent
+  agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)
+  agentctl disable <name>        Set ENABLED=no in its conf and reload (survives reload)
+  agentctl pause [reason]        Stop every oneshot runner from starting (sentinel keeps running)
+  agentctl resume                Undo pause
   agentctl logs <name> [-f]      Tail merged stdout+stderr+inbox (use -f to follow)
   agentctl reload                Rescan agents/, regenerate timers, daemon-reload
   agentctl watch                 Refreshing dashboard (Ctrl-C to exit)
@@ -877,6 +926,8 @@ case "${1:-}" in
     restart)           shift; cmd_restart "$@" ;;
     enable)            shift; cmd_enable "$@" ;;
     disable)           shift; cmd_disable "$@" ;;
+    pause)             shift; cmd_pause "$@" ;;
+    resume)            cmd_resume ;;
     logs)              shift; cmd_logs "$@" ;;
     reload)            cmd_reload ;;
     watch)             cmd_watch ;;
