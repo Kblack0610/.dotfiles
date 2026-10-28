@@ -211,6 +211,8 @@ resolve_project_name() {
         common=$(git -C "$abs_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
         repo="${common%/.git}"; repo="${repo%/}"
         [ -n "$repo" ] || repo="$top"
+        # An unregistered repo is named by its checkout, never by a worktree or subdir.
+        base="${repo##*/}"; base="${base#.}"
 
         repo_name=$(jq -r --arg p "$repo" '.paths[$p] // empty' "$map_file" 2>/dev/null || true)
         [ -n "$repo_name" ] || repo_name=$(jq -r --arg b "${repo##*/}" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
