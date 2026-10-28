@@ -121,6 +121,7 @@ Media/Music
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/fleet-overseer/
 !.claude/skills/monitoring/sentinel/
+!.claude/skills/ops/game-eval/
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
 !.claude/skills/ops/playground-headless-test/
