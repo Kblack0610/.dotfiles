@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Eval trend report — aggregates session eval scores across all projects.
 # Usage: eval-report.sh [--project NAME] [--days N] [--tsv]
+# The corpus is an archive as of 2026-10-28; current: `agentctl-session-outcomes worst`.
 #
 # Highlights dimensions below the attention floor and shows per-dimension averages.
 #

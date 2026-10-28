@@ -1,10 +1,10 @@
 ---
 name: project-index
-description: Create or refresh a project's anchor - the per-project memory/index.md front door at ~/.agent/anchors/{project}.md that the SessionStart hook injects at turn 1. Regenerates only the auto-generated block (links to plans/lessons/evals/ideation/repo-docs/tracker + active plans + lessons digest) from the filesystem; never touches the hand-curated Key URLs / Decisions log / Blockers sections. Use when the user says "update the anchor", "refresh the project index", "scaffold an anchor for X", "regenerate the memory index", or after a batch of plans/lessons land and the index feels stale.
+description: Create or refresh a project's anchor - the per-project memory/index.md front door at ~/.agent/anchors/{project}.md that the SessionStart hook injects at turn 1. Regenerates only the auto-generated block (links to plans/lessons/outcomes/ideation/repo-docs/tracker + active plans + lessons digest) from the filesystem; never touches the hand-curated Key URLs / Decisions log / Blockers sections. Use when the user says "update the anchor", "refresh the project index", "scaffold an anchor for X", "regenerate the memory index", or after a batch of plans/lessons land and the index feels stale.
 metadata:
   category: memory
   tags: [anchor, project-bus, index]
-  reviewed: "2026-08-10"
+  reviewed: "2026-10-28"
 ---
 
 # project-index
@@ -23,7 +23,7 @@ AUTO block.
 - "Update / refresh the anchor (for X)", "regenerate the project index", "the memory index is stale".
 - "Scaffold an anchor for {project}" - creates a fresh anchor with curated placeholders + a
   populated AUTO block.
-- Housekeeping after a batch of plans/lessons/evals land.
+- Housekeeping after a batch of plans/lessons land.
 
 ## How to run (mechanical - prefer the script)
 
@@ -40,7 +40,7 @@ The regeneration is deterministic, so call the helper rather than hand-editing:
   is preserved byte-for-byte. Idempotent.
 
 The AUTO block it writes:
-- **Links** - plans dir, lessons file, evals dir (+ latest), ideation (`~/.notes/lab/...`),
+- **Links** - plans dir, lessons file, session outcomes dir (+ newest month), ideation (`~/.notes/lab/...`),
   repo `docs/`, repo path, tracker (from `project-map.json` `trackers.{project}`).
 - **Active plans** - newest 5 in `~/.agent/plans/{project}/` (excludes `active/archive/_archive/tasks`).
 - **Recent lessons (digest)** - last 5 bullet lessons, each truncated to keep the inject lean.

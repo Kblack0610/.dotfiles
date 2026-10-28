@@ -3,6 +3,7 @@
 # than a shebang (SC2148).
 #
 # agent-evals.sh — ONE reader for the session-eval corpus.
+# The corpus is an archive as of 2026-10-28; current: ~/.agent/outcomes (session-outcomes.sh).
 #
 # The corpus at ~/.agent/evals/{project}/YYYY-MM-DD.md is written by the LLM judge
 # (.claude/hooks/llm-judge.sh, dispatched from stop-post.d/90-eval-gate.sh) and is the
