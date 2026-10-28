@@ -173,6 +173,73 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_not_called "detach-client"
 }
 
+# ── A board is never somewhere to go back to ────────────────────────────────
+#
+# The boards (Prefix o / O) are declared windows of the landing session, and tmux keeps
+# one last-session slot, so a glance at a board took it: A, o, L, L landed on the board.
+
+# sessions_on <server> <name>... -- list-sessions for that world, most recent first.
+sessions_on() {
+  local srv="$1" t=900 name; shift
+  : > "$NOTES_FIXTURE/tmux.sessions.$srv"
+  for name in "$@"; do
+    printf '%s %s\n' "$t" "$name" >> "$NOTES_FIXTURE/tmux.sessions.$srv"
+    t=$((t - 100))
+  done
+}
+
+# daily:watch is the board, declared the way hub.conf declares hub:watch.
+board_declared() { printf 'daily:watch ~ fleet-sessions watch\n' >> "$TMUX_SERVERS_DIR/hub.conf"; }
+
+@test "when tmux's last session is sitting on a board, L goes to the session worked in before" {
+  # A, Prefix o, L back to A: tmux now says the last session is the board's.
+  board_declared
+  sessions_on hub notes daily other
+  at hub notes 0
+  export STUB_LAST_SESSION_RC=0 STUB_CLIENT_LAST_SESSION=daily STUB_WINDOW_IDENT=watch
+  run "$TMX" back
+  assert_success
+  assert_called "switch-client -t =other"
+  assert_not_called "switch-client -l"
+  assert_not_called "detach-client"
+}
+
+@test "a last session on an ordinary window is still tmux's own last-session" {
+  # The daily note is a real place: only declared boards are skipped.
+  board_declared
+  sessions_on hub notes daily other
+  at hub notes 0
+  export STUB_LAST_SESSION_RC=0 STUB_CLIENT_LAST_SESSION=daily STUB_WINDOW_IDENT=main
+  run "$TMX" back
+  assert_success
+  assert_called "switch-client -l"
+  assert_not_called "switch-client -t"
+}
+
+@test "with only the board to go back to, L goes there rather than nowhere" {
+  board_declared
+  sessions_on hub notes daily
+  at hub notes 0
+  export STUB_LAST_SESSION_RC=0 STUB_CLIENT_LAST_SESSION=daily STUB_WINDOW_IDENT=watch
+  run "$TMX" back
+  assert_success
+  assert_called "switch-client -l"
+  assert_not_called "switch-client -t"
+}
+
+@test "a crumb naming another world's board is skipped for this world's recent session" {
+  # Left by `back` itself after returning from a board in another world.
+  board_declared
+  sessions_on lab work projects other
+  recorded hub daily 4
+  at lab work 0
+  export STUB_WINDOW_IDENT=watch
+  run "$TMX" back
+  assert_success
+  assert_called "switch-client -t =other"
+  assert_not_called "detach-client"
+}
+
 # ── The wiring ───────────────────────────────────────────────────────────────
 #
 # Everything above drives `tmx` verbs directly, and that is precisely how the first cut of
