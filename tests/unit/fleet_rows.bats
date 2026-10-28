@@ -49,7 +49,9 @@ setup() {
 # ── _age ─────────────────────────────────────────────────────────────────────
 
 @test "_age renders seconds, minutes, hours and days at the right scale" {
-  local now; now="$(date +%s)"
+  # One clock for test and code: reading it twice crossed a second under load (30s read 31s).
+  local now=1700000000
+  date() { echo 1700000000; }
   assert_equal "$(_age $((now - 30)))"    '30s'
   assert_equal "$(_age $((now - 300)))"   '5m'
   assert_equal "$(_age $((now - 7200)))"  '2h0m'
