@@ -181,40 +181,14 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | $9.99 |'
 }
 
-@test "nightly pages the headline once and publishes WORKED; no samples is FAILED" {
-  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
-  printf '#!/usr/bin/env bash\necho "notify $*" >> "%s"\n' "$SANDBOX/pages" > "$SANDBOX/bin/agent-notify"
-  chmod +x "$SANDBOX/bin/agent-notify"
-  run "$SUBJECT" nightly
-  assert_failure
-  run outcome
-  assert_output --partial FAILED
-  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
-  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" nightly
-  assert_success
-  run cat "$SANDBOX/pages"
-  assert_output --partial 'notify -p normal -t bench bench 24h: 1 sessions, 0 phases ticked'
-  [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
-  run outcome
-  assert_output --partial WORKED
-}
-
-@test "under agentctl each runner publishes its own outcome: nightly never overwrites the sampler's" {
-  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
-  printf '#!/usr/bin/env bash\n:\n' > "$SANDBOX/bin/agent-notify"; chmod +x "$SANDBOX/bin/agent-notify"
+@test "report lists the outcome of every runner that calls fleet-bench, under its own name" {
   rowj 'phases_done: 1' > "$SNAP"
   AGENTCTL_NAME=fleet-bench BENCH_NOW=$T0 run "$SUBJECT" sample
   assert_success
-  : > "$SNAP"                                   # the sampler's last pass sees nobody: NOOP
-  AGENTCTL_NAME=fleet-bench BENCH_NOW=$((T0 + 30)) run "$SUBJECT" sample
-  AGENTCTL_NAME=fleet-bench-nightly BENCH_NOW=$((T0 + 60)) run "$SUBJECT" nightly
-  assert_success
-  run cat "$AGENTCTL_STATE_DIR/fleet-bench-nightly/last-outcome"
-  assert_output --partial WORKED
-  run cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
-  assert_output NOOP
   run "$SUBJECT" report
-  assert_output --partial 'fleet-bench-nightly last outcome: WORKED'
+  assert_output --partial 'fleet-bench last outcome: WORKED'
+  assert_output --partial 'briefing last outcome: none recorded'
+  refute_output --partial 'fleet-bench-nightly'
 }
 
 # --- review: CI reds on merged PRs, and the reviewer sample ---
@@ -401,6 +375,26 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
   assert_output --partial WORKED
   [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
+}
+
+@test "asks --write writes asks.md and prints the line, with no page and no verdict of its own" {
+  stub_asks
+  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
+  { ask p a 1 go; ask old "" 72; } > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_success
+  assert_output --partial '2 asks pending: 1 block a live session, 1 have none (oldest 3d).'
+  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  [ ! -e "$SANDBOX/pages" ]
+  [ ! -e "$AGENTCTL_STATE_DIR/briefing/last-outcome" ]
+  run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
+  assert_output 1
+}
+
+@test "asks rejects an unknown flag instead of printing (negative control)" {
+  stub_asks
+  run "$SUBJECT" asks --pgae
+  assert_failure 2
 }
 
 @test "no pending ask is NOOP with no page; agent-ask failing is FAILED with exit 1" {

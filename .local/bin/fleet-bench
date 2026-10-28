@@ -6,11 +6,12 @@
 #                                any session whose phase moved, score any that finished
 #   fleet-bench eta [--json]     the latest ETA per live session
 #   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
-#   fleet-bench headline         the last 24h in one line (the popup and the nightly page)
+#   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
-#   fleet-bench nightly          scorecard, then one page with the headline
 #   fleet-bench review [--pick]  count CI reds on PRs merged in the window, review a sample
-#   fleet-bench asks [--page]    pending asks, the ones blocking a live session ranked first
+#   fleet-bench asks [--write|--page]
+#                                pending asks, the ones blocking a live session ranked first;
+#                                --write also writes asks.md and prints one line, --page pages it
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
@@ -217,7 +218,7 @@ cmd_report() {
   echo
   local r st
   proof_lib || return 0
-  for r in fleet-bench fleet-bench-nightly fleet-review ask-digest; do
+  for r in fleet-bench fleet-review briefing; do
     st="$(proof_state_dir)/$r/last-outcome"
     printf '%s last outcome: %s\n' "$r" "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
   done
@@ -326,18 +327,6 @@ ledger_section() {
   else
     echo "- baseline: ${over//$'\n'/; }"
   fi
-}
-
-cmd_nightly() {
-  local path line
-  if ! path=$(cmd_scorecard); then
-    report_outcome FAILED "scorecard not written"
-    return 1
-  fi
-  line=$(cmd_headline)
-  command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t bench "$line; $path"
-  say "$line"
-  report_outcome WORKED "$path"
 }
 
 # merged_new <now> -> repo, number and session_id (tab-separated) for every PR session-outcomes
@@ -541,25 +530,29 @@ asks_line() {
 }
 
 cmd_asks() {
-  local t rows out line
+  local mode="${1:-}" t rows out line
+  case "$mode" in ""|--write|--page) ;; *) say "usage: fleet-bench asks [--write|--page]"; return 2 ;; esac
   t=$(now)
   if ! rows=$(ask_rows "$t"); then
     say "agent-ask list failed"
-    [ "${1:-}" = --page ] && report_outcome FAILED "agent-ask list failed"
+    [ "$mode" = --page ] && report_outcome FAILED "agent-ask list failed"
     return 1
   fi
-  [ "${1:-}" = --page ] || { asks_md "$rows"; return 0; }
+  [ -n "$mode" ] || { asks_md "$rows"; return 0; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/asks.md"
   if ! { asks_md "$rows" > "$out.tmp" && mv "$out.tmp" "$out"; }; then
-    report_outcome FAILED "asks.md not written"
+    [ "$mode" = --page ] && report_outcome FAILED "asks.md not written"
     return 1
   fi
   if [ "$(jq length <<<"$rows")" = 0 ]; then
-    report_outcome NOOP "no pending asks"
+    [ "$mode" = --page ] && report_outcome NOOP "no pending asks"
     return 0
   fi
   line=$(asks_line "$rows" "$out")
+  # --write is the morning briefing's step: it puts the line in its own page, so the
+  # verdict and the page belong to the briefing run, not to this verb.
+  [ "$mode" = --write ] && { printf '%s\n' "$line"; return 0; }
   command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t asks "$line"
   say "$line"
   report_outcome WORKED "$out"
@@ -649,12 +642,11 @@ main() {
     report) cmd_report ;;
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
-    nightly) cmd_nightly ;;
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
-    -h | --help) sed -n '2,19p' "$0" ;;
-    *) sed -n '2,16p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,20p' "$0" ;;
+    *) sed -n '2,17p' "$0" >&2; return 2 ;;
   esac
 }
 
