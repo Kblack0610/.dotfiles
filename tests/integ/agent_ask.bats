@@ -79,10 +79,16 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 11 tab-separated fields per ask" {
+@test "list emits 13 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '11'
+  assert_output '13'
+}
+
+@test "the last two fields are created and session, for fleet-bench's ask digest" {
+  "$AGENT_ASK" post --project demo --session lab/game-agent-1 'ship it?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | cut -f12,13'
+  assert_output --regexp $'^20[0-9-]{8}T[0-9:]{8}[-+][0-9]{4}\tlab/game-agent-1$'
 }
 
 # The count is a contract, not trivia. `_factory_view` reads these with a positional

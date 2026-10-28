@@ -1,7 +1,7 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | nightly | sample | review. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a local non-Claude model only once its runner names a route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | nightly | sample | review | asks. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a local non-Claude model only once its runner names a route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
@@ -18,7 +18,8 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 - `~/.notes/lab/projects/current/agent-runtime/bench/latest.md`: the nightly scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, CI reds, reverts and cost), and under it the review sample. One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
 - The nightly page (`-t bench`, 06:30): the headline line and the scorecard path.
-- `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the last agentctl outcome of `fleet-bench`, `fleet-bench-nightly` and `fleet-review`.
+- `~/.notes/lab/projects/current/agent-runtime/bench/asks.md`: every pending ask, the ones blocking a live session first, rewritten at 08:00 and 18:00. The page that comes with it (`-t asks`) names the top three and what each session recommends.
+- `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the last agentctl outcome of `fleet-bench`, `fleet-bench-nightly`, `fleet-review` and `ask-digest`.
 - `fleet-bench eta`: one line per live session, or `--json` for scripts. The shepherd's "where are we" summary takes its ETAs from here.
 - Prefix + Ctrl-g (`fleet.sh`) has a `bench` section under the asks: the headline, then one ETA row per live session. Its runners section lists `fleet-bench` and `fleet-bench-nightly` with every other agentctl unit, red when the last outcome is STALLED or the run failed.
 - `agentctl status fleet-bench` and `agentctl logs fleet-bench -f` for one run's detail.
@@ -32,6 +33,8 @@ Every number here is counted from samples. None is a model's grade, because mode
 - `scorecard`: writes `<date>.md` and `latest.md` in `BENCH_SCORECARD_DIR` and prints the path.
 - `nightly`: `scorecard`, then one `agent-notify -p normal -t bench` page with the headline. The agentctl runner `fleet-bench-nightly` runs it at 06:30, after session-outcomes (02:30) has counted the night's PRs, so the page arrives as the morning summary. WORKED when the file was written, STALLED (exit 1) when it was not.
 - `review [--pick]`: for every PR that session-outcomes lists as merged in the window and `pr-ci.jsonl` has not counted, one `gh pr view` and one `gh run list --branch` give its size and its CI runs from its first commit to merge. Then, when the runner's conf names a `ROUTE`, the reviewer reads up to `BENCH_REVIEW_MAX` (5) of them: the largest per session at most `BENCH_REVIEW_MAX_LINES` (2000) diff lines, largest first. `--pick` prints that list and calls nothing. The agentctl runner `fleet-review` runs it at 02:45, after session-outcomes (02:30) and before the 06:30 scorecard.
+
+- `asks [--page]`: every pending ask from `agent-ask list --all --pending`, joined to the newest sample of the session its `session` field names (a session id or a tmux session name). It prints the digest; `--page` also writes `asks.md` in `BENCH_SCORECARD_DIR` and sends one `agent-notify -p normal -t asks` page with the counts and the top three. The agentctl runner `ask-digest` runs `--page` at 08:00 and 18:00.
 
 ## How the numbers are made
 
@@ -52,6 +55,7 @@ State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
 - **Scorecard hours.** Each sample owns the time until the next sample of that session, in that sample's bucket: WORKING is working, NEEDS is waiting on you, STALLED is stalled. A gap longer than `BENCH_GAP_CAP_MIN` (20, two cadences) counts as 20 minutes, because a longer gap means the sampler itself was down. Nudges count each time the shepherd's `nudged` flag turns on. PRs merged, reverts and cost are the newest session-outcomes line for that `session_id`, `-` when it has not been observed yet.
 - **CI reds.** Runs on the PR's branch from its first commit (or its opening, if earlier) to its merge. Red is `failure`, `timed_out` or `startup_failure`; `cancelled` is a superseded run and does not count. Earlier runs on the same branch name belong to an older PR and are left out. The scorecard sums them per session; the headline sums them over the window.
 - **Review.** `agentctl-run --role review` with `AGENT_AUTHOR_FAMILY=anthropic`: the role pins a local Qwen model and refuses to start on the author's family, and every fleet session is Claude, so a review can never be Claude marking Claude. The reviewer gets the kb-reviewer rubric and the diff, may read but not write, and must answer one `FINDING <BLOCK|FLAG|NIT> <file>:<line> <defect>` line per finding, then `REVIEW DONE`. Only those lines are counted. A run that exits non-zero or never says `REVIEW DONE` is `status: failed`, never a clean review. Each PR is reviewed once.
+- **Ask rank.** An ask whose session is live ranks by age in hours x (1 + phases left in that session's plan + 1 if the session has an open PR), highest first: an old ask holding a long plan comes before a new one holding nothing. The rest have no live session behind them (headless asks from the wave and delivery loops, and asks whose session has ended). They are listed oldest first and never paged one by one, because ranking them by age alone would put the same stale asks at the top of every page. On 2026-10-28, 11 of 16 pending asks were of that kind, 10 of them 35 to 61 days old.
 - `project` is the tmux target with the server, the window and any `-agent-N` removed, so every `unity-core-playground-agent-*` session shares one project median.
 
 A hand-made estimate can be added as a line in `estimates.jsonl` with `basis: "shepherd-guess"` and the same fields. It is scored like any other. The first five, from the 2026-10-27 evening summary, are there.
@@ -61,6 +65,7 @@ A hand-made estimate can be added as a line in `estimates.jsonl` with `basis: "s
 Each runner publishes under its own name (`$AGENTCTL_NAME`) through `agent-proof.sh`'s `proof_report`.
 
 - `sample`: WORKED when it wrote lines, NOOP when no session is live, STALLED with exit 1 when `fleet-sessions` failed. On STALLED nothing is written: the history gets a gap, and every number around it stays correct.
+- `asks --page`: WORKED when it paged, NOOP when nothing is pending (`asks.md` still rewritten, so it never shows a stale list), STALLED with exit 1 when `agent-ask list` failed or `asks.md` could not be written.
 - `review`: WORKED when it counted or reviewed something (the detail says `review off` while there is no route), NOOP when nothing new merged, STALLED with exit 1 when `gh` failed while counting or any review failed.
 
 ## Turning the review on
@@ -69,7 +74,7 @@ The runner ships with no `ROUTE`, so it only counts CI. The review needs a gatew
 
 ## Cost
 
-The sampler, the scorecard and the CI count call no model. They use no Claude subscription usage and no gateway allowance. The review runs on local hardware through the gateway, so it costs no allowance either; it is up to five local model runs a night, each capped at `BENCH_REVIEW_TIMEOUT_S` (900 s).
+The sampler, the scorecard, the CI count and the ask digest call no model. They use no Claude subscription usage and no gateway allowance. The review runs on local hardware through the gateway, so it costs no allowance either; it is up to five local model runs a night, each capped at `BENCH_REVIEW_TIMEOUT_S` (900 s).
 
 ## Do NOT
 

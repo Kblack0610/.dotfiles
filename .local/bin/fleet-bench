@@ -10,15 +10,16 @@
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench nightly          scorecard, then one page with the headline
 #   fleet-bench review [--pick]  count CI reds on PRs merged in the window, review a sample
-#
+#   fleet-bench asks [--page]    pending asks, the ones blocking a live session ranked first
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade; a review
 # only counts the findings it lists. Formulas, fields and outcomes: the fleet-bench skill.
-# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
+# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
 
 set -uo pipefail
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --json}"
+: "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
@@ -206,7 +207,7 @@ cmd_report() {
   echo
   local r st
   proof_lib || return 0
-  for r in fleet-bench fleet-bench-nightly fleet-review; do
+  for r in fleet-bench fleet-bench-nightly fleet-review ask-digest; do
     st="$(proof_state_dir)/$r/last-outcome"
     printf '%s last outcome: %s\n' "$r" "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
   done
@@ -447,6 +448,98 @@ review_section() {
       else "- \(.repo)#\(.number): review failed (exit \(.exit)): \(.tail // "")" end' <<<"$v"
 }
 
+# ask_rows <now> -> a JSON array of pending asks, each joined to the newest sample of the
+# session it names: those blocking a live session first, ranked by age h x (1 + phases left
+# + open PR), then the rest oldest first.
+ask_rows() {
+  local asks
+  asks=$($BENCH_ASKS_CMD) || return 1
+  jq -n --argjson t "$1" --rawfile a <(printf '%s' "$asks") --slurpfile live <(latest_live) '
+    # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
+    def epoch: (.[0:19] + "Z" | fromdateiso8601)
+      - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
+    def tsess: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "");
+    [$a | split("\n")[] | select(length > 0) | split("\t")
+     | {id: .[0], project: .[1], kind: .[4], question: .[5], recommend: (.[10] // ""),
+        session: (.[12] // ""), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | epoch)) / 3600 end)}
+     | .session as $s
+     | (if $s == "" then null
+        else [$live[] | select(.session_id == $s or (.target | tsess) == $s)] | sort_by(.target) | first end) as $l
+     | . + {live: ($l != null), target: ($l.target // null),
+            phases_left: (if $l.phases_total == null then 0 else $l.phases_total - $l.phases_done end),
+            pr: (($l.pr // "-") != "-")}
+     | . + {score: (if .live then .age_h * (1 + .phases_left + (if .pr then 1 else 0 end)) else 0 end)}]
+    | (map(select(.live)) | sort_by(-.score)) + (map(select(.live | not)) | sort_by(-.age_h))'
+}
+
+# asks_md <rows> -> the digest page, the same text in the terminal and in asks.md
+asks_md() {
+  local last="never"
+  [ -s "$PROGRESS" ] && last=$(jq -rs "$JQ_LIB"'max_by(.epoch) | .epoch | hm' "$PROGRESS")
+  jq -r --arg last "$last" '
+    def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
+    def cell: gsub("\\|"; "\\|") | if length > 140 then .[0:140] + "..." else . end;
+    def waits: [if .phases_left > 0 then "\(.phases_left) phase\(if .phases_left > 1 then "s" else "" end) left" else empty end,
+                if .pr then "open PR" else empty end] | if length == 0 then "-" else join(", ") end;
+    "# Pending asks",
+    "",
+    "\(length) pending. Sessions as sampled \($last). Ranked by age in hours x (1 + phases left + open PR); fields: the fleet-bench skill.",
+    "",
+    "## Blocking a live session",
+    "",
+    (map(select(.live)) | if length == 0 then "None." else
+      "| Ask | Session | Age | Waiting | Recommend | Question |", "|---|---|---|---|---|---|",
+      (.[] | "| \(.id) | \(.target) | \(.age_h | age) | \(waits) | \(.recommend | if . == "" then "-" else . end) | \(.question | cell) |")
+    end),
+    "",
+    "## No live session behind them",
+    "",
+    "Headless asks and asks whose session has ended, oldest first. Answer, or cancel with `agent-ask cancel <id>` when it no longer applies.",
+    "",
+    (map(select(.live | not)) | if length == 0 then "None." else
+      "| Ask | Project | Kind | Age | Recommend | Question |", "|---|---|---|---|---|---|",
+      (.[] | "| \(.id) | \(.project) | \(.kind) | \(.age_h | age) | \(.recommend | if . == "" then "-" else . end) | \(.question | cell) |")
+    end)' <<<"$1"
+}
+
+# asks_line <rows> <path> -> the page: counts, then the top 3 blocking a live session
+asks_line() {
+  jq -r --arg path "$2" '
+    def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
+    map(select(.live)) as $l | map(select(.live | not)) as $n
+    | "\(length) asks pending: \($l | length) block a live session, \($n | length) have none"
+      + (if ($n | length) > 0 then " (oldest \($n[0].age_h | age))" else "" end) + "."
+      + ([$l[:3] | to_entries[] | .key as $k | .value
+          | " \($k + 1)) \(.id) \(.target | sub(":[0-9]+$"; "")), \(.age_h | age): \(.question[0:60])"
+            + (if .recommend != "" then " -> \(.recommend)." else "." end)] | join(""))
+      + " Full list: \($path)"' <<<"$1"
+}
+
+cmd_asks() {
+  local t rows out line
+  t=$(now)
+  if ! rows=$(ask_rows "$t"); then
+    say "agent-ask list failed"
+    [ "${1:-}" = --page ] && report_outcome STALLED "agent-ask list failed"
+    return 1
+  fi
+  [ "${1:-}" = --page ] || { asks_md "$rows"; return 0; }
+  mkdir -p "$BENCH_SCORECARD_DIR" || return 1
+  out="$BENCH_SCORECARD_DIR/asks.md"
+  if ! { asks_md "$rows" > "$out.tmp" && mv "$out.tmp" "$out"; }; then
+    report_outcome STALLED "asks.md not written"
+    return 1
+  fi
+  if [ "$(jq length <<<"$rows")" = 0 ]; then
+    report_outcome NOOP "no pending asks"
+    return 0
+  fi
+  line=$(asks_line "$rows" "$out")
+  command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t asks "$line"
+  say "$line"
+  report_outcome WORKED "$out"
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -456,8 +549,9 @@ main() {
     scorecard) cmd_scorecard ;;
     nightly) cmd_nightly ;;
     review) shift; cmd_review "$@" ;;
+    asks) shift; cmd_asks "$@" ;;
     -h | --help) sed -n '2,16p' "$0" ;;
-    *) sed -n '2,12p' "$0" >&2; return 2 ;;
+    *) sed -n '2,13p' "$0" >&2; return 2 ;;
   esac
 }
 
