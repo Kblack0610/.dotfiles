@@ -8,7 +8,9 @@
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
 # WORKED = lines written, NOOP = nothing due, STALLED (exit 1) = gh or a write failed,
 # in which case NOTHING is written and the next run catches up. Lib + field meanings:
-# ~/.local/lib/session-outcomes.sh. Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR.
+# ~/.local/lib/session-outcomes.sh. A headless session (`claude -p`, a runner) files under
+# project `_runner` with no corrections: nobody is there to correct it, so a lesson it
+# writes is its job, not a redirect. Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR.
 
 set -uo pipefail
 
@@ -85,7 +87,7 @@ cmd_run() {
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
-      --json number,state,title,mergedAt > "$work/prs.json" 2>"$work/gh.err" \
+      --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
       || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
     so_pr_index "$FINAL_DAYS" < "$work/prs.json" > "$work/idx.json" \
       || die_stalled "could not index PRs for $repo"
@@ -101,11 +103,13 @@ cmd_run() {
     jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --arg observed "$observed" '
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
+      | ($mm.entrypoint == "sdk-cli") as $runner
       | [ ($mm.prs // [])[] | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
           | {repo: $p.repo, number: $p.number, state, merged_at, reverted} ] as $prs
       | { session_id: $row.session_id,
-          project: $row.project,
+          project: (if $runner then "_runner" else $row.project end),
+          runner: $runner,
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),
           updated_epoch: $row.updated,
@@ -122,7 +126,7 @@ cmd_run() {
           prs_closed_unmerged: ([$prs[] | select(.state == "CLOSED")] | length),
           reverted_7d: ([$prs[] | select(.reverted)] | length),
           board_done: ($mm.board_done // null),
-          corrections: ($mm.corrections // null),
+          corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
@@ -180,6 +184,6 @@ cmd_worst() {
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
-  -h|--help) sed -n '2,11p' "$0" ;;
+  -h|--help) sed -n '2,13p' "$0" ;;
   *) echo "usage: $NAME [run] | worst [--project P] [--days N] [-n N]" >&2; exit 2 ;;
 esac
