@@ -131,14 +131,8 @@ EOF
 # the transport scrub. A `claude -p` anywhere else skips all three, which is how
 # ask-resume and `sessions compact` ran for months on no role at all.
 #
-# headless_launches <dir> - print file:line for every executable line that starts a
-# headless claude. Comments, docs and tests are not call sites.
-headless_launches() {
-  grep -rniE '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")' "$1" \
-    --include='*' --exclude='*.md' --exclude-dir=tests --exclude-dir=.git 2>/dev/null \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*echo '
-}
+# The scan is fleet-bench's, so the ledger and this test cannot disagree.
+headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
   run headless_launches "$REPO_ROOT/.local"

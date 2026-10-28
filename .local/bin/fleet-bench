@@ -11,6 +11,9 @@
 #   fleet-bench nightly          scorecard, then one page with the headline
 #   fleet-bench review [--pick]  count CI reds on PRs merged in the window, review a sample
 #   fleet-bench asks [--page]    pending asks, the ones blocking a live session ranked first
+#   fleet-bench ledger [--json|--check|--launches DIR...]
+#                                runners, timers, direct headless launches, verdict words,
+#                                asks, open board rows; --check fails when one may only shrink grew
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade; a review
 # only counts the findings it lists. Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR.
@@ -27,6 +30,12 @@ set -uo pipefail
 : "${BENCH_REVIEW_MAX:=5}"           # PRs one review pass reads, at most one per session
 : "${BENCH_REVIEW_MAX_LINES:=2000}"  # diff lines the local reviewer model holds with room to reason
 : "${BENCH_REVIEW_TIMEOUT_S:=900}"   # guard on each reviewer call
+: "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
+: "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
+: "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
+: "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
+: "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
+: "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -298,8 +307,25 @@ cmd_scorecard() {
     echo "## Review sample"
     echo
     review_section "$t"
+    echo
+    echo "## Consolidation ledger"
+    echo
+    echo "Runners, timers and direct headless launches may only shrink; the baseline is ~/.config/agentctl/ledger-baseline."
+    echo
+    ledger_section
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
+}
+
+ledger_section() {
+  local counts over
+  counts=$(ledger_counts)
+  sed 's/^\(.*\)=\(.*\)$/- \1: \2/' <<<"$counts"
+  if over=$(ledger_check "$counts" 2>&1); then
+    echo "- baseline: held"
+  else
+    echo "- baseline: ${over//$'\n'/; }"
+  fi
 }
 
 cmd_nightly() {
@@ -539,6 +565,83 @@ cmd_asks() {
   report_outcome WORKED "$out"
 }
 
+# ---------------------------------------------------------------- ledger
+#
+# The consolidation ledger. Every new need used to become a new runner, timer or launch
+# path, so the fleet grew while it was being consolidated. These are counts, never a
+# grade. --check holds the three that may only shrink to the committed baseline: to add
+# one, retire one or raise the baseline in the same PR with a why.
+
+LEDGER_GATED="runners timers launches_direct"
+
+# headless_launches DIR... -> file:line of every executable line that starts a headless
+# claude outside agentctl-run. Comments, echo lines, docs and tests are not call sites.
+# git grep honours .gitignore, so 1.8G of build output under .local/src is never read;
+# it works on a plain directory too. runner_contract.bats calls this through
+# `ledger --launches`, so there is one scan.
+headless_launches() {
+  local d
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    (cd "$d" && git grep --no-index --exclude-standard -nIiE \
+      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")' -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
+      | sed "s|^|${d%/}/|"
+  done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )'
+}
+
+# ledger_counts -> key=value lines
+ledger_counts() {
+  local c n_conf=0 n_on=0 t rows src
+  for c in "$LEDGER_CONF_DIR"/*.conf; do
+    [ -e "$c" ] || continue
+    n_conf=$((n_conf + 1))
+    grep -qE '^ENABLED=["'"'"']?no' "$c" || n_on=$((n_on + 1))
+  done
+  echo "runners=$n_conf"
+  echo "runners_on=$n_on"
+  echo "timers=$(find "$LEDGER_TIMER_DIR" -maxdepth 1 -name 'agentctl-*.timer' 2>/dev/null | wc -l)"
+  IFS=: read -ra src <<<"$LEDGER_SRC"
+  echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
+  echo "verdict_words=$(proof_lib && cat "$(proof_state_dir)"/*/last-outcome 2>/dev/null | awk '{print $1}' | sort -u | grep -c .)"
+  t=$(now)
+  if rows=$(ask_rows "$t" 2>/dev/null); then
+    jq -r --argjson d "$ASK_STALE_DAYS" '"asks_pending=\(length)", "asks_stale=\(map(select(.age_h > $d * 24)) | length)"' <<<"$rows"
+  else
+    echo "asks_pending=?"; echo "asks_stale=?"
+  fi
+  echo "board_open=$(compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] ')"
+}
+
+# ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
+ledger_check() {
+  local k cur base bad=0
+  [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
+  for k in $LEDGER_GATED; do
+    cur=$(sed -n "s/^$k=//p" <<<"$1")
+    base=$(sed -n "s/^$k=//p" "$LEDGER_BASELINE" | tail -1)
+    [ -n "$base" ] || { say "baseline has no $k"; bad=1; continue; }
+    if [ "$cur" -gt "$base" ]; then
+      echo "$k grew: $cur > baseline $base"
+      bad=1
+    fi
+  done
+  return "$bad"
+}
+
+cmd_ledger() {
+  local counts
+  case "${1:-}" in
+    --launches) shift; headless_launches "$@"; return 0 ;;
+  esac
+  counts=$(ledger_counts)
+  case "${1:-}" in
+    --json) jq -Rn '[inputs | split("=") | {key: .[0], value: (.[1] | tonumber? // .)}] | from_entries' <<<"$counts" ;;
+    --check) ledger_check "$counts" ;;
+    "") echo "$counts" ;;
+    *) say "ledger: unknown option $1"; return 2 ;;
+  esac
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -549,8 +652,9 @@ main() {
     nightly) cmd_nightly ;;
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
-    -h | --help) sed -n '2,16p' "$0" ;;
-    *) sed -n '2,13p' "$0" >&2; return 2 ;;
+    ledger) shift; cmd_ledger "$@" ;;
+    -h | --help) sed -n '2,19p' "$0" ;;
+    *) sed -n '2,16p' "$0" >&2; return 2 ;;
   esac
 }
 
