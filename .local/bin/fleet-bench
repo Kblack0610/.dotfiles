@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# fleet-bench - record where every live session is, predict when it finishes, and score
+# the prediction once it does. Model-free; the shepherd reads it and gains no duties.
+#
+#   fleet-bench sample           one sample: progress line per live session, a new ETA for
+#                                any session whose phase moved, score any that finished
+#   fleet-bench eta [--json]     the latest ETA per live session
+#   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
+#
+# State is ~/.agent/bench/{progress,estimates,scores}.jsonl. Every number is counted from
+# samples, never a model's judgment. Formulas, fields and outcomes: the fleet-bench skill.
+# Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_LIB_DIR.
+
+set -uo pipefail
+
+: "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
+: "${BENCH_SESSIONS_CMD:=fleet-sessions --json}"
+DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
+PROGRESS="$DIR/progress.jsonl"
+ESTIMATES="$DIR/estimates.jsonl"
+SCORES="$DIR/scores.jsonl"
+NAME=fleet-bench
+
+say() { printf 'fleet-bench: %s\n' "$*" >&2; }
+
+report_outcome() {
+  local lib="${BENCH_LIB_DIR:-$HOME/.local/lib}/agent-proof.sh"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=/dev/null
+  . "$lib" && proof_report "$NAME" "$@"
+}
+
+now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
+
+# jq helpers shared by every verb.
+JQ_LIB='
+def project: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "") | sub("-agent-[0-9]+$"; "");
+def median: sort | length as $n | if $n == 0 then null
+  elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
+def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
+def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
+# per-phase minutes for each phase whose start and end were both sampled
+def phase_minutes:
+  sort_by(.epoch)
+  | reduce .[] as $r ({prev: null, starts: []};
+      if .prev != null and $r.phases_done != null and .prev.phases_done != null
+         and $r.phases_done > .prev.phases_done
+      then .starts += [{epoch: $r.epoch, from: .prev.phases_done, to: $r.phases_done}]
+      else . end
+      | .prev = $r)
+  | .starts as $s
+  | [range(1; $s | length) | ($s[.].epoch - $s[. - 1].epoch) / 60 / ($s[.].to - $s[.].from)];
+'
+
+# sample_rows -> the live fleet-sessions rows as progress lines (MAIN rows have no session)
+sample_rows() {
+  local t="$1"
+  $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
+    select(type == "object" and (.session_id // "") != "" and .bucket != "MAIN")
+    | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
+       phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
+       context_tokens, nudged, escalated, pr, plan_file}'
+}
+
+# new_estimates <now> -> an estimate for every live, unfinished session with a phase count
+# that has no estimate yet. Reads the whole progress history for the medians.
+new_estimates() {
+  local t="$1" est="$ESTIMATES"
+  [ -s "$est" ] || est=/dev/null
+  jq -cn --argjson t "$t" --argjson def "$BENCH_DEFAULT_PHASE_MIN" \
+     --slurpfile p "$PROGRESS" --slurpfile e "$est" "$JQ_LIB"'
+    ($p | group_by(.session_id) | map({key: .[0].session_id, value: (phase_minutes)}) | from_entries) as $bys
+    | ($p | group_by(.project) | map({key: .[0].project,
+          value: (group_by(.session_id) | map(phase_minutes) | add // [])}) | from_entries) as $byp
+    | ($e | map("\(.session_id)/\(.phases_done)/\(.phases_total)") | INDEX(.)) as $have
+    | $p | map(select(.epoch == $t)) | .[]
+    | select(.finished | not) | select(.phases_total != null and .phases_done != null)
+    | select($have["\(.session_id)/\(.phases_done)/\(.phases_total)"] | not)
+    | ($bys[.session_id] // []) as $s | ($byp[.project] // []) as $j
+    | (if ($s | length) > 0 then {m: ($s | median), basis: "session-median(\($s | length))"}
+       elif ($j | length) > 0 then {m: ($j | median), basis: "project-median(\($j | length))"}
+       else {m: $def, basis: "default"} end) as $pp
+    | ($t + (((.phases_total - .phases_done) * $pp.m * 60) | floor)) as $eta
+    | {made_epoch: $t, made_at: ($t | iso), session_id, target, project, phases_done,
+       phases_total, per_phase_min: ($pp.m | floor), eta_epoch: $eta, eta: ($eta | iso),
+       basis: $pp.basis}'
+}
+
+# new_scores -> a score for every estimate whose session has since finished. The finish is
+# the first sample that read finished; when that was the session's first sample at all, the
+# real finish was earlier and done_bound says "upper".
+new_scores() {
+  local sc="$SCORES"
+  [ -s "$sc" ] || sc=/dev/null
+  [ -s "$ESTIMATES" ] || return 0
+  jq -cn --slurpfile p "$PROGRESS" --slurpfile e "$ESTIMATES" --slurpfile s "$sc" '
+    ($p | group_by(.session_id) | map(sort_by(.epoch)
+          | {key: .[0].session_id,
+             value: {first: .[0].epoch,
+                     done: (map(select(.finished)) | .[0].epoch // null)}})
+        | from_entries) as $f
+    | ($s | map("\(.session_id)/\(.made_epoch)") | INDEX(.)) as $have
+    | $e[] | . as $x | ($f[.session_id] // null) as $d
+    | select($d != null and $d.done != null and $d.done > .made_epoch)
+    | select($have["\(.session_id)/\(.made_epoch)"] | not)
+    | {session_id, target, project, basis, made_epoch, eta_epoch, done_epoch: $d.done,
+       done_bound: (if $d.done == $d.first then "upper" else "sampled" end),
+       horizon_min: ((.eta_epoch - .made_epoch) / 60 | floor),
+       error_min: (($d.done - .eta_epoch) / 60 | floor),
+       ratio: (if .eta_epoch > .made_epoch
+               then (($d.done - .made_epoch) / (.eta_epoch - .made_epoch) * 100 | floor) / 100
+               else null end)}'
+}
+
+cmd_sample() {
+  local t rows est sc
+  mkdir -p "$DIR"
+  exec 9>"$DIR/.lock"
+  flock -n 9 || { say "another sample is running"; return 0; }
+  t=$(now)
+  if ! rows=$(sample_rows "$t"); then
+    say "fleet-sessions failed; nothing written"
+    report_outcome STALLED "fleet-sessions failed"
+    return 1
+  fi
+  if [ -z "$rows" ]; then
+    say "no live session"
+    report_outcome NOOP "no live session"
+    return 0
+  fi
+  printf '%s\n' "$rows" >> "$PROGRESS"
+  est=$(new_estimates "$t") || { report_outcome STALLED "estimate step failed"; return 1; }
+  [ -n "$est" ] && printf '%s\n' "$est" >> "$ESTIMATES"
+  sc=$(new_scores) || { report_outcome STALLED "score step failed"; return 1; }
+  [ -n "$sc" ] && printf '%s\n' "$sc" >> "$SCORES"
+  local n e s
+  n=$(grep -c . <<<"$rows"); e=$(grep -c . <<<"$est"); s=$(grep -c . <<<"$sc")
+  say "$n sessions, $e new estimates, $s new scores"
+  report_outcome WORKED "$n sessions, $e estimates, $s scores"
+}
+
+# latest_live -> the newest sample's rows joined with each session's newest estimate
+latest_live() {
+  [ -s "$PROGRESS" ] || return 0
+  local est="$ESTIMATES"
+  [ -s "$est" ] || est=/dev/null
+  jq -cn --slurpfile p "$PROGRESS" --slurpfile e "$est" '
+    ($p | max_by(.epoch) | .epoch) as $last
+    | ($e | group_by(.session_id) | map(max_by(.made_epoch) | {key: .session_id, value: .})
+        | from_entries) as $eta
+    | $p[] | select(.epoch == $last)
+    | . + {eta: (if .finished then null else $eta[.session_id] end)}'
+}
+
+cmd_eta() {
+  if [ "${1:-}" = --json ]; then
+    latest_live | jq -c '{target, session_id, phases_done, phases_total, finished,
+      eta: (.eta.eta // null), eta_epoch: (.eta.eta_epoch // null), basis: (.eta.basis // null)}'
+    return
+  fi
+  latest_live | jq -r "$JQ_LIB"'[.target, "\(.phases_done // "-")/\(.phases_total // "-")",
+      (if .finished then "finished" else (.eta.eta_epoch | hm) end), (.eta.basis // "-")] | @tsv' |
+    awk -F'\t' '{ printf "%-42s %-6s %-10s %s\n", $1, $2, $3, $4 }'
+}
+
+cmd_report() {
+  local last
+  if [ ! -s "$PROGRESS" ]; then echo "no samples yet: run fleet-bench sample"; return 0; fi
+  last=$(jq -rs "$JQ_LIB"'max_by(.epoch) | .epoch | hm' "$PROGRESS")
+  echo "Live sessions (sampled $last; ETA from measured phase times)"
+  printf '%-42s %-6s %-8s %-10s %s\n' SESSION PHASE BUCKET ETA BASIS
+  latest_live | jq -r "$JQ_LIB"'[.target, "\(.phases_done // "-")/\(.phases_total // "-")", .bucket,
+      (if .finished then "finished" else (.eta.eta_epoch | hm) end), (.eta.basis // "-")] | @tsv' |
+    awk -F'\t' '{ printf "%-42s %-6s %-8s %-10s %s\n", $1, $2, $3, $4, $5 }'
+  echo
+  echo "ETA accuracy (error = actual finish - predicted; ratio = actual/predicted duration)"
+  if [ ! -s "$SCORES" ]; then
+    echo "  nothing scored yet: an ETA is scored when its session finishes"
+  else
+    jq -rs "$JQ_LIB"'
+      def line($label): if length == 0 then empty else
+        "  \($label): \(length) scored, median error \(map(.error_min) | median) min, median |error| \(map(.error_min | fabs) | median) min, median ratio \(map(.ratio // empty) | median // "-")" end;
+      (group_by(.basis | sub("\\(.*"; "")) | .[] | line(.[0].basis | sub("\\(.*"; ""))),
+      (map(select(.horizon_min < 120)) | line("horizon under 2h")),
+      (map(select(.horizon_min >= 120 and .horizon_min < 480)) | line("horizon 2-8h")),
+      (map(select(.horizon_min >= 480)) | line("horizon over 8h")),
+      (map(select(.done_bound == "upper")) | if length > 0 then "  \(length) finished before their first sample, so their real error is smaller than shown" else empty end)
+    ' "$SCORES"
+  fi
+  echo
+  local st="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/$NAME/last-outcome"
+  printf 'Sampler last outcome: %s\n' "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
+}
+
+main() {
+  case "${1:-}" in
+    sample) cmd_sample ;;
+    eta) shift; cmd_eta "$@" ;;
+    report) cmd_report ;;
+    -h | --help) sed -n '2,12p' "$0" ;;
+    *) sed -n '2,9p' "$0" >&2; return 2 ;;
+  esac
+}
+
+# Sourceable for tests; runs main only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
