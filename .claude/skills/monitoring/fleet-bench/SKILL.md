@@ -1,11 +1,11 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | nightly | sample. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free: it spends no Claude or gateway credits. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | nightly | sample | review. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a local non-Claude model only once its runner names a route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
-  reviewed: "2026-10-27"
+  reviewed: "2026-10-28"
 ---
 
 # fleet-bench
@@ -16,9 +16,9 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 ## Where to look
 
-- `~/.notes/lab/projects/current/agent-runtime/bench/latest.md`: the nightly scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, reverts and cost from session-outcomes). One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
+- `~/.notes/lab/projects/current/agent-runtime/bench/latest.md`: the nightly scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, CI reds, reverts and cost), and under it the review sample. One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
 - The nightly page (`-t bench`, 06:30): the headline line and the scorecard path.
-- `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the sampler's last agentctl outcome.
+- `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the last agentctl outcome of `fleet-bench`, `fleet-bench-nightly` and `fleet-review`.
 - `fleet-bench eta`: one line per live session, or `--json` for scripts. The shepherd's "where are we" summary takes its ETAs from here.
 - Prefix + Ctrl-g (`fleet.sh`) has a `bench` section under the asks: the headline, then one ETA row per live session. Its runners section lists `fleet-bench` and `fleet-bench-nightly` with every other agentctl unit, red when the last outcome is STALLED or the run failed.
 - `agentctl status fleet-bench` and `agentctl logs fleet-bench -f` for one run's detail.
@@ -31,6 +31,7 @@ Every number here is counted from samples. None is a model's grade, because mode
 - `headline`: the last `BENCH_WINDOW_H` (24) hours in one line: sessions, phases ticked, hours waiting on you, hours stalled, ETAs scored and their median ratio.
 - `scorecard`: writes `<date>.md` and `latest.md` in `BENCH_SCORECARD_DIR` and prints the path.
 - `nightly`: `scorecard`, then one `agent-notify -p normal -t bench` page with the headline. The agentctl runner `fleet-bench-nightly` runs it at 06:30, after session-outcomes (02:30) has counted the night's PRs, so the page arrives as the morning summary. WORKED when the file was written, STALLED (exit 1) when it was not.
+- `review [--pick]`: for every PR that session-outcomes lists as merged in the window and `pr-ci.jsonl` has not counted, one `gh pr view` and one `gh run list --branch` give its size and its CI runs from its first commit to merge. Then, when the runner's conf names a `ROUTE`, the reviewer reads up to `BENCH_REVIEW_MAX` (5) of them: the largest per session at most `BENCH_REVIEW_MAX_LINES` (2000) diff lines, largest first. `--pick` prints that list and calls nothing. The agentctl runner `fleet-review` runs it at 02:45, after session-outcomes (02:30) and before the 06:30 scorecard.
 
 ## How the numbers are made
 
@@ -41,29 +42,41 @@ State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
 | `progress.jsonl` | session per sample | `epoch`, `session_id`, `target`, `project`, `bucket`, `phases_done`, `phases_total`, `finished`, `idle_min`, `context_tokens`, `nudged` |
 | `estimates.jsonl` | session per phase count | `made_epoch`, `eta_epoch`, `per_phase_min`, `basis` |
 | `scores.jsonl` | estimate whose session finished | `error_min`, `ratio`, `horizon_min`, `done_bound` |
+| `pr-ci.jsonl` | merged PR | `repo`, `number`, `session_id`, `merged_epoch`, `additions`, `deletions`, `ci_runs`, `ci_red` |
+| `reviews.jsonl` | reviewed PR | `status` (ok or failed), `block`, `flag`, `nit`, `findings[]` (`severity`, `where`, `summary`), `route`, `exit` |
 
 - **Phase time.** Each plan file is its own timeline, so a session that starts a new plan does not count the switch as a phase. A phase is measured only when the samples saw both its start and its end, so a session's first phase on the record is never measured (it may have started hours earlier). When one sample sees two phases tick at once, the gap is split evenly between them. The time includes waiting on the human.
 - **ETA** = now + phases left x per-phase minutes. Per-phase is the median measured phase time of that session (`basis: session-median(n)`), else of every session in its project (`project-median(n)`), else `BENCH_DEFAULT_PHASE_MIN`, 60 (`default`). A new estimate is written only when the phase count changes, so one estimate stands for each step of a plan and is scored as it was made.
 - **Finish** is the first sample that reads `finished` (fleet-sessions' DONE work conditions). If that was the session's first sample at all, the real finish was earlier, and the score says `done_bound: upper`.
 - **Score.** `error_min` = finish - ETA (positive means it ran long). `ratio` = actual duration / predicted duration (2 means it took twice as long). `horizon_min` = how far ahead the ETA looked. The report gives medians by basis and by horizon (under 2h, 2-8h, over 8h).
 - **Scorecard hours.** Each sample owns the time until the next sample of that session, in that sample's bucket: WORKING is working, NEEDS is waiting on you, STALLED is stalled. A gap longer than `BENCH_GAP_CAP_MIN` (20, two cadences) counts as 20 minutes, because a longer gap means the sampler itself was down. Nudges count each time the shepherd's `nudged` flag turns on. PRs merged, reverts and cost are the newest session-outcomes line for that `session_id`, `-` when it has not been observed yet.
+- **CI reds.** Runs on the PR's branch from its first commit (or its opening, if earlier) to its merge. Red is `failure`, `timed_out` or `startup_failure`; `cancelled` is a superseded run and does not count. Earlier runs on the same branch name belong to an older PR and are left out. The scorecard sums them per session; the headline sums them over the window.
+- **Review.** `agentctl-run --role review` with `AGENT_AUTHOR_FAMILY=anthropic`: the role pins a local Qwen model and refuses to start on the author's family, and every fleet session is Claude, so a review can never be Claude marking Claude. The reviewer gets the kb-reviewer rubric and the diff, may read but not write, and must answer one `FINDING <BLOCK|FLAG|NIT> <file>:<line> <defect>` line per finding, then `REVIEW DONE`. Only those lines are counted. A run that exits non-zero or never says `REVIEW DONE` is `status: failed`, never a clean review. Each PR is reviewed once.
 - `project` is the tmux target with the server, the window and any `-agent-N` removed, so every `unity-core-playground-agent-*` session shares one project median.
 
 A hand-made estimate can be added as a line in `estimates.jsonl` with `basis: "shepherd-guess"` and the same fields. It is scored like any other. The first five, from the 2026-10-27 evening summary, are there.
 
 ## Outcomes
 
-`sample` publishes through `agent-proof.sh`'s `proof_report`: WORKED when it wrote lines, NOOP when no session is live, STALLED with exit 1 when `fleet-sessions` failed. On STALLED nothing is written: the history gets a gap, and every number around it stays correct.
+Each runner publishes under its own name (`$AGENTCTL_NAME`) through `agent-proof.sh`'s `proof_report`.
+
+- `sample`: WORKED when it wrote lines, NOOP when no session is live, STALLED with exit 1 when `fleet-sessions` failed. On STALLED nothing is written: the history gets a gap, and every number around it stays correct.
+- `review`: WORKED when it counted or reviewed something (the detail says `review off` while there is no route), NOOP when nothing new merged, STALLED with exit 1 when `gh` failed while counting or any review failed.
+
+## Turning the review on
+
+The runner ships with no `ROUTE`, so it only counts CI. The review needs a gateway route that serves the `review` role's pinned model, `reasoning (Qwen3.6-35B-A3B-4bit)` on the Mac Studio, with a key scoped to that model alone. The existing `gateway-personal` key is scoped to Claude models, and the gateway refuses it with a 403 (checked 2026-10-28). Mint a key per home-config `apps/litellm/README.md` "Create a key" with `models: ["reasoning (Qwen3.6-35B-A3B-4bit)"]`, write it to `~/.local/state/agentctl/fleet-review/key`, add a route file whose `ROUTE_KEY_SOURCE` points there, set `ROUTE=` to it in `fleet-review.conf`, then check with `AGENT_AUTHOR_FAMILY=anthropic ROUTE=<route> agentctl-run --explain review`.
 
 ## Cost
 
-None. The sampler calls no model. It uses no Claude subscription usage and no gateway allowance.
+The sampler, the scorecard and the CI count call no model. They use no Claude subscription usage and no gateway allowance. The review runs on local hardware through the gateway, so it costs no allowance either; it is up to five local model runs a night, each capped at `BENCH_REVIEW_TIMEOUT_S` (900 s).
 
 ## Do NOT
 
 - Read a score as a grade of the session. A long ratio usually means the plan's phases were uneven or the session waited on the human, which the samples' `bucket` field shows.
 - Edit `progress.jsonl` to fix a number. Fix the sampler. The history is the source every number is rebuilt from.
 - Add a model call to `sample`. Judgment belongs in a separate runner that reads these files.
+- Point the review at a Claude model to get it running. A same-family review is recorded as independent while it is not; the `review` role refuses it on purpose.
 
 ## Related
 
