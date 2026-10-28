@@ -40,7 +40,7 @@
 #     CALLER's top-level scope; wrapped in a function, `return` only exits the function.
 #     It stays copy-pasted. See CONVENTIONS.md.
 #   - popup geometry. That is a .tmux.conf concern (%hidden constants), not a script one.
-#   - the claude-pane -> session-id resolver. Triplicated today (favourites.sh, sessions,
+#   - the claude-pane -> session-id resolver. Duplicated today (sessions,
 #     agent-panel/src/procmap.rs) but one copy is Rust; the fix is to shell out to
 #     `agent-panel list`, not to add a fourth implementation here.
 #   - config loading. That is a RULE, not a function: every tunable is ${VAR:-default} at the
@@ -109,7 +109,7 @@ G_IDLE='·'
 
 # ── Diagnostics ──────────────────────────────────────────────────────────────
 # stderr ALWAYS, plus a best-effort tmux flash. tags.sh:59's idiom, and strictly better than
-# favourites.sh:34's, which REPLACES stderr with the flash -- scripts and agents call these
+# REPLACING stderr with the flash -- scripts and agents call these
 # as CLIs and need the reason, not just an exit code. The flash is additive, for keybindings.
 panel_warn() {
   printf '%s: %s\n' "$PANEL_NAME" "$*" >&2
@@ -189,7 +189,7 @@ panel_fzf_table() {
 # panel_fzf_preview <side> <percent> -- emit --preview-window in the MODERN COMMA form.
 #
 # fzf accepts both `left:24%:wrap:border-right` and `left,24%,border-right,wrap`; the colon
-# form is legacy and is what favourites.sh and agent-panel each spell
+# form is legacy, and agent-panel and the retired favourites.sh each spelled it
 # differently. One function, one dialect.
 panel_fzf_preview() {
   local side="$1" pct="$2" border
@@ -230,7 +230,7 @@ panel_session_name() {
 }
 
 # panel_focus_session <name> / panel_focus_window <target>
-# switch-client inside tmux, attach outside. Correct copies also live in favourites.sh and
+# switch-client inside tmux, attach outside. A correct copy also lives in
 # agent-panel/src/tmux.rs; this is the shell one.
 panel_focus_session() {
   if panel_in_tmux; then

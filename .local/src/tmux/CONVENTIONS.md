@@ -42,7 +42,6 @@ before you know where the library is. One honest line beats a probe loop.
 
 **Why absolute at all:** fzf `--bind` re-invokes the script from *inside* the picker, where
 `$0` may be relative and `PATH` is whatever the tmux server had - not an interactive shell's.
-`favourites.sh:26` is the live counter-example (`SELF="$0"`, re-invoked from five actions).
 
 ## `set -uo pipefail`, and deliberately no `-e`
 
@@ -107,7 +106,6 @@ The `$'..'` form matters too. `pr-viewer.sh` used to define its own palette with
 Both route through `panel_warn`, which writes to **stderr always** plus a best-effort
 `tmux display-message`. Not either/or: these scripts are CLIs that other scripts and agents
 call, and they need the reason, not just an exit code. The flash is additive, for keybindings.
-`favourites.sh:34` gets this backwards - it *replaces* stderr with the flash.
 
 ## Dependencies: die or degrade, never assume
 
@@ -116,8 +114,7 @@ call, and they need the reason, not just an exit code. The flash is additive, fo
   model and is better behaviour than dying; prefer it when the panel still has something to
   show.
 
-What is not acceptable is neither: `favourites.sh:241` uses `jq` unchecked two lines after
-checking `sqlite3`. `pr-viewer.sh` used to check `gh auth status` while never checking `gh`,
+What is not acceptable is neither: `pr-viewer.sh` used to check `gh auth status` while never checking `gh`,
 so a machine without `gh` at all reported an authentication problem; it now does
 `panel_need gh` first, then the credential.
 
