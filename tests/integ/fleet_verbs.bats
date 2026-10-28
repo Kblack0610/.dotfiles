@@ -401,3 +401,13 @@ EOF
   run cat "$NOTES_FIXTURE/calls.log"
   assert_output --partial 'start sentinel'
 }
+
+@test "--agents shows each session's bucket from the fleet state document, and - when it has none" {
+  printf 'hub/a:1\t~\tproj\tworking\nhub/b:2\t✓\tproj\tidle\n' > "$NOTES_FIXTURE/agent-panel.list"
+  export FLEET_STATE_FILE="$HOME/state.json"
+  printf '{"schema":1,"sessions":[{"target":"hub/a:1","bucket":"STALLED"}]}' > "$FLEET_STATE_FILE"
+  run bash -c '"$FLEET" --agents | awk -F"\t" "\$1==\"agent\" { print \$5 }" | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line --regexp '^  ~ hub/a:1 +STALLED +proj +working$'
+  assert_line --regexp '^  . hub/b:2 +- +proj +idle$'
+}
