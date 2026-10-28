@@ -25,11 +25,23 @@
 #   source "$HOME/.local/lib/agent-proof.sh"
 #   proof_watch "$dreams_md" "$staging_json"      # BEFORE the run
 #   ... run the agent, tee its output to $LOG ...
-#   proof_verdict "$LOG"                          # -> WORKED | NOOP | STALLED
+#   proof_verdict "$LOG" "$rc"                    # -> one of AGENT_VERDICTS
 #   proof_report nightly-sync "$verdict"          # -> last-outcome file
 #
-# proof_verdict exits non-zero on STALLED so a wrapper can `|| exit 1` and let
-# systemd record the failure, which is what turns the fleet row red.
+# proof_verdict exits non-zero on FAILED and STALLED so a wrapper can `|| exit 1`
+# and let systemd record the failure, which is what turns the fleet row red.
+
+# The one verdict vocabulary. Every last-outcome on the fleet is one of these, plus
+# the engine's transient PENDING (agentctl seeds it at start and promotes it to
+# STALLED if the runner never reports). Readers match on these words, so a runner
+# inventing its own (it happened: FAILED existed in one runner and no reader's
+# trip list) is refused by proof_report below.
+#   WORKED   the run changed what it was meant to change
+#   NOOP     nothing to do, and the run said so
+#   BLOCKED  the run is waiting on a human: it posted a pending ask
+#   FAILED   the run errored: the harness or a step it needs exited non-zero
+#   STALLED  exit 0 but no work and no NOOP marker, or a plan instead of work
+AGENT_VERDICTS='WORKED NOOP BLOCKED FAILED STALLED'
 
 # Phrases that mean the model produced a PLAN instead of doing the work. This is
 # the signature of the plan-mode regression, and it is definitive: a headless run
@@ -43,6 +55,7 @@
 : "${AGENT_PROOF_NOOP_RE:=no new facts|nothing to capture|nothing met the bar|no new material|nothing to promote}"
 
 _AGENT_PROOF_PRE=""
+_AGENT_PROOF_T0=""
 
 # proof_watch FILE... — record a fingerprint of each artifact before the run.
 # mtime AND size: two writes inside the same second are common for small files,
@@ -50,6 +63,7 @@ _AGENT_PROOF_PRE=""
 proof_watch() {
   local f
   _AGENT_PROOF_PRE=""
+  _AGENT_PROOF_T0="$(date +%s)"
   for f in "$@"; do
     _AGENT_PROOF_PRE+="$f=$(stat -c '%Y:%s' "$f" 2>/dev/null || echo 0:0)"$'\n'
   done
@@ -67,16 +81,37 @@ proof_changed() {
   return 1
 }
 
-# proof_verdict [LOGFILE] — echo WORKED | NOOP | STALLED; non-zero on STALLED.
+# proof_blocked — 0 if this runner posted a still-pending ask since proof_watch.
+# Matched on the ask's `agent:` field, which agent-ask fills from $AGENTCTL_NAME, so a
+# concurrent session's ask in the same window cannot make this runner read BLOCKED.
+proof_blocked() {
+  local name="${AGENTCTL_NAME:-}" root="${AGENT_PROOF_ASKS:-$HOME/.agent/asks}" f
+  [ -n "$name" ] && [ -n "$_AGENT_PROOF_T0" ] && [ -d "$root" ] || return 1
+  while IFS= read -r f; do
+    [ "$(stat -c %Y "$f" 2>/dev/null || echo 0)" -ge "$_AGENT_PROOF_T0" ] || continue
+    grep -qx "agent: $name" "$f" && grep -qx 'status: pending' "$f" && return 0
+  done < <(find "$root" -mindepth 2 -maxdepth 2 -name '*.md' 2>/dev/null)
+  return 1
+}
+
+# proof_verdict [LOGFILE] [RC] — echo one of AGENT_VERDICTS; non-zero on FAILED/STALLED.
 #
-# Order matters: the plan-mode check runs FIRST and beats a changed artifact,
-# because a plan-mode run does write a file (the plan) and would otherwise be
-# scored as real work — exactly how the dream outage stayed invisible.
+# Order matters:
+#   1. A non-zero exit is FAILED before anything else looks at the run. Without the rc,
+#      a run that died on `Error: Reached max turns` after touching a watched file
+#      scored WORKED (reproduced 2026-09-06).
+#   2. The plan-mode check beats a changed artifact, because a plan-mode run does write a
+#      file (the plan) and would otherwise be scored as real work - exactly how the dream
+#      outage stayed invisible.
+#   3. BLOCKED beats WORKED: a run that did half its job and then asked is waiting on a
+#      human, and that is the fact a reader needs.
 proof_verdict() {
-  local log="${1:-}"
+  local log="${1:-}" rc="${2:-0}"
+  if [ "$rc" != 0 ]; then echo FAILED; return 1; fi
   if [ -n "$log" ] && [ -r "$log" ] && grep -qiE "$AGENT_PROOF_STALL_RE" "$log"; then
     echo STALLED; return 1
   fi
+  if proof_blocked; then echo BLOCKED; return 0; fi
   if proof_changed; then echo WORKED; return 0; fi
   if [ -n "$log" ] && [ -r "$log" ] && grep -qiE "$AGENT_PROOF_NOOP_RE" "$log"; then
     echo NOOP; return 0
@@ -99,6 +134,13 @@ proof_state_dir() {
 proof_report() {
   local name="$1" verdict="$2" detail="${3:-}"
   local dir="$(proof_state_dir)/$name"
+  # A word outside the vocabulary is a caller bug. Record it as FAILED, loudly, rather
+  # than store a value no reader's trip list knows (delivery-loop's FAILED once sat
+  # invisible to fleet-liveness for exactly this reason).
+  case " $AGENT_VERDICTS " in
+    *" $verdict "*) ;;
+    *) detail="invalid verdict '$verdict'${detail:+: $detail}"; verdict=FAILED ;;
+  esac
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true

@@ -264,7 +264,7 @@ cmd_run() {
   mkdir -p "$NS_DIR/queue" "$NS_DIR/running" "$NS_LOGS"
   exec 9> "$NS_LOGS/run.lock"
   flock -n 9 || { echo "$NS_NAME: a run is already in progress"; exit 0; }
-  local night out f s n=0 bad=0
+  local night out f s n=0 bad=0 failed=0
   night="$(date +%F)"; out="$NS_DIR/done/$night"; mkdir -p "$out"
   # Under the lock nothing can be running, so anything in running/ was orphaned by a crash
   # or reboot. Report it as failed rather than leave it there forever.
@@ -272,7 +272,7 @@ cmd_run() {
     s="$(fm_get "$f" slug)"
     skip_result "$f" "$out/$s.result.md" failed "interrupted: the runner died mid-task (see $NS_LOGS/$s.log)"
     mv -- "$f" "$out/$s.md"
-    bad=$((bad + 1))
+    bad=$((bad + 1)); failed=$((failed + 1))
   done < <(tasks_in "$NS_DIR/running")
   if [ -z "$(tasks_in "$NS_DIR/queue")" ] && [ "$bad" -eq 0 ]; then
     echo "$NS_NAME: queue empty - nothing to do."
@@ -287,11 +287,16 @@ cmd_run() {
     n=$((n + 1))
     case "$(fm_get "$out/$slug.result.md" status)" in
       ok | skipped) ;;
-      *) bad=$((bad + 1)) ;;
+      blocked) bad=$((bad + 1)) ;;
+      *) bad=$((bad + 1)); failed=$((failed + 1)) ;;
     esac
   done
-  if [ "$bad" -gt 0 ]; then
-    _publish WORKED "$n task(s), $bad need the human -> night-shift report $night"
+  # A task that needs the human leaves the night waiting on one: BLOCKED, not WORKED, so
+  # the morning view does not read it as a clean night. Every task erroring is FAILED.
+  if [ "$failed" -gt 0 ] && [ "$failed" -eq "$bad" ] && [ "$bad" -ge "$n" ]; then
+    _publish FAILED "$n task(s), all failed -> night-shift report $night"
+  elif [ "$bad" -gt 0 ]; then
+    _publish BLOCKED "$n task(s), $bad need the human -> night-shift report $night"
   else
     _publish WORKED "$n task(s), all ok -> night-shift report $night"
   fi

@@ -118,6 +118,8 @@ snapshot() {
               next_run: (if $next == "" then null else $next end),
               # Booleans, because mqtt2prom drops text: these are what Prometheus sees.
               failed: ($state == "error" or $outcome == "STALLED" or $outcome == "FAILED"),
+              # Waiting on a human is not a failure, but it is the one state worth a glance.
+              blocked: ($state == "blocked" or $outcome == "BLOCKED"),
               running: ($active == "active" or $active == "activating")}')"
     done
 

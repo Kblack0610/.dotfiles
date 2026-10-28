@@ -40,13 +40,13 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output --partial WORKED
 }
 
-@test "fleet-sessions failing writes nothing and publishes STALLED with exit 1" {
+@test "fleet-sessions failing writes nothing and publishes FAILED with exit 1" {
   printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/bin/sessions-stub"
   run sample_at 0
   assert_failure
   [ ! -e "$FLEET_BENCH_DIR/progress.jsonl" ]
   run outcome
-  assert_output --partial STALLED
+  assert_output --partial FAILED
 }
 
 @test "no live session is NOOP" {
@@ -181,14 +181,14 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | $9.99 |'
 }
 
-@test "nightly pages the headline once and publishes WORKED; no samples is STALLED" {
+@test "nightly pages the headline once and publishes WORKED; no samples is FAILED" {
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   printf '#!/usr/bin/env bash\necho "notify $*" >> "%s"\n' "$SANDBOX/pages" > "$SANDBOX/bin/agent-notify"
   chmod +x "$SANDBOX/bin/agent-notify"
   run "$SUBJECT" nightly
   assert_failure
   run outcome
-  assert_output --partial STALLED
+  assert_output --partial FAILED
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$((T0 + 60)) run "$SUBJECT" nightly
   assert_success
@@ -304,7 +304,7 @@ merged_pr() {
   assert_output WORKED
 }
 
-@test "a reviewer that never says REVIEW DONE is a failed review: STALLED with exit 1" {
+@test "a reviewer that never says REVIEW DONE is a failed review: FAILED with exit 1" {
   stub_review
   merged_pr s1 7 35
   echo 'FINDING BLOCK a.sh:3 something, then the run died' > "$GHD/reviewer.out"
@@ -313,10 +313,10 @@ merged_pr() {
   run jq -r .status "$FLEET_BENCH_DIR/reviews.jsonl"
   assert_output failed
   run outcome
-  assert_output STALLED
+  assert_output FAILED
 }
 
-@test "gh failing while counting is STALLED with exit 1 and writes nothing" {
+@test "gh failing while counting is FAILED with exit 1 and writes nothing" {
   stub_review
   merged_pr s1 7 35
   touch "$GHD/fail"
@@ -324,7 +324,7 @@ merged_pr() {
   assert_failure
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
   run outcome
-  assert_output STALLED
+  assert_output FAILED
 }
 
 @test "scorecard and headline carry CI reds and the review sample" {
@@ -403,7 +403,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
 }
 
-@test "no pending ask is NOOP with no page; agent-ask failing is STALLED with exit 1" {
+@test "no pending ask is NOOP with no page; agent-ask failing is FAILED with exit 1" {
   stub_asks
   AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
   assert_success
@@ -416,5 +416,5 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
   assert_failure
   run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
-  assert_output --partial STALLED
+  assert_output --partial FAILED
 }
