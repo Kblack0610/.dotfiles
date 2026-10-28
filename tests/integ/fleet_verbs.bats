@@ -56,6 +56,22 @@ setup() {
   assert_output --partial 'agents'
 }
 
+@test "the bench section shows fleet-bench's headline and one ETA row per session" {
+  cat > "$SANDBOX/bin/fleet-bench" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  headline) echo 'bench 24h: 2 sessions, 3 phases ticked' ;;
+  eta) printf '%s\n' 'lab/game-agent-1:1   1/4   Wed 01:10  default' 'hub/x:1   2/2   finished   -' ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/fleet-bench"
+  run bash -c '"$FLEET" --list | sed -n "/bench/,/^head/p" | cut -f1,5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
+  assert_success
+  assert_line --index 1 --partial $'hint\t  bench 24h: 2 sessions, 3 phases ticked'
+  assert_line --index 2 --partial 'lab/game-agent-1:1   1/4'
+  assert_line --index 3 --partial 'hub/x:1   2/2   finished'
+}
+
 # ── the roster contract: the conf dir IS the list ────────────────────────────
 
 @test "a runner appears purely because its conf exists" {

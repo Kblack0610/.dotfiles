@@ -1,7 +1,7 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | sample. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free: it spends no Claude or gateway credits. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | nightly | sample. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free: it spends no Claude or gateway credits. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
@@ -16,9 +16,11 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 ## Where to look
 
+- `~/.notes/lab/projects/current/agent-runtime/bench/latest.md`: the nightly scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, reverts and cost from session-outcomes). One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
+- The nightly page (`-t bench`, 06:30): the headline line and the scorecard path.
 - `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the sampler's last agentctl outcome.
 - `fleet-bench eta`: one line per live session, or `--json` for scripts. The shepherd's "where are we" summary takes its ETAs from here.
-- Prefix + Ctrl-g (`fleet.sh`) lists the `fleet-bench` runner with every other agentctl unit, red when its last outcome is STALLED or it failed.
+- Prefix + Ctrl-g (`fleet.sh`) has a `bench` section under the asks: the headline, then one ETA row per live session. Its runners section lists `fleet-bench` and `fleet-bench-nightly` with every other agentctl unit, red when the last outcome is STALLED or the run failed.
 - `agentctl status fleet-bench` and `agentctl logs fleet-bench -f` for one run's detail.
 
 ## Verbs
@@ -26,6 +28,9 @@ Every number here is counted from samples. None is a model's grade, because mode
 - `sample`: one pass. It reads `fleet-sessions --json`, appends one line per live session to `progress.jsonl`, writes an estimate for any session whose phase count has no estimate yet, and scores every estimate whose session has since finished. The agentctl runner `fleet-bench` runs it every 10 minutes: `fleet-sessions` has no event to wait on, so this is a steady poll, and one run costs about 14 s, mostly `gh`.
 - `eta [--json]`: the newest estimate per live session from the newest sample. A finished session has none.
 - `report`: as above. Read-only.
+- `headline`: the last `BENCH_WINDOW_H` (24) hours in one line: sessions, phases ticked, hours waiting on you, hours stalled, ETAs scored and their median ratio.
+- `scorecard`: writes `<date>.md` and `latest.md` in `BENCH_SCORECARD_DIR` and prints the path.
+- `nightly`: `scorecard`, then one `agent-notify -p normal -t bench` page with the headline. The agentctl runner `fleet-bench-nightly` runs it at 06:30, after session-outcomes (02:30) has counted the night's PRs, so the page arrives as the morning summary. WORKED when the file was written, STALLED (exit 1) when it was not.
 
 ## How the numbers are made
 
@@ -37,10 +42,11 @@ State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
 | `estimates.jsonl` | session per phase count | `made_epoch`, `eta_epoch`, `per_phase_min`, `basis` |
 | `scores.jsonl` | estimate whose session finished | `error_min`, `ratio`, `horizon_min`, `done_bound` |
 
-- **Phase time.** A phase is measured only when the samples saw both its start and its end, so a session's first phase on the record is never measured (it may have started hours earlier). When one sample sees two phases tick at once, the gap is split evenly between them. The time includes waiting on the human.
+- **Phase time.** Each plan file is its own timeline, so a session that starts a new plan does not count the switch as a phase. A phase is measured only when the samples saw both its start and its end, so a session's first phase on the record is never measured (it may have started hours earlier). When one sample sees two phases tick at once, the gap is split evenly between them. The time includes waiting on the human.
 - **ETA** = now + phases left x per-phase minutes. Per-phase is the median measured phase time of that session (`basis: session-median(n)`), else of every session in its project (`project-median(n)`), else `BENCH_DEFAULT_PHASE_MIN`, 60 (`default`). A new estimate is written only when the phase count changes, so one estimate stands for each step of a plan and is scored as it was made.
 - **Finish** is the first sample that reads `finished` (fleet-sessions' DONE work conditions). If that was the session's first sample at all, the real finish was earlier, and the score says `done_bound: upper`.
 - **Score.** `error_min` = finish - ETA (positive means it ran long). `ratio` = actual duration / predicted duration (2 means it took twice as long). `horizon_min` = how far ahead the ETA looked. The report gives medians by basis and by horizon (under 2h, 2-8h, over 8h).
+- **Scorecard hours.** Each sample owns the time until the next sample of that session, in that sample's bucket: WORKING is working, NEEDS is waiting on you, STALLED is stalled. A gap longer than `BENCH_GAP_CAP_MIN` (20, two cadences) counts as 20 minutes, because a longer gap means the sampler itself was down. Nudges count each time the shepherd's `nudged` flag turns on. PRs merged, reverts and cost are the newest session-outcomes line for that `session_id`, `-` when it has not been observed yet.
 - `project` is the tmux target with the server, the window and any `-agent-N` removed, so every `unity-core-playground-agent-*` session shares one project median.
 
 A hand-made estimate can be added as a line in `estimates.jsonl` with `basis: "shepherd-guess"` and the same fields. It is scored like any other. The first five, from the 2026-10-27 evening summary, are there.

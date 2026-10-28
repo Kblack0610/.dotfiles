@@ -124,3 +124,77 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output --partial 'default: 1 scored, median error 60 min'
   assert_output --partial 'Sampler last outcome: WORKED'
 }
+
+# rowj <jq object fields>: a fleet-sessions row with any fields, for the scorecard tests
+rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
+
+@test "a new plan is a new timeline: the gap across the switch is not measured as a phase" {
+  rowj 'plan_file: "p1", phases_done: 1' > "$SNAP"; sample_at 0
+  rowj 'plan_file: "p1", phases_done: 2' > "$SNAP"; sample_at 600       # first p1 phase start seen; its length is unknown
+  rowj 'plan_file: "p1", phases_done: 3' > "$SNAP"; sample_at 1200      # p1 phase 2 took 10 min
+  rowj 'plan_file: "p2", phases_done: 0, phases_total: 3' > "$SNAP"; sample_at 1800
+  rowj 'plan_file: "p2", phases_done: 1, phases_total: 3' > "$SNAP"; sample_at 9000   # 2h after the switch
+  run jq -r 'select(.phases_total == 3 and .phases_done == 1) | [.basis, .per_phase_min] | @tsv' "$FLEET_BENCH_DIR/estimates.jsonl"
+  # only p1's measured 10-min phase counts; the p1 -> p2 jump is not a 2h phase
+  assert_output "$(printf 'session-median(1)\t10')"
+}
+
+@test "scorecard minutes: each sample owns the gap to the next, capped at two cadences" {
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 0
+  rowj 'bucket: "NEEDS"' > "$SNAP"; sample_at 600        # 10 min working
+  rowj 'bucket: "STALLED"' > "$SNAP"; sample_at 1200     # 10 min waiting on you
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 12000    # 3h gap: a sampler outage, counts 20 min
+  run bash -c 'source "$1"; BENCH_NOW=$2 window_stats $2 | jq -r "[.working_min, .waiting_min, .stalled_min] | @tsv"' _ "$SUBJECT" $((T0 + 12000))
+  assert_output "$(printf '10\t10\t20')"
+}
+
+@test "negative control: without the cap the outage would count as 180 stalled minutes" {
+  rowj 'bucket: "STALLED"' > "$SNAP"; sample_at 0
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 10800
+  run bash -c 'source "$1"; BENCH_GAP_CAP_MIN=999 window_stats $2 | jq .stalled_min' _ "$SUBJECT" $((T0 + 10800))
+  assert_output 180
+}
+
+@test "nudges count each time the shepherd's nudge flag turns on" {
+  rowj 'nudged: false' > "$SNAP"; sample_at 0
+  rowj 'nudged: true' > "$SNAP"; sample_at 600
+  rowj 'nudged: true' > "$SNAP"; sample_at 1200
+  rowj 'nudged: false' > "$SNAP"; sample_at 1800
+  rowj 'nudged: true' > "$SNAP"; sample_at 2400
+  run bash -c 'source "$1"; window_stats $2 | jq .nudges' _ "$SUBJECT" $((T0 + 2400))
+  assert_output 2
+}
+
+@test "scorecard writes the dated file and latest.md, joining session-outcomes by session_id" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench" BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  echo '{"session_id":"a","prs_merged":1,"reverted_7d":0,"cost_usd":2.5}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  echo '{"session_id":"a","prs_merged":3,"reverted_7d":1,"cost_usd":9.991}' >> "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  rowj 'phases_done: 2' > "$SNAP"; sample_at 600
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" scorecard
+  assert_success
+  day=$(date -d "@$((T0 + 600))" +%F)
+  assert_output "$BENCH_SCORECARD_DIR/$day.md"
+  cmp "$BENCH_SCORECARD_DIR/$day.md" "$BENCH_SCORECARD_DIR/latest.md"
+  run grep '^| lab/game-agent-1:1 ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | 1 | $9.99 |'
+}
+
+@test "nightly pages the headline once and publishes WORKED; no samples is STALLED" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  printf '#!/usr/bin/env bash\necho "notify $*" >> "%s"\n' "$SANDBOX/pages" > "$SANDBOX/bin/agent-notify"
+  chmod +x "$SANDBOX/bin/agent-notify"
+  run "$SUBJECT" nightly
+  assert_failure
+  run outcome
+  assert_output --partial STALLED
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" nightly
+  assert_success
+  run cat "$SANDBOX/pages"
+  assert_output --partial 'notify -p normal -t bench bench 24h: 1 sessions, 0 phases ticked'
+  [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
+  run outcome
+  assert_output --partial WORKED
+}
