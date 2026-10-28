@@ -184,7 +184,7 @@ sandbox_init() {
 # enforces, so seeding one is exactly "drop a conf in".
 seed_runner() {
   local name="$1" activity="${2:-}"
-  printf 'NAME=%s\nKIND=oneshot\nCOMMAND=/bin/true\n' "$name" > "$AGENTCTL_CONF_DIR/$name.conf"
+  printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047test runner\047\nCOMMAND=/bin/true\n' "$name" > "$AGENTCTL_CONF_DIR/$name.conf"
   if [ -n "$activity" ]; then
     mkdir -p "$AGENTCTL_STATE_DIR/$name"
     printf '[2026-07-24T12:00:00-07:00] %s\n' "$activity" >> "$AGENTCTL_STATE_DIR/$name/activity.log"
