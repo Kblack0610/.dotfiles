@@ -588,9 +588,12 @@ layout() {
     }'
 }
 
-# term_width -> the terminal's columns, when stdout is one.
+# term_width -> the controlling terminal's columns, or nothing when there is none or it
+# reports no size. It asks /dev/tty because it runs inside $(...), where stdout is a pipe.
 term_width() {
-  [ -t 1 ] && stty size 2>/dev/null </dev/tty | cut -d' ' -f2
+  local w
+  w="$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2)"
+  [ "${w:-0}" -gt 0 ] 2>/dev/null && echo "$w"
 }
 
 # paint: colour the words that need an eye, only on a terminal and without NO_COLOR.
@@ -620,7 +623,7 @@ watch() {
   local width tick=1 deadline=0 resized=0
   while :; do
     [ "$tick" = 1 ] && { frame="$(watch_tick)"; deadline=$((SECONDS + every)); }
-    width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
+    width=""; [ -t 1 ] && width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
     [ -t 1 ] && printf '\033[H\033[2J'
     printf '%s\n' "$frame" | layout "$width" | paint
     [ "$once" = 1 ] && return 0
