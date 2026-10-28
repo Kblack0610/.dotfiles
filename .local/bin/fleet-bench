@@ -602,7 +602,7 @@ ledger_counts() {
   echo "timers=$(find "$LEDGER_TIMER_DIR" -maxdepth 1 -name 'agentctl-*.timer' 2>/dev/null | wc -l)"
   IFS=: read -ra src <<<"$LEDGER_SRC"
   echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
-  echo "verdict_words=$(cat "${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"/*/last-outcome 2>/dev/null | awk '{print $1}' | sort -u | grep -c .)"
+  echo "verdict_words=$(proof_lib && cat "$(proof_state_dir)"/*/last-outcome 2>/dev/null | awk '{print $1}' | sort -u | grep -c .)"
   t=$(now)
   if rows=$(ask_rows "$t" 2>/dev/null); then
     jq -r --argjson d "$ASK_STALE_DAYS" '"asks_pending=\(length)", "asks_stale=\(map(select(.age_h > $d * 24)) | length)"' <<<"$rows"
