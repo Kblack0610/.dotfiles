@@ -1,6 +1,6 @@
 ---
 name: one-shot
-description: Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, pull the main checkout, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
+description: Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, pull the main checkout, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
@@ -28,6 +28,8 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - `notes ptask <project> --agent add "<short title>"` then `start` it (one `start` only: a second one toggles it off).
 
 3. **Implement.** Make the smallest change that fully solves the task, matching the surrounding code. Send broad exploration to Explore subagents. Update the docs the project CLAUDE.md says a change of this kind must touch.
+
+   3a. **Final pass.** Run `final-pass` on the diff (`~/.claude/skills/final-pass/SKILL.md`). It skips small or docs-only diffs on its own. It goes here, before Validate, so the gate checks its edits too.
 
 4. **Validate.** Run the project's merge gate exactly as its CLAUDE.md defines it. Example, unity-core-playground: EditMode, plus each class from `scripts/test/affected-classes.py origin/main HEAD`, one `scripts/test/run.sh --filter <class>` per call, reading the counts (0/0 means the arguments were refused, not a pass). If the repo defines no gate, run its lint, typecheck and tests. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 8 in blocked mode.
 

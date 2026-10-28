@@ -59,7 +59,11 @@ fi
 # Drop generated, vendored, and binary paths.
 FILES=$(printf '%s\n' "$FILES" | grep -Ev '(^|/)(node_modules|dist|build|vendor|\.git|coverage|__snapshots__)/|\.(min|generated|lock)\.|(^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum)$' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
 
-[ -z "$FILES" ] && { echo "no files in scope"; exit 0; }
+if [ -z "$FILES" ]; then
+  # Explicit paths that resolve to nothing are a caller bug (an unsplit $F under zsh), not a clean scope.
+  [ ${#PATHS[@]} -gt 0 ] && { echo "none of the given paths are files in scope: ${PATHS[*]}" >&2; exit 2; }
+  echo "no files in scope"; exit 0
+fi
 COUNT=$(printf '%s\n' "$FILES" | wc -l | tr -d ' ')
 echo "# scope: $COUNT files"
 
