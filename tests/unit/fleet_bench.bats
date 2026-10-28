@@ -484,12 +484,14 @@ kpi_fixture() {
   assert_line '| revert_rate | - | - | max 0.1 | - |'
 }
 
-@test "kpi: runners_bad counts FAILED or STALLED switched-on runners, not off or retired ones" {
+@test "kpi: runners_bad counts FAILED or STALLED scheduled runners, not off, hand-fired or retired ones" {
   kpi_setup
-  printf 'NAME=alpha\n' > "$LEDGER_CONF_DIR/alpha.conf"
-  printf 'NAME=beta\nENABLED=no\n' > "$LEDGER_CONF_DIR/beta.conf"
-  printf 'NAME=gamma\n' > "$LEDGER_CONF_DIR/gamma.conf"
-  for n in alpha beta gamma gone; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf 'NAME=beta\nSCHEDULE=hourly\nENABLED=no\n' > "$LEDGER_CONF_DIR/beta.conf"
+  printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
+  printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
+  for n in alpha beta gamma delta gone; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf STALLED > "$AGENTCTL_STATE_DIR/delta/last-outcome"    # like wave: on, never scheduled
   printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"    # no newline, like proof_report
   printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
   printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"

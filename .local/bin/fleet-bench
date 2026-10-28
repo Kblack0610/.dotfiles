@@ -603,7 +603,9 @@ ledger_counts() {
     n_conf=$((n_conf + 1))
     grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
     n_on=$((n_on + 1))
-    # a retired runner keeps its state dir, so only a switched-on conf can count as bad
+    # fleet-liveness's roster: a retired runner keeps its state dir, and a conf with no
+    # SCHEDULE or AUTOSTART=yes is fired by hand (wave), so neither can count as bad
+    grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$c" || grep -qE '^AUTOSTART=["'"'"']?yes' "$c" || continue
     name=$(sed -n 's/^NAME=//p' "$c" | head -1); name="${name:-$(basename "$c" .conf)}"
     [ -n "$sd" ] && grep -qE '^(FAILED|STALLED)' "$sd/$name/last-outcome" 2>/dev/null && n_bad=$((n_bad + 1))
   done
