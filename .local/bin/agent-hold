@@ -3,8 +3,10 @@
 # a message.
 #
 #   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
+#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
 #   agent-hold release <resource>
-#   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free
+#   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
+#                                   when the caller's session has been granted
 #   agent-hold list                 resource<TAB>since<TAB>by<TAB>reason, one per hold
 #   agent-hold show <resource>      print the hold file
 #
@@ -12,6 +14,12 @@
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
 # a broadcast: the gate, the preflight and the coordinator all read this one file. Why and
 # how to use it: the fleet-comms and fleet-overseer skills.
+#
+# A grant is GO as state: a staged restart lets a few sessions back in while the hold stays
+# set for the rest. It lives in the hold file, so it ends with the hold, and a new `set`
+# starts with no grants. Before this, GO was a message telling a session to run with
+# UNITY_TEST_IGNORE_HOLD=1, a flag that never expired: on 2026-10-28 all 6 Unity runs live
+# under a hold carried it.
 
 set -uo pipefail
 
@@ -71,6 +79,7 @@ cmd_set() {
     printf 'since: %s\n'    "$(now_iso)"
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
+    printf 'granted: \n'
     printf 'reason: %s\n'   "$(oneline "$reason")"
   } > "$tmp"
   # Re-setting an existing hold replaces it (new reason, new roster), atomically, so a
@@ -79,6 +88,36 @@ cmd_set() {
   # High on set, normal on release: the held state is the one that needs the human.
   notify -p high -t "hold: $resource" "$(oneline "$reason") (by $(oneline "$by"))"
   echo "held: $resource"
+}
+
+# Who is asking, for `check`: the same name `set` records as `by`, which is also the name
+# the shepherd and fleet-sessions use for a session.
+caller() { default_by; }
+
+# in_list <name> <a,b,c>
+in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
+
+cmd_grant() {
+  local resource="${1:-}"; shift || true
+  need_resource "$resource"
+  [ $# -gt 0 ] || { echo "agent-hold grant: name at least one session" >&2; exit 2; }
+  local f="$HOLD_ROOT/$resource"
+  [ -f "$f" ] || { echo "agent-hold: $resource is not held, nothing to grant" >&2; exit 1; }
+  local granted name tmp
+  granted="$(field "$f" granted)"
+  for name in "$@"; do
+    name="$(oneline "$name")"
+    [ -n "$name" ] || continue
+    case "$name" in *,*) echo "agent-hold grant: bad session name '$name'" >&2; exit 2 ;; esac
+    in_list "$name" "$granted" || granted="${granted:+$granted,}$name"
+  done
+  tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
+  # Older hold files have no granted line; drop any and write one, keeping the rest.
+  { grep -v '^granted:' "$f"; printf 'granted: %s\n' "$granted"; } > "$tmp"
+  # The rename is also the wake-up: a gate waiting on the hold dir sees it and re-checks.
+  mv "$tmp" "$f"
+  notify -p normal -t "go: $resource" "granted $*; the rest stay held"
+  echo "granted: $resource for $granted"
 }
 
 cmd_release() {
@@ -101,16 +140,23 @@ cmd_check() {
   need_resource "$resource"
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || return 0
+  local me
+  me="$(caller)"
+  if [ -n "$me" ] && in_list "$me" "$(field "$f" granted)"; then
+    echo "granted: $resource for $me" >&2
+    return 0
+  fi
   echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
   return 1
 }
 
 cmd_list() {
   [ -d "$HOLD_ROOT" ] || return 0
-  local f
+  local f g
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
-    printf '%s\t%s\t%s\t%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "$(field "$f" reason)"
+    g="$(field "$f" granted)"
+    printf '%s\t%s\t%s\t%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "$(field "$f" reason)" "${g:+ (granted: $g)}"
   done
 }
 
@@ -120,11 +166,12 @@ cmd_show() {
   cat "$HOLD_ROOT/$resource" 2>/dev/null || { echo "agent-hold: $resource is not held" >&2; exit 1; }
 }
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
   set)     cmd_set "$@" ;;
+  grant)   cmd_grant "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
   list)    cmd_list ;;

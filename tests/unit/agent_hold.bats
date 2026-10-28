@@ -80,3 +80,52 @@ setup() {
   assert_failure 2
   [ ! -e "$HOME/.agent/escape" ]
 }
+
+# A grant is GO as state. Caller identity is default_by: the tmux session, here (no TMUX in
+# the sandbox) the working directory's basename.
+as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
+
+@test "grant on a resource that is not held fails" {
+  run "$HOLD" grant unity agent-1
+  assert_failure 1
+  assert_output --partial 'not held'
+}
+
+@test "a granted session passes check; an ungranted one is still held" {
+  "$HOLD" set unity --by shepherd "hot"
+  run "$HOLD" grant unity agent-1
+  assert_success
+  as_session agent-1
+  run "$HOLD" check unity
+  assert_success
+  as_session agent-2
+  run "$HOLD" check unity
+  assert_failure 1
+}
+
+@test "a grant matches a whole session name, not a prefix" {
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity agent-1
+  as_session agent-11
+  run "$HOLD" check unity
+  assert_failure 1
+}
+
+@test "grants merge across calls without duplicates" {
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity agent-1 agent-2
+  "$HOLD" grant unity agent-2 agent-3
+  run "$HOLD" show unity
+  assert_output --partial 'granted: agent-1,agent-2,agent-3'
+  run "$HOLD" list
+  assert_output --partial '(granted: agent-1,agent-2,agent-3)'
+}
+
+@test "a fresh set drops every earlier grant" {
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity agent-1
+  "$HOLD" set unity --by shepherd "hot again"
+  as_session agent-1
+  run "$HOLD" check unity
+  assert_failure 1
+}
