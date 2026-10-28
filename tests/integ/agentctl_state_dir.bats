@@ -131,10 +131,7 @@ landed_dirs() {
 @test "every state-dir resolver honours BOTH names" {
   local offenders=()
   local f
-  # agentctl-runs.sh joined this list the day `agentctl run` landed, and this
-  # test is how we found out -- it failed on the count before anyone had set a
-  # variable, which is the entire point of pinning it.
-  for f in .local/bin/agentctl .local/lib/agent-proof.sh .local/lib/agentctl-runs.sh \
+  for f in .local/bin/agentctl .local/lib/agent-proof.sh \
            .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish; do
     # the line that establishes the state dir must mention both names
     grep -qE 'AGENTCTL_STATE_DIR:-\$\{?AGENTCTL_STATE' "$REPO_ROOT/$f" || offenders+=("$f")
@@ -144,5 +141,5 @@ landed_dirs() {
   # quietly honouring one name. The count is also the empty-input guard: if the
   # grep matched nothing at all, this fails rather than reading as "all fine".
   run bash -c "grep -rlE 'AGENTCTL_STATE_DIR:-\\\$\\{?AGENTCTL_STATE' '$REPO_ROOT'/.local | wc -l"
-  assert_output '5'
+  assert_output '4'
 }

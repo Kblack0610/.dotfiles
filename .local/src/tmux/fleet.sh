@@ -31,7 +31,7 @@
 # Row wire format (TAB-delimited), consumed by fzf with --with-nth=5..:
 #   1 type(head|runner|run|watch|ask|agent|hint)  2 id  3 target  4 state  5 DISPLAY
 #
-# Modes: (no args)=UI · --list · --runners · --runs · --watches · --asks · --agents
+# Modes: (no args)=UI · --list · --runners · --watches · --asks · --agents
 #        --runner-op <type> <start|stop|restart> <name> · --journal <name> · --enter <type> <id> <target>
 
 set -uo pipefail
@@ -40,14 +40,6 @@ SELF="$(realpath "$0")"
 AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # Both names, same precedence as .local/bin/agentctl - see the note there.
 AGENTCTL_STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
-RUNS_DIR="${AGENTCTL_RUNS_DIR:-$AGENTCTL_STATE_DIR/runs}"
-# The run grammar is shared with the WRITER (.local/bin/agentctl). One
-# implementation, sourced by both, same precedent as agent-board.sh / lab-feed.sh:
-# a reader that reimplements the writer's layout is a second source of truth.
-_RUNS_LIB="${AGENTCTL_RUNS_LIB:-$HOME/.local/lib/agentctl-runs.sh}"
-[ -r "$_RUNS_LIB" ] || _RUNS_LIB="$(dirname "$SELF")/../../lib/agentctl-runs.sh"
-# shellcheck source=/dev/null
-[ -r "$_RUNS_LIB" ] && . "$_RUNS_LIB"
 # Staleness is judged once, in the shared lib, so this view and the MQTT/Prometheus
 # publisher cannot disagree about which watches are stale.
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
@@ -223,68 +215,6 @@ runners() {
 }
 
 # ── watches: sentinel's declarative manifests joined to their poll state ─────
-# ── runs: ad-hoc invocations through `agentctl run` ──────────────────────────
-#
-# Deliberately NOT folded into runners(). That roster is the conf dir, by design
-# and by the comment at the top of this file; a run has no conf, so a run row in
-# that section would carry a meaningless unit name and the s/x/R/l binds would
-# address a unit that does not exist. Field 3 here is the run DIRECTORY, matching
-# how a watch row carries its manifest path: "the file this row is about".
-#
-# Budget: everything still in flight, plus recently finished, capped. Without a
-# cap the panel fills with history and stops being an instrument. A machine that
-# never uses `agentctl run` sees this section render nothing at all.
-runs() {
-  local d; d="${AGENTCTL_RUNS_DIR:-$AGENTCTL_STATE_DIR/runs}"
-  [ -d "$d" ] || return 0
-
-  local -a live=() recent=()
-  local p st now cutoff upd
-  now="$(date +%s)"; cutoff=$(( now - 3600 ))
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    # A supervised run is a detail record on a roster row, not a row of its own.
-    [ "$(runs_meta_get "$p" supervised)" = yes ] && continue
-    st="$(runs_state "$p")"
-    if [ "$st" = working ]; then live+=("$p"); continue; fi
-    upd="$(awk -F= '$1=="updated"{print $2;exit}' "$p/status" 2>/dev/null)"
-    [[ "$upd" =~ ^[0-9]+$ ]] && [ "$upd" -ge "$cutoff" ] && recent+=("$p")
-  done < <(find "$d" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort -r)
-
-  local total=$(( ${#live[@]} + ${#recent[@]} ))
-  [ "$total" -eq 0 ] && return 0
-  head_row 'runs · ad-hoc'
-
-  local shown=0 glyph col out age label role
-  for p in "${live[@]+"${live[@]}"}" "${recent[@]+"${recent[@]}"}"; do
-    if [ "$shown" -ge 12 ]; then
-      hint_row "$(( total - shown )) more · agentctl runs"
-      break
-    fi
-    shown=$(( shown + 1 ))
-    st="$(runs_state "$p")"; out="$(runs_outcome "$p")"
-    label="$(runs_meta_get "$p" label)"; role="$(runs_meta_get "$p" role)"
-    upd="$(awk -F= '$1=="updated"{print $2;exit}' "$p/status" 2>/dev/null)"
-    case "$st" in
-      working) glyph="$G_BUSY";  col="$C_SEL" ;;
-      ok)      glyph="$G_OK";   col="$C_SEL" ;;
-      error)   glyph="$G_ATTN"; col="$C_ERR" ;;
-      *)       glyph="$G_IDLE"; col="$C_DIM" ;;
-    esac
-    # An orphan reads as error via runs_state, but say WHY rather than leaving a
-    # reader to wonder: a status stuck on `working` with a dead pid is the shape
-    # a SIGKILL or a reboot leaves behind, and it is not the same as a failure.
-    [ "$out" = ORPHANED ] && col="$C_INP"
-    age="$(_age "$upd")"
-    row run "$(basename "$p")" "$p" "$st" \
-      "$(printf '  %s%s %-24s%s %s%-8s%s %s%s%s' \
-        "$col" "$glyph" "$(_clip "${label:-$(basename "$p")}" 24)" "$C_OFF" \
-        "$col" "$out" "$C_OFF" \
-        "$C_DIM" "${role:-?} · ${age} ago" "$C_OFF")"
-  done
-  return 0
-}
-
 watches() {
   head_row 'watches · sentinel'
   local y name state lastrun desc glyph col age stale
@@ -398,7 +328,6 @@ list_all() {
   asks
   bench
   runners
-  runs
   watches
   agents
 }
@@ -438,7 +367,6 @@ enter_action() { # $1=type $2=id $3=target — what Enter means for each row kin
     ask)    tmux new-window "agent-ask show '$id'; agent-ask answer '$id'" 2>/dev/null ;;
     watch)  [ -f "$target" ] && tmux new-window "nvim '$target'" 2>/dev/null ;;
     runner) journal "$id" ;;
-    run)    [ -f "$target/output.log" ] && tmux new-window "less -R '$target/output.log'" 2>/dev/null ;;
     agent)  agent-panel jump "$target" ;;   # it owns the cross-server hop
   esac
 }
@@ -457,13 +385,9 @@ fleet — headless agents, watches and asks
 
   nav
     j / k          down / up
-    enter          ask: answer it · runner: journal · run: view output · watch: edit
+    enter          ask: answer it · runner: journal · watch: edit
                    manifest · agent: jump
     r              refresh
-
-  run     (ad-hoc `agentctl run` invocations; read-only here)
-    enter          page the run's captured output
-    full list      agentctl runs   ·   one run: agentctl runs show <id>
 
   runner  (agentctl units, roster = ~/.config/agentctl/agents/*.conf)
     s              start
@@ -486,7 +410,6 @@ EOF
 case "${1:-}" in
   --list) list_all; exit 0 ;;
   --runners) runners; exit 0 ;;
-  --runs)    runs; exit 0 ;;
   --watches) watches; exit 0 ;;
   --asks) asks; exit 0 ;;
   --agents) agents; exit 0 ;;

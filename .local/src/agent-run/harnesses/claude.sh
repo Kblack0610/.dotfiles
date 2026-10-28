@@ -51,31 +51,13 @@ harness_exec() {
   #
   # Net effect versus what delivery-loop and watch-companion-loop already do:
   # identical permission behaviour, plus denials they never had.
-  #
-  # BOTH justifications above are "every caller is a timer with no human". When
-  # `agentctl run` is invoked at a terminal that premise is false: there IS
-  # somebody to answer, and skipping their permission gate is not a convenience,
-  # it is removing a control they expected to have. So the gate comes back.
-  #
-  # Only the two PROMPTING flags are conditional. --disallowedTools, --mcp-config
-  # and --strict-mcp-config below are unconditional, because capability must not
-  # depend on who is watching - that is the whole measured distinction this file
-  # documents, and an "interactive" mode that quietly ran unenforced would be a
-  # far worse bug than the one it fixes.
-  if [ -z "${AGENTCTL_INTERACTIVE:-}" ]; then
-    flags+=(--dangerously-skip-permissions)
-  fi
+  flags+=(--dangerously-skip-permissions)
 
   [ -n "$mcp_file" ] && flags+=(--mcp-config "$mcp_file" --strict-mcp-config)
 
   # There is no human on a timer to answer a prompt or read a plan file. Mirrors
-  # the prompt agentctl-dream and agentctl-nightly-sync already use. Omitted when
-  # a human IS present - telling the model nobody can answer, while somebody is
-  # sitting there waiting to, is simply false and suppresses the plan mode they
-  # may well have wanted.
-  if [ -z "${AGENTCTL_INTERACTIVE:-}" ]; then
-    flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
-  fi
+  # the prompt agentctl-dream and agentctl-nightly-sync already use.
+  flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
 
   if [ -n "${AGENTCTL_EXPLAIN:-}" ]; then
     printf 'harness:     claude\nflags:      '

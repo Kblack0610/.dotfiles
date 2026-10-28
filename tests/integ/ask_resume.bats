@@ -226,13 +226,13 @@ EOF
   assert_output '1'
 }
 
-@test "a non-wave resume falls back to a headless claude" {
+@test "a non-wave resume falls back to a headless agentctl-run" {
   local id
   id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold' \
         --resume '/captain status' 'carry on?')"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run ask-resume --dry-run "$id"
-  assert_output --partial "would run: claude -p '/captain status'"
+  assert_output --partial "would run: agentctl-run --role build -p '/captain status'"
 }
 
 # delivery-loop exports ANTHROPIC_BASE_URL pointing at the gateway's Lazer route, and a

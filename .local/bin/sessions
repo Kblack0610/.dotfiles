@@ -677,7 +677,7 @@ cmd_compact() {
   local t proj; t="$(lookup_field "$id" transcript)"; proj="$(lookup_field "$id" project)"
   [ -n "$t" ] && [ -f "$t" ] || { echo "sessions: no transcript for $id" >&2; return 1; }
   [ -n "$proj" ] || proj="$(resolve_project)"
-  command -v claude >/dev/null 2>&1 || { echo "sessions: claude CLI not found" >&2; return 1; }
+  command -v agentctl-run >/dev/null 2>&1 || { echo "sessions: agentctl-run not found" >&2; return 1; }
 
   local out_dir="$SESS_ROOT/$proj"
   local out="$out_dir/${id}-digest.md"
@@ -689,7 +689,7 @@ cmd_compact() {
 Write a concise digest to $out with these markdown sections: \
 '# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
 Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
-  claude -p "$prompt" >/dev/null 2>&1 \
+  agentctl-run --role curate -p "$prompt" >/dev/null 2>&1 \
     && echo "Digest written: $out" >&2 \
     || echo "sessions: compact run failed (see claude output)" >&2
 }
