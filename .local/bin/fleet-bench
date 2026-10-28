@@ -26,7 +26,7 @@ DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
-NAME=fleet-bench
+NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 
 say() { printf 'fleet-bench: %s\n' "$*" >&2; }
 
@@ -198,9 +198,12 @@ cmd_report() {
     ' "$SCORES"
   fi
   echo
-  local st=
-  proof_lib && st="$(proof_state_dir)/$NAME/last-outcome"
-  printf 'Sampler last outcome: %s\n' "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
+  local r st
+  proof_lib || return 0
+  for r in fleet-bench fleet-bench-nightly; do
+    st="$(proof_state_dir)/$r/last-outcome"
+    printf '%s last outcome: %s\n' "$r" "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
+  done
 }
 
 # window_stats -> one JSON object per session seen in the window: phases ticked, minutes
