@@ -122,7 +122,7 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_success
   assert_output --partial 'lab/game-agent-1:1'
   assert_output --partial 'default: 1 scored, median error 60 min'
-  assert_output --partial 'Sampler last outcome: WORKED'
+  assert_output --partial 'fleet-bench last outcome: WORKED'
 }
 
 # rowj <jq object fields>: a fleet-sessions row with any fields, for the scorecard tests
@@ -197,4 +197,22 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
   run outcome
   assert_output --partial WORKED
+}
+
+@test "under agentctl each runner publishes its own outcome: nightly never overwrites the sampler's" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  printf '#!/usr/bin/env bash\n:\n' > "$SANDBOX/bin/agent-notify"; chmod +x "$SANDBOX/bin/agent-notify"
+  rowj 'phases_done: 1' > "$SNAP"
+  AGENTCTL_NAME=fleet-bench BENCH_NOW=$T0 run "$SUBJECT" sample
+  assert_success
+  : > "$SNAP"                                   # the sampler's last pass sees nobody: NOOP
+  AGENTCTL_NAME=fleet-bench BENCH_NOW=$((T0 + 30)) run "$SUBJECT" sample
+  AGENTCTL_NAME=fleet-bench-nightly BENCH_NOW=$((T0 + 60)) run "$SUBJECT" nightly
+  assert_success
+  run cat "$AGENTCTL_STATE_DIR/fleet-bench-nightly/last-outcome"
+  assert_output --partial WORKED
+  run cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
+  assert_output NOOP
+  run "$SUBJECT" report
+  assert_output --partial 'fleet-bench-nightly last outcome: WORKED'
 }
