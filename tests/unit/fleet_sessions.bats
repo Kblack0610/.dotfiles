@@ -279,11 +279,12 @@ MD
 }
 
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
-# s1 (sid-9, pane %7), idle for an hour, with status $PANEL_STATUS (default idle).
+# s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
+# (default idle).
 panel() {
-  local since=$(( $(date +%s) - 3600 ))
+  local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -522,12 +523,12 @@ landed_fixture() {
 }
 
 # cells <sid> <target> <ci> <stage>: one board_cells line with everything else fixed
-cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
+cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
 
 @test "transitions names what appeared, left, or changed a stage cell, and nothing else" {
   { cells a s-a pending WORKING; cells b s-b pass DONE; } > "$SANDBOX/prev"
-  # a: CI went red and the stage followed; b: only idle moved; c: new; (nothing left yet)
-  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/'; cells c s-c - LANDED; } > "$SANDBOX/cur"
+  # a: CI went red and the stage followed; b: only idle and age moved; c: new; (nothing left yet)
+  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; } > "$SANDBOX/cur"
   run transitions "$SANDBOX/prev" "$SANDBOX/cur"
   assert_line 's-a  ci pending -> fail, stage WORKING -> STALLED (why STALLED)'
   assert_line 's-c  new: LANDED (why LANDED)'
@@ -541,8 +542,8 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_success
   # CONFLICTS, QUALITY and LABELS are hidden while every cell is the default
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +IDLE  WHY$'
-  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +LANDED +60m  PR #875 merged'
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +IDLE +AGE  WHY$'
+  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +LANDED +60m +3h5m  PR #875 merged'
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
   "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
@@ -557,10 +558,10 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\twh
 # frame_fixture -> a watch frame as watch_tick emits it: plain lines, then the tab-led table.
 frame_fixture() {
   printf 'fleet watch  12:00:00  2 session(s)  %s\n\n' "$(printf 'x%.0s' {1..120})"
-  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE WHY; echo
-  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 - WORKING - 5m \
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE AGE WHY; echo
+  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 - WORKING - 5m 2d4h \
     "busy $(printf 'y%.0s' {1..150})"; echo
-  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - DONE hands-off 40m 'plan finished'; echo
+  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - DONE hands-off 40m 45m 'plan finished'; echo
 }
 
 @test "layout: at a width every line fits, and a long WHY is clipped with ~" {
@@ -575,6 +576,20 @@ frame_fixture() {
   assert_line --regexp '^unity-core-playground-agent-12 .* busy y+~$'
 }
 
+# age_row <age minutes|->: one collect row, every field fixed but the session's age (field 28).
+age_row() {
+  printf 'WORKING\tlab/s1:1\tsid-%s\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t%s\n' "$1" "$1"
+}
+
+@test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
+  run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
+  assert_success
+  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy$'
+  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy$'
+  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy$'
+  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy$'
+}
+
 @test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {
   run layout 50 < <(frame_fixture)
   assert_line --regexp '^SESSION +PLAN +STAGE$'
@@ -584,7 +599,7 @@ frame_fixture() {
 
 @test "layout: with no width nothing is clipped, defaults are hidden, :1 is stripped" {
   run layout 0 < <(frame_fixture)
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +LABELS +IDLE  WHY$'
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +LABELS +IDLE +AGE  WHY$'
   assert_line --regexp '^unity-core-playground-agent-12 .*  busy y{150}$'
   run layout 0 < <(frame_fixture CONFLICT)
   assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE '

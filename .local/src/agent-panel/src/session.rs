@@ -15,6 +15,9 @@ pub struct Session {
     pub cwd: String,
     #[serde(default)]
     pub status: String,
+    /// Epoch milliseconds the Claude process started, None on files that predate it.
+    #[serde(rename = "startedAt", default)]
+    pub started_at: Option<u64>,
 }
 
 /// Directory holding the per-pid session files.
@@ -106,5 +109,11 @@ mod tests {
         assert_eq!(s.pid, 42);
         assert_eq!(s.session_id, "sid");
         assert_eq!(s.status, "busy");
+        assert_eq!(s.started_at, None);
+        let s: Session = serde_json::from_str(
+            r#"{"pid":42,"sessionId":"sid","cwd":"/tmp","startedAt":1793219579585}"#,
+        )
+        .unwrap();
+        assert_eq!(s.started_at, Some(1_793_219_579_585));
     }
 }
