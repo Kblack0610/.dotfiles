@@ -327,9 +327,10 @@ asks() {
   local out
   out="$(agent-ask list --all --pending 2>/dev/null)"
   if [ -z "$out" ]; then hint_row 'nothing pending'; return 0; fi
-  # agent-ask list is TSV: id project profile status kind question options
+  # agent-ask list is TSV: id project profile status kind question options ...; the
+  # trailing `_` keeps the later columns out of opts
   local id project kind question opts
-  while IFS=$'\t' read -r id project _ _ kind question opts; do
+  while IFS=$'\t' read -r id project _ _ kind question opts _; do
     [ -n "$id" ] || continue
     row ask "$id" "$project" "${kind:-question}" \
       "$(printf '  %s%s %-14s%s %s%s%s %s%s%s' \

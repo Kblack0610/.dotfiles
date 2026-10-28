@@ -346,3 +346,75 @@ merged_pr() {
   assert_output --partial '- o/r#7: 1 BLOCK, 0 FLAG, 1 NIT'
   assert_output --partial '  - BLOCK a.sh:3 the guard is inverted'
 }
+
+# ask <id> <session> <hours old> [recommend] [kind]: one agent-ask list row, stamped -0700
+# like a real ask so the offset parse is exercised
+ask() {
+  printf '%s\tgame\t\tpending\t%s\t%s question\ta|b\t\t\t\t%s\t%s\t%s\n' \
+    "$1" "${5:-question}" "$1" "${4:-}" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)" "$2"
+}
+
+stub_asks() {
+  export BENCH_ASKS_CMD=asks-stub BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  printf '#!/usr/bin/env bash\n[ -e "%s/asks.fail" ] && exit 1\ncat "%s/asks.tsv"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/asks-stub"
+  printf '#!/usr/bin/env bash\necho "notify $*" >> "%s"\n' "$SANDBOX/pages" > "$SANDBOX/bin/agent-notify"
+  chmod +x "$SANDBOX/bin/asks-stub" "$SANDBOX/bin/agent-notify"
+  : > "$SANDBOX/asks.tsv"
+}
+
+asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | join(\" \")"' _ "$SUBJECT" "$T0"; }
+
+@test "asks rank by age x (1 + phases left + open PR) when blocking a live session, then the rest oldest first" {
+  stub_asks
+  { rowj 'phases_done: 0'; rowj 'session_id: "b", target: "lab/other:1", phases_done: 2, phases_total: 2, pr: "#5"'; } > "$SNAP"
+  sample_at 0
+  {
+    ask x a 4             # live by session id, 4 phases left: 4 x 5 = 20
+    ask y other 8 land    # live by tmux session name, open PR: 8 x 2 = 16
+    ask z "" 100          # headless
+    ask w gone-agent-3 1  # its session has ended
+  } > "$SANDBOX/asks.tsv"
+  run asks_order
+  # negative control: by age alone y (8h) would rank above x (4h)
+  assert_output 'x y z w'
+  BENCH_NOW=$T0 run "$SUBJECT" asks
+  assert_success
+  assert_output --partial '| x | lab/game-agent-1:1 | 4h | 4 phases left | - | x question |'
+  assert_output --partial '| y | lab/other:1 | 8h | open PR | land | y question |'
+  assert_output --partial '| z | game | question | 4d | - | z question |'
+  [ ! -e "$BENCH_SCORECARD_DIR/asks.md" ]        # the bare verb only prints
+}
+
+@test "asks --page writes asks.md, pages the top 3 with their recommendation, publishes under its own name" {
+  stub_asks
+  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
+  { ask p a 1 go; ask q a 2; ask r a 3 hold gate; ask s a 4; ask old "" 72; } > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  assert_success
+  [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
+  run cat "$SANDBOX/pages"
+  assert_output --partial 'notify -p normal -t asks 5 asks pending: 4 block a live session, 1 have none (oldest 3d). 1) s lab/game-agent-1, 4h: s question. 2) r lab/game-agent-1, 3h: r question -> hold. 3) q '
+  refute_output --partial ' p question'
+  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
+  assert_output 1
+  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
+  assert_output --partial WORKED
+  [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
+}
+
+@test "no pending ask is NOOP with no page; agent-ask failing is STALLED with exit 1" {
+  stub_asks
+  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  assert_success
+  [ ! -e "$SANDBOX/pages" ]
+  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
+  assert_output --partial NOOP
+  run grep -c '^None\.$' "$BENCH_SCORECARD_DIR/asks.md"
+  assert_output 2
+  touch "$SANDBOX/asks.fail"
+  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  assert_failure
+  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
+  assert_output --partial STALLED
+}

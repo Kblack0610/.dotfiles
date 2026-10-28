@@ -206,7 +206,7 @@ cmd_list() {
   fi
 
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
-  #      resumed_at, recommend
+  #      resumed_at, recommend, created, session (append new columns at the end only)
   local f st at
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -215,11 +215,12 @@ cmd_list() {
     at="$(field "$f" answered_at)"
     # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
     [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
       "$(field "$f" options)" "$(field "$f" task)" \
-      "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)"
+      "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)" \
+      "$(field "$f" created)" "$(field "$f" session)"
   done < <(ask_files "$key")
 }
 

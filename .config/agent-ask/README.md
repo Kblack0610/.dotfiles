@@ -34,7 +34,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
-agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task
+agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session
 agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
 agent-ask answer <id> <answer...>            record answer; status->answered; fire agent-notify
