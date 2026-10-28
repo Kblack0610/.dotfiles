@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # agentctl-session-outcomes - nightly, model-free record of what each session did.
 #
-#   agentctl-session-outcomes [run]                        observe due sessions
+#   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N]
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
 # WORKED = lines written, NOOP = nothing due, STALLED (exit 1) = gh or a write failed,
-# in which case NOTHING is written and the next run catches up. Lib + field meanings:
+# in which case NOTHING is written and the next run catches up. --all observes every session
+# again, so a fixed detector reaches sessions already past their final observation. Lib + field meanings:
 # ~/.local/lib/session-outcomes.sh. A headless session (`claude -p`, a runner) files under
 # project `_runner` with no corrections: nobody is there to correct it, so a lesson it
 # writes is its job, not a redirect. Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR.
@@ -36,7 +37,12 @@ die_stalled() {
 }
 
 cmd_run() {
-  local work
+  local work all=false
+  case "${1:-}" in
+    "") ;;
+    --all) all=true ;;
+    *) echo "$NAME run: unknown arg $1" >&2; return 2 ;;
+  esac
   work="$(mktemp -d)" || die_stalled "mktemp failed"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
@@ -48,13 +54,13 @@ cmd_run() {
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
   fi | jq -cnR --slurpfile seen "$work/seen.jsonl" \
-        --argjson now "$NOW" --argjson days "$FINAL_DAYS" '
+        --argjson now "$NOW" --argjson days "$FINAL_DAYS" --argjson all "$all" '
       ($seen | map({key: .session_id, value: .}) | from_entries) as $s
       | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
       | group_by(.session_id) | map(max_by(.updated)) | .[]
       | . + {final: (($now - .updated) >= $days * 86400)}
       | select(($s[.session_id] // null) as $p
-               | $p == null
+               | $all or $p == null
                  or $p.updated_epoch != .updated
                  or ($p.final == false and .final))
     ' > "$work/due.jsonl" || die_stalled "could not read the session registry"
@@ -184,6 +190,6 @@ cmd_worst() {
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
-  -h|--help) sed -n '2,13p' "$0" ;;
-  *) echo "usage: $NAME [run] | worst [--project P] [--days N] [-n N]" >&2; exit 2 ;;
+  -h|--help) sed -n '2,14p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N]" >&2; exit 2 ;;
 esac

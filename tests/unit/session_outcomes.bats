@@ -168,6 +168,21 @@ EOF
   assert_equal "$(lines | wc -l)" 3
 }
 
+@test "run --all observes every session again, so a fixed detector reaches final rows" {
+  "$SUBJECT" run
+  local before; before=$(cat "$SO_OUT"/*/*.jsonl | wc -l)
+  SO_NOW=$((SO_NOW + 60)) run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(cat "$SO_OUT"/*/*.jsonl | wc -l)" $((before * 2))
+}
+
+@test "run with an unknown arg fails and writes nothing" {
+  run "$SUBJECT" run --bogus
+  assert_failure 2
+  [ ! -d "$SO_OUT/proj" ]
+}
+
 @test "turning FINAL_DAYS old re-observes once with final=true" {
   "$SUBJECT" run
   assert_equal "$(field a .final)" false
