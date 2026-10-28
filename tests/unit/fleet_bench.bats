@@ -181,6 +181,20 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | $9.99 |'
 }
 
+@test "sessions --json is the scorecard's rows as data, with the plan name day-log shows" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  echo '{"session_id":"a","prs_merged":3,"reverted_7d":1,"cost_usd":9.991}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  rowj 'phases_done: 1, plan_file: "/x/plans/glad-otter.md"' > "$SNAP"; sample_at 0
+  rowj 'phases_done: 2, plan_file: "/x/plans/glad-otter.md"' > "$SNAP"; sample_at 600
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" sessions --json
+  assert_success
+  run jq -c '{target, plan, phase, working_h, prs_merged, reverts, cost_usd}' <<<"$output"
+  assert_output '{"target":"lab/game-agent-1:1","plan":"glad-otter","phase":"2/4","working_h":0.1,"prs_merged":3,"reverts":1,"cost_usd":9.99}'
+  run "$SUBJECT" sessions
+  assert_failure 2
+}
+
 @test "report lists the outcome of every runner that calls fleet-bench, under its own name" {
   rowj 'phases_done: 1' > "$SNAP"
   AGENTCTL_NAME=fleet-bench BENCH_NOW=$T0 run "$SUBJECT" sample

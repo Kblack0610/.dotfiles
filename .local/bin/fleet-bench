@@ -8,6 +8,7 @@
 #   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
 #   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
+#   fleet-bench sessions --json  the scorecard's session rows, one JSON object each (day-log reads them)
 #   fleet-bench review [--pick]  count CI reds on PRs merged in the window, review a sample
 #   fleet-bench asks [--write|--page]
 #                                pending asks, the ones blocking a live session ranked first;
@@ -241,6 +242,7 @@ window_stats() {
     | [range(0; length - 1) | {b: $r[.].bucket,
          m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
     | {session_id: .[0].session_id, target: (last.target), project: (last.project),
+     plan: (last.plan_file // "" | sub(".*/"; "") | sub("\\.md$"; "")),
      phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
      ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
      working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
@@ -282,6 +284,26 @@ cmd_headline() {
        else ", review: \(n("block")) BLOCK \(n("flag")) FLAG in \(length) PRs" end)'
 }
 
+# session_rows <now> -> one JSON object per session in the window, most working time first:
+# the scorecard's Sessions table, joined to session-outcomes and the CI reds.
+session_rows() {
+  local t="$1"
+  jq -cn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" --slurpfile c <(in_window "$CI" merged_epoch "$t") '
+    def h: . / 60 * 10 | floor / 10;
+    ($c | group_by(.session_id) | map({key: .[0].session_id, value: (map(.ci_red) | add)}) | from_entries) as $red
+    | $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
+    | {session_id, target, plan, phase, ticked, working_h: (.working_min | h), waiting_h: (.waiting_min | h),
+       stalled_h: (.stalled_min | h), nudges, peak_k: (.peak_context / 1000 | floor),
+       prs_merged: $x.prs_merged, ci_reds: $red[.session_id], reverts: $x.reverted_7d,
+       cost_usd: (if $x.cost_usd then $x.cost_usd * 100 | floor / 100 else null end)}'
+}
+
+cmd_sessions() {
+  [ "${1:-}" = --json ] || { echo "usage: fleet-bench sessions --json" >&2; return 2; }
+  [ -s "$PROGRESS" ] || return 0
+  session_rows "$(now)"
+}
+
 cmd_scorecard() {
   local t day out counts
   t=$(now); day=$(date -d "@$t" +%F)
@@ -306,11 +328,8 @@ cmd_scorecard() {
     echo
     echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost |"
     echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
-    jq -rn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" --slurpfile c <(in_window "$CI" merged_epoch "$t") '
-      def h: . / 60 * 10 | floor / 10;
-      ($c | group_by(.session_id) | map({key: .[0].session_id, value: (map(.ci_red) | add)}) | from_entries) as $red
-      | $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
-      | "| \(.target) | \(.phase) | \(.ticked) | \(.working_min | h) | \(.waiting_min | h) | \(.stalled_min | h) | \(.nudges) | \(.peak_context / 1000 | floor)k | \($x.prs_merged // "-") | \($red[.session_id] // "-") | \($x.reverted_7d // "-") | \(if $x.cost_usd then "$\($x.cost_usd * 100 | floor / 100)" else "-" end) |"'
+    session_rows "$t" | jq -r '
+      "| \(.target) | \(.phase) | \(.ticked) | \(.working_h) | \(.waiting_h) | \(.stalled_h) | \(.nudges) | \(.peak_k)k | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.reverts // "-") | \(if .cost_usd then "$\(.cost_usd)" else "-" end) |"'
     echo
     echo "## ETA accuracy"
     echo
@@ -769,13 +788,14 @@ main() {
     report) cmd_report ;;
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
+    sessions) shift; cmd_sessions "$@" ;;
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
-    -h | --help) sed -n '2,23p' "$0" ;;
-    *) sed -n '2,19p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,24p' "$0" ;;
+    *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
 }
 

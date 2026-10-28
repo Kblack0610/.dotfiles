@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+# day-log - what a day shipped: every PR you merged in any repo, what is still open, what
+# waits on you, and the fleet's telemetry, kept as one record per day. The hub:log board.
+#
+#   day-log watch [--every N] [--once] [--date D]
+#                                 the board: [ and ] step a day, t today, l the full list,
+#                                 n refresh, q quit (hub:log, Prefix O)
+#   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path
+#   day-log json [--date D]       the day's record: today is gathered, a past day is read
+#   day-log show [--date D]       the day as markdown, every PR listed
+#   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
+#                                 refs/<D>/shipped.md, print one summary line
+# Deterministic, no model: gh search, the fleet state document, fleet-bench, agent-usage,
+# agent-hold and the shepherd's watch log. The live sections (waiting on you, fleet,
+# scorecard) are read while the day is today and kept as last seen once it is past.
+
+set -uo pipefail
+
+# The shared column fitter, the same one fleet-sessions watch and command-center use.
+# shellcheck source=/dev/null
+. "${TABLE_FIT_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \
+  || . "$HOME/.local/lib/table-fit.sh" 2>/dev/null \
+  || { echo "day-log: table-fit.sh not found" >&2; exit 1; }
+
+: "${DAYLOG_DIR:=$HOME/.agent/daylog}"
+: "${DAYLOG_EVERY:=300}"      # board refresh; each pass is three gh searches
+: "${DAYLOG_GH:=gh}"
+: "${DAYLOG_STATE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+: "${DAYLOG_GROUPS:=$HOME/.config/day-log/groups}"
+: "${DAYLOG_WATCH_LOG:=$HOME/.agent/shepherd/watch.log}"
+: "${DAYLOG_BENCH_CMD:=fleet-bench}"
+: "${DAYLOG_USAGE_CMD:=agent-usage}"
+: "${DAYLOG_HOLD_CMD:=agent-hold}"
+: "${DAYLOG_UNITY_CMD:=pgrep -cx Unity}"
+: "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
+: "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
+: "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
+: "${DAYLOG_TIMELINE:=8}"     # watch-log lines on the board; the record keeps 50
+: "${DAYLOG_ASKS:=6}"         # pending asks on the board, newest first
+
+say() { printf 'day-log: %s\n' "$*" >&2; }
+now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
+today() { date -d "@$(now)" +%F; }
+valid_day() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -d "$1" +%F >/dev/null 2>&1; }
+record_of() { printf '%s/%s.json' "$DAYLOG_DIR" "$1"; }
+
+# groups_json -> {scopes: {scope: group}, repos: {repo: area}} from DAYLOG_GROUPS.
+groups_json() {
+  [ -r "$DAYLOG_GROUPS" ] || { echo '{"scopes":{},"repos":{}}'; return 0; }
+  awk '/^[[:space:]]*(#|$)/ { next }
+    { key = $1; $1 = ""; sub(/^ +/, "")
+      if (key ~ /^@/) printf "r\t%s\t%s\n", substr(key, 2), $0
+      else { n = split(key, k, ","); for (i = 1; i <= n; i++) printf "s\t%s\t%s\n", k[i], $0 } }' "$DAYLOG_GROUPS" |
+    jq -Rn '[inputs | split("\t")]
+      | {scopes: (map(select(.[0] == "s") | {key: .[1], value: .[2]}) | from_entries),
+         repos: (map(select(.[0] == "r") | {key: .[1], value: .[2]}) | from_entries)}'
+}
+
+# outcome_prs <day> -> {"repo#N": session title} for PRs session-outcomes saw merge that day.
+outcome_prs() {
+  local m; m="${1:0:7}"
+  if compgen -G "$DAYLOG_OUTCOMES_DIR/*/$m.jsonl" >/dev/null; then
+    cat "$DAYLOG_OUTCOMES_DIR"/*/"$m".jsonl
+  fi | jq -cs '[.[] | select(.title and (.prs | type) == "array") | .title as $t
+      | .prs[] | select(.state == "MERGED") | {key: "\(.repo | sub(".*/"; ""))#\(.number)", value: $t}]
+    | from_entries'
+}
+
+# usage_json <since> <until> -> per-project spend from the agent-usage registry (no network).
+usage_json() {
+  $DAYLOG_USAGE_CMD rollup --since "$1" --until "$2" 2>/dev/null |
+    jq -Rn '[inputs | split("\t") | select(length >= 5)
+      | {project: .[0], sessions: (.[1] | tonumber), tokens: (.[3] | tonumber), cost_usd: (.[4] | tonumber)}]'
+}
+
+# gather <day> -> the day's record on stdout; a source that cannot be read keeps the
+# previous record's value for it and is named in .unreadable.
+gather() {
+  local day="$1" prev s e live=false tmp
+  prev="$(record_of "$day")"; [ -s "$prev" ] || prev=/dev/null
+  s=$(date -d "$day 00:00" +%s); e=$(date -d "$day +1 day 00:00" +%s)
+  [ "$day" = "$(today)" ] && live=true
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+
+  $DAYLOG_GH search prs --author=@me --merged-at "$(date -u -d "@$s" +%FT%TZ)..$(date -u -d "@$((e - 1))" +%FT%TZ)" \
+    --limit 1000 --json number,title,url,repository,closedAt > "$tmp/merged" 2>/dev/null || rm -f "$tmp/merged"
+  if [ "$live" = true ]; then
+    $DAYLOG_GH search prs --author=@me --state=open --limit 1000 \
+      --json number,title,url,repository,createdAt,updatedAt,isDraft > "$tmp/open" 2>/dev/null || rm -f "$tmp/open"
+    cp "$DAYLOG_STATE" "$tmp/state" 2>/dev/null || rm -f "$tmp/state"
+    $DAYLOG_BENCH_CMD headline > "$tmp/headline" 2>/dev/null || rm -f "$tmp/headline"
+    $DAYLOG_BENCH_CMD sessions --json 2>/dev/null | jq -s '.[:8]' > "$tmp/bench" 2>/dev/null || rm -f "$tmp/bench"
+    $DAYLOG_HOLD_CMD list 2>/dev/null | jq -Rn '[inputs | split("\t") | {resource: .[0], since: .[1], by: .[2], reason: .[3]}]' > "$tmp/holds"
+    $DAYLOG_UNITY_CMD > "$tmp/unity" 2>/dev/null || echo 0 > "$tmp/unity"
+  fi
+  { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
+  usage_json "$s" "$e" > "$tmp/usage"
+  outcome_prs "$day" > "$tmp/outcomes"
+  groups_json > "$tmp/groups"
+
+  jq -n --arg day "$day" --argjson live "$live" --arg at "$(date -d "@$(now)" +%FT%T%z)" \
+     --slurpfile prev <(cat "$prev" 2>/dev/null || echo '{}') \
+     --slurpfile merged <(cat "$tmp/merged" 2>/dev/null || echo null) \
+     --slurpfile open <(cat "$tmp/open" 2>/dev/null || echo null) \
+     --slurpfile state <(cat "$tmp/state" 2>/dev/null || echo null) \
+     --slurpfile headline <(jq -Rs 'rtrimstr("\n")' "$tmp/headline" 2>/dev/null || echo null) \
+     --slurpfile bench <(cat "$tmp/bench" 2>/dev/null || echo null) \
+     --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
+     --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
+     --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
+     --slurpfile outcomes "$tmp/outcomes" --slurpfile groups "$tmp/groups" '
+    ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st
+    | def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
+      def who($repo): (.target // "" | sub("^[^/]*/"; "") | sub(":1$"; "")) as $t
+        | ($t | ltrimstr($repo + "-")) as $l | if $l == "" then $t else $l end;
+    # the session that landed each PR: what the live sessions say now, then earlier passes, then outcomes
+    (if $st == null then {} else
+       [ $st.sessions[]? | select((.pr // "-") != "-") | . as $x | ($x.cwd // "" | sub(".*/"; "")) as $b
+         | ($merged[0] // [])[] | select((.number | tostring) == $x.pr)
+         | .repository.name as $r | select($b == $r or ($b | startswith($r + "-")))
+         | {key: "\($r)#\(.number)", value: ($x | who($r))} ] | from_entries end) as $now_by
+    | ($outcomes[0] + ($p.landed_by // {}) + $now_by) as $by
+    | ($merged[0] // null) as $m
+    | {schema: 1, date: $day, live: $live, gathered_at: $at,
+       unreadable: ([if $m == null then "gh merged" else empty end,
+                     if $live and $open[0] == null then "gh open" else empty end,
+                     if $live and $st == null then "fleet state" else empty end]),
+       landed_by: $by,
+       merged: (if $m == null then ($p.merged // [])
+         else [$m[] | (scope) as $sc | .repository.name as $r
+           | {repo: $r, number, title, url, merged_at: .closedAt, scope: $sc,
+              group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $by["\($r)#\(.number)"]}]
+           | sort_by(.merged_at) end),
+       open: (if $live and $open[0] != null then
+           [$open[0][] | .repository.name as $r | (.number | tostring) as $n
+            | ([$st.sessions[]? | select(.pr == $n and ((.cwd // "") | sub(".*/"; "") | . == $r or startswith($r + "-")))] | first) as $x
+            | {repo: $r, number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
+               ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
+         else ($p.open // null) end),
+       waiting: (if $live and $st != null then
+           {main: [$st.main[]? | {repo, reason}],
+            needs: [$st.sessions[]? | select(.bucket == "NEEDS") | {who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")), reason, idle_min}],
+            asks: [$st.asks[]? | {id, project, kind, question, created}] | sort_by(.created) | reverse}
+         else ($p.waiting // null) end),
+       fleet: (if $live and $st != null then
+           {sessions: ($st.sessions | length), buckets: ($st.sessions | group_by(.bucket) | map({key: (.[0].bucket // "?"), value: length}) | from_entries),
+            holds: ($holds[0] // []), unity_runs: ($unity | tonumber? // 0)}
+         else ($p.fleet // null) end),
+       bench: (if $live and $headline[0] != null then {headline: $headline[0], sessions: ($bench[0] // [])}
+         else ($p.bench // null) end),
+       usage: $usage[0],
+       timeline: (if ($timeline[0] | length) > 0 then $timeline[0] else ($p.timeline // []) end)}'
+}
+
+# snapshot <day>: gather and write the record atomically, under a lock (the board and the
+# morning finalize can both write today's or yesterday's record).
+snapshot() {
+  local day="$1" out
+  mkdir -p "$DAYLOG_DIR" || return 1
+  out="$(record_of "$day")"
+  (
+    flock 9
+    gather "$day" > "$out.tmp" && jq -e .schema "$out.tmp" >/dev/null && mv "$out.tmp" "$out"
+  ) 9>"$DAYLOG_DIR/.lock" || { rm -f "$out.tmp"; say "could not write $out"; return 1; }
+  printf '%s\n' "$out"
+}
+
+# record <day> -> path of the day's record: today is gathered fresh, a past day is read.
+record() {
+  local day="$1" f; f="$(record_of "$day")"
+  if [ "$day" = "$(today)" ]; then snapshot "$day" >/dev/null || return 1
+  elif [ ! -s "$f" ]; then say "no record for $day (day-log snapshot --date $day gathers it)"; return 1; fi
+  printf '%s\n' "$f"
+}
+
+# JQ helpers the board and the markdown share.
+JQ_VIEW='
+def hm: if . == null then "-" elif endswith("Z") then fromdateiso8601 | strflocaltime("%H:%M") else .[11:16] end;
+def subject: .title | sub("^[a-z]+(\\([^)]*\\))?!?: *"; "");
+def money: if . == null then "-" else "$\(. * 100 | round / 100)" end;
+def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1e5 | floor / 10)M" else "\(.)" end;
+def spend: (.usage // []) | {cost: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)};
+def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
+'
+
+# frame <record> <width>: one board frame.
+frame() {
+  local f="$1" w="$2" t; t="$(now)"
+  jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+    spend as $u
+    | "day log  \(.date | strptime("%Y-%m-%d") | mktime | strftime("%a %Y-%m-%d"))  "
+      + (if .live then "live, gathered \(.gathered_at | hm)" else "past day, last gathered \(.gathered_at[0:16] | sub("T"; " "))" end)
+      + (if (.unreadable | length) > 0 then "  could not read: \(.unreadable | join(", "))" else "" end),
+    "merged \(.merged | length) in \(.merged | map(.repo) | unique | length) repos"
+      + (if .open then "  open \(.open | map(select(recent($now; $days))) | length) (+\(.open | map(select(recent($now; $days) | not)) | length) older)" else "" end)
+      + "  \($u.sessions) sessions \($u.cost | money)  \($u.tokens | tok) tokens",
+    (if .fleet then "fleet  " + (.fleet.buckets | to_entries | sort_by(-.value) | map("\(.key) \(.value)") | join("  "))
+      + "  unity runs \(.fleet.unity_runs)"
+      + (.fleet.holds | map("  HOLD \(.resource) since \(.since | hm) by \(.by)") | join("")) else empty end),
+    "",
+    ([range(0; 24) | . as $h | "\($h)" | if length < 2 then "0" + . else . end] as $hrs
+     | [.merged[] | .merged_at | fromdateiso8601 | strflocaltime("%H")] as $hs
+     | ([$hrs[] | . as $x | [$hs[] | select(. == $x)] | length]) as $n
+     | ($n | to_entries | map(select(.value > 0)) | if length == 0 then null else [first.key, last.key] end) as $span
+     | if $span == null then empty else
+         "hour    " + ([range($span[0]; $span[1] + 1) | $hrs[.] | " " + .] | join("")),
+         "merged  " + ([range($span[0]; $span[1] + 1) | $n[.] | tostring | if . == "0" then "." else . end
+           | (if length < 2 then "  " else " " end) + .] | join("")) end)
+  ' "$f"
+  echo
+
+  local wait
+  wait="$(jq -r --argjson n "$DAYLOG_ASKS" '
+    (.waiting // {main: [], needs: [], asks: []}) as $w
+    | ($w.main | map("\tMAIN\t\(.repo)\t\(.reason | sub("^[^ ]+ red: "; "red: "))")),
+      ($w.needs | map("\tNEEDS\t\(.who)\t\(.reason) (idle \(.idle_min)m)")),
+      ($w.asks[:$n] | map("\tASK\t\(.id) \(.project)\t\(.question | gsub("[\t\n]"; " "))")),
+      (if ($w.asks | length) > $n then ["\t\t\t+\(($w.asks | length) - $n) older asks: agent-ask list --all --pending"] else [] end)
+    | .[]' "$f")"
+  printf 'WAITING ON YOU (%s)\n' "$(grep -c . <<<"$wait")"
+  if [ -n "$wait" ]; then
+    { printf '\t%s' KIND WHO WHY; echo; printf '%s\n' "$wait"; } | table_fit "$w" keep="1 2" flex=3 flexmin=20 cap="2:30"
+  else echo "  nothing"; fi
+  echo
+
+  printf 'MERGED BY GROUP  (l: every PR)\n'
+  jq -r "$JQ_VIEW"'
+    "\tAREA\tGROUP\tN\tLAST\tLATEST",
+    (.merged | group_by(.area + "\u0000" + .group) | sort_by(.[0].area, -length)[]
+     | last as $l | "\t\(.[0].area)\t\(.[0].group)\t\(length)\t\($l.merged_at | hm)\t#\($l.number) \($l | subject)")
+  ' "$f" | table_fit "$w" keep="2 3 4 1" flex=5 flexmin=16 right="3" cap="1:14 2:28"
+  echo
+
+  if jq -e '.open != null' "$f" >/dev/null; then
+    printf 'STILL OPEN  (touched in the last %sd)\n' "$DAYLOG_OPEN_DAYS"
+    jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+      "\tPR\tREPO\tAGE\tCI\tBY\tTITLE",
+      (.open[] | select(recent($now; $days))
+       | "\t#\(.number)\t\(.repo)\t\(($now - (.created_at | fromdateiso8601)) / 3600 | floor)h\t\(if .draft then "draft" else (.ci // "-") end)\t\(.by // "-")\t\(subject)")
+    ' "$f" | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=16 right="3" opt="5" cap="2:22"
+    echo
+  fi
+
+  if jq -e '.bench != null' "$f" >/dev/null; then
+    printf 'SESSIONS\n'
+    jq -r '.bench.headline' "$f" | fold -s -w "$(( ${w:-0} > 4 ? w - 2 : 200 ))" | sed 's/^/  /'
+    jq -r "$JQ_VIEW"'
+      "\tSESSION\tPLAN\tPHASE\tWORK h\tWAIT h\tPRS\tREDS\tCOST",
+      (.bench.sessions[] | "\t\(.target | sub("^[^/]*/"; "") | sub(":1$"; ""))\t\(if (.plan // "") == "" then "-" else .plan end)\t\(.phase)\t\(.working_h)\t\(.waiting_h)\t\(.prs_merged // "-")\t\(.ci_reds // "-")\t\(.cost_usd | money)")
+    ' "$f" | table_fit "$w" keep="1 3 4 5 6 8 7 2" right="4 5 6 7 8" opt="2" cap="1:32 2:28"
+    echo
+  fi
+
+  printf 'TIMELINE\n'
+  jq -r --argjson n "$DAYLOG_TIMELINE" '.timeline[-$n:] | reverse | .[] | "  " + .[11:]' "$f" | table_fit "$w"
+}
+
+# markdown <record>: the day with every PR, for the notes ref and the board's full list.
+markdown() {
+  jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+    spend as $u
+    | "# Day log, \(.date)", "",
+      "\(.merged | length) merged in \(.merged | map(.repo) | unique | length) repos, \($u.sessions) sessions active, whose whole-session spend is \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
+      (if .waiting then "## Waiting on you (as last gathered)", "",
+        (.waiting.main[] | "- MAIN \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
+        (.waiting.needs[] | "- NEEDS \(.who): \(.reason)"),
+        (.waiting.asks[] | "- ASK \(.id) (\(.project)): \(.question | gsub("\n"; " "))"), "" else empty end),
+      "## Merged", "",
+      (.merged | group_by(.area)[] | "### \(.[0].area) (\(length))", "",
+        (group_by(.group) | sort_by(-length)[] | "#### \(.[0].group) (\(length))", "",
+          (.[] | "- \(.merged_at | hm) [\(.repo)#\(.number)](\(.url)) \(subject)\(if .by then " (\(.by))" else "" end)"), "")),
+      (if .open then "## Still open", "",
+        (.open[] | select(recent($now; $days)) | "- [\(.repo)#\(.number)](\(.url)) \(subject)\(if .draft then " (draft)" else "" end)"),
+        "", "\(.open | map(select(recent($now; $days) | not)) | length) older open PRs not listed.", "" else empty end),
+      (if .bench then "## Sessions", "", .bench.headline, "",
+        "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
+        (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
+      "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
+      (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"), "",
+      (if (.timeline | length) > 0 then "## Timeline", "", (.timeline[] | "- " + .[11:]) else empty end)
+  ' "$1"
+}
+
+# finalize [day]: re-gather a finished day and file it as that day's notes ref.
+finalize() {
+  local day="$1" f out
+  f="$(snapshot "$day")" || return 1
+  out="$DAYLOG_REFS_DIR/$day/shipped.md"
+  mkdir -p "${out%/*}" && markdown "$f" > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
+  jq -r '"\(.merged | length) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
+}
+
+# wait_key <secs> -> the key pressed, or nothing on a timeout or a resize (CONVENTIONS.md:
+# bash 5.3 keeps reading after a trap, so the read sits in a subshell the WINCH trap exits).
+wait_key() {
+  (trap 'exit 0' WINCH; read -rsn1 -t "$1" k && printf '%s' "$k")
+}
+
+term_width() {
+  local w
+  w="$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2)"
+  [ "${w:-0}" -gt 0 ] 2>/dev/null && echo "$w"
+}
+
+paint() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    sed -E -e $'s/\\b(MAIN|NEEDS|HOLD|FAIL)\\b/\033[31m&\033[0m/g' -e $'s/\\b(ASK|draft)\\b/\033[33m&\033[0m/g' \
+           -e $'s/^(WAITING ON YOU|MERGED BY GROUP|STILL OPEN|SESSIONS|TIMELINE)/\033[1m&\033[0m/'
+  else cat; fi
+}
+
+watch() {
+  local every="$DAYLOG_EVERY" once=0 day="" key f="" width deadline=0 tick=1 resized=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --every) every="${2:-}"; shift 2 || shift ;;
+      --once) once=1; shift ;;
+      --date) day="${2:-}"; shift 2 || shift ;;
+      *) echo "usage: day-log watch [--every N] [--once] [--date D]" >&2; return 2 ;;
+    esac
+  done
+  [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "day-log: --every takes whole seconds" >&2; return 2; }
+  [ -n "$day" ] || day="$(today)"
+  valid_day "$day" || { echo "day-log: --date takes YYYY-MM-DD" >&2; return 2; }
+  trap 'resized=1' WINCH
+  while :; do
+    if [ "$tick" = 1 ]; then f="$(record "$day")"; deadline=$((SECONDS + every)); fi
+    width=""; [ -t 1 ] && width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
+    [ -t 1 ] && printf '\033[H\033[2J'
+    if [ -n "$f" ]; then frame "$f" "$width" | table_fit "$width" | paint
+    else printf 'day log  %s\nno record for this day: [ and ] step, t today\n' "$day"; fi
+    [ "$once" = 1 ] && return 0
+    if [ -t 0 ]; then
+      printf '\n[ prev day  ] next  t today  l every PR  n refresh  q quit'
+      [ "$day" = "$(today)" ] && printf '  (next pass in %ss)' "$((deadline > SECONDS ? deadline - SECONDS : 0))"
+      resized=0
+      key="$(wait_key "$((deadline > SECONDS ? deadline - SECONDS : 1))")"
+      tick=1
+      case "$key" in
+        q) echo; return 0 ;;
+        '[') day="$(date -d "$day -1 day" +%F)" ;;
+        ']') [ "$day" \< "$(today)" ] && day="$(date -d "$day +1 day" +%F)" ;;
+        t) day="$(today)" ;;
+        l) [ -n "$f" ] && markdown "$f" | less -R; tick=0 ;;
+        '') [ "$resized" = 1 ] && [ "$SECONDS" -lt "$deadline" ] && tick=0 ;;
+      esac
+      # a past day's record does not change: only today is re-gathered on the timer
+      [ "$key" = '' ] && [ "$day" != "$(today)" ] && [ "$tick" = 1 ] && deadline=$((SECONDS + every))
+    else
+      sleep "$every"
+    fi
+  done
+}
+
+# day_arg [--date D] [default] -> the day, validated.
+day_arg() {
+  local def="$1" day=""; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --date) day="${2:-}"; shift 2 || shift ;;
+      *) echo "day-log: unknown argument $1" >&2; return 2 ;;
+    esac
+  done
+  day="${day:-$def}"
+  valid_day "$day" || { echo "day-log: --date takes YYYY-MM-DD" >&2; return 2; }
+  [ "$day" \> "$(today)" ] && { echo "day-log: $day has not happened yet" >&2; return 2; }
+  printf '%s' "$day"
+}
+
+main() {
+  local verb="${1:-}" day f
+  shift || true
+  case "$verb" in
+    watch) watch "$@" ;;
+    snapshot) day="$(day_arg "$(today)" "$@")" || return 2; snapshot "$day" ;;
+    json) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && cat "$f" ;;
+    show) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && markdown "$f" ;;
+    finalize) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; finalize "$day" ;;
+    -h | --help) sed -n '2,15p' "$0" ;;
+    *) sed -n '2,12p' "$0" >&2; return 2 ;;
+  esac
+}
+
+# Sourceable for tests; runs main only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
