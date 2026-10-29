@@ -47,9 +47,6 @@ pub struct RowInfo {
     pub summary: String,
     /// The session is in plan mode.
     pub plan: bool,
-    /// The session's last word asks the human something: see `asks_human`. Whether it is
-    /// still waiting on the answer also needs the session status, which the caller holds.
-    pub question: bool,
 }
 
 pub fn row_info(path: &Path) -> RowInfo {
@@ -57,14 +54,20 @@ pub fn row_info(path: &Path) -> RowInfo {
     RowInfo {
         summary: last_event_in(&text),
         plan: permission_mode(&text).as_deref() == Some("plan"),
-        question: asks_human(&text),
     }
 }
 
-/// The session ended its turn by asking the human something, in its own conversation rather
-/// than through `agent-ask`. True when the last main-thread entry is the assistant's (no prompt
-/// or tool result after it) and either its last call is a dialog tool left open
-/// (AskUserQuestion, ExitPlanMode) or its closing text asks a question (`text_asks`).
+/// The transcript at `path` ends on the session asking the human something: `asks_human`.
+/// The Stop check (`stop-post.d/88-ask-filed.sh`) reads it through `agent-panel asks-human`
+/// to make the session file that ask; no view reads it, the ask file is the record.
+pub fn asks_human_at(path: &Path) -> bool {
+    asks_human(&read(path))
+}
+
+/// The session ended its turn by asking the human something in its own conversation. True when
+/// the last main-thread entry is the assistant's (no prompt or tool result after it) and either
+/// its last call is a dialog tool left open (AskUserQuestion, ExitPlanMode), or its closing text
+/// asks a question (`text_asks`) or asks the human to do something (`text_requests_action`).
 fn asks_human(text: &str) -> bool {
     // The human's side: a typed prompt or a tool result, not a reminder or a subagent's.
     let answer = |v: &Value| {
@@ -84,7 +87,10 @@ fn asks_human(text: &str) -> bool {
     };
     match block.get("type").and_then(Value::as_str) {
         Some("tool_use") => matches!(block.get("name").and_then(Value::as_str), Some("AskUserQuestion" | "ExitPlanMode")),
-        Some("text") => text_asks(block.get("text").and_then(Value::as_str).unwrap_or("")),
+        Some("text") => {
+            let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
+            text_asks(msg) || text_requests_action(msg)
+        }
         _ => false,
     }
 }
@@ -123,6 +129,38 @@ fn text_asks(msg: &str) -> bool {
         Some(prev) if found.is_empty() && last.len() == 1 => asks(question_sentences(prev)),
         _ => asks(found),
     }
+}
+
+/// Phrases that hand the next step to the human ("when that's done, I'll re-run it"), matched in
+/// the lowercased closing paragraph with curly apostrophes folded.
+const ACTION_CUES: [&str; 6] = ["when that's done", "once that's done", "when you've", "once you've", "let me know when", "once you have"];
+
+/// The message ends by asking the human to act rather than asking a question: one of its last
+/// two blocks is a fenced `! <command>` line (only the human's prompt runs those), or its closing
+/// prose paragraph carries an `ACTION_CUES` phrase. 2026-10-28 a session ended on a `! ssh ...`
+/// block and "When that's done, I'll re-run the job." with no `?`, and waited unflagged.
+fn text_requests_action(msg: &str) -> bool {
+    // Blocks: blank-line separated prose paragraphs, and each fence as one block of its own.
+    let mut blocks: Vec<(bool, Vec<&str>)> = vec![(false, Vec::new())];
+    let mut fenced = false;
+    for line in msg.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            blocks.push((fenced, Vec::new()));
+        } else if !fenced && line.trim().is_empty() {
+            blocks.push((false, Vec::new()));
+        } else {
+            blocks.last_mut().expect("starts non-empty").1.push(line);
+        }
+    }
+    blocks.retain(|(_, b)| !b.is_empty());
+    let tail = &blocks[blocks.len().saturating_sub(2)..];
+    let command = tail.iter().any(|(f, b)| *f && b.iter().any(|l| l.trim_start().starts_with("! ")));
+    let cue = tail.last().is_some_and(|(f, b)| {
+        let p = b.join(" ").to_lowercase().replace('\u{2019}', "'");
+        !*f && ACTION_CUES.iter().any(|c| p.contains(c))
+    });
+    command || cue
 }
 
 /// Each sentence in `lines` that ends in `?`, lowercased, with markdown emphasis stripped.
@@ -585,6 +623,28 @@ mod tests {
     }
 
     #[test]
+    fn handing_the_human_a_step_asks() {
+        // agent-27, 2026-10-28: no `?`, and it waited on the human.
+        let agent27 = "This step needs you. It's a terminal command, not a click, and you can run it from here (it will ask for the M1's password):\n\n```\n! ssh -t m1 'sudo mkdir -p \"/Library/Application Support/Unity\"'\n```\n\nWhen that's done, I'll re-run the job.";
+        for msg in [
+            agent27,
+            "Run this in the prompt:\n\n```\n! gcloud auth login\n```",
+            "The token is in rbw. Let me know when the secret is set and I'll re-run the deploy.",
+            "Once you\u{2019}ve approved it on the phone I will merge.",
+        ] {
+            assert!(asks_human(&said(msg)), "should ask: {msg}");
+        }
+        for msg in [
+            // A `!` command early in an explanation, with more after it, is not the closing ask.
+            "It ended on:\n\n```\n! ssh m1 true\n```\n\nThat is why it waited.\n\nThe check now catches it, and the PR is merged.",
+            "When that's done is the wrong question here.\n\nMerged #604.",
+            "```\n!important\n```",
+        ] {
+            assert!(!asks_human(&said(msg)), "should not ask: {msg}");
+        }
+    }
+
+    #[test]
     fn only_the_last_main_thread_entry_decides() {
         let asked = said("Want me to land it?");
         // A dialog tool left open asks; any other last call is mid-turn.
@@ -604,9 +664,9 @@ mod tests {
         ];
         assert!(asks_human(&format!("{asked}{}\n", noise.join("\n"))));
         let p = tmpfile("asks", &[asked.trim_end()]);
-        assert!(row_info(&p).question);
+        assert!(asks_human_at(&p));
         fs::remove_file(&p).ok();
-        assert!(!row_info(Path::new("/no/such/file.jsonl")).question);
+        assert!(!asks_human_at(Path::new("/no/such/file.jsonl")));
     }
 
     #[test]

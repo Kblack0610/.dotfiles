@@ -9,32 +9,30 @@ A blue `A` beside it marks an agent with a pending ask: a file under
 `claude_session` is this agent's session id. That is the same rule as `asks_for` in
 `fleet-sessions`, so the panel marks exactly the sessions it buckets as NEEDS.
 
-A blue `?` in the same column marks an agent that ended its turn asking you something in its
-own conversation, without an ask. The column means "needs your answer": `A` when there is a
-pending ask (it names its question, so it wins), else `?`. The rule (`asks_human` in
-`jsonl.rs`) holds when Claude is at its prompt (`idle`, or `shell` with a background job
-running; never `busy`, whose closing text is stale) and the last main-thread entry is its own,
-with no prompt or tool result after it, and either:
+`agent-panel asks-human <transcript.jsonl>` exits 0 when a session's last word asks you
+something. The Stop check `.claude/hooks/stop-post.d/88-ask-filed.sh` uses it to make the
+session file that question as an ask, so the ask stays the one record and no view guesses from
+the chat. The rule (`asks_human` in `jsonl.rs`): the last main-thread entry is the session's
+own, with no prompt or tool result after it, and either:
 
 - that entry's last call is a dialog left open (`AskUserQuestion`, `ExitPlanMode`), or
 - its closing paragraph asks a question: a sentence ending in `?`. A `?` inside backticks,
   double quotes, a code fence or a `>` quote does not count, nor does one in a list item with
   text after it (a findings list answering its own question). A one-line postscript with no
   question ("the screenshot is at X") does not hide the paragraph before it. Pure manners
-  ("anything else?", "any questions?") do not count.
-
-A statement that hands off to you without a `?` ("I can't go on until you allow X") is not
-marked. `fleet-sessions` reads the same fact from `list --json` and buckets the session as NEEDS.
+  ("anything else?", "any questions?") do not count, or
+- it hands you a step: one of its last two blocks is a fenced `! <command>` line, or the
+  closing paragraph says "when that's done", "once you've", "let me know when" and the like.
 
 `shell` keeps the yellow `~`: Claude is at its prompt, but waiting on its own background job
-(usually a gate), and resumes by itself when it ends, so it does not need you. The `?` column
+(usually a gate), and resumes by itself when it ends, so it does not need you. The `A` column
 is what says it does.
 
 Bound in `~/.tmux.conf`:
 
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
-  prompt (`!`), holding a pending ask (`A`), or asking you a question (`?`)
+  prompt (`!`) or holding a pending ask (`A`)
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -59,9 +57,10 @@ string rather than `claude` (observed on macOS).
 | Command | Purpose |
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
-| `agent-panel next` | Cycle to the next attention-needed agent, `!`, `A` or `?` (else next in list) |
+| `agent-panel next` | Cycle to the next attention-needed agent, `!` or `A` (else next in list) |
+| `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
-| `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, question (the `?` mark), idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`) |
+| `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`) |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 

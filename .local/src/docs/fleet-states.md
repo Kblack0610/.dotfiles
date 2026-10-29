@@ -41,7 +41,7 @@ Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first
 
 | Value | Meaning | Who acts |
 | --- | --- | --- |
-| `NEEDS` | Waiting on a prompt, a pending ask (even while busy), a question it asked the human in its own conversation (agent-panel's `question`, needs it at its prompt), or plan approval | The human |
+| `NEEDS` | Waiting on a prompt or dialog, a pending ask (even while busy; an attended session files every question it leaves the human, `stop-post.d/88-ask-filed.sh`), or plan approval | The human |
 | `STALLED` | An open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
 | `LANDED` | Tree clean and the plan has a next phase, or a plan with no `## Phases` checklist and nothing merged | The session starts it |

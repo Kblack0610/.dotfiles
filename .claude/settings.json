@@ -180,6 +180,10 @@
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.local/src/tmux/wind-down.sh disarm"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh answered"
           }
         ]
       }
@@ -222,6 +226,17 @@
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.config/shared-hooks/worktree-remove.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh stale"
           }
         ]
       }

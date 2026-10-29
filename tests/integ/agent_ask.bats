@@ -5,6 +5,7 @@
 # detail. HOME is sandboxed, so ASKS_ROOT lands inside the test tmpdir automatically.
 
 setup() {
+  bats_require_minimum_version 1.5.0
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
@@ -62,14 +63,55 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'session: agent-1'
 }
 
-@test "an attended session asks in the conversation, not the queue" {
-  CLAUDE_CODE_SESSION_ATTENDED=1 run "$AGENT_ASK" post --project demo 'merge it?'
-  assert_failure 2
-  assert_output --partial 'ask in the conversation'
-  [ -z "$(find "$HOME/.agent/asks" -name '*.md' 2>/dev/null)" ]
-  # a resumable wave ask is machinery a later process acts on, so it is still filed
-  CLAUDE_CODE_SESSION_ATTENDED=1 run "$AGENT_ASK" post --project demo --resume 'true' 'ship it?'
+@test "an attended session files its ask, sees it in its pane, and pages the human once" {
+  # 2026-10-28: agent-27 asked only in the conversation and waited unflagged; the ask file is
+  # the one record every board and the phone read.
+  CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-1 run --separate-stderr \
+    "$AGENT_ASK" post --project demo --options 'now|later' --recommend later 'merge it?'
   assert_success
+  local id="$output"
+  [ -f "$HOME/.agent/asks/demo/$id.md" ]
+  [[ "$stderr" == *"ASK $id (question) - waiting on you"* ]]
+  [[ "$stderr" == *"merge it?"* ]]
+  [[ "$stderr" == *"options: [now] [later] (recommended)"* ]]
+  [ "$(grep -c '^agent-notify -p high -t ask: demo' "$NOTES_FIXTURE/calls.log")" = 1 ]
+}
+
+@test "a headless post neither renders nor pages: the briefing pages headless asks" {
+  run --separate-stderr "$AGENT_ASK" post --project demo 'merge it?'
+  assert_success
+  [ -z "$stderr" ]
+  ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "settle-session closes only that session's pending asks" {
+  local mine other done_
+  mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  other="$(CLAUDE_CODE_SESSION_ID=sid-2 post demo 'ship it?')"
+  done_="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'old?')"
+  "$AGENT_ASK" answer "$done_" yes 2>/dev/null
+  run "$AGENT_ASK" settle-session sid-1 answered "yes, go ahead"
+  assert_success
+  run "$AGENT_ASK" show "$mine"
+  assert_line 'status: answered'
+  assert_line 'answer: in session: yes, go ahead'
+  # Negative controls: another session's ask stays pending, an answered one keeps its answer.
+  run "$AGENT_ASK" show "$other"
+  assert_line 'status: pending'
+  run "$AGENT_ASK" show "$done_"
+  assert_line 'answer: yes'
+  run "$AGENT_ASK" settle-session sid-2 stale "session ended (exit)"
+  run "$AGENT_ASK" show "$other"
+  assert_line 'status: stale'
+  assert_line 'closed_reason: session ended (exit)'
+  run "$AGENT_ASK" settle-session sid-2 bogus
+  assert_failure 2
+}
+
+@test "list carries the asking Claude session as its last column" {
+  CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | cut -f16'
+  assert_output 'sid-1'
 }
 
 @test "the question survives the round trip" {
@@ -95,10 +137,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 15 tab-separated fields per ask" {
+@test "list emits 16 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '15'
+  assert_output '16'
 }
 
 @test "the last two fields are created and session, for fleet-bench's ask digest" {

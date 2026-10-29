@@ -278,9 +278,9 @@ struct AgentOut {
     summary: String,
     session: String,
     tags: String,
-    /// What the agent wants from the human, from its transcript: set when it is
-    /// `waiting` (a dialog or permission prompt is open) or `idle` (its turn ended and the
-    /// next move is the human's). Absent while it works.
+    /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
+    /// question asked in the conversation is not read here: the session files it as an ask
+    /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
 }
@@ -302,13 +302,13 @@ async fn find(target: &str) -> ApiResult<chooser::Agent> {
 }
 
 async fn agents() -> Json<Vec<AgentOut>> {
-    // Blocking: the question is a transcript read, done only for agents the human can answer.
+    // Blocking: the dialog is a transcript read, done only for agents that have one open.
     let out = tokio::task::spawn_blocking(|| {
         chooser::collect()
             .into_iter()
             .map(|a| AgentOut {
                 question: match (a.status.as_str(), &a.jsonl) {
-                    ("waiting" | "idle", Some(p)) => transcript::pending_question(p).ok().flatten(),
+                    ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
                 },
                 target: a.target,
@@ -454,10 +454,13 @@ struct Ask {
     question: String,
     options: Vec<String>,
     recommend: String,
+    /// The Claude session that asked, empty for a headless run: the tab puts the ask under it.
+    session: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
-/// task, answered_at, resumed_at, recommend.
+/// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
+/// claude_session.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -473,6 +476,7 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     .map(String::from)
                     .collect(),
                 recommend: f.get(10).copied().unwrap_or("").into(),
+                session: f.get(15).copied().unwrap_or("").into(),
             })
         })
         .collect()

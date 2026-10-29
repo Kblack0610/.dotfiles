@@ -294,10 +294,10 @@ const refreshAsks = coalesce(async () => {
   if (st.tab === "asks") renderAsks();
 });
 
-// The Waiting tab: every live session with an open question (read from its transcript
-// by the server), then the queue asks that headless runs post. One count for both.
-// An open dialog or prompt (`waiting`) sorts before a session whose turn simply ended (`idle`).
-const asking = () => st.agents.filter((a) => a.question).sort((a, b) => (b.status === "waiting") - (a.status === "waiting"));
+// The Waiting tab: every live session with a dialog or permission prompt open (read from its
+// transcript by the server), then every pending ask, the one record of a question to the human.
+// An ask from a live session names that session; answering it types the answer into its pane.
+const asking = () => st.agents.filter((a) => a.question);
 function renderBadge() {
   const n = asking().length + st.asks.length;
   $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
@@ -337,9 +337,10 @@ function drawAsks() {
   if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
   let html = "";
   if (live.length) html += '<h2 class="sec">Sessions</h2>' + live.map(sessionCard).join("");
-  if (st.asks.length) html += '<h2 class="sec">Headless runs</h2>' + st.asks.map((a) => `
+  const owner = (a) => st.agents.find((x) => a.session && x.session === a.session);
+  if (st.asks.length) html += '<h2 class="sec">Asks</h2>' + st.asks.map((a) => `
     <div class="card" data-id="${esc(a.id)}">
-      <div class="meta">${esc(a.project)} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
+      <div class="meta">${esc(a.project)} &middot; ${owner(a) ? esc(owner(a).target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
       <div class="q">${esc(a.question)}</div>
       <div class="opts">
         ${a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (rec)" : ""}</button>`).join("")}
