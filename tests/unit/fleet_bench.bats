@@ -125,6 +125,89 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output --partial 'fleet-bench last outcome: WORKED'
 }
 
+# past_scores <basis> <ratio>...: scored ETAs of that basis, as earlier sessions left them
+past_scores() {
+  local b="$1" r i=0; shift
+  mkdir -p "$FLEET_BENCH_DIR"
+  for r in "$@"; do
+    i=$((i + 1))
+    printf '{"session_id":"old%s","basis":"%s","made_epoch":%s,"error_min":0,"ratio":%s}\n' "$i" "$b" "$i" "$r" >> "$FLEET_BENCH_DIR/scores.jsonl"
+  done
+}
+
+@test "calibration: a basis with enough scores scales new ETAs by its median ratio, and only its own" {
+  past_scores 'project-median(9)' 0.2 0.3 0.3 0.4 0.5
+  past_scores 'session-median(2)' 3 3 3 3 3      # another basis: must not leak into this one
+  row a lab/game-agent-1:1 0 4 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 1 4 > "$SNAP"; sample_at 600
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 1800    # 20 min phase, project game
+  { row a lab/game-agent-1:1 2 4; row b lab/game-agent-2:1 0 3; } > "$SNAP"; sample_at 2400
+  run jq -c 'select(.session_id == "b") | {eta_epoch, factor, factor_n, cal_eta_epoch}' "$FLEET_BENCH_DIR/estimates.jsonl"
+  # raw: 3 phases x 20 min = 60 min; calibrated: x0.3 = 18 min
+  assert_output "{\"eta_epoch\":$((T0 + 2400 + 3600)),\"factor\":0.3,\"factor_n\":5,\"cal_eta_epoch\":$((T0 + 2400 + 1080))}"
+  BENCH_NOW=$((T0 + 2400)) run "$SUBJECT" eta --json
+  run jq -c 'select(.session_id == "b") | {eta_epoch, raw_eta_epoch, factor, basis}' <<<"$output"
+  assert_output "{\"eta_epoch\":$((T0 + 3480)),\"raw_eta_epoch\":$((T0 + 6000)),\"factor\":0.3,\"basis\":\"project-median(1) x0.3 (n=5)\"}"
+  run "$SUBJECT" eta
+  assert_output --partial "$(date -d "@$((T0 + 3480))" '+%a %H:%M')"
+  assert_output --partial 'project-median(1) x0.3 (n=5)'
+}
+
+@test "negative control: below BENCH_CAL_MIN_N scores the raw ETA is shown, unscaled" {
+  past_scores default 0.3 0.3 0.3 0.3
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0
+  run jq -c '{eta_epoch, factor, cal_eta_epoch}' "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output "{\"eta_epoch\":$((T0 + 7200)),\"factor\":null,\"cal_eta_epoch\":null}"
+  run "$SUBJECT" eta --json
+  run jq -c '{eta_epoch, basis}' <<<"$output"
+  assert_output "{\"eta_epoch\":$((T0 + 7200)),\"basis\":\"default\"}"
+  # one more score crosses the minimum, so the same history now calibrates
+  rm "$FLEET_BENCH_DIR/estimates.jsonl"; past_scores default 0.3
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 600
+  run jq -r .factor "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output 0.3
+}
+
+@test "calibration factor is clamped to BENCH_CAL_MIN and BENCH_CAL_MAX" {
+  past_scores default 0.05 0.05 0.05 0.05 0.05
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0
+  run jq -r .factor "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output 0.25
+  rm "$FLEET_BENCH_DIR"/*.jsonl
+  past_scores default 9 9 9 9 9
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0
+  run jq -r .factor "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output 4
+}
+
+@test "accuracy --json: one object per basis kind, with the factor calibration uses and none below the minimum" {
+  past_scores 'project-median(9)' 0.2 0.3 0.3 0.4 0.5
+  past_scores 'project-median(12)' 0.1 0.3
+  past_scores 'session-median(2)' 3 3
+  run "$SUBJECT" accuracy --json
+  assert_success
+  run jq -sc 'map({basis, n, n_ratio, median_ratio, median_abs_error_min, factor})' <<<"$output"
+  assert_output '[{"basis":"project-median","n":7,"n_ratio":7,"median_ratio":0.3,"median_abs_error_min":0,"factor":0.3},{"basis":"session-median","n":2,"n_ratio":2,"median_ratio":3,"median_abs_error_min":0,"factor":null}]'
+  run "$SUBJECT" accuracy
+  assert_failure 2
+}
+
+@test "no feedback loop: a calibrated ETA is scored raw and calibrated, and the factor comes from the raw ratio" {
+  past_scores default 0.5 0.5 0.5 0.5 0.5
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0           # raw 120 min, calibrated 60 min
+  row a lab/game-agent-1:1 4 4 true > "$SNAP"; sample_at 3600   # finished at exactly 60 min
+  run jq -c 'select(.session_id == "a") | {ratio, error_min, cal_ratio, cal_error_min}' "$FLEET_BENCH_DIR/scores.jsonl"
+  # raw ratio stays 0.5: had it been scored against the calibrated ETA it would read 1 and undo the factor
+  assert_output '{"ratio":0.5,"error_min":-60,"cal_ratio":1,"cal_error_min":0}'
+  row b lab/game-agent-2:1 2 4 > "$SNAP"; sample_at 4200
+  run jq -r 'select(.session_id == "b") | [.factor, .factor_n] | @tsv' "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output "$(printf '0.5\t6')"
+  run "$SUBJECT" report
+  assert_output --partial 'default calibrated: 1 scored, median error 0 min'
+  BENCH_NOW=$((T0 + 4200)) run "$SUBJECT" headline
+  assert_output --partial '1 ETAs scored, median 0.5x of predicted (1 calibrated, median 1x)'
+}
+
 # rowj <jq object fields>: a fleet-sessions row with any fields, for the scorecard tests
 rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
 
