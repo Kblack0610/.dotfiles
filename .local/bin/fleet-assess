@@ -353,9 +353,10 @@ gh_budget() {
   rl="$(timeout 5 gh api rate_limit --jq '.resources.core | "\(.remaining) \(.limit) \(.reset)"' 2>/dev/null)" \
     || { echo "github: rate limit unreadable"; return; }
   read -r remaining limit reset <<<"$rl"
-  read -r wf wf_reset < <(timeout 5 gh api -i "repos/$FLEET_GH_PROBE_REPO/actions/workflows?per_page=1" 2>/dev/null \
+  wf="$(timeout 5 gh api -i "repos/$FLEET_GH_PROBE_REPO/actions/workflows?per_page=1" 2>/dev/null \
     | tr -d '\r' | awk -F': ' 'tolower($1) == "x-ratelimit-remaining" { r = $2 }
-                              tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }'; echo)
+                              tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }')"
+  read -r wf wf_reset <<<"$wf"
   if [ -n "$wf" ] && [ "$wf" -lt "$remaining" ]; then
     remaining="$wf" reset="$wf_reset" bucket=" (actions/workflows)"
   fi
