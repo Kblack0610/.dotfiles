@@ -24,6 +24,7 @@ bash_cmd() { jq -nc --arg c "$1" '{tool_name:"Bash", cwd:"/home/u/wt", tool_inpu
     run grep_at "$p"
     assert_output --partial '"deny"'
     assert_output --partial '/mnt/nas/private'
+    assert_output --partial 'Search `/home/u/wt`'
   done
 }
 
