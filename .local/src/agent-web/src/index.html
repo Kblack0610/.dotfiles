@@ -176,6 +176,17 @@ details.area summary { cursor: pointer; font-weight: 600; display: flex; gap: 8p
 .pr a.by { color: var(--accent); }
 details.sec-d summary { list-style: none; cursor: pointer; }
 details.sec-d summary::-webkit-details-marker { display: none; }
+/* Infra tab */
+.tv.sm { font-size: 18px; }
+.sp { height: 8px; }
+.glink { color: var(--accent); text-decoration: none; margin-left: 10px; font-family: system-ui, sans-serif; }
+.tbl td.warn, .tbl td.bad { font-weight: 600; }
+.tbl td.warn { color: var(--b-stalled); } .tbl td.bad { color: var(--b-needs); }
+.tbl td.wrap { white-space: normal; min-width: 160px; }
+.panel.down { border-left: 4px solid var(--b-needs); }
+.stack { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; min-width: 80px; }
+.stack i { display: block; }
+.fold { font-size: 12px; margin-top: 6px; }
 .tl1 { font: 12px var(--mono); padding: 2px 0; border-bottom: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ft { font-family: var(--mono); color: var(--muted); }
 .fg { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -184,6 +195,7 @@ details.sec-d summary::-webkit-details-marker { display: none; }
   .board { padding: 12px; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
+  .ticks span:nth-child(even) { display: none; }
   .fr { grid-template-columns: 40px minmax(0, 1fr); }
   .fr .fw { grid-column: 1 / -1; }
 
@@ -204,6 +216,7 @@ details.sec-d summary::-webkit-details-marker { display: none; }
     <button id="tab-asks">Waiting<span id="ask-badge"></span></button>
     <button id="tab-watch">Watch</button>
     <button id="tab-log">Log</button>
+    <button id="tab-infra">Infra</button>
   </div>
   <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
 </header>
@@ -232,6 +245,7 @@ details.sec-d summary::-webkit-details-marker { display: none; }
   <section id="asks" hidden></section>
   <section id="watch" class="board" hidden></section>
   <section id="log" class="board" hidden></section>
+  <section id="infra" class="board" hidden></section>
 </main>
 <script>
 "use strict";
@@ -512,7 +526,7 @@ $("asks").addEventListener("keydown", (e) => {
   if (btn) btn.click();
 });
 
-const TAB_NAMES = ["sessions", "asks", "watch", "log"];
+const TAB_NAMES = ["sessions", "asks", "watch", "log", "infra"];
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
@@ -545,6 +559,7 @@ function connect() {
 <script src="/static/charts.js"></script>
 <script src="/static/watch.js"></script>
 <script src="/static/log.js"></script>
+<script src="/static/infra.js"></script>
 <script>
 "use strict";
 if (TAB_NAMES.includes(location.hash.slice(1))) setTab(location.hash.slice(1));

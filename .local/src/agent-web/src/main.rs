@@ -11,6 +11,7 @@
 
 mod auth;
 mod boards;
+mod infra;
 mod transcript;
 
 use std::convert::Infallible;
@@ -53,6 +54,11 @@ const STATIC: &[(&str, &str, &str)] = &[
         "text/javascript",
         include_str!("../static/log.js"),
     ),
+    (
+        "infra.js",
+        "text/javascript",
+        include_str!("../static/infra.js"),
+    ),
 ];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -69,6 +75,7 @@ struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
     events: broadcast::Sender<String>,
+    infra: infra::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -88,6 +95,7 @@ async fn main() -> Result<()> {
         oauth,
         sessions,
         events,
+        infra: infra::Cache::default(),
     });
 
     let api = Router::new()
@@ -100,6 +108,7 @@ async fn main() -> Result<()> {
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
+        .route("/api/infra", get(infra_board))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -609,6 +618,14 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .await
         .map(Json)
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn infra_board(State(s): State<Shared>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.infra.get().await,
+    )
+        .into_response()
 }
 
 async fn static_file(UrlPath(name): UrlPath<String>) -> Response {
