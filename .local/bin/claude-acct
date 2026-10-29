@@ -22,9 +22,15 @@ MAIN_DIR="$HOME/.claude"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 
 # What every account shares with the main one. Everything else (.credentials.json,
-# .claude.json, stats, runtime dirs) stays per account.
+# .claude.json, stats, other runtime dirs) stays per account. sessions/ is the machine's
+# live-session registry (<pid>.json, read by agent-panel, ListAgents and the fleet tools),
+# so a split copy hides every session on the other account.
 SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks skills
-        agents plugins output-styles themes docs mcp-profiles .mcp.json projects plans)
+        agents plugins output-styles themes docs mcp-profiles .mcp.json projects plans
+        sessions)
+# Shared dirs keyed by pid: an account's own copy is merged into main, not parked, since
+# its files belong to sessions running right now and pids cannot collide.
+MERGE=(sessions)
 
 usage() {
     sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
@@ -97,6 +103,10 @@ cmd_link() {
             src="$MAIN_DIR/$e" dst="$dir/$e"
             [[ -e "$src" ]] || continue
             [[ -L "$dst" && "$(readlink "$dst")" == "$src" ]] && continue
+            if [[ -d "$dst" && ! -L "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
+                find "$dst" -mindepth 1 -maxdepth 1 -exec mv -n -t "$src" {} +
+                rmdir "$dst" 2>/dev/null   # anything left (a name clash) is parked below
+            fi
             if [[ -e "$dst" || -L "$dst" ]]; then
                 # Never delete what an account already had: park it for a manual merge.
                 bk="$dir/.pre-share-$(date +%F)"
