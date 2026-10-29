@@ -4,11 +4,16 @@ A cross-platform tmux chooser for running Claude / AI agents. Lists every tmux
 window running an agent, grouped by project, with a live status glyph and a
 preview pane — pick one with fzf and jump to it. A magenta `P` after the glyph
 marks an agent in plan mode, read from the transcript's latest `permissionMode`.
+A blue `A` beside it marks an agent with a pending ask: a file under
+`~/.agent/asks/<project>/` (or `$AGENT_ASK_DIR`) with `status: pending` whose
+`claude_session` is this agent's session id. That is the same rule as `asks_for` in
+`fleet-sessions`, so the panel marks exactly the sessions it buckets as NEEDS.
 
 Bound in `~/.tmux.conf`:
 
 - `Prefix + g` — interactive chooser (fzf popup)
-- `Prefix + G` — jump straight to the next agent needing attention
+- `Prefix + G` — jump straight to the next agent needing attention: waiting at a
+  prompt (`!`) or holding a pending ask (`A`)
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -33,7 +38,7 @@ string rather than `claude` (observed on macOS).
 | Command | Purpose |
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
-| `agent-panel next` | Cycle to the next attention-needed agent (else next in list) |
+| `agent-panel next` | Cycle to the next attention-needed agent, `!` or `A` (else next in list) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`) |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
@@ -55,6 +60,7 @@ which owns the detach-and-attach hop and the Prefix+L way back.
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; JSONL path
 - `jsonl.rs` — tail the transcript; row summary, plan mode, recent-events for the preview
+- `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks
 - `chooser.rs` — orchestration for the three entry points

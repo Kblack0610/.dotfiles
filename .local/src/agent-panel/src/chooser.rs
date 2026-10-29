@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::{fzf, jsonl, procmap::ProcMap, render, session, tmux};
+use crate::{asks, fzf, jsonl, procmap::ProcMap, render, session, tmux};
 
 /// One detected Claude agent, ready to render.
 pub struct Agent {
@@ -30,8 +30,17 @@ pub struct Agent {
     pub status: String,
     /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
     pub plan: bool,
+    /// Owns a pending ask (`agent-ask`), so it is waiting on the human: see `asks.rs`.
+    pub ask: bool,
     /// Epoch seconds the session opened (the Claude process start), when Claude recorded it.
     pub started_at: Option<u64>,
+}
+
+impl Agent {
+    /// Waiting on the human: at a prompt (`!`) or holding a pending ask.
+    pub fn needs_attention(&self) -> bool {
+        self.glyph == '!' || self.ask
+    }
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
@@ -42,6 +51,7 @@ pub fn collect() -> Vec<Agent> {
         return Vec::new();
     };
     let sessions = session::load_all();
+    let asking = asks::pending_sessions(&asks::root());
     let live_claude: Vec<u32> = sessions
         .keys()
         .copied()
@@ -97,6 +107,7 @@ pub fn collect() -> Vec<Agent> {
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
             plan,
+            ask: asking.contains(&sess.session_id),
             started_at: sess.started_at.map(|ms| ms / 1000),
         });
     }
@@ -214,7 +225,7 @@ pub fn run_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Jump to the next agent needing attention (`!`), else the next in the list.
+/// Jump to the next agent needing attention (`!` or a pending ask), else the next in the list.
 pub fn run_next() -> Result<()> {
     let agents = collect();
     if agents.is_empty() {
@@ -232,7 +243,7 @@ pub fn run_next() -> Result<()> {
     for step in 1..=total {
         let idx = (((start + step as isize) % total as isize + total as isize)
             % total as isize) as usize;
-        if agents[idx].glyph == '!' {
+        if agents[idx].needs_attention() {
             target = Some(&agents[idx].target);
             break;
         }

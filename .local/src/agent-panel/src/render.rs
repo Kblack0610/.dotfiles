@@ -13,6 +13,7 @@ const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
 const ORANGE: &str = "\x1b[38;5;214m"; // window tags, matching the tmux status bar
 const MAGENTA: &str = "\x1b[1;35m";
+const BLUE: &str = "\x1b[1;34m";
 
 /// Normalize a working-directory path to a project name: basename with any
 /// `-agent`, `-agent2`, `-agent-2` worktree suffix stripped, and the dotfiles
@@ -107,8 +108,10 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 
         for a in group {
             let g = colorize(a.glyph);
-            // Plan-mode marker in its own column, blank otherwise, so targets stay aligned.
+            // Plan-mode and pending-ask markers, each in its own column, blank otherwise,
+            // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
+            let ask = if a.ask { format!("{BLUE}A{RESET}") } else { " ".to_string() };
             // Window tags (Prefix+a) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
@@ -117,9 +120,9 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
                 format!(" {ORANGE}[{}]{RESET}", a.tags.replace(' ', ","))
             };
             let display = if a.summary.is_empty() {
-                format!(" {g} {mode} {}{tags}", a.short_target)
+                format!(" {g} {mode}{ask} {}{tags}", a.short_target)
             } else {
-                format!(" {g} {mode} {}{tags} {DIM}{}{RESET}", a.short_target, a.summary)
+                format!(" {g} {mode}{ask} {}{tags} {DIM}{}{RESET}", a.short_target, a.summary)
             };
             rows.push(Row {
                 target: a.target.clone(),
@@ -199,6 +202,55 @@ mod tests {
         // no "-agent-N" suffix -> window index only.
         assert_eq!(short_target("platform", "3"), "3");
         assert_eq!(short_target("_dotfiles", "0"), "0");
+    }
+
+    fn agent(target: &str, glyph: char, plan: bool, ask: bool) -> Agent {
+        Agent {
+            glyph,
+            target: target.to_string(),
+            short_target: target.to_string(),
+            project: "proj".to_string(),
+            repo_full: String::new(),
+            summary: String::new(),
+            jsonl: None,
+            tags: String::new(),
+            pane: String::new(),
+            session_id: String::new(),
+            cwd: String::new(),
+            status: String::new(),
+            plan,
+            ask,
+            started_at: None,
+        }
+    }
+
+    fn row<'a>(rows: &'a [Row], target: &str) -> &'a str {
+        &rows.iter().find(|r| r.target == target).unwrap().text
+    }
+
+    #[test]
+    fn marks_pending_ask_beside_plan_mode() {
+        let agents = [
+            agent("s:1", '✓', false, true),
+            agent("s:2", '✓', false, false),
+            agent("s:3", '~', true, true),
+        ];
+        let (rows, _) = build(&agents);
+        let a = format!("{BLUE}A{RESET}");
+        let p = format!("{MAGENTA}P{RESET}");
+        assert!(row(&rows, "s:1").contains(&format!("  {a} s:1")));
+        // Negative control: no pending ask (answered, cancelled or none) -> no mark,
+        // and the blank column keeps the target aligned.
+        assert!(!row(&rows, "s:2").contains(&a));
+        assert!(row(&rows, "s:2").contains("    s:2"));
+        assert!(row(&rows, "s:3").contains(&format!("{p}{a} s:3")));
+    }
+
+    #[test]
+    fn pending_ask_needs_attention() {
+        assert!(agent("s:1", '✓', false, true).needs_attention());
+        assert!(agent("s:1", '!', false, false).needs_attention());
+        assert!(!agent("s:1", '~', true, false).needs_attention());
     }
 
     #[test]
