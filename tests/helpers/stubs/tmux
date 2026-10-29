@@ -129,6 +129,11 @@ case "$verb" in
       '#{window_id} #{session_name}:#{window_index}')
         [ -f "$FIX/tmux.window_labels" ] && cat "$FIX/tmux.window_labels"
         exit 0 ;;
+      # servers.sh `_landing_window`: each window's index and declared identity, so
+      # `root` can tell the landing page's own window from the boards beside it.
+      '#{window_index} #{?@tmx_window,#{@tmx_window},#{window_name}}')
+        [ -f "$FIX/tmux.window_idents" ] && cat "$FIX/tmux.window_idents"
+        exit 0 ;;
     esac
     ;;
   capture-pane)

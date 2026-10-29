@@ -175,3 +175,51 @@ in_landing() {
   run bash -c "grep -c ':e ' '$NOTES_FIXTURE/calls.log' || true"
   assert_output "0"
 }
+
+# --- the page's window, not a board beside it ---
+#
+# The boards (hub:infra, hub:watch, hub:log) are declared windows of the landing session,
+# and a session remembers its last-selected window. Prefix+O leaves hub on hub:log, so a
+# root that only attached to the session landed on the log board instead of the daily, and
+# the shell branch typed the daily's startup command into the board.
+
+# windows <index ident>... -- the landing session's windows, in index order.
+windows() { printf '%s\n' "$@" > "$NOTES_FIXTURE/tmux.window_idents"; }
+
+boards_declared() {
+  printf 'hub:infra %s\nhub:log %s day-log watch\n' "$BASE" "$BASE" >> "$TMUX_SERVERS_DIR/hub.conf"
+}
+
+@test "root selects the page's window when the session was left on a board" {
+  boards_declared
+  windows "1 master" "2 infra" "3 log"
+  in_landing hub hub
+  STUB_PANE_CMD=nvim run "$TMX" land hub root
+  assert_success
+  run bash -c "cat '$NOTES_FIXTURE/calls.log'"
+  assert_output --partial "select-window -t hub:1"
+}
+
+@test "the page's window is found by identity, not by being first" {
+  boards_declared
+  windows "1 infra" "2 log" "3 main"
+  in_landing hub hub
+  STUB_PANE_CMD=nvim run "$TMX" land hub root
+  assert_success
+  run bash -c "cat '$NOTES_FIXTURE/calls.log'"
+  assert_output --partial "select-window -t hub:3"
+}
+
+@test "the window is selected before the page is restored into it" {
+  # _refresh_landing types into the session's CURRENT window, so selecting after it
+  # would still have sent the keys to the board.
+  boards_declared
+  windows "1 log" "2 master"
+  in_landing hub hub
+  STUB_PANE_CMD=bash run "$TMX" land hub root
+  assert_success
+  run bash -c "grep -n 'select-window\|send-keys' '$NOTES_FIXTURE/calls.log'"
+  sel=$(printf '%s\n' "$output" | grep -n 'select-window' | head -1 | cut -d: -f1)
+  send=$(printf '%s\n' "$output" | grep -n 'send-keys -t hub:' | head -1 | cut -d: -f1)
+  [ -n "$sel" ] && [ -n "$send" ] && [ "$sel" -lt "$send" ]
+}
