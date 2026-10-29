@@ -76,6 +76,7 @@ LLM_ENV                           # points at a file that sets all of the above
 # a real redirect gets parked here later and nobody re-reads it.
 CLAUDE_HEADLESS                   # ours: "no human is watching". Set by agentctl-run itself
 CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
+CLAUDE_CODE_SESSION_ATTENDED      # 1 when a human is attached; agent-ask reads it, no routing effect
 CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY
