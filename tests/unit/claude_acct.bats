@@ -94,3 +94,19 @@ creds() {
   run "$ACCT" link
   assert_output ''
 }
+
+@test "link merges an account's live sessions into the shared registry" {
+  mkdir -p "$HOME/.claude/sessions" "$ALT/sessions"
+  echo main > "$HOME/.claude/sessions/100.json"
+  echo alt > "$ALT/sessions/200.json"
+  echo key > "$ALT/sessions/200.abc.key"
+  echo clash > "$ALT/sessions/100.json"
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/sessions")" == "$HOME/.claude/sessions" ]]
+  [[ "$(cat "$HOME/.claude/sessions/200.json")" == alt ]]
+  [[ -f "$HOME/.claude/sessions/200.abc.key" ]]
+  # a clash keeps main's file and parks the account's copy, never overwrites
+  [[ "$(cat "$HOME/.claude/sessions/100.json")" == main ]]
+  [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
+}
