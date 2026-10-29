@@ -34,7 +34,7 @@ function clip(s, n = 24) {
 // A colour key: [[label, color], ...].
 const legend = (items) => `<span class="legend">${items.map(([l, c]) => `<span><i style="background:${c}"></i>${esc(l)}</span>`).join("")}</span>`;
 
-const kfmt = (n) => (n == null ? "-" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
+const kfmt = (n) => (n == null ? "-" : n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
 
 // Swimlanes over [t0, t1] (ms). lanes: [{label, sub, dim, segs: [{a, b, key, title}]}], where
 // colorOf(key) picks a segment's fill. Each lane's bar is an SVG stretched to the column, so it
@@ -54,3 +54,40 @@ function swimlanes(lanes, t0, t1, colorOf) {
   }
   return `<div class="lanes">${rows}<div class="lane axis"><span class="ll"></span><div class="ticks">${ticks.join("")}</div></div></div>`;
 }
+
+// Categorical series in fixed order (the dataviz palette: --c1..--c4 in both themes); anything
+// past the slots folds into "Other", never a generated hue.
+const SLOTS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)"];
+const OTHER = "var(--c-other)";
+
+const usd = (n) => (n == null ? "-" : "$" + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)));
+
+// A column chart on one axis. cols: [{key, label, tip, segs: [{v, color}]}], stacked bottom up.
+// Each column carries data-key (for clicks) and data-tip (the shared hover tooltip); `sel` marks
+// one column. HTML columns rather than a stretched SVG, so the rounded caps keep their shape.
+function columns(cols, { height = 140, sel = null, yfmt = String } = {}) {
+  const max = Math.max(1, ...cols.map((c) => c.segs.reduce((a, s) => a + (s.v || 0), 0)));
+  const grid = [max, max / 2].map((v) => `<div class="cg" style="bottom:${(v / max) * 100}%"><span>${esc(yfmt(Math.round(v * 100) / 100))}</span></div>`).join("");
+  const body = cols.map((c) => {
+    const segs = c.segs.filter((s) => s.v > 0).map((s) => `<i style="height:${(s.v / max) * 100}%;background:${s.color}"></i>`).join("");
+    return `<div class="cc${c.key === sel ? " sel" : ""}" data-key="${esc(c.key)}" data-tip="${esc(c.tip)}"><div class="cs">${segs}</div><span class="cx">${esc(c.label || "")}</span></div>`;
+  }).join("");
+  return `<div class="cols" style="--h:${height}px"><div class="cplot">${grid}<div class="cbars">${body}</div></div></div>`;
+}
+
+// One tooltip for every [data-tip] mark on the page; the text is plain, newlines kept.
+(() => {
+  const tip = document.createElement("div");
+  tip.className = "tip";
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  document.addEventListener("mousemove", (e) => {
+    const m = e.target.closest && e.target.closest("[data-tip]");
+    if (!m || !m.dataset.tip) { tip.hidden = true; return; }
+    tip.textContent = m.dataset.tip;
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = Math.min(e.clientX + 12, innerWidth - w - 8) + "px";
+    tip.style.top = (e.clientY - h - 12 < 4 ? e.clientY + 16 : e.clientY - h - 12) + "px";
+  });
+})();
