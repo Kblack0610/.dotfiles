@@ -9,6 +9,7 @@ setup() {
   sandbox_init basic
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   unset COLUMNS # the board fits a width only when one is given
+  export FLEET_MAIN_TTL=0 # each test's gh answers decide; the reuse test sets its own
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
@@ -428,6 +429,38 @@ landed_fixture() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
   [ "$(jq -r 'select(.bucket != "MAIN") | .bucket' <<<"$output")" = LANDED ]
+}
+
+@test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
+  # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  green="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" fetch -q origin
+  git -C "$SANDBOX/wt" checkout -q -b feat/x "$green"
+  phases_plan '- [ ] Phase 1: x'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  runs="[$(r Tests success "$green" 1)]"
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo run >> "$HOME/runcalls"; echo %q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$runs" "$green" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+
+  FLEET_MAIN_TTL=300 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  FLEET_MAIN_TTL=300 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(wc -l < "$HOME/runcalls")" -eq 1 ]
+
+  # past the TTL it asks again; a failure then is UNKNOWN, never the cached green
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo run >> "$HOME/runcalls"; exit 1; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(wc -l < "$HOME/runcalls")" -eq 2 ]
+  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(wc -l < "$HOME/runcalls")" -eq 3 ]
 }
 
 @test "a session fleet-dispatch started carries its row as dispatch; others carry null" {

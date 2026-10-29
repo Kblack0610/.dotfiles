@@ -18,7 +18,7 @@ It owns no product code. It owns three questions: does this machine have room fo
 
 ## Tools
 
-- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
+- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), the GitHub REST calls left this hour (a `github:` line, LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
 - `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
@@ -45,7 +45,7 @@ Under-use is a fault too. The human's budget for this box is about 70% of its CP
 
 ## Verb: `assess`
 
-1. Run `fleet-assess`. Quote the headroom line and the verdict to the user as given.
+1. Run `fleet-assess`. Quote the headroom line and the verdict to the user as given, and the `github:` line when it says LOW: the limit is per user, so when it runs out every gh call in the fleet fails until the reset. Name the scripts it lists, and tell sessions not to retry gh in a loop.
 2. Group the rows by worktree and class. Run `ListAgents` and match its names to the SESSION column.
 3. Say who is consuming what, and how each can be stopped (the class table). Name anything at nice 0 or below that is a batch job: it is competing with the human's desktop.
    A thread blocked on I/O adds 1 to load and 0 to CPU, so when load is well above what `top` shows busy, the blocked table explains the gap. Read it before blaming Unity.

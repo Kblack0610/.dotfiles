@@ -44,6 +44,11 @@ set -uo pipefail
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
+: "${FLEET_MAIN_TTL:=300}" # seconds a repo's main run list is reused across passes: every caller (the
+                           # ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on
+                           # 2026-10-29 the fleet spent GitHub's 5,000/hr REST limit; a nightly's red
+                           # is no less true five minutes later
+MAIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/fleet"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
@@ -340,6 +345,21 @@ main_state() {
        (if $g == null then "-" else .[$g].headSha end)] | @tsv'
 }
 
+# main_runs <dir> <branch> -> gh run list JSON for the branch, reused for FLEET_MAIN_TTL seconds
+# across passes. A failed call is not cached, so the next pass asks again.
+main_runs() {
+  local dir="$1" b="$2" file runs
+  file="$MAIN_CACHE/runs_$(repo_slug "$dir")_${b//\//_}.json"
+  if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
+    cat "$file"; return
+  fi
+  runs="$(cd "$dir" && gh run list --branch "$b" --limit 100 \
+            --json workflowName,status,conclusion,headSha,createdAt 2>/dev/null)" || return 1
+  mkdir -p "$MAIN_CACHE"
+  printf '%s\n' "$runs" > "$file.$$" && mv "$file.$$" "$file"
+  printf '%s\n' "$runs"
+}
+
 # main_health <dir> -> "RED \t <detail> \t <red sha> \t <suspect PRs, space-separated>", "OK"
 # or "UNKNOWN", cached per repo per pass. A red workflow's range is last-green..red on this
 # clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
@@ -352,8 +372,7 @@ main_health() {
     base="$(default_base "$dir")"
     b="${base#origin/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
-    if ! runs="$(cd "$dir" && gh run list --branch "$b" --limit 100 \
-                   --json workflowName,status,conclusion,headSha,createdAt 2>/dev/null)"; then
+    if ! runs="$(main_runs "$dir" "$b")"; then
       printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-4 "$key"; return
     fi
