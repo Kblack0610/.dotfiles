@@ -13,6 +13,7 @@ setup() {
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ci_runners.sh"
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR"
+  CHECK=$'\uf00c' # the finished-jobs glyph, as an escape so no editor can strip it
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
@@ -27,6 +28,8 @@ STUB
 }
 
 # fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/10 q1.
+# Finished in 24h: unity 40 at 95%, pmp-light 10 at 60%, github-hosted (no slots) 50 at
+# 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
 # the exporter's last GitHub call.
 fixtures() {
@@ -34,6 +37,7 @@ fixtures() {
 import json, os, sys
 d, mode = sys.argv[1], sys.argv[2]
 status, api = os.environ.get("CI_STATUS", "1"), os.environ.get("API_OK", "1")
+no_done = os.environ.get("NO_DONE") == "1"
 def out(name, rows):
     res = [{"metric": m, "value": [0, v]} for m, v in rows]
     json.dump({"status": "success", "data": {"result": res}}, open(f"{d}/{name}.json", "w"))
@@ -47,6 +51,11 @@ cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
        ({"__name__": "cc:host_local_busy", "host": "workstation"}, "2"),
        ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
        ({"__name__": "api_ok"}, api)]
+if not no_done:
+    for pre, key, k, done, ratio in [("cc:pool", "pool", "unity", "40", "0.95"), ("cc:pool", "pool", "pmp-light", "10", "0.6"),
+                                     ("cc:pool", "pool", "github-hosted", "50", "1"),
+                                     ("cc:host_local", "host", "workstation", "20", "0.5")]:
+        cc += [({"__name__": f"{pre}_done_24h", key: k}, done), ({"__name__": f"{pre}_pass_ratio_24h", key: k}, ratio)]
 if status != "none":
     cc += [({"__name__": "cc:domain_status", "domain": "ci"}, status),
            ({"__name__": "cc:component_status", "domain": "ci", "component": "pools"}, status),
@@ -73,15 +82,50 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "the bar sums pools and local gates like the board header, queue in gold" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span> <span color='#ffcc2f'>${CHECK}120</span>"
 }
 
 @test "pools and local gates list busy/slots, queue and oldest wait, longest queue first" {
   run "$MODULE"
   run tip
-  assert_line --index 3 --regexp "^unity +3/4 .*5</span>  5h15m$"
-  assert_line --index 4 --regexp "^local:workstation +2/10 .*1</span>  -$"
-  assert_line --index 5 --regexp '^pmp-light +0/2 +0  -$'
+  assert_line --index 4 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
+  assert_line --index 5 --regexp "^local:workstation +2/10 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
+}
+
+@test "a pool with finished jobs but no slots still gets a row, with no busy count" {
+  run "$MODULE"
+  run tip
+  assert_line --index 6 --regexp "^github-hosted +- +0 +- +50  100%$"
+  assert_line --index 7 --regexp "^pmp-light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
+}
+
+@test "the bar's finished count is painted by the pass rate over all finished jobs" {
+  run "$MODULE"
+  assert_output --partial "<span color='#ffcc2f'>${CHECK}120</span>"
+  run tip
+  assert_line --index 2 "finished 24h: 120, 87% passed"
+}
+
+@test "under 70% passed the finished count is red" {
+  python3 - "$FX/cc.json" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    if r["metric"]["__name__"].endswith("pass_ratio_24h"):
+        r["value"][1] = "0.5"
+json.dump(d, open(sys.argv[1], "w"))
+PY2
+  run "$MODULE"
+  assert_output --partial "<span color='#ef5734'>${CHECK}120</span>"
+}
+
+# Negative control: with no finished series the count is -, never a 0 nobody measured.
+@test "no finished series reads -, never 0" {
+  NO_DONE=1 fixtures idle
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span> ${CHECK}-"
+  run tip
+  assert_line --index 2 "finished 24h: none reported"
 }
 
 @test "the colour and class are the ci domain status, and the hover names each component" {
@@ -102,7 +146,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   CI_STATUS=0 fixtures idle
   run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" ok
-  assert_equal "$(jq -r .text <<< "$output")" "CI 5/16 <span color='#ffcc2f'>q6</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "CI 5/16 <span color='#ffcc2f'>q6</span> <span color='#ffcc2f'>${CHECK}120</span>"
 }
 
 # No status series is not a green light: the board prints NO DATA for it.
@@ -178,5 +222,5 @@ for r in d["data"]["result"]:
 json.dump(d, open(sys.argv[1], "w"))
 PY
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 q0"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 q0 <span color='#ffcc2f'>${CHECK}120</span>"
 }

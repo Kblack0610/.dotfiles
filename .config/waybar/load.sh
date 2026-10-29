@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Waybar module: load. The bar is this machine's 1-minute load, read from /proc/loadavg so
-# it still shows when Prometheus is down, coloured by load per core. A gold ! follows it
-# when any OTHER machine is hot. The hover is every machine's load, CPU, memory and
+# Waybar module: load, a pill beside CPU and RAM. The bar is this machine's 1-minute load,
+# read from /proc/loadavg so it still shows when Prometheus is down; the class (ok, warn,
+# critical by load per core) lets the theme turn the pill red, like the temperature pill.
+# A gold ! follows it when any OTHER machine is hot. The hover is every machine's load, CPU, memory and
 # temperature from the cc:host_* rules, worst load per core first.
 #
 # Missing values read -, never 0: the temperature rule only reads coretemp/k10temp, so
@@ -28,7 +29,7 @@ cores="${LOAD_CORES:-$(nproc)}"
 # level <ratio> -> 0 under one per core, 1 under HOT_RATIO, 2 past it.
 level=$(awk -v r="$load1" -v c="$cores" -v h="$HOT_RATIO" 'BEGIN { r = c > 0 ? r / c : 0; print (r < 1 ? 0 : (r < h ? 1 : 2)) }')
 class="${LEVEL_CLASS[$level]}"
-printf -v text 'LOAD %s' "$(paint "${LEVEL_COLOUR[$level]}" "$(printf '%.1f' "$load1")")"
+printf -v text 'LOAD %.1f' "$load1"
 
 fallback() { emit "$text" "Load $load1 on $cores cores"$'\n'"$1" "$class"; exit 0; }
 
