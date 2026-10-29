@@ -26,6 +26,9 @@
 set -uo pipefail
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
+: "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
+: "${BENCH_CAL_MIN:=0.25}"           # clamp on that factor: a few odd runs cannot shrink an ETA to nothing
+: "${BENCH_CAL_MAX:=4}"              # nor stretch it to days
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
 : "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
@@ -73,6 +76,12 @@ def median: sort | length as $n | if $n == 0 then null
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def key: "\(.repo)#\(.number)";
+def kind: sub("\\(.*"; "");
+# the ETA an estimate publishes and how it was made: calibrated when a factor was applied;
+# null for no estimate
+def shown_eta: if . == null then null else .cal_eta_epoch // .eta_epoch end;
+def basis_label: if . == null then null
+  else .basis + (if .factor != null then " x\(.factor) (n=\(.factor_n))" else "" end) end;
 # per-phase minutes for each phase whose start and end were both sampled
 def phase_minutes:
   sort_by(.epoch)
@@ -97,17 +106,23 @@ sample_rows() {
 }
 
 # new_estimates <now> -> an estimate for every live, unfinished session with a phase count
-# that has no estimate yet. Reads the whole progress history for the medians.
+# that has no estimate yet. Reads the whole progress history for the medians. The raw ETA is
+# what gets scored; the calibration factor is the median raw ratio of that basis kind's past
+# scores, kept in its own fields, so it never feeds back into the ratios it is made from.
 new_estimates() {
-  local t="$1" est="$ESTIMATES"
+  local t="$1" est="$ESTIMATES" sc="$SCORES"
   [ -s "$est" ] || est=/dev/null
+  [ -s "$sc" ] || sc=/dev/null
   jq -cn --argjson t "$t" --argjson def "$BENCH_DEFAULT_PHASE_MIN" \
-     --slurpfile p "$PROGRESS" --slurpfile e "$est" "$JQ_LIB"'
+     --argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX" \
+     --slurpfile p "$PROGRESS" --slurpfile e "$est" --slurpfile s "$sc" "$JQ_LIB"'
     ($p | group_by(.session_id) | map({key: .[0].session_id,
           value: (group_by(.plan_file) | map(phase_minutes) | add // [])}) | from_entries) as $bys
     | ($p | group_by(.project) | map({key: .[0].project,
           value: (group_by([.session_id, .plan_file]) | map(phase_minutes) | add // [])}) | from_entries) as $byp
     | ($e | map("\(.session_id)/\(.phases_done)/\(.phases_total)") | INDEX(.)) as $have
+    | ($s | map(select(.ratio != null)) | group_by(.basis | kind)
+        | map({key: (.[0].basis | kind), value: map(.ratio)}) | from_entries) as $ratios
     | $p | map(select(.epoch == $t)) | .[]
     | select(.finished | not) | select(.phases_total != null and .phases_done != null)
     | select($have["\(.session_id)/\(.phases_done)/\(.phases_total)"] | not)
@@ -116,9 +131,14 @@ new_estimates() {
        elif ($j | length) > 0 then {m: ($j | median), basis: "project-median(\($j | length))"}
        else {m: $def, basis: "default"} end) as $pp
     | ($t + (((.phases_total - .phases_done) * $pp.m * 60) | floor)) as $eta
+    | ($ratios[$pp.basis | kind] // []) as $r
     | {made_epoch: $t, made_at: ($t | iso), session_id, target, project, phases_done,
        phases_total, per_phase_min: ($pp.m | floor), eta_epoch: $eta, eta: ($eta | iso),
-       basis: $pp.basis}'
+       basis: $pp.basis}
+      + (if ($r | length) < $minn then {} else
+           ([[($r | median), $lo] | max, $hi] | min * 100 | round / 100) as $f
+           | ($t + (($eta - $t) * $f | floor)) as $cal
+           | {factor: $f, factor_n: ($r | length), cal_eta_epoch: $cal, cal_eta: ($cal | iso)} end)'
 }
 
 # new_scores -> a score for every estimate whose session has since finished. The finish is
@@ -144,7 +164,12 @@ new_scores() {
        error_min: (($d.done - .eta_epoch) / 60 | floor),
        ratio: (if .eta_epoch > .made_epoch
                then (($d.done - .made_epoch) / (.eta_epoch - .made_epoch) * 100 | floor) / 100
-               else null end)}'
+               else null end)}
+      + (if .cal_eta_epoch == null then {} else
+           {factor, cal_eta_epoch, cal_error_min: (($d.done - .cal_eta_epoch) / 60 | floor),
+            cal_ratio: (if .cal_eta_epoch > .made_epoch
+                        then (($d.done - .made_epoch) / (.cal_eta_epoch - .made_epoch) * 100 | floor) / 100
+                        else null end)} end)'
 }
 
 cmd_sample() {
@@ -189,12 +214,14 @@ latest_live() {
 
 cmd_eta() {
   if [ "${1:-}" = --json ]; then
-    latest_live | jq -c '{target, session_id, phases_done, phases_total, finished,
-      eta: (.eta.eta // null), eta_epoch: (.eta.eta_epoch // null), basis: (.eta.basis // null)}'
+    latest_live | jq -c "$JQ_LIB"'{target, session_id, phases_done, phases_total, finished,
+      eta: (.eta.cal_eta // .eta.eta // null), eta_epoch: (.eta | shown_eta),
+      raw_eta_epoch: (.eta.eta_epoch // null), factor: (.eta.factor // null),
+      basis: (.eta | basis_label)}'
     return
   fi
   latest_live | jq -r "$JQ_LIB"'[.target, "\(.phases_done // "-")/\(.phases_total // "-")",
-      (if .finished then "finished" else (.eta.eta_epoch | hm) end), (.eta.basis // "-")] | @tsv' |
+      (if .finished then "finished" else (.eta | shown_eta | hm) end), (.eta | basis_label // "-")] | @tsv' |
     awk -F'\t' '{ printf "%-42s %-6s %-10s %s\n", $1, $2, $3, $4 }'
 }
 
@@ -202,10 +229,10 @@ cmd_report() {
   local last
   if [ ! -s "$PROGRESS" ]; then echo "no samples yet: run fleet-bench sample"; return 0; fi
   last=$(jq -rs "$JQ_LIB"'max_by(.epoch) | .epoch | hm' "$PROGRESS")
-  echo "Live sessions (sampled $last; ETA from measured phase times)"
+  echo "Live sessions (sampled $last; ETA from measured phase times, x the basis's measured ratio once it has $BENCH_CAL_MIN_N scores)"
   printf '%-42s %-6s %-8s %-10s %s\n' SESSION PHASE BUCKET ETA BASIS
   latest_live | jq -r "$JQ_LIB"'[.target, "\(.phases_done // "-")/\(.phases_total // "-")", .bucket,
-      (if .finished then "finished" else (.eta.eta_epoch | hm) end), (.eta.basis // "-")] | @tsv' |
+      (if .finished then "finished" else (.eta | shown_eta | hm) end), (.eta | basis_label // "-")] | @tsv' |
     awk -F'\t' '{ printf "%-42s %-6s %-8s %-10s %s\n", $1, $2, $3, $4, $5 }'
   echo
   echo "ETA accuracy (error = actual finish - predicted; ratio = actual/predicted duration)"
@@ -213,9 +240,12 @@ cmd_report() {
     echo "  nothing scored yet: an ETA is scored when its session finishes"
   else
     jq -rs "$JQ_LIB"'
-      def line($label): if length == 0 then empty else
-        "  \($label): \(length) scored, median error \(map(.error_min) | median) min, median |error| \(map(.error_min | fabs) | median) min, median ratio \(map(.ratio // empty) | median // "-")" end;
-      (group_by(.basis | sub("\\(.*"; "")) | .[] | line(.[0].basis | sub("\\(.*"; ""))),
+      def line($label; err; rat): if length == 0 then empty else
+        "  \($label): \(length) scored, median error \(map(err) | median) min, median |error| \(map(err | fabs) | median) min, median ratio \(map(rat // empty) | median // "-")" end;
+      def line($label): line($label; .error_min; .ratio);
+      (group_by(.basis | kind) | .[] | line(.[0].basis | kind)),
+      (map(select(.cal_eta_epoch != null)) | group_by(.basis | kind) | .[]
+        | line("\(.[0].basis | kind) calibrated"; .cal_error_min; .cal_ratio)),
       (map(select(.horizon_min < 120)) | line("horizon under 2h")),
       (map(select(.horizon_min >= 120 and .horizon_min < 480)) | line("horizon 2-8h")),
       (map(select(.horizon_min >= 480)) | line("horizon over 8h")),
@@ -277,7 +307,9 @@ cmd_headline() {
     "bench \($win)h: \($w | length) sessions, \($w | map(.ticked) | add // 0) phases ticked, "
     + "\($w | map(.waiting_min) | add // 0 | h)h waiting on you, \($w | map(.stalled_min) | add // 0 | h)h stalled, "
     + (if ($s | length) == 0 then "no ETA finished yet"
-       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted" end)
+       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted"
+         + ($s | map(.cal_ratio // empty) | if length == 0 then ""
+            else " (\(length) calibrated, median \(median)x)" end) end)
     + (if ($c | length) == 0 then ""
        else ", \($c | map(.ci_red) | add) CI reds before merge in \($c | length) PRs" end)
     + ($v | map(select(.status == "ok")) | if length == 0 then ""
