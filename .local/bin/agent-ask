@@ -19,10 +19,20 @@
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
 #   agent-ask recommend <id> <option>   set/replace the recommended option
+#   agent-ask settle-session <sid> answered|stale [text...]
+#                                       close every pending ask a Claude session owns (the
+#                                       UserPromptSubmit and SessionEnd hooks)
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
 # so an ask lines up with sessions.jsonl and the sprint blackboards.
+#
+# ONE RECORD FOR "WAITING ON THE HUMAN". A session the human is attached to asks in the
+# conversation AND posts here in the same turn (a Stop check blocks a question left unfiled):
+# post prints the ask into the session and pages once, every board reads these files, and the
+# ask closes itself when the human answers (typed into the session, or `answer` from a board,
+# which also types the answer into the session) or when the session ends (stale). A human-only
+# action the session will not wait on is a human-sheet row, not an ask.
 #
 # ASYNC IS THE PRIMARY PATH. The main producers (delivery-loop, /kb:sprint BLOCK) are
 # headless and CANNOT block: they post and exit, and a later fire / `/captain resume`
@@ -99,6 +109,19 @@ set_field() {
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# render_ask <file>: the ask as the human reads it in the asking session's pane.
+render_ask() {
+  local f="$1" opt rec out="" opts=()
+  rec="$(field "$f" recommend)"
+  printf 'ASK %s (%s) - waiting on you\n%s\n' "$(field "$f" id)" "$(field "$f" kind)" "$(field "$f" question)"
+  IFS='|' read -r -a opts <<< "$(field "$f" options)"
+  for opt in "${opts[@]}"; do
+    [ "$opt" = "$rec" ] && out+=" [$opt] (recommended)" || out+=" [$opt]"
+  done
+  [ -n "$out" ] && printf 'options:%s\n' "$out"
+  return 0
+}
+
 # --- post ------------------------------------------------------------------
 
 cmd_post() {
@@ -122,14 +145,6 @@ cmd_post() {
     esac
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
-  # The queue is for runs with nobody attached. A session the human is in asks in the
-  # conversation: the human has no board they answer asks from, so a question filed here from a
-  # live session waits unseen and holds the session open. A --resume ask is wave machinery that
-  # a later process acts on, so it may still be filed.
-  if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "$resume" ]; then
-    echo "agent-ask post: this session has a human attached: ask in the conversation instead" >&2
-    return 2
-  fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
     # for it. The resolver's own answer (no --project) is canonical by construction.
@@ -209,6 +224,14 @@ cmd_post() {
   } > "$file"
   queue_changed
 
+  # A session the human is attached to asks in the conversation AND here: the file is what every
+  # board, the phone and the shepherd read, and the session shows the same text, rendered from
+  # the file, in its own pane. Headless producers are paged by the briefing's pending-asks pass.
+  if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
+    render_ask "$file" >&2
+    agent-notify -p high -t "ask: $project" "${session:-$project}: $(field "$file" question | cut -c1-140)" >/dev/null 2>&1 || true
+  fi
+
   if [ "$wait" -eq 1 ]; then
     # SECONDARY path: block until answered, then print the answer to stdout.
     # Producers that are headless must NOT use this.
@@ -258,7 +281,7 @@ cmd_list() {
   fi
 
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
-  #      resumed_at, recommend, created, session, closed_at, closed_reason
+  #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session
   #      (append new columns at the end only)
   local f st at
   while IFS= read -r f; do
@@ -268,13 +291,13 @@ cmd_list() {
     at="$(field "$f" answered_at)"
     # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
     [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
       "$(field "$f" options)" "$(field "$f" task)" \
       "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)" \
       "$(field "$f" created)" "$(field "$f" session)" \
-      "$(field "$f" closed_at)" "$(field "$f" closed_reason)"
+      "$(field "$f" closed_at)" "$(field "$f" closed_reason)" "$(field "$f" claude_session)"
   done < <(ask_files "$key")
 }
 
@@ -309,11 +332,56 @@ cmd_answer() {
   agent-notify -t "ask answered" "${project}: ${answer}" >/dev/null 2>&1 || true
   echo "answered $id: $answer" >&2
 
+  deliver_to_session "$f" "$answer"
+
   # Answering IS starting (see header). ask-resume marks before it runs and detaches the
   # long work, so this returns promptly; its failure must not fail the answer.
   if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
     ask-resume "$id" >&2 || true
   fi
+}
+
+# deliver_to_session <file> <answer>: an ask from a live attended session is answered in that
+# session too, so a board answer and a typed answer reach the same place. Skipped when the owner
+# is gone, or sits in a permission/question dialog that a paste would answer by accident.
+deliver_to_session() {
+  local f="$1" answer="$2" owner row pane server
+  [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
+  owner="$(field "$f" claude_session)"
+  [ -n "$owner" ] && command -v agent-panel >/dev/null 2>&1 || return 0
+  row="$(agent-panel list --json 2>/dev/null | jq -c --arg s "$owner" 'select(.session_id == $s)' | head -1)"
+  [ -n "$row" ] || return 0
+  [ "$(jq -r .status <<< "$row")" = waiting ] && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
+  pane="$(jq -r .pane <<< "$row")"; server="${pane%%/*}"; pane="${pane#*/}"
+  printf 'Answer to ask %s: %s' "$(field "$f" id)" "$answer" | tmux -L "$server" load-buffer -b agent-ask - 2>/dev/null &&
+    tmux -L "$server" paste-buffer -p -d -b agent-ask -t "$pane" 2>/dev/null &&
+    tmux -L "$server" send-keys -t "$pane" Enter 2>/dev/null || true
+}
+
+# settle-session <claude_session> answered|stale [text...]: close every pending ask that session
+# owns. The UserPromptSubmit hook calls it with `answered` (the human typed into the session,
+# which is the answer) and the SessionEnd hook with `stale` (nobody is left to act on it).
+cmd_settle_session() {
+  local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
+  [ -n "$owner" ] && { [ "$to" = answered ] || [ "$to" = stale ]; } ||
+    { echo "usage: agent-ask settle-session <claude_session> answered|stale [text...]" >&2; return 2; }
+  local text f n=0; text="$(oneline "$*" | cut -c1-200)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$(field "$f" status)" = pending ] && [ "$(field "$f" claude_session)" = "$owner" ] || continue
+    if [ "$to" = answered ]; then
+      set_field "$f" status answered
+      set_field "$f" answer "in session: ${text:-(no text)}"
+      set_field "$f" answered_at "$(now_iso)"
+    else
+      set_field "$f" status stale
+      set_field "$f" closed_at "$(now_iso)"
+      set_field "$f" closed_reason "${text:-session ended}"
+    fi
+    n=$((n + 1))
+  done < <(ask_files --all)
+  [ "$n" -gt 0 ] && queue_changed
+  return 0
 }
 
 # close_ask <status> <id> [reason...]: the shared body of cancel and stale.
@@ -442,6 +510,7 @@ case "$sub" in
   recommend)    cmd_recommend "$@" ;;
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;
+  settle-session) cmd_settle_session "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

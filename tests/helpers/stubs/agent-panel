@@ -10,6 +10,7 @@
 #
 # Fixture files, all optional:
 #   agent-panel.list    lines for `agent-panel list`
+#   agent-panel.asks    present: `agent-panel asks-human` exits 0 (the turn asks the human)
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -17,6 +18,7 @@ printf 'agent-panel %s\n' "$*" >> "$FIX/calls.log"
 
 case "${1:-}" in
   list) [ -f "$FIX/agent-panel.list" ] && cat "$FIX/agent-panel.list" ;;
+  asks-human) [ -f "$FIX/agent-panel.asks" ] && exit 0; exit 1 ;;
   *) : ;;   # jump / next / preview / interactive: recorded no-ops
 esac
 exit 0

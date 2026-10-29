@@ -543,7 +543,7 @@ review_section() {
 }
 
 # ask_rows <now> -> a JSON array of pending asks, each joined to the newest sample of the
-# session it names: those blocking a live session first, ranked by age h x (1 + phases left
+# session that posted it (its claude_session; the tmux label only for an ask that predates it): those blocking a live session first, ranked by age h x (1 + phases left
 # + open PR), then the rest oldest first.
 ask_rows() {
   local asks
@@ -555,7 +555,7 @@ ask_rows() {
     def tsess: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "");
     [$a | split("\n")[] | select(length > 0) | split("\t")
      | {id: .[0], project: .[1], kind: .[4], question: .[5], recommend: (.[10] // ""),
-        session: (.[12] // ""), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | epoch)) / 3600 end)}
+        session: (if (.[15] // "") != "" then .[15] else (.[12] // "") end), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | epoch)) / 3600 end)}
      | .session as $s
      | (if $s == "" then null
         else [$live[] | select(.session_id == $s or (.target | tsess) == $s)] | sort_by(.target) | first end) as $l

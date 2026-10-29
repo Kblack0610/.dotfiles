@@ -292,7 +292,7 @@ brief_for() {
 Dispatched by fleet-dispatch from $project ($stage), $lane sheet row "$key".
 You are already in a fresh worktree off the trunk: work here, do not cut another.
 When the PR merges, record done on THAT row: notes --profile $prof ptask $project$flag done "$key" --proof pr:<N>
-If the task needs a decision or clarification from the human, stop, post an agent-ask with your recommendation, and leave this window open.
+If the task needs a decision or clarification from the human, ask it here and file the same question with agent-ask post (your recommendation in --recommend), then stop and leave this window open.
 EOF
 }
 

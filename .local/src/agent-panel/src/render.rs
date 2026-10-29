@@ -108,15 +108,10 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 
         for a in group {
             let g = colorize(a.glyph);
-            // Plan-mode and needs-your-answer markers, each in its own column, blank otherwise,
-            // so targets stay aligned. The answer column reads `A` for a pending ask, else `?`
-            // for a question asked in the conversation: the ask names its question, so it wins.
+            // Plan-mode and pending-ask markers, each in its own column, blank otherwise,
+            // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
-            let ask = match (a.ask, a.question) {
-                (true, _) => format!("{BLUE}A{RESET}"),
-                (false, true) => format!("{BLUE}?{RESET}"),
-                _ => " ".to_string(),
-            };
+            let ask = if a.ask { format!("{BLUE}A{RESET}") } else { " ".to_string() };
             // Window tags (Prefix+a) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
@@ -225,7 +220,6 @@ mod tests {
             status: String::new(),
             plan,
             ask,
-            question: false,
             started_at: None,
         }
     }
@@ -256,26 +250,7 @@ mod tests {
     fn pending_ask_needs_attention() {
         assert!(agent("s:1", '✓', false, true).needs_attention());
         assert!(agent("s:1", '!', false, false).needs_attention());
-        assert!(Agent { question: true, ..agent("s:1", '~', false, false) }.needs_attention());
         assert!(!agent("s:1", '~', true, false).needs_attention());
-    }
-
-    #[test]
-    fn marks_a_question_in_the_answer_column() {
-        let agents = [
-            Agent { question: true, ..agent("s:1", '~', false, false) },
-            agent("s:2", '~', false, false),
-            Agent { question: true, ..agent("s:3", '✓', true, true) },
-        ];
-        let (rows, _) = build(&agents);
-        let q = format!("{BLUE}?{RESET}");
-        let a = format!("{BLUE}A{RESET}");
-        assert!(row(&rows, "s:1").contains(&format!("  {q} s:1")));
-        // Negative control: no question -> the column stays blank and aligned.
-        assert!(!row(&rows, "s:2").contains(&q));
-        assert!(row(&rows, "s:2").contains("    s:2"));
-        // A pending ask and a question share the column, and the ask wins.
-        assert!(row(&rows, "s:3").contains(&a) && !row(&rows, "s:3").contains(&q));
     }
 
     #[test]

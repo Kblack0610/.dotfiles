@@ -20,7 +20,7 @@ The rule underneath it: a stop belongs in state that every session can read. On 
 |---|---|---|
 | Ask one peer session to do or not do something specific | `SendMessage` to its name from `ListAgents` | a broadcast |
 | Pause a shared resource for everyone, including sessions not started yet | `agent-hold set <resource> --roster a,b "<reason>"`, then message the Claude sessions on the roster | a broadcast with no hold behind it |
-| Get a decision from the human | ask in your own conversation; `agent-ask post` only from a headless run (it refuses when `CLAUDE_CODE_SESSION_ATTENDED=1`) | a peer message asking another agent to decide |
+| Get a decision or an action from the human | ask in your own conversation AND `agent-ask post --options 'a|b' --recommend a "<question>"` in the same turn: the ask file is the one record every board, the phone and the shepherd read, and `post` prints it in your pane. The Stop check `88-ask-filed.sh` blocks a turn that ends waiting on the human with nothing filed. A human-only action you will not wait on is a human-sheet row instead (`notes ptask <project> add`), and you may close | a peer message asking another agent to decide; a question left only in the chat |
 | Tell the human something that cannot wait | `agent-notify -p high -t '<title>' '<msg>'` | long flags such as `--priority`; they land in the message body |
 | Let other sessions know what you are doing | the agent board (`notes ptask <project> --agent start`) | a message |
 
@@ -77,7 +77,7 @@ If a hold shows up in your session preflight, you are under it from turn 1 even 
 
 - Broadcast a stop with no `agent-hold` behind it. Loops and new sessions will miss it.
 - Restart the moment GO arrives if every peer will do the same. Start one run and let the slot queue, where a resource has one, pace the rest.
-- Use a peer message to reach the human. Ask in your own conversation; from a headless run, use `agent-ask` or `agent-notify`.
+- Use a peer message to reach the human. Ask in your own conversation and file it with `agent-ask post`; from a headless run, `agent-ask post` alone.
 - Answer a peer's ack. The coordinator tracks acks; nobody replies to them.
 
 ## Related

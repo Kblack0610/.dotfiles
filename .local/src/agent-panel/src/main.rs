@@ -30,6 +30,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Exit 0 when the transcript's last word asks the human something (a question, a step for
+    /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
+    AsksHuman { transcript: PathBuf },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
     /// Internal fzf preview callback (not meant to be run by hand).
@@ -47,6 +50,9 @@ fn main() -> anyhow::Result<()> {
         None => chooser::run_interactive(),
         Some(Cmd::Next) => chooser::run_next(),
         Some(Cmd::List { json }) => chooser::run_list(json),
+        Some(Cmd::AsksHuman { transcript }) => {
+            std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
+        }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }

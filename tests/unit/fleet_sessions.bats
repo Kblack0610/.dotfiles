@@ -14,7 +14,7 @@ setup() {
 }
 
 # b <status> <plan> <asks> <heavy> <idle> <git> <dirty> <ahead> <pr> <state> <ci> <in_pr> \
-#   [<red> <phases> <next> <conflicts> <question>]
+#   [<red> <phases> <next> <conflicts>]
 b() { session_bucket "$@"; }
 
 @test "waiting and busy win over the session's own work facts" {
@@ -36,24 +36,6 @@ b() { session_bucket "$@"; }
   assert_output 'NEEDS 2 pending ask(s)'
   run b idle 0 1 1 99 1 0 0 - - - 1
   assert_output 'NEEDS 1 pending ask(s)'
-}
-
-@test "a question to the human in the conversation is NEEDS, not DONE or WORKING shell" {
-  # 2026-10-28: sessions that ended their turn asking the human read DONE or WORKING shell,
-  # so the shepherd wound them down or skipped them while the human was the next step.
-  run b idle 0 0 0 99 1 0 0 875 MERGED PASS 1 - 3/3 - no 1
-  assert_output 'NEEDS question to the human in the conversation'
-  run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x no 1
-  assert_output 'NEEDS question to the human in the conversation'
-  # Negative controls: no question leaves the same facts DONE and WORKING shell.
-  run b idle 0 0 0 99 1 0 0 875 MERGED PASS 1 - 3/3 - no 0
-  assert_output --partial 'DONE'
-  run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x no
-  assert_output 'WORKING shell'
-  # A pending ask still names its count first; the question is only `finished`-neutral.
-  run b idle 0 1 0 99 1 0 0 875 MERGED PASS 1 - 3/3 - no 1
-  assert_output 'NEEDS 1 pending ask(s)'
-  session_finished idle 0 0 0 99 1 0 0 875 MERGED PASS 1 - 3/3 - no 1
 }
 
 @test "an open PR that conflicts with the default branch is STALLED whatever the status" {
@@ -356,11 +338,11 @@ MD
 
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
-# (default idle) and question $PANEL_QUESTION (default false).
+# (default idle).
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"question\":${PANEL_QUESTION:-false},\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -412,15 +394,6 @@ landed_fixture() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .escalated <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
-}
-
-@test "end to end: agent-panel's question turns a LANDED session into NEEDS" {
-  landed_fixture
-  PANEL_QUESTION=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
-  [ "$(jq -r .reason <<<"$output")" = 'question to the human in the conversation' ]
 }
 
 @test "end to end: main red after a merge names the merging session as owner" {

@@ -75,6 +75,16 @@ get_session_status() {
         fi
     done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
 
+    # A pending ask from this session waits on the human like an open prompt does. The ask file
+    # is the record (agent-ask); the screen only shows prompts and dialogs.
+    if [[ -n "$target_session" ]]; then
+        local f
+        for f in "$HOME"/.agent/asks/*/*.md; do
+            [ -f "$f" ] || continue
+            grep -qxF "session: $target_session" "$f" && grep -qx 'status: pending' "$f" && ((attention++))
+        done
+    fi
+
     # Return compact status
     if [ $total -eq 0 ]; then
         echo ""
