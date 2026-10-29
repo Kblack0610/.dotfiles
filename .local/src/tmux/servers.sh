@@ -482,11 +482,7 @@ cmd_land() {
   # attach) when the world genuinely has nothing else.
   local landing_name last
   landing_name="$(_landing "$target")"
-
-  last="$(tmux -L "$target" list-sessions \
-            -F '#{session_last_attached} #{session_name}' 2>/dev/null \
-          | sort -rn | cut -d' ' -f2- \
-          | grep -vxF "${landing_name:-}" | head -1)"
+  last="$(_recent_session "$target")"
 
   # Nothing but the root in this world — go there rather than nowhere.
   [ -n "$last" ] || last="$landing_name"
@@ -496,6 +492,31 @@ cmd_land() {
     exec tmux -L "$target" attach -t "=$last"
   fi
   exec tmux -L "$target" attach
+}
+
+# _recent_session <server> [exclude] -- the session you were last working on in a world:
+# most recent last_attached, never the landing page, never <exclude>. Empty when the world
+# holds nothing else. One definition shared by resume (cmd_land) and Prefix+L (cmd_back),
+# so "what I was working on" cannot mean two things.
+_recent_session() {
+  local srv="$1" exclude="${2:-}"
+  tmux -L "$srv" list-sessions \
+      -F '#{session_last_attached} #{session_name}' 2>/dev/null \
+    | sort -rn | cut -d' ' -f2- \
+    | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | head -1
+}
+
+# _is_board <server> <session>[:<window>] -- is that window (the session's current one when
+# none is given) a declared window of the manifest, like hub:watch? Identity is the one
+# ensure finds declared windows by: @tmx_window, else the name for windows made before it.
+_is_board() {
+  local srv="$1" sess="${2%%:*}" win="" id
+  case "$2" in *:*) win="${2#*:}" ;; esac
+  id="$(tmux -L "$srv" display-message -p -t "=$sess:$win" \
+          '#{?@tmx_window,#{@tmx_window},#{window_name}}' 2>/dev/null)"
+  [ -n "$id" ] || return 1
+  awk -v k="$sess:$id" '!/^[[:space:]]*#/ { n = $1; sub(/^\?/, "", n); if (n == k) f = 1 }
+                        END { exit !f }' "$MANIFEST_DIR/$srv.conf" 2>/dev/null
 }
 
 cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
@@ -522,16 +543,36 @@ cmd_goto() {
 # last hop started, hours ago, instead of the session you were just in. tmux knows the real
 # answer whenever it has one; it only has none on a fresh attach, which is exactly the state
 # a cross-server hop leaves you in - and that is the one case the crumb exists for.
+#
+# A board is never a place to go BACK to. The boards (Prefix o -> hub:watch, Prefix O ->
+# hub:log) are declared windows of the landing session, and tmux keeps one last-session
+# slot, so a glance at one took it: A, o, L, L landed on the board instead of the session
+# before A. When tmux's answer (or the crumb) is a board, L goes to the session you were
+# last working on instead, and to the board only when there is nowhere else.
 cmd_back() {
-  local rec srv sess win cur cur_srv cur_sess
+  local rec srv sess win cur cur_srv cur_sess last pick
 
-  [ -n "${TMUX:-}" ] && tmux switch-client -l 2>/dev/null && return 0
+  cur="$(_current_loc)" || cur=""
+  IFS=$'\t' read -r cur_srv cur_sess _ <<<"${cur:-}"
+
+  if [ -n "${TMUX:-}" ]; then
+    last="$(tmux display-message -p '#{client_last_session}' 2>/dev/null)"
+    if [ -n "${cur_srv:-}" ] && [ -n "$last" ] && _is_board "$cur_srv" "$last"; then
+      pick="$(_recent_session "$cur_srv" "$cur_sess")"
+      [ -n "$pick" ] && exec tmux switch-client -t "=$pick"
+    fi
+    tmux switch-client -l 2>/dev/null && return 0
+  fi
 
   rec="$(head -1 "$BACK_FILE" 2>/dev/null)"
   IFS=$'\t' read -r srv sess win <<<"${rec:-}"
 
-  cur="$(_current_loc)" || cur=""
-  IFS=$'\t' read -r cur_srv cur_sess _ <<<"${cur:-}"
+  # The crumb `back` itself leaves after returning from a board in another world.
+  if [ -n "${srv:-}" ] && [ -n "${sess:-}" ] && [ -n "${cur_srv:-}" ] &&
+     _is_board "$srv" "$sess${win:+:$win}"; then
+    pick="$(_recent_session "$cur_srv" "$cur_sess")"
+    [ -n "$pick" ] && exec tmux switch-client -t "=$pick"
+  fi
 
   # Nothing recorded, the world it named is gone, or it names where we already are.
   if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] ||
