@@ -2,9 +2,12 @@
 # day-log - what a day shipped: every PR you merged in any repo, what is still open, what
 # waits on you, and the fleet's telemetry, kept as one record per day. The hub:log board.
 #
-#   day-log watch [--every N] [--once] [--date D]
-#                                 the board: [ and ] step a day, t today, l the full list,
-#                                 n refresh, q quit (hub:log, Prefix O)
+#   day-log watch [--every N] [--once] [--date D] [--open SECTION]
+#                                 the board (hub:log, Prefix O). 1-5 or a click on a header
+#                                 opens that section in full and folds the rest (again or Esc
+#                                 closes it); j/k, space/b, g/G and the wheel scroll it.
+#                                 [ and ] step a day, t today, l the whole day in less,
+#                                 n refresh, q quit
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path
 #   day-log json [--date D]       the day's record: today is gathered, a past day is read
 #   day-log show [--date D]       the day as markdown, every PR listed
@@ -38,6 +41,7 @@ set -uo pipefail
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
 : "${DAYLOG_TIMELINE:=8}"     # watch-log lines on the board; the record keeps 50
 : "${DAYLOG_ASKS:=6}"         # pending asks on the board, newest first
+: "${DAYLOG_ESC_WAIT:=0.05}"  # seconds after Esc for the rest of an arrow or mouse sequence
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -186,21 +190,28 @@ def spend: (.usage // []) | {cost: (map(.cost_usd) | add // 0), tokens: (map(.to
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 
-# rows <n>: a fitted table's header and its first n rows, then a count of the rest; 0 keeps all.
+# rows <n> <key> [head]: a fitted section's first head lines (its pinned header, 1 by default)
+# and n rows after them, then a count of the rest and the key that opens it; 0 keeps all.
 rows() {
-  awk -v n="$1" 'n == 0 || NR <= n + 1 { print; next } { more++ }
-    END { if (more) printf "  +%d more (l lists everything)\n", more }'
+  awk -v n="$1" -v k="$2" -v head="${3:-1}" 'n == 0 || NR <= n + head { print; next } { more++ }
+    END { if (more) printf "  +%d more (%s opens it)\n", more, k }'
 }
 
-# frame <record> <width> [height]: one board frame. With a height, each table gets a share
-# of the rows left after the fixed lines (MERGED two shares) so the summary stays on screen.
-frame() {
-  local f="$1" w="$2" h="${3:-0}" t share=0 tl="$DAYLOG_TIMELINE"; t="$(now)"
-  if [ "$h" -gt 0 ]; then
-    share=$(( (h - 29) / 6 )); [ "$share" -lt 2 ] && share=2
-    [ "$tl" -gt "$share" ] && tl="$share"
-  fi
-  jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+# The board's sections, in order; the number on each header is the key that opens it.
+SECTIONS=(waiting merged open sessions timeline)
+
+# section_key <name|number> -> the section's key, or fail for an unknown one.
+section_key() {
+  local i
+  for i in "${!SECTIONS[@]}"; do
+    if [ "$1" = "${SECTIONS[$i]}" ] || [ "$1" = "$((i + 1))" ]; then echo $((i + 1)); return 0; fi
+  done
+  return 1
+}
+
+# summary <record>: the lines above the sections - the day, the counts, the fleet, merges by hour.
+summary() {
+  jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
     spend as $u
     | "day log  \(.date | strptime("%Y-%m-%d") | mktime | strftime("%a %Y-%m-%d"))  "
       + (if .live then "live, gathered \(.gathered_at | hm)" else "past day, last gathered \(.gathered_at[0:16] | sub("T"; " "))" end)
@@ -220,53 +231,151 @@ frame() {
          "hour    " + ([range($span[0]; $span[1] + 1) | $hrs[.] | " " + .] | join("")),
          "merged  " + ([range($span[0]; $span[1] + 1) | $n[.] | tostring | if . == "0" then "." else . end
            | (if length < 2 then "  " else " " end) + .] | join("")) end)
-  ' "$f"
-  echo
+  ' "$1"
+}
 
-  local wait
-  wait="$(jq -r --argjson n "$DAYLOG_ASKS" '
-    (.waiting // {main: [], needs: [], asks: []}) as $w
-    | ($w.main | map("\tMAIN\t\(.repo)\t\(.reason | sub("^[^ ]+ red: "; "red: "))")),
-      ($w.needs | map("\tNEEDS\t\(.who)\t\(.reason) (idle \(.idle_min)m)")),
-      ($w.asks[:$n] | map("\tASK\t\(.id) \(.project)\t\(.question | gsub("[\t\n]"; " "))")),
-      (if ($w.asks | length) > $n then ["\t\t\t+\(($w.asks | length) - $n) older asks: agent-ask list --all --pending"] else [] end)
-    | .[]' "$f")"
-  printf 'WAITING ON YOU (%s)\n' "$(grep -c . <<<"$wait")"
-  if [ -n "$wait" ]; then
-    { printf '\t%s' KIND WHO WHY; echo; printf '%s\n' "$wait"; } | table_fit "$w" keep="1 2" flex=3 flexmin=20 cap="2:30" | rows "$share"
-  else echo "  nothing"; fi
-  echo
+# sec_title <record> <key> <full>: the section's header line, its key first; nothing when the
+# record has no such section (open PRs and sessions are only read while the day is live).
+sec_title() {
+  jq -r --argjson k "$2" --argjson full "$3" --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+    if $k == 1 then (.waiting // {main: [], needs: [], asks: []}) | "WAITING ON YOU (\(.main + .needs + .asks | length))"
+    elif $k == 2 then
+      if $full == 1 then "MERGED, EVERY PR (\(.merged | length))"
+      else "MERGED BY GROUP (\(.merged | length) PRs in \(.merged | map(.area + "\u0000" + .group) | unique | length) groups)" end
+    elif $k == 3 then
+      if .open == null then empty
+      else "STILL OPEN (\(.open | map(select(recent($now; $days))) | length) touched in \($days)d"
+        + (if $full == 1 then ", \(.open | map(select(recent($now; $days) | not)) | length) older)" else ")" end) end
+    elif $k == 4 then if .bench == null then empty else "SESSIONS (\(.bench.sessions | length))" end
+    else "TIMELINE (\(.timeline | length))" end
+    | "\($k) " + .' "$1"
+}
 
-  printf 'MERGED BY GROUP  (l: every PR)\n'
-  jq -r "$JQ_VIEW"'
-    "\tAREA\tGROUP\tN\tLAST\tLATEST",
-    (.merged | group_by(.area + "\u0000" + .group) | sort_by(-length, .[0].area)[]
-     | last as $l | "\t\(.[0].area)\t\(.[0].group)\t\(length)\t\($l.merged_at | hm)\t#\($l.number) \($l | subject)")
-  ' "$f" | table_fit "$w" keep="2 3 4 1" flex=5 flexmin=16 right="3" cap="1:14 2:28" | rows "$((share * 2))"
-  echo
+# sec_pin <record> <width> <key>: how many of the section's first lines stay put when it scrolls
+# (the column header, and for sessions the bench headline above it).
+sec_pin() {
+  case "$3" in
+    4) echo $(( $(jq -r '.bench.headline' "$1" | fold -s -w "$(( ${2:-0} > 4 ? $2 - 2 : 200 ))" | grep -c '') + 1 )) ;;
+    5) echo 0 ;;
+    *) echo 1 ;;
+  esac
+}
 
-  if jq -e '.open != null' "$f" >/dev/null; then
-    printf 'STILL OPEN  (touched in the last %sd)\n' "$DAYLOG_OPEN_DAYS"
-    jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
-      "\tPR\tREPO\tAGE\tCI\tBY\tTITLE",
-      (.open[] | select(recent($now; $days))
-       | "\t#\(.number)\t\(.repo)\t\(($now - (.created_at | fromdateiso8601)) / 3600 | floor)h\t\(if .draft then "draft" else (.ci // "-") end)\t\(.by // "-")\t\(subject)")
-    ' "$f" | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=16 right="3" opt="5" cap="2:22" | rows "$share"
-    echo
+# sec_body <record> <width> <key> <full> [timeline lines]: the section's lines. Folded (full 0)
+# is the board's view; full 1 is everything: every PR flat, every ask, every open PR however old.
+sec_body() {
+  local f="$1" w="$2" k="$3" full="$4" t wait; t="$(now)"
+  case "$k" in
+    1)
+      wait="$(jq -r --argjson n "$DAYLOG_ASKS" --argjson full "$full" '
+        (.waiting // {main: [], needs: [], asks: []}) as $w
+        | (if $full == 1 then ($w.asks | length) else $n end) as $n
+        | ($w.main | map("\tMAIN\t\(.repo)\t\(.reason | sub("^[^ ]+ red: "; "red: "))")),
+          ($w.needs | map("\tNEEDS\t\(.who)\t\(.reason) (idle \(.idle_min)m)")),
+          ($w.asks[:$n] | map("\tASK\t\(.id) \(.project)\t\(.question | gsub("[\t\n]"; " "))")),
+          (if ($w.asks | length) > $n then ["\t\t\t+\(($w.asks | length) - $n) older asks (1 opens them)"] else [] end)
+        | .[]' "$f")"
+      if [ -n "$wait" ]; then
+        { printf '\t%s' KIND WHO WHY; echo; printf '%s\n' "$wait"; } | table_fit "$w" keep="1 2" flex=3 flexmin=20 cap="2:30"
+      else echo "  nothing"; fi ;;
+    2)
+      if [ "$full" = 1 ]; then
+        jq -r "$JQ_VIEW"'
+          "\tTIME\tPR\tAREA\tGROUP\tBY\tTITLE",
+          (.merged | reverse | .[] | "\t\(.merged_at | hm)\t\(.repo)#\(.number)\t\(.area)\t\(.group)\t\(.by // "-")\t\(subject)")
+        ' "$f" | table_fit "$w" keep="2 1 4 5 3" flex=6 flexmin=40 flexkeep=1 opt="5" cap="2:28 3:14 4:24 5:18"
+      else
+        jq -r "$JQ_VIEW"'
+          "\tAREA\tGROUP\tN\tLAST\tLATEST",
+          (.merged | group_by(.area + "\u0000" + .group) | sort_by(-length, .[0].area)[]
+           | last as $l | "\t\(.[0].area)\t\(.[0].group)\t\(length)\t\($l.merged_at | hm)\t#\($l.number) \($l | subject)")
+        ' "$f" | table_fit "$w" keep="2 3 4 1" flex=5 flexmin=16 right="3" cap="1:14 2:28"
+      fi ;;
+    3)
+      jq -r --argjson now "$t" --argjson days "$DAYLOG_OPEN_DAYS" --argjson full "$full" "$JQ_VIEW"'
+        "\tPR\tREPO\tAGE\tCI\tBY\tTITLE",
+        (.open[] | select($full == 1 or recent($now; $days))
+         | (($now - (.created_at | fromdateiso8601)) / 3600 | floor) as $h
+         | "\t#\(.number)\t\(.repo)\t\(if $h >= 48 then "\($h / 24 | floor)d" else "\($h)h" end)\t\(if .draft then "draft" else (.ci // "-") end)\t\(.by // "-")\t\(subject)")
+      ' "$f" | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=16 right="3" opt="5" cap="2:22" ;;
+    4)
+      jq -r '.bench.headline' "$f" | fold -s -w "$(( ${w:-0} > 4 ? w - 2 : 200 ))" | sed 's/^/  /'
+      jq -r "$JQ_VIEW"'
+        "\tSESSION\tPLAN\tPHASE\tWORK h\tWAIT h\tPRS\tREDS\tCOST",
+        (.bench.sessions[] | "\t\(.target | sub("^[^/]*/"; "") | sub(":1$"; ""))\t\(if (.plan // "") == "" then "-" else .plan end)\t\(.phase)\t\(.working_h)\t\(.waiting_h)\t\(.prs_merged // "-")\t\(.ci_reds // "-")\t\(.cost_usd | money)")
+      ' "$f" | table_fit "$w" keep="1 3 4 5 6 8 7 2" right="4 5 6 7 8" opt="2" cap="1:32 2:28" ;;
+    5)
+      jq -r --argjson n "${5:-$DAYLOG_TIMELINE}" --argjson full "$full" \
+        '(if $full == 1 then .timeline else .timeline[-$n:] end) | reverse | .[] | "  " + .[11:]' "$f" | table_fit "$w" ;;
+  esac
+}
+
+# frame <record> <width> [height] [open] [scroll]: one board frame, run in the caller's shell
+# so it can hand back FRAME_OPEN, FRAME_SCROLL and FRAME_PAGE (the open section, the scroll
+# clamped to its list, and the rows the list was given).
+#   open 0: every section folded. With a height each table gets a share of the rows left
+#     after the fixed lines (MERGED two shares) so the summary stays on screen.
+#   open 1-5: that section in full, scrolled to fit, and every other one down to its header.
+frame() {
+  local f="$1" w="$2" h="${3:-0}" open="${4:-0}" scroll="${5:-0}" share=0 tl="$DAYLOG_TIMELINE" k title
+  local sum body pin n avail max last=0 i
+  local -a above=() below=()
+  FRAME_SCROLL=0; FRAME_PAGE=0
+  [ "$open" != 0 ] && [ -z "$(sec_title "$f" "$open" 1)" ] && open=0
+  FRAME_OPEN="$open"
+  sum="$(summary "$f")"
+  printf '%s\n\n' "$sum"
+
+  if [ "$open" = 0 ]; then
+    if [ "$h" -gt 0 ]; then
+      share=$(( (h - 29) / 6 )); [ "$share" -lt 2 ] && share=2
+      [ "$tl" -gt "$share" ] && tl="$share"
+    fi
+    for k in 1 2 3 4 5; do
+      title="$(sec_title "$f" "$k" 0)"; [ -n "$title" ] || continue
+      [ "$last" = 1 ] && echo
+      printf '%s\n' "$title"
+      case "$k" in
+        2) sec_body "$f" "$w" 2 0 | rows "$((share * 2))" 2 ;;
+        4) sec_body "$f" "$w" 4 0 | rows "$share" 4 "$(sec_pin "$f" "$w" 4)" ;;
+        5) sec_body "$f" "$w" 5 0 "$tl" ;;
+        *) sec_body "$f" "$w" "$k" 0 | rows "$share" "$k" ;;
+      esac
+      last=1
+    done
+    return 0
   fi
 
-  if jq -e '.bench != null' "$f" >/dev/null; then
-    printf 'SESSIONS\n'
-    jq -r '.bench.headline' "$f" | fold -s -w "$(( ${w:-0} > 4 ? w - 2 : 200 ))" | sed 's/^/  /'
-    jq -r "$JQ_VIEW"'
-      "\tSESSION\tPLAN\tPHASE\tWORK h\tWAIT h\tPRS\tREDS\tCOST",
-      (.bench.sessions[] | "\t\(.target | sub("^[^/]*/"; "") | sub(":1$"; ""))\t\(if (.plan // "") == "" then "-" else .plan end)\t\(.phase)\t\(.working_h)\t\(.waiting_h)\t\(.prs_merged // "-")\t\(.ci_reds // "-")\t\(.cost_usd | money)")
-    ' "$f" | table_fit "$w" keep="1 3 4 5 6 8 7 2" right="4 5 6 7 8" opt="2" cap="1:32 2:28" | rows "$share"
-    echo
+  for k in 1 2 3 4 5; do
+    [ "$k" = "$open" ] && continue
+    title="$(sec_title "$f" "$k" 0)"; [ -n "$title" ] || continue
+    if [ "$k" -lt "$open" ]; then above+=("$title"); else below+=("$title"); fi
+  done
+  title="$(sec_title "$f" "$open" 1)"
+  body="$(sec_body "$f" "$w" "$open" 1)"
+  pin="$(sec_pin "$f" "$w" "$open")"
+  n=$(( $(grep -c '' <<<"$body") - pin ))
+  if [ "$h" -gt 0 ]; then
+    # the list gets what is left after the summary and its blank line, every header, the
+    # pinned lines, the position line and the two-row key line
+    avail=$(( h - $(grep -c '' <<<"$sum") - 1 - ${#above[@]} - 1 - pin - 1 - ${#below[@]} - 2 ))
+    [ "$avail" -lt 3 ] && avail=3
+  else
+    avail="$n"
   fi
+  max=$(( n > avail ? n - avail : 0 ))
+  [ "$scroll" -gt "$max" ] && scroll="$max"
+  [ "$scroll" -lt 0 ] && scroll=0
+  FRAME_SCROLL="$scroll"; FRAME_PAGE="$avail"
 
-  printf 'TIMELINE\n'
-  jq -r --argjson n "$tl" '.timeline[-$n:] | reverse | .[] | "  " + .[11:]' "$f" | table_fit "$w"
+  for i in "${above[@]}"; do printf '%s\n' "$i"; done
+  printf '%s\n' "$title"
+  [ "$pin" -gt 0 ] && head -n "$pin" <<<"$body"
+  tail -n +"$((pin + 1))" <<<"$body" | sed -n "$((scroll + 1)),$((scroll + avail))p"
+  if [ "$n" -gt "$avail" ]; then
+    printf '  rows %d-%d of %d\n' "$((scroll + 1))" "$((scroll + avail))" "$n"
+  else echo; fi
+  for i in "${below[@]}"; do printf '%s\n' "$i"; done
 }
 
 # markdown <record>: the day with every PR, for the notes ref and the board's full list.
@@ -304,10 +413,22 @@ finalize() {
   jq -r '"\(.merged | length) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
 }
 
-# wait_key <secs> -> the key pressed, or nothing on a timeout or a resize (CONVENTIONS.md:
-# bash 5.3 keeps reading after a trap, so the read sits in a subshell the WINCH trap exits).
+# wait_key <secs> -> the key pressed, a whole escape sequence for an arrow, a page key or a
+# mouse report, or nothing on a timeout or a resize (CONVENTIONS.md: bash 5.3 keeps reading
+# after a trap, so the read sits in a subshell the WINCH trap exits).
 wait_key() {
-  (trap 'exit 0' WINCH; read -rsn1 -t "$1" k && printf '%s' "$k")
+  (trap 'exit 0' WINCH
+   IFS= read -rsn1 -t "$1" k || exit 0
+   # A bare Esc and the Esc that starts a sequence arrive the same way, and a terminal sends
+   # no end-of-key event: the rest of a sequence is already buffered, so a short read that
+   # finds nothing means Esc alone (vim's ttimeoutlen, for the same reason).
+   if [ "$k" = $'\033' ]; then
+     while IFS= read -rsn1 -t "$DAYLOG_ESC_WAIT" c; do
+       k+="$c"
+       case "$c" in [A-Za-z~]) [ "${#k}" -gt 2 ] && break ;; esac
+     done
+   fi
+   printf '%s' "$k")
 }
 
 # term_size -> "<rows> <cols>" of the controlling terminal, or nothing.
@@ -317,49 +438,100 @@ term_size() {
   [[ "$s" =~ ^[1-9][0-9]*\ [1-9][0-9]*$ ]] && echo "$s"
 }
 
+# paint <open> <colour 0|1>: section headers bold, the open one in reverse, alarms in red.
 paint() {
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  if [ "$2" = 1 ] && [ -z "${NO_COLOR:-}" ]; then
     sed -E -e $'s/\\b(MAIN|NEEDS|HOLD|FAIL)\\b/\033[31m&\033[0m/g' -e $'s/\\b(ASK|draft)\\b/\033[33m&\033[0m/g' \
-           -e $'s/^(WAITING ON YOU|MERGED BY GROUP|STILL OPEN|SESSIONS|TIMELINE)/\033[1m&\033[0m/'
+           -e $'s/^'"$1"$' [A-Z].*/\033[7m&\033[0m/' \
+           -e $'s/^[1-5] (WAITING ON YOU|MERGED|STILL OPEN|SESSIONS|TIMELINE).*/\033[1m&\033[0m/'
   else cat; fi
 }
 
+# The board's terminal: the alternate screen so quitting gives the shell back, no cursor, no
+# echo (a key pressed mid-redraw would print), and SGR mouse reports so the wheel scrolls and
+# a click on a header opens that section.
+screen_on() { stty -echo 2>/dev/null; printf '\033[?1049h\033[?25l\033[?1000h\033[?1006h'; }
+screen_off() { printf '\033[?1006l\033[?1000l\033[?25h\033[?1049l'; stty echo 2>/dev/null; }
+
 watch() {
   local every="$DAYLOG_EVERY" once=0 day="" key f="" size width height deadline=0 tick=1 resized=0
+  local open=0 scroll=0 page=1 tty=0 buf out kl mb my ln rest
+  local -a hdr=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --every) every="${2:-}"; shift 2 || shift ;;
       --once) once=1; shift ;;
       --date) day="${2:-}"; shift 2 || shift ;;
-      *) echo "usage: day-log watch [--every N] [--once] [--date D]" >&2; return 2 ;;
+      --open) open="$(section_key "${2:-}")" || { echo "day-log: --open takes 1-5 or ${SECTIONS[*]}" >&2; return 2; }; shift 2 ;;
+      *) echo "usage: day-log watch [--every N] [--once] [--date D] [--open SECTION]" >&2; return 2 ;;
     esac
   done
   [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "day-log: --every takes whole seconds" >&2; return 2; }
   [ -n "$day" ] || day="$(today)"
   valid_day "$day" || { echo "day-log: --date takes YYYY-MM-DD" >&2; return 2; }
+  buf="$(mktemp)" || return 1
+  [ -t 0 ] && [ -t 1 ] && [ "$once" = 0 ] && tty=1
+  # shellcheck disable=SC2064
+  trap "rm -f '$buf'; if [ $tty = 1 ]; then screen_off; fi" EXIT
+  [ "$tty" = 1 ] && screen_on
   trap 'resized=1' WINCH
   while :; do
     if [ "$tick" = 1 ]; then f="$(record "$day")"; deadline=$((SECONDS + every)); fi
     size=""; [ -t 1 ] && size="$(term_size)"
     height="${size% *}"; width="${size#* }"; height="${height:-${LINES:-0}}"; width="${width:-${COLUMNS:-0}}"
-    [ -t 1 ] && printf '\033[H\033[2J'
-    # the key line below takes two rows; whatever still does not fit is cut from the bottom
-    if [ -n "$f" ]; then frame "$f" "$width" "$height" | table_fit "$width" | { if [ "$height" -gt 2 ]; then head -n $((height - 2)); else cat; fi; } | paint
-    else printf 'day log  %s\nno record for this day: [ and ] step, t today\n' "$day"; fi
+    if [ -n "$f" ]; then
+      frame "$f" "$width" "$height" "$open" "$scroll" > "$buf"
+      open="$FRAME_OPEN"; scroll="$FRAME_SCROLL"; page="$FRAME_PAGE"; [ "$page" -gt 0 ] || page=1
+      # the key line below takes two rows; whatever still does not fit is cut from the bottom
+      out="$(table_fit "$width" < "$buf" | { if [ "$height" -gt 2 ]; then head -n $((height - 2)); else cat; fi; })"
+    else
+      out="$(printf 'day log  %s\nno record for this day: [ and ] step, t today' "$day")"
+    fi
+    if [ "$tty" = 1 ]; then
+      # over the last frame in place, each line's tail cleared, so a redraw does not flash
+      printf '\033[H'; paint "$open" 1 <<<"$out" | sed $'s/$/\033[K/'; printf '\033[J'
+    else
+      paint "$open" 0 <<<"$out"
+    fi
     [ "$once" = 1 ] && return 0
     if [ -t 0 ]; then
-      printf '\n[ prev day  ] next  t today  l every PR  n refresh  q quit'
-      [ "$day" = "$(today)" ] && printf '  (next pass in %ss)' "$((deadline > SECONDS ? deadline - SECONDS : 0))"
+      hdr=()
+      while IFS=: read -r ln rest; do hdr[ln]="${rest%% *}"; done < <(grep -n -E '^[1-5] [A-Z]' <<<"$out")
+      if [ "$open" = 0 ]; then kl='1-5 or click a header: open a section  [ ] day  t today  l whole day  n refresh  q quit'
+      else kl='j/k scroll  space/b page  g/G ends  1-5 switch  esc closes  [ ] day  q quit'; fi
+      [ "$day" = "$(today)" ] && kl+="  (next pass in $((deadline > SECONDS ? deadline - SECONDS : 0))s)"
+      [ "$width" -gt 0 ] && kl="${kl:0:width}"
+      printf '\n%s' "$kl"
       resized=0
       key="$(wait_key "$((deadline > SECONDS ? deadline - SECONDS : 1))")"
-      tick=1
+      tick=0
       case "$key" in
-        q) echo; return 0 ;;
-        '[') day="$(date -d "$day -1 day" +%F)" ;;
-        ']') [ "$day" \< "$(today)" ] && day="$(date -d "$day +1 day" +%F)" ;;
-        t) day="$(today)" ;;
-        l) [ -n "$f" ] && markdown "$f" | less -R; tick=0 ;;
-        '') [ "$resized" = 1 ] && [ "$SECONDS" -lt "$deadline" ] && tick=0 ;;
+        q) return 0 ;;
+        # a timeout gathers again; a resize only redraws
+        '') if [ "$resized" != 1 ] || [ "$SECONDS" -ge "$deadline" ]; then tick=1; fi ;;
+        n) tick=1 ;;
+        '[') day="$(date -d "$day -1 day" +%F)"; tick=1; scroll=0 ;;
+        ']') [ "$day" \< "$(today)" ] && day="$(date -d "$day +1 day" +%F)"; tick=1; scroll=0 ;;
+        t) day="$(today)"; tick=1; scroll=0 ;;
+        l) [ -n "$f" ] && { [ "$tty" = 1 ] && screen_off; markdown "$f" | less -R; [ "$tty" = 1 ] && screen_on; } ;;
+        [1-5]) if [ "$open" = "$key" ]; then open=0; else open="$key"; fi; scroll=0 ;;
+        $'\033') open=0; scroll=0 ;;
+        j | $'\033[B' | $'\033OB') scroll=$((scroll + 1)) ;;
+        k | $'\033[A' | $'\033OA') scroll=$((scroll - 1)) ;;
+        ' ' | d | $'\033[6~') scroll=$((scroll + page)) ;;
+        b | u | $'\033[5~') scroll=$((scroll - page)) ;;
+        g) scroll=0 ;;
+        G) scroll=999999 ;;
+        $'\033[<'*)
+          # SGR mouse: 64/65 the wheel, 0 a left press (M; the release ends in m) on a header row
+          IFS=';' read -r mb _ my <<<"${key#$'\033[<'}"
+          case "$mb" in
+            64) scroll=$((scroll - 3)) ;;
+            65) scroll=$((scroll + 3)) ;;
+            0) if [ "${key: -1}" = M ] && [ -n "${hdr[${my%[Mm]}]:-}" ]; then
+                 key="${hdr[${my%[Mm]}]}"; if [ "$open" = "$key" ]; then open=0; else open="$key"; fi; scroll=0
+               fi ;;
+          esac ;;
       esac
       # a past day's record does not change: only today is re-gathered on the timer
       [ "$key" = '' ] && [ "$day" != "$(today)" ] && [ "$tick" = 1 ] && deadline=$((SECONDS + every))
@@ -393,8 +565,8 @@ main() {
     json) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && cat "$f" ;;
     show) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && markdown "$f" ;;
     finalize) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; finalize "$day" ;;
-    -h | --help) sed -n '2,15p' "$0" ;;
-    *) sed -n '2,12p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,18p' "$0" ;;
+    *) sed -n '2,15p' "$0" >&2; return 2 ;;
   esac
 }
 
