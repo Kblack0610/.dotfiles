@@ -278,7 +278,9 @@ struct AgentOut {
     summary: String,
     session: String,
     tags: String,
-    /// What a `waiting` agent is asking, from its transcript; absent otherwise.
+    /// What the agent wants from the human, from its transcript: set when it is
+    /// `waiting` (a dialog or permission prompt is open) or `idle` (its turn ended and the
+    /// next move is the human's). Absent while it works.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
 }
@@ -300,13 +302,13 @@ async fn find(target: &str) -> ApiResult<chooser::Agent> {
 }
 
 async fn agents() -> Json<Vec<AgentOut>> {
-    // Blocking: the question is a transcript read, done only for waiting agents.
+    // Blocking: the question is a transcript read, done only for agents the human can answer.
     let out = tokio::task::spawn_blocking(|| {
         chooser::collect()
             .into_iter()
             .map(|a| AgentOut {
                 question: match (a.status.as_str(), &a.jsonl) {
-                    ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
+                    ("waiting" | "idle", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
                 },
                 target: a.target,

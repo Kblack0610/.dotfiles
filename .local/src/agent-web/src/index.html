@@ -40,6 +40,8 @@ main { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 49px
 .dot.busy, .dot.shell { background: var(--busy); }
 .row .t { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .row .s { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* An element's own display rule would otherwise beat the hidden attribute (#detail is flex). */
+[hidden] { display: none !important; }
 #detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .bar .name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -294,7 +296,8 @@ const refreshAsks = coalesce(async () => {
 
 // The Waiting tab: every live session with an open question (read from its transcript
 // by the server), then the queue asks that headless runs post. One count for both.
-const asking = () => st.agents.filter((a) => a.question);
+// An open dialog or prompt (`waiting`) sorts before a session whose turn simply ended (`idle`).
+const asking = () => st.agents.filter((a) => a.question).sort((a, b) => (b.status === "waiting") - (a.status === "waiting"));
 function renderBadge() {
   const n = asking().length + st.asks.length;
   $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
@@ -308,7 +311,7 @@ function sessionCard(a) {
   return `
     <div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">
       <span class="open" data-open>open</span>
-      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)}${q.kind === "tool" ? " &middot; permission" : ""}</div>
+      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${q.kind === "choice" ? "asking" : q.kind === "tool" ? "permission" : "your turn"}</div>
       <div class="q">${esc(q.text)}</div>
       <div class="opts">
         ${opts}
