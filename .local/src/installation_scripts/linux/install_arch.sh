@@ -667,9 +667,9 @@ setup_rbw() {
 #
 # aerc REFUSES to start if accounts.conf is group/world-readable, and it fails in
 # the worst possible way: it prints the reason and exits before any TUI is drawn,
-# so `bind e` in .tmux.conf (`new-session -d -s mail aerc`) creates a session that
-# dies in the same instant and the following `switch-client -t mail` finds nothing.
-# The key looks dead. Nothing is logged. That is exactly how it presented.
+# so a tmux session started as `aerc` dies in the same instant and anything that
+# switches to it finds nothing. It looks dead. Nothing is logged. That is exactly how
+# it presented when Prefix+e still opened mail.
 #
 # This has to live in the installer rather than in the repo because git records
 # only the exec bit — a 0600 file is stored as 100644 and every fresh clone of the
