@@ -295,6 +295,21 @@ declare_in_lab() {
   assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
 }
 
+@test "inside tmux, new hands WT_NEW_CMD to the pane, which runs it in the worktree" {
+  # 2026-10-28: the pane got the tmux server's environment, not the caller's, so a session
+  # `wt new` opened from inside tmux for a command came up as a bare shell.
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  WT_NEW_CMD='touch ran-here' run "$WT" new --detach -c "$MAIN"
+  assert_success
+  assert_called '_prepare'
+  assert_called 'ran-here'
+
+  WT_NEW_CMD='' SHELL="$(type -P bash)" run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh 'touch ran-here'
+  assert_success
+  [ -e "$WT_ROOT/repo-agent-1/ran-here" ] || fail "the pane did not run the command in the worktree"
+}
+
 @test "a second press while the first is still preparing takes the NEXT slot" {
   # The first press's session exists but its worktree does not yet: the session alone
   # must pin the slot, or both presses would cut agent-1.

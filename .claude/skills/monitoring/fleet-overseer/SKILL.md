@@ -161,7 +161,16 @@ A pass, in order:
 2. Candidates: every open `[ ]` row assigned to `fleet` at an allowed tier, on the human sheet and the agent board, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, while it already has a dispatched session, or when `project-map.json` has no repo for it.
 3. Judgment: one sonnet call for the rows not judged before, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text, the policy or `workers.json` changes. To change what gets picked, edit the policy, not the script.
 4. Picks: verdict `dispatch` with size S, clear and agent-only, judged no higher a tier than the row is tagged, made under the current policy; one per project; `#urgent` first, then prod before beta before alpha.
-5. Launch: re-read the row, `ptask start` it, check it reads `[/]`, then `wt new --server lab --detach` in the project's repo running `claude --permission-mode bypassPermissions "/one-shot <row> ..."`. The session is tagged `@dispatch` (the lab status line shows it) and gets a ledger at `~/.agent/dispatch/live/<session>`, which `fleet-sessions` reads.
+5. Launch: `fleet-dispatch start` (below) with the row and a `/one-shot <row> ...` brief, on the lab server.
+
+### Starting a session by hand: `fleet-dispatch start`
+
+Every session an agent starts goes through `fleet-dispatch start`: the dispatch pass above, a session you start for a board row, and a reboot restore (`session-snapshot` restore). It opens the session (for a row, after re-reading the row, `ptask start`ing it and checking it reads `[/]`), tags it `@dispatch` on its server (the status line shows `dispatch: <project>: <row>`; the human reads it as "an agent started this") and writes the ledger `~/.agent/dispatch/live/<session>` with the server it is on, which `reap` and `fleet-sessions` read. Never `wt new` + `claude` by hand, and never `tmux set-option @dispatch` on a session afterwards: on 2026-10-28 the human had to ask twice why sessions an agent started carried no label.
+
+- For a row: `fleet-dispatch start --project <p> [--agent] --row "<row>" --brief <file> [--server lab] [--cwd <repo>] [--model <m>]`. Write the brief to a file first: `/one-shot <task>`, then where the row is and how to record it done. It cuts a fresh worktree with `wt new --detach`. Do not `start` the row yourself first: `start` claims it, and refuses a row that is not open.
+- After a reboot: `fleet-dispatch start --project <p> --server <server> --session <name> --cwd <dir> --resume <claude session id> [--row "<row>"]`. The sheet is left alone, and a session name that already exists on that server is refused.
+
+Only the sessions the dispatch pass started count against `DISPATCH_MAX_LIVE` and its one-per-project rule; hand launches and restores carry the label and the ledger but hold none of its slots. `start` does not check the `dispatch` hold, which pauses only the runner. Before starting anything, read `agent-hold list` and the pace check as for any other new work.
 
 A dispatched session is an ordinary session from then on: the shepherd's buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation and stops: `agent-ask post` refuses from a session with a human attached, and the human answers in the session. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`.
 
