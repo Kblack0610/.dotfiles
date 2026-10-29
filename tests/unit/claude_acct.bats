@@ -110,3 +110,87 @@ creds() {
   [[ "$(cat "$HOME/.claude/sessions/100.json")" == main ]]
   [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
 }
+
+# --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
+
+src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
+
+@test "move refuses a busy session, a dialog and an unknown status" {
+  src
+  run refusal busy "" "$ALT" 10 alt "5h 1%"
+  assert_success; assert_output --partial 'busy mid-turn'
+  run refusal waiting "" "$ALT" 10 alt "5h 1%"
+  assert_success; assert_output --partial 'permission or question dialog'
+  run refusal compacting "" "$ALT" 10 alt "5h 1%"
+  assert_success; assert_output --partial "unknown session status 'compacting'"
+}
+
+@test "move refuses when no account has room, or nothing is known about room" {
+  src
+  run refusal idle "" "$ALT" 100 alt "5h 2%, 7d 100%"
+  assert_success; assert_output 'no account has room (the best is alt: 5h 2%, 7d 100%)'
+  run refusal idle "" "$ALT" 99.5 alt "x"
+  assert_failure
+  run refusal shell "" "" "" "" ""
+  assert_success; assert_output --partial 'no usage data'
+}
+
+@test "move refuses a session already on the account with the most room" {
+  src
+  run refusal shell "$ALT" "$ALT" 10 alt "5h 1%"
+  assert_success; assert_output --partial 'already on alt'
+  run refusal idle "" "" 10 main "5h 1%"
+  assert_success; assert_output --partial 'already on main'
+  run refusal shell "" "$ALT" 10 alt "5h 1%"
+  assert_failure; assert_output ''
+}
+
+@test "the background-shell dialog is answered by its own option number" {
+  src
+  run dialog_choice $'  Background tasks are running\n  1. Exit and stop tasks\n  2. Move to background and exit\n  3. Stay'
+  assert_output 2
+  run dialog_choice $' > 1. Stay\n   2. Exit and stop tasks\n   3. Move to background and exit'
+  assert_output 3
+  run dialog_choice $'❯ /exit\n  bypass permissions on'
+  assert_output ''
+}
+
+@test "a resumed claude keeps the model and permission flags and drops the brief" {
+  src
+  mkdir -p "$SANDBOX/proc/42"
+  printf 'claude\0--model\0opus\0--permission-mode\0bypassPermissions\0/one-shot do --model it\0' > "$SANDBOX/proc/42/cmdline"
+  run carry_flags 42
+  assert_output '--model opus --permission-mode bypassPermissions '
+  printf 'claude\0--dangerously-skip-permissions\0--model=sonnet\0' > "$SANDBOX/proc/42/cmdline"
+  run carry_flags 42
+  assert_output '--dangerously-skip-permissions --model sonnet '
+  printf 'claude\0' > "$SANDBOX/proc/42/cmdline"
+  run carry_flags 42
+  assert_output ''
+}
+
+@test "a process's parent and account come from its own proc entry" {
+  src
+  mkdir -p "$SANDBOX/proc/7"
+  echo '7 (my (odd) name) S 3 7 7 0 -1' > "$SANDBOX/proc/7/stat"
+  run ppid_of 7
+  assert_output 3
+  printf 'A=1\0CLAUDE_CONFIG_DIR=%s/\0' "$ALT" > "$SANDBOX/proc/7/environ"
+  run config_dir_of 7
+  assert_output "$ALT"
+  printf 'CLAUDE_CONFIG_DIR=%s\0' "$HOME/.claude" > "$SANDBOX/proc/7/environ"
+  run config_dir_of 7
+  assert_output ''
+  printf 'A=1\0' > "$SANDBOX/proc/7/environ"
+  run config_dir_of 7
+  assert_output ''
+}
+
+@test "a claude counts as the pane's when it runs anywhere under the pane's process" {
+  src
+  for p in "5 1" "6 5" "7 6"; do set -- $p; mkdir -p "$SANDBOX/proc/$1"; echo "$1 (x) S $2 0" > "$SANDBOX/proc/$1/stat"; done
+  run descends 7 5; assert_success
+  run descends 5 5; assert_success
+  run descends 5 7; assert_failure
+  run descends 7 9; assert_failure
+}
