@@ -32,14 +32,17 @@ pub struct Agent {
     pub plan: bool,
     /// Owns a pending ask (`agent-ask`), so it is waiting on the human: see `asks.rs`.
     pub ask: bool,
+    /// Ended its turn asking the human a question in its own conversation, and is not working
+    /// (idle, or idle with a background shell): see `jsonl::asks_human`.
+    pub question: bool,
     /// Epoch seconds the session opened (the Claude process start), when Claude recorded it.
     pub started_at: Option<u64>,
 }
 
 impl Agent {
-    /// Waiting on the human: at a prompt (`!`) or holding a pending ask.
+    /// Waiting on the human: at a prompt (`!`), holding a pending ask, or asked a question.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask
+        self.glyph == '!' || self.ask || self.question
     }
 }
 
@@ -74,11 +77,11 @@ pub fn collect() -> Vec<Agent> {
         };
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        let (mut summary, plan) = if jsonl_path.exists() {
+        let (mut summary, plan, question) = if jsonl_path.exists() {
             let info = jsonl::row_info(&jsonl_path);
-            (info.summary, info.plan)
+            (info.summary, info.plan, info.question)
         } else {
-            (String::new(), false)
+            (String::new(), false, false)
         };
         // Prefer Claude's pane title (the live session title) over the JSONL
         // "say:" text; the row glyph already conveys status.
@@ -108,6 +111,7 @@ pub fn collect() -> Vec<Agent> {
             status: sess.status.clone(),
             plan,
             ask: asking.contains(&sess.session_id),
+            question: question && session::at_prompt(&sess.status),
             started_at: sess.started_at.map(|ms| ms / 1000),
         });
     }
@@ -182,7 +186,7 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// header rows and alignment padding meant only for fzf.
 ///
 /// `json` prints one object per line instead, with the session and transcript facts
-/// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file, the last
+/// fleet-sessions buckets on (status, cwd, plan mode, an open question, context size, plan file, the last
 /// entry's time as `idle_since`, the process start as `started_at`, and `edited_files`).
 pub fn run_list(json: bool) -> Result<()> {
     for a in collect() {
@@ -212,6 +216,7 @@ pub fn run_list(json: bool) -> Result<()> {
             "session_id": a.session_id,
             "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
             "plan_mode": a.plan,
+            "question": a.question,
             "idle_since": idle_since,
             "started_at": a.started_at,
             "context_tokens": info.context_tokens,
@@ -225,7 +230,7 @@ pub fn run_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Jump to the next agent needing attention (`!` or a pending ask), else the next in the list.
+/// Jump to the next agent needing attention (`!`, a pending ask or a question), else the next in the list.
 pub fn run_next() -> Result<()> {
     let agents = collect();
     if agents.is_empty() {

@@ -23,8 +23,9 @@
 # and `blockers` lists every reason it is false. A plan with no checklist counts as one phase:
 # its PR merged with the tree clean is DONE.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
-# A pending ask (NEEDS) and an open PR that conflicts with the default branch (STALLED) decide
-# before the session's status, so neither can hide behind WORKING.
+# A pending ask or a question to the human in the session's own conversation (NEEDS) and an
+# open PR that conflicts with the default branch (STALLED) decide before the session's status,
+# so none can hide behind WORKING or read as DONE.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -62,7 +63,9 @@ LABELS="$LEDGER/labels"
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
-#                <conflicts: yes|no|- (merging the default branch in would conflict)>
+#                <conflicts: yes|no|- (merging the default branch in would conflict)> \
+#                <question 0|1: agent-panel's `question`, its last word asks the human and it is
+#                 at its prompt; the rule is agent-panel's jsonl.rs `asks_human`, not repeated here>
 #   -> "BUCKET reason"
 # Who must act decides before whether the session is active: an ask waits on the human and a
 # PR that cannot merge wastes every run on it, however busy the session is. On 2026-10-28
@@ -72,6 +75,7 @@ session_bucket() {
   local st="$1" note=""
   [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
   [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
+  [ "${17:-0}" = 1 ] && { echo "NEEDS question to the human in the conversation"; return; }
   if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
     echo "STALLED PR #$9 conflicts with the default branch"; return
   fi
@@ -123,19 +127,21 @@ bucket_facts() {
 
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
 # (phases all ticked, no ask, nothing unlanded, not a red-main suspect). It skips status,
-# plan mode, a heavy child and the idle threshold, so a session can check its own row
-# mid-turn, when that row always reads WORKING busy.
+# plan mode, a heavy child, the idle threshold and an open question (which needs the session at
+# its prompt), so a session can check its own row mid-turn, when that row always reads WORKING busy.
 session_finished() {
   case "$(bucket_facts - 0 "$3" 0 "$FLEET_IDLE_MIN" "${@:6}")" in DONE*) return 0 ;; esac
   return 1
 }
 
-# work_blockers: session_bucket's arguments, plus the open ask ids (comma-separated) as the
-# 17th -> every reason session_finished is false, "; "-separated, empty when it is true.
+# work_blockers <open ask ids, comma-separated> <session_bucket's arguments...> -> every reason
+# session_finished is false, "; "-separated, empty when it is true. The ids lead so a new
+# session_bucket argument never moves them.
 # bucket_facts names only the first reason; a session told it is unfinished needs all of them.
 work_blockers() {
+  local ids="$1"; shift
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
-        red="${13:--}" phases="${14:--}" next="${15:--}" ids="${17:-}" b=() id merged=0 out=""
+        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out=""
   if [ -n "$ids" ]; then
     for id in ${ids//,/ }; do b+=("open ask $id"); done
   elif [ "$asks" -gt 0 ]; then b+=("$asks open ask(s)"); fi
@@ -460,10 +466,10 @@ collect() {
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
-    local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
+    local target pane status plan question sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
-      (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
+    IFS=$'\t' read -r target pane status plan question sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+      (if .plan_mode then 1 else 0 end), (if .question then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
@@ -486,11 +492,11 @@ collect() {
       fi
     elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$question")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
-    blk="$(work_blockers "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$askids")"
+    blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$question")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice.
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"

@@ -47,6 +47,9 @@ pub struct RowInfo {
     pub summary: String,
     /// The session is in plan mode.
     pub plan: bool,
+    /// The session's last word asks the human something: see `asks_human`. Whether it is
+    /// still waiting on the answer also needs the session status, which the caller holds.
+    pub question: bool,
 }
 
 pub fn row_info(path: &Path) -> RowInfo {
@@ -54,7 +57,113 @@ pub fn row_info(path: &Path) -> RowInfo {
     RowInfo {
         summary: last_event_in(&text),
         plan: permission_mode(&text).as_deref() == Some("plan"),
+        question: asks_human(&text),
     }
+}
+
+/// The session ended its turn by asking the human something, in its own conversation rather
+/// than through `agent-ask`. True when the last main-thread entry is the assistant's (no prompt
+/// or tool result after it) and either its last call is a dialog tool left open
+/// (AskUserQuestion, ExitPlanMode) or its closing text asks a question (`text_asks`).
+fn asks_human(text: &str) -> bool {
+    // The human's side: a typed prompt or a tool result, not a reminder or a subagent's.
+    let answer = |v: &Value| {
+        v.get("type").and_then(Value::as_str) == Some("user")
+            && v.get("isMeta").and_then(Value::as_bool) != Some(true)
+            && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+    };
+    let last = text
+        .lines()
+        .rev()
+        .filter(|l| l.contains("\"type\":\"assistant\"") || l.contains("\"type\":\"user\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| own_turn(v) || answer(v))
+        .filter(own_turn);
+    let Some(block) = last.as_ref().and_then(|v| v.pointer("/message/content")?.as_array()?.last()) else {
+        return false;
+    };
+    match block.get("type").and_then(Value::as_str) {
+        Some("tool_use") => matches!(block.get("name").and_then(Value::as_str), Some("AskUserQuestion" | "ExitPlanMode")),
+        Some("text") => text_asks(block.get("text").and_then(Value::as_str).unwrap_or("")),
+        _ => false,
+    }
+}
+
+/// An entry the session wrote itself: a main-thread assistant turn, not a subagent's.
+fn own_turn(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("assistant")
+        && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+}
+
+/// Closing questions that are manners, not asks: a session that ends every turn this way is not
+/// waiting on anything. Matched against the start of the lowercased sentence.
+const GENERIC_CLOSERS: [&str; 5] = ["anything else", "is there anything else", "any questions", "any other questions", "what's next"];
+
+/// The message's closing paragraph asks a question, code fences dropped. A one-line paragraph
+/// with no question after it (a "the screenshot is at X" postscript) does not hide the one before.
+fn text_asks(msg: &str) -> bool {
+    let mut fenced = false;
+    let mut paras: Vec<Vec<&str>> = vec![Vec::new()];
+    for line in msg.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && line.trim().is_empty() {
+            paras.push(Vec::new());
+        } else if !fenced {
+            paras.last_mut().expect("starts non-empty").push(line);
+        }
+    }
+    paras.retain(|p| !p.is_empty());
+    let asks = |found: Vec<String>| found.iter().any(|s| !GENERIC_CLOSERS.iter().any(|g| s.starts_with(g)));
+    let Some((last, before)) = paras.split_last() else {
+        return false;
+    };
+    let found = question_sentences(last);
+    match before.last() {
+        Some(prev) if found.is_empty() && last.len() == 1 => asks(question_sentences(prev)),
+        _ => asks(found),
+    }
+}
+
+/// Each sentence in `lines` that ends in `?`, lowercased, with markdown emphasis stripped.
+/// A `?` inside backticks or double quotes is quoted, not asked, and so is a `>` blockquote.
+/// In a list item only a closing `?` counts: one with more text after it is a findings list
+/// answering its own question ("2. Does X? Yes.").
+fn question_sentences(lines: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let t = line.trim();
+        if t.starts_with('>') {
+            continue;
+        }
+        let numbered = t.trim_start_matches(|c: char| c.is_ascii_digit());
+        let item = ["- ", "* ", "+ "].iter().find_map(|m| t.strip_prefix(m)).or_else(|| {
+            (numbered.len() < t.len()).then(|| numbered.strip_prefix(". ").or_else(|| numbered.strip_prefix(") "))).flatten()
+        });
+        let chars: Vec<char> = item.unwrap_or(t).chars().collect();
+        let (mut code, mut quote, mut start) = (false, false, 0);
+        // Punctuation ends a sentence when only closing markdown sits between it and a space.
+        let closing = |c: &&char| !matches!(c, '*' | '_' | ')');
+        let ends = |i: usize| chars[i + 1..].iter().find(closing).is_none_or(|n| n.is_whitespace());
+        let ends_line = |i: usize| chars[i + 1..].iter().filter(closing).all(|c| c.is_whitespace());
+        for (i, &c) in chars.iter().enumerate() {
+            match c {
+                '`' => code = !code,
+                '"' if !code => quote = !quote,
+                '\u{201c}' if !code => quote = true,
+                '\u{201d}' if !code => quote = false,
+                '.' | '!' | ':' | '?' if !code && !quote && ends(i) => {
+                    let from = std::mem::replace(&mut start, i + 1);
+                    if c == '?' && (item.is_none() || ends_line(i)) {
+                        let s: String = chars[from..i].iter().filter(|c| !matches!(c, '*' | '_' | '#')).collect();
+                        out.push(s.trim().to_lowercase());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// What `list --json` adds for fleet-sessions: context size, model, plan file, when the
@@ -190,10 +299,6 @@ fn plan_file(text: &str) -> String {
     }
     const DIR: &str = "/.claude/plans/";
     const ASSISTANT: &str = "\"type\":\"assistant\"";
-    let own_turn = |v: &Value| {
-        v.get("type").and_then(Value::as_str) == Some("assistant")
-            && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
-    };
     let mut own: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut prompt = own.clone();
     let mut replied = false;
@@ -434,6 +539,74 @@ mod tests {
         ]);
         assert_eq!(fleet_info(&p).edited_files, ["/r/a.rs", "/r/b.md", "/r/n.ipynb"]);
         fs::remove_file(&p).ok();
+    }
+
+    /// A transcript whose last main-thread entry is an assistant text block saying `msg`.
+    fn said(msg: &str) -> String {
+        let user = r#"{"type":"user","message":{"content":"go"}}"#;
+        let asst = serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":msg}]}});
+        format!("{user}\n{asst}\n")
+    }
+
+    #[test]
+    fn closing_questions_ask_the_human() {
+        // Real closings from the 2026-10 transcript sample.
+        for msg in [
+            "Done.\n\nI haven't stopped anything. Want me to kill the scan or hold the fleet?",
+            "Should I ask that session to add the line? Or just wind down now?",
+            "Three causes:\n\n1. a\n2. b\n\nWhich of these are you seeing? If it's the cloud view, I can help with that.",
+            "**My recommendation:** do HitReactions first. Should I start with HitReactions?**",
+            // A one-line postscript does not hide the question before it.
+            "**Decision for you:** Should I retire it or switch you to hypridle?\n\nI can publish the full report as a page if you want.",
+            "Options:\n\n- Keep the hold?\n- Lift it now?",
+        ] {
+            assert!(asks_human(&said(msg)), "should ask: {msg}");
+        }
+    }
+
+    #[test]
+    fn statements_quotes_and_manners_do_not_ask() {
+        for msg in [
+            "Merged #599. The board row is closed.",
+            "Anything else?",
+            "All landed. Is there anything else you'd like me to look at?",
+            // Quoted, in code, or a findings list answering its own question.
+            r#"Questions asked: "With refusals piling up, is the slot pool growing?" Half answered."#,
+            "Run `ls -d */?` to see them.",
+            "> Why does it fail?\n\nBecause the pin moved.",
+            "Findings:\n\n2. Does a headless `wt gc` see the same sessions? From this sweep, yes.\n3. Polling? Only the ps loop.",
+            "```\nwhat?\n```",
+            // A question earlier in the message is not the closing word.
+            "Why did it fail?\n\nThe pin moved, so I re-pinned it and the gate is green.\nNothing is left open.",
+            "",
+        ] {
+            assert!(!asks_human(&said(msg)), "should not ask: {msg}");
+        }
+    }
+
+    #[test]
+    fn only_the_last_main_thread_entry_decides() {
+        let asked = said("Want me to land it?");
+        // A dialog tool left open asks; any other last call is mid-turn.
+        let tool = |name: &str| format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{name}"}}]}}}}"#);
+        assert!(asks_human(&tool("AskUserQuestion")));
+        assert!(asks_human(&tool("ExitPlanMode")));
+        assert!(!asks_human(&tool("Bash")));
+        // Answered: a prompt or a tool result after it.
+        assert!(!asks_human(&format!("{asked}{}\n", r#"{"type":"user","message":{"content":"yes"}}"#)));
+        assert!(!asks_human(&format!("{}\n{}\n", tool("AskUserQuestion"), r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"A"}]}}"#)));
+        // Reminders, subagent turns and bookkeeping entries after it do not answer it.
+        let noise = [
+            r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>x</system-reminder>"}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"done."}]}}"#,
+            r#"{"type":"system","subtype":"stop_hook_summary"}"#,
+            r#"{"type":"last-prompt"}"#,
+        ];
+        assert!(asks_human(&format!("{asked}{}\n", noise.join("\n"))));
+        let p = tmpfile("asks", &[asked.trim_end()]);
+        assert!(row_info(&p).question);
+        fs::remove_file(&p).ok();
+        assert!(!row_info(Path::new("/no/such/file.jsonl")).question);
     }
 
     #[test]

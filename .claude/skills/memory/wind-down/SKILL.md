@@ -45,7 +45,7 @@ re-run `/wind-down` when that work is finished.
    ```
 
    Read `finished`, not `bucket`: you run this mid-turn, so your own bucket always reads WORKING busy, and `finished` is the DONE test without the status and idle checks. It is true when every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. A plan with no checklist, or no plan file, counts as one phase: true once its PR merged with the tree clean. `false` means you are not finished, and `blockers` names every reason: deal with each one (do the next phase, land what is left, or ask the human in this conversation) instead of closing.
-2. Your last message to the human did not end with a question or an offer they have not answered ("want me to...", "should I...", a choice between options). `fleet-sessions` cannot see this and reads such a session as DONE. If it did, the human is the next step: reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
+2. Your last message to the human did not end with a question or an offer they have not answered ("want me to...", "should I...", a choice between options). Once you are back at the prompt, `fleet-sessions` buckets such a session as NEEDS (agent-panel's `question`, the `?` mark in Prefix+g), but mid-turn your own row cannot show it, so check your last message yourself. If it did, the human is the next step: reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
 
 ### 1. Write the wrap-up note
 
