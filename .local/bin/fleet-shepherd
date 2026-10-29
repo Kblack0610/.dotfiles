@@ -6,7 +6,8 @@
 #                          `/fleet-overseer shepherd` pass only when the document holds
 #                          something to move
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
-#                          1 if nothing. Reads the document as it is, writes nothing
+#                          1 if nothing. Reads the document and the blocked sample as they
+#                          are, writes nothing
 #   fleet-shepherd lease   record that a shepherd pass is running now and tag its tmux session
 #                          @shepherd; every pass calls it first (fleet-overseer, shepherd step 0)
 #   fleet-shepherd log [--heading] <text>
@@ -25,6 +26,7 @@ NAME="${AGENTCTL_NAME:-shepherd}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 LEASE="$LEDGER/.lease"
+BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -101,8 +103,28 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   fi
+  local b
+  b="$(blocked_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"
+}
+
+# blocked_sample: rotate the blocked rows, so each pass compares itself with the one before.
+# Only `run` calls it; `due` reads the two files as they are.
+blocked_sample() {
+  [ ! -e "$BLOCKED" ] || mv -f "$BLOCKED" "$BLOCKED.prev"
+  fleet-assess --blocked > "$BLOCKED" 2>/dev/null || true
+}
+
+# blocked_due -> a `blocked:` line per process stuck on I/O in this pass and the last one. One
+# sample alone is not enough: an editor reading a font is in D for a moment. Fifteen minutes
+# stuck is a walk of a network share or a hung mount (2026-10-29, three searches from `/`).
+blocked_due() {
+  [ -s "$BLOCKED" ] && [ -s "$BLOCKED.prev" ] || return 0
+  awk -F'\t' 'NR == FNR { seen[$1] = 1; next }
+    ($1 in seen) { printf "blocked: pid %s %s, %s threads on I/O for %s, %s session %s (%s), open %s\n", $1, $4, $2, $3, $5, $6, $7, $9 }' \
+    "$BLOCKED.prev" "$BLOCKED"
 }
 
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
@@ -142,6 +164,7 @@ cmd_run() {
     return 0
   fi
   fleet-sessions --write >/dev/null || { publish FAILED "fleet-sessions --write failed"; return 1; }
+  blocked_sample
   local due
   if ! due="$(cmd_due)"; then
     settle

@@ -13,7 +13,7 @@ setup() {
   export FLEET_STATE_FILE="$HOME/state.json" FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
-  stub fleet-assess 'echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"'
+  stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   # A pass that moves something logs it, as the skill says; STUB_SILENT makes one that does not.
@@ -146,4 +146,26 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   run "$SH" log --heading
   assert_failure
   [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ]
+}
+
+# The 2026-10-29 walk, as `fleet-assess --blocked` prints it (tab-separated).
+WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-playground-agent-28\twait_for_response\t/mnt/nas/private/immich/upload/thumbs\tbfs -S dfs / -name CutscenePlayer.cs\n'
+
+@test "a process blocked on I/O in two passes in a row is due, and the pass is told which" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_BLOCKED="$WALK"
+  run "$SH" run
+  assert_output --partial 'nothing to move'
+  run "$SH" run
+  assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O for 38m, claude session unity-core-playground-agent-28'
+  grep -q 'open /mnt/nas/private/immich/upload/thumbs' "$HOME/last-prompt"
+}
+
+@test "a process blocked in one pass only is not due" {
+  doc "[$(row d WORKING false false)]"
+  STUB_BLOCKED='4100000\t1\t5m\tUnity\tclaude\ts\tw\t-\t/usr/share/fonts/x.ttf\tUnity\n' run "$SH" run
+  STUB_BLOCKED="$WALK" run "$SH" run
+  assert_output --partial 'nothing to move'
+  run "$SH" due
+  assert_failure 1
 }

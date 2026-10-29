@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-28"
+  reviewed: "2026-10-29"
 ---
 
 # fleet-overseer
@@ -18,7 +18,7 @@ It owns no product code. It owns three questions: does this machine have room fo
 
 ## Tools
 
-- `fleet-assess` prints headroom (load against cores, Tctl, memory), active holds, a verdict, and one row per heavy process: pid, CPU, nice, class, tmux session, worktree. `--watch-probe` prints one line and exits 1 on HOLD.
+- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
 - `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
@@ -48,6 +48,7 @@ Under-use is a fault too. The human's budget for this box is about 70% of its CP
 1. Run `fleet-assess`. Quote the headroom line and the verdict to the user as given.
 2. Group the rows by worktree and class. Run `ListAgents` and match its names to the SESSION column.
 3. Say who is consuming what, and how each can be stopped (the class table). Name anything at nice 0 or below that is a batch job: it is competing with the human's desktop.
+   A thread blocked on I/O adds 1 to load and 0 to CPU, so when load is well above what `top` shows busy, the blocked table explains the gap. Read it before blaming Unity.
 4. On HOLD, recommend `hold` and the resource name. On CLEAR, recommend `go`. On OK, stop there and send nothing.
 
 ## Verb: `hold <resource> "<reason>"`
@@ -117,6 +118,7 @@ One pass. It runs two ways, and only one acts at a time:
 1. **Pace check.** Run `fleet-assess` and read idle from a real sample: `top -bn2 -d2 | grep '^%Cpu' | tail -1`. Never `top -bn1`: its only frame averages since boot, and on 2026-10-28 it read 50-57% idle while a 2-second sample read 12-19%, so two passes sent sessions to gate locally into a box that was already full (load 25.8 then 38.8 on 24 cores).
    - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
    - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
+   - Blocked on I/O (a `blocked:` due line, or rows in the `blocked on I/O` table that a second pass still shows): a recursive search (`find`, `bfs`, `fd`, `rg`, `grep -r`, `ugrep`, or Claude's own Grep/Glob, whose comm is its version, like `2.1.312`) only reads, so `kill` it without asking and send its session one `fleet-comms` line: "your search from `/` was walking the NAS for <age>; I killed it. Search your worktree or a named directory." Anything else blocked (a build, copy or test on a network mount, a hung mount) goes to the human with the open path; never kill it. Blocked threads are not CPU, so they are never a reason to hold Unity. 2026-10-29: three searches from `/` walked `/mnt/nas` for 25-43 minutes, load 28 at 0% CPU, and no pass saw them; `block-root-search.sh` now denies the call.
    - Sessions stopped on the account's usage limit (the pane shows "weekly limit" or "/login"): escalate once to the human. Only they can log in.
    - Otherwise the pace is fine; say the numbers in one line.
 2. `fleet-dispatch reap`, which un-starts the row of a dispatched session that ended without it done and drops ledgers whose row is finished. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished` (DONE's work conditions alone, ignoring status and idle, so a session can check its own row mid-turn; wind-down step 0 reads it), `owners`, `dispatch` (the row it was started for, or null), and `labels`. MAIN rows come first and lead the report: a red main is the most important thing on the board.
