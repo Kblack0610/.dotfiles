@@ -6,26 +6,28 @@
 # through. Columns take their content's width and drop from the least important end until
 # the rest fit; the flex column takes what is left. Every line is clipped with ~.
 #
-#   table_fit <width|0> keep="1 3 2" [flex=4] [flexmin=12] [opt="3"] [right="2"] [cap="1:34"]
+#   table_fit <width|0> keep="1 3 2" [flex=4] [flexmin=12] [flexkeep=1] [opt="3"] [right="2"] [cap="1:34"]
 #
 # keep: most important first, the first never drops. opt: hidden while every body cell is
-# "-" or "no". right: right-aligned. cap: col:max width.
+# "-" or "no". right: right-aligned. cap: col:max width. flexkeep=1: the flex column never
+# hides; keep columns drop from the end until it has flexmin.
 
 table_fit() {
-  local w="${1:-0}" keep="" flex=0 flexmin=12 opt="" right="" cap="" a
+  local w="${1:-0}" keep="" flex=0 flexmin=12 flexkeep=0 opt="" right="" cap="" a
   shift
   for a in "$@"; do
     case "$a" in
       keep=*) keep="${a#keep=}" ;;
       flex=*) flex="${a#flex=}" ;;
       flexmin=*) flexmin="${a#flexmin=}" ;;
+      flexkeep=*) flexkeep="${a#flexkeep=}" ;;
       opt=*) opt="${a#opt=}" ;;
       right=*) right="${a#right=}" ;;
       cap=*) cap="${a#cap=}" ;;
       *) echo "table_fit: unknown option $a" >&2; return 2 ;;
     esac
   done
-  awk -F'\t' -v W="$w" -v KEEP="$keep" -v FLEX="$flex" -v FLEXMIN="$flexmin" \
+  awk -F'\t' -v W="$w" -v KEEP="$keep" -v FLEX="$flex" -v FLEXMIN="$flexmin" -v FLEXKEEP="$flexkeep" \
       -v OPT="$opt" -v RIGHT="$right" -v CAP="$cap" '
     function clip(s, w) { return (w > 0 && length(s) > w) ? substr(s, 1, w - 1) "~" : s }
     BEGIN {
@@ -53,9 +55,10 @@ table_fit() {
         if (j in optional && !used[j]) continue
         on[j] = 1; total += wid[j] + GAP
       }
-      for (k = n_keep; W > 0 && total > W && k > 1; k--)
+      need = (FLEX > 0 && FLEXKEEP) ? FLEXMIN + GAP : 0
+      for (k = n_keep; W > 0 && total + need > W && k > 1; k--)
         if (keep[k] in on) { delete on[keep[k]]; total -= wid[keep[k]] + GAP }
-      if (FLEX > 0) on[FLEX] = W == 0 || W - total - GAP >= FLEXMIN
+      if (FLEX > 0) on[FLEX] = W == 0 || FLEXKEEP || W - total - GAP >= FLEXMIN
       for (r = 1; r <= NR; r++) {
         if (!is_row[r]) { print clip(line[r], W); continue }
         out = ""
