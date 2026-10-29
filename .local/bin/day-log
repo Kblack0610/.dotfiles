@@ -186,7 +186,9 @@ def hm: if . == null then "-" elif endswith("Z") then fromdateiso8601 | strfloca
 def subject: .title | sub("^[a-z]+(\\([^)]*\\))?!?: *"; "");
 def money: if . == null then "-" else "$\(. * 100 | round / 100)" end;
 def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1e5 | floor / 10)M" else "\(.)" end;
-def spend: (.usage // []) | {cost: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)};
+def spend: (.usage // []) | (map(select(.project == "TOTAL")) | first)
+  // {cost_usd: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)}
+  | {cost: .cost_usd, tokens: .tokens, sessions: .sessions};
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 

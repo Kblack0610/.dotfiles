@@ -11,6 +11,8 @@
   --user: #eaf0fb; --tool: #f1efe9; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* fleet-sessions buckets */
   --b-needs: #d4483b; --b-stalled: #dd7a1f; --b-landed: #8457d0; --b-unclear: #8f8d86; --b-working: #2f6fde; --b-done: #3f9a5a;
+  /* categorical series, fixed order (dataviz palette) */
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c-other: #a3a19a;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -18,6 +20,7 @@
     --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9a998f; --line: #2e2d2a;
     --accent: #6f9ef0; --user: #1f2a3d; --tool: #24231f; color-scheme: dark;
     --b-needs: #e8665a; --b-stalled: #f0953f; --b-landed: #a585e6; --b-unclear: #77756e; --b-working: #6f9ef0; --b-done: #5cb877;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c-other: #66645e;
   }
 }
 * { box-sizing: border-box; }
@@ -127,6 +130,53 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .feed { max-height: 420px; overflow-y: auto; padding: 6px 10px; }
 .fr { display: grid; grid-template-columns: 44px minmax(100px, 220px) minmax(0, 1fr); gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .fr:last-child { border-bottom: 0; }
+/* Log tab */
+.tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.daynav b { margin: 0 6px; font-family: var(--mono); }
+.daynav .btn:disabled { opacity: .4; cursor: default; }
+.headline { font-size: 12px; margin: 10px auto 0; }
+.g2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; margin-top: 12px; }
+.g2 > .panel { min-width: 0; }
+.panel h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.cols { padding-left: 34px; }
+.cplot { position: relative; height: var(--h); border-bottom: 1px solid var(--line); }
+.cg { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--line); }
+.cg span { position: absolute; right: calc(100% + 6px); top: -7px; font: 10px var(--mono); color: var(--muted); white-space: nowrap; }
+.cbars { position: absolute; inset: 0; display: flex; gap: 2px; align-items: stretch; }
+.cc { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; justify-content: flex-end; cursor: default; border-radius: 4px 4px 0 0; }
+.cc[data-key^="2"] { cursor: pointer; }
+.cc:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.cc.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.cs { display: flex; flex-direction: column-reverse; height: 100%; justify-content: flex-start; gap: 0; }
+.cs i { display: block; width: 100%; min-height: 0; border-top: 2px solid var(--panel); }
+.cs i:last-child { border-radius: 4px 4px 0 0; }
+.cs i:first-child { border-top: 0; }
+.cs i:only-child { border-radius: 4px 4px 0 0; }
+.cx { position: absolute; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--muted); white-space: nowrap; }
+.cols { padding-bottom: 16px; }
+.tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl .n { text-align: right; font-family: var(--mono); }
+.tbl .m { width: 30%; }
+.tbl .m .meter { width: 100%; }
+.tbl tr.tot td { font-weight: 600; border-bottom: 0; }
+.scroll { overflow-x: auto; }
+details.area { margin-bottom: 8px; }
+details.area summary { cursor: pointer; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.grp { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 2px; }
+.pr { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 13px; min-width: 0; }
+.pr:last-child { border-bottom: 0; }
+.pr .ft { flex: none; width: 40px; font: 12px var(--mono); color: var(--muted); }
+.pr a { flex: none; color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 12px; }
+.pr .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr .by { flex: none; font: 12px var(--mono); color: var(--muted); }
+.pr a.by { color: var(--accent); }
+details.sec-d summary { list-style: none; cursor: pointer; }
+details.sec-d summary::-webkit-details-marker { display: none; }
+.tl1 { font: 12px var(--mono); padding: 2px 0; border-bottom: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ft { font-family: var(--mono); color: var(--muted); }
 .fg { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fw { overflow-wrap: anywhere; }
@@ -153,6 +203,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
     <button id="tab-sessions" class="on">Sessions<span id="wait-badge"></span></button>
     <button id="tab-asks">Waiting<span id="ask-badge"></span></button>
     <button id="tab-watch">Watch</button>
+    <button id="tab-log">Log</button>
   </div>
   <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
 </header>
@@ -180,6 +231,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
   </section>
   <section id="asks" hidden></section>
   <section id="watch" class="board" hidden></section>
+  <section id="log" class="board" hidden></section>
 </main>
 <script>
 "use strict";
@@ -460,7 +512,7 @@ $("asks").addEventListener("keydown", (e) => {
   if (btn) btn.click();
 });
 
-const TAB_NAMES = ["sessions", "asks", "watch"];
+const TAB_NAMES = ["sessions", "asks", "watch", "log"];
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
@@ -492,6 +544,7 @@ function connect() {
 </script>
 <script src="/static/charts.js"></script>
 <script src="/static/watch.js"></script>
+<script src="/static/log.js"></script>
 <script>
 "use strict";
 if (TAB_NAMES.includes(location.hash.slice(1))) setTab(location.hash.slice(1));

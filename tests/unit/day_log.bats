@@ -149,6 +149,19 @@ rec() { local day="${*: -1}"; jq "${@:1:$#-1}" "$DAYLOG_DIR/$day.json"; }
   assert_output 1
 }
 
+@test "spend is the rollup's TOTAL row, not the sum of every row with it" {
+  printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\ntools\\t1\\t2\\t1000000\\t2.5\\t0\\nTOTAL\\t4\\t12\\t3000000\\t15\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
+  COLUMNS=120 run "$SUBJECT" watch --once
+  assert_success
+  assert_output --partial '4 sessions $15  3M tokens'
+}
+
+@test "negative control: a rollup with no TOTAL row is summed" {
+  COLUMNS=120 run "$SUBJECT" watch --once
+  assert_success
+  assert_output --partial '3 sessions $12.5  2M tokens'
+}
+
 @test "watch --once draws every section and no line passes the width" {
   { pr game 1 'feat(raiders): bosses stay in their lairs and start over when they are left alone' 2026-10-28T20:00:00Z; } | merged
   jq -n '[{number: 9, title: "feat: open thing", url: "u", repository: {name: "game"}, createdAt: "2026-10-28T20:00:00Z", updatedAt: "2026-10-28T21:00:00Z", isDraft: false}]' > "$GHD/open"
