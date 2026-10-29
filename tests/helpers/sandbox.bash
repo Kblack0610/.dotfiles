@@ -153,6 +153,7 @@ sandbox_init() {
   # the one calls.log that assert_called reads. A second log would mean a test could assert
   # against gh calls while silently missing tmux ones, or the reverse.
   export GH_FIXTURE="$NOTES_FIXTURE"
+  export RBW_FIXTURE="$NOTES_FIXTURE"
 
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect
   # above relocates them for free; they are exported explicitly anyway so a test can point

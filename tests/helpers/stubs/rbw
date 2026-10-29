@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Stub for the `rbw` (Bitwarden) CLI.
+#
+# On PATH ahead of the real one so no test can read the developer's vault: with a real key
+# a subject would post fixture data to a live service. `rbw get <entry>` prints
+# $RBW_FIXTURE/<entry> when that file exists and fails like a missing entry otherwise.
+set -uo pipefail
+
+FIX="${RBW_FIXTURE:?RBW_FIXTURE unset - stub used outside the sandbox}"
+printf 'rbw %s\n' "$*" >> "$FIX/calls.log"
+
+case "${1:-}" in
+get)
+  [ -f "$FIX/${2:-}" ] || { echo "rbw get: couldn't find entry for '${2:-}'" >&2; exit 1; }
+  cat "$FIX/$2"
+  ;;
+*) exit 0 ;;
+esac

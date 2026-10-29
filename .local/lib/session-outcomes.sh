@@ -142,3 +142,31 @@ def friction:
   + (.hard_errors.api_error // 0);
 EOF
 }
+
+# so_langfuse_events - stdin: outcome rows (so_latest lines). stdout: one Langfuse
+# `score-create` ingestion event per (session, measure), keyed on sessionId, which is the
+# same Claude session id the Alloy -> Langfuse traces carry. The score id has no
+# timestamp, so a re-observed session overwrites its scores in place; the event id does,
+# because Langfuse dedupes events by it. A measure the row has as null (a runner's
+# corrections) is left out rather than sent as 0. These scores are a VIEW of the outcome
+# rows, which stay canonical: they exist so Langfuse can filter traces by them.
+so_langfuse_events() {
+  jq -c "$(so_friction_def)"'
+    . as $r
+    | [ ["friction", friction],
+        ["prs_merged", .prs_merged],
+        ["prs_closed_unmerged", .prs_closed_unmerged],
+        ["reverted_7d", .reverted_7d],
+        ["interrupts", .corrections.interrupts],
+        ["lessons_written", .corrections.lessons_written],
+        ["denied", .hard_errors.denied],
+        ["api_error", .hard_errors.api_error],
+        ["tool_errors", .hard_errors.tool_errors] ][]
+    | select(.[1] != null)
+    | { id: "so:\($r.session_id):\(.[0]):\($r.observed)",
+        type: "score-create",
+        timestamp: $r.observed,
+        body: { id: "so:\($r.session_id):\(.[0])", sessionId: $r.session_id,
+                name: .[0], value: .[1], dataType: "NUMERIC",
+                metadata: { project: $r.project, runner: $r.runner, final: $r.final } } }'
+}

@@ -210,3 +210,114 @@ EOF
   assert_line --index 2 --partial '1 reverted'
   refute_output --partial 'sess-a'
 }
+
+# Langfuse push. `curl-lf` stands in for curl: it records each request body and argv,
+# answers LF_CODE (default 207) with LF_ERRORS per-event errors (default none), and never
+# reaches the network. The key comes from the rbw stub's fixture.
+lf_setup() {
+  printf 'pk-lf-test:sk-lf-secret' > "$RBW_FIXTURE/langfuse-api"
+  cat > "$SANDBOX/bin/curl-lf" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null    # the -K - config carrying the key
+out="" body=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    --data-binary) body="${2#@}"; shift ;;
+  esac
+  shift
+done
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/lf.argv"
+cat "$body" >> "$BATS_TEST_TMPDIR/lf.posted"; echo >> "$BATS_TEST_TMPDIR/lf.posted"
+errs="[]"; [ "${LF_ERRORS:-0}" -gt 0 ] && errs='[{"id":"x","status":400,"message":"bad"}]'
+printf '{"successes":[],"errors":%s}' "$errs" > "$out"
+printf '%s' "${LF_CODE:-207}"
+STUB
+  chmod +x "$SANDBOX/bin/curl-lf"
+  export SO_CURL=curl-lf SO_LF_URL=http://langfuse.test
+}
+posted() { jq -c '.batch[]' "$BATS_TEST_TMPDIR/lf.posted"; }
+report() { tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log"; }
+mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
+
+@test "langfuse: with no URL the push is skipped" {
+  printf 'pk-lf-test:sk-lf-secret' > "$RBW_FIXTURE/langfuse-api"
+  run "$SUBJECT" run
+  assert_success
+  report | grep -q 'langfuse: no URL (SO_LF_URL)'
+  run grep -c '^rbw' "$RBW_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "langfuse: with no key the run still works and says it skipped the push" {
+  export SO_LF_URL=http://langfuse.test
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  report | grep -q 'langfuse: no key (rbw langfuse-api)'
+  [ -z "$(mark)" ]
+}
+
+@test "langfuse: one score per measure per session, keyed on sessionId, a runner sends no corrections" {
+  lf_setup
+  run "$SUBJECT" run
+  assert_success
+  report | grep -q 'langfuse: 34 score(s) for 4 session(s)'
+  assert_equal "$(posted | jq -s 'length')" 34
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-d") | .body.name' | grep -c -E 'interrupts|lessons_written')" 0
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-b" and .body.name == "reverted_7d") | .body.value')" 1
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-c" and .body.name == "friction") | .body.value')" 5
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-a" and .body.name == "prs_merged") | .body.id')" so:sess-a:prs_merged
+  assert_equal "$(mark)" 2026-10-20T00:00:00Z
+}
+
+@test "langfuse: the key never appears in curl's argv" {
+  lf_setup
+  "$SUBJECT" run
+  run grep -c 'sk-lf-secret' "$BATS_TEST_TMPDIR/lf.argv"
+  assert_output 0
+}
+
+@test "langfuse: a second run sends nothing new; --all resends the same score ids" {
+  lf_setup
+  "$SUBJECT" run
+  local first; first=$(posted | jq -r .body.id | sort)
+  assert_equal "$(wc -l <<<"$first")" 34
+  : > "$BATS_TEST_TMPDIR/lf.posted"
+  "$SUBJECT" run
+  report | grep -q 'langfuse: nothing new'
+  [ ! -s "$BATS_TEST_TMPDIR/lf.posted" ]
+  run "$SUBJECT" langfuse --all
+  assert_success
+  assert_equal "$(posted | jq -r .body.id | sort)" "$first"
+}
+
+@test "langfuse: a failed push leaves the mark, says FAILED, and the next run sends it again" {
+  lf_setup
+  LF_CODE=500 run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  report | grep -q 'langfuse: FAILED (HTTP 500)'
+  [ -z "$(mark)" ]
+  : > "$BATS_TEST_TMPDIR/lf.posted"
+  "$SUBJECT" run
+  assert_equal "$(outcome)" NOOP
+  assert_equal "$(posted | jq -s 'length')" 34
+  assert_equal "$(mark)" 2026-10-20T00:00:00Z
+}
+
+@test "langfuse: a 207 carrying per-event errors is a failure" {
+  lf_setup
+  LF_ERRORS=1 "$SUBJECT" run
+  report | grep -q 'langfuse: FAILED (HTTP 207)'
+  [ -z "$(mark)" ]
+}
+
+@test "langfuse: sessions past the 90-day trace TTL are not sent" {
+  lf_setup
+  "$SUBJECT" run
+  : > "$BATS_TEST_TMPDIR/lf.posted"
+  SO_NOW=$((SO_NOW + 91 * 86400)) run "$SUBJECT" langfuse --all
+  assert_success
+  assert_output --partial 'langfuse: nothing new'
+}

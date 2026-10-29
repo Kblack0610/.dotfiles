@@ -3,6 +3,7 @@
 #
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N]
+#   agentctl-session-outcomes langfuse [--all]             push outcomes to Langfuse as scores
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -11,7 +12,12 @@
 # again, so a fixed detector reaches sessions already past their final observation. Lib + field meanings:
 # ~/.local/lib/session-outcomes.sh. A headless session (`claude -p`, a runner) files under
 # project `_runner` with no corrections: nobody is there to correct it, so a lesson it
-# writes is its job, not a redirect. Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR.
+# writes is its job, not a redirect. Every run ends with `langfuse`: rows observed since the
+# last push go to Langfuse as session scores (so_langfuse_events), so its trace view filters
+# by them. URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry SO_LF_ENTRY,
+# "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push leaves the
+# mark where it was, so the next run sends them again.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL.
 
 set -uo pipefail
 
@@ -21,6 +27,12 @@ NOW="${SO_NOW:-$(date +%s)}"
 FINAL_DAYS="${SO_FINAL_DAYS:-7}"
 PR_LIMIT="${SO_PR_LIMIT:-1000}"   # newest N PRs per repo; one paginated call covers them
 GH="${SO_GH:-gh}"
+RBW="${SO_RBW:-rbw}"
+CURL="${SO_CURL:-curl}"
+LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
+LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
+LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
+LF_BATCH=100      # events per ingestion request
 NAME=session-outcomes
 
 LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
@@ -67,7 +79,7 @@ cmd_run() {
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
-    proof_report "$NAME" NOOP "nothing due"
+    proof_report "$NAME" NOOP "nothing due; $(lf_push "" "$work")"
     return 0
   fi
 
@@ -148,7 +160,77 @@ cmd_run() {
   done < "$work/lines.jsonl"
 
   echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked"
-  proof_report "$NAME" WORKED "observed $written"
+  proof_report "$NAME" WORKED "observed $written; $(lf_push "" "$work")"
+}
+
+# lf_push [--all] WORKDIR - send every session's newest row observed after the mark (all
+# of them with --all) to Langfuse, then move the mark. Prints one status phrase for the
+# run's report. Never fails the run: the outcome rows are already written and are the
+# record; a push that failed says so on stderr and in the report, and is retried next run.
+lf_push() {
+  local all="$1" work="$2" key mark since code n=0 sent=0
+  local mark_file
+  mark_file="$(proof_state_dir)/$NAME/langfuse-mark"
+  if [ -z "$LF_URL" ]; then
+    printf 'langfuse: no URL (SO_LF_URL)'
+    return 0
+  fi
+  key="$("$RBW" get "$LF_ENTRY" 2>/dev/null)" || key=""
+  if [ -z "$key" ]; then
+    printf 'langfuse: no key (rbw %s)' "$LF_ENTRY"
+    return 0
+  fi
+  mark=""
+  [ "$all" = --all ] || mark="$(cat "$mark_file" 2>/dev/null)"
+  since=$((NOW - LF_TTL_DAYS * 86400))
+  so_latest "$OUT" | jq -c --arg m "$mark" --argjson since "$since" \
+    'select(.observed > $m and .updated_epoch >= $since)' > "$work/lf.rows" || {
+    echo "$NAME: langfuse: could not read $OUT" >&2
+    printf 'langfuse: FAILED reading outcomes'
+    return 0
+  }
+  if [ ! -s "$work/lf.rows" ]; then
+    printf 'langfuse: nothing new'
+    return 0
+  fi
+  if ! so_langfuse_events < "$work/lf.rows" | jq -cn --argjson b "$LF_BATCH" \
+      '[inputs] | range(0; length; $b) as $i | {batch: .[$i:$i + $b]}' > "$work/lf.batches"; then
+    echo "$NAME: langfuse: could not build score events" >&2
+    printf 'langfuse: FAILED building events'
+    return 0
+  fi
+  while IFS= read -r batch; do
+    n=$((n + 1))
+    printf '%s' "$batch" > "$work/lf.body"
+    # The key goes in on stdin (-K -), never argv, where any `ps` would show it.
+    code="$(printf 'user = "%s"\n' "$key" | "$CURL" -sS -K - -o "$work/lf.resp" -w '%{http_code}' \
+      --max-time 30 -H 'Content-Type: application/json' \
+      --data-binary @"$work/lf.body" "$LF_URL/api/public/ingestion" 2>"$work/lf.err")" || code=000
+    # 207 is the normal answer: per-event results, any of which can be an error.
+    if { [ "$code" = 200 ] || [ "$code" = 207 ]; } \
+       && [ "$(jq '.errors | length' "$work/lf.resp" 2>/dev/null)" = 0 ]; then
+      sent=$((sent + $(jq '.batch | length' "$work/lf.body")))
+    else
+      echo "$NAME: langfuse: batch $n failed (HTTP $code): $(head -c 300 "$work/lf.resp" "$work/lf.err" 2>/dev/null)" >&2
+      printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$code" "$sent"
+      return 0
+    fi
+  done < "$work/lf.batches"
+  mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
+  printf 'langfuse: %s score(s) for %s session(s)' "$sent" "$(wc -l < "$work/lf.rows")"
+}
+
+cmd_langfuse() {
+  case "${1:-}" in
+    ""|--all) ;;
+    *) echo "$NAME langfuse: unknown arg $1" >&2; return 2 ;;
+  esac
+  local work
+  work="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  lf_push "${1:-}" "$work"
+  echo
 }
 
 # worst: the sessions to look at first over the last N days, as a markdown table.
@@ -190,6 +272,7 @@ cmd_worst() {
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
-  -h|--help) sed -n '2,14p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N]" >&2; exit 2 ;;
+  langfuse) shift; cmd_langfuse "$@" ;;
+  -h|--help) sed -n '2,19p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] | langfuse [--all]" >&2; exit 2 ;;
 esac
