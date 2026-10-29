@@ -7,8 +7,8 @@
 #                          something to move
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document as it is, writes nothing
-#   fleet-shepherd lease   record that a shepherd pass is running now; every pass calls it
-#                          first (fleet-overseer, shepherd step 0)
+#   fleet-shepherd lease   record that a shepherd pass is running now and tag its tmux session
+#                          @shepherd; every pass calls it first (fleet-overseer, shepherd step 0)
 #   fleet-shepherd log [--heading] <text>
 #                          append to the rundown ($LEDGER/log.md) stamped with the clock's
 #                          time: a `## <date time> <text>` heading, or a `- <time>: <text>` line
@@ -39,7 +39,32 @@ publish() {
 # the step-0 call inside a headless pass never reads as a human's loop.
 cmd_lease() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
-  printf '%s %s\n' "${FLEET_SHEPHERD_HOLDER:-interactive}" "$(date +%s)" > "$LEASE"
+  local holder="${FLEET_SHEPHERD_HOLDER:-interactive}" now
+  now="$(date +%s)"
+  printf '%s %s\n' "$holder" "$now" > "$LEASE"
+  tag_session "$holder" $(( now + FLEET_SHEPHERD_LEASE_MIN * 60 ))
+}
+
+# tag_session <holder> <expires>: exactly one tmux session carries @shepherd, the one an
+# interactive lease was taken from, and its value is the epoch the lease goes stale. Readers
+# show the tag only while that is in the future (.tmux.conf @shepherd_live, agent-panel), so a
+# shepherd that stopped renewing drops its tag with no cleanup. Every server in the socket dir
+# is swept, found the way agent-panel finds them (tmux.rs socket_dir). A headless pass has no
+# session, so it only clears.
+tag_session() {
+  local dir sock sid val
+  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+  [ -z "${TMUX:-}" ] || dir="$(dirname "${TMUX%%,*}")"
+  for sock in "$dir"/*; do
+    [ -S "$sock" ] || continue
+    tmux -S "$sock" list-sessions -F '#{session_id} #{@shepherd}' 2>/dev/null |
+      while read -r sid val; do
+        [ -z "$val" ] || tmux -S "$sock" set-option -t "$sid" -u @shepherd 2>/dev/null
+      done
+  done
+  [ "$1" = interactive ] && [ -n "${TMUX:-}" ] || return 0
+  # Bare tmux under $TMUX is the server this pass runs in; $TMUX_PANE names its session.
+  tmux set-option ${TMUX_PANE:+-t "$TMUX_PANE"} @shepherd "$2" 2>/dev/null || true
 }
 
 # interactive_age -> minutes since a live interactive pass, or nothing when there is none.
