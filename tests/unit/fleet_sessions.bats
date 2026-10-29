@@ -96,8 +96,10 @@ b() { session_bucket "$@"; }
   assert_output --partial 'LANDED PR #875 merged, tree clean'
 }
 
-# r <workflow> <conclusion> <sha> <minute>: one gh run list row
+# r <workflow> <conclusion> <sha> <minute>: one main_runs row
 r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "$2" "$3" "$4"; }
+# page <rows>: those rows as GitHub's actions/runs answer, for a stub gh to serve
+page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, head_sha: .headSha, created_at: .createdAt})}' <<<"$1"; }
 
 @test "main_state names each workflow whose latest decided run failed, with its last green" {
   run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Checks success c1 3)]"
@@ -366,7 +368,7 @@ landed_fixture() {
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
@@ -410,7 +412,7 @@ landed_fixture() {
   phases_plan '- [ ] Phase 1: fix main'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   runs="[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
-  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo %q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$runs" "$red" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { jq -c "${@: -1}" <<<%q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$(page "$runs")" "$red" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -425,9 +427,9 @@ landed_fixture() {
   [ "$(jq -r .fact <<<"$main")" = "MAIN origin red: Tests @${red:0:8} (#875)" ]
 
   # an unreadable CI is reported, never read as green
-  printf '#!/usr/bin/env bash\n[ "$1" = run ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
+  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
   [ "$(jq -r 'select(.bucket != "MAIN") | .bucket' <<<"$output")" = LANDED ]
 }
 
@@ -444,7 +446,7 @@ landed_fixture() {
   phases_plan '- [ ] Phase 1: x'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   runs="[$(r Tests success "$green" 1)]"
-  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo run >> "$HOME/runcalls"; echo %q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$runs" "$green" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo run >> "$HOME/runcalls"; jq -c "${@: -1}" <<<%q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$(page "$runs")" "$green" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -455,10 +457,10 @@ landed_fixture() {
   [ "$(wc -l < "$HOME/runcalls")" -eq 1 ]
 
   # past the TTL it asks again; a failure then is UNKNOWN, never the cached green
-  printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo run >> "$HOME/runcalls"; exit 1; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo run >> "$HOME/runcalls"; exit 1; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(wc -l < "$HOME/runcalls")" -eq 2 ]
-  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh run list failed)' ]
+  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(wc -l < "$HOME/runcalls")" -eq 3 ]
 }
@@ -552,7 +554,7 @@ landed_fixture() {
   "${g[@]}" remote set-head origin main
   panel "$SANDBOX/wt"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo develop ;; run) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo develop ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -560,7 +562,7 @@ landed_fixture() {
   [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file: done or never started' ]
 
   # gh unreachable: the symref decides, stale or not
-  printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; run) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = '3 file(s) not on the default branch, no PR' ]
 }
@@ -915,7 +917,7 @@ open_pr_gh() {
     "$oid" "$1" > "$SANDBOX/prs.json"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
-[ "\$1" = run ] && { echo "[]"; exit 0; }
+[ "\$1" = api ] && { echo "[]"; exit 0; }
 while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
 GH
   chmod +x "$SANDBOX/bin/gh"
