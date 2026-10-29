@@ -697,7 +697,7 @@ watch() {
   done
   [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "fleet-sessions: --every takes whole seconds" >&2; return 2; }
   export FLEET_FETCH=1
-  # A resize (the Prefix+o popup opening or closing) ends the wait early, and the frame
+  # A resize (the hub:watch window or its pane changing size) ends the wait early, and the frame
   # already in hand is re-fitted to the new width: no pass is run for it.
   trap 'resized=1' WINCH
   local width tick=1 deadline=0 resized=0

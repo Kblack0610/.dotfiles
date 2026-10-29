@@ -1,6 +1,6 @@
 # agent-web
 
-A web view of the Claude agents running in tmux on this machine. From a phone or another computer you can read any session's transcript or live screen, type into it, press the keys a permission prompt needs, and answer the headless `agent-ask` queue.
+A web view of the Claude agents running in tmux on this machine. From a phone or another computer you can read any session's transcript or live screen, type into it, press the keys a permission prompt needs, and answer the headless `agent-ask` queue. The board tabs show the tmux hub boards with charts: Watch is `hub:watch` (`Prefix+o`).
 
 It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux wrappers), so the web list and the `Prefix+g` chooser always agree on what an agent is.
 
@@ -15,7 +15,10 @@ It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux 
 | Keys | a fixed list: Enter, Escape, arrows, Tab, Space, 1-9. No `C-c`/`C-d` |
 | Waiting tab | each `waiting` or `idle` session's open question, read from the end of its transcript (`transcript::pending_question`): an AskUserQuestion dialog with its options, a tool waiting on permission, or its last message. Answers go through Typing/Keys into that session's pane, so they land in the conversation that asked; a typed reply to a dialog sends Escape first |
 | Asks | below the sessions on the same tab: `agent-ask list --all --pending` and `agent-ask answer`, for headless runs only (an attended session asks in its conversation) |
-| Live updates | inotify on `~/.claude/sessions`, `~/.claude/projects` and `~/.agent/asks`, pushed over SSE. Nothing polls |
+| Watch tab | `~/.local/state/fleet/state.json` (written by `fleet-sessions --write`) and the last 1500 lines of `~/.agent/shepherd/watch.log`, parsed in `src/boards.rs`: bucket tiles, a 24h swimlane per session, a card per session, and the change feed. It reads what the `hub:watch` board writes and judges nothing itself |
+| Live updates | inotify on `~/.claude/sessions`, `~/.claude/projects`, `~/.agent/asks`, `~/.local/state/fleet` and `~/.agent/shepherd`, pushed over SSE. Nothing polls |
+
+The board tabs are `static/*.js`, compiled in with `include_str!` and served at `/static/<name>` behind sign-in. Each registers `TABS.<name> = { show(), onEvent(ev) }`; the page calls `show` when the tab opens and passes every SSE message to `onEvent`. `static/charts.js` holds the shared pieces (swimlanes, meters, bucket colours). A tab can be opened directly with `#watch`.
 
 Only a target that is a live agent right now accepts input, so the API cannot be aimed at an arbitrary pane.
 
@@ -50,3 +53,15 @@ systemctl --user enable --now agent-web   # unit lives in the private overlay
 ```sh
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
+
+To look at a change without touching the live service, run a second instance against a throwaway config dir with a hand-made session, then open `http://127.0.0.1:8799/#watch` with the cookie `agent_web=dev`:
+
+```sh
+d=$(mktemp -d); mkdir -p $d/agent-web
+echo '{"client_id":"x","client_secret":"x"}' > $d/agent-web/oauth.json
+echo '{"dev":{"user":"me","expires":4102444800}}' > $d/agent-web/sessions.json
+XDG_CONFIG_HOME=$d AGENT_WEB_ADDR=127.0.0.1:8799 AGENT_WEB_FORGEJO_URL=http://x AGENT_WEB_BASE_URL=http://127.0.0.1:8799 ./target/debug/agent-web
+curl -s -b agent_web=dev 127.0.0.1:8799/api/watch | jq '.state.sessions | length'
+```
+
+The static files are compiled in, so restart the instance after editing one.

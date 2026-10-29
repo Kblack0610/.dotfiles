@@ -2,13 +2,15 @@
 //!
 //! Lists every agent (the same pane x `~/.claude/sessions` join agent-panel uses),
 //! pages through any agent's transcript, shows its live screen, types into its
-//! pane, and answers the headless `agent-ask` queue. Changes are pushed to the
-//! browser over SSE from inotify on `~/.claude`, so nothing polls.
+//! pane, and answers the headless `agent-ask` queue. The board tabs show what the
+//! tmux hub boards write (`boards`). Changes are pushed to the browser over SSE
+//! from inotify, so nothing polls.
 //!
 //! Served behind the home cluster ingress (home-config `apps/agents`),
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
 mod auth;
+mod boards;
 mod transcript;
 
 use std::convert::Infallible;
@@ -18,7 +20,7 @@ use std::sync::Arc;
 
 use agent_panel::{chooser, session, tmux};
 use anyhow::Result;
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -34,6 +36,11 @@ use tokio_stream::{Stream, StreamExt};
 
 const INDEX: &str = include_str!("index.html");
 const LOGIN: &str = include_str!("login.html");
+/// The board tabs' scripts, served beside the page. Each registers itself in `TABS`.
+const STATIC: &[(&str, &str, &str)] = &[
+    ("charts.js", "text/javascript", include_str!("../static/charts.js")),
+    ("watch.js", "text/javascript", include_str!("../static/watch.js")),
+];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
 const PAGE_MAX: usize = 1000;
@@ -77,7 +84,9 @@ async fn main() -> Result<()> {
         .route("/api/send", post(send))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/watch", get(watch_board))
         .route("/api/events", get(events_stream))
+        .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -117,10 +126,22 @@ fn watch(tx: broadcast::Sender<String>) -> Result<notify::RecommendedWatcher> {
     if asks.is_dir() {
         w.watch(&asks, RecursiveMode::Recursive)?;
     }
+    // The boards' files: watch a directory, not the file, since each is replaced by a rename.
+    for dir in [boards::fleet_state().parent().map(Path::to_path_buf), Some(boards::shepherd_dir())]
+        .into_iter()
+        .flatten()
+    {
+        if dir.is_dir() {
+            w.watch(&dir, RecursiveMode::NonRecursive)?;
+        }
+    }
     Ok(w)
 }
 
 fn classify(p: &Path) -> Option<String> {
+    if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
+        return Some(r#"{"kind":"watch"}"#.to_string());
+    }
     let ext = p.extension()?.to_str()?;
     let parent = p.parent()?.file_name()?.to_str()?;
     match ext {
@@ -524,6 +545,22 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
 }
 
+async fn watch_board() -> ApiResult<Json<boards::Watch>> {
+    tokio::task::spawn_blocking(|| {
+        boards::watch(&boards::fleet_state(), &boards::shepherd_dir().join("watch.log"))
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn static_file(UrlPath(name): UrlPath<String>) -> Response {
+    match STATIC.iter().find(|(n, _, _)| *n == name) {
+        Some((_, ctype, body)) => ([(header::CONTENT_TYPE, *ctype)], *body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn events_stream(
     State(s): State<Shared>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
@@ -553,6 +590,16 @@ mod tests {
             classify(Path::new("/h/.agent/asks/bnb/Y3g.md")).as_deref(),
             Some(r#"{"kind":"asks"}"#)
         );
+        assert_eq!(
+            classify(Path::new("/h/.local/state/fleet/state.json")).as_deref(),
+            Some(r#"{"kind":"watch"}"#)
+        );
+        assert_eq!(
+            classify(Path::new("/h/.agent/shepherd/watch.log")).as_deref(),
+            Some(r#"{"kind":"watch"}"#)
+        );
+        assert_eq!(classify(Path::new("/h/.local/state/fleet/.state.AbC123")), None);
+        assert_eq!(classify(Path::new("/h/.agent/shepherd/watch.state")), None);
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(
