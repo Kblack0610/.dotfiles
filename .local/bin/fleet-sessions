@@ -299,8 +299,8 @@ prs_for() {
         .headRefName, .number, .state,
         (.statusCheckRollup // [] | map(.conclusion // .state // "") as $c
           | if ($c | length) == 0 then "NONE"
-            elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
             elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
+            elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
             else "PASS" end),
         .headRefOid ] | @tsv' 2>/dev/null) > "$key" || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
   cat "$key"
@@ -430,10 +430,10 @@ sync_facts() {
 }
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
-# plus branch and sync: "git dirty ahead pr state ci in_pr branch behind conflicts".
+# plus branch, sync and the PR head: "git dirty ahead pr state ci in_pr branch behind conflicts oid".
 git_facts() {
   local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
-  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - -"; return; }
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - -"; return; }
   fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   dirty="$(dirty_count "$d" "$edited")"
@@ -447,7 +447,7 @@ git_facts() {
     if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
        && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
   fi
-  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base")"
+  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--}"
 }
 
 collect() {
@@ -460,7 +460,7 @@ collect() {
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
-          pdone ptotal pnext phases fin started age askids blk
+          pdone ptotal pnext phases fin started age oid askids blk
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -471,7 +471,7 @@ collect() {
     askids="$(asks_for "$sid" | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch behind conflicts < <(git_facts "$cwd" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts oid < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
@@ -490,13 +490,16 @@ collect() {
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
     blk="$(work_blockers "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$askids")"
+    # An open PR's fact carries its head commit, so a push that is still red is a new fact
+    # and gets a new nudge, while the same commit is never nudged twice.
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
+    [ "$state" = OPEN ] && [ "$oid" != - ] && fact="$fact@${oid:0:12}"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "${blk:--}"
+      "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}"
   done
   main_rows
 }
@@ -516,7 +519,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -693,8 +696,8 @@ json_rows() {
       activity: (if .[26] == "-" then null else .[26] end),
       age_min: (if (.[27] // "-") == "-" then null else .[27] | tonumber end),
       asks: ((.[28] // "0") | tonumber),
-      blockers: (if (.[29] // "-") == "-" then [] else .[29] | split("; ") end),
-      fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}'
+      fact: .[29],
+      blockers: (if (.[30] // "-") == "-" then [] else .[30] | split("; ") end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

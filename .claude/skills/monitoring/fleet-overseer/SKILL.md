@@ -140,7 +140,7 @@ The human is usually away while this loop runs, so every pass leaves a record an
 - **Page when settled.** When no row is WORKING, no MAIN row is unescalated, and every DONE, LANDED or STALLED row is already nudged, nothing is left for the shepherd to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
 - **In the session.** Each pass also prints its report in the shepherd's own session, where `/fleet-overseer status` gives the live table.
 
-The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact and the last escalated fact. A new fact for the same session (its PR went from red to green, or the next phase merged) is nudged again; the same fact never is.
+The ledger (`~/.agent/shepherd/<session_id>`) holds the last nudged fact and the last escalated fact. A new fact for the same session (its PR went from red to green, or the next phase merged) is nudged again; the same fact never is. An open PR's fact ends with its head commit (`@branch@<sha12>`), so a push that is still red is a new fact and gets one more nudge.
 
 A session in a different permission mode holds a peer message for approval. If a message comes back pending approval, say so in the report and do not count it as delivered.
 

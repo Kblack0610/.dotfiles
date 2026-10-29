@@ -809,3 +809,47 @@ caught() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.unreadable[0]' "$XDG_STATE_HOME/fleet/state.json")" = agent-panel ]
 }
+
+
+# open_pr_gh <json rollup>: a gh whose `pr list` answers one OPEN PR for feat/x at the
+# worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under test.
+open_pr_gh() {
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
+    "$oid" "$1" > "$SANDBOX/prs.json"
+  cat > "$SANDBOX/bin/gh" <<GH
+#!/usr/bin/env bash
+[ "\$1" = run ] && { echo "[]"; exit 0; }
+while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
+GH
+  chmod +x "$SANDBOX/bin/gh"
+}
+
+@test "end to end: a PR is red only once every check has finished" {
+  landed_fixture
+  open_pr_gh '[{"conclusion":"FAILURE"},{"status":"IN_PROGRESS","conclusion":""}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  open_pr_gh '[{"conclusion":"FAILURE"},{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
+  landed_fixture
+  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red @feat/x@${oid:0:12}" ]
+  mark sid-9 "$(jq -r .fact <<<"$output")"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+
+  # the agent pushes a fix that is still red: same bucket, new head, new nudge
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'fix?'
+  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .nudged <<<"$output")" = false ]
+}
