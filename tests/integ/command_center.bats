@@ -40,10 +40,17 @@ cc = [({"__name__": "cc:overall_status"}, "2"), ({"__name__": "cc:domain_status"
       ({"__name__": "cc:ci_expected"}, "14"), ({"__name__": "cc:k3s_nodes_ready"}, "8"),
       ({"__name__": "cc:k3s_nodes_total"}, "8"), ({"__name__": "cc:asks_open"}, "0"),
       ({"__name__": "cc:sessions_attention"}, "0")]
-for n, v in [("cc:host_cpu_busy_ratio", "0.91"), ("cc:host_load1", "9.84"), ("cc:host_cores", "16"),
+for n, v in [("cc:host_cpu_busy_ratio", "0.91"), ("cc:host_cpu_busy_ratio:avg6h", "0.31"), ("cc:host_load1", "9.84"), ("cc:host_cores", "16"),
              ("cc:host_mem_used_ratio", "0.6"), ("cc:host_temp_c", "84.2")]:
     cc.append(({"__name__": n, "host": "razer-laptop"}, v))
 cc.append(({"__name__": "cc:host_cpu_busy_ratio", "host": "mac-mini"}, "0.03"))
+# windows has slots and nothing waiting: it must read 0, never vanish.
+for pool, slots, busy, waiting, oldest in [("unity", "4", "3", "3", "8880"), ("pmp-light", "2", "0", "1", "60"),
+                                           ("windows", "1", "0", "0", None)]:
+    cc += [({"__name__": "cc:pool_slots", "pool": pool}, slots), ({"__name__": "cc:pool_busy", "pool": pool}, busy),
+           ({"__name__": "cc:pool_waiting", "pool": pool}, waiting)]
+    if oldest:
+        cc.append(({"__name__": "cc:pool_oldest_wait_seconds", "pool": pool}, oldest))
 out("cc", cc)
 def runner(host, name, state, val, **kw):
     m = {"host": host, "name": name, "state": state, "pool": "unity"}
@@ -55,11 +62,15 @@ out("runners", [
     runner("razer-laptop", "razer-2", "running", "300", repo="platform", branch="develop",
            job_name="E2E", workflow="E2E", title="E2E"),
     runner("razer-laptop", "razer-3", "idle", "0"),
+    runner("razer-laptop", "razer-4", "running", "5580", repo="unity-core-playground", pr="1110",
+           branch="feat/automatch-phase", job_name="PlayMode 4", workflow="Tests", title="Tests"),
     runner("mac-mini", "mini-1", "offline", "0", pool="macos"),
 ])
-out("waiting", [({"labels": "self-hosted,unity", "repo": "unity-core-playground", "pr": "412",
+out("waiting", [({"pool": "unity", "repo": "unity-core-playground", "pr": "412", "stuck": "false",
                   "branch": "feat/apociseum-third"}, v) for v in ("600", "8880", "120")] +
-               [({"labels": "self-hosted,pmp-light", "repo": "platform", "branch": "develop"}, "60")])
+               [({"pool": "pmp-light", "repo": "platform", "branch": "develop", "stuck": "false"}, "60"),
+                # A run queued 45 days with no jobs: DOWN's, and never the queue's age.
+                ({"pool": "other", "repo": "platform", "branch": "develop", "stuck": "true"}, "3949200")])
 now = int(time.time())
 out("recent", [({"conclusion": "failure", "repo": "unity-core-playground", "workflow": "Tests",
                  "branch": "feat/x"}, str(now - 240))])
@@ -69,21 +80,49 @@ PY
 }
 
 
-@test "a busy runner's row names its repo, PR, job, time in job, branch and run title" {
+@test "a busy runner's row names its host, pool, repo, PR, job, time in job, branch and run title" {
   run "$CC" --once
   assert_success
-  assert_output --regexp 'razer-laptop +91% +9\.8/16 +60% +84C +2/3 busy +unity +unity-core-playground +#412 +PlayMode 2 +36m +feat/apociseum-third - Apociseum third arena'
+  assert_line --regexp '^razer-laptop +unity +unity-core-playground +#412 +PlayMode 2 +36m +feat/apociseum-third - Apociseum third arena$'
 }
 
 @test "a run with no PR shows -, and a title that only repeats the workflow is not shown" {
   run "$CC" --once
-  assert_line --regexp ' +unity +platform +- +E2E +5m +develop$'
+  assert_line --regexp '^razer-laptop +unity +platform +- +E2E +5m +develop$'
+}
+
+@test "a machine's row carries its load, 6h CPU and busy of its registered slots per pool" {
+  run "$CC" --once
+  assert_line --regexp '^razer-laptop +91% +31% +9\.8/16 +60% +84C +unity 3/4$'
 }
 
 @test "a machine with no exporter series reads - in every column, never 0" {
   run "$CC" --once
-  assert_line --regexp '^workstation +- +- +- +- +- '
-  assert_line --regexp '^mac-mini +3% +- +- +- +0/1 busy'
+  assert_line --regexp '^workstation +- +- +- +- +- +-$'
+  assert_line --regexp '^mac-mini +3% +- +- +- +- +-$'
+}
+
+@test "pools show busy of slots, waiting, oldest and the hosts that serve them, longest queue first" {
+  run "$CC" --once
+  assert_line --regexp '^unity +3/4 +3 +2h28m +razer-laptop:4$'
+  assert_line --regexp '^windows +0/1 +0 +- +-$'
+  local order
+  order="$(awk '/^POOL /{on=1; next} on && NF == 0 {exit} on {print $1}' <<< "$output" | paste -sd' ')"
+  assert_equal "$order" "unity pmp-light windows"
+}
+
+@test "a job past an hour is marked, and painted amber when colour is on" {
+  run "$CC" --once
+  assert_line --regexp '^razer-laptop +unity +unity-core-playground +#1110 +PlayMode 4 +1h33m! +feat/automatch-phase$'
+  refute_output --partial '36m!'
+  NO_COLOR= run "$CC" --once
+  assert_output --partial $'\033[1;30;43m1h33m!'
+}
+
+@test "a stuck run is listed in DOWN and left out of the queue and its oldest wait" {
+  run "$CC" --once
+  assert_output --partial 'stuck run: platform develop, 45d17h, no jobs'
+  assert_output --partial 'QUEUED  4 jobs in 2 groups, oldest waiting 2h28m'
 }
 
 @test "an offline runner lands in DOWN by name" {
@@ -107,11 +146,18 @@ PY
   run "$CC" --once
   assert_output --partial 'OVERALL RED'
   assert_output --partial 'k3s OK ci NODATA llm RED'
-  assert_output --partial 'ci slots 13/14'
+  assert_output --partial 'ci busy 3/7 waiting 4'
   assert_output --partial 'red now: watch mac_studio_mlx'
 }
 
-@test "a narrow terminal drops columns but keeps machine, repo and PR, and nothing wraps" {
+@test "narrowing the machines drops TEMP, then MEM, then 6H, never CPU, LOAD or SLOTS" {
+  COLUMNS=46 run "$CC" --once
+  assert_line --regexp '^razer-laptop +91% +31% +9\.8/16 +60% +unity 3/4$'
+  COLUMNS=40 run "$CC" --once
+  assert_line --regexp '^razer-laptop +91% +9\.8/16 +unity 3/4$'
+}
+
+@test "a narrow terminal keeps each run's machine, repo and PR, and nothing wraps" {
   COLUMNS=60 run "$CC" --once
   assert_success
   assert_line --regexp '^razer-laptop +unity-core-playground +#412'
@@ -160,8 +206,9 @@ json.dump({"status": "success", "data": {"result": [g("unity-core-playground-age
 PY
   run "$CC" --once
   assert_success
-  assert_line --regexp '^workstation +- +- +- +- +2 gates +local +unity-core-playground-agent-7 +- +PlayMode +36m +feat/dodge-feel$'
-  assert_line --regexp '^ +local +unity-core-playground-agent-9 +- +EditMode +45s +fix/x$'
+  assert_line --regexp '^workstation +- +- +- +- +- +2 gates$'
+  assert_line --regexp '^workstation +local +unity-core-playgroun~ +- +PlayMode +36m +feat/dodge-feel$'
+  assert_line --regexp '^workstation +local +unity-core-playgroun~ +- +EditMode +45s +fix/x$'
 }
 
 @test "the agent session count shows only when the rule has a value" {
