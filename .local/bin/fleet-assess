@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-assess - is this machine overloaded, by whom, and can each consumer hear a message?
 #
-#   fleet-assess                 headroom, holds, verdict, and one row per heavy process
+#   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (the sentinel `fleet-thermal` probe)
 #   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
@@ -23,6 +23,8 @@ set -uo pipefail
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
 : "${FLEET_NOT_LOAD_HOLDS:=dispatch}"  # holds that pause work, not the machine: no effect on the verdict
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
+: "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
+                                 # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
@@ -312,6 +314,7 @@ main() {
   fi
 
   echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free, $(d_sample | d_threads) threads blocked on I/O"
+  gh_budget
   if [ "$held" = 1 ]; then
     echo "holds:"
     agent-hold list 2>/dev/null | awk -F'\t' '{ printf "  %s since %s by %s: %s\n", $1, $2, $3, $4 }'
@@ -328,6 +331,30 @@ main() {
   echo "blocked on I/O (0% CPU, each thread counts 1 toward load):"
   printf '%-8s %3s %5s  %-12s %-8s %-28s %-34s %-20s %s\n' PID THR AGE COMM CLASS SESSION WORKTREE WCHAN OPEN
   awk -F'\t' '{ printf "%-8s %3s %5s  %-12s %-8s %-28s %-34s %-20s %s\n", $1, $2, $3, $4, $5, $6, $7, $8, $9 }' <<<"$blocked"
+}
+
+# gh_callers -> "<script> xN, ..." for the scripts whose children are gh right now, most first.
+gh_callers() {
+  local pp
+  ps -eo ppid=,comm= | awk '$2 == "gh" { print $1 }' | while read -r pp; do
+    ps -o args= -p "$pp" | awk '{ s = $1; for (i = 1; i <= NF; i++) if ($i ~ /\//) { s = $i; break }
+                                  n = split(s, a, "/"); print a[n] }'
+  done | sort | uniq -c | sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+}
+
+# gh_budget -> one line: REST calls left this hour, and who is spending them when LOW.
+# The rate_limit endpoint does not count against the limit.
+gh_budget() {
+  local rl remaining limit reset line callers
+  rl="$(timeout 5 gh api rate_limit --jq '.resources.core | "\(.remaining) \(.limit) \(.reset)"' 2>/dev/null)" \
+    || { echo "github: rate limit unreadable"; return; }
+  read -r remaining limit reset <<<"$rl"
+  line="github: $remaining/$limit REST calls left, resets $(date -d "@$reset" +%H:%M)"
+  if [ "$remaining" -lt "$FLEET_GH_LOW" ] && [ $(( reset - $(date +%s) )) -gt 1200 ]; then
+    callers="$(gh_callers)"
+    line="$line, LOW${callers:+; gh running under $callers}"
+  fi
+  echo "$line"
 }
 
 # Sourceable for tests (fleet_verdict); runs main only when executed.
