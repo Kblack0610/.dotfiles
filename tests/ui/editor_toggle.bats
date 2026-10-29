@@ -260,13 +260,13 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   conf_tmux kill-server 2>/dev/null || true
 }
 
-@test "mail is still on prefix+e, per tmux itself" {
+@test "infra is still on prefix+e, per tmux itself" {
   # The feature took a free key rather than rekeying anything. Asserted against the live
   # binding table, not the file, because that is what actually decides what your finger does.
   conf_server
   local e
   e="$(conf_tmux list-keys -T prefix | awk '$4 == "e" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  grep -qF 'aerc' <<< "$e" || fail "prefix+e is not mail: [$e]"
+  grep -qF 'hub:infra' <<< "$e" || fail "prefix+e is not infra: [$e]"
   conf_tmux kill-server 2>/dev/null || true
 }
 
