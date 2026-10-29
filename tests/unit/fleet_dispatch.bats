@@ -319,6 +319,7 @@ game_ready() {
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix crash on load'
   assert_equal "$(sed -n 's/^key=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
+  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1" | paste -sd' ')" 'lab run'
 }
 
 @test "run claims a row at the top of a board too big for one pipe buffer" {
@@ -405,4 +406,128 @@ game_ready() {
   run cmd_reap
   assert_not_called 'start'
   [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "a done row kept its project's dispatch slot"
+}
+
+# --- start: the one launch path for every agent-started session --------------------------
+# 2026-10-28: only `run` tagged @dispatch and wrote a ledger, so restored and hand-launched
+# sessions showed no [dispatch] and an agent tagged two by hand with set-option.
+
+@test "start --brief claims the row, cuts a worktree on the named server, tags it there and records the server" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent \
+    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'started game-agent-1: game: tidy the loader'
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
+  assert_called "wt new --server default --detach -c $SANDBOX/repos/game"
+  assert_called 'tmux -L default set-option -t =game-agent-1: @dispatch game: tidy the loader'
+  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p;s/^lane=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1" | paste -sd' ')" 'agent default hand'
+}
+
+@test "start --brief refuses a row that is not open, and starts nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'taken' '- [/] taken'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row taken --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'row no longer open'
+  assert_not_called 'wt new'
+  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "wrote a ledger"
+}
+
+@test "start --resume opens its own session on the named server running claude --resume, and leaves the sheet alone" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [/] fix crash'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row 'fix crash' \
+    --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: fix crash'
+  assert_not_called 'start fix crash'
+  assert_not_called 'wt new'
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "touched the row"
+  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/fix-crash" | paste -sd' ')" 'default resume'
+}
+
+@test "start --resume never lands in a session that already exists on that server" {
+  project game beta "$SANDBOX/repos/game"
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
+    --session dotfiles --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_failure
+  assert_output --partial 'already exists on default'
+  assert_not_called 'new-session'
+  assert_not_called 'set-option'
+  [ ! -e "$FLEET_DISPATCH_DIR/live/dotfiles" ] || fail "wrote a ledger for someone else's session"
+}
+
+@test "start refuses a call that is not exactly one launch" {
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row r
+  assert_failure
+  assert_output --partial 'exactly one of --brief or --resume'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row r --brief "$SANDBOX/brief.md" --resume x
+  assert_failure
+  assert_output --partial 'exactly one of --brief or --resume'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'needs the --row'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --resume x --cwd "$SANDBOX"
+  assert_failure
+  assert_output --partial 'needs --session and --cwd'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project
+  assert_failure
+  assert_output --partial '--project needs a value'
+  assert_not_called 'wt new'
+  assert_not_called 'new-session'
+}
+
+@test "reap reads the server from the ledger: a live session on default is kept, one gone from it is settled" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [/] fix crash'
+  mkdir -p "$FLEET_DISPATCH_DIR/live"
+  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\nserver=default\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  run cmd_reap
+  [ -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "reaped a session live on the server its ledger names"
+  assert_not_called 'start'
+
+  # The same name live on lab only is not this session.
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "kept a ledger whose session is gone from its server"
+  grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
+}
+
+@test "reap keeps a live restore with no row and drops it once its session is gone, touching no sheet" {
+  mkdir -p "$FLEET_DISPATCH_DIR/live"
+  printf 'project=game\nprofile=bnb\nlane=human\nkey=\nserver=default\norigin=resume\n' > "$FLEET_DISPATCH_DIR/live/restored"
+  printf 'restored\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  run cmd_reap
+  [ -e "$FLEET_DISPATCH_DIR/live/restored" ] || fail "reaped a live restore"
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run cmd_reap
+  [ ! -e "$FLEET_DISPATCH_DIR/live/restored" ] || fail "kept a restore whose session is gone"
+  assert_not_called 'ptask'
+}
+
+@test "a live hand launch or restore holds none of the runner's slots; its own sessions do" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' "- [ ] fix crash $T"
+  mkdir -p "$FLEET_DISPATCH_DIR/live"
+  printf 'project=game\nserver=lab\norigin=resume\n' > "$FLEET_DISPATCH_DIR/live/restored"
+  printf 'project=game\nserver=lab\norigin=hand\n' > "$FLEET_DISPATCH_DIR/live/by-hand"
+  printf 'restored\nby-hand\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run live_projects
+  assert_output ''
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
+
+  printf 'project=game\nserver=lab\norigin=run\n' > "$FLEET_DISPATCH_DIR/live/game-agent-9"
+  run live_projects
+  assert_output game
 }
