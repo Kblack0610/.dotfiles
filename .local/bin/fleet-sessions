@@ -10,7 +10,8 @@
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
 #   fleet-sessions watch [--every N] [--once]  stage board: one column per delivery stage, plus a
-#                                     log of what changed since the last tick
+#                                     log of what changed since the last tick, and each
+#                                     session's expected finish from `fleet-bench eta`
 #                                     (fitted to the terminal, or to $COLUMNS off one)
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
@@ -524,12 +525,27 @@ main_rows() {
 }
 
 # --- watch: the stage board -------------------------------------------------------------
-# board_cells: collect's rows on stdin -> one line per session, in bucket order:
-#   sid target sync conflicts tree pr ci plan quality stage labels idle age reason
-# Columns 3-11 are the stages a transition is read from; idle and age move every tick and reason
-# rides along to explain a stage change. MAIN rows are rendered separately.
+# eta_cells -> "sid <TAB> eta" for each session fleet-bench has an estimate for: the expected
+# finish (HH:MM today, else "Thu HH:MM") and its basis, short: "<word>-median(N)" as its first
+# letter and N ("21:30 s3" is the session's own median over 3 phases, "p16" the project's),
+# anything else as it is. fleet-bench reads only its own files, so one call per tick is cheap; how
+# it estimates is its business (the fleet-bench skill), the board only shows the answer.
+eta_cells() {
+  "${FLEET_BENCH:-fleet-bench}" eta --json 2>/dev/null | jq -r --arg today "$(date +%F)" '
+    select(type == "object" and .eta_epoch != null and (.finished | not))
+    | .eta_epoch as $e
+    | ($e | strflocaltime(if ($e | strflocaltime("%F")) == $today then "%H:%M" else "%a %H:%M" end)) as $at
+    | [.session_id, ([$at, (.basis // empty | sub("^(?<k>[a-z])[a-z]*-median\\((?<n>[0-9]+)\\)$"; "\(.k)\(.n)"))] | join(" "))] | @tsv' 2>/dev/null
+  return 0 # no bench, or a failed read, is no estimate: the column reads -
+}
+
+# board_cells [eta file]: collect's rows on stdin -> one line per session, in bucket order:
+#   sid target sync conflicts tree pr ci plan quality stage labels idle age reason eta
+# Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
+# changing, and reason rides along to explain a stage change. eta comes last so a watch.state
+# written before it existed still lines up. MAIN rows are rendered separately.
 board_cells() {
-  awk -F'\t' -v OFS='\t' '
+  awk -F'\t' -v OFS='\t' -v etaf="${1:-}" '
     # minutes -> 45m, 3h12m, 2d4h; "-" when the session start is unknown
     function dur(m) {
       if (m !~ /^[0-9]+$/) return "-"
@@ -537,7 +553,10 @@ board_cells() {
       if (m < 1440) return int(m / 60) "h" (m % 60) "m"
       return int(m / 1440) "d" int((m % 1440) / 60) "h"
     }
-    BEGIN { n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i }
+    BEGIN {
+      n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
+      if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
+    }
     $1 == "MAIN" { next }
     {
       t = $2; sub(/^[^\/]*\//, "", t)
@@ -554,7 +573,8 @@ board_cells() {
         if (ls[i] ~ /^quality:/) q = q (q == "" ? "" : ",") substr(ls[i], 9)
         else l = l (l == "" ? "" : ",") ls[i]
       print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
-            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11
+            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11,
+            ($3 in eta ? eta[$3] : "-")
     }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-
 }
 
@@ -581,7 +601,8 @@ watch_tick() {
   local rows cur new f now
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT # runs in $(...), so this is its own exit
   rows="$(collect)"
-  cur="$CACHE/cells"; board_cells <<<"$rows" > "$cur"
+  eta_cells > "$CACHE/eta"
+  cur="$CACHE/cells"; board_cells "$CACHE/eta" <<<"$rows" > "$cur"
   now="$(date '+%Y-%m-%d %H:%M')"
   mkdir -p "$LEDGER"
   # A blind pass keeps the last good state: what it could not read did not change.
@@ -604,19 +625,19 @@ watch_tick() {
     tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
   fi
   # The table goes out as tab-led TSV; layout fits it to the terminal at draw time.
-  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE AGE WHY; echo
-  cut -f2- "$cur" | sed 's/^/\t/'
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN ETA QUALITY STAGE LABELS IDLE AGE WHY; echo
+  awk -F'\t' -v OFS='\t' '{ print "", $2, $3, $4, $5, $6, $7, $8, ($15 == "" ? "-" : $15), $9, $10, $11, $12, $13, $14 }' "$cur"
   awk -F'\t' '$1 == "MAIN" { if (!h++) print "\nMAIN"; print "  " $11 }' <<<"$rows"
 }
 
 # layout <width|0>: a watch frame on stdin -> the frame fitted to <width> columns (0: no
-# limit). Tab-led lines are the table: each column takes its content's width, CONFLICTS,
+# limit). Tab-led lines are the table: each column takes its content's width, CONFLICTS, ETA,
 # QUALITY and LABELS are hidden while every cell is the default, and columns drop from the
 # least important end until the rest fit. WHY takes whatever is left and goes once that is
 # under 12. Every line, table or not, is then clipped to <width> with a trailing ~.
 layout() {
   awk -F'\t' 'BEGIN { OFS = FS } /^\t/ && seen++ { sub(/:1$/, "", $2) } 1' |
-    table_fit "${1:-0}" keep="1 9 7 5 6 4 2 11 12 3 8 10" flex=13 flexmin=12 opt="3 8 10" right="11 12" cap="1:34"
+    table_fit "${1:-0}" keep="1 10 7 8 5 6 4 2 12 13 3 9 11" flex=14 flexmin=12 opt="3 8 9 11" right="12 13" cap="1:34"
 }
 
 # term_width -> the controlling terminal's columns, or nothing when there is none or it

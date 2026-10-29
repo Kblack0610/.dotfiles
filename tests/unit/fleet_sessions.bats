@@ -367,7 +367,8 @@ landed_fixture() {
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   printf '#!/usr/bin/env bash\n[ "$1" = run ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
 }
 
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
@@ -613,24 +614,86 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
+# bench_eta <json line>...: a fleet-bench stub whose `eta --json` prints these lines.
+bench_eta() {
+  { printf '#!/usr/bin/env bash\n[ "$*" = "eta --json" ] || exit 1\ncat <<"J"\n'; printf '%s\n' "$@"; printf 'J\n'; } \
+    > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-bench"
+}
+
+@test "eta_cells: today's finish as HH:MM, a later day with its weekday, the basis short, nothing without an estimate" {
+  export TZ=UTC
+  local today later
+  today="$(date -d 'today 00:05' +%s)"; later=$((today + 2 * 86400))
+  bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$today,\"basis\":\"session-median(3)\"}" \
+    "{\"session_id\":\"b\",\"finished\":false,\"eta_epoch\":$later,\"basis\":\"default\"}" \
+    '{"session_id":"c","finished":false,"eta_epoch":null,"basis":null}' \
+    "{\"session_id\":\"d\",\"finished\":true,\"eta_epoch\":$today,\"basis\":\"default\"}" \
+    "{\"session_id\":\"e\",\"finished\":false,\"eta_epoch\":$today}"
+  run eta_cells
+  assert_success
+  assert_line $'a\t00:05 s3'
+  assert_line $'b\t'"$(date -d @"$later" +%a)"' 00:05 default'
+  assert_line $'e\t00:05'
+  [ "${#lines[@]}" -eq 3 ]
+  # fleet-bench missing or failing is an empty board column, never a failed tick
+  FLEET_BENCH=/nonexistent run eta_cells
+  assert_success
+  assert_output ''
+}
+
+@test "board_cells: ETA is joined by session id, - when fleet-bench has none for it" {
+  printf 'sid-45\t21:30 s3\n' > "$SANDBOX/eta"
+  run board_cells "$SANDBOX/eta" < <(age_row 45; age_row 192)
+  assert_line --regexp $'^sid-45\t.*\tbusy\t21:30 s3$'
+  assert_line --regexp $'^sid-192\t.*\tbusy\t-$'
+  # negative control: with no estimates every row reads -
+  run board_cells < <(age_row 45)
+  assert_line --regexp $'^sid-45\t.*\tbusy\t-$'
+}
+
+@test "transitions: a re-estimated ETA is not a change" {
+  { cells a s-a pass WORKING; printf '\t20:00 default\n'; } | paste -sd '' > "$SANDBOX/prev"
+  { cells a s-a pass WORKING; printf '\t21:30 session(2)\n'; } | paste -sd '' > "$SANDBOX/cur"
+  run transitions "$SANDBOX/prev" "$SANDBOX/cur"
+  assert_output ''
+  # an old watch.state with no eta column lines up with the new one
+  cells a s-a pass WORKING > "$SANDBOX/prev"
+  run transitions "$SANDBOX/prev" "$SANDBOX/cur"
+  assert_output ''
+}
+
+@test "end to end: watch --once shows the session's ETA next to PLAN, and no ETA column without one" {
+  landed_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  refute_line --partial 'ETA'
+  bench_eta "{\"session_id\":\"sid-9\",\"finished\":false,\"eta_epoch\":$(( $(date +%s) + 2 * 86400 )),\"basis\":\"project-median(12)\"}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +ETA +STAGE +IDLE +AGE  WHY$'
+  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +[A-Z][a-z]{2} [0-9]{2}:[0-9]{2} p12 +LANDED '
+  # the ETA moving is not a stage change
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+}
+
 # frame_fixture -> a watch frame as watch_tick emits it: plain lines, then the tab-led table.
 frame_fixture() {
   printf 'fleet watch  12:00:00  2 session(s)  %s\n\n' "$(printf 'x%.0s' {1..120})"
-  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN QUALITY STAGE LABELS IDLE AGE WHY; echo
-  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 - WORKING - 5m 2d4h \
+  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN ETA QUALITY STAGE LABELS IDLE AGE WHY; echo
+  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 '21:30 s3' - WORKING - 5m 2d4h \
     "busy $(printf 'y%.0s' {1..150})"; echo
-  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - DONE hands-off 40m 45m 'plan finished'; echo
+  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - - DONE hands-off 40m 45m 'plan finished'; echo
 }
 
 @test "layout: at a width every line fits, and a long WHY is clipped with ~" {
   local w l
-  for w in 120 80; do
+  for w in 130 80; do
     run layout "$w" < <(frame_fixture)
     assert_success
     for l in "${lines[@]}"; do [ "${#l}" -le "$w" ] || fail "over $w: $l"; done
     assert_line --regexp '^fleet watch .*~$'
   done
-  run layout 120 < <(frame_fixture)
+  run layout 130 < <(frame_fixture)
   assert_line --regexp '^unity-core-playground-agent-12 .* busy y+~$'
 }
 
@@ -642,10 +705,10 @@ age_row() {
 @test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
   run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
   assert_success
-  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy$'
-  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy$'
-  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy$'
-  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy$'
+  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-$'
+  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-$'
+  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-$'
+  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-$'
 }
 
 @test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {
@@ -657,7 +720,7 @@ age_row() {
 
 @test "layout: with no width nothing is clipped, defaults are hidden, :1 is stripped" {
   run layout 0 < <(frame_fixture)
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +LABELS +IDLE +AGE  WHY$'
+  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +ETA +STAGE +LABELS +IDLE +AGE  WHY$'
   assert_line --regexp '^unity-core-playground-agent-12 .*  busy y{150}$'
   run layout 0 < <(frame_fixture CONFLICT)
   assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE '
