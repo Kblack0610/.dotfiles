@@ -16,6 +16,7 @@
         "network",
         "cpu",
         "memory",
+        "custom/load",
         "custom/storage",
         "temperature",
         "temperature#gpu",

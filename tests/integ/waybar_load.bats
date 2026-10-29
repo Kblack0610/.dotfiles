@@ -44,17 +44,19 @@ PY
 
 tip() { jq -r .tooltip <<< "$output"; }
 
-@test "the bar is this machine's load, coloured by load per core" {
+@test "the bar is this machine's load, plain like the CPU and RAM pills" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "LOAD <span color='#a6e34a'>12.0</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "LOAD 12.0"
   assert_equal "$(jq -r .class <<< "$output")" ok
 }
 
-@test "past 1.5 per core the local load is red and the class critical" {
+@test "the class follows load per core: warn from 1, critical from 1.5" {
+  echo "30.00 10.00 9.00 3/900 1234" > "$LOAD_LOADAVG"
+  run "$MODULE"
+  assert_equal "$(jq -r .class <<< "$output")" warn
   echo "40.00 10.00 9.00 3/900 1234" > "$LOAD_LOADAVG"
   run "$MODULE"
-  assert_output --partial "#ef5734'>40.0<"
   assert_equal "$(jq -r .class <<< "$output")" critical
 }
 
@@ -105,7 +107,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "Prometheus down: the local load stays, the tooltip says so, no machine rows" {
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "LOAD <span color='#a6e34a'>12.0</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "LOAD 12.0"
   run tip
   assert_output --partial "fleet telemetry unavailable (http://prom.test)"
   refute_output --partial "razer-laptop"

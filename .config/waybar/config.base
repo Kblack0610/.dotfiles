@@ -126,7 +126,6 @@
             "custom/timebox",
             "custom/ai-agents",
             "custom/fleet",
-            "custom/load",
             "custom/ci"
         ]
     },
@@ -161,8 +160,8 @@
         "on-click": "sh -c '. $HOME/.config/fleet-pulse/env 2>/dev/null; xdg-open ${GATUS_BASE:-https://status.example.com}'",
         "tooltip": true
     },
-    // This machine's load on the bar, every machine's load/CPU/mem/temp on hover, all from
-    // the Prometheus cc:host_* rules (load.sh). Click opens the hub:infra board.
+    // This machine's load beside CPU and RAM, every machine's load/CPU/mem/temp on hover
+    // from the Prometheus cc:host_* rules (load.sh). Click opens the hub:infra board.
     "custom/load": {
         "format": "{}",
         "return-type": "json",
@@ -173,8 +172,8 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
         "tooltip": true
     },
-    // GitHub runner pools: busy/slots and queued on the bar, runners by machine on hover
-    // (ci_runners.sh). 60s because the exporter and rules move once a minute.
+    // CI: busy/slots, queued and the last day's finished jobs on the bar, runners by machine
+    // on hover (ci_runners.sh). 60s because the exporter and rules move once a minute.
     "custom/ci": {
         "format": "{}",
         "return-type": "json",
