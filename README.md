@@ -20,7 +20,7 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.opencode/`, `.cursor/`, `.codeium/`, `.serena/` | Per-tool runtime state |
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
-| `.local/src/{adb-controller,android-suite,claude-wrapper,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
+| `.local/src/{adb-controller,android-suite,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
 | `.githooks/post-commit` | Repo-local git hooks |
 | `.fonts/` | Bundled fonts |
 | `Media/` | Wallpapers / lock screen assets |
@@ -36,7 +36,7 @@ Tracked in `.gitmodules`:
 | [android-suite](https://github.com/Kblack0610/android-suite) | `.local/src/android-suite/` | Android device provisioning and debloating |
 | [gungan-speak](https://github.com/Kblack0610/gungan-speak) | `.local/src/gungan/` | Gungan voice / TTS helpers |
 
-(`.claude/`, `.local/src/tmux/`, and `.local/src/claude-wrapper/` are plain directories — not submodules. claude-wrapper was previously a submodule and was vendored in as plain files in commit `a23f91f`.)
+(`.claude/` and `.local/src/tmux/` are plain directories, not submodules.)
 
 ## Installation
 

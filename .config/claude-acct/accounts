@@ -1,0 +1,5 @@
+# Claude accounts `cl` picks between (claude-acct). One `name dir` per line.
+# `-` is the default account: ~/.claude + ~/.claude.json, CLAUDE_CONFIG_DIR unset.
+# On a tie the first line wins.
+main -
+alt  ~/.claude-personal
