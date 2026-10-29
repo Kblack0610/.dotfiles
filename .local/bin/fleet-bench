@@ -33,7 +33,7 @@ set -uo pipefail
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${BENCH_REVIEW_MAX:=5}"           # PRs one review pass reads, at most one per session
-: "${BENCH_REVIEW_MAX_LINES:=2000}"  # diff lines the local reviewer model holds with room to reason
+: "${BENCH_REVIEW_MAX_LINES:=2000}"  # diff lines the reviewer model holds with room to reason
 : "${BENCH_REVIEW_TIMEOUT_S:=900}"   # guard on each reviewer call
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
