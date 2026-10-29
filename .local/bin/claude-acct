@@ -6,6 +6,9 @@
 #   claude-acct pick     # print the CLAUDE_CONFIG_DIR to use (empty = main account)
 #   claude-acct status   # 5h / 7d usage per account
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
+#   claude-acct move <tmux-session> [--server S] [--dry-run]
+#                        # exit that session's claude and resume it on the account pick
+#                        # returns, in the same pane
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
 # One account per session via CLAUDE_CONFIG_DIR; nothing here writes a credential,
@@ -33,7 +36,7 @@ SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks s
 MERGE=(sessions)
 
 usage() {
-    sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # accounts -> "name US dir" lines (US = \037, never collapsed like a tab), dir empty = default
@@ -120,16 +123,21 @@ cmd_link() {
     done < <(accounts)
 }
 
+# best -> "score US name US dir US note" of the account with the most room, nothing without data
+best() {
+    # Stable sort keeps file order on a tie, so the first account (main) wins it.
+    scores | sort -s -t$'\037' -g -k1,1 | head -n1
+}
+
 cmd_pick() {
     cmd_link
-    local best
-    # Stable sort keeps file order on a tie, so the first account (main) wins it.
-    best=$(scores | sort -s -t$'\037' -g -k1,1 | head -n1)
-    if [[ -z "$best" ]]; then
+    local b name dir note
+    b=$(best)
+    if [[ -z "$b" ]]; then
         echo "claude-acct: no usage data, using the default account" >&2
         return 0
     fi
-    IFS=$'\037' read -r _ name dir note <<< "$best"
+    IFS=$'\037' read -r _ name dir note <<< "$b"
     echo "claude-acct: $name ($note)" >&2
     printf '%s\n' "$dir"
 }
@@ -149,10 +157,256 @@ cmd_status() {
     done < <(accounts)
 }
 
+# --- move ------------------------------------------------------------------------------
+# A session stopped on one account's limit carries on from the other: the accounts share
+# projects/ (the transcripts) and sessions/ (the live registry), so `claude --resume <id>`
+# continues the same conversation from either one.
+
+PROC="${CLAUDE_ACCT_PROC:-/proc}"
+REGISTRY="$MAIN_DIR/sessions"
+# A TUI dialog and a new registry entry have no event to await, so move looks at the pane and
+# the registry on this one cadence, for at most MOVE_TIMEOUT seconds each.
+MOVE_POLL="${CLAUDE_ACCT_POLL:-0.5}"
+MOVE_TIMEOUT="${CLAUDE_ACCT_MOVE_TIMEOUT:-60}"
+# Flags a resumed claude keeps from the one it replaces; the rest (a brief, --resume) are spent.
+CARRY_VALUE=(--model --permission-mode)
+CARRY_BARE=(--dangerously-skip-permissions --allow-dangerously-skip-permissions)
+
+# norm_dir <dir> -> the account dir as accounts() spells it: empty for the main account
+norm_dir() {
+    local d="${1%/}"
+    [[ "$d" == "$MAIN_DIR" ]] && d=""
+    printf '%s' "$d"
+}
+
+# config_dir_of <pid> -> the CLAUDE_CONFIG_DIR that process runs under, empty = main
+config_dir_of() {
+    norm_dir "$(tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n1)"
+}
+
+# ppid_of <pid> -- the fourth field of stat, read after the comm, which may hold spaces
+ppid_of() {
+    local st
+    st=$(cat "$PROC/$1/stat" 2>/dev/null) || return 1
+    st="${st##*) }"
+    printf '%s' "$st" | cut -d' ' -f2
+}
+
+# descends <pid> <ancestor> -- the process is the ancestor or runs somewhere under it
+descends() {
+    local p="$1" n
+    for ((n = 0; n < 16; n++)); do
+        [[ "$p" == "$2" ]] && return 0
+        p=$(ppid_of "$p") || return 1
+        [[ -n "$p" && "$p" != 0 && "$p" != 1 ]] || return 1
+    done
+    return 1
+}
+
+# name_of <dir> -> the account's name in the accounts file, or the dir itself
+name_of() {
+    local name dir
+    while IFS=$'\037' read -r name dir; do
+        [[ "$dir" == "$1" ]] && { printf '%s' "$name"; return; }
+    done < <(accounts)
+    printf '%s' "${1:-default}"
+}
+
+# carry_flags <pid> -> the CARRY_* flags from its command line, shell-quoted
+carry_flags() {
+    local -a argv out=()
+    local i a f
+    mapfile -d '' -t argv < "$PROC/$1/cmdline" 2>/dev/null || return 0
+    for ((i = 1; i < ${#argv[@]}; i++)); do
+        a="${argv[i]}"
+        for f in "${CARRY_BARE[@]}"; do [[ "$a" == "$f" ]] && out+=("$a"); done
+        for f in "${CARRY_VALUE[@]}"; do
+            if [[ "$a" == "$f" && -n "${argv[i+1]:-}" ]]; then out+=("$a" "${argv[i+1]}"); ((i++))
+            elif [[ "$a" == "$f="* ]]; then out+=("$f" "${a#*=}"); fi
+        done
+    done
+    ((${#out[@]})) && printf '%q ' "${out[@]}"
+    return 0
+}
+
+# refusal <status> <from dir> <to dir> <best score> <best name> <best note>
+#   -> why this session must not move, or nothing (exit 1) when it may
+refusal() {
+    case "$1" in
+        busy)    echo "busy mid-turn; move it once the turn ends"; return 0 ;;
+        waiting) echo "waiting in a permission or question dialog; answer it first"; return 0 ;;
+        idle|shell) ;;
+        *)       echo "unknown session status '${1:-none}'"; return 0 ;;
+    esac
+    if [[ -z "$4" ]]; then echo "no usage data, so no account is known to have room"; return 0; fi
+    if awk -v s="$4" 'BEGIN { exit !(s >= 100) }'; then
+        echo "no account has room (the best is $5: $6)"; return 0
+    fi
+    if [[ "$2" == "$3" ]]; then echo "already on $5, the account with the most room ($6)"; return 0; fi
+    return 1
+}
+
+# dialog_choice <screen> -> the number of /exit's "Move to background and exit" option
+dialog_choice() {
+    grep -oE '([0-9])\. Move to background' <<< "$1" | head -n1 | cut -c1
+}
+
+# tmux_servers -> the name of every tmux socket in this user's socket dir
+tmux_servers() {
+    local d="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" s
+    for s in "$d"/*; do [[ -S "$s" ]] && printf '%s\n' "${s##*/}"; done
+    return 0
+}
+
+# find_claude <server> <session> -> "pid US pane US pane_pid US registry file" for each live
+# claude in the session's panes: one whose registered pid is the pane's process or under it.
+find_claude() {
+    local pane ppid f pid
+    while read -r pane ppid; do
+        for f in "$REGISTRY"/*.json; do
+            [[ -f "$f" ]] || continue
+            pid=$(jq -r '.pid // empty' "$f" 2>/dev/null)
+            [[ -n "$pid" && -d "$PROC/$pid" ]] || continue
+            descends "$pid" "$ppid" || continue
+            printf '%s\037%s\037%s\037%s\n' "$pid" "$pane" "$ppid" "$f"
+        done
+    done < <(tmux -L "$1" list-panes -s -t "=$2:" -F '#{pane_id} #{pane_pid}' 2>/dev/null)
+}
+
+# await <what> <command...> -- run the command every MOVE_POLL seconds until it succeeds
+await() {
+    local what="$1" end=$(( $(date +%s) + MOVE_TIMEOUT ))
+    shift
+    until "$@" > /dev/null; do
+        (( $(date +%s) >= end )) && { echo "claude-acct: timed out after ${MOVE_TIMEOUT}s waiting for $what" >&2; return 1; }
+        sleep "$MOVE_POLL"
+    done
+}
+
+# exited <server> <pane> <pid> -- the claude is gone; answers the background-shell dialog
+# on the way with "Move to background", so a running gate outlives the claude that started it.
+exited() {
+    [[ -d "$PROC/$3" ]] || return 0
+    local n
+    n=$(dialog_choice "$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)")
+    [[ -n "$n" ]] && tmux -L "$1" send-keys -t "$2" "$n"
+    return 1
+}
+
+# resumed <session id> <old pid> <to dir> -- a new claude registered that session id on the
+# target account; prints "pid status" for it
+resumed() {
+    local f pid
+    for f in "$REGISTRY"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" == "$1" ]] || continue
+        pid=$(jq -r '.pid // empty' "$f")
+        [[ -n "$pid" && "$pid" != "$2" && -d "$PROC/$pid" ]] || continue
+        [[ "$(config_dir_of "$pid")" == "$3" ]] || continue
+        printf '%s %s\n' "$pid" "$(jq -r '.status // "-"' "$f")"
+        return 0
+    done
+    return 1
+}
+
+resume_prompt() {
+    local p="This session was moved from the $1 Claude account to $2, because $1 is out of usage. Nothing else changed: same conversation, same worktree. Pick up where you left off."
+    [[ "$3" == shell ]] && p+=" Your background shells kept running, but this claude does not track them as tasks: read their output files directly (the paths are in your earlier tool results) and stop them by pid when you are done with them."
+    printf '%s' "$p"
+}
+
+cmd_move() {
+    local session="" server="" dry=0
+    while (($#)); do
+        case "$1" in
+            --server) [[ -n "${2:-}" ]] || { echo "claude-acct: move: --server needs a value" >&2; return 2; }
+                      server="$2"; shift 2 ;;
+            --dry-run) dry=1; shift ;;
+            -*) echo "claude-acct: move: unknown flag '$1'" >&2; return 2 ;;
+            *) [[ -z "$session" ]] || { echo "claude-acct: move: one session at a time" >&2; return 2; }
+               session="$1"; shift ;;
+        esac
+    done
+    [[ -n "$session" ]] || { echo "claude-acct: move: name the tmux session to move" >&2; return 2; }
+    refuse() { echo "claude-acct: move $session: $*" >&2; return 1; }
+
+    if [[ -z "$server" ]]; then
+        local s found=()
+        while read -r s; do
+            tmux -L "$s" has-session -t "=$session" 2>/dev/null && found+=("$s")
+        done < <(tmux_servers)
+        case ${#found[@]} in
+            0) refuse "no tmux server has that session"; return ;;
+            1) server="${found[0]}" ;;
+            *) refuse "on servers ${found[*]}; pass --server"; return ;;
+        esac
+    fi
+    tmux -L "$server" has-session -t "=$session" 2>/dev/null || { refuse "no such session on server $server"; return; }
+
+    local hits pid pane pane_pid reg
+    hits=$(find_claude "$server" "$session")
+    [[ -n "$hits" ]] || { refuse "no live claude in its panes"; return; }
+    (( $(wc -l <<< "$hits") == 1 )) || { refuse "more than one claude in its panes"; return; }
+    IFS=$'\037' read -r pid pane pane_pid reg <<< "$hits"
+
+    local status sid cwd from b score name to note why
+    status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
+    [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
+    from=$(config_dir_of "$pid")
+    b=$(best)
+    IFS=$'\037' read -r score name to note <<< "$b"
+    if why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note"); then refuse "$why"; return; fi
+
+    local direct=0 claude cmd
+    [[ "$pid" == "$pane_pid" ]] && direct=1
+    claude="claude $(carry_flags "$pid")--resume $(printf %q "$sid") $(printf %q "$(resume_prompt "$(name_of "$from")" "$name" "$status")")"
+    if [[ -n "$to" ]]; then claude="CLAUDE_CONFIG_DIR=$(printf %q "$to") $claude"
+    else claude="env -u CLAUDE_CONFIG_DIR $claude"; fi
+
+    echo "claude-acct: move $session ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
+    if ((direct)); then
+        echo "  claude is the pane's own process: keep the pane on exit, respawn it in $cwd"
+        cmd="$claude"
+    else
+        echo "  claude runs under the pane's shell: exit it and type the resume there"
+        cmd="cd $(printf %q "$cwd") && $claude"
+    fi
+    [[ "$status" == shell ]] && echo "  it has a background shell: answer /exit's dialog with 'Move to background'"
+    echo "  then: $cmd"
+    ((dry)) && return 0
+
+    cmd_link
+    # A fleet-dispatch pane closes with its claude, and with it the session, its @dispatch
+    # label and the name its ledger is filed under; held open, it is respawned in place.
+    ((direct)) && tmux -L "$server" set-option -p -t "$pane" remain-on-exit on
+    tmux -L "$server" send-keys -t "$pane" Escape
+    tmux -L "$server" send-keys -t "$pane" -l /exit
+    tmux -L "$server" send-keys -t "$pane" Enter
+    if ! await "claude $pid to exit" exited "$server" "$pane" "$pid"; then
+        ((direct)) && tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
+        refuse "claude $pid did not exit; look at the pane"; return
+    fi
+    if ((direct)); then
+        tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
+        tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
+    else
+        tmux -L "$server" send-keys -t "$pane" -l "$cmd"
+        tmux -L "$server" send-keys -t "$pane" Enter
+    fi
+    local got
+    await "session $sid to register on $name" resumed "$sid" "$pid" "$to" || { refuse "resume did not register; look at the pane"; return; }
+    got=$(resumed "$sid" "$pid" "$to")
+    echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
+}
+
+# Sourceable for tests; the dispatch runs only when executed.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
 case "${1:-}" in
     pick)   cmd_pick ;;
     status) cmd_status ;;
     link)   cmd_link ;;
+    move)   shift; cmd_move "$@" ;;
     -h|--help|"") usage ;;
     *) echo "claude-acct: unknown verb '$1'" >&2; usage >&2; exit 1 ;;
 esac
