@@ -9,6 +9,9 @@
 #                          1 if nothing. Reads the document as it is, writes nothing
 #   fleet-shepherd lease   record that a shepherd pass is running now; every pass calls it
 #                          first (fleet-overseer, shepherd step 0)
+#   fleet-shepherd log [--heading] <text>
+#                          append to the rundown ($LEDGER/log.md) stamped with the clock's
+#                          time: a `## <date time> <text>` heading, or a `- <time>: <text>` line
 #
 # Most passes find nothing to move, and deciding that is a jq query, not a model run. An
 # interactive shepherd loop holds the human's latest word in context, so its lease wins.
@@ -77,6 +80,20 @@ cmd_due() {
   printf '%s\n' "$out"
 }
 
+# log [--heading] <text>: the rundown's only writer of times. A model that types the time
+# guesses it: on 2026-10-28 entries stamped 00:55 and 01:00 UTC 10-29 were written at 23:44 UTC.
+cmd_log() {
+  local heading=0
+  [ "${1:-}" = --heading ] && { heading=1; shift; }
+  [ -n "$*" ] || die "usage: fleet-shepherd log [--heading] <text>"
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  if [ "$heading" = 1 ]; then
+    printf '\n## %s %s\n' "$(date -u '+%F %H:%M UTC')" "$*" >> "$LEDGER/log.md"
+  else
+    printf -- '- %s: %s\n' "$(date -u '+%H:%M UTC %m-%d')" "$*" >> "$LEDGER/log.md"
+  fi
+}
+
 # Nothing to move and nothing working is the settled fleet: page that once, as the skill's
 # settled rule does, so a quiet fleet still says it is quiet.
 settle() {
@@ -129,6 +146,7 @@ case "${1:-}" in
   run)   cmd_run ;;
   due)   cmd_due ;;
   lease) cmd_lease ;;
-  -h|--help|"") sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|due|lease)" ;;
+  log)   shift; cmd_log "$@" ;;
+  -h|--help|"") sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (run|due|lease|log)" ;;
 esac
