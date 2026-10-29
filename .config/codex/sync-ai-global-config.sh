@@ -106,6 +106,9 @@ cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 {
     echo "$START_MARKER"
     cat "$stage_dir/.codex/config.toml"
+    # Unset, Codex sends its built-in usage metrics to OpenAI's Statsig
+    # (codex-rs core/src/config/otel.rs defaults metrics_exporter to Statsig).
+    printf '\n[analytics]\nenabled = false\n'
     echo "$END_MARKER"
 } > "$managed_tmp"
 
@@ -113,8 +116,8 @@ if [ -f "$CODEX_HOME/config.toml" ]; then
     awk -v start="$START_MARKER" -v end="$END_MARKER" '
         $0 == start {skip_managed=1; next}
         $0 == end {skip_managed=0; next}
-        /^\[/ {skip_mcp=($0 ~ /^\[mcp_servers(\.|])/) ? 1 : 0}
-        skip_managed != 1 && skip_mcp != 1 {print}
+        /^\[/ {skip_owned=($0 ~ /^\[(mcp_servers(\.|])|analytics])/) ? 1 : 0}
+        skip_managed != 1 && skip_owned != 1 {print}
     ' "$CODEX_HOME/config.toml" > "$codex_tmp"
 else
     : > "$codex_tmp"
