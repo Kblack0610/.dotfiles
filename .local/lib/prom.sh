@@ -1,6 +1,6 @@
-# shellcheck shell=bash disable=SC2034  # PROM_URL, W and LONG_RUN_SECS are for the scripts that source this
+# shellcheck shell=bash disable=SC2034  # PROM_URL, W, PROM_RED_NOW and LONG_RUN_SECS are for the scripts that source this
 # prom.sh - the one Prometheus reader for the hub:infra board (.local/src/tmux/command-center.sh)
-# and the waybar load and CI chips (.config/waybar/load.sh, ci_runners.sh).
+# and the waybar load, CI and day chips (.config/waybar/load.sh, ci_runners.sh, day.sh).
 #
 # All of them draw the cc:* recording rules and runner-exporter series (home-config
 # apps/monitoring/prometheus-rules-command-center.yaml, apps/github-runner-exporter), so
@@ -20,6 +20,13 @@ PROM_URL="${CC_PROM_URL:-https://prometheus.example.com}"
 
 # Scrape-target labels, stripped so two exporter pods during a rollout read as one row.
 W='max without (instance, pod, job, namespace, service, endpoint, container)'
+
+# What is red right now: tripped watches, failed agent runners, NotReady nodes, each as an
+# `item` label. The same three sources as the kb-command-center "What is red" table; the
+# board's "red now" line and the waybar day chip both read it.
+PROM_RED_NOW='label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
+  or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
+  or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")'
 
 # A job running longer than this shows its time amber: playground ci.md calls a gate that
 # runs past about an hour a bug to fix, not a wait.

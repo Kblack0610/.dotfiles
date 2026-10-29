@@ -13,6 +13,7 @@ agents|AI agents|custom/ai-agents
 fleet|Fleet health|custom/fleet
 load|Load (fleet on hover)|custom/load
 ci|CI runners|custom/ci
+day|Day: merged PRs, red now|custom/day
 timebox|Timebox|custom/timebox
 storage|Disk usage|custom/storage
 machines|Machines (pin only)|custom/machines

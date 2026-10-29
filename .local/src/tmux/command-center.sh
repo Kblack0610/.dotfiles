@@ -23,8 +23,8 @@ set -uo pipefail
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/table-fit.sh" 2>/dev/null \
   || { echo "command-center: table-fit.sh not found" >&2; exit 1; }
 
-# The Prometheus reader (prom_q, prom_dur, W, PROM_URL from ~/.config/command-center/env),
-# shared with the waybar load and CI chips.
+# The Prometheus reader (prom_q, prom_dur, W, PROM_RED_NOW, PROM_URL from ~/.config/command-center/env),
+# shared with the waybar load, CI and day chips.
 # shellcheck source=/dev/null
 . "${PROM_LIB:-/nonexistent}" 2>/dev/null \
   || . "$HOME/.local/lib/prom.sh" 2>/dev/null \
@@ -88,10 +88,7 @@ fetch() {
     [ "$pr" = - ] || PR_BY_BRANCH[$repo/$branch]="$pr"
   done
   API_OK="$(jq -r '.data.result[0].value[1] // ""' <<< "$api")"
-  # The same three sources as the dashboard's "What is red" table.
-  red="$(prom_q 'label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
-    or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
-    or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")')" || true
+  red="$(prom_q "$PROM_RED_NOW")" || true
   [ -n "$red" ] && mapfile -t RED_ITEMS < <(jq -r '.data.result[].metric.item' <<< "$red" 2>/dev/null | sort)
   return 0
 }

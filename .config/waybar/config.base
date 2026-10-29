@@ -126,7 +126,8 @@
             "custom/timebox",
             "custom/ai-agents",
             "custom/fleet",
-            "custom/ci"
+            "custom/ci",
+            "custom/day"
         ]
     },
     // Shown only while keys bypass Hyprland (VDI submap or RustDesk grab). Not gated:
@@ -172,8 +173,8 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
         "tooltip": true
     },
-    // CI: busy/slots, queued and the last day's finished jobs on the bar, runners by machine
-    // on hover (ci_runners.sh). 60s because the exporter and rules move once a minute.
+    // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
+    // jobs on hover (ci_runners.sh). 60s because the exporter and rules move once a minute.
     "custom/ci": {
         "format": "{}",
         "return-type": "json",
@@ -183,6 +184,19 @@
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
+        "tooltip": true
+    },
+    // Day: PRs merged today (day-log's record, refreshed by hub:log) and a red !N for what is
+    // red now (day.sh). Click opens hub:log's board, right-click the infra board.
+    "custom/day": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/day $HOME/.config/waybar/day.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/day-log watch",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
         "tooltip": true
     },
     "custom/timebox": {

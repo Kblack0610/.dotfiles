@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Waybar module: CI runners. The bar is busy of slots and the queue, summed the way the
 # hub:infra board's header sums them (the GitHub self-hosted pools plus the workstation's
-# local Unity gates), then the jobs finished in the last day, painted by their pass rate on
-# the board's lines (red under 70%, amber under 90%). The hover lists each pool's queue,
+# local Unity gates). The hover adds the jobs finished in the last day, painted by their pass
+# rate on the board's lines (red under 70%, amber under 90%), and lists each pool's queue,
 # oldest wait, finished jobs and pass rate, then each machine's runners with the job every
 # busy one is on, then any runner that is down.
 #
@@ -19,8 +19,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 
-# nf-fa-check, written as an escape so an editor cannot strip the glyph from this file.
-DONE_ICON=$'\uf00c'
 PASS_RED=70
 PASS_WARN=90
 
@@ -149,20 +147,16 @@ label=CI
 ((level > 0)) && label="$(paint "${LEVEL_COLOUR[$level]}" CI)"
 q="q$waiting"
 ((waiting > 0)) && q="$(paint "$C_YEL" "$q")"
-# Finished in the last day, painted by the pass rate over all of them (each pool's ratio
-# weighted by its finished count). No finished series at all reads -, never 0.
-done_text="${DONE_ICON}-" finished="finished 24h: none reported"
+# Finished in the last day, for the hover only, painted by the pass rate over all of them
+# (each pool's ratio weighted by its finished count). The bar leaves it out: a rolling job
+# count mixes housekeeping and light checks with the Unity gates and says nothing to act on.
+finished="finished 24h: none reported"
 if ((done_total > 0)); then
   ratio="$(awk -v ps="$passes" 'BEGIN { n = split(ps, a, " "); for (i = 1; i <= n; i++) { split(a[i], x, ":"); d += x[1]; p += x[1] * x[2] } if (d > 0) printf "%.4f", p / d }')"
-  done_text="${DONE_ICON}${done_total}"
-  if [ -n "$ratio" ]; then
-    pct=$(awk -v r="$ratio" 'BEGIN { printf "%.0f", r * 100 }')
-    if ((pct < PASS_RED)); then done_text="$(paint "$C_RED" "$done_text")"
-    elif ((pct < PASS_WARN)); then done_text="$(paint "$C_YEL" "$done_text")"; fi
-    finished="finished 24h: $done_total, $pct% passed"
-  fi
+  finished="finished 24h: $done_total"
+  [ -z "$ratio" ] || finished+=", $(pass_cell "$ratio") passed"
 fi
 
-emit "$label $busy/$slots $q $done_text" \
-  "<b>CI runners</b>  busy/slots, queued, finished in 24h"$'\n'"ci:${status%,}"$'\n'"$finished"$'\n'"<tt>$body</tt>" \
+emit "$label $busy/$slots $q" \
+  "<b>CI runners</b>  busy/slots, queued"$'\n'"ci:${status%,}"$'\n'"$finished"$'\n'"<tt>$body</tt>" \
   "${LEVEL_CLASS[$level]}"

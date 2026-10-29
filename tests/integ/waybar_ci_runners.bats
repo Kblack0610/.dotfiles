@@ -13,7 +13,6 @@ setup() {
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ci_runners.sh"
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR"
-  CHECK=$'\uf00c' # the finished-jobs glyph, as an escape so no editor can strip it
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
@@ -82,7 +81,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "the bar sums pools and local gates like the board header, queue in gold" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span> <span color='#ffcc2f'>${CHECK}120</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span>"
 }
 
 @test "pools and local gates list busy/slots, queue and oldest wait, longest queue first" {
@@ -99,14 +98,14 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 7 --regexp "^pmp-light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
 }
 
-@test "the bar's finished count is painted by the pass rate over all finished jobs" {
+@test "finished jobs stay off the bar; the hover paints them by the pass rate over all of them" {
   run "$MODULE"
-  assert_output --partial "<span color='#ffcc2f'>${CHECK}120</span>"
+  refute_output --partial "120</span>"
   run tip
-  assert_line --index 2 "finished 24h: 120, 87% passed"
+  assert_line --index 2 "finished 24h: 120, <span color='#ffcc2f'>87%</span> passed"
 }
 
-@test "under 70% passed the finished count is red" {
+@test "under 70% passed the hover's finished line is red" {
   python3 - "$FX/cc.json" <<'PY2'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -116,14 +115,15 @@ for r in d["data"]["result"]:
 json.dump(d, open(sys.argv[1], "w"))
 PY2
   run "$MODULE"
-  assert_output --partial "<span color='#ef5734'>${CHECK}120</span>"
+  run tip
+  assert_line --index 2 "finished 24h: 120, <span color='#ef5734'>50%</span> passed"
 }
 
 # Negative control: with no finished series the count is -, never a 0 nobody measured.
-@test "no finished series reads -, never 0" {
+@test "no finished series reads none reported, never 0" {
   NO_DONE=1 fixtures idle
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span> ${CHECK}-"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span>"
   run tip
   assert_line --index 2 "finished 24h: none reported"
 }
@@ -146,7 +146,7 @@ PY2
   CI_STATUS=0 fixtures idle
   run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" ok
-  assert_equal "$(jq -r .text <<< "$output")" "CI 5/16 <span color='#ffcc2f'>q6</span> <span color='#ffcc2f'>${CHECK}120</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "CI 5/16 <span color='#ffcc2f'>q6</span>"
 }
 
 # No status series is not a green light: the board prints NO DATA for it.
@@ -222,5 +222,5 @@ for r in d["data"]["result"]:
 json.dump(d, open(sys.argv[1], "w"))
 PY
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 q0 <span color='#ffcc2f'>${CHECK}120</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 q0"
 }
