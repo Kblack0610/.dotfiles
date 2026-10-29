@@ -1,10 +1,10 @@
 ---
 name: update-rules
-description: Add, edit, or remove AI assistant rules across the right layer (rulesync overview / project CLAUDE.md / AGENTS.md / project-repo rules) and run the sync so Claude, Codex, Gemini, and OpenCode all see the change. Use when the user says "add a rule", "from now on always X", "stop doing Y everywhere", "update CLAUDE.md", "update AGENTS.md", "add this to the rules", "register a new skill in CLAUDE.md", or "register a new MCP server". Differs from update-config (settings.json/permissions/hooks).
+description: Add, edit, or remove AI assistant rules across the right layer (rulesync overview / project CLAUDE.md / AGENTS.md / project-repo rules) and run the sync so Claude, Codex, Gemini, and OpenCode all see the change. Use when the user says "add a rule", "from now on always X", "stop doing Y everywhere", "update CLAUDE.md", "update AGENTS.md", "add this to the rules", "where should this rule go", or "register a new MCP server". Differs from update-config (settings.json/permissions/hooks).
 metadata:
   category: authoring
   tags: [rules, claude-md, sync]
-  reviewed: "2026-08-03"
+  reviewed: "2026-10-29"
 ---
 
 # update-rules
@@ -23,15 +23,17 @@ Practical consequence: **a rule change plus a skill change is a cross-repo chang
 
 ## Quick decision tree
 
-Ask first: **which tools should obey this rule?**
+Ask first: **which repos does this rule apply in, and which tools should obey it?** The placement rule is in the global CLAUDE.md "Standards" section: a rule goes in the global file only when it applies in two or more repos; otherwise in that repo's root CLAUDE.md, a subdirectory CLAUDE.md for one subtree, or the skill when it is a procedure. Never restate a skill there. Budgets: global under 20 KB, a repo root under 12 KB, a `MEMORY.md` under 8 KB. Check `wc -c` before and after.
 
 | Scope | Edit | Affects |
 |---|---|---|
 | All AI tools (Claude + Codex + Gemini + OpenCode) | `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md` + run sync | Everything via rulesync fan-out |
 | Claude-only (user-global) | `~/.dotfiles-private/.claude/CLAUDE.md` | Claude Code (symlinked to `~/.claude/CLAUDE.md`) |
 | Codex-only (repo root) | `~/.dotfiles-private/AGENTS.md` | Codex CLI (auto-loaded from repo root) |
-| One project | `<project>/CLAUDE.md` or `<project>/.claude/CLAUDE.md` and/or `<project>/AGENTS.md` | Only that repo |
-| MCP server (cross-tool) | `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` + run sync | Claude / Codex / Gemini / OpenCode MCP configs |
+| One project | `<project>/CLAUDE.md` (or `@AGENTS.md` plus Claude-only lines when the repo has an AGENTS.md) | Only that repo |
+| This dotfiles repo | `~/.dotfiles/CLAUDE.md` (public, excluded from stow) | Sessions in `~/.dotfiles` |
+| MCP server for Claude | the committed `.mcp.json` of the repo that uses it, or `~/.dotfiles-private/.claude/mcp-optional/<name>.json` for on-demand use (`claude-mcp <name>`) | That repo / sessions that ask for it |
+| MCP server for Codex / Gemini / OpenCode | `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` + run sync | Those tools' MCP configs |
 
 If the user just says "add this rule" without specifying scope, **ask** before editing - the wrong layer creates drift.
 
@@ -57,7 +59,7 @@ The sync script reads `$RULESYNC_ROOT` (default `~/.config/rulesync-global`, the
 What it writes, and what it explicitly does NOT:
 
 - Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`
-- Does NOT write: `~/.claude/CLAUDE.md` - a symlink into `~/.dotfiles-private/.claude/`. Editing the private file IS the deploy; no sync needed.
+- Does NOT write: `~/.claude/CLAUDE.md` (a symlink into `~/.dotfiles-private/.claude/`; editing the private file IS the deploy) or any Claude MCP config.
 
 ## Running the sync
 
@@ -76,7 +78,7 @@ If `~/.config/rulesync-global` is absent (a public-only machine with no private 
 1. Open `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md`.
 2. Append to the appropriate section (Operating Model, Workflow Expectations, Verification, Writing Style, Artifact Placement, Infrastructure Questions, Prefer skills, Agent Delegation, Project Mapping, Compact Handoff). Keep it terse - one bullet, with rationale only when non-obvious.
 3. Run the sync (above).
-4. If the rule is also worth pinning in the Claude-flavored `CLAUDE.md` (richer prose, eval format, memory routing), mirror it there. The Claude file is intentionally a superset, not a copy.
+4. Claude does not read the overview (the sync skips Claude), so a rule every tool must obey also goes in `~/.dotfiles-private/.claude/CLAUDE.md`, in the same words. Until a sync step generates that block from the overview, the two copies are kept by hand: change both in the same commit.
 5. Commit in the **private** repo: `rulesync: add <one-line summary>`.
 
 ### Add a Claude-only rule (eval, lessons, plan-mode behavior)
@@ -96,23 +98,13 @@ If `~/.config/rulesync-global` is absent (a public-only machine with no private 
 
 ### Register a new MCP server
 
-1. Edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` (top-level `mcpServers` map).
-2. Run the sync. The script merges the entries into each tool's native MCP config.
-3. Restart any tool already running (Claude Code, Codex) to pick up the new server.
+1. For Claude: add it to the committed `.mcp.json` of the repo that uses it (`enableAllProjectMcpServers` in settings.json approves it). Never at user scope (`claude mcp add -s user`) and never in a `.mcp.json` above the repos: Claude Code walks up from the cwd, so either one starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
+2. For Codex / Gemini / OpenCode: edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` and run the sync. The sync only merges new keys, so a removal also needs a hand edit of `~/.config/opencode/opencode.json`.
+3. Restart any tool already running to pick up the change.
 
-### Register a new skill in the CLAUDE.md skills list
+### A new skill and CLAUDE.md
 
-The "Prefer skills over raw tooling and MCPs" section in `~/.dotfiles-private/.claude/CLAUDE.md` should mirror the skills on disk. **The canonical index is `~/.claude/skills/`** - the union of both repos (public skills and private skills are both symlinked in there). Listing only `~/.dotfiles/.claude/skills/` misses every private skill.
-
-Show the drift:
-
-```bash
-skill-drift
-```
-
-`UNLISTED` = on disk, missing from CLAUDE.md (add a bullet). `GHOST` = bulleted but not on disk (retired - remove the bullet). `UNDEPLOYED` = in a repo but not symlinked into `~/.claude/skills/`, so it is documented and unreachable.
-
-Add a one-line bullet under the right category (Infra/ops, Notes/memory, Jira/tickets, Research, Workstreams, Monitoring, Authoring/config) in the same style as its neighbors.
+Skills are not listed in CLAUDE.md: every skill's description is injected automatically, and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins) or retires one (add it under "Retired"). `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
 
 ### Remove a rule
 
@@ -128,7 +120,7 @@ Add a one-line bullet under the right category (Infra/ops, Notes/memory, Jira/ti
 ### Audit drift between layers
 
 ```bash
-# Shared overview vs the Claude-flavored superset
+# Shared overview vs the Claude file (shared rules must match word for word)
 diff -u ~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md \
         ~/.dotfiles-private/.claude/CLAUDE.md
 
@@ -148,7 +140,7 @@ For drift between the rules and *reality* (paths that moved, retired skills stil
 - Lead with the imperative or the fact, not throat-clearing.
 - Add a `Why:` clause only when the rationale isn't obvious from the rule itself.
 - Don't reference today's task / commit / PR - rules outlive incidents.
-- Don't duplicate across layers. If a rule lives in the shared overview, it doesn't also need to be in the Claude superset unless the Claude-side context (eval format, memory routing) materially changes how to apply it.
+- Don't duplicate across layers, except the shared-overview copy in the global CLAUDE.md (Claude cannot read the overview).
 - Plain ASCII, no hard-wrapping (the house writing style - it is itself one of these rules).
 
 ## What this skill does NOT do
@@ -168,5 +160,5 @@ For drift between the rules and *reality* (paths that moved, retired skills stil
   ```
   Then open a new Claude session and check the rule appears in the CLAUDE.md system-reminder block.
 - **MCP additions:** list servers in the target tool (`claude mcp list`) and confirm the new one is enumerated.
-- **Skills-list edits:** `skill-drift` reports no new `UNLISTED` or `GHOST`.
+- **Global CLAUDE.md edits:** `wc -c` is under the budget and `skill-drift` reports no new `GHOST`.
 - **Landing:** rule content is private, this skill is public. `dotfiles-land` splits a cross-repo change into two PRs.
