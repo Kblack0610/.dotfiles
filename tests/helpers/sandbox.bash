@@ -105,6 +105,10 @@ sandbox_init() {
   # and the fleet view rendered them as real for two weeks.
   unset AGENTCTL_STATE AGENTCTL_NAME
 
+  # The suite runs from inside a Claude session, whose id and attended flag would otherwise
+  # be read as the test's own: agent-ask refuses to post from an attended session.
+  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
+
   # `agent-ask answer` runs the ask's resume command, and `wave-start` on the real PATH
   # would start a real wave. Off for every test; ask_resume.bats turns it back on, with
   # wave-start and claude stubbed, to assert exactly that behaviour.
