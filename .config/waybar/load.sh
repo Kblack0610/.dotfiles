@@ -8,91 +8,86 @@
 # the Macs and Pis have no temp at all.
 
 set -u
-# shellcheck source=prom.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/prom.sh"
+here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../../.local/lib/prom.sh
+. "${PROM_LIB:-$here/../../.local/lib/prom.sh}" 2>/dev/null || . "$HOME/.local/lib/prom.sh"
+# shellcheck source=pango.sh
+. "$here/pango.sh"
 
-# This machine's name in the cc:host_* series. It is skipped for the ! (the temperature
-# chips already cover this box) but still listed in the hover.
-SELF="${CC_SELF:-workstation}"
-# A machine is hot at either line. 90 C sits under the 95 C where the workstation's Zen 4
-# stops boosting (fleet-assess FLEET_HOT_TCTL), so a laptop cooking shows before it throttles.
+# Hot is either line. The rules carry no heat judgement yet, so this one is the bar's own:
+# 90 C sits under the 95 C where the workstation's Zen 4 stops boosting, so a laptop
+# cooking shows before it throttles (fleet-assess pages on 95 C AND 1.5 load per core).
 HOT_TEMP=90
 HOT_RATIO=1.5
 # Under this load per core, and not hot, a machine folds into the one "idle:" line.
 IDLE_RATIO=0.1
 
-LOADAVG="${LOAD_LOADAVG:-/proc/loadavg}"
-read -r load1 _ < "$LOADAVG"
+read -r load1 _ < "${LOAD_LOADAVG:-/proc/loadavg}"
 cores="${LOAD_CORES:-$(nproc)}"
 
-# colour_for <ratio>: green under 1 core's worth per core, gold under HOT_RATIO, red past it.
-colour_for() {
-  awk -v r="$1" -v h="$HOT_RATIO" -v g="$C_GRN" -v y="$C_YEL" -v x="$C_RED" \
-    'BEGIN { print (r < 1 ? g : (r < h ? y : x)) }'
-}
+# level <ratio> -> 0 under one per core, 1 under HOT_RATIO, 2 past it.
+level=$(awk -v r="$load1" -v c="$cores" -v h="$HOT_RATIO" 'BEGIN { r = c > 0 ? r / c : 0; print (r < 1 ? 0 : (r < h ? 1 : 2)) }')
+class="${LEVEL_CLASS[$level]}"
+printf -v text 'LOAD %s' "$(paint "${LEVEL_COLOUR[$level]}" "$(printf '%.1f' "$load1")")"
 
-local_ratio="$(awk -v l="$load1" -v c="$cores" 'BEGIN { printf "%.3f", (c > 0 ? l / c : 0) }')"
-local_colour="$(colour_for "$local_ratio")"
-class="$(awk -v r="$local_ratio" -v h="$HOT_RATIO" 'BEGIN { print (r < 1 ? "ok" : (r < h ? "warn" : "critical")) }')"
-text="LOAD $(paint "$local_colour" "$(printf '%.1f' "$load1")")"
+fallback() { emit "$text" "Load $load1 on $cores cores"$'\n'"$1" "$class"; exit 0; }
 
-if ! json="$(prom_q '{__name__=~"cc:host_(load1|cores|cpu_busy_ratio|mem_used_ratio|temp_c)"}')"; then
-  emit "$text" "Load $load1 on $cores cores"$'\n'"fleet telemetry unavailable ($PROM_URL)" "$class"
-  exit 0
-fi
+# This machine's row: CC_SELF, else the one whose node-exporter nodename is our hostname.
+# It is skipped for the ! (the temperature chips already cover this box), not hidden.
+host="$(hostname 2>/dev/null)"
+self_q="label_replace(max by (host) (cc:host_instance * on (instance) group_left () node_uname_info{nodename=\"${host//[^A-Za-z0-9._-]/}\"}), \"__name__\", \"cc:host_self\", \"\", \"\")"
+json="$(prom_q "{__name__=~\"cc:host_(load1|cores|cpu_busy_ratio|mem_used_ratio|temp_c)\"} or $self_q")" \
+  || fallback "fleet telemetry unavailable ($PROM_URL)"
 
 # One row per machine, worst load per core first; a machine with no ratio sorts last.
-# host|load1|cores|cpu|mem|temp|ratio|hot|idle, "" for a missing value. Not tab-separated:
-# tab is IFS whitespace, so `read` would collapse an empty field and shift the rest.
-rows="$(jq -r --argjson ht "$HOT_TEMP" --argjson hr "$HOT_RATIO" --argjson ir "$IDLE_RATIO" '
+# host|load/cores|cpu|mem|temp|load level|temp hot|self|hot|idle, cells ready to print.
+# Not tab-separated: tab is IFS whitespace, so `read` would collapse an empty field.
+mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --argjson hr "$HOT_RATIO" --argjson ir "$IDLE_RATIO" '
+  def f1: (. * 10 | round) as $n | "\($n / 10 | floor).\($n % 10)";
+  def pct: if . == null then "-" else "\(. * 100 | round)%" end;
   [.data.result[] | select(.metric.host)
    | {h: .metric.host, k: (.metric.__name__ | sub("^cc:host_"; "")), v: (.value[1] | tonumber)}]
   | group_by(.h)
   | map((map({(.k): .v}) | add) as $m
         | {h: .[0].h, m: $m,
-           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end)})
-  | map(. + {hot: (((.m.temp_c // 0) >= $ht) or ((.r // 0) >= $hr))})
+           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end),
+           th: (($m.temp_c // 0) >= $ht)})
+  | (if $self != "" then $self else (map(select(.m.self != null) | .h) | first // "") end) as $me
+  | map(. + {hot: (.th or ((.r // 0) >= $hr))})
   | map(. + {idle: (.r != null and .r < $ir and (.hot | not))})
   | sort_by(-(.r // -1), .h)[]
-  | [.h, (.m.load1 // ""), (.m.cores // ""), (.m.cpu_busy_ratio // ""), (.m.mem_used_ratio // ""),
-     (.m.temp_c // ""), (.r // ""), (if .hot then 1 else 0 end), (if .idle then 1 else 0 end)]
-  | map(tostring) | join("|")' <<< "$json" 2>/dev/null)"
+  | select(.m.load1 != null or .m.cores != null or .m.cpu_busy_ratio != null or .m.mem_used_ratio != null or .m.temp_c != null)
+  | [.h,
+     (if .m.load1 == null then "-" else "\(.m.load1 | f1)/\(.m.cores // "-")" end),
+     (.m.cpu_busy_ratio | pct), (.m.mem_used_ratio | pct),
+     (if .m.temp_c == null then "-" else "\(.m.temp_c | round)C" end),
+     (if .r == null then "" elif .r < 1 then 0 elif .r < $hr then 1 else 2 end),
+     (if .th then 1 else 0 end), (if .h == $me then 1 else 0 end),
+     (if .hot then 1 else 0 end), (if .idle then 1 else 0 end)]
+  | map(tostring) | join("|")' <<< "$json" 2>/dev/null)
 
-if [ -z "$rows" ]; then
-  emit "$text" "Load $load1 on $cores cores"$'\n'"no cc:host_* series (recording rules not loaded?)" "$class"
-  exit 0
-fi
+((${#rows[@]})) || fallback "no cc:host_* series (recording rules not loaded?)"
 
-# Host column fits the longest name that gets a row.
-width=4
-while IFS='|' read -r h _ _ _ _ _ _ _ idle; do
-  [ "$idle" = 1 ] && continue
+width=4 idle_hosts=() shown=()
+for row in "${rows[@]}"; do
+  IFS='|' read -r h _ _ _ _ _ _ _ _ idle <<< "$row"
+  if [ "$idle" = 1 ]; then idle_hosts+=("$h"); continue; fi
+  shown+=("$row")
   ((${#h} > width)) && width=${#h}
-done <<< "$rows"
+done
 
-pct() { [ -n "$1" ] && awk -v v="$1" 'BEGIN { printf "%d%%", v * 100 + 0.5 }' || printf -- '-'; }
-
-body="$(printf "%-${width}s  %-8s %4s %4s %5s" HOST LOAD CPU MEM TEMP)"
-idle_hosts=() hot_other=false
-while IFS='|' read -r h l c cpu mem temp r hot idle; do
-  if [ "$idle" = 1 ]; then
-    idle_hosts+=("$h")
-    continue
-  fi
-  [ "$hot" = 1 ] && [ "$h" != "$SELF" ] && hot_other=true
-  if [ -n "$l" ]; then
-    lc="$(printf '%.1f/%s' "$l" "${c:--}")"
-  else
-    lc=-
-  fi
-  lc="$(printf '%-8s' "$lc")"
-  [ -n "$r" ] && lc="$(paint "$(colour_for "$r")" "$lc")"
-  t=-
-  [ -n "$temp" ] && t="$(printf '%.0fC' "$temp")"
-  t="$(printf '%5s' "$t")"
-  [ -n "$temp" ] && awk -v v="$temp" -v h="$HOT_TEMP" 'BEGIN { exit !(v >= h) }' && t="$(paint "$C_RED" "$t")"
-  body+=$'\n'"$(printf "%-${width}s  %s %4s %4s %s" "$h" "$lc" "$(pct "$cpu")" "$(pct "$mem")" "$t")"
-done <<< "$rows"
+printf -v body "%-${width}s  %-8s %4s %4s %5s" HOST LOAD CPU MEM TEMP
+hot_other=false
+for row in "${shown[@]}"; do
+  IFS='|' read -r h lc cpu mem temp lvl thot me hot _ <<< "$row"
+  [ "$hot" = 1 ] && [ "$me" = 0 ] && hot_other=true
+  printf -v lc '%-8s' "$lc"
+  [ -n "$lvl" ] && lc="$(paint "${LEVEL_COLOUR[$lvl]}" "$lc")"
+  printf -v temp '%5s' "$temp"
+  [ "$thot" = 1 ] && temp="$(paint "$C_RED" "$temp")"
+  printf -v line "%-${width}s  %s %4s %4s %s" "$h" "$lc" "$cpu" "$mem" "$temp"
+  body+=$'\n'"$line"
+done
 # Four names a line, so the folded k3s pis do not stretch the tooltip across the screen.
 if ((${#idle_hosts[@]})); then
   mapfile -t idle_hosts < <(printf '%s\n' "${idle_hosts[@]}" | sort)
@@ -105,5 +100,4 @@ if ((${#idle_hosts[@]})); then
 fi
 
 $hot_other && text+=" $(paint "$C_YEL" '!')"
-tooltip="<b>Load</b>  1-min load/cores, CPU busy, memory, temperature"$'\n'"<tt>$body</tt>"
-emit "$text" "$tooltip" "$class"
+emit "$text" "<b>Load</b>  1-min load/cores, CPU busy, memory, temperature"$'\n'"<tt>$body</tt>" "$class"

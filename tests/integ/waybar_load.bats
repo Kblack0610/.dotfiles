@@ -10,7 +10,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/load.sh"
-  export CC_PROM_URL=http://prom.test CC_SELF=workstation LOAD_CORES=24
+  export CC_PROM_URL=http://prom.test LOAD_CORES=24
   export FX="$BATS_TEST_TMPDIR"
   export LOAD_LOADAVG="$FX/loadavg"
   echo "12.00 10.00 9.00 3/900 1234" > "$LOAD_LOADAVG"
@@ -24,13 +24,17 @@ STUB
     mac-mini:1.6:8:0.16:0.43: pi-a:0.1:4:0.02:0.2: pi-b:0.05:4:0.01:0.1:
 }
 
-# hosts name:load1:cores:cpu:mem:temp ... (an empty field means no series at all)
+# hosts name:load1:cores:cpu:mem:temp ... (an empty field means no series at all). The
+# workstation is this machine: Prometheus answers its row as cc:host_self, the way the
+# hostname lookup does live.
 hosts() {
   python3 - "$FX/hosts.json" "$@" <<'PY'
 import json, sys
 res = []
 for spec in sys.argv[2:]:
     h, *vals = spec.split(":")
+    if h == "workstation":
+        res.append({"metric": {"__name__": "cc:host_self", "host": h}, "value": [0, "1"]})
     for k, v in zip(["load1", "cores", "cpu_busy_ratio", "mem_used_ratio", "temp_c"], vals):
         if v:
             res.append({"metric": {"__name__": f"cc:host_{k}", "host": h}, "value": [0, v]})
@@ -83,6 +87,12 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "...but this machine running hot does not" {
   hosts workstation:23.3:24:0.57:0.58:96 razer-laptop:13.1:16:0.48:0.27:58
   run "$MODULE"
+  refute_output --partial "'>!<"
+}
+
+@test "CC_SELF names this machine when the hostname lookup cannot" {
+  hosts razer-laptop:3:16:0.1:0.5:95 workstation:3:24:0.1:0.5:60
+  CC_SELF=razer-laptop run "$MODULE"
   refute_output --partial "'>!<"
 }
 
