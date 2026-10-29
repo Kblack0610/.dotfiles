@@ -24,7 +24,7 @@ USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 # What every account shares with the main one. Everything else (.credentials.json,
 # .claude.json, stats, runtime dirs) stays per account.
 SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks skills
-        agents plugins output-styles themes docs mcp-profiles .mcp.json projects plans)
+        agents plugins output-styles themes docs mcp-profiles projects plans)
 
 usage() {
     sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
