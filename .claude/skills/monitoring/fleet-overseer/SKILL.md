@@ -96,12 +96,13 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 
 ### When the human asks "where are we" or for a summary
 
-The bucket counts are not the answer. The human asked (2026-10-27) for this shape, every time:
+This is the shape for any status question about the fleet: "where are we", "how long will these take", "benchmark the sessions", "what are they doing". A narrower question still gets the whole shape; on 2026-10-28 an ETA question answered with ETAs alone left out the merges, the blockers and the room, and the human asked why the shepherd gives more. The bucket counts are not the answer. The human asked (2026-10-27) for this shape, every time:
 
 1. **Done since the last summary.** Every PR merged since then, per repo (`gh pr list --state merged --search "merged:>=<last summary time>"`), with the session that landed it. Take the last summary time from `~/.agent/shepherd/log.md`.
 2. **One row per live session:** what it is for (its plan's title), which phase of its plan it is in (`phases_done` of `phases_total`, and `next_phase`, from `fleet-sessions --json`; null means the plan has no `## Phases` checklist, so say so) and the step inside that phase (the pane's last recap line), and what it is waiting on. A DONE session says its plan is finished and it is winding down. Its expected finish time comes from `fleet-bench eta` (ETA and its basis), never from a guess; if the bench has no estimate for it, say there is none.
 3. **Telemetry, where it can be read cleanly:** the open PR and its gate (local or pool, class count, batch N of M), whether it holds a Unity right now and its CPU (`fleet-assess` rows), context used (`context_tokens` in `fleet-sessions --json`), and idle minutes. Leave a field out rather than guess it.
 4. **Room for new work:** current load and idle against the 70% budget, how many Unity runs are live, and how many more would fit.
+5. **How far to trust the ETAs:** the accuracy table from `fleet-bench report` (per basis and per horizon: how many scored, median miss, and actual over predicted time), then one line saying whether the ETAs above run long or short and by how much. Added 2026-10-28, when that table showed the project-median ETAs ran about 3x long.
 
 ## Verb: `shepherd`
 
