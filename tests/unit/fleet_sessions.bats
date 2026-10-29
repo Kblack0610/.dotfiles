@@ -22,7 +22,7 @@ b() { session_bucket "$@"; }
   assert_output --partial 'NEEDS waiting'
   run b busy 0 0 0 99 1 0 0 875 MERGED PASS 1
   assert_output 'WORKING busy'
-  run b shell 0 0 0 99 1 0 0 875 MERGED PASS 1
+  run b shell 0 0 0 99 1 0 0 875 MERGED PASS 1 - 1/2 x
   assert_output 'WORKING shell'
   run b busy 0 0 0 99 1 4 0 9 OPEN FAIL 1 - 1/3 x no
   assert_output 'WORKING busy'
@@ -143,10 +143,14 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   assert_output 'DONE PR #875 merged, tree clean, all 3 phases done'
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 2/3 'Phase 3: rollout'
   assert_output 'LANDED PR #875 merged, tree clean, next phase: Phase 3: rollout'
+  # a plan with no checklist, or no plan file, is one phase: its merged PR finishes it
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - none -
-  assert_output 'LANDED PR #875 merged, tree clean, plan has no ## Phases checklist'
+  assert_output 'DONE PR #875 merged, tree clean, single-phase plan, its PR landed'
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - - -
-  assert_output --partial 'UNCLEAR PR #875 merged, tree clean, no plan file'
+  assert_output 'DONE PR #875 merged, tree clean, no plan file, its PR landed'
+  # with nothing merged there is no landed phase to go on
+  run b idle 0 0 0 30 1 0 0 - - - 1 - none -
+  assert_output 'LANDED clean, nothing on the branch, plan has no ## Phases checklist'
   # no PR and a clean tree: the plan decides the same way (a phase landed from main)
   run b idle 0 0 0 30 1 0 0 - - - 1 - 1/4 'docs'
   assert_output 'LANDED clean, nothing on the branch, next phase: docs'
@@ -195,7 +199,30 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   run session_finished busy 0 0 0 0 1 0 0 9 OPEN PASS 1 - 3/3 -
   assert_failure
   run session_finished busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - none -
+  assert_success
+  run session_finished busy 0 0 0 0 1 0 0 - - - 1 - none -
   assert_failure
+}
+
+@test "work_blockers names every reason finished is false, and nothing when it is true" {
+  wb() { work_blockers "$@"; }
+  run wb busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - 3/3 - no
+  assert_output ''
+  run wb busy 0 2 0 0 1 3 0 875 MERGED PASS 0 'Tests' 1/3 'Phase 2' no 'aB12cd,Xy34zw'
+  assert_output 'open ask aB12cd; open ask Xy34zw; main red after PR #875: Tests; 3 dirty file(s); commits after merged PR #875; next phase: Phase 2'
+  run wb busy 0 0 0 0 1 0 0 9 OPEN FAIL 1 - - - no
+  assert_output 'PR #9 open, CI FAIL; no plan file and nothing merged'
+  run wb busy 0 0 0 0 0 0 0 - - - 1 - - -
+  assert_output 'not in a git repo'
+  # finished and an empty blocker list are one fact: every session_finished vector agrees
+  local v
+  for v in '0 0 875 MERGED PASS 1 - 3/3 -' '0 0 875 MERGED PASS 1 - 2/3 x' '1 0 875 MERGED PASS 1 - 3/3 -' \
+           '0 2 - - - 1 - 3/3 -' '0 0 875 MERGED PASS 0 - 3/3 -' '0 0 875 MERGED PASS 1 Tests 3/3 -' \
+           '0 0 9 OPEN PASS 1 - 3/3 -' '0 0 875 MERGED PASS 1 - none -' '0 0 - - - 1 - none -' '0 0 875 MERGED PASS 1 - - -'; do
+    # shellcheck disable=SC2086
+    if session_finished busy 0 0 0 0 1 $v; then [ -z "$(work_blockers busy 0 0 0 0 1 $v)" ]
+    else [ -n "$(work_blockers busy 0 0 0 0 1 $v)" ]; fi
+  done
 }
 
 @test "a background shell is WORKING until FLEET_SHELL_STALE_MIN, then the facts decide" {
@@ -432,12 +459,12 @@ landed_fixture() {
 
   printf '# Plan\n\nNo checklist.\n' > "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  [ "$(jq -c '[.phases_done, .phases_total, .next_phase]' <<<"$output")" = '[null,null,null]' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -c '[.phases_done, .phases_total, .next_phase, .blockers]' <<<"$output")" = '[null,null,null,[]]' ]
 
   panel "$SANDBOX/wt" ""
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = UNCLEAR ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .phases_total <<<"$output")" = null ]
 }
 
@@ -717,26 +744,29 @@ caught() {
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
 
-@test "an ask counts for the Claude session that asked, not every window of its tmux session" {
+@test "an ask counts only for the Claude session that asked, never by tmux session name" {
   ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
   printf 'status: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
-  run asks_for dotfiles sid-asker
-  assert_output 1
-  run asks_for dotfiles sid-neighbour
-  assert_output 0
-  # an ask from before the field still matches by tmux session name
-  printf 'status: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/b.md"
-  run asks_for dotfiles sid-neighbour
-  assert_output 1
-  printf 'status: answered\nsession: dotfiles\nclaude_session: sid-neighbour\n' > "$ASK_ROOT/demo/c.md"
-  run asks_for dotfiles sid-neighbour
-  assert_output 1
+  run asks_for sid-asker
+  assert_output a
+  run asks_for sid-neighbour
+  assert_output ''
+  # an ask with no owner blocks nobody, including a later session that reuses its tmux name
+  printf 'status: pending\nsession: dotfiles\nclaude_session: \n' > "$ASK_ROOT/demo/b.md"
+  printf 'status: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/c.md"
+  run asks_for sid-neighbour
+  assert_output ''
+  run asks_for ''
+  assert_output ''
+  printf 'status: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
+  run asks_for sid-asker
+  assert_output a
 }
 
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
   landed_fixture
   PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
   local doc="$XDG_STATE_HOME/fleet/state.json"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
@@ -751,6 +781,7 @@ caught() {
   [ "$(jq -r '.sessions[0].bucket' "$doc")" = NEEDS ]
   [ "$(jq -r '.sessions[0].reason' "$doc")" = '1 pending ask(s)' ]
   [ "$(jq -r '.sessions[0].asks' "$doc")" = 1 ]
+  [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]

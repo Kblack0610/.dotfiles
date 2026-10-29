@@ -122,6 +122,14 @@ cmd_post() {
     esac
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
+  # The queue is for runs with nobody attached. A session the human is in asks in the
+  # conversation: the human has no board they answer asks from, so a question filed here from a
+  # live session waits unseen and holds the session open. A --resume ask is wave machinery that
+  # a later process acts on, so it may still be filed.
+  if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "$resume" ]; then
+    echo "agent-ask post: this session has a human attached: ask in the conversation instead" >&2
+    return 2
+  fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
     # for it. The resolver's own answer (no --project) is canonical by construction.
@@ -145,15 +153,13 @@ cmd_post() {
   # proof_blocked matches a pending ask on this field, which is how "waiting on the human"
   # stops reading as WORKED or NOOP.
   [ -n "$agent" ] || agent="${AGENTCTL_NAME:-}"
-  # An ask from inside tmux names its tmux session unless told otherwise, so fleet-sessions
-  # can tell which session is waiting on it. 11 of 12 pending asks once had this empty.
-  # The tmux session is shared by every window in it, so a defaulted ask also records the
-  # asking Claude session's id, which fleet-sessions matches first. An explicit --session
-  # names someone else, so the poster's id is not theirs.
-  local owner=""
-  if [ -z "$session" ]; then
-    owner="${CLAUDE_CODE_SESSION_ID:-}"
-    [ -n "${TMUX:-}" ] && session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
+  # An ask from inside tmux names its tmux session unless told otherwise; that name is a
+  # label for people. Ownership is the asking Claude session's id, recorded always: agents pass
+  # their own tmux name as --session, and the tmux name is shared by every window in it and by
+  # every later session that reuses it, so matching on it held unrelated sessions open.
+  local owner="${CLAUDE_CODE_SESSION_ID:-}"
+  if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
+    session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
   fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision

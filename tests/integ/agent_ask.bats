@@ -50,14 +50,26 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'session: '
 }
 
-@test "post records the asking Claude session, unless --session names someone else" {
+@test "post records the asking Claude session, even when --session names a tmux session" {
   local id
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
   run "$AGENT_ASK" show "$id"
   assert_line 'claude_session: sid-1'
-  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session other 'merge it?')"
+  # agents pass their own tmux name as --session; the owner is still the poster
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session agent-1 'merge it?')"
   run "$AGENT_ASK" show "$id"
-  assert_line 'claude_session: '
+  assert_line 'claude_session: sid-1'
+  assert_line 'session: agent-1'
+}
+
+@test "an attended session asks in the conversation, not the queue" {
+  CLAUDE_CODE_SESSION_ATTENDED=1 run "$AGENT_ASK" post --project demo 'merge it?'
+  assert_failure 2
+  assert_output --partial 'ask in the conversation'
+  [ -z "$(find "$HOME/.agent/asks" -name '*.md' 2>/dev/null)" ]
+  # a resumable wave ask is machinery a later process acts on, so it is still filed
+  CLAUDE_CODE_SESSION_ATTENDED=1 run "$AGENT_ASK" post --project demo --resume 'true' 'ship it?'
+  assert_success
 }
 
 @test "the question survives the round trip" {

@@ -18,7 +18,9 @@
 # latest decided run of a workflow failed), naming the PRs merged since that workflow was
 # last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
-# is DONE without the idle and status checks, so a session can check its own row mid-turn.
+# is DONE without the idle and status checks, so a session can check its own row mid-turn,
+# and `blockers` lists every reason it is false. A plan with no checklist counts as one phase:
+# its PR merged with the tree clean is DONE.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
 # A pending ask (NEEDS) and an open PR that conflicts with the default branch (STALLED) decide
 # before the session's status, so neither can hide behind WORKING.
@@ -103,7 +105,7 @@ bucket_facts() {
       if [ "$red" != - ]; then echo "STALLED main red after PR #$pr: $red"
       elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
-      else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next"; fi ;;
+      else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1; fi ;;
     OPEN)
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
@@ -114,7 +116,7 @@ bucket_facts() {
     *)
       if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s), no PR"
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
-      else plan_bucket "clean, nothing on the branch" "$phases" "$next"; fi ;;
+      else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0; fi ;;
   esac
 }
 
@@ -127,14 +129,51 @@ session_finished() {
   return 1
 }
 
-# plan_bucket <reason so far> <phases> <next>: nothing is unlanded, so the plan decides.
-# All phases ticked is DONE; one left is LANDED naming it; no checklist is LANDED asking for
-# one; no plan file at all is the human's call.
-plan_bucket() {
-  local why="$1" phases="$2" next="$3"
+# work_blockers: session_bucket's arguments, plus the open ask ids (comma-separated) as the
+# 17th -> every reason session_finished is false, "; "-separated, empty when it is true.
+# bucket_facts names only the first reason; a session told it is unfinished needs all of them.
+work_blockers() {
+  local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
+        red="${13:--}" phases="${14:--}" next="${15:--}" ids="${17:-}" b=() id merged=0 out=""
+  if [ -n "$ids" ]; then
+    for id in ${ids//,/ }; do b+=("open ask $id"); done
+  elif [ "$asks" -gt 0 ]; then b+=("$asks open ask(s)"); fi
+  if [ "$git" != 1 ]; then b+=("not in a git repo")
+  else
+  case "$state" in
+    MERGED)
+      merged=1
+      [ "$red" != - ] && b+=("main red after PR #$pr: $red")
+      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)")
+      [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
+    OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
+    CLOSED) b+=("PR #$pr closed without merging") ;;
+    *)
+      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s), no PR")
+      [ "$ahead" -gt 0 ] && b+=("$ahead file(s) not on the default branch, no PR") ;;
+  esac
   case "$phases" in
-    -)    echo "UNCLEAR $why, no plan file: done or never started" ;;
-    none) echo "LANDED $why, plan has no ## Phases checklist" ;;
+    -) [ "$merged" = 1 ] || b+=("no plan file and nothing merged") ;;
+    none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
+    *) [ "${phases%/*}" -ge "${phases#*/}" ] || b+=("next phase: $next") ;;
+  esac
+  fi
+  for id in "${b[@]}"; do out="${out:+$out; }$id"; done
+  printf '%s' "$out"
+}
+
+# plan_bucket <reason so far> <phases> <next> <merged 0|1>: nothing is unlanded, so the plan
+# decides. All phases ticked is DONE; one left is LANDED naming it. A plan with no checklist,
+# or no plan file, is one phase of work: DONE once its PR merged. Without a merged PR, no
+# checklist is LANDED asking for one and no plan file is the human's call (usually a
+# conversation, which closing on idle would cut off).
+plan_bucket() {
+  local why="$1" phases="$2" next="$3" merged="${4:-0}"
+  case "$phases" in
+    -)    if [ "$merged" = 1 ]; then echo "DONE $why, no plan file, its PR landed"
+          else echo "UNCLEAR $why, no plan file: done or never started"; fi ;;
+    none) if [ "$merged" = 1 ]; then echo "DONE $why, single-phase plan, its PR landed"
+          else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
     *)
       if [ "${phases%/*}" -ge "${phases#*/}" ]; then echo "DONE $why, all ${phases#*/} phases done"
       else echo "LANDED $why, next phase: $next"; fi ;;
@@ -222,22 +261,19 @@ label() {
 }
 
 # --- facts ------------------------------------------------------------------------------
-# Pending asks for this session: by claude_session when the ask has one, else by `session:` (tmux session name or session id).
+# asks_for <claude session id> -> the ids of its pending asks, one per line. Only the
+# asking session owns an ask. The tmux session name is not a fallback: every window in it
+# and every later session that reuses the name share it, and a 10-24 ask held a 10-28
+# session open that way. An ask with no owner blocks nobody; the state document still
+# lists it under `asks`.
 asks_for() {
-  local f n=0 owner
+  local f
+  [ -n "$1" ] || return 0
   for f in "$ASK_ROOT"/*/*.md; do
     [ -f "$f" ] || continue
     grep -q '^status: pending$' "$f" || continue
-    # claude_session names the one asking session; the tmux session name is shared by every
-    # window in it, so it is only the fallback for asks that predate the field.
-    owner="$(sed -n 's/^claude_session: //p' "$f")"
-    if [ -n "$owner" ]; then
-      [ "$owner" = "$2" ] && n=$((n + 1))
-    elif grep -qxF -e "session: $1" -e "session: $2" "$f"; then
-      n=$((n + 1))
-    fi
+    grep -qxF "claude_session: $1" "$f" && basename "$f" .md
   done
-  echo "$n"
 }
 
 # tmux sessions holding a heavy process (fleet-assess rows), one per line.
@@ -424,7 +460,7 @@ collect() {
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
-          pdone ptotal pnext phases fin started age oid
+          pdone ptotal pnext phases fin started age oid askids blk
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -432,7 +468,8 @@ collect() {
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
-    asks="$(asks_for "$tsess" "$sid")"
+    askids="$(asks_for "$sid" | paste -sd, -)"
+    asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
     read -r g dirty ahead pr state ci inpr branch behind conflicts oid < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
@@ -451,16 +488,18 @@ collect() {
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
+    blk="$(work_blockers "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$askids")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice.
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     [ "$state" = OPEN ] && [ "$oid" != - ] && fact="$fact@${oid:0:12}"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact"
+      "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}"
   done
   main_rows
 }
@@ -480,7 +519,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -657,7 +696,8 @@ json_rows() {
       activity: (if .[26] == "-" then null else .[26] end),
       age_min: (if (.[27] // "-") == "-" then null else .[27] | tonumber end),
       asks: ((.[28] // "0") | tonumber),
-      fact: .[29]}'
+      fact: .[29],
+      blockers: (if (.[30] // "-") == "-" then [] else .[30] | split("; ") end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
