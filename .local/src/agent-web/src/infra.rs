@@ -30,7 +30,7 @@ fn instant_queries() -> Vec<(&'static str, String)> {
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
-        ("finished", format!("sum by (repo, workflow, conclusion) ({W} (github_runs_finished))")),
+        ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
         ("api", "min(github_runner_exporter_api_ok)".into()),
         ("gates", "cc:host_local_gate".into()),
         // The same three sources as the dashboard's "What is red" table.

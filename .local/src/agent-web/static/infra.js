@@ -191,25 +191,30 @@ function redItems(inst) {
   return items;
 }
 
+// Main's pass rate leads: a red on the default branch is everyone's problem, while a red gate on
+// a work branch is usually the gate doing its job (github_runs_finished's scope label).
 function finishedTable(inst) {
   const agg = {};
+  const zero = () => ({ ok: 0, bad: 0, can: 0 });
   for (const s of inst.finished || []) {
-    const k = `${s.labels.repo}\t${s.labels.workflow}`, a = (agg[k] ||= { repo: s.labels.repo, wf: s.labels.workflow, runs: 0, ok: 0, bad: 0, can: 0 });
-    const n = s.value || 0, c = s.labels.conclusion;
+    const k = `${s.labels.repo}\t${s.labels.workflow}`, a = (agg[k] ||= { repo: s.labels.repo, wf: s.labels.workflow, runs: 0, ok: 0, bad: 0, can: 0, main: zero(), branch: zero() });
+    const n = s.value || 0, c = s.labels.conclusion, sc = a[s.labels.scope] || {};
     a.runs += n;
-    if (c === "success") a.ok += n; else if (c === "failure" || c === "timed_out") a.bad += n; else if (c === "cancelled") a.can += n;
+    for (const t of [a, sc]) if (c === "success") t.ok += n; else if (c === "failure" || c === "timed_out") t.bad += n; else if (c === "cancelled") t.can += n;
   }
   const all = Object.values(agg);
   if (!all.length) return { head: "no finished-run series yet", body: "" };
-  const t = all.reduce((x, a) => ({ runs: x.runs + a.runs, ok: x.ok + a.ok, bad: x.bad + a.bad, can: x.can + a.can }), { runs: 0, ok: 0, bad: 0, can: 0 });
-  const head = `${t.runs} runs, ${t.ok + t.bad ? Math.round((100 * t.ok) / (t.ok + t.bad)) + "%" : "-"} pass, ${t.bad} failed, ${t.can} cancelled`;
+  const sum = (xs) => xs.reduce((x, a) => ({ runs: x.runs + a.runs, ok: x.ok + a.ok, bad: x.bad + a.bad, can: x.can + a.can }), { runs: 0, ok: 0, bad: 0, can: 0 });
   const pass = (a) => (a.ok + a.bad ? a.ok / (a.ok + a.bad) : null);
-  const bad = all.filter((a) => a.bad + a.can > 0).sort((a, b) => (pass(a) ?? 2) - (pass(b) ?? 2) || b.bad - a.bad);
+  const t = sum(all), tm = sum(all.map((a) => ({ runs: 0, ...a.main })));
+  const head = `${t.runs} runs, ${pct(pass(t))} pass, main ${pct(pass(tm))}, ${t.bad} failed, ${t.can} cancelled`;
+  const bad = all.filter((a) => a.bad + a.can > 0).sort((a, b) => (pass(a.main) ?? 2) - (pass(b.main) ?? 2) || (pass(a) ?? 2) - (pass(b) ?? 2) || b.bad - a.bad);
   const green = all.filter((a) => a.bad + a.can === 0);
-  const seg = (a) => `<span class="stack" data-tip="${esc(`${a.repo} ${a.wf}\n${a.ok} passed, ${a.bad} failed, ${a.can} cancelled`)}">${[[a.ok, "var(--b-done)"], [a.bad, "var(--b-needs)"], [a.can, "var(--b-unclear)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
-  const body = (bad.length ? `<table class="tbl"><tr><th>repo</th><th>workflow</th><th></th><th class="n">pass</th><th class="n">runs</th><th class="n">failed</th><th class="n">cancelled</th></tr>${bad.map((a) => {
-    const p = pass(a);
-    return `<tr><td>${esc(a.repo)}</td><td class="wrap">${esc(a.wf)}</td><td class="m">${seg(a)}</td><td class="n ${p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : ""}">${pct(p)}</td><td class="n">${a.runs}</td><td class="n">${a.bad}</td><td class="n">${a.can}</td></tr>`;
+  const seg = (a) => `<span class="stack" data-tip="${esc(`${a.repo} ${a.wf}\nmain: ${a.main.ok} passed, ${a.main.bad} failed, ${a.main.can} cancelled\nbranches: ${a.branch.ok} passed, ${a.branch.bad} failed, ${a.branch.can} cancelled`)}">${[[a.ok, "var(--b-done)"], [a.bad, "var(--b-needs)"], [a.can, "var(--b-unclear)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
+  const cls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
+  const body = (bad.length ? `<table class="tbl"><tr><th>repo</th><th>workflow</th><th></th><th class="n">main</th><th class="n">branches</th><th class="n">runs</th><th class="n">failed</th><th class="n">cancelled</th></tr>${bad.map((a) => {
+    const pm = pass(a.main);
+    return `<tr><td>${esc(a.repo)}</td><td class="wrap">${esc(a.wf)}</td><td class="m">${seg(a)}</td><td class="n ${cls(pm)}">${pct(pm)}</td><td class="n muted">${pct(pass(a.branch))}</td><td class="n">${a.runs}</td><td class="n">${a.bad}</td><td class="n">${a.can}</td></tr>`;
   }).join("")}</table>` : "") + (green.length ? `<div class="muted fold">+${green.length} green workflows, ${green.reduce((x, a) => x + a.runs, 0)} runs</div>` : "");
   return { head, body };
 }
