@@ -62,7 +62,6 @@ These read the project transcript and print a compliance audit. They are not wir
 
 | File | Job |
 |------|-----|
-| `~/.claude/setup-personal-mcp.sh` | Wire up personal MCP servers |
 | `~/.dotfiles/.config/shared-hooks/session-preflight.sh` | Inject plans/lessons/git context |
 
 ## PreToolUse hooks (user-global)
@@ -73,6 +72,14 @@ These read the project transcript and print a compliance audit. They are not wir
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
+
+## PostToolUse hooks (user-global)
+
+| Matcher | File | Job |
+|---------|------|-----|
+| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/board-observe.sh` | Record a sprint-board stage transition when the board is edited |
+| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
+| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/memory-index-guard.sh` | Warn when an auto-memory `MEMORY.md` passes 8 KB or has a line over 200 chars |
 
 ## File layout
 
