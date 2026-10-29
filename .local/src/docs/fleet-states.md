@@ -22,7 +22,7 @@ A session has two independent states, and no surface may fold them into one word
 - **`activity`** is what the Claude process is doing right now, read from agent-panel. It changes many times a minute.
 - **`bucket`** is where the session is in its delivery: does it need the human, has it landed, is it stuck. It is derived from git, gh, the plan file and the ask queue, and changes a few times an hour.
 
-An `idle` session can be NEEDS (an ask is open), LANDED (start the next phase) or STALLED (a green PR nobody merged). Reading "idle" as "done" was the mistake this split exists to stop: `claude-status.sh` used to count idle panes as `done`.
+An `idle` session can be NEEDS (an ask is open, or its last message asks the human something), LANDED (start the next phase) or STALLED (a green PR nobody merged). Reading "idle" as "done" was the mistake this split exists to stop: `claude-status.sh` used to count idle panes as `done`.
 
 The document holds `activity` as of `generated_at`. A view that needs it live (the tmux status line, agent-web, the phone's working/attention counts) reads agent-panel directly and joins `bucket` from the document by `target`. It never computes a bucket itself.
 
@@ -41,7 +41,7 @@ Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first
 
 | Value | Meaning | Who acts |
 | --- | --- | --- |
-| `NEEDS` | Waiting on a prompt, a pending ask (even while busy), or plan approval | The human |
+| `NEEDS` | Waiting on a prompt, a pending ask (even while busy), a question it asked the human in its own conversation (agent-panel's `question`, needs it at its prompt), or plan approval | The human |
 | `STALLED` | An open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
 | `LANDED` | Tree clean and the plan has a next phase, or a plan with no `## Phases` checklist and nothing merged | The session starts it |

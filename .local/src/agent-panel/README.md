@@ -9,11 +9,32 @@ A blue `A` beside it marks an agent with a pending ask: a file under
 `claude_session` is this agent's session id. That is the same rule as `asks_for` in
 `fleet-sessions`, so the panel marks exactly the sessions it buckets as NEEDS.
 
+A blue `?` in the same column marks an agent that ended its turn asking you something in its
+own conversation, without an ask. The column means "needs your answer": `A` when there is a
+pending ask (it names its question, so it wins), else `?`. The rule (`asks_human` in
+`jsonl.rs`) holds when Claude is at its prompt (`idle`, or `shell` with a background job
+running; never `busy`, whose closing text is stale) and the last main-thread entry is its own,
+with no prompt or tool result after it, and either:
+
+- that entry's last call is a dialog left open (`AskUserQuestion`, `ExitPlanMode`), or
+- its closing paragraph asks a question: a sentence ending in `?`. A `?` inside backticks,
+  double quotes, a code fence or a `>` quote does not count, nor does one in a list item with
+  text after it (a findings list answering its own question). A one-line postscript with no
+  question ("the screenshot is at X") does not hide the paragraph before it. Pure manners
+  ("anything else?", "any questions?") do not count.
+
+A statement that hands off to you without a `?` ("I can't go on until you allow X") is not
+marked. `fleet-sessions` reads the same fact from `list --json` and buckets the session as NEEDS.
+
+`shell` keeps the yellow `~`: Claude is at its prompt, but waiting on its own background job
+(usually a gate), and resumes by itself when it ends, so it does not need you. The `?` column
+is what says it does.
+
 Bound in `~/.tmux.conf`:
 
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
-  prompt (`!`) or holding a pending ask (`A`)
+  prompt (`!`), holding a pending ask (`A`), or asking you a question (`?`)
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -38,9 +59,9 @@ string rather than `claude` (observed on macOS).
 | Command | Purpose |
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
-| `agent-panel next` | Cycle to the next attention-needed agent, `!` or `A` (else next in list) |
+| `agent-panel next` | Cycle to the next attention-needed agent, `!`, `A` or `?` (else next in list) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
-| `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`) |
+| `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, question (the `?` mark), idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`) |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 
@@ -58,8 +79,8 @@ which owns the detach-and-attach hop and the Prefix+L way back.
 
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
-- `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; JSONL path
-- `jsonl.rs` — tail the transcript; row summary, plan mode, recent-events for the preview
+- `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
+- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, recent-events for the preview
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks

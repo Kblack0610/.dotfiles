@@ -65,6 +65,13 @@ pub fn glyph(status: &str) -> char {
     }
 }
 
+/// Claude is at its prompt, so its last message is still its last word: `idle`, or `shell`
+/// (idle with a background job running). A `busy` session's closing text is stale mid-turn,
+/// and `waiting` is already a prompt (`!`).
+pub fn at_prompt(status: &str) -> bool {
+    matches!(status, "idle" | "shell")
+}
+
 /// Compute the transcript JSONL path from sessionId + cwd. Claude encodes
 /// `/`, `.`, and `_` all as `-` in the project directory name.
 pub fn jsonl_path(session_id: &str, cwd: &str) -> PathBuf {
@@ -90,6 +97,16 @@ mod tests {
         assert_eq!(glyph("shell"), '~');
         assert_eq!(glyph("idle"), '✓');
         assert_eq!(glyph("anything"), '✓');
+    }
+
+    #[test]
+    fn only_idle_and_shell_are_at_the_prompt() {
+        assert!(at_prompt("idle"));
+        assert!(at_prompt("shell"));
+        // Negative controls: a busy session's closing `?` is stale, and `waiting` is `!` already.
+        assert!(!at_prompt("busy"));
+        assert!(!at_prompt("waiting"));
+        assert!(!at_prompt(""));
     }
 
     #[test]
