@@ -23,24 +23,18 @@ set -uo pipefail
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/table-fit.sh" 2>/dev/null \
   || { echo "command-center: table-fit.sh not found" >&2; exit 1; }
 
-# Endpoints stay out of this public repo. Set them in ~/.config/command-center/env (stowed
-# from the private overlay):
-#   CC_PROM_URL=https://prometheus.your.lan
-#   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-ci-runners
-#   CC_HOSTS="workstation mac-studio"   machines shown even with no runner, first
+# The Prometheus reader (prom_q, prom_dur, W, PROM_URL from ~/.config/command-center/env),
+# shared with the waybar load and CI chips.
 # shellcheck source=/dev/null
-[ -r "$HOME/.config/command-center/env" ] && . "$HOME/.config/command-center/env"
-PROM_URL="${CC_PROM_URL:-https://prometheus.example.com}"
+. "${PROM_LIB:-/nonexistent}" 2>/dev/null \
+  || . "$HOME/.local/lib/prom.sh" 2>/dev/null \
+  || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/prom.sh" 2>/dev/null \
+  || { echo "command-center: prom.sh not found" >&2; exit 1; }
 GRAFANA_URL="${CC_GRAFANA_URL:-https://grafana.example.com/d/kb-ci-runners}"
 EXTRA_HOSTS="${CC_HOSTS:-workstation mac-studio}"
 # Prometheus offers no push to a terminal, so the board re-reads on a fixed cadence. The
 # exporter is scraped and the rules evaluate every 1m; faster only redraws the same numbers.
 REFRESH_SECS=60
-# A job running longer than this shows its time amber: playground ci.md calls a gate that
-# runs past about an hour a bug to fix, not a wait.
-LONG_RUN_SECS=3600
-# Scrape-target labels, stripped so two exporter pods during a rollout read as one row.
-W='max without (instance, pod, job, namespace, service, endpoint, container)'
 
 if [ -n "${NO_COLOR:-}" ]; then
   C_OK='' C_WARN='' C_RED='' C_NONE='' C_HEAD='' C_DIM='' C_OFF=''
@@ -54,14 +48,6 @@ RED_ITEMS=() RUNNERS=() WAITING=() FINISHED=() LOCAL=()
 declare -A PR_BY_BRANCH # "<repo>/<branch>" -> the PR a runner or queued job carries for it
 API_OK='' FETCH_ERR=''
 
-# _q <promql> -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
-_q() {
-  local out
-  out="$(curl -sf -m 10 -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null)" || return 1
-  [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
-  printf '%s' "$out"
-}
-
 # _rows <json> <label...> -> one TSV line per series: the labels in order, then the value.
 # Empty labels read "-", because bash `read` folds adjacent TABs and would shift columns.
 _rows() {
@@ -74,12 +60,12 @@ _rows() {
 fetch() {
   V=() RED_ITEMS=() RUNNERS=() WAITING=() FINISHED=() LOCAL=() PR_BY_BRANCH=() API_OK='' FETCH_ERR=''
   local cc red runners waiting finished api gates key val line repo pr branch
-  cc="$(_q '{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate"}')" \
-    && runners="$(_q "$W (github_runner_state)")" \
-    && waiting="$(_q "$W (github_actions_job_waiting)")" \
-    && finished="$(_q "sum by (repo, workflow, conclusion) ($W (github_runs_finished))")" \
-    && api="$(_q 'min(github_runner_exporter_api_ok)')" \
-    && gates="$(_q 'cc:host_local_gate')" \
+  cc="$(prom_q '{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate"}')" \
+    && runners="$(prom_q "$W (github_runner_state)")" \
+    && waiting="$(prom_q "$W (github_actions_job_waiting)")" \
+    && finished="$(prom_q "sum by (repo, workflow, conclusion) ($W (github_runs_finished))")" \
+    && api="$(prom_q 'min(github_runner_exporter_api_ok)')" \
+    && gates="$(prom_q 'cc:host_local_gate')" \
     || { FETCH_ERR="cannot read $PROM_URL"; return 1; }
   while IFS=$'\t' read -r key val; do
     [ -n "$key" ] && V["$key"]="$val"
@@ -103,7 +89,7 @@ fetch() {
   done
   API_OK="$(jq -r '.data.result[0].value[1] // ""' <<< "$api")"
   # The same three sources as the dashboard's "What is red" table.
-  red="$(_q 'label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
+  red="$(prom_q 'label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
     or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
     or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")')" || true
   [ -n "$red" ] && mapfile -t RED_ITEMS < <(jq -r '.data.result[].metric.item' <<< "$red" 2>/dev/null | sort)
@@ -116,15 +102,6 @@ _usd() { local v="${V[$1]:-}"; [ -n "$v" ] && printf '$%.0f' "$v" 2>/dev/null ||
 _pct() { local v="${V[$1]:-}"; [ -n "$v" ] && awk -v v="$v" 'BEGIN { printf "%.0f%%", v * 100 }' || printf -- '-'; }
 # _int <key> -> the value as a whole number, or - when the series is absent (never a 0 it did not say).
 _int() { local v="${V[$1]:-}"; [ -n "$v" ] && printf '%.0f' "$v" 2>/dev/null || printf -- '-'; }
-# _dur <seconds> -> 45s, 36m, 2h28m, 3d4h
-_dur() {
-  local s="${1%%.*}"
-  [[ "$s" =~ ^[0-9]+$ ]] || { printf -- '-'; return; }
-  if (( s < 60 )); then printf '%ds' "$s"
-  elif (( s < 3600 )); then printf '%dm' $((s / 60))
-  elif (( s < 86400 )); then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
-  else printf '%dd%dh' $((s / 86400)) $((s % 86400 / 3600)); fi
-}
 # _tag <status> <label> -> the label on its status colour; NO DATA is never shown as OK.
 _tag() {
   local c
@@ -215,7 +192,7 @@ pools() {
         hosts+="${k#*/}"; (( ${on[$k]} > 1 )) && hosts+=":${on[$k]}"; hosts+=' '
       done
       [ -n "${V[cc:pool_slots/$p]:-}" ] && slots="$(_num "cc:pool_busy/$p")/$(_num "cc:pool_slots/$p")"
-      [ -n "${V[cc:pool_oldest_wait_seconds/$p]:-}" ] && old="$(_dur "${V[cc:pool_oldest_wait_seconds/$p]}")"
+      [ -n "${V[cc:pool_oldest_wait_seconds/$p]:-}" ] && old="$(prom_dur "${V[cc:pool_oldest_wait_seconds/$p]}")"
       printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$slots" "$(_num "cc:pool_waiting/$p")" "$old" \
         "$(_int "cc:pool_done_24h/$p")" "$(_pct "cc:pool_pass_ratio_24h/$p")" "$( [ -n "$hosts" ] && printf '%s' "${hosts% }" || printf -- - )"
     done < <(_pools)
@@ -307,7 +284,7 @@ running() {
     sort -t$'\t' -k1,1nr <<< "${rows%$'\n'}" | while IFS=$'\t' read -r val host pool repo pr job branch; do
       for='-'
       if [ "${val:-0}" -gt 0 ] 2>/dev/null; then
-        for="$(_dur "$val")"; (( val > LONG_RUN_SECS )) && for+='!'
+        for="$(prom_dur "$val")"; (( val > LONG_RUN_SECS )) && for+='!'
       fi
       printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$pool" "$repo" "$pr" "$job" "$for" "$branch"
     done
@@ -330,13 +307,13 @@ queued() {
     (( val > ${old[$k]:-0} )) && old[$k]=$val
   done
   if (( n == 0 )); then printf '%sQUEUED%s  nothing waiting\n' "$C_HEAD" "$C_OFF"; return; fi
-  printf '%sQUEUED%s  %d jobs in %d groups, oldest waiting %s\n' "$C_HEAD" "$C_OFF" "$n" "${#count[@]}" "$(_dur "$oldest")"
+  printf '%sQUEUED%s  %d jobs in %d groups, oldest waiting %s\n' "$C_HEAD" "$C_OFF" "$n" "${#count[@]}" "$(prom_dur "$oldest")"
   local rows
   rows="$(for k in "${!count[@]}"; do printf '%s\t%s\t%s\n' "${old[$k]}" "$k" "${count[$k]}"; done | sort -t$'\t' -k1,1nr)"
   {
     printf '\tPOOL\tREPO\tPR\tJOBS\tWAITING\tBRANCH\n'
     head -n "$max" <<< "$rows" | while IFS=$'\t' read -r val pool repo pr branch c; do
-      printf '\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pool" "$repo" "$pr" "$c" "$(_dur "$val")" "$branch"
+      printf '\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pool" "$repo" "$pr" "$c" "$(prom_dur "$val")" "$branch"
     done
   } | table_fit "$w" keep="1 2 3 4 5" flex=6 flexmin=12 right="4 5"
   (( ${#count[@]} > max )) && printf '%s  +%d more groups (Grafana: Waiting for a runner)%s\n' "$C_DIM" $(( ${#count[@]} - max )) "$C_OFF"
@@ -351,7 +328,7 @@ down() {
   done
   for line in "${WAITING[@]}"; do
     IFS=$'\t' read -r pool repo pr branch stuck val <<< "$line"
-    [ "$stuck" = true ] && items+=("stuck run: $repo $branch, $(_dur "$val"), no jobs")
+    [ "$stuck" = true ] && items+=("stuck run: $repo $branch, $(prom_dur "$val"), no jobs")
   done
   [ "$API_OK" = 1 ] || items=("GitHub API not answering: runner rows may be missing" "${items[@]}")
   [ ${#RUNNERS[@]} -gt 0 ] || items+=("no runner series (exporter down?)")
