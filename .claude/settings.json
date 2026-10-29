@@ -129,6 +129,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/ai-comment-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/memory-index-guard.sh"
           }
         ]
       }
@@ -256,6 +260,7 @@
     "clangd-lsp@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "enableAllProjectMcpServers": true,
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
