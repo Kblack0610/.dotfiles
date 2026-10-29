@@ -54,7 +54,7 @@ Under-use is a fault too. The human's budget for this box is about 70% of its CP
 
 Go down the ladder only as far as you need to:
 
-1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages the human (high) and makes every new session and every gate see it.
+1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages low (the overseer acts on it, the human does not) and makes every new session and every gate see it.
 2. **Message the Claude sessions on the roster**, one `fleet-comms` message each, naming the hold.
 3. **Lower the priority** of batch consumers that are still running: `renice -n 19 -p $(ls /proc/<pid>/task)` and `ionice -c3 -p $(ls /proc/<pid>/task)`. On Linux both act on one thread, so `-p <pid>` alone moves only the main thread: on 2026-10-27 a Unity compiler server (`VBCSCompiler`) kept 60 of its 61 threads at nice -4 after `renice -p`. Check with `ps -L -o ni= -p <pid> | sort | uniq -c`. This is reversible and needs no ask.
 4. **Kill only when the human asks.** Then kill only batch process trees (the driving `run.sh`, its `timeout`, the editor), and never an interactive editor, meaning a Unity without `-batchmode`. The CPU throttles itself at 95 C, so the hardware is safe while the human decides, and a killed run is lost work.
