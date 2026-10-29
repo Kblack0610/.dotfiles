@@ -71,7 +71,18 @@ claude() {
     fi
 }
 
-alias cl="claude --dangerously-skip-permissions"
+# cl starts on whichever Claude account has the most 5h/7d room left (claude-acct,
+# accounts in ~/.config/claude-acct/accounts). Plain `claude` stays on the default one.
+unalias cl 2>/dev/null
+cl() {
+    local dir=""
+    command -v claude-acct >/dev/null && dir=$(claude-acct pick)
+    if [ -n "$dir" ]; then
+        CLAUDE_CONFIG_DIR="$dir" command claude --dangerously-skip-permissions "$@"
+    else
+        command claude --dangerously-skip-permissions "$@"
+    fi
+}
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
 alias cb="agent" # need to rename to agent
 
