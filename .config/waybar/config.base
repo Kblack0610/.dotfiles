@@ -125,7 +125,9 @@
         "modules": [
             "custom/timebox",
             "custom/ai-agents",
-            "custom/fleet"
+            "custom/fleet",
+            "custom/load",
+            "custom/ci"
         ]
     },
     // Shown only while keys bypass Hyprland (VDI submap or RustDesk grab). Not gated:
@@ -157,6 +159,31 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "sh -c '. $HOME/.config/fleet-pulse/env 2>/dev/null; xdg-open ${GATUS_BASE:-https://status.example.com}'",
+        "tooltip": true
+    },
+    // This machine's load on the bar, every machine's load/CPU/mem/temp on hover, all from
+    // the Prometheus cc:host_* rules (load.sh). Click opens the hub:infra board.
+    "custom/load": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 15,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/load $HOME/.config/waybar/load.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
+        "tooltip": true
+    },
+    // GitHub runner pools: busy/slots and queued on the bar, runners by machine on hover
+    // (ci_runners.sh). 60s because the exporter and rules move once a minute.
+    "custom/ci": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/ci $HOME/.config/waybar/ci_runners.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
+        "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
     "custom/timebox": {

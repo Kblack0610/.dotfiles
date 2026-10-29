@@ -31,7 +31,7 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
   s settings           L2 pinbar-settings a agents | f fleet | t timebox | m machines | l list> | s size | esc back
 ```
 
-Views: **min** = the main bar's status cluster (timebox | agents | fleet); **big** = +
+Views: **min** = the main bar's status cluster (timebox | agents | fleet | load | ci); **big** = +
 machines, cpu/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
