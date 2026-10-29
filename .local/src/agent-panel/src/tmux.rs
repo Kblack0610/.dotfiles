@@ -104,12 +104,24 @@ pub fn list_panes() -> Vec<Pane> {
 }
 
 fn list_server_panes(server: &str) -> Vec<Pane> {
-    let fmt = "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t#{pane_title}\t\
-               #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}";
-    let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", fmt]).output() else {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let fmt = pane_format(now);
+    let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", &fmt]).output() else {
         return Vec::new();
     };
     parse_panes(server, &String::from_utf8_lossy(&out.stdout))
+}
+
+/// The `list-panes -F` row. `@shepherd` holds the epoch its lease goes stale
+/// (fleet-shepherd lease), so the tag needs the clock, which a list-panes format has
+/// no variable for: `now` is spliced in, the same test as .tmux.conf `@shepherd_live`.
+fn pane_format(now: u64) -> String {
+    "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t#{pane_title}\t\
+     #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
+     #{?#{e|<:NOW,#{@shepherd}},shepherd ,}"
+        .replace("NOW", &now.to_string())
 }
 
 fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
@@ -222,5 +234,12 @@ mod tests {
         assert_eq!(panes[0].pane_id, "%7");
         assert_eq!(panes[0].title, "✳ title");
         assert_eq!(panes[0].tags, "pinned");
+    }
+
+    #[test]
+    fn shepherd_tag_compares_the_lease_expiry_to_now() {
+        let fmt = pane_format(1_700_000_000);
+        assert!(fmt.ends_with("#{?#{e|<:1700000000,#{@shepherd}},shepherd ,}"), "{fmt}");
+        assert!(!fmt.contains("NOW"));
     }
 }
