@@ -27,7 +27,7 @@ covered() {
 }
 
 deny() {
-  jq -nc --arg r "Search from the repo or worktree root, or a named subdirectory, not \`$1\`: it contains the network mount \`$2\`, and a recursive walk there blocks on the share for tens of minutes and loads the whole machine. To search the share, name a subdirectory of it." \
+  jq -nc --arg r "Search \`${CWD:-the repo or worktree root}\` (your working directory: a repo's code, submodules included, is under it) or a named subdirectory, not \`$1\`: it contains the network mount \`$2\`, and a recursive walk there blocks on the share for tens of minutes and loads the whole machine. To search the share, name a subdirectory of it." \
     '{hookSpecificOutput: {hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'
   exit 0
 }
