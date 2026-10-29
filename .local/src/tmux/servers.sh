@@ -244,6 +244,21 @@ _landing() {
   awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
 }
 
+# The landing session's OWN window: the first one that is not a declared board. The boards
+# (hub:infra, hub:watch, hub:log) are windows of the landing session too, and a session
+# remembers its last-selected window, so after Prefix+O a bare attach to hub opened the log
+# board, not the daily. Identity is the one ensure finds declared windows by: @tmx_window,
+# else the name. One list-windows rather than _is_board per window.
+_landing_window() {
+  local srv="$1" sess="$2"
+  tmux -L "$srv" list-windows -t "=$sess" \
+      -F '#{window_index} #{?@tmx_window,#{@tmx_window},#{window_name}}' 2>/dev/null |
+    awk -v s="$sess" '
+      NR == FNR { if (!/^[[:space:]]*#/ && NF) { n = $1; sub(/^\?/, "", n); board[n] = 1 }; next }
+      { i = $1; sub(/^[^ ]* /, ""); if (!((s ":" $0) in board)) { print i; exit } }
+    ' "$MANIFEST_DIR/$srv.conf" -
+}
+
 # The manifest's startup command for one session, e.g. `nvim ~/.notes/lab/projects/index.md`.
 _startup_cmd() {
   awk -v s="$2" \
@@ -457,6 +472,11 @@ cmd_land() {
     local landing
     landing="$(_landing "$target")"
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
+      # Select the page's window FIRST: _refresh_landing types into the current window,
+      # which would otherwise be whichever board was last open.
+      local lwin
+      lwin="$(_landing_window "$target" "$landing")"
+      [ -n "$lwin" ] && tmux -L "$target" select-window -t "$landing:$lwin" 2>/dev/null
       _refresh_landing "$target" "$landing"
       # $TMUX is still set here (see _enter); attach refuses to nest while it is,
       # so drop it. -L already selects the server, so nothing else needs it.
