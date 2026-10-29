@@ -169,13 +169,74 @@ rec() { local day="${*: -1}"; jq "${@:1:$#-1}" "$DAYLOG_DIR/$day.json"; }
   LINES=34 COLUMNS=100 run "$SUBJECT" watch --once
   assert_success
   assert_line --index 0 --partial 'day log  Wed 2026-10-28'
-  assert_output --partial '+26 more (l lists everything)'
+  assert_output --partial '+26 more (2 opens it)'
   [ "${#lines[@]}" -le 32 ]
 }
 
 @test "negative control: with no height every merged group is drawn" {
   for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
   COLUMNS=100 run "$SUBJECT" watch --once
-  refute_output --partial 'more (l lists everything)'
+  refute_output --partial 'more (2 opens it)'
   assert_output --partial 'g30'
+}
+
+@test "an open section lists everything in full and folds every other section to its header" {
+  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" "2026-10-28T20:$(printf %02d "$i"):00Z"; done | merged
+  COLUMNS=100 run "$SUBJECT" watch --once --open merged
+  assert_success
+  assert_output --partial '2 MERGED, EVERY PR (30)'
+  assert_output --partial '1 WAITING ON YOU (0)'
+  assert_output --partial '5 TIMELINE (0)'
+  refute_output --partial 'nothing'
+  refute_output --partial 'opens it'
+  run grep -c 'game#' <<<"$output"
+  assert_output 30
+  run grep -m1 'game#' <<<"$(COLUMNS=100 "$SUBJECT" watch --once --open 2)"
+  assert_output --partial 'game#30'
+}
+
+@test "an open section taller than the pane scrolls: it says which rows show, and the board still fits" {
+  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
+  LINES=24 COLUMNS=100 run "$SUBJECT" watch --once --open 2
+  assert_success
+  assert_output --regexp 'rows 1-[0-9]+ of 30'
+  assert_output --partial '5 TIMELINE (0)'
+  [ "${#lines[@]}" -le 22 ]
+}
+
+@test "scrolling stops at the end of the list, so the last row is on screen and no further" {
+  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
+  f="$("$SUBJECT" snapshot --date 2026-10-28)"
+  source "$SUBJECT"
+  frame "$f" 100 24 2 999 > "$SANDBOX/frame"
+  [ "$FRAME_OPEN" = 2 ]
+  [ "$FRAME_SCROLL" -eq $((30 - FRAME_PAGE)) ]
+  run grep -c 'game#1 ' "$SANDBOX/frame"
+  assert_output 1
+  run grep "of 30" "$SANDBOX/frame"
+  assert_output "  rows $((FRAME_SCROLL + 1))-30 of 30"
+}
+
+@test "the folded board shows the first asks and points at 1 for the rest; opened, every ask" {
+  jq -n '{sessions: [], main: [], asks: [range(1; 10) | {id: "a\(.)", project: "game", kind: "decision", question: "q\(.)?", created: "2026-10-28T10:00:00-0700"}]}' > "$DAYLOG_STATE"
+  COLUMNS=100 run "$SUBJECT" watch --once
+  assert_output --partial '1 WAITING ON YOU (9)'
+  assert_output --partial '+3 older asks (1 opens them)'
+  COLUMNS=100 run "$SUBJECT" watch --once --open waiting
+  refute_output --partial 'older asks'
+  run grep -c 'ASK' <<<"$output"
+  assert_output 9
+}
+
+@test "a section the day does not have opens nothing, and an unknown one is refused" {
+  { pr game 1 'feat: x' 2026-10-28T03:00:00Z; } | merged
+  "$SUBJECT" snapshot --date 2026-10-27
+  rm -f "$DAYLOG_DIR/2026-10-27.json.tmp"
+  jq '.open = null | .bench = null' "$DAYLOG_DIR/2026-10-27.json" > "$SANDBOX/r" && mv "$SANDBOX/r" "$DAYLOG_DIR/2026-10-27.json"
+  COLUMNS=100 run "$SUBJECT" watch --once --date 2026-10-27 --open open
+  assert_success
+  assert_output --partial '2 MERGED BY GROUP'
+  refute_output --partial 'STILL OPEN'
+  run "$SUBJECT" watch --once --open bogus
+  assert_failure 2
 }

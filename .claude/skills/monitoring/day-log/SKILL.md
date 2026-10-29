@@ -29,6 +29,8 @@ Not for what sessions are doing right now (`fleet-overseer status`, the `hub:wat
 
 Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, area, by), `open[]` (repo, number, title, created_at, updated_at, draft, ci, by), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`.
 
+The board (`day-log watch`, hub:log, Prefix O) folds each section to fit the pane. When the user wants a full list there, point them at the keys rather than dumping it: `1`-`5` or a click on a section header opens that section in full and folds the others (again or Esc closes it), and j/k, space/b, g/G or the mouse wheel scroll it. `day-log watch --once --open merged` prints the same view.
+
 ## Do NOT
 
 - Do not call `gh` yourself to count the day. Two producers drift; a scope or bound fix belongs in `day-log`, and grouping belongs in `~/.config/day-log/groups`.
