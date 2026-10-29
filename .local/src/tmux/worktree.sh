@@ -733,8 +733,10 @@ cmd_new() {
     command tmux display-message "wt: $kind $name, opening it" 2>/dev/null
     start="$path"
     [ "$kind" = recycle ] || start="$main"
+    # WT_NEW_CMD rides as an argument: the pane gets the SERVER's environment, not ours, and
+    # `new-session -e` would leave it in the session's, where every later window inherits it.
     tmux new-session -ds "$name" -c "$start" \
-      "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind")" ||
+      "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind" "$WT_NEW_CMD")" ||
       panel_die "could not create session $name"
     printf '%s\n' "$name"
     if [ "$detach" = 1 ]; then
@@ -775,18 +777,19 @@ wt_prepare() {
   fi
 }
 
-# cmd_prepare -- `_prepare`, the first pane of a session `new` opened inside tmux. Not for
-# typing: it does wt_prepare in the foreground, then BECOMES the pane's shell -- in the
-# worktree on success, in the main checkout on failure with the error left on screen.
+# cmd_prepare <main> <path> <n> <kind> [<cmd>] -- `_prepare`, the first pane of a session
+# `new` opened inside tmux. Not for typing: it does wt_prepare in the foreground, then BECOMES
+# the pane's command (`new`'s WT_NEW_CMD) or shell -- in the worktree on success, in the main
+# checkout on failure with the error left on screen.
 cmd_prepare() {
-  local main="$1" path="$2" n="$3" kind="$4" what
+  local main="$1" path="$2" n="$3" kind="$4" cmd="${5:-}" what
   what="cutting $(basename "$path")"
   [ "$kind" = recycle ] && what="reusing idle $(basename "$path")"
   printf '%swt: %s, fetching and checking out...%s\n' "$C_DIM" "$what" "$C_OFF"
   if wt_prepare "$main" "$path" "$n" "$kind"; then
     printf '%swt: ready.%s\n' "$C_SEL" "$C_OFF"
     cd "$path" || exit 1
-    [ -n "$WT_NEW_CMD" ] && exec "${SHELL:-/bin/sh}" -c "$WT_NEW_CMD"
+    [ -n "$cmd" ] && exec "${SHELL:-/bin/sh}" -c "$cmd"
     exec "${SHELL:-/bin/sh}" -l
   fi
   printf '\n%swt: %s FAILED, see above. This shell is in %s.%s\n' "$C_ERR" "$what" "$main" "$C_OFF"

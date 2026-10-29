@@ -12,7 +12,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, reboot, inventory]
-  reviewed: "2026-07-05"
+  reviewed: "2026-10-28"
 ---
 
 # session-snapshot
@@ -74,7 +74,7 @@ Write the file with these sections (see the template the skill emits):
 - **⚠️ Before reboot** - dirty/unpushed repos (commit/stash prompt)
 - **🟢 Auto-restarts (enabled --user units)** - do nothing
 - **🟡 Manual restart** - running-but-not-enabled services + dev servers (with exact relaunch cmd + port)
-- **🔴 Dies on reboot** - tmux/Claude sessions table (session | dir | branch)
+- **🔴 Dies on reboot** - tmux/Claude sessions table (server | session | dir | branch | project | Claude session id | board row, if it was working one). The id is what `restore` resumes; the project comes from `resolve_project_name <dir>` (`~/.config/shared-hooks/project-name.sh`), the row from `fleet-dispatch`'s ledger at `~/.agent/dispatch/live/<session>` when it has one.
 - **Docker** - containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
 - **Resume task** - any in-flight task to pick up (e.g. the original reason for rebooting)
 
@@ -92,7 +92,8 @@ ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklis
 ```
 
 Read it, then **with confirmation** offer to:
-- recreate tmux sessions: `tmux new-session -d -s <name> -c <dir>` (+ `tmux send-keys 'claude' Enter` if it was a Claude window)
+- bring back each Claude session with `fleet-dispatch start --project <project> --server <server> --session <name> --cwd <dir> --resume <session id> [--row "<row>"]`. That is the one way an agent starts a session: it tags the session `@dispatch` (the human reads `[dispatch]` as "an agent started this") and writes the ledger naming its server, which `fleet-dispatch reap` and `fleet-sessions` read. Never `tmux new-session` + `claude --resume` by hand, and never tag a session with `set-option` afterwards. `start` refuses a session name that already exists on that server, so a Claude window that shared a human's session (the main checkout's `dotfiles`, say) gets its own `--session`, named for the window.
+- recreate other tmux sessions (no Claude in them): `tmux new-session -d -s <name> -c <dir>`
 - start the manual services: `systemctl --user start <unit>`
 - relaunch dev servers with the captured command line
 - `docker start <name>` for DBs that lacked a restart policy

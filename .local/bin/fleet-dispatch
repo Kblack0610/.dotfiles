@@ -5,6 +5,9 @@
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch reap              settle ledger entries whose session is gone
+#   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
+#       (--brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--row KEY])
+#                                    start ONE session the way every agent must: see cmd_start
 #
 # A row is only a candidate when the human ASSIGNED it: `#worker/<DISPATCH_WORKER>` plus a
 # `#tier/N` within that worker's max_tier in workers.json (tier meanings: policy.md).
@@ -13,6 +16,7 @@
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and
 # gets a detached `wt new` session on the lab server running /one-shot, tagged @dispatch,
 # with a ledger entry at live/<session> that fleet-sessions reads. Pause with `agent-hold set dispatch`.
+# `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # Tuning is the DISPATCH_* block, set in the agentctl conf.
 
 set -uo pipefail
@@ -101,14 +105,32 @@ sig() { sha256sum | cut -c1-12; }
 # policy_sig -> changes whenever the policy or the worker registry does, so both re-judge.
 policy_sig() { cat "$DISPATCH_POLICY" "$DISPATCH_WORKERS" 2>/dev/null | sig; }
 
-session_live() { tmux -L "$DISPATCH_SERVER" has-session -t "=$1" 2>/dev/null; }
+# np <profile> <args...> -> notes, under that profile, or notes' own default when it is empty
+# (a hand `start` may leave the profile to the CLI).
+np() {
+  local p="$1"
+  shift
+  if [ -n "$p" ]; then notes --profile "$p" "$@"; else notes "$@"; fi
+}
 
-# live_projects -> the project of every ledger entry whose session is still running
+# ledger_field <file> <name> -> that line's value
+ledger_field() { sed -n "s/^$2=//p" "$1" | head -1; }
+
+# session_live <session> [server] -- a ledger older than the server= line was always on DISPATCH_SERVER.
+session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
+
+# ledger_live <ledger file> -- is its session up, on the server the ledger names?
+ledger_live() { session_live "${1##*/}" "$(ledger_field "$1" server)"; }
+
+# live_projects -> the project of every running session this runner started itself. A hand
+# launch or a restore is tagged and tracked like any other, but holds none of the runner's
+# slots: a dozen restored sessions must not stop dispatch for the day.
 live_projects() {
   local f
   for f in "$LIVE"/*; do
     [ -f "$f" ] || continue
-    session_live "${f##*/}" && sed -n 's/^project=//p' "$f"
+    case "$(ledger_field "$f" origin)" in '' | run) ;; *) continue ;; esac
+    ledger_live "$f" && ledger_field "$f" project
   done
   return 0
 }
@@ -117,7 +139,7 @@ live_projects() {
 rows() {
   local flag=()
   [ "$3" = agent ] && flag=(--agent)
-  notes --profile "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3-
+  np "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3-
 }
 
 # row_is <profile> <project> <lane> <key> <mark> -- is that row on the board as `- [<mark>]`?
@@ -265,35 +287,100 @@ EOF
 }
 
 launch() {
-  local c="$1" project lane key prof repo text model brief cmd session label flag=()
+  local c="$1" project lane key prof repo text model flag=()
   project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c"); key=$(jq -r .key <<<"$c")
   prof=$(jq -r .profile <<<"$c"); repo=$(jq -r .repo <<<"$c"); text=$(jq -r .text <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
-
-  # Claim: the row must still be open right now, and `start` must leave THIS row started.
-  row_is "$prof" "$project" "$lane" "$key" ' ' ||
-    { say "skip $project: row no longer open: $key"; return 1; }
-  notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-  row_is "$prof" "$project" "$lane" "$key" / ||
-    { say "skip $project: could not start row: $key"; return 1; }
-
   model=$(model-lane classify "$text" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
-  brief=$(brief_for "$c")
-  cmd="claude --model ${model:-opus} --permission-mode bypassPermissions $(printf '%q' "$brief")"
-  session=$(cd "$repo" && WT_NEW_CMD="$cmd" wt new --server "$DISPATCH_SERVER" --detach -c "$repo" | tail -1)
-  if [ -z "$session" ]; then
-    notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-    say "wt new failed for $project; row un-started"
-    return 1
+  START_ORIGIN=run cmd_start --profile "$prof" --project "$project" "${flag[@]}" --row "$key" \
+    --server "$DISPATCH_SERVER" --model "${model:-opus}" --cwd "$repo" --brief <(brief_for "$c")
+}
+
+# cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
+# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
+# its server (the human reads [dispatch] as "an agent started this") with a ledger at
+# live/<session> naming that server, which reap and fleet-sessions read. Before this, only
+# `run` did either, and agents tagged their hand launches with set-option, which the human
+# had to ask about twice.
+#   --brief FILE --row KEY  claim the open row, cut a worktree off --cwd (default: the
+#                           project's repo) with `wt new`, and run claude on the brief there.
+#   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
+#                           The sheet is not touched: the row was claimed before the reboot.
+cmd_start() {
+  local project='' prof='' lane=human key='' server="$DISPATCH_SERVER" model='' brief_file='' \
+    resume='' cwd='' session='' brief cmd label origin flag=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent) lane=agent; shift; continue ;;
+      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session) ;;
+      *) say "start: unknown argument: $1"; return 2 ;;
+    esac
+    [ $# -ge 2 ] && [ -n "$2" ] || { say "start: $1 needs a value"; return 2; }
+    case "$1" in
+      --project) project=$2 ;;
+      --profile) prof=$2 ;;
+      --row) key=$2 ;;
+      --server) server=$2 ;;
+      --model) model=$2 ;;
+      --brief) brief_file=$2 ;;
+      --resume) resume=$2 ;;
+      --cwd) cwd=$2 ;;
+      --session) session=$2 ;;
+    esac
+    shift 2
+  done
+  [ -n "$project" ] || { say "start: --project is required"; return 2; }
+  [ "$lane" = agent ] && flag=(--agent)
+
+  if [ -n "$brief_file" ] && [ -z "$resume" ]; then
+    [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
+    [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
+    [ -n "$cwd" ] || cwd=$(repo_dir "$project")
+    [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
+    brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
+    origin=${START_ORIGIN:-hand}
+
+    # Claim: the row must still be open right now, and `start` must leave THIS row started.
+    row_is "$prof" "$project" "$lane" "$key" ' ' ||
+      { say "skip $project: row no longer open: $key"; return 1; }
+    np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+    row_is "$prof" "$project" "$lane" "$key" / ||
+      { say "skip $project: could not start row: $key"; return 1; }
+
+    model=${model:-opus}
+    cmd="claude --model $(printf '%q' "$model") --permission-mode bypassPermissions $(printf '%q' "$brief")"
+    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
+    if [ -z "$session" ]; then
+      np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+      say "wt new failed for $project; row un-started"
+      return 1
+    fi
+  elif [ -n "$resume" ] && [ -z "$brief_file" ]; then
+    [ -n "$session" ] && [ -n "$cwd" ] || { say "start: --resume needs --session and --cwd"; return 2; }
+    [ -d "$cwd" ] || { say "start: not a directory: $cwd"; return 2; }
+    # One agent per session: the ledger and the label belong to the whole session, so a
+    # restore never lands in a session someone already has (a main checkout's, say).
+    if session_live "$session" "$server"; then
+      say "start: session $session already exists on $server; pass another --session"
+      return 1
+    fi
+    origin=${START_ORIGIN:-resume}
+    cmd="claude${model:+ --model $(printf '%q' "$model")} --permission-mode bypassPermissions --resume $(printf '%q' "$resume")"
+    tmux -L "$server" new-session -d -s "$session" -c "$cwd" "$cmd" ||
+      { say "could not create session $session on $server"; return 1; }
+  else
+    say "start: give exactly one of --brief or --resume"
+    return 2
   fi
-  label="$project: $(cut -c1-60 <<<"$key")"
+
+  label="$project: $(cut -c1-60 <<<"${key:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
-  tmux -L "$DISPATCH_SERVER" set-option -t "=$session:" @dispatch "$label" ||
+  tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
   mkdir -p "$LIVE"
-  printf 'project=%s\nprofile=%s\nlane=%s\nkey=%s\nmodel=%s\nlabel=%s\nstarted=%s\n' \
-    "$project" "$prof" "$lane" "$key" "${model:-opus}" "$label" "$(date -Iseconds)" > "$LIVE/$session"
-  logline "started $session for $project $lane: $key"
+  printf 'project=%s\nprofile=%s\nlane=%s\nkey=%s\nmodel=%s\nlabel=%s\nserver=%s\norigin=%s\nstarted=%s\n' \
+    "$project" "$prof" "$lane" "$key" "${model:-}" "$label" "$server" "$origin" "$(date -Iseconds)" > "$LIVE/$session"
+  logline "started $session on $server ($origin) for $project $lane: ${key:-resume $resume}"
   echo "started $session: $label"
 }
 
@@ -309,23 +396,25 @@ cmd_reap() {
   for f in "$LIVE"/*; do
     [ -f "$f" ] || continue
     s="${f##*/}"
-    project=$(sed -n 's/^project=//p' "$f"); prof=$(sed -n 's/^profile=//p' "$f")
-    lane=$(sed -n 's/^lane=//p' "$f"); key=$(sed -n 's/^key=//p' "$f")
-    if session_live "$s"; then
+    project=$(ledger_field "$f" project); prof=$(ledger_field "$f" profile)
+    lane=$(ledger_field "$f" lane); key=$(ledger_field "$f" key)
+    if ledger_live "$f"; then
+      # A restore with no row has nothing to settle while its session runs.
+      [ -z "$key" ] && continue
       row_is "$prof" "$project" "$lane" "$key" / && continue
       logline "reaped $s: $project $lane row no longer open (session still up): $key"
       rm -f -- "$f"
       continue
     fi
     flag=(); [ "$lane" = agent ] && flag=(--agent)
-    if row_is "$prof" "$project" "$lane" "$key" /; then
-      notes --profile "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+    if [ -n "$key" ] && row_is "$prof" "$project" "$lane" "$key" /; then
+      np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
       jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" \
         '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "session ended without the row done", at: $at}' >> "$VERDICTS"
       logline "reaped $s: session gone, row un-started: $project $lane: $key"
       echo "un-started $project: $key ($s ended without it done)"
     else
-      logline "reaped $s: $project $lane row no longer open: $key"
+      logline "reaped $s: session gone${key:+, $project $lane row no longer open: $key}"
     fi
     rm -f -- "$f"
   done
@@ -385,8 +474,9 @@ main() {
     candidates) cmd_candidates ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
-    -h | --help) sed -n '2,16p' "$0" ;;
-    *) sed -n '2,7p' "$0" >&2; return 2 ;;
+    start) shift; cmd_start "$@" ;;
+    -h | --help) sed -n '2,20p' "$0" ;;
+    *) sed -n '2,10p' "$0" >&2; return 2 ;;
   esac
 }
 
