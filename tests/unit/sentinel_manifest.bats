@@ -196,3 +196,17 @@ EOF
   run "$SM" validate --strict "$M"
   assert_success
 }
+
+@test "confirm accepts a whole number of probes" {
+  base; echo 'confirm: 3' >> "$M"
+  run "$SM" validate "$M"
+  assert_success
+}
+
+@test "a mistyped confirm is rejected, not read as 1" {
+  # The loop treats anything non-numeric as 1, which silently turns the debounce off.
+  base; echo 'confirm: three' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'confirm'
+}
