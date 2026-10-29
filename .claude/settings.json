@@ -256,6 +256,7 @@
     "clangd-lsp@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "enableAllProjectMcpServers": true,
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",

@@ -57,7 +57,7 @@ The sync script reads `$RULESYNC_ROOT` (default `~/.config/rulesync-global`, the
 What it writes, and what it explicitly does NOT:
 
 - Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`
-- Does NOT write: `~/.claude/CLAUDE.md` or `~/.claude/.mcp.json` - those are symlinks into `~/.dotfiles-private/.claude/`. Editing the private file IS the deploy; no sync needed.
+- Does NOT write: `~/.claude/CLAUDE.md` - a symlink into `~/.dotfiles-private/.claude/`. Editing the private file IS the deploy; no sync needed.
 
 ## Running the sync
 
