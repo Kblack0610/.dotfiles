@@ -69,6 +69,8 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 .card .q { white-space: pre-wrap; margin-bottom: 10px; }
 .card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .card .opts .rec { border-color: var(--accent); }
+.card .open { float: right; color: var(--accent); cursor: pointer; }
+h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px auto 8px; max-width: 760px; }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 @media (max-width: 760px) {
   main { grid-template-columns: 1fr; }
@@ -85,7 +87,7 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
   <h1>Agents</h1>
   <div class="tabs">
     <button id="tab-sessions" class="on">Sessions<span id="wait-badge"></span></button>
-    <button id="tab-asks">Asks<span id="ask-badge"></span></button>
+    <button id="tab-asks">Waiting<span id="ask-badge"></span></button>
   </div>
   <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
 </header>
@@ -145,6 +147,8 @@ function coalesce(fn) {
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
   renderList();
+  renderBadge();
+  if (st.tab === "asks") renderAsks();
   if (st.sel) {
     const a = st.agents.find((x) => x.target === st.sel.target);
     if (a) { st.sel = a; renderHead(); } else { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
@@ -284,13 +288,53 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 const refreshAsks = coalesce(async () => {
   st.asks = await api("/api/asks");
-  $("ask-badge").innerHTML = st.asks.length ? `<span class="badge">${st.asks.length}</span>` : "";
+  renderBadge();
   if (st.tab === "asks") renderAsks();
 });
 
+// The Waiting tab: every live session with an open question (read from its transcript
+// by the server), then the queue asks that headless runs post. One count for both.
+const asking = () => st.agents.filter((a) => a.question);
+function renderBadge() {
+  const n = asking().length + st.asks.length;
+  $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
+}
+
+function sessionCard(a) {
+  const q = a.question;
+  let opts = "";
+  if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
+  if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
+  return `
+    <div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">
+      <span class="open" data-open>open</span>
+      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)}${q.kind === "tool" ? " &middot; permission" : ""}</div>
+      <div class="q">${esc(q.text)}</div>
+      <div class="opts">
+        ${opts}
+        <input placeholder="reply in this session" data-free><button class="btn" data-reply>Send</button>
+      </div>
+      <div class="err"></div>
+    </div>`;
+}
+
 function renderAsks() {
-  if (!st.asks.length) { $("asks").innerHTML = '<div class="empty">No pending asks.</div>'; return; }
-  $("asks").innerHTML = st.asks.map((a) => `
+  // Session events re-render this often; keep a reply that is being typed.
+  const f = document.activeElement, card = f && f.closest && f.closest("#asks .card");
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  drawAsks();
+  if (!keep) return;
+  const again = [...$("asks").querySelectorAll(".card")].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const input = again && again.querySelector("[data-free]");
+  if (input) { input.value = keep.v; input.focus(); }
+}
+
+function drawAsks() {
+  const live = asking();
+  if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
+  let html = "";
+  if (live.length) html += '<h2 class="sec">Sessions</h2>' + live.map(sessionCard).join("");
+  if (st.asks.length) html += '<h2 class="sec">Headless runs</h2>' + st.asks.map((a) => `
     <div class="card" data-id="${esc(a.id)}">
       <div class="meta">${esc(a.project)} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
       <div class="q">${esc(a.question)}</div>
@@ -300,16 +344,50 @@ function renderAsks() {
       </div>
       <div class="err"></div>
     </div>`).join("");
+  $("asks").innerHTML = html;
+}
+
+// A session card answers through the session's own pane, so the answer lands in that
+// conversation. A typed reply to a dialog first closes it with Escape; the text then
+// arrives as the human's next message.
+async function answerSession(card, e) {
+  const t = card.dataset.t;
+  if (e.target.dataset.open !== undefined) {
+    const a = st.agents.find((x) => x.target === t);
+    if (a) { setTab("sessions"); select(a); }
+    return;
+  }
+  const key = e.target.dataset.k;
+  const text = e.target.dataset.reply !== undefined ? card.querySelector("[data-free]").value : "";
+  if (!key && !text.trim()) return;
+  if (key) await post("/api/send", { t, key });
+  else {
+    if (card.dataset.kind !== "text") await post("/api/send", { t, key: "Escape" });
+    await post("/api/send", { t, text });
+  }
+  card.querySelector("[data-free]").value = "";
 }
 
 $("asks").addEventListener("click", async (e) => {
   const card = e.target.closest(".card");
   if (!card) return;
+  if (card.dataset.t) {
+    try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
+    catch (err) { card.querySelector(".err").textContent = err.message; }
+    return;
+  }
   let answer = e.target.dataset.a;
   if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
   if (!answer || !answer.trim()) return;
   try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
   catch (err) { card.querySelector(".err").textContent = err.message; }
+});
+
+$("asks").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !e.target.matches("[data-free]")) return;
+  e.preventDefault();
+  const btn = e.target.parentElement.querySelector("[data-reply], [data-send]");
+  if (btn) btn.click();
 });
 
 function setTab(t) {
