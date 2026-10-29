@@ -9,7 +9,8 @@
 # The editor deliberately took a key nothing else wanted (Space, whose stock binding is
 # next-layout), so no existing surface was rebound to make room. That is worth ASSERTING
 # rather than trusting: an earlier revision of this feature moved mail off prefix+e, and a
-# rekey is exactly the kind of change that silently strands a key you use daily.
+# rekey is exactly the kind of change that silently strands a key you use daily. e is the
+# infra board now (mail retired 2026-10-28), and is pinned here for the same reason.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -76,27 +77,21 @@ setup() {
   assert_output '0'
 }
 
-# ── Mail, which this feature must NOT have touched ───────────────────────────
+# ── prefix+e, which this feature must NOT have touched ───────────────────────
 
-@test "mail is still on prefix+e, exactly where it was" {
-  local mail
-  mail="$(bind_for e)"
-  [ -n "$mail" ] || fail "prefix+e is not bound -- mail was dropped"
-  grep -qF 'aerc' <<< "$mail" || fail "prefix+e is bound to something that is not mail: $mail"
+@test "infra is still on prefix+e, exactly where it was" {
+  local infra
+  infra="$(bind_for e)"
+  [ -n "$infra" ] || fail "prefix+e is not bound -- infra was dropped"
+  grep -qF 'hub:infra' <<< "$infra" || fail "prefix+e is bound to something that is not infra: $infra"
 }
 
 @test "prefix+e is bound exactly once" {
   # A duplicate bind is silent: tmux keeps the LAST one, so a stray editor bind on e
-  # further down the file would beat mail with no diagnostic at load.
+  # further down the file would beat infra with no diagnostic at load.
   local n
   n="$(root_binds | awk -F'\t' '$1 == "e"' | grep -c .)"
   [ "$n" -eq 1 ] || fail "prefix+e is bound $n times -- tmux silently keeps only the last"
-}
-
-@test "aerc is bound exactly once, and not on a second key" {
-  local n
-  n="$(grep -cE '^[[:space:]]*(bind|bind-key)[[:space:]].*aerc' "$TMUX_CONF")"
-  [ "$n" -eq 1 ] || fail "aerc appears in $n bindings, expected 1"
 }
 
 @test "the editor claimed no Alt key, so nvim and the shell still see them" {

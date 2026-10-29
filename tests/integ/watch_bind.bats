@@ -47,3 +47,9 @@ setup() {
   run awk '$1 == "hub:log" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
   assert_output 'day-log watch'
 }
+
+@test "prefix+e goes to the hub:infra window, and hub.conf declares it running the command center" {
+  assert_equal "$(bind_for e)" 'run-shell "tmx goto hub hub:infra"'
+  run awk '$1 == "hub:infra" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
+  assert_output '~/.local/src/tmux/command-center.sh'
+}
