@@ -131,25 +131,36 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_success; assert_output 'no account has room (the best is alt: 5h 2%, 7d 100%)'
   run refusal idle "" "$ALT" 99.5 alt "x"
   assert_failure
-  run refusal shell "" "" "" "" ""
+  run refusal idle "" "" "" "" ""
   assert_success; assert_output --partial 'no usage data'
+}
+
+@test "move refuses a session with background shells unless told to stop them" {
+  src
+  run refusal shell "" "$ALT" 10 alt "5h 1%" 0
+  assert_success; assert_output --partial 'pass --stop-shells'
+  run refusal shell "" "$ALT" 10 alt "5h 1%"
+  assert_success; assert_output --partial 'background shells are running'
+  run refusal shell "" "$ALT" 10 alt "5h 1%" 1
+  assert_failure; assert_output ''
 }
 
 @test "move refuses a session already on the account with the most room" {
   src
-  run refusal shell "$ALT" "$ALT" 10 alt "5h 1%"
+  run refusal shell "$ALT" "$ALT" 10 alt "5h 1%" 1
   assert_success; assert_output --partial 'already on alt'
   run refusal idle "" "" 10 main "5h 1%"
   assert_success; assert_output --partial 'already on main'
-  run refusal shell "" "$ALT" 10 alt "5h 1%"
+  run refusal idle "" "$ALT" 10 alt "5h 1%"
   assert_failure; assert_output ''
 }
 
 @test "the background-shell dialog is answered by its own option number" {
   src
-  run dialog_choice $'  Background tasks are running\n  1. Exit and stop tasks\n  2. Move to background and exit\n  3. Stay'
-  assert_output 2
-  run dialog_choice $' > 1. Stay\n   2. Exit and stop tasks\n   3. Move to background and exit'
+  # the dialog as Claude Code 2.1.312 draws it
+  run dialog_choice $'  Background work is running\n  ❯ 1. Exit and stop tasks\n    2. Move to background and exit\n    3. Stay'
+  assert_output 1
+  run dialog_choice $' > 1. Stay\n   2. Move to background and exit\n   3. Exit and stop tasks'
   assert_output 3
   run dialog_choice $'❯ /exit\n  bypass permissions on'
   assert_output ''
@@ -193,4 +204,18 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   run descends 5 5; assert_success
   run descends 5 7; assert_failure
   run descends 7 9; assert_failure
+}
+
+@test "background shells are the claude's children that source a shell snapshot" {
+  src
+  mkdir -p "$SANDBOX/proc/"{50,51,52,53}
+  echo '50 (claude) S 1 0' > "$SANDBOX/proc/50/stat"
+  echo '51 (zsh) S 50 0' > "$SANDBOX/proc/51/stat"
+  printf '/bin/zsh\0-c\0source /x/shell-snapshots/s.sh && eval '"'"'scripts/test/suite.sh --retry'"'"'\0' > "$SANDBOX/proc/51/cmdline"
+  echo '52 (npm exec) S 50 0' > "$SANDBOX/proc/52/stat"
+  printf 'npm\0exec\0@playwright/mcp\0' > "$SANDBOX/proc/52/cmdline"
+  echo '53 (zsh) S 9 0' > "$SANDBOX/proc/53/stat"
+  printf '/bin/zsh\0-c\0source /x/shell-snapshots/s.sh\0' > "$SANDBOX/proc/53/cmdline"
+  run bg_shells 50
+  assert_output "51  scripts/test/suite.sh --retry' "
 }

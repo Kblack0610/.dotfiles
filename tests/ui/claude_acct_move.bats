@@ -4,7 +4,8 @@
 # pane held open by remain-on-exit survives its claude and is respawned in place, keeping
 # the session and its @dispatch label, and a resume typed into a real shell starts there.
 # `claude` is a fake that registers itself in the shared registry the way Claude does, and
-# shows the background-shell dialog on /exit when FAKE_DIALOG is set.
+# shows the background-shell dialog on /exit when FAKE_DIALOG is set (it exits on option 1,
+# "Exit and stop tasks", the only answer move gives).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -38,7 +39,7 @@ while IFS= read -r line; do
   printf '  1. Exit and stop tasks\n  2. Move to background and exit\n  3. Stay\n'
   IFS= read -rn1 c
   echo "$c" >> "$HOME/choices"
-  [ "$c" = 2 ] && exit 0
+  [ "$c" = 1 ] && exit 0
 done
 FAKE
   chmod +x "$SANDBOX/bin/claude"
@@ -87,10 +88,10 @@ registered() {
   t send-keys -t '=agent-s:' -l 'FAKE_STATUS=shell FAKE_DIALOG=1 claude --dangerously-skip-permissions'
   t send-keys -t '=agent-s:' Enter
   wait_until 'registered main'
-  run "$ACCT" move agent-s --server "$SRV"
+  run "$ACCT" move agent-s --server "$SRV" --stop-shells
   assert_success
   assert_output --partial 'claude-acct: moved agent-s to alt'
-  [ "$(cat "$HOME/choices")" = 2 ]
+  [ "$(cat "$HOME/choices")" = 1 ]
   wait_until 'registered "$ALT"'
   wait_until 't capture-pane -pJ -t "=agent-s:" | grep -q "account=$ALT args=--dangerously-skip-permissions --resume sid-1"'
 }
