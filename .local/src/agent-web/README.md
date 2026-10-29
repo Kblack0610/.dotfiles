@@ -13,7 +13,8 @@ It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux 
 | Live screen | `tmux capture-pane` on the agent's own pane id |
 | Typing | `load-buffer` + `paste-buffer -p` (bracketed paste, so a newline does not submit early), then `Enter` |
 | Keys | a fixed list: Enter, Escape, arrows, Tab, Space, 1-9. No `C-c`/`C-d` |
-| Asks | `agent-ask list --all --pending` and `agent-ask answer` |
+| Waiting tab | each `waiting` or `idle` session's open question, read from the end of its transcript (`transcript::pending_question`): an AskUserQuestion dialog with its options, a tool waiting on permission, or its last message. Answers go through Typing/Keys into that session's pane, so they land in the conversation that asked; a typed reply to a dialog sends Escape first |
+| Asks | below the sessions on the same tab: `agent-ask list --all --pending` and `agent-ask answer`, for headless runs only (an attended session asks in its conversation) |
 | Live updates | inotify on `~/.claude/sessions`, `~/.claude/projects` and `~/.agent/asks`, pushed over SSE. Nothing polls |
 
 Only a target that is a live agent right now accepts input, so the API cannot be aimed at an arbitrary pane.
