@@ -70,6 +70,7 @@ These read the project transcript and print a compliance audit. They are not wir
 | Matcher | File | Job |
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
+| Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 

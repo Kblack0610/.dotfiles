@@ -157,3 +157,40 @@ textfile_fixture() {
   run grep -c '^fleet_agent_sessions 14$' "$OUT/fleet_local.prom"
   assert_output 1
 }
+
+# Lines are `pid ppid etimes stat`, one per thread, as d_sample prints them.
+@test "blocked_pick: the 2026-10-29 walk gets a row, short D and kernel threads do not" {
+  run blocked_pick <<'PS'
+3546209 3546207 2331 S<l
+3546209 3546207 2331 D<l
+3546209 3546207 2331 D<l
+3546209 3546207 2331 D<l
+4100000 4099999 10 D
+2158286 2 50000 D
+2 0 50000 S
+900 1 50000 R
+PS
+  assert_success
+  assert_output '3546209 3 2331'
+}
+
+@test "blocked_pick: most blocked threads first, and the age floor is FLEET_BLOCKED_MIN_AGE" {
+  FLEET_BLOCKED_MIN_AGE=5
+  run blocked_pick <<'PS'
+10 1 6 D
+20 1 6 D
+20 1 6 D
+30 1 4 D
+PS
+  assert_output $'20 2 6\n10 1 6'
+}
+
+@test "d_threads counts every non-kernel thread in D state" {
+  run d_threads <<'PS'
+10 1 1 D
+10 1 1 D+
+11 2 9 D
+12 1 9 S
+PS
+  assert_output 2
+}

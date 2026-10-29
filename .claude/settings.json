@@ -153,6 +153,15 @@
         ]
       },
       {
+        "matcher": "Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/block-root-search.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task|Workflow",
         "hooks": [
           {
