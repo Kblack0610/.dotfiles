@@ -26,10 +26,12 @@
     // With no sensor set, waybar reads thermal_zone0, which on this box is the
     // WiFi card. Point at the CPU (k10temp Tctl) and dGPU junction instead, by
     // PCI path because hwmonN numbering changes between boots.
+    // Critical at 95: this Zen 4 part boosts until Tctl reads 95 C, so low 90s under
+    // load are normal (fleet-assess FLEET_HOT_TCTL uses the same line).
     "temperature": {
         "hwmon-path-abs": "/sys/devices/pci0000:00/0000:00:18.3/hwmon",
         "input-filename": "temp1_input",
-        "critical-threshold": 90,
+        "critical-threshold": 95,
         "format": "CPU {temperatureC}°C {icon}"
     },
     "temperature#gpu": {
