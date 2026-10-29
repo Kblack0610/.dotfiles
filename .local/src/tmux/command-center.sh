@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # command-center.sh - the hub's infra board (window hub:infra): each CI pool's busy slots
-# against its queue, every machine's load with its slots, the job each busy runner is on
-# (repo, PR, branch), what is queued, what is down, and one strip of domain statuses.
+# against its queue and its last day's pass rate, every machine's load with its slots (the
+# workstation's local Unity slots too), the job each busy runner or local gate is on (repo,
+# PR, branch), what is queued, what is down, how each workflow finished over the last day,
+# and one strip of domain statuses.
 # Terminal twin of Grafana kb-ci-runners and kb-command-center.
 #
 # It judges nothing: statuses are cc:* rules, rows are runner-exporter series (home-config
@@ -48,7 +50,8 @@ else
 fi
 
 declare -A V # "cc:name", "cc:domain_status/<domain>", "cc:host_x/<host>" or "cc:pool_x/<pool>" -> value
-RED_ITEMS=() RUNNERS=() WAITING=() RECENT=() LOCAL=()
+RED_ITEMS=() RUNNERS=() WAITING=() FINISHED=() LOCAL=()
+declare -A PR_BY_BRANCH # "<repo>/<branch>" -> the PR a runner or queued job carries for it
 API_OK='' FETCH_ERR=''
 
 # _q <promql> -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
@@ -69,12 +72,12 @@ _rows() {
 }
 
 fetch() {
-  V=() RED_ITEMS=() RUNNERS=() WAITING=() RECENT=() LOCAL=() API_OK='' FETCH_ERR=''
-  local cc red runners waiting recent api gates key val
+  V=() RED_ITEMS=() RUNNERS=() WAITING=() FINISHED=() LOCAL=() PR_BY_BRANCH=() API_OK='' FETCH_ERR=''
+  local cc red runners waiting finished api gates key val line repo pr branch
   cc="$(_q '{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate"}')" \
     && runners="$(_q "$W (github_runner_state)")" \
     && waiting="$(_q "$W (github_actions_job_waiting)")" \
-    && recent="$(_q "topk(5, $W (github_actions_run_recent))")" \
+    && finished="$(_q "sum by (repo, workflow, conclusion) ($W (github_runs_finished))")" \
     && api="$(_q 'min(github_runner_exporter_api_ok)')" \
     && gates="$(_q 'cc:host_local_gate')" \
     || { FETCH_ERR="cannot read $PROM_URL"; return 1; }
@@ -87,8 +90,17 @@ fetch() {
   [ -n "${V[cc:overall_status]:-}" ] || { FETCH_ERR="no cc:* series (recording rules not loaded?)"; return 1; }
   mapfile -t RUNNERS < <(_rows "$runners" host state pool name repo pr branch job_name workflow title | sort)
   mapfile -t WAITING < <(_rows "$waiting" pool repo pr branch stuck)
-  mapfile -t RECENT < <(_rows "$recent" conclusion repo workflow branch | sort -t$'\t' -k5,5nr)
-  mapfile -t LOCAL < <(_rows "$gates" host worktree branch platform | sort)
+  mapfile -t FINISHED < <(_rows "$finished" repo workflow conclusion)
+  mapfile -t LOCAL < <(_rows "$gates" host worktree branch platform repo | sort)
+  # A local gate carries no PR; the runner and queue rows for the same branch do.
+  for line in "${RUNNERS[@]}"; do
+    IFS=$'\t' read -r _ _ _ _ repo pr branch _ <<< "$line"
+    [ "$pr" = - ] || PR_BY_BRANCH[$repo/$branch]="$pr"
+  done
+  for line in "${WAITING[@]}"; do
+    IFS=$'\t' read -r _ repo pr branch _ <<< "$line"
+    [ "$pr" = - ] || PR_BY_BRANCH[$repo/$branch]="$pr"
+  done
   API_OK="$(jq -r '.data.result[0].value[1] // ""' <<< "$api")"
   # The same three sources as the dashboard's "What is red" table.
   red="$(_q 'label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
@@ -102,6 +114,8 @@ fetch() {
 _num() { local v="${V[$1]:-}"; [ -n "$v" ] && printf '%.0f' "$v" 2>/dev/null || printf '?'; }
 _usd() { local v="${V[$1]:-}"; [ -n "$v" ] && printf '$%.0f' "$v" 2>/dev/null || printf '?'; }
 _pct() { local v="${V[$1]:-}"; [ -n "$v" ] && awk -v v="$v" 'BEGIN { printf "%.0f%%", v * 100 }' || printf -- '-'; }
+# _int <key> -> the value as a whole number, or - when the series is absent (never a 0 it did not say).
+_int() { local v="${V[$1]:-}"; [ -n "$v" ] && printf '%.0f' "$v" 2>/dev/null || printf -- '-'; }
 # _dur <seconds> -> 45s, 36m, 2h28m, 3d4h
 _dur() {
   local s="${1%%.*}"
@@ -132,11 +146,18 @@ _clip_ansi() {
     print out "~" OFF
   }'
 }
-# _sum <cc rule> -> the sum of its per-pool values, or ? when it has none.
+# _sum <cc rule...> -> the sum of their per-pool or per-host values, or ? when none has any.
 _sum() {
-  local k t='' p="$1/"
-  for k in "${!V[@]}"; do [[ "$k" == "$p"* ]] && t="$(awk -v a="${t:-0}" -v b="${V[$k]}" 'BEGIN { print a + b }')"; done
+  local k r t=''
+  for r in "$@"; do
+    for k in "${!V[@]}"; do [[ "$k" == "$r/"* ]] && t="$(awk -v a="${t:-0}" -v b="${V[$k]}" 'BEGIN { print a + b }')"; done
+  done
   [ -n "$t" ] && printf '%.0f' "$t" || printf '?'
+}
+# _local_hosts -> every host whose local Unity slots are published (cc:host_local_slots).
+_local_hosts() {
+  local k
+  for k in "${!V[@]}"; do [[ "$k" == cc:host_local_slots/* ]] && echo "${k#*/}"; done | sort
 }
 # _pools -> every pool a cc:pool_* series names, one per line, the longest queue first.
 _pools() {
@@ -168,21 +189,24 @@ header() {
   [ -n "${V[cc:agent_sessions_running]:-}" ] && here="  agent sessions $(_num cc:agent_sessions_running)"
   printf '%snodes %s/%s  heartbeats %s/%s  ci busy %s/%s waiting %s  agent runners %s failed  watches %s/%s tripped  lazer %s/%s  claude 24h %s%s%s\n' \
     "$C_DIM" "$(_num cc:k3s_nodes_ready)" "$(_num cc:k3s_nodes_total)" "$(_num cc:machines_up)" "$(_num cc:machines_total)" \
-    "$(_sum cc:pool_busy)" "$(_sum cc:pool_slots)" "$(_sum cc:pool_waiting)" "$(_num cc:runners_failed)" "$(_num cc:watches_tripped)" \
+    "$(_sum cc:pool_busy cc:host_local_busy)" "$(_sum cc:pool_slots cc:host_local_slots)" "$(_sum cc:pool_waiting cc:host_local_queued)" \
+    "$(_num cc:runners_failed)" "$(_num cc:watches_tripped)" \
     "$(_num cc:watches_total)" "$(_usd cc:lazer_spend_usd)" "$(_usd cc:lazer_budget_usd)" "$(_usd cc:claude_code_cost_24h_usd)" "$here" "$C_OFF"
 }
 
 # pools <width>: the balance view, one row per pool: busy of its slots, jobs waiting for it,
-# the oldest wait, and which machines serve it (host:n when a host has more than one slot).
+# the oldest wait, jobs done and their pass rate over the last day (cc:pool_*_24h), and which
+# machines serve it (host:n when a host has more than one slot). A machine's local Unity
+# slots are one more pool, unity-local, its waiting being the runs queued for a slot there.
 pools() {
-  local w="$1" line host state pool rest p
+  local w="$1" line host state pool rest p h
   declare -A on
   for line in "${RUNNERS[@]}"; do
     IFS=$'\t' read -r host state pool rest <<< "$line"
     case "$state" in running|idle) on[$pool/$host]=$(( ${on[$pool/$host]:-0} + 1 )) ;; esac
   done
   {
-    printf '\tPOOL\tBUSY\tWAITING\tOLDEST\tON\n'
+    printf '\tPOOL\tBUSY\tWAITING\tOLDEST\tDONE\tPASS\tON\n'
     while IFS= read -r p; do
       [ -n "$p" ] || continue
       local k hosts='' slots='-' old='-'
@@ -192,9 +216,14 @@ pools() {
       done
       [ -n "${V[cc:pool_slots/$p]:-}" ] && slots="$(_num "cc:pool_busy/$p")/$(_num "cc:pool_slots/$p")"
       [ -n "${V[cc:pool_oldest_wait_seconds/$p]:-}" ] && old="$(_dur "${V[cc:pool_oldest_wait_seconds/$p]}")"
-      printf '\t%s\t%s\t%s\t%s\t%s\n' "$p" "$slots" "$(_num "cc:pool_waiting/$p")" "$old" "$( [ -n "$hosts" ] && printf '%s' "${hosts% }" || printf -- - )"
+      printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$slots" "$(_num "cc:pool_waiting/$p")" "$old" \
+        "$(_int "cc:pool_done_24h/$p")" "$(_pct "cc:pool_pass_ratio_24h/$p")" "$( [ -n "$hosts" ] && printf '%s' "${hosts% }" || printf -- - )"
     done < <(_pools)
-  } | table_fit "$w" keep="1 2 3 4" flex=5 flexmin=8 right="2 3 4"
+    for h in $(_local_hosts); do
+      printf '\tunity-local\t%s/%s\t%s\t-\t%s\t%s\t%s\n' "$(_num "cc:host_local_busy/$h")" "$(_num "cc:host_local_slots/$h")" \
+        "$(_num "cc:host_local_queued/$h")" "$(_int "cc:host_local_done_24h/$h")" "$(_pct "cc:host_local_pass_ratio_24h/$h")" "$h"
+    done
+  } | table_fit "$w" keep="1 2 3 6 5 4" flex=7 flexmin=8 right="2 3 4 5 6" | _paint_pass
 }
 
 # machines <width>: one row per machine with its load and its slots per pool. Narrowing drops
@@ -219,7 +248,7 @@ machines() {
   for p in "${order[@]}"; do [[ " ${known[*]} " == *" $p "* ]] || known+=("$p"); done
   order=("${known[@]}")
   for line in "${LOCAL[@]}"; do
-    IFS=$'\t' read -r host wt branch plat val <<< "$line"
+    IFS=$'\t' read -r host wt branch plat _ val <<< "$line"
     [ -n "${seen[$host]:-}" ] || { seen[$host]=1; hosts+=("$host"); }
     gates[$host]=$(( ${gates[$host]:-0} + 1 ))
   done
@@ -236,7 +265,12 @@ machines() {
     for k in "${order[@]}"; do
       [ -n "${slots[$h/$k]:-}" ] && sl+="$k ${busy[$h/$k]}/${slots[$h/$k]}  "
     done
-    [ -n "${gates[$h]:-}" ] && sl+="${gates[$h]} gates  "
+    # Local slots once slots.sh publishes them; until then only the gates' count is known.
+    if [ -n "${V[cc:host_local_slots/$h]:-}" ]; then
+      sl+="unity-local $(_num "cc:host_local_busy/$h")/$(_num "cc:host_local_slots/$h")  "
+    elif [ -n "${gates[$h]:-}" ]; then
+      sl+="${gates[$h]} gates  "
+    fi
     sl="${sl%  }"
     printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$h" "$cpu" "$avg" "$load" "$mem" "$temp" "${sl:--}"
   done)"
@@ -257,11 +291,14 @@ running() {
     [ "$title" = - ] || [ "$title" = "$wf" ] || branch="$branch - $title"
     rows+="${val%%.*}"$'\t'"$host"$'\t'"$pool"$'\t'"$repo"$'\t'"$pr"$'\t'"$job"$'\t'"$branch"$'\n'
   done
-  # A machine that is not a runner (the workstation) runs its gates locally: pool "local",
-  # the worktree where the repo goes.
+  # A machine that is not a runner (the workstation) runs its gates locally: pool
+  # unity-local, the PR from a runner or queue row on the same branch, and the worktree only
+  # when the gate's repo is unknown.
   for line in "${LOCAL[@]}"; do
-    IFS=$'\t' read -r host wt branch plat val <<< "$line"
-    rows+="${val%%.*}"$'\t'"$host"$'\t'"local"$'\t'"$wt"$'\t'"-"$'\t'"$plat"$'\t'"$branch"$'\n'
+    IFS=$'\t' read -r host wt branch plat repo val <<< "$line"
+    [ "$repo" = - ] && repo="$wt"
+    pr="${PR_BY_BRANCH[$repo/$branch]:--}"; [ "$pr" = - ] || pr="#$pr"
+    rows+="${val%%.*}"$'\t'"$host"$'\t'"unity-local"$'\t'"$repo"$'\t'"$pr"$'\t'"$plat"$'\t'"$branch"$'\n'
   done
   if [ -z "$rows" ]; then printf '%sRUNNING%s  nothing\n' "$C_HEAD" "$C_OFF"; return; fi
   printf '%sRUNNING%s\n' "$C_HEAD" "$C_OFF"
@@ -325,24 +362,48 @@ down() {
   fi
 }
 
-recent() {
-  local w="$1" line c repo wf branch val now
-  now="$(date +%s)"
-  printf '%sRECENT%s\n' "$C_HEAD" "$C_OFF"
-  {
-    printf '\tAGO\tRESULT\tREPO\tWORKFLOW\tBRANCH\n'
-    for line in "${RECENT[@]}"; do
-      IFS=$'\t' read -r c repo wf branch val <<< "$line"
-      printf '\t%s\t%s\t%s\t%s\t%s\n' "$(_dur $((now - ${val%%.*})))" "$c" "$repo" "$wf" "$branch"
-    done
-  } | table_fit "$w" keep="1 2 3 4" flex=5 flexmin=12 right="1" | _paint_results
+# finished <width> <max rows>: the last day of runs per repo and workflow, the worst pass
+# rate first. Pass is success of success + failure + timed out, as cc:pool_pass_ratio_24h
+# counts jobs; cancelled is its own column, since gates for closed PRs are cancelled on
+# purpose. Workflows with nothing failed or cancelled fold into one line.
+finished() {
+  local w="$1" max="$2" agg bad green
+  if [ ${#FINISHED[@]} -eq 0 ]; then
+    printf '%sFINISHED 24H%s  no finished-run series yet (runner exporter)\n' "$C_HEAD" "$C_OFF"; return
+  fi
+  # pass% (-1 when nothing passed or failed), runs, passed, failed, cancelled, repo, workflow
+  agg="$(printf '%s\n' "${FINISHED[@]}" | awk -F'\t' '
+    { k = $1 "\t" $2; n = $4 + 0; runs[k] += n
+      if ($3 == "success") ok[k] += n
+      else if ($3 == "failure" || $3 == "timed_out") bad[k] += n
+      else if ($3 == "cancelled") can[k] += n }
+    END { for (k in runs) { j = ok[k] + bad[k]
+            printf "%d\t%d\t%d\t%d\t%d\t%s\n", j ? int(100 * ok[k] / j + 0.5) : -1, runs[k], ok[k], bad[k], can[k], k } }')"
+  bad="$(awk -F'\t' '$4 + $5 > 0' <<< "$agg" | sort -t$'\t' -k1,1n -k4,4nr -k5,5nr)"
+  green="$(awk -F'\t' '$4 + $5 == 0 { n++; r += $2 } END { if (n) print n, r }' <<< "$agg")"
+  printf '%sFINISHED 24H%s  %s\n' "$C_HEAD" "$C_OFF" "$(awk -F'\t' '{ r += $2; o += $3; f += $4; c += $5 }
+    END { printf "%d runs, %s pass, %d failed, %d cancelled", r, (o + f) ? sprintf("%.0f%%", 100 * o / (o + f)) : "-", f, c }' <<< "$agg")"
+  if [ -n "$bad" ]; then
+    {
+      printf '\tPASS\tRUNS\tFAIL\tCANCEL\tREPO\tWORKFLOW\n'
+      head -n "$max" <<< "$bad" | while IFS=$'\t' read -r pct runs _ f c repo wf; do
+        printf '\t%s\t%s\t%s\t%s\t%s\t%s\n' "$( [ "$pct" -ge 0 ] && printf '%s%%' "$pct" || printf -- - )" "$runs" "$f" "$c" "$repo" "$wf"
+      done
+    } | table_fit "$w" keep="1 3 6 4 2 5" flex=6 flexmin=10 flexkeep=1 right="1 2 3 4" cap="5:21" | _paint_pass
+    (( $(wc -l <<< "$bad") > max )) && printf '%s  +%d more workflows with failures (Grafana: Finished, last 24h)%s\n' "$C_DIM" $(( $(wc -l <<< "$bad") - max )) "$C_OFF"
+  fi
+  [ -n "$green" ] && printf '%s  +%s green workflows, %s runs%s\n' "$C_DIM" "${green% *}" "${green#* }" "$C_OFF"
+  return 0
 }
 
-# _paint_results: GitHub's own verdict words, coloured. Applied after fitting so escape
-# codes never count toward a column's width.
-_paint_results() {
+# _paint_pass: a pass rate under 70% red, under 90% amber, applied after fitting. Only tables
+# with a pass column are piped through it, and that is the one % on their rows.
+_paint_pass() {
   if [ -n "$C_OFF" ]; then
-    sed -E -e "s/\\b(failure|timed_out)\\b/${C_RED}&${C_OFF}/" -e "s/\\b(success)\\b/${C_OK}&${C_OFF}/"
+    awk -v R="$C_RED" -v A="$C_WARN" -v OFF="$C_OFF" '
+      match($0, /[0-9]+%/) { v = substr($0, RSTART, RLENGTH - 1) + 0; c = v < 70 ? R : (v < 90 ? A : "")
+        if (c != "") $0 = substr($0, 1, RSTART - 1) c substr($0, RSTART, RLENGTH) OFF substr($0, RSTART + RLENGTH) }
+      { print }'
   else cat; fi
 }
 
@@ -356,23 +417,23 @@ render() {
       "$C_DIM" "$REFRESH_SECS" "$C_OFF"
     return 0
   fi
-  local top pl mach run dn rec red foot q_rows used
+  local top pl mach run dn fin red foot q_rows used
   top="$(header | _clip_ansi "$cols")"
   pl="$(pools "$cols")"
   mach="$(machines "$cols")"
   run="$(running "$cols")"
   dn="$(down | _clip_ansi "$cols")"
-  rec="$(recent "$cols")"
+  fin="$(finished "$cols" 6)"
   if [ ${#RED_ITEMS[@]} -gt 0 ]; then red="red now: $(printf '%s, ' "${RED_ITEMS[@]}" | sed 's/, $//')"; else red='red now: nothing'; fi
   foot="$(printf '%s\n%s%s   fleet actions: Prefix+C-g   r refresh   q quit%s' "$red" "$C_DIM" "$GRAFANA_URL" "$C_OFF" | _clip_ansi "$cols")"
   # Pools, machines, running and DOWN always show. The queue gets what is left (at least 3
-  # groups), and RECENT goes first when the window is short.
+  # groups), and FINISHED goes first when the window is short.
   used=$(( $(wc -l <<< "$top") + $(wc -l <<< "$pl") + $(wc -l <<< "$mach") + $(wc -l <<< "$run") + $(wc -l <<< "$dn") + $(wc -l <<< "$foot") + 6 ))
-  q_rows=$(( lines - used - $(wc -l <<< "$rec") - 4 ))
-  if (( q_rows < 3 )); then rec=''; q_rows=$(( lines - used - 4 )); fi
+  q_rows=$(( lines - used - $(wc -l <<< "$fin") - 4 ))
+  if (( q_rows < 3 )); then fin=''; q_rows=$(( lines - used - 4 )); fi
   (( q_rows < 3 )) && q_rows=3
   printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n%s\n' "$top" "$pl" "$mach" "$run" "$(queued "$cols" "$q_rows")" "$dn"
-  [ -n "$rec" ] && printf '\n%s\n' "$rec"
+  [ -n "$fin" ] && printf '\n%s\n' "$fin"
   printf '\n%s\n' "$foot"
 }
 

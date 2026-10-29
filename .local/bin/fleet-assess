@@ -188,6 +188,54 @@ gate_rows() {
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 
+# The playground's run slots (its scripts/test/slots.sh): `capacity` holds "<open> <room>",
+# N.lock is flocked while slot N runs, queue.lock while runs wait. Its run ledger has one line
+# per finished run: end, start, result, platform, worktree, branch, repo.
+SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
+RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
+PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
+LEDGER_WINDOW_SECS=86400
+
+# lock_ids <file...> -> one "<maj:min:inode>" per file, as /proc/locks names it (hex device).
+lock_ids() {
+  local f
+  for f in "$@"; do
+    [ -e "$f" ] && printf '%02x:%02x:%s\n' "$(stat -c %Hd "$f")" "$(stat -c %Ld "$f")" "$(stat -c %i "$f")"
+  done
+}
+
+# slot_usage -> "<busy slots> <queued runs>" from /proc/locks. Reading it takes no lock, so it
+# never races a run claiming a slot the way a flock -n probe would. Queued is queue.lock's
+# holder (the run at the head, watching the slots) plus everyone blocked behind it.
+slot_usage() {
+  local ids q
+  ids="$(lock_ids "$SLOT_DIR"/[0-9]*.lock | paste -sd' ')"
+  q="$(lock_ids "$SLOT_DIR/queue.lock")"
+  awk -v ids=" $ids " -v q="$q" '
+    { id = ($2 == "->") ? $7 : $6; wait = ($2 == "->") }
+    !wait && index(ids, " " id " ") && !(id in held) { held[id] = 1; busy++ }
+    q != "" && id == q { queued++ }
+    END { print busy + 0, queued + 0 }' "$PROC_LOCKS" 2>/dev/null || echo '0 0'
+}
+
+# ledger_stats -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of run time,
+# over runs that ended in the last LEDGER_WINDOW_SECS.
+ledger_stats() {
+  # No ledger yet (no run since slots.sh began writing one) reads as no runs, not a failure.
+  local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
+  awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" '
+    BEGIN { c["pass"] = c["fail"] = c["timeout"] = c["error"] = 0 }
+    $1 >= since && ($3 in c) { c[$3]++; d[++n] = $1 - $2 }
+    END {
+      for (r in c) print r, c[r]
+      if (!n) exit
+      for (i = 2; i <= n; i++) { v = d[i]; for (j = i - 1; j > 0 && d[j] > v; j--) d[j + 1] = d[j]; d[j + 1] = v }
+      print "p50", d[rank(0.5)]; print "p90", d[rank(0.9)]
+    }
+    # Nearest rank: the smallest run time that q of the runs are at or under.
+    function rank(q,  i) { i = int(q * n); if (i < q * n) i++; return i < 1 ? 1 : i }' "$f" | sort
+}
+
 # agent_count -> claude processes whose parent is not claude: one per session.
 agent_count() {
   local p n=0
@@ -202,7 +250,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch
+  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued stats
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -211,13 +259,36 @@ write_textfile() {
     gate_rows | while IFS=$'\t' read -r secs proj plat pid; do
       wt="${proj%/}"; wt="${wt##*/}"
       branch="$(git -C "$proj" branch --show-current 2>/dev/null)"
-      printf 'fleet_local_gate{session="%s",worktree="%s",branch="%s",platform="%s"} %s\n' \
-        "$(_label "$(session_of "$pid")")" "$(_label "$wt")" "$(_label "${branch:--}")" "$(_label "$plat")" "$secs"
+      repo="$(basename "$(git -C "$proj" remote get-url origin 2>/dev/null)" .git)"
+      printf 'fleet_local_gate{session="%s",worktree="%s",branch="%s",platform="%s",repo="%s"} %s\n' \
+        "$(_label "$(session_of "$pid")")" "$(_label "$wt")" "$(_label "${branch:--}")" "$(_label "$plat")" \
+        "$(_label "${repo:--}")" "$secs"
     done | awk '{ v = $NF; k = substr($0, 1, length($0) - length(v) - 1); if (!(k in m) || v + 0 > m[k] + 0) m[k] = v }
                 END { for (k in m) print k, m[k] }' | sort
     echo '# HELP fleet_agent_sessions Claude agent sessions running on this machine.'
     echo '# TYPE fleet_agent_sessions gauge'
     echo "fleet_agent_sessions $(agent_count)"
+    # No capacity file (slots.sh never ran here) means no slot series, never a guessed count.
+    if read -r open room 2>/dev/null < "$SLOT_DIR/capacity"; then
+      read -r busy queued < <(slot_usage)
+      echo '# HELP fleet_local_slots Unity run slots on this machine (playground slots.sh): open always, burst only with room.'
+      echo '# TYPE fleet_local_slots gauge'
+      echo "fleet_local_slots{kind=\"open\"} $open"
+      echo "fleet_local_slots{kind=\"burst\"} $room"
+      echo '# HELP fleet_local_slots_busy Run slots held right now.'
+      echo '# TYPE fleet_local_slots_busy gauge'
+      echo "fleet_local_slots_busy $busy"
+      echo '# HELP fleet_local_queued Runs waiting for a slot.'
+      echo '# TYPE fleet_local_queued gauge'
+      echo "fleet_local_queued $queued"
+    fi
+    stats="$(ledger_stats)"
+    echo '# HELP fleet_local_gate_finished Local Unity runs that ended in the last 24h, by result (playground run ledger).'
+    echo '# TYPE fleet_local_gate_finished gauge'
+    awk '$1 !~ /^p[0-9]/ { printf "fleet_local_gate_finished{result=\"%s\"} %s\n", $1, $2 }' <<< "$stats"
+    echo '# HELP fleet_local_gate_duration_seconds Run time of those runs.'
+    echo '# TYPE fleet_local_gate_duration_seconds gauge'
+    awk '$1 ~ /^p[0-9]/ { printf "fleet_local_gate_duration_seconds{quantile=\"0.%s\"} %s\n", substr($1, 2, 1), $2 }' <<< "$stats"
   } > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$dir/fleet_local.prom" || { rm -f "$tmp"; return 1; }
 }
 

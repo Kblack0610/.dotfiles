@@ -122,7 +122,7 @@ textfile_fixture() {
   run write_textfile "$OUT"
   assert_success
   run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_gate{session="agent-7",worktree="unity-core-playground-agent-7",branch="feat/dodge-feel",platform="PlayMode"} 2160'
+  assert_line 'fleet_local_gate{session="agent-7",worktree="unity-core-playground-agent-7",branch="feat/dodge-feel",platform="PlayMode",repo="-"} 2160'
   refute_output --partial '} 30'
   assert_line 'fleet_agent_sessions 14'
 }
@@ -131,7 +131,7 @@ textfile_fixture() {
   textfile_fixture
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_gate{session="odd \"name\"",worktree="nogit",branch="-",platform="build"} 600'
+  assert_line 'fleet_local_gate{session="odd \"name\"",worktree="nogit",branch="-",platform="build",repo="-"} 600'
 }
 
 @test "textfile: readable by node_exporter's user, and no temp file left behind" {
@@ -156,6 +156,80 @@ textfile_fixture() {
   assert_output 0
   run grep -c '^fleet_agent_sessions 14$' "$OUT/fleet_local.prom"
   assert_output 1
+}
+
+@test "textfile: a gate's repo is its origin remote's name" {
+  textfile_fixture
+  git -C "$PROJ" remote add origin https://github.com/Org/unity-core-playground.git
+  write_textfile "$OUT"
+  run grep -c 'repo="unity-core-playground"} 2160$' "$OUT/fleet_local.prom"
+  assert_output 1
+}
+
+# slots.sh's directory with slots 1-3 and the queue, and a /proc/locks written from the
+# fixture files' own ids: slots 1 and 3 held, queue.lock held plus one waiter, a waiter on
+# slot 2 (waiting is not busy), and slot 2's inode on another device (not this file).
+slot_fixture() {
+  SLOT_DIR="$BATS_TEST_TMPDIR/slots"; mkdir -p "$SLOT_DIR"
+  touch "$SLOT_DIR"/{1,2,3,queue}.lock
+  echo '2 8' > "$SLOT_DIR/capacity"
+  PROC_LOCKS="$BATS_TEST_TMPDIR/locks"
+  local s1 s2 s3 q
+  s1="$(lock_ids "$SLOT_DIR/1.lock")" s2="$(lock_ids "$SLOT_DIR/2.lock")"
+  s3="$(lock_ids "$SLOT_DIR/3.lock")" q="$(lock_ids "$SLOT_DIR/queue.lock")"
+  cat > "$PROC_LOCKS" <<LOCKS
+1: FLOCK  ADVISORY  WRITE 11 $s1 0 EOF
+2: FLOCK  ADVISORY  WRITE 12 $s3 0 EOF
+3: FLOCK  ADVISORY  WRITE 13 $q 0 EOF
+3: -> FLOCK  ADVISORY  WRITE 14 $q 0 EOF
+4: -> FLOCK  ADVISORY  WRITE 15 $s2 0 EOF
+5: FLOCK  ADVISORY  READ 16 ff:ff:${s2##*:} 0 EOF
+LOCKS
+}
+
+@test "textfile: slots, busy and queued come from slots.sh's files and /proc/locks" {
+  textfile_fixture
+  slot_fixture
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_slots{kind="open"} 2'
+  assert_line 'fleet_local_slots{kind="burst"} 8'
+  assert_line 'fleet_local_slots_busy 2'
+  assert_line 'fleet_local_queued 2'
+}
+
+@test "textfile: no capacity file publishes no slot series, never a guessed count" {
+  textfile_fixture
+  slot_fixture
+  rm "$SLOT_DIR/capacity"
+  write_textfile "$OUT"
+  run grep -c '^fleet_local_slots' "$OUT/fleet_local.prom"
+  assert_output 0
+}
+
+@test "textfile: the last day of the run ledger, by result, with nearest-rank run times" {
+  textfile_fixture
+  local now; now="$(date +%s)"
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"
+  printf '%s\t%s\t%s\tPlayMode\twt\tb\tr\n' \
+    $((now - 100)) $((now - 700)) pass $((now - 50)) $((now - 250)) fail \
+    $((now - 90000)) $((now - 90600)) pass $((now - 10)) $((now - 20)) bogus > "$RUN_LEDGER"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_gate_finished{result="pass"} 1'
+  assert_line 'fleet_local_gate_finished{result="fail"} 1'
+  assert_line 'fleet_local_gate_finished{result="timeout"} 0'
+  assert_line 'fleet_local_gate_duration_seconds{quantile="0.5"} 200'
+  assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
+}
+
+@test "textfile: no ledger still publishes zero results and no run times" {
+  textfile_fixture
+  RUN_LEDGER="$BATS_TEST_TMPDIR/absent.tsv"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_gate_finished{result="pass"} 0'
+  refute_output --partial 'fleet_local_gate_duration_seconds{'
 }
 
 # Lines are `pid ppid etimes stat`, one per thread, as d_sample prints them.
