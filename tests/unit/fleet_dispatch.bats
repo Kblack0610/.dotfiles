@@ -23,6 +23,7 @@ setup() {
   stub agent-hold 'exit 0'
   stub fleet-assess 'exit 0'
   stub wave-lock 'exit 1'
+  stub claude-acct 'exit 0'   # main account; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
   stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   stub judge-stub 'echo "judge called" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
@@ -450,6 +451,23 @@ game_ready() {
   assert_not_called 'wt new'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "touched the row"
   assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/fix-crash" | paste -sd' ')" 'default resume'
+}
+
+@test "start runs claude on the account claude-acct picks, for a brief and for a resume" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  stub claude-acct 'echo /home/u/.claude-personal'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
+    --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called "fix-crash -c $SANDBOX/repos/game CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 @test "start --resume never lands in a session that already exists on that server" {

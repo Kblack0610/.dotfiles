@@ -119,6 +119,16 @@ ledger_field() { sed -n "s/^$2=//p" "$1" | head -1; }
 # session_live <session> [server] -- a ledger older than the server= line was always on DISPATCH_SERVER.
 session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
 
+# The env prefix that starts claude on the account with the most room left (claude-acct pick,
+# the same choice `cl` makes); empty for the main account or when claude-acct is missing.
+# Accounts share ~/.claude/projects, so a resumed session works from either one.
+account_env() {
+  local dir
+  dir=$(claude-acct pick 2>/dev/null) || dir=""
+  [ -n "$dir" ] && printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"
+  return 0
+}
+
 # ledger_live <ledger file> -- is its session up, on the server the ledger names?
 ledger_live() { session_live "${1##*/}" "$(ledger_field "$1" server)"; }
 
@@ -348,7 +358,7 @@ cmd_start() {
       { say "skip $project: could not start row: $key"; return 1; }
 
     model=${model:-opus}
-    cmd="claude --model $(printf '%q' "$model") --permission-mode bypassPermissions $(printf '%q' "$brief")"
+    cmd="$(account_env)claude --model $(printf '%q' "$model") --permission-mode bypassPermissions $(printf '%q' "$brief")"
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
     if [ -z "$session" ]; then
       np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
@@ -365,7 +375,7 @@ cmd_start() {
       return 1
     fi
     origin=${START_ORIGIN:-resume}
-    cmd="claude${model:+ --model $(printf '%q' "$model")} --permission-mode bypassPermissions --resume $(printf '%q' "$resume")"
+    cmd="$(account_env)claude${model:+ --model $(printf '%q' "$model")} --permission-mode bypassPermissions --resume $(printf '%q' "$resume")"
     tmux -L "$server" new-session -d -s "$session" -c "$cwd" "$cmd" ||
       { say "could not create session $session on $server"; return 1; }
   else
