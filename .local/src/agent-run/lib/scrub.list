@@ -35,7 +35,7 @@ ANTHROPIC_SMALL_FAST_MODEL        # the background/title model, separately setta
 ANTHROPIC_DEFAULT_OPUS_MODEL      # the DEFAULT_* trio silently repoints an alias
 ANTHROPIC_DEFAULT_SONNET_MODEL
 ANTHROPIC_DEFAULT_HAIKU_MODEL
-CLAUDE_CODE_OAUTH_TOKEN           # a credential; claude-wrapper injects it per session
+CLAUDE_CODE_OAUTH_TOKEN           # a credential; overrides the account login
 
 # --- Alternate clouds. The USE_* switches move the whole request to another
 # provider, and the rest are the credentials/region those switches consume, so

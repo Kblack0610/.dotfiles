@@ -20,6 +20,8 @@
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
+# A pending ask (NEEDS) and an open PR that conflicts with the default branch (STALLED) decide
+# before the session's status, so neither can hide behind WORKING.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -57,12 +59,20 @@ LABELS="$LEDGER/labels"
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
-#                <conflicts with the base: yes|no|->
+#                <conflicts: yes|no|- (merging the default branch in would conflict)>
 #   -> "BUCKET reason"
+# Who must act decides before whether the session is active: an ask waits on the human and a
+# PR that cannot merge wastes every run on it, however busy the session is. On 2026-10-28
+# agent-12's ask sat 14h behind "WORKING busy", and five PRs that conflicted on the
+# unity-core pin read "WORKING shell", so the shepherd, which skips WORKING, saw none of it.
 session_bucket() {
   local st="$1" note=""
+  [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
+  [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
+  if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
+    echo "STALLED PR #$9 conflicts with the default branch"; return
+  fi
   case "$st" in
-    waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
     busy) echo "WORKING busy"; return ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
@@ -81,8 +91,7 @@ session_bucket() {
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" \
-        conflicts="${16:--}"
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
   [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
@@ -96,8 +105,6 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next"; fi ;;
     OPEN)
-      # A conflict blocks the merge whatever CI says, and CI on a conflicted PR may not run.
-      [ "$conflicts" = yes ] && { echo "STALLED PR #$pr conflicts with the default branch"; return; }
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
@@ -450,10 +457,10 @@ collect() {
     [ "$state" = OPEN ] && [ "$oid" != - ] && fact="$fact@${oid:0:12}"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")" "${status:--}" "$age" "$fact"
+      "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact"
   done
   main_rows
 }
@@ -473,7 +480,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\tMAIN %s\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -649,7 +656,8 @@ json_rows() {
       labels: (if .[25] == "-" then [] else .[25] | split(",") end),
       activity: (if .[26] == "-" then null else .[26] end),
       age_min: (if (.[27] // "-") == "-" then null else .[27] | tonumber end),
-      fact: .[28]}'
+      asks: ((.[28] // "0") | tonumber),
+      fact: .[29]}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

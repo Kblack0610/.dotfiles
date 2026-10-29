@@ -270,6 +270,13 @@ def cmd_validate(path, strict=False):
             f"renotify_after {renotify!r} is not a duration (e.g. 12h 2d) or null"
         )
 
+    # How many consecutive probes must agree before a state change. The loop's
+    # `[ "$confirm" -gt 1 ] 2>/dev/null` reads anything non-numeric as 1, so a typo
+    # would quietly turn the debounce off.
+    confirm = scalar(doc.get("confirm"))
+    if confirm and not (confirm.isdigit() and int(confirm) >= 1):
+        errors.append(f"confirm {confirm!r} is not a whole number of probes (1 or more)")
+
     if errors:
         for err in errors:
             print(f"invalid: {err}", file=sys.stderr)

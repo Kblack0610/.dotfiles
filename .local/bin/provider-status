@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# provider-status - is an upstream we depend on having an incident right now?
+#
+# An upstream outage reaches the fleet as its own fault (API Error passes, red CI, offline
+# runners), so the sentinel `provider-status` watch reads each Statuspage feed to name it.
+# Only incidents on components we use count: GitHub's feed is mostly Copilot, Cloudflare's
+# is mostly regional, and Claude's carries connector incidents under "Claude Code". A page
+# that cannot be read is not evidence that all is well, so it never exits 0.
+#
+# Usage:
+#   provider-status           one line per relevant incident or unreachable page
+#   provider-status --quiet   print nothing (for a watch)
+# Exit: 0 all clear, 1 a relevant incident is open, 2 a page could not be read.
+set -uo pipefail
+
+# name | statuspage host | jq test on one incident: does it touch something we use?
+PROVIDERS=(
+  'GitHub|www.githubstatus.com|any(.components[]?.name; IN("Git Operations","API Requests","Pull Requests","Actions","Webhooks"))'
+  'Claude|status.claude.com|any(.components[]?.name; startswith("Claude API"))'
+  'Cloudflare|www.cloudflarestatus.com|(.impact | IN("major","critical")) or any(.components[]?.name; test("Tunnel|DNS"))'
+)
+
+quiet=0
+case "${1:-}" in
+  --quiet) quiet=1 ;;
+  "") ;;
+  -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  *) echo "provider-status: unknown argument: $1" >&2; exit 64 ;;
+esac
+
+say() { [ "$quiet" = 1 ] || printf '%s\n' "$1"; }
+
+rc=0
+for p in "${PROVIDERS[@]}"; do
+  IFS='|' read -r name host relevant <<<"$p"
+  if ! body="$(curl -sf -m 10 --retry 1 --retry-all-errors --retry-delay 5 \
+        "https://$host/api/v2/incidents/unresolved.json")" \
+     || ! hits="$(jq -r --arg n "$name" ".incidents[] | select($relevant)
+          | \"\(\$n): \(.name) (\(.impact))\"" <<<"$body" 2>/dev/null)"; then
+    say "UNREACHABLE $name: $host"
+    [ "$rc" = 0 ] && rc=2
+    continue
+  fi
+  [ -n "$hits" ] || continue
+  say "$hits"
+  rc=1
+done
+exit "$rc"

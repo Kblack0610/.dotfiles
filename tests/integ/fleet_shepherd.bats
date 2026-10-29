@@ -124,3 +124,26 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   run "$SH" run
   [ -e "$HOME/last-prompt" ]
 }
+
+@test "log stamps each entry with the clock's time and appends to the rundown" {
+  # 2026-10-28: a model-typed ledger carried "00:55 UTC 10-29" at a real 23:44 UTC 10-28.
+  stub date 'case "$*" in *%F*) echo "2026-10-28 23:44 UTC" ;; *) echo "23:44 UTC 10-28" ;; esac'
+  echo "earlier pass" > "$FLEET_SHEPHERD_DIR/log.md"
+  run "$SH" log --heading shepherd
+  assert_success
+  run "$SH" log "GO agent-25: one run of its class"
+  assert_success
+  run cat "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output "earlier pass
+
+## 2026-10-28 23:44 UTC shepherd
+- 23:44 UTC 10-28: GO agent-25: one run of its class"
+}
+
+@test "log refuses an empty entry" {
+  run "$SH" log
+  assert_failure
+  run "$SH" log --heading
+  assert_failure
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ]
+}

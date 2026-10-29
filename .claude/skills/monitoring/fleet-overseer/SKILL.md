@@ -19,7 +19,7 @@ It owns no product code. It owns three questions: does this machine have room fo
 ## Tools
 
 - `fleet-assess` prints headroom (load against cores, Tctl, memory), active holds, a verdict, and one row per heavy process: pid, CPU, nice, class, tmux session, worktree. `--watch-probe` prints one line and exits 1 on HOLD.
-- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
+- `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
 The class column tells you how each consumer can be stopped:
@@ -54,7 +54,7 @@ Under-use is a fault too. The human's budget for this box is about 70% of its CP
 
 Go down the ladder only as far as you need to:
 
-1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages the human (high) and makes every new session and every gate see it.
+1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages low (the overseer acts on it, the human does not) and makes every new session and every gate see it.
 2. **Message the Claude sessions on the roster**, one `fleet-comms` message each, naming the hold.
 3. **Lower the priority** of batch consumers that are still running: `renice -n 19 -p $(ls /proc/<pid>/task)` and `ionice -c3 -p $(ls /proc/<pid>/task)`. On Linux both act on one thread, so `-p <pid>` alone moves only the main thread: on 2026-10-27 a Unity compiler server (`VBCSCompiler`) kept 60 of its 61 threads at nice -4 after `renice -p`. Check with `ps -L -o ni= -p <pid> | sort | uniq -c`. This is reversible and needs no ask.
 4. **Kill only when the human asks.** Then kill only batch process trees (the driving `run.sh`, its `timeout`, the editor), and never an interactive editor, meaning a Unity without `-batchmode`. The CPU throttles itself at 95 C, so the hardware is safe while the human decides, and a killed run is lost work.
@@ -66,9 +66,9 @@ Report the before and after numbers from `fleet-assess`.
 ## Verb: `go <resource>`
 
 1. Run `fleet-assess`. Continue only on CLEAR. On HOLD, say what is still over the line and stop.
-2. Stage the restart, because nothing paces it for you. Keep the hold set and send GO by message to at most 3 sessions on the roster per pass: "you may restart, one run at a time; the rest of the roster is still held". Pick the sessions whose work unblocks others first (a red main, a red PR). On each later pass that still reads CLEAR, send the next 3.
+2. Stage the restart, because nothing paces it for you. Keep the hold set and `agent-hold grant <resource> <s1> <s2> <s3>`, at most 3 sessions per pass, picked per `~/.agent/shepherd/orders.md` and then whose work unblocks others first (a red main, a red PR). The grant is the GO: `agent-hold check` passes for those sessions, so a run already queued on the hold starts by itself. Then message each one: "you are granted `<resource>`; a queued run starts by itself, start any new run one at a time, and set no override". On each later pass that still reads CLEAR, grant the next 3. A standing exemption from the human (a session that may run under a hold) is a grant too, made right after the `set`.
 3. After the last batch has had GO and a pass still reads CLEAR, `agent-hold release <resource>`. It prints the roster.
-4. If a pass reads HOLD again, the batch was too wide: stop sending GO, tell the sessions that got it to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
+4. If a pass reads HOLD again, the batch was too wide: `agent-hold set <resource>` again, which drops every grant, tell the sessions that had one to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
 
 ## Verb: `status`
 
@@ -77,12 +77,12 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 | Bucket | Means | The shepherd |
 |---|---|---|
 | MAIN | one row per repo whose default branch is red: the latest decided run of a workflow failed (or `gh` could not read it). Names each red workflow, its sha, and its suspects: the PRs since that workflow's last green, when there are `FLEET_SUSPECTS_MAX` (3) or fewer. `owners` are the live sessions whose merged PR is a suspect | owners get the STALLED nudge; with no owner, it goes to the human, paged high |
-| NEEDS | waiting on a prompt or permission, a plan awaiting approval, or a pending ask with its `session:` | lists it for the human |
-| STALLED | idle 20m or more with something unlanded: dirty files or changed files not on the default branch and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a red main | nudges once |
+| NEEDS | waiting on a prompt or permission, a plan awaiting approval, or a pending ask with its `session:`, even while the session is busy on other work | lists it for the human |
+| STALLED | an open PR that conflicts with the default branch, even while busy (every run on it is wasted); or idle 20m or more with something unlanded: dirty files or changed files not on the default branch and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a red main | nudges once |
 | DONE | nothing unlanded or open (as LANDED), and every line of its plan's `## Phases` checklist is `[x]` or `[-]` | tells it to wind down, once |
 | LANDED | idle, its PR merged (or it never had one) and the tree clean, nothing after the PR, not a suspect for a red main, and its plan has an unchecked phase (`next_phase`) or no `## Phases` checklist | sends it on to its next phase, once |
 | UNCLEAR | as LANDED but with no plan file, a closed PR, no git | lists it with the reason |
-| WORKING | busy, a background shell idle under 120m (unless its plan is finished: then DONE after 20m), a heavy child process, CI running, or idle under 20m | leaves it alone |
+| WORKING | none of the above, and busy, a background shell idle under 120m (unless its plan is finished: then DONE after 20m), a heavy child process, CI running, or idle under 20m | leaves it alone |
 
 **The rule.** A session is DONE when its plan's `## Phases` checklist has no `- [ ]` left (`[x] <name> (#PR)` landed, `[-] <name>: <why>, <board row>` deferred by the human), no ask, prompt or plan approval of its own is open, and nothing it made is unlanded. Then, and only then, it winds down. Until then a merged phase is LANDED and the session carries on with the next one in the same session.
 
@@ -125,7 +125,8 @@ One pass. It runs two ways, and only one acts at a time:
    - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then post an agent-ask with your recommendation and that reason (it records your tmux session itself)."
    - LANDED with no checklist (`phases_total` null): "PR #N merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then start the first unchecked phase under the same /my:autopilot rules."
    - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
-   - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; conflicts with the default branch, merge `origin/<default>` into the branch, resolve the conflicts and push; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
+   - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Stop any run on this tree, merge origin/<base> into your branch, resolve it, and run your gate on the merged tree before anything else."
+   - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
    The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
 5. Rows for the human: NEEDS and UNCLEAR rows, MAIN rows with empty `owners`, and DONE, LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page. A MAIN row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
 6. Report, then page (see Reporting). Lead with the pace line: load, idle, and what you did about it.
@@ -134,7 +135,7 @@ One pass. It runs two ways, and only one acts at a time:
 
 The human is usually away while this loop runs, so every pass leaves a record and pages only on news.
 
-- **Log.** When a pass sent a message or escalated a row, append one entry to `~/.agent/shepherd/log.md`: a `## <date time>` heading, the counts per bucket, one line per message sent (session, fact), and one line per new escalation. A pass that did nothing writes nothing. This file is the rundown the human reads on return.
+- **Log.** When a pass sent a message or escalated a row, append one entry to `~/.agent/shepherd/log.md`: a heading, the counts per bucket, one line per message sent (session, fact), and one line per new escalation. Write every line with `fleet-shepherd log` (`fleet-shepherd log --heading shepherd` for the heading, `fleet-shepherd log "<line>"` for each line), never with `echo`: it stamps the time from the clock, and a time you type is a guess (2026-10-28: entries stamped 00:55 and 01:00 UTC the next day were written at 23:44 UTC). A pass that did nothing writes nothing. This file is the rundown the human reads on return.
 - **Page on escalation.** If step 4 escalated anything, send one page for the pass: `agent-notify -p normal -t shepherd '<n> need you: <session> <reason>; ...'`. A MAIN row escalated this pass makes that page `-p high` and leads it (`main red: <repo> <workflows>, no session owns it`): a red main blocks everyone. Escalation is once per fact, so the same session never pages twice for the same reason.
 - **Page when settled.** When no row is WORKING, no MAIN row is unescalated, and every DONE, LANDED or STALLED row is already nudged, nothing is left for the shepherd to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
 - **In the session.** Each pass also prints its report in the shepherd's own session, where `/fleet-overseer status` gives the live table.
@@ -168,10 +169,12 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 - Kill anything without the human's say-so, and never an interactive editor.
 - Broadcast to every `ListAgents` row. The roster is the sessions consuming the resource.
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
+- Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.
 - Close, kill, or `/wind-down` a session yourself. The shepherd asks; the session winds itself down with `/wind-down auto`, which refuses when its plan is unfinished or its last message is an open question to the human.
 - Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The one exception is step 1's pace message to a session waiting on the pool.
+- GO a run for a session whose row has `conflicts: true`. The run tests a tree that cannot merge; the conflict nudge goes first.
 - Hold back sessions while the machine is under budget, or report "nothing to act on" while `top` shows the box idle with work queued. Both are pace failures.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
 - Widen dispatch beyond `DISPATCH_PROFILES=bnb`, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. It starts conservative on purpose. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
