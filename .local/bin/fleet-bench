@@ -6,6 +6,7 @@
 #                                any session whose phase moved, score any that finished
 #   fleet-bench eta [--json]     the latest ETA per live session
 #   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
+#   fleet-bench accuracy --json  per basis: how far its raw ETAs ran, and the factor new ones get
 #   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench sessions --json  the scorecard's session rows, one JSON object each (day-log reads them)
@@ -54,6 +55,7 @@ SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 REVIEWS="$DIR/reviews.jsonl"
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
+CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
 say() { printf 'fleet-bench: %s\n' "$*" >&2; }
 
@@ -82,6 +84,17 @@ def kind: sub("\\(.*"; "");
 def shown_eta: if . == null then null else .cal_eta_epoch // .eta_epoch end;
 def basis_label: if . == null then null
   else .basis + (if .factor != null then " x\(.factor) (n=\(.factor_n))" else "" end) end;
+# scores in -> one object per basis kind: how far its raw ETAs ran, and the calibration factor
+# a new estimate of that kind gets (null below $minn scores with a ratio). Scores are raw, so
+# the factor is made from raw ratios only.
+def accuracy($minn; $lo; $hi):
+  group_by(.basis | kind) | map(
+    (map(.ratio // empty) | median | if . == null then null else (. * 100 | round) / 100 end) as $mr
+    | (map(.ratio // empty) | length) as $nr
+    | {basis: (.[0].basis | kind), n: length, n_ratio: $nr, median_ratio: $mr,
+       median_error_min: (map(.error_min) | median),
+       median_abs_error_min: (map(.error_min | fabs) | median),
+       factor: (if $nr < $minn then null else [[$mr, $lo] | max, $hi] | min end)});
 # per-phase minutes for each phase whose start and end were both sampled
 def phase_minutes:
   sort_by(.epoch)
@@ -113,16 +126,14 @@ new_estimates() {
   local t="$1" est="$ESTIMATES" sc="$SCORES"
   [ -s "$est" ] || est=/dev/null
   [ -s "$sc" ] || sc=/dev/null
-  jq -cn --argjson t "$t" --argjson def "$BENCH_DEFAULT_PHASE_MIN" \
-     --argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX" \
+  jq -cn --argjson t "$t" --argjson def "$BENCH_DEFAULT_PHASE_MIN" "${CAL_ARGS[@]}" \
      --slurpfile p "$PROGRESS" --slurpfile e "$est" --slurpfile s "$sc" "$JQ_LIB"'
     ($p | group_by(.session_id) | map({key: .[0].session_id,
           value: (group_by(.plan_file) | map(phase_minutes) | add // [])}) | from_entries) as $bys
     | ($p | group_by(.project) | map({key: .[0].project,
           value: (group_by([.session_id, .plan_file]) | map(phase_minutes) | add // [])}) | from_entries) as $byp
     | ($e | map("\(.session_id)/\(.phases_done)/\(.phases_total)") | INDEX(.)) as $have
-    | ($s | map(select(.ratio != null)) | group_by(.basis | kind)
-        | map({key: (.[0].basis | kind), value: map(.ratio)}) | from_entries) as $ratios
+    | ($s | accuracy($minn; $lo; $hi) | INDEX(.basis)) as $acc
     | $p | map(select(.epoch == $t)) | .[]
     | select(.finished | not) | select(.phases_total != null and .phases_done != null)
     | select($have["\(.session_id)/\(.phases_done)/\(.phases_total)"] | not)
@@ -131,14 +142,13 @@ new_estimates() {
        elif ($j | length) > 0 then {m: ($j | median), basis: "project-median(\($j | length))"}
        else {m: $def, basis: "default"} end) as $pp
     | ($t + (((.phases_total - .phases_done) * $pp.m * 60) | floor)) as $eta
-    | ($ratios[$pp.basis | kind] // []) as $r
+    | ($acc[$pp.basis | kind].factor // null) as $f
     | {made_epoch: $t, made_at: ($t | iso), session_id, target, project, phases_done,
        phases_total, per_phase_min: ($pp.m | floor), eta_epoch: $eta, eta: ($eta | iso),
        basis: $pp.basis}
-      + (if ($r | length) < $minn then {} else
-           ([[($r | median), $lo] | max, $hi] | min * 100 | round / 100) as $f
-           | ($t + (($eta - $t) * $f | floor)) as $cal
-           | {factor: $f, factor_n: ($r | length), cal_eta_epoch: $cal, cal_eta: ($cal | iso)} end)'
+      + (if $f == null then {} else
+           ($t + (($eta - $t) * $f | floor)) as $cal
+           | {factor: $f, factor_n: $acc[$pp.basis | kind].n_ratio, cal_eta_epoch: $cal, cal_eta: ($cal | iso)} end)'
 }
 
 # new_scores -> a score for every estimate whose session has since finished. The finish is
@@ -239,11 +249,12 @@ cmd_report() {
   if [ ! -s "$SCORES" ]; then
     echo "  nothing scored yet: an ETA is scored when its session finishes"
   else
-    jq -rs "$JQ_LIB"'
+    jq -rs "${CAL_ARGS[@]}" "$JQ_LIB"'
       def line($label; err; rat): if length == 0 then empty else
         "  \($label): \(length) scored, median error \(map(err) | median) min, median |error| \(map(err | fabs) | median) min, median ratio \(map(rat // empty) | median // "-")" end;
       def line($label): line($label; .error_min; .ratio);
-      (group_by(.basis | kind) | .[] | line(.[0].basis | kind)),
+      (accuracy($minn; $lo; $hi) | .[]
+        | "  \(.basis): \(.n) scored, median error \(.median_error_min) min, median |error| \(.median_abs_error_min) min, median ratio \(.median_ratio // "-")"),
       (map(select(.cal_eta_epoch != null)) | group_by(.basis | kind) | .[]
         | line("\(.[0].basis | kind) calibrated"; .cal_error_min; .cal_ratio)),
       (map(select(.horizon_min < 120)) | line("horizon under 2h")),
@@ -259,6 +270,12 @@ cmd_report() {
     st="$(proof_state_dir)/$r/last-outcome"
     printf '%s last outcome: %s\n' "$r" "$(cat "$st" 2>/dev/null || echo 'none recorded (not run under agentctl yet)')"
   done
+}
+
+cmd_accuracy() {
+  [ "${1:-}" = --json ] || { echo "usage: fleet-bench accuracy --json" >&2; return 2; }
+  [ -s "$SCORES" ] || return 0
+  jq -cs "${CAL_ARGS[@]}" "$JQ_LIB"'accuracy($minn; $lo; $hi) | .[]' "$SCORES"
 }
 
 # window_stats -> one JSON object per session seen in the window: phases ticked, minutes
@@ -818,6 +835,7 @@ main() {
     sample) cmd_sample ;;
     eta) shift; cmd_eta "$@" ;;
     report) cmd_report ;;
+    accuracy) shift; cmd_accuracy "$@" ;;
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
     sessions) shift; cmd_sessions "$@" ;;
@@ -826,8 +844,8 @@ main() {
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
-    -h | --help) sed -n '2,24p' "$0" ;;
-    *) sed -n '2,20p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,25p' "$0" ;;
+    *) sed -n '2,21p' "$0" >&2; return 2 ;;
   esac
 }
 

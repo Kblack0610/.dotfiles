@@ -180,6 +180,18 @@ past_scores() {
   assert_output 4
 }
 
+@test "accuracy --json: one object per basis kind, with the factor calibration uses and none below the minimum" {
+  past_scores 'project-median(9)' 0.2 0.3 0.3 0.4 0.5
+  past_scores 'project-median(12)' 0.1 0.3
+  past_scores 'session-median(2)' 3 3
+  run "$SUBJECT" accuracy --json
+  assert_success
+  run jq -sc 'map({basis, n, n_ratio, median_ratio, median_abs_error_min, factor})' <<<"$output"
+  assert_output '[{"basis":"project-median","n":7,"n_ratio":7,"median_ratio":0.3,"median_abs_error_min":0,"factor":0.3},{"basis":"session-median","n":2,"n_ratio":2,"median_ratio":3,"median_abs_error_min":0,"factor":null}]'
+  run "$SUBJECT" accuracy
+  assert_failure 2
+}
+
 @test "no feedback loop: a calibrated ETA is scored raw and calibrated, and the factor comes from the raw ratio" {
   past_scores default 0.5 0.5 0.5 0.5 0.5
   row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0           # raw 120 min, calibrated 60 min
