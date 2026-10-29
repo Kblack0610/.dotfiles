@@ -149,30 +149,54 @@ tmux_calls() { cat "$FIX/calls.log"; }
   (( on < exit && exit < respawn && respawn < off ))
 }
 
-@test "a session with a background shell answers the exit dialog with Move to background" {
+@test "a session with background shells is refused, and the shells are listed" {
   session lab agent-3 %9 300 301 shell ""
-  printf '  1. Stay\n  2. Exit and stop tasks\n  3. Move to background and exit\n' > "$FIX/dialog"
-  echo 3 > "$FIX/bg-option"
+  proc 302 301 ""
+  printf '/bin/zsh\0-c\0source /s/shell-snapshots/x.sh && eval '"'"'scripts/test/suite.sh'"'"'\0' > "$CLAUDE_ACCT_PROC/302/cmdline"
   run "$ACCT" move agent-3 --server lab
+  assert_failure
+  assert_output --partial 'background shells are running; move it once they finish, or pass --stop-shells'
+  assert_output --partial "shell 302  scripts/test/suite.sh"
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
+@test "--stop-shells answers the exit dialog with Exit and stop tasks, never Move to background" {
+  session lab agent-3 %9 300 301 shell ""
+  printf '  1. Stay\n  2. Move to background and exit\n  3. Exit and stop tasks\n' > "$FIX/dialog"
+  echo 3 > "$FIX/bg-option"
+  run "$ACCT" move agent-3 --server lab --stop-shells
   assert_success
-  assert_output --partial "answer /exit's dialog with 'Move to background'"
+  assert_output --partial "--stop-shells: answer /exit's dialog with 'Exit and stop tasks'"
   run tmux_calls
   assert_line 'tmux -L lab send-keys -t %9 3'
   refute_line 'tmux -L lab send-keys -t %9 2'
   run cat "$FIX/started"
-  assert_output --partial 'Your\ background\ shells\ kept\ running'
+  assert_output --partial 'The\ move\ stopped\ your\ background\ shells'
 }
 
-@test "a claude that never exits is reported, and a held pane is released" {
+@test "a claude that never exits is reported, its dialog closed, and a held pane released" {
   session lab agent-4 %11 400 400 shell ""
-  printf '  1. Exit and stop tasks\n  2. Stay\n' > "$FIX/dialog"
-  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" move agent-4 --server lab
+  printf '  1. Stay\n  2. Move to background and exit\n' > "$FIX/dialog"
+  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" move agent-4 --server lab --stop-shells
   assert_failure
   assert_output --partial 'did not exit'
   run tmux_calls
   assert_line 'tmux -L lab set-option -p -u -t %11 remain-on-exit'
   refute_output --partial 'respawn-pane'
   refute_line --partial 'send-keys -t %11 1'
+  refute_line --partial 'send-keys -t %11 2'
+  [ "$(grep -c 'send-keys -t %11 Escape' "$FIX/calls.log")" -eq 2 ]
+}
+
+@test "an idle session's unexpected dialog is never answered" {
+  session lab agent-7 %17 700 701 idle ""
+  printf '  1. Exit and stop tasks\n  2. Move to background and exit\n' > "$FIX/dialog"
+  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" move agent-7 --server lab
+  assert_failure
+  run tmux_calls
+  refute_line --partial 'send-keys -t %17 1'
+  refute_line --partial 'send-keys -t %17 2'
 }
 
 @test "a resume that comes up on another account is not a move" {
@@ -185,11 +209,11 @@ tmux_calls() { cat "$FIX/calls.log"; }
 }
 
 @test "dry-run says what it would do and touches nothing" {
-  session lab agent-5 %13 500 501 shell ""
+  session lab agent-5 %13 500 501 idle ""
   socket lab; socket hub
   run "$ACCT" move agent-5 --dry-run
   assert_success
-  assert_output --partial 'claude-acct: move agent-5 (lab %13, claude 501, shell)'
+  assert_output --partial 'claude-acct: move agent-5 (lab %13, claude 501, idle)'
   assert_output --partial 'claude runs under the pane'
   assert_output --partial "then: cd $(q "$HOME/wt") && CLAUDE_CONFIG_DIR=$(q "$ALT") claude --resume sid-1"
   run tmux_calls

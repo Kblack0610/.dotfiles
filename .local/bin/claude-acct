@@ -6,7 +6,7 @@
 #   claude-acct pick     # print the CLAUDE_CONFIG_DIR to use (empty = main account)
 #   claude-acct status   # 5h / 7d usage per account
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
-#   claude-acct move <tmux-session> [--server S] [--dry-run]
+#   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
 #                        # returns, in the same pane
 #
@@ -229,13 +229,18 @@ carry_flags() {
     return 0
 }
 
-# refusal <status> <from dir> <to dir> <best score> <best name> <best note>
+# refusal <status> <from dir> <to dir> <best score> <best name> <best note> <stop shells 0|1>
 #   -> why this session must not move, or nothing (exit 1) when it may
+# A session with background shells moves only with --stop-shells. The /exit dialog's other
+# way out, "Move to background", forks the conversation into a `claude daemon` session that
+# stays on the old account: a second agent in the same worktree once that account resets,
+# and on 2026-10-29 it did not keep agent-35's shell alive either.
 refusal() {
     case "$1" in
         busy)    echo "busy mid-turn; move it once the turn ends"; return 0 ;;
         waiting) echo "waiting in a permission or question dialog; answer it first"; return 0 ;;
-        idle|shell) ;;
+        shell)   [[ "${7:-0}" == 1 ]] || { echo "background shells are running; move it once they finish, or pass --stop-shells to stop them"; return 0; } ;;
+        idle) ;;
         *)       echo "unknown session status '${1:-none}'"; return 0 ;;
     esac
     if [[ -z "$4" ]]; then echo "no usage data, so no account is known to have room"; return 0; fi
@@ -246,9 +251,25 @@ refusal() {
     return 1
 }
 
-# dialog_choice <screen> -> the number of /exit's "Move to background and exit" option
+# dialog_choice <screen> -> the number of /exit's "Exit and stop tasks" option
 dialog_choice() {
-    grep -oE '([0-9])\. Move to background' <<< "$1" | head -n1 | cut -c1
+    grep -oE '([0-9])\. Exit and stop tasks' <<< "$1" | head -n1 | cut -c1
+}
+
+# bg_shells <pid> -> "pid  command" for each background shell that claude runs: a child
+# shell sourcing one of its shell snapshots, the way the Bash tool starts a command
+bg_shells() {
+    local f st c
+    for f in "$PROC"/[0-9]*/stat; do
+        { read -r st < "$f"; } 2>/dev/null || continue   # a process may end mid-scan
+        st="${st##*) }"; st="${st#* }"
+        [[ "${st%% *}" == "$1" ]] || continue
+        c=$(tr '\0' ' ' < "${f%/stat}/cmdline" 2>/dev/null)
+        [[ "$c" == *shell-snapshots* ]] || continue
+        [[ "$c" == *"eval '"* ]] && c="${c#*eval \'}"
+        f="${f%/stat}"
+        printf '%s  %s\n' "${f##*/}" "${c:0:100}"
+    done
 }
 
 # tmux_servers -> the name of every tmux socket in this user's socket dir
@@ -283,10 +304,11 @@ await() {
     done
 }
 
-# exited <server> <pane> <pid> -- the claude is gone; answers the background-shell dialog
-# on the way with "Move to background", so a running gate outlives the claude that started it.
+# exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
+# it answers the background-shell dialog on the way with "Exit and stop tasks".
 exited() {
     [[ -d "$PROC/$3" ]] || return 0
+    [[ "$4" == 1 ]] || return 1
     local n
     n=$(dialog_choice "$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)")
     [[ -n "$n" ]] && tmux -L "$1" send-keys -t "$2" "$n"
@@ -311,17 +333,18 @@ resumed() {
 
 resume_prompt() {
     local p="This session was moved from the $1 Claude account to $2, because $1 is out of usage. Nothing else changed: same conversation, same worktree. Pick up where you left off."
-    [[ "$3" == shell ]] && p+=" Your background shells kept running, but this claude does not track them as tasks: read their output files directly (the paths are in your earlier tool results) and stop them by pid when you are done with them."
+    [[ "$3" == shell ]] && p+=" The move stopped your background shells: restart any you still need."
     printf '%s' "$p"
 }
 
 cmd_move() {
-    local session="" server="" dry=0
+    local session="" server="" dry=0 stop=0
     while (($#)); do
         case "$1" in
             --server) [[ -n "${2:-}" ]] || { echo "claude-acct: move: --server needs a value" >&2; return 2; }
                       server="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
+            --stop-shells) stop=1; shift ;;
             -*) echo "claude-acct: move: unknown flag '$1'" >&2; return 2 ;;
             *) [[ -z "$session" ]] || { echo "claude-acct: move: one session at a time" >&2; return 2; }
                session="$1"; shift ;;
@@ -355,7 +378,11 @@ cmd_move() {
     from=$(config_dir_of "$pid")
     b=$(best)
     IFS=$'\037' read -r score name to note <<< "$b"
-    if why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note"); then refuse "$why"; return; fi
+    if why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop"); then
+        refuse "$why"
+        [[ "$status" == shell ]] && bg_shells "$pid" | sed 's/^/  shell /' >&2
+        return 1
+    fi
 
     local direct=0 claude cmd
     [[ "$pid" == "$pane_pid" ]] && direct=1
@@ -371,7 +398,10 @@ cmd_move() {
         echo "  claude runs under the pane's shell: exit it and type the resume there"
         cmd="cd $(printf %q "$cwd") && $claude"
     fi
-    [[ "$status" == shell ]] && echo "  it has a background shell: answer /exit's dialog with 'Move to background'"
+    if [[ "$status" == shell ]]; then
+        echo "  --stop-shells: answer /exit's dialog with 'Exit and stop tasks', stopping:"
+        bg_shells "$pid" | sed 's/^/    /'
+    fi
     echo "  then: $cmd"
     ((dry)) && return 0
 
@@ -382,7 +412,8 @@ cmd_move() {
     tmux -L "$server" send-keys -t "$pane" Escape
     tmux -L "$server" send-keys -t "$pane" -l /exit
     tmux -L "$server" send-keys -t "$pane" Enter
-    if ! await "claude $pid to exit" exited "$server" "$pane" "$pid"; then
+    if ! await "claude $pid to exit" exited "$server" "$pane" "$pid" "$stop"; then
+        tmux -L "$server" send-keys -t "$pane" Escape   # closes a dialog left open
         ((direct)) && tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
         refuse "claude $pid did not exit; look at the pane"; return
     fi
