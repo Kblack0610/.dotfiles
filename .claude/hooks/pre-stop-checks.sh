@@ -2,7 +2,8 @@
 # Stop-hook coordinator. Single Stop hook entrypoint, two phases:
 #
 #   checks  parallel, exit-code aggregated, may BLOCK (exit 2)
-#           - lint / typecheck / etc.; runs only when there are local changes
+#           - lint / typecheck / etc.; runs only when there are local changes, and
+#             not again while the dirty tree is unchanged since a passing run
 #   post-d  sequential, stdout/stderr passed through verbatim, may BLOCK; runs ALWAYS
 #           (incl. no-changes), so anything that must fire on a Q&A turn goes here
 #
@@ -109,6 +110,39 @@ if git rev-parse --git-dir >/dev/null 2>&1 \
   exit $?
 fi
 
+# --- unchanged-since-last-pass early exit ---
+# A tree left dirty across turns would otherwise re-run cargo/turbo/bats on every Stop,
+# including Q&A turns that touched nothing. The fingerprint is HEAD plus every changed or
+# untracked path with its size and mtime, plus the check scripts themselves; an edit moves
+# the mtime, and stat is cheap where hashing a Unity tree's untracked binaries is not.
+# Empty output means "cannot tell" (no GNU stat / sha256sum), and the checks run.
+dirty_fingerprint() {
+  local head
+  command -v sha256sum >/dev/null 2>&1 && stat -c %s / >/dev/null 2>&1 || return 0
+  head=$(git rev-parse HEAD 2>/dev/null) || return 0
+  {
+    echo "$head"
+    git diff HEAD --name-status 2>/dev/null
+    { git diff HEAD --name-only -z; git ls-files --others --exclude-standard -z; } 2>/dev/null \
+      | xargs -0 -r stat -c '%n %s %y' 2>/dev/null
+    for s in "$CHECKS_DIR"/*.sh; do [ -f "$s" ] && stat -c '%n %s %y' "$s"; done
+  } | sha256sum | cut -d' ' -f1
+}
+
+FP=""
+FP_FILE=""
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  FP=$(dirty_fingerprint)
+  FP_FILE="$CACHE_DIR/pass-fp-$(git rev-parse --show-toplevel 2>/dev/null | sha256sum 2>/dev/null | cut -c1-16).txt"
+  find "$CACHE_DIR" -maxdepth 1 -name 'pass-fp-*.txt' -mtime +7 -delete 2>/dev/null || true
+  if [ -n "$FP" ] && [ "$(cat "$FP_FILE" 2>/dev/null)" = "$FP" ]; then
+    note "worktree: dirty but unchanged since the last passing run"
+    write_result "SKIPPED" "unchanged since last pass"
+    run_post "$POST_DIR"
+    exit $?
+  fi
+fi
+
 # --- Informational: uncommitted/untracked state. Gates nothing, so it is log-only.
 # "Uncommitted changes" is tautological here anyway: the clean-tree early-exit above is
 # the only way past this point, so reaching it already means the tree is dirty. ---
@@ -204,6 +238,10 @@ else
   else
     write_result "PASS" "all checks passed"
     note "=== All stop-hook checks passed ==="
+  fi
+  # Only a pass is remembered, so a FAIL or timeout always runs again next Stop.
+  if [ $CONTENT_BLOCKED -eq 0 ] && [ -n "$FP" ]; then
+    printf '%s\n' "$FP" > "$FP_FILE" 2>/dev/null || true
   fi
 fi
 

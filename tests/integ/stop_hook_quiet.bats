@@ -281,3 +281,77 @@ run_session() {
   run grep -l -E 'llm-judge|llm-call|claude -p|agentctl-run' "$REPO_ROOT"/.claude/hooks/stop-post.d/*.sh
   assert_failure
 }
+
+# counted <name> <exit-code> -- a fake check that appends a line to $SANDBOX/<name>.runs each
+# time it runs, so a test can tell a skipped Stop from a passing one.
+counted() {
+  local f="$HOOK_DIR/stop-checks.d/$1.sh"
+  printf '#!/bin/bash\necho run >> "%s/%s.runs"\nexit %s\n' "$SANDBOX" "$1" "$2" > "$f"
+  chmod +x "$f"
+}
+runs() { wc -l < "$SANDBOX/$1.runs" 2>/dev/null | tr -d ' ' || echo 0; }
+ci_result() { cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"; }
+
+@test "a dirty tree unchanged since a passing run skips the checks on the next Stop" {
+  dirty
+  counted green 0
+  run_hook
+  assert_equal "$STATUS" 0
+  run_hook
+  assert_equal "$STATUS" 0
+  assert_equal "$(stderr)" ""
+  assert_equal "$(runs green)" 1
+  run ci_result
+  assert_output --partial "status=SKIPPED"
+  assert_output --partial "note=unchanged since last pass"
+}
+
+@test "editing a tracked file after a pass runs the checks again" {
+  dirty
+  counted green 0
+  run_hook
+  echo three >> "$REPO/a.txt"
+  touch -d '+1 second' "$REPO/a.txt"
+  run_hook
+  assert_equal "$(runs green)" 2
+}
+
+@test "a new untracked file after a pass runs the checks again" {
+  dirty
+  counted green 0
+  run_hook
+  echo new > "$REPO/another.txt"
+  run_hook
+  assert_equal "$(runs green)" 2
+}
+
+@test "a new commit after a pass runs the checks again" {
+  dirty
+  counted green 0
+  run_hook
+  echo x > "$REPO/b.txt"
+  git -C "$REPO" add b.txt
+  git -C "$REPO" commit -qm two
+  run_hook
+  assert_equal "$(runs green)" 2
+}
+
+@test "a failing run is never remembered: the next Stop runs and blocks again" {
+  dirty
+  counted red 2
+  run_hook
+  assert_equal "$STATUS" 2
+  run_hook
+  assert_equal "$STATUS" 2
+  assert_equal "$(runs red)" 2
+}
+
+@test "changing a check script after a pass runs the checks again" {
+  dirty
+  counted green 0
+  run_hook
+  printf '\n# edited\n' >> "$HOOK_DIR/stop-checks.d/green.sh"
+  touch -d '+1 second' "$HOOK_DIR/stop-checks.d/green.sh"
+  run_hook
+  assert_equal "$(runs green)" 2
+}
