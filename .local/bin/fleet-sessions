@@ -20,6 +20,8 @@
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
+# A pending ask (NEEDS) and an open PR that conflicts with the default branch (STALLED) decide
+# before the session's status, so neither can hide behind WORKING.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -56,12 +58,21 @@ LABELS="$LEDGER/labels"
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
-#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|->
+#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
+#                <conflicts: yes|no|- (merging the default branch in would conflict)>
 #   -> "BUCKET reason"
+# Who must act decides before whether the session is active: an ask waits on the human and a
+# PR that cannot merge wastes every run on it, however busy the session is. On 2026-10-28
+# agent-12's ask sat 14h behind "WORKING busy", and five PRs that conflicted on the
+# unity-core pin read "WORKING shell", so the shepherd, which skips WORKING, saw none of it.
 session_bucket() {
   local st="$1" note=""
+  [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
+  [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
+  if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
+    echo "STALLED PR #$9 conflicts with the default branch"; return
+  fi
   case "$st" in
-    waiting) echo "NEEDS waiting on a prompt or permission"; return ;;
     busy) echo "WORKING busy"; return ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
@@ -437,16 +448,16 @@ collect() {
       fi
     elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
-      "$(labels_of "$sid")" "${status:--}" "$age"
+      "$(labels_of "$sid")" "${status:--}" "$age" "$asks"
   done
   main_rows
 }
@@ -466,7 +477,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}"
   done
 }
 
@@ -642,6 +653,7 @@ json_rows() {
       labels: (if .[25] == "-" then [] else .[25] | split(",") end),
       activity: (if .[26] == "-" then null else .[26] end),
       age_min: (if (.[27] // "-") == "-" then null else .[27] | tonumber end),
+      asks: ((.[28] // "0") | tonumber),
       fact: (.[0] + " " + .[10] + (if .[5] != "-" then " @" + .[4] else "" end))}'
 }
 

@@ -14,16 +14,46 @@ setup() {
 }
 
 # b <status> <plan> <asks> <heavy> <idle> <git> <dirty> <ahead> <pr> <state> <ci> <in_pr> \
-#   [<red> <phases> <next>]
+#   [<red> <phases> <next> <conflicts>]
 b() { session_bucket "$@"; }
 
-@test "waiting and busy win over everything else" {
+@test "waiting and busy win over the session's own work facts" {
   run b waiting 1 2 1 99 1 0 0 875 MERGED PASS 1
   assert_output --partial 'NEEDS waiting'
   run b busy 0 0 0 99 1 0 0 875 MERGED PASS 1
   assert_output 'WORKING busy'
   run b shell 0 0 0 99 1 0 0 875 MERGED PASS 1
   assert_output 'WORKING shell'
+  run b busy 0 0 0 99 1 4 0 9 OPEN FAIL 1 - 1/3 x no
+  assert_output 'WORKING busy'
+}
+
+@test "a pending ask is NEEDS while the session is busy, in a shell or under a heavy child" {
+  # 2026-10-28: agent-12's ask sat 14h behind "WORKING busy", so it never reached the human.
+  run b busy 0 1 0 0 1 0 0 - - - 1
+  assert_output 'NEEDS 1 pending ask(s)'
+  run b shell 0 2 0 5 1 3 0 - - - 1
+  assert_output 'NEEDS 2 pending ask(s)'
+  run b idle 0 1 1 99 1 0 0 - - - 1
+  assert_output 'NEEDS 1 pending ask(s)'
+}
+
+@test "an open PR that conflicts with the default branch is STALLED whatever the status" {
+  # 2026-10-28: five PRs conflicted on the unity-core pin while reading "WORKING shell".
+  run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x yes
+  assert_output 'STALLED PR #1092 conflicts with the default branch'
+  run b busy 0 0 1 0 1 2 0 1099 OPEN PENDING 1 - - - yes
+  assert_output 'STALLED PR #1099 conflicts with the default branch'
+  # an ask still outranks it: the human is needed first
+  run b busy 0 1 0 0 1 0 0 1099 OPEN PASS 1 - - - yes
+  assert_output 'NEEDS 1 pending ask(s)'
+  # unknown or clean sync, or a conflict with no open PR, changes nothing
+  run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x -
+  assert_output 'WORKING shell'
+  run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x no
+  assert_output 'WORKING shell'
+  run b busy 0 0 0 0 1 3 0 - - - 1 - - - yes
+  assert_output 'WORKING busy'
 }
 
 @test "an idle session with a heavy child is still WORKING" {
@@ -183,8 +213,9 @@ r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headS
   assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
   run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'WORKING shell'
+  # an open ask is not finished, and it is the human's, not the shell's
   run b shell 0 1 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
-  assert_output 'WORKING shell'
+  assert_output 'NEEDS 1 pending ask(s)'
 }
 
 @test "plan_phases counts the ## Phases checklist: [x] and [-] done, the first [ ] is next" {
@@ -716,7 +747,10 @@ caught() {
   [ "$(jq -r .schema "$doc")" = 1 ]
   [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
   [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
-  [ "$(jq -r '.sessions[0].bucket' "$doc")" = WORKING ]
+  # its own ask outranks the background shell: the agent-12 shape from 2026-10-28
+  [ "$(jq -r '.sessions[0].bucket' "$doc")" = NEEDS ]
+  [ "$(jq -r '.sessions[0].reason' "$doc")" = '1 pending ask(s)' ]
+  [ "$(jq -r '.sessions[0].asks' "$doc")" = 1 ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
