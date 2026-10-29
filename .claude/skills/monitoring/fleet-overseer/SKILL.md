@@ -19,7 +19,7 @@ It owns no product code. It owns three questions: does this machine have room fo
 ## Tools
 
 - `fleet-assess` prints headroom (load against cores, Tctl, memory), active holds, a verdict, and one row per heavy process: pid, CPU, nice, class, tmux session, worktree. `--watch-probe` prints one line and exits 1 on HOLD.
-- `agent-hold set | release | check | list` is the durable pause. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
+- `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
 The class column tells you how each consumer can be stopped:
@@ -66,9 +66,9 @@ Report the before and after numbers from `fleet-assess`.
 ## Verb: `go <resource>`
 
 1. Run `fleet-assess`. Continue only on CLEAR. On HOLD, say what is still over the line and stop.
-2. Stage the restart, because nothing paces it for you. Keep the hold set and send GO by message to at most 3 sessions on the roster per pass: "you may restart, one run at a time; the rest of the roster is still held". Pick the sessions whose work unblocks others first (a red main, a red PR). On each later pass that still reads CLEAR, send the next 3.
+2. Stage the restart, because nothing paces it for you. Keep the hold set and `agent-hold grant <resource> <s1> <s2> <s3>`, at most 3 sessions per pass, picked per `~/.agent/shepherd/orders.md` and then whose work unblocks others first (a red main, a red PR). The grant is the GO: `agent-hold check` passes for those sessions, so a run already queued on the hold starts by itself. Then message each one: "you are granted `<resource>`; a queued run starts by itself, start any new run one at a time, and set no override". On each later pass that still reads CLEAR, grant the next 3. A standing exemption from the human (a session that may run under a hold) is a grant too, made right after the `set`.
 3. After the last batch has had GO and a pass still reads CLEAR, `agent-hold release <resource>`. It prints the roster.
-4. If a pass reads HOLD again, the batch was too wide: stop sending GO, tell the sessions that got it to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
+4. If a pass reads HOLD again, the batch was too wide: `agent-hold set <resource>` again, which drops every grant, tell the sessions that had one to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
 
 ## Verb: `status`
 
@@ -168,6 +168,7 @@ A dispatched session is an ordinary session from then on: the shepherd's buckets
 - Kill anything without the human's say-so, and never an interactive editor.
 - Broadcast to every `ListAgents` row. The roster is the sessions consuming the resource.
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
+- Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.
 - Close, kill, or `/wind-down` a session yourself. The shepherd asks; the session winds itself down with `/wind-down auto`, which refuses when its plan is unfinished or its last message is an open question to the human.
