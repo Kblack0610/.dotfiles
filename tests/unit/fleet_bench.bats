@@ -57,6 +57,52 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output --partial NOOP
 }
 
+# brow <session> <target> <bucket>: a live row in that bucket
+brow() {
+  printf '{"session_id":"%s","target":"%s","bucket":"%s","phases_done":1,"phases_total":4,"finished":false}\n' "$1" "$2" "$3"
+}
+
+@test "sample publishes the window per project to node_exporter as fleet_bench.prom" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  # a: 10 min waiting on the human, then 20 min stalled; b (another project) only working
+  { brow a lab/game-agent-1:1 NEEDS; brow b hub/web:1 WORKING; } > "$SNAP"; sample_at 0
+  { brow a lab/game-agent-1:1 STALLED; brow b hub/web:1 WORKING; } > "$SNAP"; sample_at 600
+  { brow a lab/game-agent-1:1 WORKING; brow b hub/web:1 WORKING; } > "$SNAP"
+  # two ETAs scored in the window for game; CI reds on a game PR, and on a PR whose session
+  # was never sampled, which no project can claim
+  printf '{"session_id":"s%s","project":"game","basis":"default","made_epoch":0,"done_epoch":%s,"error_min":0,"horizon_min":60,"ratio":%s}\n' \
+    1 "$T0" 1.5 2 "$T0" 2.5 > "$FLEET_BENCH_DIR/scores.jsonl"
+  printf '{"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
+    > "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  run sample_at 1800
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/fleet_bench.prom"
+  assert_output "$(cat <<'PROM'
+# HELP agent_bench_waiting_hours Hours sessions sat in NEEDS over the last 24h.
+# TYPE agent_bench_waiting_hours gauge
+agent_bench_waiting_hours{project="game"} 0.17
+agent_bench_waiting_hours{project="web"} 0
+# HELP agent_bench_stalled_hours Hours sessions sat in STALLED over the last 24h.
+# TYPE agent_bench_stalled_hours gauge
+agent_bench_stalled_hours{project="game"} 0.33
+agent_bench_stalled_hours{project="web"} 0
+# HELP agent_bench_eta_ratio Median actual over predicted duration of ETAs scored in the last 24h.
+# TYPE agent_bench_eta_ratio gauge
+agent_bench_eta_ratio{project="game"} 2
+# HELP agent_bench_ci_reds_before_merge CI reds on PRs merged in the last 24h, before they merged.
+# TYPE agent_bench_ci_reds_before_merge gauge
+agent_bench_ci_reds_before_merge{project="game"} 2
+PROM
+)"
+}
+
+@test "sample with no collector directory writes no metrics and still succeeds" {
+  brow a lab/game-agent-1:1 WORKING > "$SNAP"
+  run sample_at 0
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR" ]
+}
+
 @test "ETA comes from the session's own measured phases once two phase starts were sampled" {
   row a lab/game-agent-1:1 0 4 > "$SNAP"; sample_at 0
   row a lab/game-agent-1:1 1 4 > "$SNAP"; sample_at 1800    # phase 1 starts

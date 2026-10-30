@@ -59,6 +59,36 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .updated <<< "$p")" '2026-09-18T02:53:20+00:00'
 }
 
+@test "runner numbers ride beside the text, since mqtt2prom drops text" {
+  printf '1000000' > "$NOTES_FIXTURE/systemctl.show.agentctl@alpha.service.ExecMainStartTimestampMonotonic"
+  printf '4500000' > "$NOTES_FIXTURE/systemctl.show.agentctl@alpha.service.ExecMainExitTimestampMonotonic"
+  run "$PUB" --dry-run
+  assert_success
+  p="$(payload agents/testhost/runner/alpha <(printf '%s\n' "$output"))"
+  assert_equal "$(jq -c '[.updated_epoch, .duration_s, .outcome_code]' <<< "$p")" '[1789700000,3,0]'
+}
+
+@test "outcome_code: 0 ok, 1 warn, 2 fail, null when no outcome is recorded" {
+  local w c
+  for w in WORKED:0 NOOP:0 BLOCKED:1 PENDING:1 FAILED:2 STALLED:2; do
+    printf '%s' "${w%:*}" > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+    c="$(jq -r .outcome_code <<< "$(payload agents/testhost/runner/alpha <("$PUB" --dry-run))")"
+    assert_equal "${w%:*} $c" "${w%:*} ${w#*:}"
+  done
+  rm "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  assert_equal "$(jq -r .outcome_code <<< "$(payload agents/testhost/runner/alpha <("$PUB" --dry-run))")" null
+}
+
+@test "duration_s is null while a run is in flight or when the unit never ran" {
+  run "$PUB" --dry-run
+  assert_equal "$(jq -r .duration_s <<< "$(payload agents/testhost/runner/alpha <(printf '%s\n' "$output"))")" null
+  # exit stamp from the previous run, start stamp from the one running now
+  printf '9000000' > "$NOTES_FIXTURE/systemctl.show.agentctl@alpha.service.ExecMainStartTimestampMonotonic"
+  printf '4500000' > "$NOTES_FIXTURE/systemctl.show.agentctl@alpha.service.ExecMainExitTimestampMonotonic"
+  run "$PUB" --dry-run
+  assert_equal "$(jq -r .duration_s <<< "$(payload agents/testhost/runner/alpha <(printf '%s\n' "$output"))")" null
+}
+
 @test "discovery config names a stable entity and points at the state topic" {
   run "$PUB" --quiet
   c="$(payload homeassistant/sensor/agent_testhost_runner_alpha/config)"
@@ -73,6 +103,7 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   p="$(payload agents/testhost/watch/skill_drift)"
   assert_equal "$(jq -r .state <<< "$p")" TRIP
   assert_equal "$(jq -r .since <<< "$p")" '2026-09-10T00:26:40+00:00'
+  assert_equal "$(jq -r .since_epoch <<< "$p")" 1789000000
   c="$(payload homeassistant/sensor/agent_testhost_watch_skill_drift/config)"
   assert_equal "$(jq -r .default_entity_id <<< "$c")" sensor.agent_watch_skill_drift
 }

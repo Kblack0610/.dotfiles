@@ -3,7 +3,8 @@
 # the prediction once it does. Model-free but `review`; the shepherd only reads it.
 #
 #   fleet-bench sample           one sample: progress line per live session, a new ETA for
-#                                any session whose phase moved, score any that finished
+#                                any session whose phase moved, score any that finished,
+#                                and the window per project as fleet_bench.prom
 #   fleet-bench eta [--json]     the latest ETA per live session
 #   fleet-bench report           live table, ETA accuracy so far, when the sampler last ran
 #   fleet-bench accuracy --json  per basis: how far its raw ETAs ran, and the factor new ones get
@@ -25,6 +26,10 @@
 # BENCH_NOTES_CMD.
 
 set -uo pipefail
+
+# Each sample also publishes the window's numbers to Prometheus (fleet_bench.prom).
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -195,6 +200,7 @@ cmd_sample() {
   fi
   if [ -z "$rows" ]; then
     say "no live session"
+    publish_window "$t"
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -206,6 +212,7 @@ cmd_sample() {
   local n e s
   n=$(grep -c . <<<"$rows"); e=$(grep -c . <<<"$est"); s=$(grep -c . <<<"$sc")
   say "$n sessions, $e new estimates, $s new scores"
+  publish_window "$t"
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
 }
 
@@ -295,6 +302,35 @@ window_stats() {
      working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
      nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
      peak_context: (map(.context_tokens // 0) | max)}'
+}
+
+# bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project. Waiting
+# and stalled hours are summed over the project's sessions, the ETA ratio is the median of
+# the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
+# in the window by a session of that project.
+bench_prom() {
+  local t="$1"
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") \
+     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") \
+     "$JQ_LIB$PROM_JQ"'
+    def h: . / 60 * 100 | round / 100;
+    ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
+    | ($w | map(.project) + ($s | map(.project)) | unique) as $ps
+    | gauge("agent_bench_waiting_hours"; "Hours sessions sat in NEEDS over the last \($win)h.";
+        $w | group_by(.project)[] | [{project: .[0].project}, (map(.waiting_min) | add | h)]),
+      gauge("agent_bench_stalled_hours"; "Hours sessions sat in STALLED over the last \($win)h.";
+        $w | group_by(.project)[] | [{project: .[0].project}, (map(.stalled_min) | add | h)]),
+      gauge("agent_bench_eta_ratio"; "Median actual over predicted duration of ETAs scored in the last \($win)h.";
+        $ps[] | . as $p | [{project: $p}, ($s | map(select(.project == $p) | .ratio // empty) | median)]),
+      gauge("agent_bench_ci_reds_before_merge"; "CI reds on PRs merged in the last \($win)h, before they merged.";
+        $c | map(. + {project: $proj[.session_id]}) | map(select(.project != null)) | group_by(.project)[]
+        | [{project: .[0].project}, (map(.ci_red) | add)])'
+}
+
+# publish_window <now>: write bench_prom where node_exporter reads it.
+publish_window() {
+  [ -s "$PROGRESS" ] || return 0
+  prom_textfile fleet_bench.prom bench_prom "$1" || say "could not write fleet_bench.prom"
 }
 
 # outcomes_newest -> the newest session-outcomes line per session_id (its own reader rule)
@@ -844,8 +880,8 @@ main() {
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
-    -h | --help) sed -n '2,25p' "$0" ;;
-    *) sed -n '2,21p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,26p' "$0" ;;
+    *) sed -n '2,22p' "$0" >&2; return 2 ;;
   esac
 }
 

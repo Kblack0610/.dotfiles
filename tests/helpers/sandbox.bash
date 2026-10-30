@@ -119,6 +119,11 @@ sandbox_init() {
   # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
   unset NTFY_URL NTFY_TOKEN SLACK_WEBHOOK_URL DISPLAY
 
+  # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
+  # publish there as a side effect, and on the workstation it exists. A test that wants the
+  # files makes this directory itself.
+  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"

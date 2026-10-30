@@ -65,7 +65,17 @@ fi
 # Corporate machines leave it unset (the default) — bypass never appears.
 claude() {
     if [ -n "$CLAUDE_YOLO" ]; then
-        command claude --allow-dangerously-skip-permissions "$@"
+        _claude_launch --allow-dangerously-skip-permissions "$@"
+    else
+        _claude_launch "$@"
+    fi
+}
+
+# Claude Code reads OTEL_RESOURCE_ATTRIBUTES once, at start, so the project of the directory
+# it starts in is added here, per launch (claude-telemetry.sh says why not at shell start).
+_claude_launch() {
+    if command -v claude_telemetry_project >/dev/null 2>&1; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)" command claude "$@"
     else
         command claude "$@"
     fi
@@ -78,9 +88,9 @@ cl() {
     local dir=""
     command -v claude-acct >/dev/null && dir=$(claude-acct pick)
     if [ -n "$dir" ]; then
-        CLAUDE_CONFIG_DIR="$dir" command claude --dangerously-skip-permissions "$@"
+        CLAUDE_CONFIG_DIR="$dir" _claude_launch --dangerously-skip-permissions "$@"
     else
-        command claude --dangerously-skip-permissions "$@"
+        _claude_launch --dangerously-skip-permissions "$@"
     fi
 }
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"

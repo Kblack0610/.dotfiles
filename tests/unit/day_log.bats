@@ -253,3 +253,34 @@ rec() { local day="${*: -1}"; jq "${@:1:$#-1}" "$DAYLOG_DIR/$day.json"; }
   run "$SUBJECT" watch --once --open bogus
   assert_failure 2
 }
+
+@test "a snapshot of today publishes merged PRs per area and spend per project, TOTAL left out" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  pr game 1 'feat(raiders): one' 2026-10-28T17:00:00Z > "$SANDBOX/p1"
+  pr game 2 'fix(ci): two' 2026-10-28T18:00:00Z > "$SANDBOX/p2"
+  pr web 3 'docs: three' 2026-10-28T19:00:00Z > "$SANDBOX/p3"
+  cat "$SANDBOX/p1" "$SANDBOX/p2" "$SANDBOX/p3" | merged
+  printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\nweb\\t1\\t1\\t10\\t0.25\\t0\\nTOTAL\\t4\\t11\\t2000010\\t12.75\\t0\\n"\n' \
+    > "$SANDBOX/bin/usage-stub"
+  run "$SUBJECT" snapshot
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/day_log.prom"
+  assert_output "$(cat <<'PROM'
+# HELP agent_day_merged PRs merged today, by day-log area.
+# TYPE agent_day_merged gauge
+agent_day_merged{area="Games"} 2
+agent_day_merged{area="web"} 1
+# HELP agent_day_cost_usd Spend today in USD, by project (agent-usage).
+# TYPE agent_day_cost_usd gauge
+agent_day_cost_usd{project="game"} 12.5
+agent_day_cost_usd{project="web"} 0.25
+PROM
+)"
+}
+
+@test "a snapshot of a past day does not overwrite today's metrics" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" snapshot --date 2026-10-27
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR/day_log.prom" ]
+}

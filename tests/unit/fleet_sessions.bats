@@ -890,13 +890,95 @@ caught() {
   local doc="$XDG_STATE_HOME/fleet/state.json"
   mkdir -p "${doc%/*}"
   echo '{"schema":1,"generated_epoch":9999999999,"sessions":[]}' > "$doc"
+  mkdir -p "$PROM_TEXTFILE_DIR"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_success
   [ "$(jq -r .generated_epoch "$doc")" = 9999999999 ]
+  # nor does it publish its older rows to Prometheus
+  [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
   # negative control: an older document is replaced
   echo '{"schema":1,"generated_epoch":1,"sessions":[]}' > "$doc"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
+}
+
+@test "--write: publishes the document to node_exporter as fleet_sessions.prom" {
+  landed_fixture
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  # the clone's project is its checkout's name, with no project map in the sandbox
+  run grep '^agent_session_context_tokens' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
+  assert_output 'agent_session_context_tokens{target="lab/s1:1",project="wt",bucket="LANDED"} 5'
+  run grep -c '^agent_sessions{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
+  assert_output 6
+}
+
+# A state document with one session that has every fact and one that has almost none.
+state_doc() {
+  cat > "$SANDBOX/state.json" <<'JSON'
+{"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],"sessions":[
+ {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
+  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true},
+ {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
+  "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
+JSON
+}
+
+@test "sessions_prom: one series per fact a session has, never a guessed 0 for one it lacks" {
+  state_doc
+  run sessions_prom "$SANDBOX/state.json"
+  assert_success
+  assert_output "$(cat <<'PROM'
+# HELP agent_session_context_tokens Context tokens the session holds.
+# TYPE agent_session_context_tokens gauge
+agent_session_context_tokens{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 9
+agent_session_context_tokens{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 120000
+# HELP agent_session_idle_minutes Minutes since the session went idle, by agent-panel.
+# TYPE agent_session_idle_minutes gauge
+agent_session_idle_minutes{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 40
+agent_session_idle_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 3
+# HELP agent_session_age_minutes Minutes since the session started.
+# TYPE agent_session_age_minutes gauge
+agent_session_age_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 95
+# HELP agent_session_phases_done Phases ticked in the plan checklist of the session.
+# TYPE agent_session_phases_done gauge
+agent_session_phases_done{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
+# HELP agent_session_phases_total Phases in the plan checklist of the session.
+# TYPE agent_session_phases_total gauge
+agent_session_phases_total{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 4
+# HELP agent_session_behind Commits the branch of the session is behind its base.
+# TYPE agent_session_behind gauge
+agent_session_behind{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 2
+# HELP agent_session_dirty Uncommitted files in the worktree of the session.
+# TYPE agent_session_dirty gauge
+agent_session_dirty{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 0
+agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 5
+# HELP agent_session_conflicts 1 when the branch of the session conflicts with its base.
+# TYPE agent_session_conflicts gauge
+agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
+# HELP agent_sessions Live sessions per fleet-sessions bucket.
+# TYPE agent_sessions gauge
+agent_sessions{bucket="DONE"} 0
+agent_sessions{bucket="LANDED"} 0
+agent_sessions{bucket="NEEDS"} 1
+agent_sessions{bucket="STALLED"} 0
+agent_sessions{bucket="UNCLEAR"} 0
+agent_sessions{bucket="WORKING"} 1
+# HELP agent_asks_open Pending asks waiting on the human.
+# TYPE agent_asks_open gauge
+agent_asks_open 2
+PROM
+)"
+}
+
+@test "sessions_prom: asks that could not be read are left out, not counted as none" {
+  state_doc
+  jq '.unreadable = ["agent-ask"] | .asks = []' "$SANDBOX/state.json" > "$SANDBOX/s2.json"
+  run sessions_prom "$SANDBOX/s2.json"
+  assert_success
+  assert_line '# TYPE agent_asks_open gauge'
+  refute_line --regexp '^agent_asks_open '
 }
 
 @test "--write: an unreadable agent-panel is named, not passed off as an empty fleet" {
