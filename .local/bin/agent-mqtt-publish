@@ -7,6 +7,10 @@
 #
 # Entities use HA MQTT discovery: runners, watches, open asks and live sessions appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
+# mqtt2prom keeps only numeric and boolean keys, so each text fact Prometheus needs has a
+# number beside it: runner updated_epoch, duration_s (the main process of the last run, null
+# while one runs) and outcome_code (0 ok: WORKED, NOOP; 1 warn: BLOCKED, PENDING; 2 fail:
+# FAILED, STALLED; null when none is recorded), and watch since_epoch.
 # Triggers: agentctl after every status write, sentinel on a watch state change,
 # agent-mqtt-sessions.path on the fleet state document, and agent-mqtt-publish.timer (--full).
 # Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
@@ -42,7 +46,7 @@ for a in "$@"; do
         --full) mode=full ;;
         --dry-run) mode=dry ;;
         --quiet) quiet=1 ;;
-        -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'agent-mqtt-publish: unknown arg %s\n' "$a" >&2; exit 2 ;;
     esac
 done
@@ -63,9 +67,25 @@ iso() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] && date -d "@$1" -Iseconds 2>/dev/null; 
 # systemd's human timestamp ("Thu 2026-09-17 20:30:00 PDT") -> ISO 8601, or empty.
 iso_ts() { [ -n "${1:-}" ] && [ "$1" != n/a ] && date -d "$1" -Iseconds 2>/dev/null; }
 
+# epoch -> itself as a JSON number, or null for anything that is not a positive integer.
+num() { if [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$1"; else printf null; fi; }
+
 kv() { awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$1" 2>/dev/null; }
 
 unit_prop() { systemctl --user show "$1" -p "$2" --value 2>/dev/null; }
+
+# last_run_secs <unit> -> seconds its last run took, from systemd's monotonic start and exit
+# stamps; null while it runs (exit is from an earlier run) or when it never ran.
+last_run_secs() {
+    local start end
+    start="$(unit_prop "$1" ExecMainStartTimestampMonotonic)"
+    end="$(unit_prop "$1" ExecMainExitTimestampMonotonic)"
+    if [[ "$start" =~ ^[1-9][0-9]*$ && "$end" =~ ^[0-9]+$ ]] && [ "$end" -ge "$start" ]; then
+        printf '%s' $(((end - start) / 1000000))
+    else
+        printf null
+    fi
+}
 
 # emit <kind> <name> <icon> <state-json> [extra-discovery-json]
 # Prints the discovery message then the state message, as `topic<TAB>payload`.
@@ -102,13 +122,14 @@ snapshot() {
         [ -f "$f" ] || continue
         name="$(basename "$f" .conf)"
         st="$STATE_DIR/$name/status"
-        local state; state="$(kv "$st" state)"
+        local state updated; state="$(kv "$st" state)"; updated="$(kv "$st" updated)"
         emit runner "$name" mdi:robot "$(jq -cn \
             --arg state "${state:-unknown}" \
             --arg project "$(kv "$st" project)" \
             --arg item "$(kv "$st" item)" \
             --arg detail "$(kv "$st" detail)" \
-            --arg updated "$(iso "$(kv "$st" updated)")" \
+            --arg updated "$(iso "$updated")" --argjson updated_epoch "$(num "$updated")" \
+            --argjson duration "$(last_run_secs "agentctl@$name.service")" \
             --arg outcome "$(cat "$STATE_DIR/$name/last-outcome" 2>/dev/null)" \
             --arg active "$(unit_prop "agentctl@$name.service" ActiveState)" \
             --arg next "$(iso_ts "$(unit_prop "agentctl-$name.timer" NextElapseUSecRealtime)")" \
@@ -120,27 +141,30 @@ snapshot() {
               failed: ($state == "error" or $outcome == "STALLED" or $outcome == "FAILED"),
               # Waiting on a human is not a failure, but it is the one state worth a glance.
               blocked: ($state == "blocked" or $outcome == "BLOCKED"),
-              running: ($active == "active" or $active == "activating")}')"
+              running: ($active == "active" or $active == "activating"),
+              updated_epoch: $updated_epoch, duration_s: $duration,
+              outcome_code: ({WORKED: 0, NOOP: 0, BLOCKED: 1, PENDING: 1, FAILED: 2, STALLED: 2}[$outcome])}')"
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
-        local ws paused=false lr stale=false
+        local ws paused=false lr stale=false since
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
+        since="$(cat "$WSTATE/$name.since" 2>/dev/null)"
         lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
         # A paused watch is not polled on purpose, so it is never stale.
         [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
-            --arg since "$(iso "$(cat "$WSTATE/$name.since" 2>/dev/null)")" \
+            --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
-              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale}')"
+              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.

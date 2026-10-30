@@ -5,7 +5,7 @@
 #   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
 #   fleet-sessions --write            --json, and the fleet state document every view renders
 #                                     ($FLEET_STATE_FILE; schema and vocabulary in
-#                                     .local/src/docs/fleet-states.md)
+#                                     .local/src/docs/fleet-states.md), and fleet_sessions.prom
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
@@ -37,6 +37,9 @@ set -uo pipefail
   || . "$HOME/.local/lib/table-fit.sh" 2>/dev/null \
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \
   || { echo "fleet-sessions: table-fit.sh not found" >&2; exit 1; }
+# --write also publishes the rows to Prometheus (fleet_sessions.prom).
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -772,7 +775,38 @@ write_state() {
   flock -w 30 8 || { rm -f "$tmp"; echo "fleet-sessions: $dir/.lock busy" >&2; return 1; }
   prev="$(jq -r '.generated_epoch // 0' "$STATE_FILE" 2>/dev/null)"
   if [ "${prev:-0}" -gt "$t" ] 2>/dev/null; then rm -f "$tmp"; return 0; fi
-  mv -f "$tmp" "$STATE_FILE"
+  mv -f "$tmp" "$STATE_FILE" || return 1
+  prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
+    echo "fleet-sessions: could not write fleet_sessions.prom" >&2
+}
+
+# sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per
+# fact it has, labelled {target, project, bucket}, bucket counts, and the open asks unless
+# agent-ask could not be read. project is the canonical name the hooks give the session's cwd.
+sessions_prom() {
+  local d projects
+  # shellcheck source=/dev/null
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
+  projects="$(jq -r '.sessions[].cwd // empty' "$1" | sort -u | while IFS= read -r d; do
+    printf '%s\t%s\n' "$d" "$(resolve_project_name "$d")"
+  done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')"
+  jq -r --argjson p "$projects" "$PROM_JQ"'
+    def per($name; $help; f): gauge($name; $help;
+      .sessions | sort_by(.target)[] | [{target, project: ($p[.cwd // ""] // ""), bucket}, f]);
+    per("agent_session_context_tokens"; "Context tokens the session holds."; .context_tokens),
+    per("agent_session_idle_minutes"; "Minutes since the session went idle, by agent-panel."; .idle_min),
+    per("agent_session_age_minutes"; "Minutes since the session started."; .age_min),
+    per("agent_session_phases_done"; "Phases ticked in the plan checklist of the session."; .phases_done),
+    per("agent_session_phases_total"; "Phases in the plan checklist of the session."; .phases_total),
+    per("agent_session_behind"; "Commits the branch of the session is behind its base."; .behind),
+    per("agent_session_dirty"; "Uncommitted files in the worktree of the session."; .dirty),
+    per("agent_session_conflicts"; "1 when the branch of the session conflicts with its base."; .conflicts),
+    gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
+      (.sessions | map(.bucket)) as $b
+      | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR"] + $b | unique)[]
+      | . as $k | [{bucket: $k}, ($b | map(select(. == $k)) | length)]),
+    gauge("agent_asks_open"; "Pending asks waiting on the human.";
+      if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }
 
 main() {

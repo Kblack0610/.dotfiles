@@ -8,7 +8,8 @@
 #                                 closes it); j/k, space/b, g/G and the wheel scroll it.
 #                                 [ and ] step a day, t today, l the whole day in less,
 #                                 n refresh, q quit
-#   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path
+#   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
+#                                 today is also published as day_log.prom
 #   day-log json [--date D]       the day's record: today is gathered, a past day is read
 #   day-log show [--date D]       the day as markdown, every PR listed
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
@@ -25,6 +26,9 @@ set -uo pipefail
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \
   || . "$HOME/.local/lib/table-fit.sh" 2>/dev/null \
   || { echo "day-log: table-fit.sh not found" >&2; exit 1; }
+# A snapshot of today also publishes it to Prometheus (day_log.prom).
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
 : "${DAYLOG_DIR:=$HOME/.agent/daylog}"
 : "${DAYLOG_EVERY:=300}"      # board refresh; each pass is three gh searches
@@ -169,7 +173,21 @@ snapshot() {
     flock 9
     gather "$day" > "$out.tmp" && jq -e .schema "$out.tmp" >/dev/null && mv "$out.tmp" "$out"
   ) 9>"$DAYLOG_DIR/.lock" || { rm -f "$out.tmp"; say "could not write $out"; return 1; }
+  # Only today's record is today's numbers: re-gathering a past day must not overwrite them.
+  if [ "$day" = "$(today)" ]; then
+    prom_textfile day_log.prom day_prom "$out" || say "could not write day_log.prom"
+  fi
   printf '%s\n' "$out"
+}
+
+# day_prom <record> -> the day_log.prom lines: PRs merged per area, and spend per project. The
+# usage TOTAL row is the sum of the others (agent-usage rollup), so it is left out here.
+day_prom() {
+  jq -r "$PROM_JQ"'
+    gauge("agent_day_merged"; "PRs merged today, by day-log area.";
+      (.merged // []) | group_by(.area)[] | [{area: .[0].area}, length]),
+    gauge("agent_day_cost_usd"; "Spend today in USD, by project (agent-usage).";
+      (.usage // [])[] | select(.project != "TOTAL") | [{project}, .cost_usd])' "$1"
 }
 
 # record <day> -> path of the day's record: today is gathered fresh, a past day is read.
@@ -567,8 +585,8 @@ main() {
     json) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && cat "$f" ;;
     show) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && markdown "$f" ;;
     finalize) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; finalize "$day" ;;
-    -h | --help) sed -n '2,18p' "$0" ;;
-    *) sed -n '2,15p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,19p' "$0" ;;
+    *) sed -n '2,16p' "$0" >&2; return 2 ;;
   esac
 }
 

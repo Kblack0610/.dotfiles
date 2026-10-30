@@ -38,6 +38,14 @@
 # path: a runner fires every 12 minutes, and an 8s stall on each would be permanent.
 
 if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
+    # claude_otel_attr <key> [value] -> OTEL_RESOURCE_ATTRIBUTES with <key> set to <value>, or
+    # dropped when there is none, and every other attribute kept: a value someone else set
+    # survives, and sourcing this twice never stacks copies.
+    claude_otel_attr() {
+        printf '%s' "${OTEL_RESOURCE_ATTRIBUTES:-}" | tr ',' '\n' | awk -F= -v k="$1" 'NF && $1 != k' |
+            { cat; [ -z "${2:-}" ] || printf '%s=%s\n' "$1" "$2"; } | paste -sd, -
+    }
+
     export CLAUDE_CODE_ENABLE_TELEMETRY=1
     export OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318
     export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -72,5 +80,20 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # front of. Without it every runner lands in the same bucket as interactive work
     # and the one question this whole extraction exists to answer — "what is the poll loop
     # actually costing me" — stays unanswerable even with the metrics flowing.
-    export OTEL_RESOURCE_ATTRIBUTES="service.name=${CLAUDE_TELEMETRY_SERVICE:-claude-code},host.name=$(hostname)"
+    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr service.name "${CLAUDE_TELEMETRY_SERVICE:-claude-code}")"
+    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr host.name "$(hostname)")"
+    # `project` (the canonical name project-name.sh gives the directory Claude starts in, as
+    # every hook names it) is added per launch by claude_telemetry_project, which the .ai-rc
+    # claude and cl wrappers call, and never exported here. This env is inherited by everything
+    # the shell starts, a tmux server included, so a project resolved now would label a session
+    # started later in another directory: missing is better than wrong. An inherited one is
+    # dropped for the same reason.
+    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr project)"
+    export OTEL_RESOURCE_ATTRIBUTES
+
+    # claude_telemetry_project -> OTEL_RESOURCE_ATTRIBUTES with project= for $PWD.
+    claude_telemetry_project() {
+        claude_otel_attr project "$(bash -c '. "$1" && resolve_project_name "$2"' _ \
+            "$HOME/.config/shared-hooks/project-name.sh" "$PWD" 2>/dev/null)"
+    }
 fi

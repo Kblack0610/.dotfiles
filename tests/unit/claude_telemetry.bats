@@ -96,3 +96,29 @@ telemetry_env() {
   run grep -c 'export OTEL_LOG_USER_PROMPTS' "$airc"
   assert_output '0'
 }
+
+# Source the snippet on-LAN in a pristine env whose HOME holds the repo's project-name.sh,
+# from directory $1, with OTEL_RESOURCE_ATTRIBUTES preset to $2, then run $3.
+attrs_in() {
+  local home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home/.config/shared-hooks"
+  ln -sf "$BATS_TEST_DIRNAME/../../.config/shared-hooks/project-name.sh" "$home/.config/shared-hooks/project-name.sh"
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"; chmod +x "$FAKEBIN/getent"
+  (cd "$1" && env -i HOME="$home" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" OTEL_RESOURCE_ATTRIBUTES="$2" \
+    bash -c ". '$SNIP' >/dev/null 2>&1; $3")
+}
+
+@test "resource attributes set elsewhere survive, and sourcing twice stacks nothing" {
+  run attrs_in / 'deployment.environment=lab' ". '$SNIP'; echo \$OTEL_RESOURCE_ATTRIBUTES"
+  assert_output "deployment.environment=lab,service.name=claude-code,host.name=$(hostname)"
+}
+
+@test "project is added per launch for the launch directory, and never exported at shell start" {
+  # Exported at shell start it would ride into a tmux server's env and label every session
+  # started from it later, in any directory: an inherited one is dropped for that reason.
+  local dir="$BATS_TEST_TMPDIR/.my-app"
+  mkdir -p "$dir"
+  run attrs_in "$dir" 'project=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; claude_telemetry_project'
+  assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
+  assert_line --index 1 "service.name=claude-code,host.name=$(hostname),project=my-app"
+}
