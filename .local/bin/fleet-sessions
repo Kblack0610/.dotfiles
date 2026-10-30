@@ -781,7 +781,8 @@ write_state() {
 }
 
 # sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per
-# fact it has, labelled {target, project, bucket}, bucket counts, and the open asks unless
+# fact it has, labelled {target, project, bucket}, an info series joining each target to its
+# session_id (the label claude_code_* metrics carry), bucket counts, and the open asks unless
 # agent-ask could not be read. project is the canonical name the hooks give the session's cwd.
 sessions_prom() {
   local d projects
@@ -801,6 +802,9 @@ sessions_prom() {
     per("agent_session_behind"; "Commits the branch of the session is behind its base."; .behind),
     per("agent_session_dirty"; "Uncommitted files in the worktree of the session."; .dirty),
     per("agent_session_conflicts"; "1 when the branch of the session conflicts with its base."; .conflicts),
+    gauge("agent_session_info"; "Joins a session target to its Claude Code session_id; always 1.";
+      .sessions | sort_by(.target)[] | select((.session_id // "") != "")
+      | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
       (.sessions | map(.bucket)) as $b
       | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR"] + $b | unique)[]
