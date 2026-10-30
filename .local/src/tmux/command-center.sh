@@ -31,7 +31,7 @@ set -uo pipefail
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/prom.sh" 2>/dev/null \
   || { echo "command-center: prom.sh not found" >&2; exit 1; }
 GRAFANA_URL="${CC_GRAFANA_URL:-https://grafana.example.com/d/kb-ci-runners}"
-EXTRA_HOSTS="${CC_HOSTS:-workstation mac-studio}"
+EXTRA_HOSTS="${CC_HOSTS:-workstation}"
 # Prometheus offers no push to a terminal, so the board re-reads on a fixed cadence. The
 # exporter is scraped and the rules evaluate every 1m; faster only redraws the same numbers.
 REFRESH_SECS=60
@@ -133,6 +133,15 @@ _local_hosts() {
   local k
   for k in "${!V[@]}"; do [[ "$k" == cc:host_local_slots/* ]] && echo "${k#*/}"; done | sort
 }
+# _local_cell <host> -> busy/open+room. Open slots always run; room slots only while the
+# machine has room, so the sum of the two is a ceiling and not what the machine can carry.
+_local_cell() {
+  local room
+  room="$(awk -v t="${V[cc:host_local_slots/$1]:-0}" -v o="${V[cc:host_local_open_slots/$1]:-0}" 'BEGIN { printf "%.0f", t - o }')"
+  printf '%s/%s' "$(_num "cc:host_local_busy/$1")" "$(_num "cc:host_local_open_slots/$1")"
+  (( room > 0 )) && printf '+%s' "$room"
+  return 0
+}
 # _pools -> every pool a cc:pool_* series names, one per line, the longest queue first.
 _pools() {
   local k p
@@ -163,7 +172,7 @@ header() {
   [ -n "${V[cc:agent_sessions_running]:-}" ] && here="  agent sessions $(_num cc:agent_sessions_running)"
   printf '%snodes %s/%s  heartbeats %s/%s  ci busy %s/%s waiting %s  agent runners %s failed  watches %s/%s tripped  lazer %s/%s  claude 24h %s%s%s\n' \
     "$C_DIM" "$(_num cc:k3s_nodes_ready)" "$(_num cc:k3s_nodes_total)" "$(_num cc:machines_up)" "$(_num cc:machines_total)" \
-    "$(_sum cc:pool_busy cc:host_local_busy)" "$(_sum cc:pool_slots cc:host_local_slots)" "$(_sum cc:pool_waiting cc:host_local_queued)" \
+    "$(_sum cc:pool_busy cc:host_local_busy)" "$(_sum cc:pool_slots cc:host_local_open_slots)" "$(_sum cc:pool_waiting cc:host_local_queued)" \
     "$(_num cc:runners_failed)" "$(_num cc:watches_tripped)" \
     "$(_num cc:watches_total)" "$(_usd cc:lazer_spend_usd)" "$(_usd cc:lazer_budget_usd)" "$(_usd cc:claude_code_cost_24h_usd)" "$here" "$C_OFF"
 }
@@ -194,7 +203,7 @@ pools() {
         "$(_int "cc:pool_done_24h/$p")" "$(_pct "cc:pool_pass_ratio_24h/$p")" "$( [ -n "$hosts" ] && printf '%s' "${hosts% }" || printf -- - )"
     done < <(_pools)
     for h in $(_local_hosts); do
-      printf '\tunity-local\t%s/%s\t%s\t-\t%s\t%s\t%s\n' "$(_num "cc:host_local_busy/$h")" "$(_num "cc:host_local_slots/$h")" \
+      printf '\tunity-local\t%s\t%s\t-\t%s\t%s\t%s\n' "$(_local_cell "$h")" \
         "$(_num "cc:host_local_queued/$h")" "$(_int "cc:host_local_done_24h/$h")" "$(_pct "cc:host_local_pass_ratio_24h/$h")" "$h"
     done
   } | table_fit "$w" keep="1 2 3 6 5 4" flex=7 flexmin=8 right="2 3 4 5 6" | _paint_pass
@@ -241,7 +250,7 @@ machines() {
     done
     # Local slots once slots.sh publishes them; until then only the gates' count is known.
     if [ -n "${V[cc:host_local_slots/$h]:-}" ]; then
-      sl+="unity-local $(_num "cc:host_local_busy/$h")/$(_num "cc:host_local_slots/$h")  "
+      sl+="unity-local $(_local_cell "$h")  "
     elif [ -n "${gates[$h]:-}" ]; then
       sl+="${gates[$h]} gates  "
     fi
