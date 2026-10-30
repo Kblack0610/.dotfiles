@@ -218,18 +218,213 @@ pub struct FleetInfo {
     /// Absolute paths the session changed through Edit, Write, MultiEdit or NotebookEdit,
     /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
     pub edited_files: Vec<String>,
+    pub time_use: TimeUse,
+    /// The last main-thread tool call, `<Tool>: <description>`, empty when there is none.
+    pub doing: String,
+    /// The last main-thread assistant text on one line, clipped to `SAID_CHARS`.
+    pub said: String,
+    /// How many times the context was compacted.
+    pub compactions: u64,
 }
 
 pub fn fleet_info(path: &Path) -> FleetInfo {
     let text = read(path);
     let (context_tokens, model) = last_usage(&text);
+    let (doing, said) = doing_said(&text);
     FleetInfo {
         context_tokens,
         model,
         plan_file: plan_file(&text),
         last_entry: last_entry(&text),
         edited_files: edited_files(&text),
+        time_use: time_use(&text),
+        doing,
+        said,
+        compactions: compactions(&text),
     }
+}
+
+/// A gap between entries shorter than this is the session working; a longer one was a wait,
+/// and what ended it says for what.
+const WORK_GAP_SECS: u64 = 300;
+/// How far past a gap's end to look for the entry that says who ended it.
+const WAKE_SECS: u64 = 60;
+const SAID_CHARS: usize = 120;
+const HUMAN_TOOLS: [&str; 2] = ["AskUserQuestion", "ExitPlanMode"];
+
+/// Minutes of a session's closed gaps, by what it was waiting on. The open gap since the last
+/// entry is not here: IDLE already shows it, and what ends it is not known yet.
+#[derive(Debug, Default, PartialEq)]
+pub struct TimeUse {
+    pub work_min: u64,
+    /// A background job or a foreground tool.
+    pub jobs_min: u64,
+    /// A typed prompt, or an answer to AskUserQuestion or ExitPlanMode.
+    pub human_min: u64,
+    /// Nothing the session was running: a peer's message or some other record woke it.
+    pub parked_min: u64,
+}
+
+#[derive(Clone, Copy)]
+enum Wait {
+    Work,
+    Jobs,
+    Human,
+    Parked,
+}
+
+/// Split the transcript's elapsed time. Reads every line, so it stays on substring checks and
+/// parses only around a long gap. The first `"timestamp":"` on a line is the entry's own
+/// (escaped copies inside a string do not match); a file-history-snapshot has only a nested one.
+/// The running max keeps a burst written out of order from reading as a gap.
+fn time_use(text: &str) -> TimeUse {
+    let lines: Vec<&str> = text.lines().filter(|l| !skipped_entry(l)).collect();
+    let mut secs = [0u64; 4];
+    let mut last: Option<u64> = None;
+    let mut human_ids = std::collections::HashSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        if HUMAN_TOOLS.iter().any(|t| line.contains(&format!("\"name\":\"{t}\""))) {
+            human_tool_ids(line, &mut human_ids);
+        }
+        let Some(at) = entry_epoch(line) else { continue };
+        let Some(prev) = last else {
+            last = Some(at);
+            continue;
+        };
+        if at <= prev {
+            continue;
+        }
+        let gap = at - prev;
+        let wait = if gap < WORK_GAP_SECS { Wait::Work } else { gap_end(&lines[i..], at, &human_ids) };
+        secs[wait as usize] += gap;
+        last = Some(at);
+    }
+    let [work, jobs, human, parked] = secs.map(|s| s / 60);
+    TimeUse { work_min: work, jobs_min: jobs, human_min: human, parked_min: parked }
+}
+
+/// A subagent's entry, or a snapshot whose only timestamp is nested.
+fn skipped_entry(line: &str) -> bool {
+    line.contains("\"isSidechain\":true") || line.starts_with("{\"type\":\"file-history-snapshot\"")
+}
+
+fn entry_epoch(line: &str) -> Option<u64> {
+    const KEY: &str = "\"timestamp\":\"";
+    line.find(KEY)
+        .and_then(|i| line.get(i + KEY.len()..))
+        .and_then(|rest| rest.split('"').next())
+        .and_then(iso_epoch)
+}
+
+/// The ids of the HUMAN_TOOLS calls on an assistant line.
+fn human_tool_ids(line: &str, ids: &mut std::collections::HashSet<String>) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { return };
+    for c in blocks {
+        let name = c.get("name").and_then(Value::as_str).unwrap_or("");
+        if c.get("type").and_then(Value::as_str) == Some("tool_use") && HUMAN_TOOLS.contains(&name) {
+            if let Some(id) = c.get("id").and_then(Value::as_str) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+}
+
+/// What a long gap was waiting on: the first entry at the gap's end that says who woke the
+/// session. Bookkeeping lands around it, sometimes first: an `api-request` written just before
+/// the prompt it sends, a `system` line for a mistyped command. Past WAKE_SECS those are all
+/// there is, and nothing the session was running ended the gap.
+fn gap_end(lines: &[&str], end: u64, human_ids: &std::collections::HashSet<String>) -> Wait {
+    for line in lines {
+        if entry_epoch(line).is_some_and(|at| at > end + WAKE_SECS) {
+            break;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(wait) = entry_wait(&v, human_ids) {
+            return wait;
+        }
+    }
+    Wait::Parked
+}
+
+/// Who an entry says woke the session, None for bookkeeping.
+fn entry_wait(v: &Value, human_ids: &std::collections::HashSet<String>) -> Option<Wait> {
+    match v.get("type").and_then(Value::as_str)? {
+        // A slow model turn is the session working: nothing arrived to end the gap.
+        "assistant" => Some(Wait::Work),
+        // An enqueue carries the prompt; its dequeue and remove carry nothing.
+        "queue-operation" => v.get("content").and_then(Value::as_str).filter(|s| !s.is_empty()).map(prompt_wait),
+        "user" if v.get("isMeta").and_then(Value::as_bool) == Some(true) => Some(Wait::Parked),
+        "user" => match v.pointer("/message/content")? {
+            Value::String(s) => Some(prompt_wait(s)),
+            Value::Array(blocks) => {
+                if let Some(id) = blocks
+                    .iter()
+                    .find(|c| c.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    .map(|c| c.get("tool_use_id").and_then(Value::as_str).unwrap_or(""))
+                {
+                    return Some(if human_ids.contains(id) { Wait::Human } else { Wait::Jobs });
+                }
+                blocks
+                    .iter()
+                    .find(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+                    .map(|c| prompt_wait(c.get("text").and_then(Value::as_str).unwrap_or("")))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Who a prompt came from, by its opening tag: the harness tags everything it injects.
+fn prompt_wait(s: &str) -> Wait {
+    if s.starts_with("<task-notification>") {
+        Wait::Jobs
+    } else if !s.starts_with('<') || s.starts_with("<command") || s.starts_with("<local-command") {
+        Wait::Human
+    } else {
+        Wait::Parked
+    }
+}
+
+/// The last tool call and the last text of the session's own turns. Only a tool's description
+/// is copied, never a Bash command, which can hold a secret.
+fn doing_said(text: &str) -> (String, String) {
+    let (mut doing, mut said) = (None, None);
+    for line in text.lines().rev() {
+        if doing.is_some() && said.is_some() {
+            break;
+        }
+        if !line.contains("\"type\":\"assistant\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if !own_turn(&v) {
+            continue;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        for c in blocks.iter().rev() {
+            match c.get("type").and_then(Value::as_str) {
+                Some("tool_use") if doing.is_none() => {
+                    let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
+                    let desc = c.pointer("/input/description").and_then(Value::as_str).map(collapse).unwrap_or_default();
+                    doing = Some(if desc.is_empty() { name.to_string() } else { format!("{name}: {}", truncate(&desc, SAID_CHARS)) });
+                }
+                Some("text") if said.is_none() => {
+                    let t = collapse(c.get("text").and_then(Value::as_str).unwrap_or(""));
+                    if !t.is_empty() {
+                        said = Some(truncate(&t, SAID_CHARS));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (doing.unwrap_or_default(), said.unwrap_or_default())
+}
+
+fn compactions(text: &str) -> u64 {
+    text.lines().filter(|l| l.contains("\"subtype\":\"compact_boundary\"") && !l.contains("\"isSidechain\":true")).count() as u64
 }
 
 /// The newest top-level `timestamp` among the last 200 lines. Entries written in one
@@ -489,6 +684,98 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         writeln!(f, "{}", lines.join("\n")).unwrap();
         path
+    }
+
+    /// An entry at `min` minutes past 12:00, with the rest of its JSON from `body`.
+    fn at(min: u64, body: &str) -> String {
+        format!(r#"{{{body},"timestamp":"2026-10-30T{:02}:{:02}:00.000Z"}}"#, 12 + min / 60, min % 60)
+    }
+
+    #[test]
+    fn time_use_buckets_a_gap_by_what_ended_it() {
+        let lines = [
+            at(0, r#""type":"user","message":{"content":"go"}"#),
+            at(2, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}},{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}"#),
+            // Ordinary tool result and a task notification: jobs, 10 + 20.
+            at(12, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}"#),
+            at(32, r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> done""#),
+            // AskUserQuestion's answer and a typed prompt: human, 30 + 40.
+            at(62, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"a"}]}"#),
+            at(102, r#""type":"user","message":{"content":"next"}"#),
+            // A peer's message and a system record: parked, 50 + 60.
+            at(152, r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> Shepherd""#),
+            at(212, r#""type":"system","subtype":"informational""#),
+            // A long model turn is work, 7; a typed prompt queued while busy is human, 8.
+            at(219, r#""type":"assistant","message":{"content":[]}"#),
+            at(227, r#""type":"queue-operation","operation":"enqueue","content":"also this""#),
+        ];
+        let text = lines.join("\n");
+        assert_eq!(
+            time_use(&text),
+            TimeUse { work_min: 2 + 7, jobs_min: 30, human_min: 78, parked_min: 110 }
+        );
+    }
+
+    #[test]
+    fn time_use_ignores_sidechains_snapshots_and_out_of_order_lines() {
+        let lines = [
+            at(0, r#""type":"user","message":{"content":"go"}"#),
+            // A subagent's entry and a snapshot's nested timestamp must not split the gap.
+            at(30, r#""type":"assistant","isSidechain":true,"message":{"content":[]}"#),
+            r#"{"type":"file-history-snapshot","snapshot":{"timestamp":"2026-10-30T12:45:00.000Z"}}"#.to_string(),
+            at(60, r#""type":"queue-operation","operation":"enqueue","content":"<task-notification>""#),
+            // Written out of order: no negative gap, and the next gap runs from the max.
+            at(59, r#""type":"assistant","message":{"content":[]}"#),
+            at(61, r#""type":"assistant","message":{"content":[]}"#),
+        ];
+        assert_eq!(time_use(&lines.join("\n")), TimeUse { work_min: 1, jobs_min: 60, human_min: 0, parked_min: 0 });
+        assert_eq!(time_use(""), TimeUse::default());
+    }
+
+    #[test]
+    fn time_use_reads_past_bookkeeping_at_a_gaps_end() {
+        let lines = [
+            at(0, r#""type":"user","message":{"content":"go"}"#),
+            // An api-request written just ahead of the prompt it sends: human, 30.
+            at(30, r#""type":"api-request""#),
+            at(30, r#""type":"user","message":{"content":"back"}"#),
+            // A mistyped command's system line, then the retry: human, 40.
+            at(70, r#""type":"system","subtype":"informational","content":"Unknown command""#),
+            at(70, r#""type":"user","message":{"content":"/compact"}"#),
+            // A dequeue is bookkeeping too; the notification behind it is jobs, 50.
+            at(120, r#""type":"queue-operation","operation":"dequeue""#),
+            at(120, r#""type":"user","message":{"content":"<task-notification>x"}"#),
+            // Bookkeeping with nothing real inside the window: parked, 60. The prompt 20
+            // minutes later is its own gap: human, 20.
+            at(180, r#""type":"pr-link""#),
+            at(200, r#""type":"user","message":{"content":"late"}"#),
+        ];
+        assert_eq!(time_use(&lines.join("\n")), TimeUse { work_min: 0, jobs_min: 50, human_min: 90, parked_min: 60 });
+    }
+
+    #[test]
+    fn doing_and_said_come_from_the_sessions_own_turns() {
+        let text = [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"first  note"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H secret","description":"Fetch  the page"}}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"},{"type":"tool_use","name":"Read","input":{}}]}}"#,
+        ]
+        .join("\n");
+        assert_eq!(doing_said(&text), ("Bash: Fetch the page".to_string(), "first note".to_string()));
+        // No description: the tool's name alone, and the command is never copied.
+        let bare = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H secret"}}]}}"#;
+        assert_eq!(doing_said(bare), ("Bash".to_string(), String::new()));
+    }
+
+    #[test]
+    fn counts_main_thread_compactions() {
+        let text = [
+            r#"{"type":"system","subtype":"compact_boundary"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","isSidechain":true}"#,
+            r#"{"type":"user","message":{"content":"the text \"subtype\":\"compact_boundary\" quoted"}}"#,
+        ]
+        .join("\n");
+        assert_eq!(compactions(&text), 1);
     }
 
     #[test]
