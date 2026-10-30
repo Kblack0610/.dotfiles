@@ -333,7 +333,7 @@ default_base() {
   cat "$key"
 }
 
-# main_state: gh run list JSON (any order) on stdin -> one line per workflow whose latest
+# main_state: main_runs JSON (any order) on stdin -> one line per workflow whose latest
 # decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
 # FIRST failure after the last green (the oldest in the window when there is none), so the
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
@@ -348,16 +348,19 @@ main_state() {
        (if $g == null then "-" else .[$g].headSha end)] | @tsv'
 }
 
-# main_runs <dir> <branch> -> gh run list JSON for the branch, reused for FLEET_MAIN_TTL seconds
-# across passes. A failed call is not cached, so the next pass asks again.
+# main_runs <dir> <branch> -> the branch's runs in gh run list field names, reused for
+# FLEET_MAIN_TTL seconds across passes. A failed call is not cached, so the next pass asks again.
+# actions/runs, not `gh run list`: that looks workflows up under actions/workflows, a separate
+# bucket that `gh api rate_limit` does not show, and on 2026-10-29 it was the one used up.
 main_runs() {
   local dir="$1" b="$2" file runs
   file="$MAIN_CACHE/runs_$(repo_slug "$dir")_${b//\//_}.json"
   if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
     cat "$file"; return
   fi
-  runs="$(cd "$dir" && gh run list --branch "$b" --limit 100 \
-            --json workflowName,status,conclusion,headSha,createdAt 2>/dev/null)" || return 1
+  runs="$(cd "$dir" && gh api -X GET "repos/{owner}/{repo}/actions/runs" -f branch="$b" -f per_page=100 \
+            --jq '[.workflow_runs[] | {workflowName: .name, status, conclusion, headSha: .head_sha, createdAt: .created_at}]' \
+            2>/dev/null)" || return 1
   mkdir -p "$MAIN_CACHE"
   printf '%s\n' "$runs" > "$file.$$" && mv "$file.$$" "$file"
   printf '%s\n' "$runs"
@@ -539,7 +542,7 @@ main_rows() {
     slug="${f##*/main_}"; sid="main-$slug"
     case "$st" in
       RED) reason="$repo red: $wfs" ;;
-      UNKNOWN) reason="$repo main CI unreadable (gh run list failed)" ;;
+      UNKNOWN) reason="$repo main CI unreadable (gh api actions/runs failed)" ;;
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"

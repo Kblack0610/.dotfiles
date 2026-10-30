@@ -25,6 +25,7 @@ set -uo pipefail
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
+: "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
@@ -349,14 +350,24 @@ gh_callers() {
   done | sort | uniq -c | sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
 }
 
-# gh_budget -> one line: REST calls left this hour, and who is spending them when LOW.
-# The rate_limit endpoint does not count against the limit.
+# gh_budget -> one line: REST calls left this hour in the emptier bucket, and who is spending
+# them when LOW. GitHub charges actions/workflows (`gh run list`, `gh run view`, `gh workflow
+# run`) and orgs/ to a second per-user bucket of the same size that rate_limit does not show; on
+# 2026-10-29 that one ran out while rate_limit read 2,964 left. rate_limit is free; reading the
+# second bucket's headers costs one of its calls.
 gh_budget() {
-  local rl remaining limit reset line callers
+  local rl remaining limit reset wf wf_reset bucket="" line callers
   rl="$(timeout 5 gh api rate_limit --jq '.resources.core | "\(.remaining) \(.limit) \(.reset)"' 2>/dev/null)" \
     || { echo "github: rate limit unreadable"; return; }
   read -r remaining limit reset <<<"$rl"
-  line="github: $remaining/$limit REST calls left, resets $(date -d "@$reset" +%H:%M)"
+  wf="$(timeout 5 gh api -i "repos/$FLEET_GH_PROBE_REPO/actions/workflows?per_page=1" 2>/dev/null \
+    | tr -d '\r' | awk -F': ' 'tolower($1) == "x-ratelimit-remaining" { r = $2 }
+                              tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }')"
+  read -r wf wf_reset <<<"$wf"
+  if [ -n "$wf" ] && [ "$wf" -lt "$remaining" ]; then
+    remaining="$wf" reset="$wf_reset" bucket=" (actions/workflows)"
+  fi
+  line="github: $remaining/$limit REST calls left$bucket, resets $(date -d "@$reset" +%H:%M)"
   if [ "$remaining" -lt "$FLEET_GH_LOW" ] && [ $(( reset - $(date +%s) )) -gt 1200 ]; then
     callers="$(gh_callers)"
     line="$line, LOW${callers:+; gh running under $callers}"
