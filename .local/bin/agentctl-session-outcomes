@@ -145,7 +145,8 @@ cmd_run() {
           reverted_7d: ([$prs[] | select(.reverted)] | length),
           board_done: ($mm.board_done // null),
           corrections: (if $runner then null else ($mm.corrections // null) end),
-          hard_errors: ($mm.hard_errors // null) }
+          hard_errors: ($mm.hard_errors // null),
+          activity: ($mm.activity // null) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
@@ -254,8 +255,8 @@ cmd_worst() {
     | sort_by(-.f, -(.cost_usd // 0)) | .[:$top]
     | if length == 0 then "_(no session with friction in the last \($days) days)_"
       else
-        (["| friction | session | project | title | why | cost |",
-          "|---|---|---|---|---|---|"]
+        (["| friction | session | project | title | why | cost | test runs | CI polls | spent after last edit |",
+          "|---|---|---|---|---|---|---|---|---|"]
          + map("| \(.f) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
                + ([ (if .reverted_7d > 0 then "\(.reverted_7d) reverted" else empty end),
                     (if .prs_closed_unmerged > 0 then "\(.prs_closed_unmerged) PR closed unmerged" else empty end),
@@ -264,7 +265,10 @@ cmd_worst() {
                     (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
                     (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API error(s)" else empty end)
                   ] | join(", "))
-               + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end) |"))
+               + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end)"
+               + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
+               + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0
+                  then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) + " |"))
         | join("\n")
       end'
 }

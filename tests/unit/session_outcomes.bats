@@ -202,6 +202,41 @@ EOF
   [ ! -d "$SO_OUT/proj" ]
 }
 
+# One API message split across two records, a commit message that names a
+# test command, a test run, a CI poll, an edit, then a message spent after it, ending on a
+# write to its own notes, which does not reset the count.
+activity_of() {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  so_transcript_metrics "$1" | jq -c .activity
+}
+
+@test "activity: tool calls, test runs and CI polls come from the commands, each message's tokens once" {
+  cat > "$TR/act.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":1,"cache_read_input_tokens":10,"cache_creation_input_tokens":2,"output_tokens":3},"content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":1,"cache_read_input_tokens":10,"cache_creation_input_tokens":2,"output_tokens":3},"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"git commit -m 'make test and bats pass'"}}]}}
+{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"cd x && FOO=1 timeout 60 scripts/test/run.sh Bar"}},{"type":"tool_use","id":"c","name":"Edit","input":{"file_path":"/repo/a.sh"}}]}}
+{"type":"assistant","message":{"id":"m3","usage":{"output_tokens":7},"content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"gh pr checks 5 --watch"}},{"type":"tool_use","id":"e","name":"Write","input":{"file_path":"/home/u/.agent/lessons/p.md"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7}'
+}
+
+@test "activity: a commit ends the edit count, for edits made through Bash" {
+  cat > "$TR/act.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"git add -A && git commit -m x"}}]}}
+{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":7},"content":[{"type":"text","text":"done"}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"tokens_after_last_edit":7'
+}
+
+@test "activity: a transcript with no usage counts its calls and no tokens, and reaches the row" {
+  "$SUBJECT" run
+  run jq -sr 'map(select(.session_id == "sess-a"))[0].activity | "\(.tool_calls) \(.tokens)"' "$SO_OUT/proj/2026-10.jsonl"
+  assert_output '3 0'
+}
+
 @test "worst ranks the reverted session first and leaves A out" {
   "$SUBJECT" run
   run "$SUBJECT" worst --project proj --days 7 -n 5
