@@ -20,22 +20,43 @@
 # Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
 # entrypoint is the first one a record carries: "sdk-cli" is a headless `claude -p`.
+# activity is how the session spent itself. A test run is a test command at the start of a
+# Bash line, so a commit message naming one does not count. An API message's records repeat
+# its usage, so each id counts once, and tokens include cache reads, as the bill does. Tokens
+# after the last edit are what it spent past its last commit or change to anything but its
+# own notes; a commit counts because an edit made through Bash is not a tool call of its own.
 so_transcript_metrics() {
   jq -nR '
+    def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
+    def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
     reduce (inputs | fromjson? | select(type == "object")) as $r (
       { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
-        api_error: 0, denied: 0, tool_errors: 0 };
+        api_error: 0, denied: 0, tool_errors: 0,
+        tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {} };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
       | if $r.type == "assistant" then
         (if $r.isApiErrorMessage == true then .api_error += 1 else . end)
+        | (if ($r.message.id | type) == "string" then
+             ($r.message.usage // {} | [.input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens, .output_tokens]
+              | map(. // 0) | add) as $tokens
+             | .messages[$r.message.id] = $tokens | .since_edit[$r.message.id] = $tokens
+           else . end)
         | reduce ($r.message.content | if type == "array" then .[] else empty end
                   | select(.type == "tool_use")) as $u (.;
-            if $u.name == "Bash" then
+            .tool_calls += 1
+            | (if (["Edit", "Write", "MultiEdit", "NotebookEdit"] | index($u.name)) != null
+                  and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
+                 .since_edit = {}
+               else . end)
+            | if $u.name == "Bash" then
               ($u.input.command // "") as $c
+              | (if ($c | test(test_run)) then .test_runs += 1 else . end)
+              | (if ($c | test(ci_poll)) then .ci_polls += 1 else . end)
+              | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | test("\\bgh\\s+pr\\s+(create|merge)\\b")) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | (if ($c | test("\\bnotes\\s+ptask\\b.*\\sdone\\b")) then
@@ -76,7 +97,9 @@ so_transcript_metrics() {
         entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
-        hard_errors: { api_error, denied, tool_errors } }
+        hard_errors: { api_error, denied, tool_errors },
+        activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
+                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0) } }
   ' < "$1"
 }
 
