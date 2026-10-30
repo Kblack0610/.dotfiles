@@ -12,6 +12,8 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export BENCH_SESSIONS_CMD=sessions-stub   # on PATH: the sandbox path has a space
   export BENCH_DEFAULT_PHASE_MIN=60
+  export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
+  export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -716,4 +718,281 @@ kpi_fixture() {
   assert_line --index 0 '## KPIs'
   assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line --index 2 '## Sessions'
+}
+
+# --- findings: the 2026-10-29 outage replayed. A is 06:00 PDT, the start of the recorded day.
+
+A=1793278800
+
+use_fixture() {
+  FX="$REPO_ROOT/tests/fixtures/bench-replay-1029"
+  export BENCH_PROM_TSV="$FX/prom.tsv" BENCH_MERGES_TSV="$FX/merges.tsv" BENCH_RUNS_TSV="$FX/runs.tsv"
+  mkdir -p "$FLEET_BENCH_DIR"
+  cp "$FX/progress.jsonl" "$FLEET_BENCH_DIR/progress.jsonl"
+}
+
+# clock <HH:MM> [next]: that moment on the recorded day, or the morning after
+clock() { echo $((A + (10#${1%:*} - 6) * 3600 + 10#${1#*:} * 60 + ${2:+86400}0 / 10)); }
+eval_at() { BENCH_NOW="$(clock "$@")" "$SUBJECT" findings --run; }
+# open_at <HH:MM> [next] -> "rule scope" per open finding, sorted
+open_at() { BENCH_NOW="$(clock "$@")" "$SUBJECT" findings --json | jq -r '"\(.rule) \(.scope)"' | sort; }
+fired() { eval_at "$@"; open_at "$@"; }
+episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "$FLEET_BENCH_DIR/findings.jsonl" | sort -un | wc -l; }
+
+@test "findings: the pool signal first fires at 09:30, before anyone was looking" {
+  use_fixture
+  run fired 09:20
+  refute_output --partial 'starved pool:unity'
+  run fired 09:30
+  assert_output --partial 'starved pool:unity'
+}
+
+@test "findings: local starvation first fires at 13:00 and names the slot limit" {
+  use_fixture
+  run fired 12:50
+  refute_output --partial 'starved workstation'
+  run fired 13:00
+  assert_output --partial 'starved workstation'
+  run jq -r 'select(.scope == "workstation") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output --partial 'a slot limit binds'
+}
+
+@test "findings: throughput-drop first fires at 14:20, over five hours before the human found it" {
+  use_fixture
+  run fired 14:10
+  refute_output --partial 'throughput-drop'
+  run fired 14:20
+  assert_output --partial 'throughput-drop unity-core-playground'
+  run jq -r 'select(.rule == "throughput-drop") | .decision_class' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output human
+}
+
+@test "findings: the quiet morning after raises no starved or throughput-drop" {
+  use_fixture
+  for t in 00:30 01:30 02:30 03:30 04:30 05:30; do
+    run fired "$t" next
+    refute_output --partial starved
+    refute_output --partial throughput-drop
+  done
+}
+
+@test "findings: a host over its mark on 3 samples fires, one short of that does not" {
+  use_fixture
+  run fired 16:50
+  refute_output --partial 'host-overload mac-studio'
+  run fired 17:00
+  assert_output --partial 'host-overload mac-studio'
+}
+
+@test "findings: a gap inside the clear window is one episode, a recurrence after it is a new one" {
+  use_fixture
+  # The pool queue dropped under an hour at 10:40 and was back at 11:30.
+  for t in 09:30 10:30 10:40 11:30 12:30 13:30 14:30 15:30 16:30; do eval_at "$t"; done
+  run episode 'starved pool:unity'
+  assert_output 1
+  eval_at 21:20
+  run episode 'starved pool:unity'
+  assert_output 2
+}
+
+@test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
+  use_fixture
+  eval_at 09:30; eval_at 10:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.decision_class) \(.fact)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_line --index 0 "shepherd starved pool:unity @$(clock 09:30)"
+  assert_line --index 1 "human starved pool:unity @$(clock 09:30)"
+}
+
+@test "findings: the human row sorts first, and the text view shows conclusion and cost" {
+  use_fixture
+  eval_at 09:30; eval_at 14:30
+  BENCH_NOW=$(clock 14:30) run "$SUBJECT" findings
+  assert_success
+  assert_line --index 0 --partial human
+  assert_output --partial 'jobs waiting'
+  assert_output --partial 'merges behind in 2h'
+}
+
+@test "findings: each rule reads its threshold from kpi-thresholds" {
+  use_fixture
+  printf 'finding_queued_min=999\nfinding_pool_wait_s=9999999\nfinding_merge_ratio=0\nfinding_host_load_per_core=9999\n' > "$KPI_THRESHOLDS"
+  run fired 17:00
+  assert_output ''
+  printf 'finding_host_load_per_core=0.01\n' > "$KPI_THRESHOLDS"
+  rm -f "$FLEET_BENCH_DIR/findings.jsonl"
+  run fired 17:00
+  assert_output --partial 'host-overload hp-victus'
+}
+
+@test "findings: prometheus unreadable is one blind finding and no healthy read" {
+  use_fixture
+  export BENCH_PROM_TSV=/dev/null
+  eval_at 17:00
+  BENCH_NOW=$(clock 17:00) run "$SUBJECT" findings
+  assert_output --partial 'blind'
+  refute_output --partial 'none open'
+  run open_at 17:00
+  assert_line 'blind prom'
+  refute_output --partial starved
+  refute_output --partial host-overload
+}
+
+@test "findings: a missing series is blind by name and the other rules still run" {
+  use_fixture
+  grep -v '^cc:pool_slots' "$FX/prom.tsv" > "$SANDBOX/prom.tsv"
+  export BENCH_PROM_TSV="$SANDBOX/prom.tsv"
+  run fired 17:00
+  assert_line 'blind prom:cc:pool_slots'
+  assert_line 'starved workstation'
+}
+
+@test "findings: unreadable merges are blind and turn throughput-drop off for that project only" {
+  use_fixture
+  { cat "$FX/merges.tsv"; echo '!unity-core-playground'; } > "$SANDBOX/merges.tsv"
+  export BENCH_MERGES_TSV="$SANDBOX/merges.tsv"
+  run fired 15:00
+  assert_line 'blind merges:unity-core-playground'
+  refute_output --partial throughput-drop
+  assert_line 'starved workstation'
+}
+
+@test "findings: an evaluation that fails leaves a row, because no rows is what healthy looks like" {
+  use_fixture
+  printf 'not json\n' > "$FLEET_BENCH_DIR/progress.jsonl"
+  run fired 15:00
+  assert_line 'blind findings'
+  refute_line --partial starved
+}
+
+@test "findings: a store nobody has evaluated lately is not an all clear" {
+  use_fixture
+  BENCH_NOW=$(clock 15:00) run "$SUBJECT" findings
+  assert_output --partial 'no evaluation since ever'
+  eval_at 00:30 next
+  BENCH_NOW=$(clock 00:40 next) run "$SUBJECT" findings
+  assert_output 'findings: none open'
+  BENCH_NOW=$(clock 02:00 next) run "$SUBJECT" findings
+  assert_output --partial 'no evaluation since'
+}
+
+@test "findings: sample evaluates on both paths and a blind one still publishes WORKED" {
+  row a lab/game-agent-1:1 0 4 > "$SNAP"
+  run sample_at 0
+  assert_success
+  run jq -r .scope "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output prom
+  run outcome
+  assert_output --partial WORKED
+  : > "$SNAP"
+  run sample_at 600
+  assert_success
+  run jq -r .epoch "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_line "$((T0 + 600))"
+}
+
+@test "findings: a bad flag is a usage error" {
+  run "$SUBJECT" findings --nope
+  assert_failure 2
+}
+
+# --- the live readers, with a stubbed curl and a local remote standing in for the services
+
+stub_prom() {
+  unset BENCH_PROM_TSV
+  cat > "$SANDBOX/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SANDBOX/curl.log"
+$1
+EOF
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "findings: the live reader asks prometheus for the moment it is judging" {
+  stub_prom 'echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"__name__\":\"cc:host_load1\",\"host\":\"h\"},\"value\":[1,\"99\"]},{\"metric\":{\"__name__\":\"cc:host_cores\",\"host\":\"h\"},\"value\":[1,\"4\"]}]}}"'
+  BENCH_NOW=$T0 run "$SUBJECT" findings --run
+  assert_success
+  run grep -c "time=$((T0 - 1200))" "$SANDBOX/curl.log"
+  assert_output 1
+  BENCH_NOW=$T0 run "$SUBJECT" findings --json
+  assert_output --partial '"host-overload"'
+  refute_output --partial '"scope":"prom"'
+}
+
+@test "findings: a dead prometheus through the live reader is blind" {
+  stub_prom 'exit 7'
+  BENCH_NOW=$T0 "$SUBJECT" findings --run
+  run jq -r .scope "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output prom
+}
+
+# merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch
+merge_repo() {
+  local dir="$1" e; shift
+  git init -q --bare -b main "$dir.git"
+  git clone -q "$dir.git" "$dir" 2>/dev/null
+  for e in "$@"; do
+    GIT_AUTHOR_DATE="$e +0000" GIT_COMMITTER_DATE="$e +0000" git -C "$dir" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$e"
+  done
+  git -C "$dir" push -q origin HEAD:main
+  git -C "$dir" remote set-head origin main
+}
+
+live_merges() {
+  unset BENCH_MERGES_TSV
+  export BENCH_PROJECT_MAP="$SANDBOX/map.json"
+  mkdir -p "$FLEET_BENCH_DIR"
+  merge_repo "$SANDBOX/plat" $((T0 - 108000)) $((T0 - 1800))
+  jq -n --arg p "$SANDBOX/plat" '{paths: {($p): "bnb-platform"}, aliases: {platform: "bnb-platform"}}' > "$BENCH_PROJECT_MAP"
+  printf '{"epoch":%s,"project":"platform","bucket":"WORKING"}\n' $((T0 - 600)) $((T0 - 118000)) > "$FLEET_BENCH_DIR/progress.jsonl"
+}
+
+@test "throughput: merges come from git, reaching a repo through the map's alias" {
+  live_merges
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_output --partial 'merges/h: platform 0.5'
+}
+
+@test "throughput: --from older than a day counts the whole window" {
+  live_merges
+  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 120000)) --to "$T0"
+  assert_output --partial 'merges/h: platform 0.1'
+}
+
+@test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
+  live_merges
+  git -C "$SANDBOX/plat" remote set-url origin "$SANDBOX/gone.git"
+  BENCH_NOW=$T0 "$SUBJECT" findings --run
+  run jq -r .scope "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_line merges:platform
+}
+
+@test "findings: a project with no repo in the map is blind, never quietly skipped" {
+  live_merges
+  printf '{"epoch":%s,"project":"unmapped","bucket":"WORKING"}\n' $((T0 - 600)) >> "$FLEET_BENCH_DIR/progress.jsonl"
+  BENCH_NOW=$T0 "$SUBJECT" findings --run
+  run jq -r .scope "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_line merges:unmapped
+  refute_line merges:platform
+}
+
+@test "throughput: the 10-29 window reads runs, failures, merges, pool and hosts" {
+  use_fixture
+  BENCH_NOW=$(clock 15:00) run "$SUBJECT" throughput
+  assert_success
+  assert_line --partial 'local runs: 37/h, 58% not passed'
+  assert_line 'merges/h: unity-core-playground 1.5'
+  assert_line 'pool unity: 29 waiting, 7/9 busy, oldest 5.4h'
+  assert_line 'local: 15 queued'
+  assert_line --partial 'razer-laptop 1.4x'
+}
+
+@test "throughput: an empty window and a backwards one are told apart" {
+  use_fixture
+  run "$SUBJECT" throughput --from $((T0 + 10)) --to "$T0"
+  assert_failure 2
+  run "$SUBJECT" throughput --from $((T0 - 90000)) --to $((T0 - 86400))
+  assert_success
+  assert_output --partial 'local runs: none recorded'
+  assert_output --partial 'merges: none'
 }
