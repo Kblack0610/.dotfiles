@@ -680,11 +680,11 @@ bench_eta() {
 @test "board_cells: ETA is joined by session id, - when fleet-bench has none for it" {
   printf 'sid-45\t21:30 s3\n' > "$SANDBOX/eta"
   run board_cells "$SANDBOX/eta" < <(age_row 45; age_row 192)
-  assert_line --regexp $'^sid-45\t.*\tbusy\t21:30 s3$'
-  assert_line --regexp $'^sid-192\t.*\tbusy\t-$'
+  assert_line --regexp $'^sid-45\t.*\tbusy\t21:30 s3\t'
+  assert_line --regexp $'^sid-192\t.*\t3h12m\tbusy\t-\t'
   # negative control: with no estimates every row reads -
   run board_cells < <(age_row 45)
-  assert_line --regexp $'^sid-45\t.*\tbusy\t-$'
+  assert_line --regexp $'^sid-45\t.*\t45m\tbusy\t-\t'
 }
 
 @test "transitions: a re-estimated ETA is not a change" {
@@ -714,10 +714,10 @@ bench_eta() {
 # frame_fixture -> a watch frame as watch_tick emits it: plain lines, then the tab-led table.
 frame_fixture() {
   printf 'fleet watch  12:00:00  2 session(s)  %s\n\n' "$(printf 'x%.0s' {1..120})"
-  printf '\t%s' SESSION SYNC CONFLICTS TREE PR CI PLAN ETA QUALITY STAGE LABELS IDLE AGE WHY; echo
-  printf '\t%s' 'unity-core-playground-agent-12:1' '3 behind' no '2 dirty' '#88 open' pending 1/3 '21:30 s3' - WORKING - 5m 2d4h \
+  printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
+  printf '\t%s' 'unity-core-playground-agent-12:1' - '3 behind' no '2 dirty' '#88 open' - pending 1/3 '21:30 s3' - WORKING - - - 5m 2d4h \
     "busy $(printf 'y%.0s' {1..150})"; echo
-  printf '\t%s' 'dotfiles:4' current "${1:-no}" clean - - 2/2 - - DONE hands-off 40m 45m 'plan finished'; echo
+  printf '\t%s' 'dotfiles:4' - current "${1:-no}" clean - - - 2/2 - - DONE hands-off - - 40m 45m 'plan finished'; echo
 }
 
 @test "layout: at a width every line fits, and a long WHY is clipped with ~" {
@@ -740,10 +740,217 @@ age_row() {
 @test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
   run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
   assert_success
-  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-$'
-  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-$'
-  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-$'
-  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-$'
+  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy$'
+  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy$'
+  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy$'
+  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy$'
+}
+
+# time_row <stage> <work> <jobs> <human> <parked> [doing]: a collect row with the newer fields set.
+time_row() {
+  printf '%s\tlab/s1:1\tsid-1\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t60\t0\tfact\t-\t[]\t2/3\t%s\t%s\t%s\t%s\t4\tthe-topic\t%s\tsaid it\n' "$1" "$2" "$3" "$4" "$5" "${6:--}"
+}
+
+@test "board_cells: PRS, WORK, the largest WAIT, TASK, and WHY as the last action on a WORKING row" {
+  run board_cells < <(time_row WORKING 190 300 60 620 'Bash: Commit P3')
+  assert_success
+  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3$'
+  run board_cells < <(time_row WORKING 45 90 300 60 'Read')
+  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead$'
+  # a tie goes to jobs: something was running, so it is not the session sitting still
+  run board_cells < <(time_row WORKING 0 120 120 120)
+  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy$'
+  run board_cells < <(time_row WORKING 0 0 0 0)
+  assert_output --regexp $'\t-\t-\tthe-topic\tbusy$'
+  # any other stage keeps its reason: it says what the stage needs
+  run board_cells < <(time_row STALLED 5 5 5 5 'Bash: Commit P3')
+  assert_output --regexp $'\tbusy$'
+}
+
+@test "board_cells: a session with no transcript entry reads IDLE -, not the whole epoch" {
+  run board_cells < <(time_row WORKING 0 0 0 0 | awk -F'\t' -v OFS='\t' '{ $7 = 29889656; print }')
+  assert_output --regexp $'\tWORKING\t-\t-\t1h0m\tbusy\t'
+  run board_cells < <(time_row WORKING 0 0 0 0)
+  assert_output --regexp $'\tWORKING\t-\t5m\t1h0m\tbusy\t'
+}
+
+@test "layout: from 100 columns WHY keeps 30 and lesser columns drop for it, below that it goes first" {
+  { printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
+    printf '\t%s' "$(printf 's%.0s' {1..30})" "$(printf 't%.0s' {1..22})" '3 behind' no '2 dirty' '#88 merged' 1/3 pending 1/3 '21:30 s3' - WORKING - 3h 'parked 10h' 5m 2d4h \
+      "Run $(printf 'w%.0s' {1..60})"; echo; } > "$SANDBOX/frame"
+  run layout 120 < "$SANDBOX/frame"
+  assert_line --regexp '^SESSION .* STAGE +WORK +WAIT +AGE  WHY$'
+  refute_line --regexp '^SESSION .* (SYNC|TREE|CI) '
+  assert_line --regexp '  Run w{20,}~$'
+  # the negative control: at 99 WHY does not hold its place and is the first to go
+  run layout 99 < "$SANDBOX/frame"
+  refute_line --partial 'WHY'
+}
+
+@test "eta_cells: a calibrated basis is shortened like a plain one" {
+  export TZ=UTC
+  bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$(date +%s),\"basis\":\"project-median(34) x1.15 (n=70)\"}"
+  run eta_cells
+  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34$'
+}
+
+@test "end to end: a long session name keeps its tail on the board" {
+  landed_fixture
+  sed -i 's|lab/s1:1|lab/unity-core-playground-agent-16:1|' "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  assert_line --regexp '^~playground-agent-16 +'
+}
+
+@test "prs_cell: merged over total, ? while a state is unknown, - with none" {
+  run prs_cell <<<'[]'
+  [ "$output" = - ]
+  run prs_cell <<<'[{"state":"MERGED"},{"state":"OPEN"},{"state":"CLOSED"}]'
+  assert_output '1/3'
+  run prs_cell <<<'[{"state":"MERGED"},{"state":null}]'
+  assert_output '1/2?'
+}
+
+# pr_transcript <file>: a transcript whose session created one PR in each of two repos and
+# only viewed a third, which must not count.
+pr_transcript() {
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/one/pull/7"}]}}'
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"gh pr merge 9"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","content":"Merged pull request o/two#9"}]}}'
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"gh pr view 3"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c","content":"https://github.com/o/three/pull/3"}]}}'
+  } > "$1"
+}
+
+# pr_gh: a gh stub answering `pr list --repo`, logging each call. o/two fails on $PR_GH_FAIL.
+pr_gh() {
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/gh.log"
+case "$*" in
+  *"--repo o/one"*) echo '[{"number":7,"state":"OPEN","mergedAt":null}]' ;;
+  *"--repo o/two"*) [ -n "${PR_GH_FAIL:-}" ] && exit 1; echo '[{"number":9,"state":"MERGED","mergedAt":"2026-10-30T12:00:00Z"}]' ;;
+esac
+SH
+  chmod +x "$SANDBOX/bin/gh"
+  export SANDBOX
+}
+
+@test "session_prs: each PR with its state from its own repo, viewed PRs not counted, one gh call per repo" {
+  pr_gh; pr_transcript "$SANDBOX/t.jsonl"
+  export FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
+  run session_prs "$SANDBOX/t.jsonl"
+  [ "$(wc -l < "$SANDBOX/gh.log")" -eq 2 ] # the second pass reuses both lists
+  run session_prs "$SANDBOX/no-such-file"
+  assert_output '[]'
+}
+
+@test "session_prs: a repo gh cannot read leaves a null state, is retried once per pass, and is not cached" {
+  pr_gh; pr_transcript "$SANDBOX/t.jsonl"
+  export PR_GH_FAIL=1 FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN",null]' ]
+  run session_prs "$SANDBOX/t.jsonl"
+  [ "$(grep -c 'repo o/two' "$SANDBOX/gh.log")" -eq 1 ]
+  # the next pass asks again, and the answer is now known
+  unset PR_GH_FAIL; CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
+}
+
+@test "json_rows: the newer fields, with a row that predates them still parsing" {
+  run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x')
+  assert_success
+  [ "$(jq -c '.time' <<<"$output")" = '{"work_min":190,"jobs_min":300,"human_min":60,"parked_min":620}' ]
+  [ "$(jq -c '[.compactions, .topic, .doing, .said, .prs]' <<<"$output")" = '[4,"the-topic","Bash: x","said it",[]]' ]
+  run json_rows < <(age_row 45)
+  assert_success
+  [ "$(jq -c '[.time.work_min, .compactions, .topic, .prs]' <<<"$output")" = '[0,0,null,[]]' ]
+}
+
+# explain_state: a state document with one session, in $FLEET_STATE_FILE.
+explain_state() {
+  export FLEET_STATE_FILE="$SANDBOX/state.json" TZ=UTC
+  STATE_FILE="$FLEET_STATE_FILE"
+  jq -n --argjson e "$(( $(date +%s) - 180 ))" '{generated_epoch: $e, sessions: [{
+    target: "lab/s1:1", bucket: "WORKING", session_id: "sid-1", branch: "feat/x", pr: "9", reason: "shell",
+    age_min: 1440, idle_min: 12, phases_done: 2, phases_total: 5, next_phase: "Phase 3: board", topic: "the-topic",
+    doing: "Bash: Run the gate", said: "Gate is running.", compactions: 4, blockers: ["2 dirty file(s)"],
+    time: {work_min: 190, jobs_min: 300, human_min: 45, parked_min: 620},
+    prs: [{repo: "o/one", number: 7, state: "OPEN", merged_at: null},
+          {repo: "o/two", number: 9, state: "MERGED", merged_at: "2026-10-30T12:00:00Z"},
+          {repo: "o/two", number: 8, state: null, merged_at: null}]}]}' > "$FLEET_STATE_FILE"
+}
+
+@test "explain: one session's task, time, plan, PRs, action and blockers, by any name for it" {
+  explain_state
+  run explain s1
+  assert_success
+  assert_line --regexp '^lab/s1:1  WORKING  \(state 3m old\)$'
+  assert_line 'task     the-topic'
+  assert_line 'time     open 24h: 3h work, 5h jobs, 45m you, 10h parked; idle 12m now; 4 compactions'
+  assert_line 'plan     2/5, next: Phase 3: board'
+  assert_line 'branch   feat/x (PR #9)'
+  assert_line 'PRs      1 merged of 3'
+  assert_line '  o/one#7  open'
+  assert_line '  o/two#9  merged  Fri 12:00'
+  assert_line '  o/two#8  unknown'
+  assert_line 'doing    Bash: Run the gate'
+  assert_line 'said     Gate is running.'
+  assert_line '  - 2 dirty file(s)'
+  for who in lab/s1:1 s1:1 sid-1; do run explain "$who"; assert_success; done
+}
+
+@test "explain: a name that matches nothing, a missing argument and no state document are errors" {
+  explain_state
+  run explain nobody
+  assert_failure 2
+  assert_output --partial "matches 'nobody'"
+  run explain
+  assert_failure 2
+  STATE_FILE="$SANDBOX/absent"
+  run explain s1
+  assert_failure 1
+}
+
+@test "explain: a row written before the newer fields still prints" {
+  explain_state
+  jq '.sessions[0] |= del(.time, .prs, .compactions, .topic, .doing, .said)' "$STATE_FILE" > "$STATE_FILE.n" && mv "$STATE_FILE.n" "$STATE_FILE"
+  run explain s1
+  assert_success
+  assert_line 'time     open 24h: 0m work, 0m jobs, 0m you, 0m parked; idle 12m now; 0 compactions'
+  assert_line 'PRs      0 merged of 0'
+}
+
+@test "end to end: the board and the state row carry a session's PRs, time and last action" {
+  landed_fixture
+  pr_transcript "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 60 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"started_at\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"edited_files\":[],\"transcript\":\"$SANDBOX/t.jsonl\",\"summary\":\"the-topic\",\"time_use\":{\"work_min\":190,\"jobs_min\":5,\"human_min\":5,\"parked_min\":620},\"doing\":\"Bash: Run the gate\",\"said\":\"Going.\",\"compactions\":2}" \
+    > "$SANDBOX/bin/agent-panel"
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = api ] && { echo "[]"; exit 0; }
+case "$*" in
+  *"--repo o/one"*) echo '[{"number":7,"state":"MERGED","mergedAt":"2026-10-30T12:00:00Z"}]' ;;
+  *"--repo o/two"*) echo '[{"number":9,"state":"OPEN","mergedAt":null}]' ;;
+esac
+SH
+  export XDG_CACHE_HOME="$SANDBOX/xdg"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  assert_success
+  assert_line --regexp '^SESSION +TASK +SYNC +TREE +PR +PRS +CI +PLAN +STAGE +WORK +WAIT +IDLE +AGE  WHY$'
+  assert_line --regexp '^s1 +the-topic .* 1/2 .* WORKING +3h +parked 10h .*  Run the gate$'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.prs[].number, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,620,2,"Bash: Run the gate"]' ]
 }
 
 @test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {
