@@ -68,12 +68,7 @@
     },
     "temperature": {
         "critical-threshold": 80,
-        "format": "{temperatureC}°C {icon}",
-        "format-icons": [
-            "",
-            "",
-            ""
-        ]
+        "format": "{temperatureC}°C"
     },
     // Only connected or not on the bar; the interface, address and gateway are on hover.
     "network": {
@@ -128,6 +123,15 @@
             "custom/fleet",
             "custom/ci",
             "custom/day"
+        ]
+    },
+    // CPU use and temperature read as one pill (layout.css): neither built-in can print the
+    // other's value, and the temperature half keeps its own sensor path and critical state.
+    "group/cpu-temp": {
+        "orientation": "horizontal",
+        "modules": [
+            "cpu",
+            "temperature"
         ]
     },
     // Shown only while keys bypass Hyprland (VDI submap or RustDesk grab). Not gated:

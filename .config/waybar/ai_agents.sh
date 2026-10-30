@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Waybar module for AI agents
-# One glyph per agent, grouped by PROJECT (working directory) not session, e.g.
-# "ghe <ok><busy><attn> | dot <busy>". Glyphs come from agent-panel: ! needs
-# attention, ~ in progress, check mark ready.
+# A count per state, grouped by PROJECT (working directory) not session, e.g.
+# "ghe !2 ~ <ok>3 | dot ~5": one agent is the bare glyph. Counts, not a glyph per agent,
+# so the chip's width follows the projects and a busy fleet cannot push the clock off the
+# bar. Glyphs come from agent-panel: ! needs attention, ~ in progress, check mark ready.
 #
 # Reads `agent-panel list` rather than scraping tmux itself. Sessions live on several
 # tmux servers (hub, lab, ... see .local/src/tmux/servers.sh), and a bare
@@ -40,11 +41,20 @@ json_escape() {
     printf '%s' "$s"
 }
 
+# state_cell <colour span> <glyph> <count>: nothing for none, the glyph for one, glyph
+# and count for more.
+state_cell() {
+    (($3 > 0)) || return 0
+    local n=""
+    (($3 > 1)) && n="$3"
+    printf ' %s%s%s%s' "$1" "$2" "$n" "$C_END"
+}
+
 get_ai_agent_status() {
-    declare -A project_agents    # project -> coloured status glyphs
-    declare -A project_sessions  # project -> tooltip lines
+    declare -A urgent working ready  # project -> agents in that state
+    declare -A project_sessions      # project -> tooltip lines
     local has_urgent=false has_working=false
-    local target glyph project summary short status
+    local target glyph project summary short
 
     if [[ ! -x "$AGENT_PANEL" ]]; then
         echo '{"text": " ?", "tooltip": "agent-panel not built (cargo build --release in .local/src/agent-panel)", "class": "inactive"}'
@@ -55,11 +65,10 @@ get_ai_agent_status() {
         [[ -n "$target" ]] || continue
         short=$(short_project "$project")
         case "$glyph" in
-            '!') status="${C_RED}!${C_END}"; has_urgent=true ;;
-            '~') status="${C_YEL}~${C_END}"; has_working=true ;;
-            *)   status="${C_GRN}✓${C_END}" ;;
+            '!') urgent[$short]=$((${urgent[$short]:-0} + 1)); has_urgent=true ;;
+            '~') working[$short]=$((${working[$short]:-0} + 1)); has_working=true ;;
+            *)   ready[$short]=$((${ready[$short]:-0} + 1)) ;;
         esac
-        project_agents[$short]+="$status"
         if [[ -n "$summary" ]]; then
             project_sessions[$short]+="${glyph} ${target} - $(json_escape "${summary:0:60}")\\n"
         else
@@ -69,14 +78,14 @@ get_ai_agent_status() {
 
     local display="" tooltip="" p
     local sorted_projects
-    mapfile -t sorted_projects < <(printf '%s\n' "${!project_agents[@]}" | sort)
+    mapfile -t sorted_projects < <(printf '%s\n' "${!project_sessions[@]}" | sort)
 
     for p in "${sorted_projects[@]}"; do
         [[ -n "$p" ]] || continue
         # Dim, so these per-project ticks read as inside the module and the
         # group dividers between modules (layout.css) stay the strong lines.
         [[ -n "$display" ]] && display+=" <span alpha='40%'>·</span> "
-        display+="${p} ${project_agents[$p]}"
+        display+="${p}$(state_cell "$C_RED" '!' "${urgent[$p]:-0}")$(state_cell "$C_YEL" '~' "${working[$p]:-0}")$(state_cell "$C_GRN" '✓' "${ready[$p]:-0}")"
         tooltip+="${p}:\\n${project_sessions[$p]}"
     done
     tooltip="${tooltip%\\n}"

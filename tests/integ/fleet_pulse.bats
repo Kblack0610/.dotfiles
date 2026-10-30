@@ -116,10 +116,10 @@ EOF
   refute_output --partial "k3s<span color='#ef5734'>○</span>"
 }
 
-@test "a group is green only when every member is up" {
+@test "a group with every member up draws no dot" {
   FLEET_DISPLAY="@homelab=hl" run "$MODULE"
   assert_success
-  assert_output --partial "hl<span color='#a6e34a'>●</span>"
+  refute_output --partial "hl<span"
 }
 
 # THE NEGATIVE CONTROL for the above: if amber were returned whenever ANYTHING was
@@ -132,12 +132,40 @@ EOF
   refute_output --partial "k3s<span color='#ffcc2f'>●</span>"
 }
 
-# --- transient (~) tokens: a laptop is drawn only while it is up --------------
+# --- the bar is the icon alone until something is wrong -----------------------
+#
+# Four green dots cost 180px, and with them the clock fell off a 1920 screen. All four
+# coming back when one goes amber would push it off exactly when the bar matters, so
+# only the unhappy token draws.
 
-@test "a ~ token for a host that is up draws a green dot" {
+@test "a fully healthy fleet is the green icon and nothing else" {
+  FLEET_ROSTER="linux-cachyos gp-mac pi5-master" FLEET_DISPLAY="linux-cachyos=main gp-mac=gp" run "$MODULE"
+  assert_success
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#a6e34a'>"$'\U000F0430'"</span>"
+  assert_equal "$(jq -r .class <<< "$output")" healthy
+}
+
+@test "one host down draws that token and not its healthy sibling" {
+  FLEET_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
+  assert_success
+  assert_equal "$(jq -r .text <<< "$output")" \
+    "<span color='#ffcc2f'>"$'\U000F0430'"</span> w4<span color='#ef5734'>○</span>"
+}
+
+@test "a rostered host with no token is an amber icon, no dots, named on hover" {
+  FLEET_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>"$'\U000F0430'"</span>"
+  assert_equal "$(jq -r .class <<< "$output")" degraded
+  assert_output --partial "pi4-worker4: DOWN"
+}
+
+# --- transient (~) tokens: a laptop only ever draws a ghost marker ------------
+
+@test "a ~ token for a host that is up draws nothing" {
   FLEET_DISPLAY="linux-cachyos=main ~gp-mac=gp" run "$MODULE"
   assert_success
-  assert_output --partial "gp<span color='#a6e34a'>●</span>"
+  refute_output --partial " gp<"
 }
 
 @test "a ~ token for a host that is not up draws nothing at all" {
