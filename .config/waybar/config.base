@@ -44,11 +44,7 @@
         "tooltip-format": "{:%H:%M:%S}",
         "format-alt": "{:%I:%M %p}"
     },
-    // Labelled like the temperature chips, so CPU and RAM read at a glance.
-    "cpu": {
-        "format": "CPU {usage}%",
-        "tooltip": false
-    },
+    // Labelled like the CPU pill, so CPU and RAM read at a glance.
     "memory": {
         "format": "RAM {}%",
         "tooltip-format": "{used:0.1f} of {total:0.1f} GiB used\nswap {swapUsed:0.1f} of {swapTotal:0.1f} GiB"
@@ -125,12 +121,13 @@
             "custom/day"
         ]
     },
-    // CPU use and temperature read as one pill (layout.css): neither built-in can print the
-    // other's value, and the temperature half keeps its own sensor path and critical state.
+    // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
+    // and load half, because a built-in cpu module cannot show every machine on hover; the
+    // temperature half keeps its own sensor path and critical state.
     "group/cpu-temp": {
         "orientation": "horizontal",
         "modules": [
-            "cpu",
+            "custom/load",
             "temperature"
         ]
     },
@@ -165,8 +162,8 @@
         "on-click": "sh -c '. $HOME/.config/fleet-pulse/env 2>/dev/null; xdg-open ${GATUS_BASE:-https://status.example.com}'",
         "tooltip": true
     },
-    // This machine's load beside CPU and RAM, every machine's load/CPU/mem/temp on hover
-    // from the Prometheus cc:host_* rules (load.sh). Click opens the hub:infra board.
+    // This machine's CPU and load, every machine's load/CPU/mem/temp on hover from the
+    // Prometheus cc:host_* rules (load.sh). Click opens the hub:infra board.
     "custom/load": {
         "format": "{}",
         "return-type": "json",

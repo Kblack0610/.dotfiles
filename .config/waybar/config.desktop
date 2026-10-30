@@ -17,7 +17,6 @@
         "group/cpu-temp",
         "temperature#gpu",
         "memory",
-        "custom/load",
         "custom/storage",
         "clock#date",
         "clock#time",
