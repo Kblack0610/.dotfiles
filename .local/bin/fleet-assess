@@ -234,7 +234,7 @@ ledger_stats() {
   # No ledger yet (no run since slots.sh began writing one) reads as no runs, not a failure.
   local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
   awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" '
-    BEGIN { c["pass"] = c["fail"] = c["timeout"] = c["error"] = 0 }
+    BEGIN { c["pass"] = c["fail"] = c["timeout"] = c["killed"] = c["flood"] = c["error"] = 0 }
     $1 >= since && ($3 in c) { c[$3]++; d[++n] = $1 - $2 }
     END {
       for (r in c) print r, c[r]

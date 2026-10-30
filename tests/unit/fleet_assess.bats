@@ -242,6 +242,19 @@ LOCKS
   assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
 }
 
+@test "textfile: a run the kernel killed or the log cap stopped still counts" {
+  textfile_fixture
+  local now; now="$(date +%s)"
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"
+  printf '%s\t%s\t%s\tPlayMode\twt\tb\tr\n' \
+    $((now - 100)) $((now - 700)) killed $((now - 50)) $((now - 250)) flood > "$RUN_LEDGER"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_gate_finished{result="killed"} 1'
+  assert_line 'fleet_local_gate_finished{result="flood"} 1'
+  assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
+}
+
 @test "textfile: no ledger still publishes zero results and no run times" {
   textfile_fixture
   RUN_LEDGER="$BATS_TEST_TMPDIR/absent.tsv"
