@@ -32,7 +32,7 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
 ```
 
 Views: **min** = the main bar's status cluster (timebox | agents | fleet | ci | day); **big** = +
-machines, cpu/mem/load, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
+machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
@@ -45,7 +45,7 @@ is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 ## Views
 
 - **Minimal** (`config.pin-min`): `group/status`, the same cluster and dividers as the main bar, + chevron.
-- **Bigger** (`config.pin-full`): machines + `group/status` + cpu/mem + action buttons.
+- **Bigger** (`config.pin-full`): machines + `group/status` + cpu+load/mem + action buttons.
 
 Both are single-row (a Waybar bar is one horizontal row). A multi-row card would
 need eww; intentionally out of scope.
@@ -100,7 +100,7 @@ may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and gi
 `"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
 `leader.conf` and the key to `pin-hint.sh`'s settings legend.
 
-Only **custom** modules can be toggled. Built-ins (cpu, memory, clock, tray...) have
+Only **custom** modules can be toggled. Built-ins (memory, clock, tray...) have
 no `exec` to gate; hiding those would mean generating the config and restarting the
 bar on every toggle, which is why they are out of scope.
 

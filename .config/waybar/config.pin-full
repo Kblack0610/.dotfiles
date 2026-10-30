@@ -17,9 +17,8 @@
     "modules-center": [
         "custom/machines",
         "group/status",
-        "cpu",
-        "memory",
         "custom/load",
+        "memory",
         "custom/act-sync",
         "custom/act-pull",
         "custom/act-panel",

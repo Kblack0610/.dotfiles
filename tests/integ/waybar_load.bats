@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# load.sh: the waybar load chip. The bar is this machine's load from /proc/loadavg; the
-# hover is every machine from the cc:host_* rules. What these pin: a missing value is -,
+# load.sh: the waybar CPU and load chip. The bar is this machine's CPU from /proc/stat and
+# load from /proc/loadavg; the hover is every machine from the cc:host_* rules. What these pin: a missing value is -,
 # never 0 (Macs and Pis have no temp series); a hot OTHER machine shows on the bar without
 # hovering; and a dead Prometheus keeps the local number but never shows stale rows.
 
@@ -14,6 +14,10 @@ setup() {
   export FX="$BATS_TEST_TMPDIR"
   export LOAD_LOADAVG="$FX/loadavg"
   echo "12.00 10.00 9.00 3/900 1234" > "$LOAD_LOADAVG"
+  # Since the saved sample: 1000 ticks passed, 500 of them idle or iowait.
+  export LOAD_STAT="$FX/stat" LOAD_CPU_STATE="$FX/cpu-state"
+  echo "cpu  500 0 100 1200 200 0 0 0 0 0" > "$LOAD_STAT"
+  echo "1000 900" > "$LOAD_CPU_STATE"
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
@@ -44,11 +48,27 @@ PY
 
 tip() { jq -r .tooltip <<< "$output"; }
 
-@test "the bar is this machine's load, plain like the CPU and RAM pills" {
+@test "the bar is this machine's CPU and load, plain like the RAM pill" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
   assert_equal "$(jq -r .class <<< "$output")" ok
+}
+
+@test "with no saved sample CPU reads -, then the next run measures from that one" {
+  rm "$LOAD_CPU_STATE"
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU - LOAD 12.0"
+  # 100 more ticks, 25 of them idle: 75% since the run above, nowhere near the since-boot 30%.
+  echo "cpu  575 0 100 1225 200 0 0 0 0 0" > "$LOAD_STAT"
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 75% LOAD 12.0"
+}
+
+@test "iowait counts as idle" {
+  echo "cpu  500 0 100 700 700 0 0 0 0 0" > "$LOAD_STAT"
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
 }
 
 @test "the class follows load per core: warn from 1, critical from 1.5" {
@@ -104,10 +124,10 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "<span color='#ffcc2f'>!</span>"
 }
 
-@test "Prometheus down: the local load stays, the tooltip says so, no machine rows" {
+@test "Prometheus down: the local CPU and load stay, the tooltip says so, no machine rows" {
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
   run tip
   assert_output --partial "fleet telemetry unavailable (http://prom.test)"
   refute_output --partial "razer-laptop"

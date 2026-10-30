@@ -91,7 +91,6 @@ button:hover {
 /* Common module styling for right-side modules */
 #clock,
 #battery,
-#cpu,
 #memory,
 #custom-load,
 #custom-storage,
@@ -136,7 +135,7 @@ button:hover {
     border-left: 3px solid #ff5555;
 }
 
-#cpu {
+#custom-load {
     background-color: rgba(243, 253, 33, 0.2);
     color: #f3fd21;
 }

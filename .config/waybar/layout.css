@@ -16,7 +16,7 @@
     border-left: 2px solid alpha(currentColor, 0.6);
 }
 
-/* #cpu-temp is `group/cpu-temp` in config.base: two built-in modules drawn as one
+/* #cpu-temp is `group/cpu-temp` in config.base: two modules drawn as one
  * pill. The theme still colours each half, so only the temperature half goes red at
  * critical; this only closes the gap between them and rounds the outer corners. */
 #cpu-temp > widget:first-child > label {
