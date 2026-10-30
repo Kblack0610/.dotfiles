@@ -919,7 +919,7 @@ state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
-  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true},
+  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
   "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
 JSON
@@ -957,6 +957,9 @@ agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="W
 # HELP agent_session_conflicts 1 when the branch of the session conflicts with its base.
 # TYPE agent_session_conflicts gauge
 agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
+# HELP agent_session_info Joins a session target to its Claude Code session_id; always 1.
+# TYPE agent_session_info gauge
+agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
 # HELP agent_sessions Live sessions per fleet-sessions bucket.
 # TYPE agent_sessions gauge
 agent_sessions{bucket="DONE"} 0
