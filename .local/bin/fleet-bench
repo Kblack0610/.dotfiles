@@ -93,6 +93,11 @@ def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
+def round1: . * 10 | round / 10;
+def round2: . * 100 | round / 100;
+def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
+def run_rows: split("\n") | map(select(. != "") | split("\t")
+  | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
 def key: "\(.repo)#\(.number)";
 def kind: sub("\\(.*"; "");
 # the ETA an estimate publishes and how it was made: calibrated when a factor was applied;
@@ -354,7 +359,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> -> the file's rows whose field falls in the window
@@ -373,27 +378,48 @@ cmd_headline() {
     "bench \($win)h: \($w | length) sessions, \($w | map(.ticked) | add // 0) phases ticked, "
     + "\($w | map(.waiting_min) | add // 0 | h)h waiting on you, \($w | map(.stalled_min) | add // 0 | h)h stalled, "
     + (if ($s | length) == 0 then "no ETA finished yet"
-       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median)x of predicted"
+       else "\($s | length) ETAs scored, median \($s | map(.ratio // empty) | median | round2)x of predicted"
          + ($s | map(.cal_ratio // empty) | if length == 0 then ""
-            else " (\(length) calibrated, median \(median)x)" end) end)
+            else " (\(length) calibrated, median \(median | round2)x)" end) end)
     + (if ($c | length) == 0 then ""
        else ", \($c | map(.ci_red) | add) CI reds before merge in \($c | length) PRs" end)
     + ($v | map(select(.status == "ok")) | if length == 0 then ""
        else ", review: \(n("block")) BLOCK \(n("flag")) FLAG in \(length) PRs" end)'
 }
 
+# runs_between <from> <to> -> the run ledger's rows that ended in that time
+runs_between() { awk -F'\t' -v a="$1" -v b="$2" '$1 > a && $1 <= b' "$BENCH_RUNS_TSV" 2>/dev/null; }
+
+# prom_map <label> <promql> <epoch> -> {label value: number}; rc 1 when unreadable. A recorded
+# series can only answer instant lookups, so a replay has no answer to these.
+prom_map() {
+  [ -z "${BENCH_PROM_TSV:-}" ] || return 1
+  prom_q "$2" "$3" | jq -c --arg l "$1" '[.data.result[] | {key: (.metric[$l] // "-"), value: (.value[1] | tonumber)}] | from_entries'
+}
+
+# spend_by_session <now> -> {session id: dollars in the window}, from the counter Claude Code exports
+spend_by_session() {
+  prom_map session_id "sum by (session_id) (increase(claude_code_cost_usage_USD_total[${BENCH_WINDOW_H}h]))" "$1"
+}
+
 # session_rows <now> -> one JSON object per session in the window, most working time first:
 # the scorecard's Sessions table, joined to session-outcomes and the CI reds.
 session_rows() {
-  local t="$1"
-  jq -cn --slurpfile w <(window_stats "$t") --argjson o "$(outcomes_latest)" --slurpfile c <(in_window "$CI" merged_epoch "$t") '
+  local t="$1" spend
+  spend=$(spend_by_session "$t") || spend=null
+  # Through a file: the outcomes of a few thousand sessions are over the kernel's 128 KB limit on one argument.
+  jq -cn --slurpfile w <(window_stats "$t") --slurpfile outcomes <(outcomes_latest) --argjson spend "$spend" \
+     --slurpfile c <(in_window "$CI" merged_epoch "$t") "$JQ_LIB"'
     def h: . / 60 * 10 | floor / 10;
     ($c | group_by(.session_id) | map({key: .[0].session_id, value: (map(.ci_red) | add)}) | from_entries) as $red
+    | $outcomes[0] as $o
     | $w | sort_by(-.working_min) | .[] | ($o[.session_id] // {}) as $x
     | {session_id, target, plan, phase, ticked, working_h: (.working_min | h), waiting_h: (.waiting_min | h),
        stalled_h: (.stalled_min | h), nudges, peak_k: (.peak_context / 1000 | floor),
        prs_merged: $x.prs_merged, ci_reds: $red[.session_id], reverts: $x.reverted_7d,
-       cost_usd: (if $x.cost_usd then $x.cost_usd * 100 | floor / 100 else null end)}'
+       cost_usd: (if $x.cost_usd then $x.cost_usd * 100 | floor / 100 else null end),
+       cost_24h: ($spend[.session_id] // null | if . then round2 else . end),
+       edits: $x.edits, activity: $x.activity, tool_errors: $x.tool_errors}'
 }
 
 cmd_sessions() {
@@ -420,14 +446,20 @@ cmd_scorecard() {
     echo
     kpi_table "$(kpi_json "$t" "$counts")"
     echo
+    bottleneck_section "$t"
+    echo
+    time_section "$t"
+    echo
     echo "## Sessions"
     echo
     echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
     echo
-    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost |"
-    echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
+    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost ${BENCH_WINDOW_H}h | Cost to last nightly |"
+    echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     session_rows "$t" | jq -r '
-      "| \(.target) | \(.phase) | \(.ticked) | \(.working_h) | \(.waiting_h) | \(.stalled_h) | \(.nudges) | \(.peak_k)k | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.reverts // "-") | \(if .cost_usd then "$\(.cost_usd)" else "-" end) |"'
+      "| \(.target) | \(.phase) | \(.ticked) | \(.working_h) | \(.waiting_h) | \(.stalled_h) | \(.nudges) | \(.peak_k)k | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.reverts // "-") | \(if .cost_24h then "$\(.cost_24h)" else "-" end) | \(if .cost_usd then "$\(.cost_usd)" else "-" end) |"'
+    echo
+    depth_section "$t"
     echo
     echo "## ETA accuracy"
     echo
@@ -446,6 +478,95 @@ cmd_scorecard() {
     ledger_section "$counts"
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
+}
+
+# bottleneck_section <now>: the hours lost in the window, biggest first, and the branches behind the
+# failed runs. Waited hours come from the queue length sampled every 10 minutes.
+bottleneck_section() {
+  local t="$1" win="${BENCH_WINDOW_H}h" pool queued
+  pool=$(prom_map pool "sum_over_time(cc:pool_waiting[$win:10m]) / 6" "$t") || pool=null
+  queued=$(prom_map host "sum_over_time(cc:host_local_queued[$win:10m]) / 6" "$t") || queued=null
+  echo "## Bottlenecks"
+  echo
+  echo "Hours lost over the last $win, from counts. The units differ, so the order says where to look first and the rows do not add up."
+  echo
+  jq -rn --argjson pool "$pool" --argjson queued "$queued" --slurpfile w <(window_stats "$t") \
+      --rawfile r <(runs_between $((t - BENCH_WINDOW_H * 3600)) "$t") "$JQ_LIB"'
+    def hours($k): map(.[$k]) | add // 0 | . / 60;
+    def top($k): map(select(.[$k] > 0)) | sort_by(-.[$k]) | .[:3] | map("\(.target) \(.[$k] / 60 | round1)h") | join(", ");
+    def bad: map(select(.res != "pass"));
+    ($r | run_rows) as $runs
+    | ($runs | map(.s) | add // 0 | . / 3600) as $editor
+    | ($runs | bad | map(.s) | add // 0 | . / 3600) as $lost
+    | ($runs | bad | group_by(.branch) | map({branch: .[0].branch, not_passed: length, h: (map(.s) | add / 3600)}) | sort_by(-.h)) as $branches
+    | [ (if $pool == null then {what: "Pool queues", unit: "job-hours", detail: "prometheus unreadable"}
+         else $pool | to_entries[] | select(.value >= 0.1) | {what: "Pool queue: \(.key)", h: .value, unit: "job-hours", detail: "jobs waiting, sampled every 10 minutes"} end),
+        (if $queued == null then {what: "Local queue", unit: "run-hours", detail: "prometheus unreadable"}
+         else $queued | to_entries[] | select(.value >= 0.1) | {what: "Local queue: \(.key)", h: .value, unit: "run-hours", detail: "runs waiting for a slot"} end),
+        (select($lost > 0) | {what: "Local runs not passed", h: $lost, unit: "editor-hours", detail: "of \($editor | round1)h on all local runs"}),
+        {what: "Sessions waiting on you", h: ($w | hours("waiting_min")), unit: "session-hours", detail: ($w | top("waiting_min"))},
+        {what: "Sessions stalled", h: ($w | hours("stalled_min")), unit: "session-hours", detail: ($w | top("stalled_min"))} ]
+    | "| Bottleneck | Hours | Unit | Detail |", "|---|---|---|---|",
+      (sort_by(-(.h // -1)) | .[] | "| \(.what) | \(.h // "?" | if type == "number" then round1 else . end) | \(.unit) | \(.detail) |"),
+      (if ($branches | length) == 0 then empty else
+        "", "Branches by editor-hours on runs not passed. A suite is one run per class, so the run count alone overstates a retry.", "",
+        "| Branch | Runs not passed | Hours |", "|---|---|---|",
+        ($branches[:5][] | "| \(.branch) | \(.not_passed) | \(.h | round1) |") end)'
+}
+
+# time_section <now>: where the window went per project and per plan, for reading against what the
+# human said matters. There is no join yet from a hand-launched session to a row's priority.
+time_section() {
+  local t="$1" since=$((t - BENCH_WINDOW_H * 3600)) spend merges
+  spend=$(spend_by_session "$t") || spend=null
+  merges=$(merge_rows "$t" "$since")
+  echo "## Where the time went"
+  echo
+  jq -rn --argjson since "$since" --argjson t "$t" --argjson spend "$spend" --arg m "$merges" --arg win "${BENCH_WINDOW_H}h" \
+      --slurpfile w <(window_stats "$t") --rawfile r <(runs_between "$since" "$t") "$JQ_LIB"'
+    def hours($k): map(.[$k]) | add // 0 | . / 60 | round1;
+    def cost: if $spend == null then "-" else "$\(map($spend[.session_id] // 0) | add // 0 | round2)" end;
+    ($r | run_rows) as $runs
+    | ($m | split("\n") | map(select(. != "") | split("\t"))) as $rows
+    | [$rows[] | select(.[0] | startswith("!")) | .[0][1:]] as $unread
+    | ($rows | map(select((.[0] | startswith("!") | not) and (.[1] | tonumber) > $since and (.[1] | tonumber) <= $t)) | group_by(.[0])
+       | map({key: .[0][0], value: length}) | from_entries) as $merged
+    | (if $spend == null then "Agent spend: prometheus unreadable."
+       else "Agent spend over \($win): $\($spend | add // 0 | round2) by the Prometheus counter, not checked against a bill; "
+         + "$\(($spend | add // 0) - ($w | map($spend[.session_id] // 0) | add // 0) | round2) of it on sessions no sample saw." end),
+      "",
+      "| Project | Sessions | Working h | Waiting h | Stalled h | Spend | Editor h | Editor h not passed | Merges |",
+      "|---|---|---|---|---|---|---|---|---|",
+      ((($w | map(.project)) + ($runs | map(.repo)) + ($merged | keys) | unique | map(select(. != null))) as $ps
+       | $ps[] | . as $p | ($w | map(select(.project == $p))) as $g | ($runs | map(select(.repo == $p))) as $e
+       | "| \($p) | \($g | length) | \($g | hours("working_min")) | \($g | hours("waiting_min")) | \($g | hours("stalled_min")) | \($g | cost) | "
+         + "\($e | map(.s) | add // 0 | . / 3600 | round1) | \($e | map(select(.res != "pass") | .s) | add // 0 | . / 3600 | round1) | "
+         + "\(if ($unread | index($p)) then "?" else ($merged[$p] // 0) end) |"),
+      "",
+      "| Plan | Project | Sessions | Working h | Phases ticked | Spend |",
+      "|---|---|---|---|---|---|",
+      ($w | group_by(.plan) | map({plan: (.[0].plan | if . == "" then "(no plan)" else . end), project: .[0].project, n: length,
+          work: hours("working_min"), ticked: (map(.ticked // 0) | add), cost: cost}) | sort_by(-.work) | .[:10][]
+       | "| \(.plan) | \(.project) | \(.n) | \(.work) | \(.ticked) | \(.cost) |")'
+}
+
+# depth_section <now>: how each session spent itself, top spenders of tokens first. Whole sessions as
+# of the last nightly, so a session the nightly has not seen is not listed.
+depth_section() {
+  echo "## Agent depth"
+  echo
+  echo "Whole sessions as of the last nightly, counted from the transcript's structure. A test run is one command, and a suite is many runs. Spent after the last edit is the share of tokens past its last commit or edit, so a high share on a long session is time spent waiting or polling."
+  echo
+  session_rows "$1" | jq -rs "$JQ_LIB"'
+    map(select(.activity != null)) | sort_by(-.activity.tokens) | .[:15]
+    | if length == 0 then "_No session in this window has been through the nightly yet._"
+      else ("| Session | Test runs | Test runs per PR | CI polls | Tool calls | Tool errors | API messages | Tokens (M) | Spent after last edit |",
+            "|---|---|---|---|---|---|---|---|---|",
+            (.[] | .activity as $a
+             | "| \(.target) | \($a.test_runs) | \(if (.prs_merged // 0) > 0 then $a.test_runs / .prs_merged | round1 else "-" end) | \($a.ci_polls) | \($a.tool_calls) | "
+               + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages) | \($a.tokens / 1000000 | round1) | "
+               + "\(if (.edits // 0) > 0 and $a.tokens > 0 then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
+      end'
 }
 
 ledger_section() {
@@ -962,10 +1083,8 @@ finding_facts() {
 
 # finding_rows <facts> -> one object per rule firing now. Pure: the same facts give the same rows.
 finding_rows() {
-  jq -c --argjson l "$(finding_limits)" --argjson required "$FINDING_REQUIRED" '
+  jq -c --argjson l "$(finding_limits)" --argjson required "$FINDING_REQUIRED" "$JQ_LIB"'
     def pct: . * 100 | round;
-    def round1: . * 10 | round / 10;
-    def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
     def row($rule; $scope; $class; $numbers; $window; $source; $conclusion; $cost):
       {rule: $rule, scope: $scope, decision_class: $class, evidence: {numbers: $numbers, window: $window, source: $source},
        conclusion: $conclusion, cost: $cost};
@@ -1093,12 +1212,10 @@ cmd_throughput() {
   # The exporter's own quantiles over the jobs finished in 24h; a recorded fixture has none.
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
   jq -rn --argjson a "$from" --argjson b "$to" --argjson s "$snap" --arg m "$merges" --arg q "$queue" \
-      --rawfile r <(awk -F'\t' -v a="$from" -v b="$to" '$1 > a && $1 <= b' "$BENCH_RUNS_TSV" 2>/dev/null) "$JQ_LIB"'
-    def round1: . * 10 | round / 10;
-    def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
+      --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
     (($b - $a) / 3600) as $h
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
-    | ($r | split("\n") | map(select(. != "") | split("\t")) | map({res: .[2], s: ((.[0] | tonumber) - (.[1] | tonumber))})) as $runs
+    | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
     | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
       (if ($runs | length) == 0 then "local runs: none recorded"
