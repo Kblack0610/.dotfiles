@@ -5,14 +5,14 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-29"
+  reviewed: "2026-10-30"
 ---
 
 # fleet-overseer
 
 This skill is the coordinator role from 2026-10-23, written down. About 15 sessions each started headless Unity runs, load reached 96 on 24 cores, Tctl reached 95.8 C, and the timing-sensitive test classes went red. Stopping them took an improvised process-tree trace, a hand-built kill, a dozen one-off messages, and a second kill when shell loops respawned the editors. This skill makes that a three-verb routine.
 
-The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting at 97% idle while sessions wait on the runner pool is as much a failure as one at 0% idle, and on 2026-10-26 it happened on the same evening as a meltdown. Every pass looks at both directions.
+The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting at 97% idle while gates queue on a backed-up runner pool is as much a failure as one at 0% idle, and on 2026-10-26 it happened on the same evening as a meltdown. Every pass looks at both directions.
 
 It owns no product code. It owns three questions: does this machine have room for what is running (assess, hold, go), is every session either working, waiting on the human, or finished and wound down (status, shepherd), and which easy board rows should get a session next (dispatch).
 
@@ -41,7 +41,7 @@ The class column tells you how each consumer can be stopped:
 
 The gap between the marks is deliberate. A hold set at 1.75x and lifted at 1.7x would flap and page on every sample. The high mark is where the CPU runs out of idle time: on 2026-10-26 load 46 on 24 cores (1.9x) read OK against the old 3x mark while `top` showed 0% idle, and the human had to point at it. When you report a pass, check what the human sees (`top`'s idle), not only the verdict. Load is the main signal; temperature alone is not. This box is a Zen 4 part, which boosts until it reaches 95 C, so readings in the 90s with one busy thread are normal. The thresholds are the `FLEET_*` variables at the top of `fleet-assess`, and that block is the one place to change them.
 
-Under-use is a fault too. The human's budget for this box is about 70% of its CPU, with the runner pool as the extra runner for overflow (playground `docs/operations/ci.md`, Who gates what). When `top` idle stays above 30% while sessions wait on queued pool gates, tell those sessions to gate locally; on 2026-10-26 six gates queued for two hours while the box sat 97% idle. A player build (`PlaygroundBuild.Build*`) on the workstation is never in budget: it starts one shader compiler per core.
+Under-use is a fault too. Gates go to the runner pool, and this box, with a budget of about 70% of its CPU, takes them when the pool is backed up (playground `docs/operations/ci.md`, Who gates what). `suite.sh` decides that when a gate starts, so a gate that queued before the pool backed up can still be waiting. When `top` idle stays above 30% while a gate has queued past an hour, tell that session to gate with `--local`; on 2026-10-26 six gates queued for two hours while the box sat 97% idle. A player build (`PlaygroundBuild.Build*`) on the workstation is never in budget: it starts one shader compiler per core.
 
 ## Verb: `assess`
 
@@ -117,7 +117,7 @@ One pass. It runs two ways, and only one acts at a time:
 0. `fleet-shepherd lease`, then read `~/.agent/shepherd/orders.md`.
 1. **Pace check.** Run `fleet-assess` and read idle from a real sample: `top -bn2 -d2 | grep '^%Cpu' | tail -1`. Never `top -bn1`: its only frame averages since boot, and on 2026-10-28 it read 50-57% idle while a 2-second sample read 12-19%, so two passes sent sessions to gate locally into a box that was already full (load 25.8 then 38.8 on 24 cores).
    - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
-   - Under budget (idle above 30%) while sessions wait on queued pool gates (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message those sessions, WORKING included, to gate locally now (`suite.sh --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
+   - Under budget (idle above 30%) while a gate has queued past an hour (`gh run list --status queued`, or a pane that says it is waiting on `ci-gate.sh`): message that session, WORKING included, to gate here now (`suite.sh --local --retry --classes`, playground `docs/operations/ci.md`, Who gates what). Message each one once per queued run.
    - Blocked on I/O (a `blocked:` due line, or rows in the `blocked on I/O` table that a second pass still shows): a recursive search (`find`, `bfs`, `fd`, `rg`, `grep -r`, `ugrep`, or Claude's own Grep/Glob, whose comm is its version, like `2.1.312`) only reads, so `kill` it without asking and send its session one `fleet-comms` line: "your search from `/` was walking the NAS for <age>; I killed it. Search your worktree or a named directory." Anything else blocked (a build, copy or test on a network mount, a hung mount) goes to the human with the open path; never kill it. Blocked threads are not CPU, so they are never a reason to hold Unity. 2026-10-29: three searches from `/` walked `/mnt/nas` for 25-43 minutes, load 28 at 0% CPU, and no pass saw them; `block-root-search.sh` now denies the call.
    - Sessions stopped on the account's usage limit (the pane shows "weekly limit" or "/login"): run `claude-acct move <session>` (`--server` when the name is on two servers, `--dry-run` to see the plan). It exits that claude and resumes the same conversation in the same pane on the account `claude-acct pick` returns. It refuses a busy session, an open dialog, a session already on that account, and a session with background shells running, which it lists. Move a refused session on a later pass; add `--stop-shells` only when every listed shell is a wait loop the session can restart, never a running gate. Never answer /exit's "Move to background": it forks the conversation into a `claude daemon` session left on the old account, a second agent in the same worktree once that account resets. Escalate once to the human only when `move` says no account has room: only they can log in or add usage.
    - Otherwise the pace is fine; say the numbers in one line.

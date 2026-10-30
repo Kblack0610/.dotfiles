@@ -1,10 +1,10 @@
 ---
 name: playground-headless-test
-description: "Run unity-core-playground tests the safe way: iterate on one class locally with scripts/test/run.sh, gate a merge on the workstation up to about 70% CPU with the runner pool taking only the overflow, prove a new check with a negative control, and read the nightly. Use when the user says \"run the tests\", \"gate this PR\", \"is this green\", \"run <Class> headless\", \"why did the nightly fail\", or before merging any playground change to code, assets or game data. It is a thin driver over the repo's docs/development/testing.md and docs/operations/ci.md (Who gates what) plus the traps that have hung runs or loaded the workstation. Not for driving a live editor over MCP (CLAUDE.md, Driving the sandbox) and not for content work itself (playground-new-content, playground-ingest)."
+description: "Run unity-core-playground tests the safe way: iterate on one class locally with scripts/test/run.sh, gate a merge on the runner pool with the workstation taking it only when the pool is backed up, prove a new check with a negative control, and read the nightly. Use when the user says \"run the tests\", \"gate this PR\", \"is this green\", \"run <Class> headless\", \"why did the nightly fail\", or before merging any playground change to code, assets or game data. It is a thin driver over the repo's docs/development/testing.md and docs/operations/ci.md (Who gates what) plus the traps that have hung runs or loaded the workstation. Not for driving a live editor over MCP (CLAUDE.md, Driving the sandbox) and not for content work itself (playground-new-content, playground-ingest)."
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
-  reviewed: "2026-10-29"
+  reviewed: "2026-10-30"
 ---
 
 # Playground headless test
@@ -26,14 +26,14 @@ Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP".
    `scripts/test/run.sh --filter <Namespace.Class>` (add `--platform EditMode` for an EditMode class). A fresh worktree seeds `Library/` itself (`scripts/setup/library.sh`). Run it in the background and wait for the notification.
 3. Read the counts. `0/0` or no `==> n/m` line means run.sh refused the arguments, not that tests passed. Failure detail is in `Logs/test-runs/<stamp>/results.xml`.
 4. Prove a new check can fail: plant one fault per assertion (a bad asset, an entry removed from an allow list), run, see it red, revert, confirm `git status` is clean in the repo and in `External/asset-library`.
-5. Gate on the workstation first, and use the runner pool as an extra runner only for what does not fit. The human's budget for this box is about 70% of its CPU: check `fleet-assess` (load under 0.7x cores, 17 on 24) or `top` (idle above 30%). Run EditMode and the PlayMode classes the branch can affect (`scripts/test/affected-classes.py`) with `scripts/test/suite.sh --retry --batch 12 --baseline main --classes <that list>` in your worktree, in the background, committed and with nothing uncommitted: when a run would queue on the workstation, suite.sh pushes the branch and gates on the pool itself (`ci-gate.sh`, playground #1227), so do not pick the pool by hand and do not pass `--local` to wait for a slot. The pick is at most about 40 classes plus a broad set (20 to 30 minutes); ALL comes only from a Unity version change or `--full`, and the nightly runs the rest. Once green, merge main and merge; do not gate again unless the merge touched files your pick depends on. Never leave the workstation idle while a gate waits in the pool queue: the pool is three laptops shared with the nightly, and on 2026-10-26 six gates sat queued up to two hours behind it while this box was 97% idle. FAIL on your change blocks; ONMAIN is red on main too and goes on the agent board.
+5. Gate on the runner pool. Run EditMode and the PlayMode classes the branch can affect (`scripts/test/affected-classes.py`) with `scripts/test/suite.sh --retry --batch 12 --baseline main --classes <that list>` in your worktree, in the background, committed and with nothing uncommitted: suite.sh pushes the branch and becomes `ci-gate.sh`, or runs it on the workstation when the pool is backed up and a slot is free, so do not pick by hand. Jobs take Linux slots first and the Mac Studio is overflow; `ci-gate.sh --host=mac-studio` is a check that needs a Mac. The pick is at most about 40 classes plus a broad set (20 to 30 minutes); ALL comes only from a Unity version change or `--full`, and the nightly runs the rest. Once green, merge main and merge; do not gate again unless the merge touched files your pick depends on. FAIL on your change blocks; ONMAIN is red on main too and goes on the agent board.
 6. Land: `gh pr checks <n> --watch`, branch current with main (`test "$(git rev-list --count HEAD..origin/main)" -eq 0`), then `gh pr merge <n> --squash --match-head-commit <sha> --subject "<title> (#n)"`.
 7. At session start, read main's last nightly FAIL / FLAKY / ONMAIN lines (`docs/operations/ci.md`); a non-FLAKY red on main comes before your own work.
 
 ## Do NOT
 
 - Do not run the whole PlayMode suite locally; gate on the affected classes.
-- Do not wait on a local slot queue while the pool has idle runners: suite.sh --classes sends a gate that would queue to the pool by itself; an uncommitted tree keeps it local, so commit first.
+- Do not gate with an uncommitted tree: the pool tests what is pushed, so suite.sh --classes keeps that gate on the workstation. Commit first.
 - Do not run a player build (`scripts/build.sh`, `PlaygroundBuild.Build*`) on the workstation: it compiles every shader on every core for an hour (2026-10-26, load 33 on 24, 0% idle). Ask the human first.
 - Do not call Unity `-runTests` by hand or use port 7770: a `-host` that cannot bind joins the human's game.
 - Do not loop run.sh in zsh with unsplit args; wrap the loop in `bash -c`.
