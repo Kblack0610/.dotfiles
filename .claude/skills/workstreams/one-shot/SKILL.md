@@ -1,6 +1,6 @@
 ---
 name: one-shot
-description: Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, pull the main checkout, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
+description: Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
@@ -39,7 +39,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    ```bash
    git fetch origin && test "$(git rev-list --count HEAD..origin/<base>)" -eq 0 && gh pr merge <N> --squash --match-head-commit "$(git rev-parse HEAD)"
    ```
-   One landing step per call, absolute paths, no `;` or pipes after a push or merge. Then reap the worktree (`wt done`, or `git worktree remove`) and do the project's post-land step (unity-core-playground: pull the main checkout only when the editor is not playing, otherwise report "pull waiting").
+   One landing step per call, absolute paths, no `;` or pipes after a push or merge. Then reap the worktree (`wt done`, or `git worktree remove`) and do any post-land step the project's CLAUDE.md names (unity-core-playground has none: landing ends at the merge).
 
 7. **Record.** Tick the plan's phase (`- [x] <task> (#N)`). Close the agent-board row: `notes ptask <project> --agent done "<title>" --proof pr:<N>`. Then put the result on the human's sheet too, because a one-shot is always an ask the human wrote. If a sheet row already asked for this work, `done --proof pr:<N>` it. Otherwise add one tagged `#oneshot` and close it straight away:
    ```bash
