@@ -220,6 +220,15 @@ pub fn run_list(json: bool) -> Result<()> {
             "plan_file": info.plan_file,
             "edited_files": info.edited_files,
             "summary": a.summary,
+            "time_use": {
+                "work_min": info.time_use.work_min,
+                "jobs_min": info.time_use.jobs_min,
+                "human_min": info.time_use.human_min,
+                "parked_min": info.time_use.parked_min,
+            },
+            "doing": info.doing,
+            "said": info.said,
+            "compactions": info.compactions,
         });
         println!("{row}");
     }
