@@ -16,6 +16,21 @@
     border-left: 2px solid alpha(currentColor, 0.6);
 }
 
+/* #cpu-temp is `group/cpu-temp` in config.base: two built-in modules drawn as one
+ * pill. The theme still colours each half, so only the temperature half goes red at
+ * critical; this only closes the gap between them and rounds the outer corners. */
+#cpu-temp > widget:first-child > label {
+    margin-right: 0;
+    padding-right: 4px;
+    border-radius: 6px 0 0 6px;
+}
+
+#cpu-temp > widget:last-child > label {
+    margin-left: 0;
+    padding-left: 4px;
+    border-radius: 0 6px 6px 0;
+}
+
 /* Keys are bypassing Hyprland (passthrough.sh). Fixed red on purpose: an alarm
  * should read the same under every theme. */
 #custom-passthrough {

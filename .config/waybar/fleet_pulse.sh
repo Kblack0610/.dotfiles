@@ -31,20 +31,21 @@ GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
 ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = infer from API
 
-# How the bar renders the fleet (the tooltip always lists everyone). Ordered,
-# space-separated tokens - one dot per token, left to right:
-#   <name>=<label>    expand ONE machine as its own labeled dot (gp-mac=gp).
-#                     Always drawn, so a box that stops reporting goes red here
-#                     instead of silently vanishing.
-#   @<group>=<label>  collapse a gatus group to a single dot: green when every
-#                     member is up, amber when some are, red only when NONE are
-#                     (@k3s=k3s -> one dot for the pi cluster).
-#   ~<name>=<label>   a machine that is OFF by design (a laptop): its dot is drawn
-#                     only while it is up, and nothing at all otherwise. Keep it OFF
-#                     FLEET_ROSTER - the roster is "who should always be reporting",
-#                     and a closed laptop is not a fault. It still shows in the
-#                     tooltip, and a name gatus has never heard of is still a `?`.
-# Groups not named here stay in the tooltip only. Gatus group names are the key
+# How the bar renders the fleet (the tooltip always lists everyone). A healthy fleet
+# is the icon alone; a token that is not up adds its labeled dot. Only the unhappy
+# ones, because four dots cost 180px and pushed the clock off a 1920 screen. Ordered,
+# space-separated tokens, left to right:
+#   <name>=<label>    ONE machine (gp-mac=gp). A box that stops reporting goes red
+#                     here instead of silently vanishing.
+#   @<group>=<label>  a gatus group as a single dot: amber when some members are up,
+#                     red only when NONE are (@k3s=k3s -> one dot for the pi cluster).
+#   ~<name>=<label>   a machine that is OFF by design (a laptop): it never draws a
+#                     dot, up or not. Keep it OFF FLEET_ROSTER - the roster is "who
+#                     should always be reporting", and a closed laptop is not a fault.
+#                     It still shows in the tooltip, and a name gatus has never heard
+#                     of is still a `?`.
+# A rostered host with no token turns the icon amber with no dot, and the tooltip
+# names it. Groups not named here stay in the tooltip only. Gatus group names are the key
 # (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
 # a future settings submenu just rewrites this line and signals the module.
 # The two personal CachyOS boxes lead: they were reporting fine but were named in
@@ -160,7 +161,7 @@ status_text() {
     else echo "STALE ($(fmt_age "$age") ago)"; fi
 }
 
-# state -> pango-colored dot. Filled ● when reporting, hollow ○ when not.
+# not-up state -> pango-colored dot. Filled when reporting, hollow when not.
 #
 # `ghost` is NOT a fleet state, it is a CONFIG state: the token names a host or
 # group that exists nowhere - not on the roster, not in the API. Rendering it as
@@ -169,7 +170,6 @@ status_text() {
 # `?` reads as "this dot is lying to you", which is the actual situation.
 dot() {
     case "$1" in
-        up)      printf "<span color='%s'>●</span>" "$C_GRN" ;;
         stale)   printf "<span color='%s'>●</span>" "$C_YEL" ;;
         partial) printf "<span color='%s'>●</span>" "$C_YEL" ;;
         ghost)   printf "<span color='%s'>?</span>" "$C_YEL" ;;
@@ -220,7 +220,7 @@ for m in $ROSTER; do
 done
 if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degraded"; icon_col="$C_YEL"; fi
 
-# --- bar text: the pulse icon, then one dot per FLEET_DISPLAY token -----------
+# --- bar text: the pulse icon, then a dot per FLEET_DISPLAY token not up ------
 #
 # Every token is checked for EXISTENCE before it is checked for health, because
 # those two failures are visually identical otherwise (both were a red ○) and
@@ -236,8 +236,6 @@ for tok in $FLEET_DISPLAY; do
         key="${key#"~"}"; transient+=("$key")
         if [[ -z "${in_roster[$key]:-}" && -z "$(row_of "$key")" ]]; then
             ghosts+=("~$key"); text="${text} ${lbl}$(dot ghost)"
-        elif [[ "$(classify "$key")" == "up" ]]; then
-            text="${text} ${lbl}$(dot up)"
         fi
         continue
     fi
@@ -255,7 +253,7 @@ for tok in $FLEET_DISPLAY; do
     else
         st="$(classify "$key")"
     fi
-    text="${text} ${lbl}$(dot "$st")"
+    [[ "$st" == up ]] || text="${text} ${lbl}$(dot "$st")"
 done
 
 # --- tooltip: full fleet, grouped by gatus group -----------------------------
