@@ -255,7 +255,7 @@ local_slots() {
   python3 - "$FX/cc.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-for n, v in [("cc:host_local_slots", "10"), ("cc:host_local_busy", "2"), ("cc:host_local_queued", "1"),
+for n, v in [("cc:host_local_slots", "10"), ("cc:host_local_open_slots", "4"), ("cc:host_local_busy", "2"), ("cc:host_local_queued", "1"),
              ("cc:host_local_done_24h", "14"), ("cc:host_local_pass_ratio_24h", "0.5")]:
     d["data"]["result"].append({"metric": {"__name__": n, "host": "workstation"}, "value": [0, v]})
 json.dump(d, open(sys.argv[1], "w"))
@@ -284,9 +284,9 @@ PY
   local_slots
   run "$CC" --once
   assert_success
-  assert_line --regexp '^workstation +- +- +- +- +- +unity-local 2/10$'
-  assert_line --regexp '^unity-local +2/10 +1 +- +14 +50% +workstation$'
-  assert_output --partial 'ci busy 5/17 waiting 5'
+  assert_line --regexp '^workstation +- +- +- +- +- +unity-local 2/4\+6$'
+  assert_line --regexp '^unity-local +2/4\+6 +1 +- +14 +50% +workstation$'
+  assert_output --partial 'ci busy 5/11 waiting 5'
 }
 
 @test "the agent session count shows only when the rule has a value" {

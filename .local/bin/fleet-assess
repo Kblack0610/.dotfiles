@@ -182,11 +182,18 @@ blocked_rows() {
 # Published through node_exporter's textfile collector, they sit under the workstation's
 # row on the hub:infra board and in Grafana, beside the runner pools.
 
-# gate_rows -> per headless Unity run: <seconds running> TAB <projectPath> TAB <platform> TAB <pid>
+# gate_rows -> per headless Unity run: <seconds running> TAB <projectPath> TAB <what> TAB <pid>.
+# <what> is its -testPlatform, else the Class.Method it executes, else "editor": a run says
+# what it is from its own arguments, so a player build reads as one and nothing else does.
 gate_rows() {
   ps -eo pid=,etimes=,comm=,args= 2>/dev/null | awk '$3 == "Unity" && / -batchmode/ {
-    proj = "-"; plat = "build"
-    for (i = 4; i < NF; i++) { if ($i == "-projectPath") proj = $(i + 1); if ($i == "-testPlatform") plat = $(i + 1) }
+    proj = "-"; plat = "editor"; test_plat = ""
+    for (i = 4; i < NF; i++) {
+      if ($i == "-projectPath") proj = $(i + 1)
+      if ($i == "-testPlatform") test_plat = $(i + 1)
+      if ($i == "-executeMethod") { n = split($(i + 1), a, "."); plat = (n > 1 ? a[n - 1] "." : "") a[n] }
+    }
+    if (test_plat != "") plat = test_plat
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 

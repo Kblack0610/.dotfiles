@@ -12,7 +12,7 @@
 # from the private overlay):
 #   CC_PROM_URL=https://prometheus.your.lan
 #   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-ci-runners
-#   CC_HOSTS="workstation mac-studio"   board: machines shown even with no runner, first
+#   CC_HOSTS="workstation"   board: machines shown even with no runner, first
 
 # shellcheck source=/dev/null
 [ -r "$HOME/.config/command-center/env" ] && . "$HOME/.config/command-center/env"

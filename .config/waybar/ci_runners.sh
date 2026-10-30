@@ -24,7 +24,7 @@ PASS_WARN=90
 
 fail() { emit "$(paint "$C_RED" 'CI ?')" "CI runners: $1" critical; exit 0; }
 
-cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|busy|queued|done_24h|pass_ratio_24h)"}
+cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)"}
   or cc:component_status{domain="ci"} or cc:domain_status{domain="ci"}
   or label_replace(min(github_runner_exporter_api_ok), "__name__", "api_ok", "", "")')" \
   || fail "cannot read $PROM_URL"
@@ -65,10 +65,17 @@ for key in "${!V[@]}"; do
     *) continue ;;
   esac
   s="${V[${pre}_slots/$p]:-}" d="${V[${pre}_done_24h/$p]:-}" r="${V[${pre}_pass_ratio_24h/$p]:-}"
+  cell="${s:+$b/$s}"
+  # A local row counts its open slots: room slots run only while the machine has room.
+  if [ "$pre" = cc:host_local ]; then
+    open="${V[cc:host_local_open_slots/$p]:-0}" room=$((s - ${V[cc:host_local_open_slots/$p]:-0}))
+    s="$open" cell="$b/$open"
+    ((room > 0)) && cell+="+$room"
+  fi
   ((busy += ${b/-/0}, slots += ${s:-0}, waiting += q, done_total += ${d:-0}))
   [ -n "$d" ] && [ -n "$r" ] && passes+=" $d:$r"
   [ "$pre" = cc:pool ] || p="local:$p"
-  pool_rows+=("$q|$p|${s:+$b/$s}|$d|$r")
+  pool_rows+=("$q|$p|$cell|$d|$r")
 done
 ((${#pool_rows[@]})) || fail "no cc:pool_* series (recording rules not loaded?)"
 mapfile -t pool_rows < <(printf '%s\n' "${pool_rows[@]}" | sort -t'|' -k1,1nr -k2,2)

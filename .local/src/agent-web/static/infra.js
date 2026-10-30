@@ -108,7 +108,7 @@ function kpis(cc) {
   const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
-  const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_slots"]);
+  const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_open_slots"]);
   const waiting = sumOf(cc["cc:pool_waiting"]) + sumOf(cc["cc:host_local_queued"]);
   const lazer = [one("cc:lazer_spend_usd"), one("cc:lazer_budget_usd")];
   const ok = (a, b) => (a != null && a === b ? "var(--b-done)" : "var(--b-needs)");
@@ -138,10 +138,10 @@ function poolsTable(cc, inst) {
   const pools = [...new Set([...Object.keys(cc["cc:pool_slots"] || {}), ...Object.keys(cc["cc:pool_waiting"] || {})])]
     .sort((a, b) => ((cc["cc:pool_waiting"] || {})[b] || 0) - ((cc["cc:pool_waiting"] || {})[a] || 0) || a.localeCompare(b));
   const g = (n, p) => (cc[n] || {})[p];
-  const row = (p, busy, slots, waiting, oldest, done, pass, hosts) => `<tr><td>${esc(p)}</td><td class="m">${meter(slots ? busy / slots : 0, "var(--c1)")}</td><td class="n">${busy ?? "-"}/${slots ?? "-"}</td><td class="n${waiting ? " warn" : ""}">${waiting ?? "-"}</td><td class="n">${secs(oldest)}</td><td class="n">${done ?? "-"}</td><td class="n ${pass == null ? "" : pass < 0.7 ? "bad" : pass < 0.9 ? "warn" : ""}">${pct(pass)}</td><td class="muted">${esc(hosts)}</td></tr>`;
+  const row = (p, busy, slots, waiting, oldest, done, pass, hosts, room) => `<tr><td>${esc(p)}</td><td class="m">${meter(slots ? busy / slots : 0, "var(--c1)")}</td><td class="n">${busy ?? "-"}/${slots ?? "-"}${room > 0 ? `+${room}` : ""}</td><td class="n${waiting ? " warn" : ""}">${waiting ?? "-"}</td><td class="n">${secs(oldest)}</td><td class="n">${done ?? "-"}</td><td class="n ${pass == null ? "" : pass < 0.7 ? "bad" : pass < 0.9 ? "warn" : ""}">${pct(pass)}</td><td class="muted">${esc(hosts)}</td></tr>`;
   let rows = pools.map((p) => row(p, g("cc:pool_busy", p), g("cc:pool_slots", p), g("cc:pool_waiting", p), g("cc:pool_oldest_wait_seconds", p), g("cc:pool_done_24h", p), g("cc:pool_pass_ratio_24h", p),
     Object.entries(on[p] || {}).map(([h, n]) => (n > 1 ? `${h}:${n}` : h)).join(" "))).join("");
-  for (const h of Object.keys(cc["cc:host_local_slots"] || {})) rows += row("unity-local", g("cc:host_local_busy", h), g("cc:host_local_slots", h), g("cc:host_local_queued", h), null, g("cc:host_local_done_24h", h), g("cc:host_local_pass_ratio_24h", h), h);
+  for (const h of Object.keys(cc["cc:host_local_slots"] || {})) rows += row("unity-local", g("cc:host_local_busy", h), g("cc:host_local_open_slots", h), g("cc:host_local_queued", h), null, g("cc:host_local_done_24h", h), g("cc:host_local_pass_ratio_24h", h), h, g("cc:host_local_slots", h) - g("cc:host_local_open_slots", h));
   for (const p of Object.keys(cc["cc:pool_done_24h"] || {}).filter((p) => !pools.includes(p))) rows += row(p, null, null, null, null, g("cc:pool_done_24h", p), g("cc:pool_pass_ratio_24h", p), "");
   return `<table class="tbl"><tr><th>pool</th><th></th><th class="n">busy</th><th class="n">waiting</th><th class="n">oldest</th><th class="n">done 24h</th><th class="n">pass</th><th>on</th></tr>${rows}</table>`;
 }

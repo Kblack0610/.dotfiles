@@ -26,7 +26,7 @@ STUB
   fixtures idle
 }
 
-# fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/10 q1.
+# fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/4+6 q1.
 # Finished in 24h: unity 40 at 95%, pmp-light 10 at 60%, github-hosted (no slots) 50 at
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
@@ -47,6 +47,7 @@ for pool, slots, busy, waiting, oldest in [("unity", "4", "3", "5", "18900"), ("
     if oldest:
         cc.append(({"__name__": "cc:pool_oldest_wait_seconds", "pool": pool}, oldest))
 cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
+       ({"__name__": "cc:host_local_open_slots", "host": "workstation"}, "4"),
        ({"__name__": "cc:host_local_busy", "host": "workstation"}, "2"),
        ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
        ({"__name__": "api_ok"}, api)]
@@ -81,14 +82,14 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "the bar sums pools and local gates like the board header, queue in gold" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 <span color='#ffcc2f'>q6</span>"
 }
 
 @test "pools and local gates list busy/slots, queue and oldest wait, longest queue first" {
   run "$MODULE"
   run tip
   assert_line --index 4 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
-  assert_line --index 5 --regexp "^local:workstation +2/10 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
+  assert_line --index 5 --regexp "^local:workstation +2/4\+6 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
 }
 
 @test "a pool with finished jobs but no slots still gets a row, with no busy count" {
@@ -123,7 +124,7 @@ PY2
 @test "no finished series reads none reported, never 0" {
   NO_DONE=1 fixtures idle
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 <span color='#ffcc2f'>q6</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 <span color='#ffcc2f'>q6</span>"
   run tip
   assert_line --index 2 "finished 24h: none reported"
 }
@@ -146,7 +147,7 @@ PY2
   CI_STATUS=0 fixtures idle
   run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" ok
-  assert_equal "$(jq -r .text <<< "$output")" "CI 5/16 <span color='#ffcc2f'>q6</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "CI 5/10 <span color='#ffcc2f'>q6</span>"
 }
 
 # No status series is not a green light: the board prints NO DATA for it.
@@ -222,5 +223,5 @@ for r in d["data"]["result"]:
 json.dump(d, open(sys.argv[1], "w"))
 PY
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/16 q0"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 q0"
 }

@@ -102,6 +102,25 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD held'
 }
 
+@test "gate_rows: a run says what it is from its own arguments, and only a build reads as one" {
+  ps() {
+    cat <<'EOF'
+101 60 Unity /opt/Unity -batchmode -projectPath /wt/a -testPlatform PlayMode -logFile x
+102 70 Unity /opt/Unity -batchmode -projectPath /wt/b -executeMethod Playground.EditorTools.HoldShots.ItemCli -quit
+103 80 Unity /opt/Unity -batchmode -projectPath /wt/c -executeMethod Playground.PlaygroundBuild.BuildWindows -quit
+104 90 Unity /opt/Unity -batchmode -projectPath /wt/d -quit
+105 95 Unity /opt/Unity -batchMode -name AssetImportWorker1 -projectPath /wt/e -logFile x
+EOF
+  }
+  run gate_rows
+  assert_success
+  assert_line "$(printf '60\t/wt/a\tPlayMode\t101')"
+  assert_line "$(printf '70\t/wt/b\tHoldShots.ItemCli\t102')"
+  assert_line "$(printf '80\t/wt/c\tPlaygroundBuild.BuildWindows\t103')"
+  assert_line "$(printf '90\t/wt/d\teditor\t104')"
+  refute_output --partial '105'
+}
+
 # --- --textfile: what node_exporter publishes for the hub:infra board ---------------------
 # gate_rows, session_of and agent_count read /proc and tmux; stubbed here so the rows are
 # fixtures, not whatever this machine is running.
