@@ -32,12 +32,12 @@ PROM_RED_NOW='label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "ite
 # runs past about an hour a bug to fix, not a wait.
 LONG_RUN_SECS=3600
 
-# prom_q <promql> -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
+# prom_q <promql> [epoch] -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
 # PROM_TIMEOUT: the board waits 10s; a bar module sets less, so a dead endpoint cannot
 # stall the bar.
 prom_q() {
   local out
-  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null)" || return 1
+  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" ${2:+--data-urlencode "time=$2"} 2>/dev/null)" || return 1
   [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
   printf '%s' "$out"
 }

@@ -1,11 +1,11 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
-  reviewed: "2026-10-28"
+  reviewed: "2026-10-30"
 ---
 
 # fleet-bench
@@ -42,6 +42,27 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 - `retro`: for each KPI whose 7d value is past its threshold, keeps exactly one open row `kpi: <key> past threshold: 7d <v> (28d <v>, max <t>)` on the agent-runtime agent board (`now <v> (max <t>)` for a count taken now): it adds the row (`#high` when more than 2x past, else `#low`) or refreshes its numbers with `ptask edit`, and touches no other row. WORKED when it wrote, NOOP otherwise, and NOOP with no notes call when there is no thresholds file. The briefing runs it on Mondays.
 
+- `findings [--open|--json|--run]`: conclusions that want a decision, from rules over counted facts on every machine. It prints what is open, worst class first; `--json` gives the rows; `--run` evaluates and appends, and every `sample` does. See "Findings".
+
+- `throughput [--from T] [--to T]`: runs/h, share not passed, editor-hours and those spent on runs not passed, merges/h per project, each pool's queue, and load per core on every host over 0.5x. Default window is the last 2h; T is an epoch or anything `date -d` reads. Any slot, hold or pace change states this number before and after. Read-only apart from a `git fetch` of each project's default branch.
+
+### Findings
+
+`fleet-assess` decides for this workstation alone. Findings read the pool and the other hosts too, and they are in shadow: nothing pages on them yet (plan `can-we-update-shepherd-composed-hopcroft`).
+
+| Rule | Fires when | Reads | Class |
+|---|---|---|---|
+| `starved <host>` | `finding_queued_min` (5) local runs queued on 2 samples and the CPU over `finding_local_idle_min` (0.3) idle | `cc:host_local_queued`, `cc:host_cpu_busy_ratio` | shepherd, human after `finding_human_after_min` (60) |
+| `starved pool:<pool>` | oldest job waited `finding_pool_wait_s` (3600) with jobs still waiting. Busy share under `finding_pool_idle_share` (0.75) concludes admission or labels, otherwise demand over capacity | `cc:pool_*` | shepherd, human after that |
+| `throughput-drop <project>` | merges/h over 2h under `finding_merge_ratio` (0.5) of the 24h rate, with a 24h rate of at least `finding_merge_floor_h` (2)/h, while live sessions hold at `finding_demand_ratio` (0.7) of their 24h average | `git log --first-parent`, `progress.jsonl` | human |
+| `host-overload <host>` | load per core at `finding_host_load_per_core` (2) on 3 samples | `cc:host_load1`, `cc:host_cores` | report, human after that |
+| `blind <source>` | Prometheus unreadable, a series missing, a project's merges unreadable (no mapped repo, or the fetch failed), the rules themselves failing, or nothing evaluated within `finding_clear_min` | every source | report |
+
+- **Demand is sessions, not runs.** Local runs fall by design once gates move to the pool, so runs/h would read that as demand gone.
+- **Episode.** The time a rule first fired for a scope. It outlives a gap up to `finding_clear_min` (60), so one outage is one episode, and a recurrence after that is a new one. `fact` is `<rule> <scope> @<episode>`, the key a ledger pages once on. There are no close rows: a finding is open while its newest row is inside the clear window.
+- **Thresholds** are starting points set from the 10-29 replay. Defaults are in the code; a `finding_*=` line in `KPI_THRESHOLDS` overrides one.
+- **Replay.** `tests/fixtures/bench-replay-1029/` is that day, read through `BENCH_NOW`, `BENCH_PROM_TSV`, `BENCH_MERGES_TSV` and `BENCH_RUNS_TSV`. The rules fire at 09:30 (pool), 13:00 (local slots) and 14:20 (merges); the human found it at 19:59.
+
 ### KPIs
 
 Windows count human sessions by `updated_epoch` in session-outcomes; a line with `runner: true` or project `_runner` is headless and left out (older lines have no `runner` field and count as human). A ratio over zero is `-` (null in `--json`).
@@ -70,6 +91,7 @@ State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
 | `estimates.jsonl` | session per phase count | `made_epoch`, `eta_epoch` (raw), `per_phase_min`, `basis`; when calibrated also `factor`, `factor_n`, `cal_eta_epoch` |
 | `scores.jsonl` | estimate whose session finished | `error_min`, `ratio` (both against the raw ETA), `horizon_min`, `done_bound`; when calibrated also `factor`, `cal_error_min`, `cal_ratio` |
 | `pr-ci.jsonl` | merged PR | `repo`, `number`, `session_id`, `merged_epoch`, `additions`, `deletions`, `ci_runs`, `ci_red` |
+| `findings.jsonl` | firing finding per sample | `epoch`, `rule`, `scope`, `episode`, `decision_class`, `evidence`, `conclusion`, `cost`, `fact` |
 | `reviews.jsonl` | reviewed PR | `status` (ok or failed), `block`, `flag`, `nit`, `findings[]` (`severity`, `where`, `summary`), `route`, `exit` |
 
 - **Phase time.** Each plan file is its own timeline, so a session that starts a new plan does not count the switch as a phase. A phase is measured only when the samples saw both its start and its end, so a session's first phase on the record is never measured (it may have started hours earlier). When one sample sees two phases tick at once, the gap is split evenly between them. The time includes waiting on the human.

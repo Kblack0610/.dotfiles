@@ -20,16 +20,23 @@
 #                                asks, open board rows; --check fails when one may only shrink grew
 #   fleet-bench kpi [--json]     KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS
 #   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold
+#   fleet-bench findings [--open|--json|--run]
+#                                conclusions that want a decision, from rules over counted facts
+#                                on every machine; --run evaluates and appends (each sample does)
+#   fleet-bench throughput [--from T] [--to T]
+#                                runs/h, failures, merges/h, pool wait and load on every host
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade; a review
 # only counts the findings it lists. Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD.
+# BENCH_NOTES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP.
 
 set -uo pipefail
 
 # Each sample also publishes the window's numbers to Prometheus (fleet_bench.prom).
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -53,12 +60,16 @@ set -uo pipefail
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_NOTES_CMD:=notes}"
+: "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 REVIEWS="$DIR/reviews.jsonl"
+FINDINGS="$DIR/findings.jsonl"
+FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -201,6 +212,7 @@ cmd_sample() {
   if [ -z "$rows" ]; then
     say "no live session"
     publish_window "$t"
+    findings_run "$t"
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -213,6 +225,7 @@ cmd_sample() {
   n=$(grep -c . <<<"$rows"); e=$(grep -c . <<<"$est"); s=$(grep -c . <<<"$sc")
   say "$n sessions, $e new estimates, $s new scores"
   publish_window "$t"
+  findings_run "$t"
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
 }
 
@@ -866,6 +879,243 @@ cmd_retro() {
   fi
 }
 
+# Findings: conclusions that want a decision, reached by rules over counted facts, every machine
+# included. fleet-assess decides for this box alone; these read the pool and the other hosts too.
+# On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
+# collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
+
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:host_local_queued|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds'
+# A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
+# is left out: it is only there while something waits.
+FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:host_local_queued","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
+FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
+# Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
+FINDING_DEFAULTS='{"finding_queued_min":5,"finding_local_idle_min":0.3,"finding_pool_wait_s":3600,
+  "finding_pool_idle_share":0.75,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,
+  "finding_host_load_per_core":2,"finding_clear_min":60,"finding_human_after_min":60}'
+
+finding_limits() {
+  local file='{}'
+  [ -r "$KPI_THRESHOLDS" ] && file=$(grep -E '^finding_[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
+  jq -cn --argjson d "$FINDING_DEFAULTS" --argjson f "$file" '$d + ($f | with_entries(select(.value != null)))'
+}
+
+# prom_rows <epoch> -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
+# BENCH_PROM_TSV is a recorded series (metric, label, epoch, value), so a replay needs no server.
+prom_rows() {
+  local t="$1" out
+  if [ -n "${BENCH_PROM_TSV:-}" ]; then
+    out=$(awk -F'\t' -v t="$t" -v old="$FINDING_SAMPLE_S" '$3 <= t && $3 > t - old { v[$1 "\t" $2] = $4 }
+      END { for (k in v) print k "\t" v[k] }' "$BENCH_PROM_TSV")
+  else
+    out=$(prom_q "{__name__=~\"$FINDING_METRICS\"}" "$t" | jq -r '.data.result[]
+      | [.metric.__name__, (.metric.host // .metric.pool // "-"), (.value[1] | tonumber)] | @tsv') || return 1
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out"
+}
+
+# prom_snapshot <epoch> -> {metric: {label: value}}; rc 1 when unreadable
+prom_snapshot() {
+  local rows
+  rows=$(prom_rows "$1") || return 1
+  jq -Rn 'reduce (inputs | split("\t")) as $r ({}; .[$r[0]][$r[1]] = ($r[2] | tonumber))' <<<"$rows"
+}
+
+# merge_rows <until> [since] -> project, merge epoch (tab-separated) for each project sampled in that
+# time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
+# failed fetch, whose old refs would otherwise read as no merges.
+merge_rows() {
+  local until="$1" since="${2:-$(($1 - 86400))}" p path head
+  if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
+  [ -s "$PROGRESS" ] || return 0
+  [ -r "$BENCH_PROJECT_MAP" ] || { echo '!project-map'; return 0; }
+  while read -r p path; do
+    [ -n "$path" ] || { printf '!%s\n' "$p"; continue; }
+    head=$(git -C "$path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || head=origin/main
+    if ! timeout 30 git -C "$path" fetch -q origin "${head#origin/}" 2>/dev/null; then printf '!%s\n' "$p"; continue; fi
+    git -C "$path" log "$head" --first-parent --since="$since" --until="$until" --format=%ct | sed "s/^/$p\t/"
+  done < <(jq -rn --argjson since "$since" --slurpfile m "$BENCH_PROJECT_MAP" '
+    ($m[0].paths | to_entries | map({key: .value, value: .key}) | from_entries) as $path
+    | ($m[0].aliases // {}) as $alias
+    | [inputs | select(.epoch >= $since) | .project | select(. != "")] | unique[] | "\(.) \($path[$alias[.] // .] // "")"' "$PROGRESS")
+}
+
+# finding_facts <now> -> everything the rules read, as one object; a source that could not be read is
+# null. Demand is the time average of live sessions, so a straggler on an empty project is not a full load.
+finding_facts() {
+  local t="$1" s0 s1 s2 merges live='' src=/dev/null
+  s0=$(prom_snapshot "$t") && s1=$(prom_snapshot $((t - FINDING_SAMPLE_S))) && s2=$(prom_snapshot $((t - 2 * FINDING_SAMPLE_S))) \
+    || s0='null' s1='null' s2='null'
+  merges=$(merge_rows "$t")
+  [ -s "$PROGRESS" ] && src=$PROGRESS
+  live=$(jq -c --argjson since $((t - 86400)) --argjson t "$t" \
+    'select(.epoch > $since and .epoch <= $t and (.bucket == "WORKING" or .bucket == "STALLED")) | {epoch, project}' "$src") || return 1
+  jq -cn --argjson t "$t" --argjson s0 "$s0" --argjson s1 "$s1" --argjson s2 "$s2" --arg m "$merges" \
+      --argjson every "$FINDING_SAMPLE_S" --slurpfile p <(printf '%s\n' "$live") '
+    def avg_live($span): map(select(.epoch > $t - $span)) | length * $every / $span;
+    ($m | split("\n") | map(select(. != "") | split("\t"))) as $rows
+    | {t: $t, prom: [$s0, $s1, $s2],
+       unfetched: [$rows[] | select(.[0] | startswith("!")) | .[0][1:]],
+       merges: ($rows | map(select(.[0] | startswith("!") | not)) | group_by(.[0]) | map({key: .[0][0], value: map(.[1] | tonumber)}) | from_entries),
+       live: ($p | group_by(.project) | map({key: .[0].project, value: {avg_24h: avg_live(86400), avg_2h: avg_live(7200)}}) | from_entries)}'
+}
+
+# finding_rows <facts> -> one object per rule firing now. Pure: the same facts give the same rows.
+finding_rows() {
+  jq -c --argjson l "$(finding_limits)" --argjson required "$FINDING_REQUIRED" '
+    def pct: . * 100 | round;
+    def round1: . * 10 | round / 10;
+    def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
+    def row($rule; $scope; $class; $numbers; $window; $source; $conclusion; $cost):
+      {rule: $rule, scope: $scope, decision_class: $class, evidence: {numbers: $numbers, window: $window, source: $source},
+       conclusion: $conclusion, cost: $cost};
+    .t as $t | .prom as $p | .
+    | ( .unfetched[] | row("blind"; "merges:\(.)"; "report"; {}; "now"; "git log";
+          "merges for \(.) unreadable (no mapped repo, or the fetch failed), so throughput-drop is off for it"; "") ),
+      ( if $p[0] == null then row("blind"; "prom"; "report"; {}; "now"; "prometheus";
+          "prometheus unreadable, so starved and host-overload are off"; "") else empty end ),
+      ( select($p[0] != null) | $p[0] as $a | $required[] | select($a[.] == null)
+        | row("blind"; "prom:\(.)"; "report"; {}; "now"; "prometheus"; "\(.) is missing, so the rules that read it are off"; "") ),
+      ( select($p[0] != null) | $p[0] as $a | $p[1] as $b | $p[2] as $c
+        | ( ($a["cc:host_local_queued"] // {}) | to_entries[] | .key as $h | .value as $q
+            | (($b["cc:host_local_queued"][$h]) // 0) as $q1 | ($a["cc:host_cpu_busy_ratio"][$h]) as $busy
+            | select($q >= $l.finding_queued_min and $q1 >= $l.finding_queued_min
+                     and $busy != null and (1 - $busy) > $l.finding_local_idle_min)
+            | row("starved"; $h; "shepherd"; {queued: $q, idle: (1 - $busy | pct)}; "2 samples"; "cc:host_local_queued, cc:host_cpu_busy_ratio";
+                "\($q) local runs queued with the CPU \(1 - $busy | pct)% idle: a slot limit binds, not the machine"; "\($q) runs waiting") ),
+          ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
+            | (($a["cc:pool_waiting"][$pool]) // 0) as $n | ($a["cc:pool_busy"][$pool]) as $u | ($a["cc:pool_slots"][$pool]) as $s
+            | select($w >= $l.finding_pool_wait_s and $n > 0)
+            | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $u, slots: $s, oldest_s: $w}; "now"; "cc:pool_*";
+                "oldest job waited \($w | dur) with \($u // "?")/\($s // "?") slots busy: "
+                + (if $u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share
+                   then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
+                "\($n) jobs waiting") ),
+          ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
+            | select($n != null and $n > 0)
+            | [$v, ($b["cc:host_load1"][$h]), ($c["cc:host_load1"][$h])] as $vs
+            | select(($vs | all(. != null and . / $n >= $l.finding_host_load_per_core)))
+            | row("host-overload"; $h; "report"; {load: $v, cores: $n, per_core: ($v / $n | round1)}; "3 samples"; "cc:host_load1, cc:host_cores";
+                "load \($v | round1) on \($n) cores for 20m (\($v / $n | round1)x)"; "") ) ),
+      ( .unfetched as $u | .live as $live | .merges | to_entries[] | .key as $proj | .value as $e
+        | select(($u | index($proj)) == null) | ($live[$proj]) as $d
+        | ($e | map(select(. > $t - 86400 and . <= $t)) | length / 24) as $base
+        | ($e | map(select(. > $t - 7200 and . <= $t)) | length / 2) as $now
+        | select($d != null and $base >= $l.finding_merge_floor_h and $now < $l.finding_merge_ratio * $base
+                 and $d.avg_2h >= $l.finding_demand_ratio * $d.avg_24h)
+        | row("throughput-drop"; $proj; "human"; {merges_h_2h: $now, merges_h_24h: ($base | round1), live_2h: ($d.avg_2h | round1), live_24h: ($d.avg_24h | round1)};
+            "2h against 24h"; "git log --first-parent, progress.jsonl";
+            "merges \($now)/h against \($base | round1)/h with sessions still working (\($d.avg_2h | round1) live, usual \($d.avg_24h | round1)): something between gate and merge binds";
+            "\(($base - $now) * 2 | round) merges behind in 2h") )' <<<"$1"
+}
+
+# finding_stamp <now> -> rows on stdin with their episode. An episode is the time a rule first fired
+# for a scope, and it outlives a gap shorter than finding_clear_min, so a rule that flickers is one
+# episode and a recurrence is a new one. The fact is what the ledger pages once.
+finding_stamp() {
+  local t="$1" prior=/dev/null
+  [ -s "$FINDINGS" ] && prior=$FINDINGS
+  jq -c --argjson t "$t" --argjson l "$(finding_limits)" --slurpfile p "$prior" "$JQ_LIB"'
+    ($p | map(select(.epoch < $t and .epoch >= $t - $l.finding_clear_min * 60)) | group_by([.rule, .scope])
+     | map(max_by(.epoch) | {key: "\(.rule)/\(.scope)", value: .}) | from_entries) as $last
+    | ($last["\(.rule)/\(.scope)"].episode // $t) as $ep
+    | . + {epoch: $t, at: ($t | iso), episode: $ep, fact: "\(.rule) \(.scope) @\($ep)"}
+    | if (.rule == "starved" or .rule == "host-overload") and $t - $ep >= $l.finding_human_after_min * 60
+      then .decision_class = "human" else . end'
+}
+
+# finding_blind <scope> <source> <conclusion> -> one unstamped row, for a source no rule could read
+finding_blind() {
+  jq -cn --arg s "$1" --arg src "$2" --arg c "$3" \
+    '{rule: "blind", scope: $s, decision_class: "report", evidence: {numbers: {}, window: "now", source: $src}, conclusion: $c, cost: ""}'
+}
+
+# findings_run <now>: evaluate and append. Never fails the sample that calls it, and a failed evaluation
+# leaves a row, because no rows is what a healthy pass looks like.
+findings_run() {
+  local facts rows
+  mkdir -p "$DIR"
+  { facts=$(finding_facts "$1") && [ -n "$facts" ] && rows=$(finding_rows "$facts" | finding_stamp "$1"); } \
+    || rows=$(finding_blind findings "fleet-bench" "the rules could not be evaluated, so nothing here is a healthy read" | finding_stamp "$1")
+  [ -z "$rows" ] || printf '%s\n' "$rows" >> "$FINDINGS"
+  printf '%s\n' "$1" > "$FINDINGS_PASS"
+}
+
+# findings_open <now> -> the newest row of each finding still inside its episode, worst class first. A
+# store nobody has evaluated lately says so first, because its emptiness is not health.
+findings_open() {
+  local t="$1" limits last store=/dev/null
+  limits=$(finding_limits)
+  [ -s "$FINDINGS" ] && store=$FINDINGS
+  last=$(cat "$FINDINGS_PASS" 2>/dev/null)
+  if [ $((t - ${last:-0})) -gt "$(jq '.finding_clear_min * 60 | floor' <<<"$limits")" ]; then
+    finding_blind sampler "findings.last" "no evaluation since $(jq -rn --argjson e "${last:-0}" "$JQ_LIB"'$e | if . == 0 then "ever" else hm end'), so this list is not current" | finding_stamp "$t"
+  fi
+  jq -cn --argjson t "$t" --argjson l "$limits" --slurpfile f "$store" '
+    $f | map(select(.epoch <= $t)) | group_by([.rule, .scope]) | map(max_by(.epoch))
+    | map(select($t - .epoch <= $l.finding_clear_min * 60))
+    | sort_by(({human: 0, shepherd: 1, report: 2}[.decision_class]), .episode) | .[]'
+}
+
+cmd_findings() {
+  case "${1:-}" in
+    --run) findings_run "$(now)"; return ;;
+    --json) findings_open "$(now)"; return ;;
+    ""|--open) ;;
+    *) say "usage: fleet-bench findings [--open|--json|--run]"; return 2 ;;
+  esac
+  local rows
+  rows=$(findings_open "$(now)")
+  [ -n "$rows" ] || { echo "findings: none open"; return 0; }
+  jq -r "$JQ_LIB"'[.decision_class, .rule, .scope, "since \(.episode | hm)", .conclusion + (if .cost != "" then " (\(.cost))" else "" end)] | @tsv' <<<"$rows" |
+    awk -F'\t' '{ printf "%-8s %-15s %-24s %-15s %s\n", $1, $2, $3, $4, $5 }'
+}
+
+# throughput_epoch <text> -> an epoch, from an epoch or anything `date -d` reads
+throughput_epoch() { [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || date -d "$1" +%s; }
+
+# The before and after any slot, hold or pace change has to state: load and idle are proxies, and the
+# outcome is merges per hour and queue wait (dotfiles lessons, 2026-10-30).
+cmd_throughput() {
+  local from='' to='' snap='null' merges queue=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) from=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      --to) to=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      *) say "usage: fleet-bench throughput [--from T] [--to T]"; return 2 ;;
+    esac
+  done
+  [ -n "$to" ] || to=$(now)
+  [ -n "$from" ] || from=$((to - 7200))
+  [ "$to" -gt "$from" ] || { say "--to must be after --from"; return 2; }
+  snap=$(prom_snapshot "$to") || snap='null'
+  merges=$(merge_rows "$to" "$from" | grep -v '^!')
+  # The exporter's own quantiles over the jobs finished in 24h; a recorded fixture has none.
+  [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
+  jq -rn --argjson a "$from" --argjson b "$to" --argjson s "$snap" --arg m "$merges" --arg q "$queue" \
+      --rawfile r <(awk -F'\t' -v a="$from" -v b="$to" '$1 > a && $1 <= b' "$BENCH_RUNS_TSV" 2>/dev/null) "$JQ_LIB"'
+    def round1: . * 10 | round / 10;
+    def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
+    (($b - $a) / 3600) as $h
+    | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
+    | ($r | split("\n") | map(select(. != "") | split("\t")) | map({res: .[2], s: ((.[0] | tonumber) - (.[1] | tonumber))})) as $runs
+    | ($runs | map(select(.res != "pass"))) as $bad
+    | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
+      (if ($runs | length) == 0 then "local runs: none recorded"
+       else "local runs: \($runs | length / $h | round1)/h, \($bad | length * 100 / ($runs | length) | round)% not passed, editor \(($runs | map(.s) | add) / 3600 | round1)h, of which on runs not passed \((($bad | map(.s) | add) // 0) / 3600 | round1)h" end),
+      ($m | split("\n") | map(select(. != "") | split("\t")) | map(select((.[1] | tonumber) > $a and (.[1] | tonumber) <= $b)) | group_by(.[0])
+       | if length == 0 then "merges: none" else "merges/h: " + (map("\(.[0][0]) \(length / $h | round1)") | join(", ")) end),
+      (if $s == null then "pool and hosts: prometheus unreadable"
+       else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
+             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0)/\($s["cc:pool_slots"][$p]) busy"
+               + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
+               + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
+            "local: \($s["cc:host_local_queued"].workstation // "-") queued",
+            "hosts, load per core: " + ($s["cc:host_load1"] // {} | to_entries | map(select(($s["cc:host_cores"][.key] // 0) > 0) | {k: .key, v: (.value / $s["cc:host_cores"][.key])})
+               | map(select(.v >= 0.5)) | sort_by(-.v) | if length == 0 then "all under 0.5x" else map("\(.k) \(.v | round1)x") | join(", ") end)
+       end)'
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -880,8 +1130,10 @@ main() {
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
-    -h | --help) sed -n '2,26p' "$0" ;;
-    *) sed -n '2,22p' "$0" >&2; return 2 ;;
+    findings) shift; cmd_findings "$@" ;;
+    throughput) shift; cmd_throughput "$@" ;;
+    -h | --help) sed -n '2,31p' "$0" ;;
+    *) sed -n '2,27p' "$0" >&2; return 2 ;;
   esac
 }
 
