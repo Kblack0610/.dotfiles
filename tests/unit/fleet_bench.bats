@@ -309,7 +309,7 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output "$BENCH_SCORECARD_DIR/$day.md"
   cmp "$BENCH_SCORECARD_DIR/$day.md" "$BENCH_SCORECARD_DIR/latest.md"
   run grep '^| lab/game-agent-1:1 ' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | $9.99 |'
+  assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | - | $9.99 |'
 }
 
 @test "sessions --json is the scorecard's rows as data, with the plan name day-log shows" {
@@ -709,7 +709,7 @@ kpi_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table between the headline and the sessions" {
+@test "scorecard carries the KPI table right after the headline, before the breakdown and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -717,7 +717,10 @@ kpi_fixture() {
   run grep -e '^## ' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## KPIs'
   assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
-  assert_line --index 2 '## Sessions'
+  assert_line --index 2 '## Bottlenecks'
+  assert_line --index 3 '## Where the time went'
+  assert_line --index 4 '## Sessions'
+  assert_line --index 5 '## Agent depth'
 }
 
 # --- findings: the 2026-10-29 outage replayed. A is 06:00 PDT, the start of the recorded day.
@@ -996,3 +999,108 @@ live_merges() {
   assert_output --partial 'local runs: none recorded'
   assert_output --partial 'merges: none'
 }
+
+# --- the scorecard's breakdown
+
+# stub_breakdown: prometheus answers the three range questions the scorecard asks
+stub_breakdown() {
+  stub_prom 'case "$*" in
+  *pool_waiting*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"pool\":\"unity\"},\"value\":[1,\"300\"]},{\"metric\":{\"pool\":\"macos\"},\"value\":[1,\"0\"]}]}}" ;;
+  *host_local_queued*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"host\":\"workstation\"},\"value\":[1,\"96\"]}]}}" ;;
+  *claude_code_cost*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"session_id\":\"s1\"},\"value\":[1,\"12.345\"]},{\"metric\":{\"session_id\":\"nosample\"},\"value\":[1,\"5\"]}]}}" ;;
+  *) exit 7 ;;
+esac'
+}
+
+# scorecard_with_data: one session, a stall and a wait on you, runs on two branches, two merges
+scorecard_with_data() {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench" BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
+  export BENCH_RUNS_TSV="$SANDBOX/runs.tsv" BENCH_MERGES_TSV="$SANDBOX/merges.tsv"
+  rowj 'session_id: "s1", target: "lab/game-agent-1:1", bucket: "WORKING"' > "$SNAP"; sample_at 0
+  rowj 'session_id: "s1", target: "lab/game-agent-1:1", bucket: "STALLED"' > "$SNAP"; sample_at 600
+  rowj 'session_id: "s1", target: "lab/game-agent-1:1", bucket: "NEEDS"' > "$SNAP"; sample_at 1200
+  rowj 'session_id: "s1", target: "lab/game-agent-1:1", bucket: "WORKING"' > "$SNAP"; sample_at 1800
+  { printf '%s\t%s\tfail\tEditMode\tw\tfeat/a\tgame\n' $((T0 + 3600)) $((T0 - 3600))
+    printf '%s\t%s\tpass\tEditMode\tw\tfeat/a\tgame\n' $((T0 + 3600)) $((T0 + 0))
+    printf '%s\t%s\ttimeout\tPlayMode\tw\tfeat/b\tgame\n' $((T0 + 3600)) $((T0 + 1800)); } > "$BENCH_RUNS_TSV"
+  { printf 'game\t%s\n' $((T0 + 60)) $((T0 + 120)); echo '!other'; } > "$BENCH_MERGES_TSV"
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+}
+
+@test "breakdown: bottlenecks rank the hours lost, biggest first, with the branches behind the failures" {
+  stub_breakdown
+  scorecard_with_data
+  run sed -n '/^## Bottlenecks/,/^## Where/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 4 '| Pool queue: unity | 300 | job-hours | jobs waiting, sampled every 10 minutes |'
+  assert_line --index 5 --partial '| Local queue: workstation | 96 |'
+  assert_line --index 6 '| Local runs not passed | 2.5 | editor-hours | of 3.5h on all local runs |'
+  assert_output --partial '| Sessions stalled | 0.2 | session-hours | lab/game-agent-1:1 0.2h |'
+  refute_output --partial 'macos'
+  assert_output --partial '| feat/a | 1 | 2 |'
+  assert_output --partial '| feat/b | 1 | 0.5 |'
+}
+
+@test "breakdown: where the time went has spend, editor-hours and merges per project, and unknowns stay unknown" {
+  stub_breakdown
+  scorecard_with_data
+  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial 'Agent spend over 24h: $17.35'
+  assert_output --partial '$5 of it on sessions no sample saw'
+  assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $12.35 | 3.5 | 2.5 | 2 |'
+  run sed -n '/^## Sessions/,+6p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial 'Cost 24h'
+  assert_output --partial '$12.35'
+}
+
+@test "breakdown: a project with unreadable merges shows a question mark, never zero" {
+  stub_breakdown
+  scorecard_with_data
+  { printf 'game\t%s\n' $((T0 + 60)); echo '!game'; } > "$BENCH_MERGES_TSV"
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+  run grep '^| game ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '| ? |'
+}
+
+@test "breakdown: prometheus down is written down, and the rest of the scorecard still lands" {
+  stub_prom 'exit 7'
+  scorecard_with_data
+  run cat "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '| Pool queues | ? | job-hours | prometheus unreadable |'
+  assert_output --partial 'Agent spend: prometheus unreadable.'
+  assert_output --partial '| Local runs not passed | 2.5 |'
+  assert_output --partial '## ETA accuracy'
+}
+
+@test "breakdown: agent depth reads the nightly's activity, top spender first" {
+  scorecard_with_data
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  jq -cn '{session_id: "s1", prs_merged: 2, edits: 3, hard_errors: {tool_errors: 5},
+    activity: {tool_calls: 50, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+  run grep '^| lab/game-agent-1:1 | 12 ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output '| lab/game-agent-1:1 | 12 | 6 | 4 | 50 | 10% | 60 | 4 | 25% |'
+}
+
+@test "breakdown: a session the nightly has not seen is not reported as idle" {
+  scorecard_with_data
+  run grep -c 'has been through the nightly yet' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output 1
+}
+
+@test "breakdown: outcomes past the kernel's one-argument limit still join to the sessions" {
+  scorecard_with_data
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  jq -cn 'range(4000) | {session_id: "pad-\(.)", prs_merged: 1, reverted_7d: 0, cost_usd: 1.5, edits: 1, activity: {tool_calls: 1, test_runs: 1, ci_polls: 1, api_messages: 1, tokens: 1, tokens_after_last_edit: 1}}' > "$BENCH_OUTCOMES_DIR/game/2026-09.jsonl"
+  jq -cn '{session_id: "s1", prs_merged: 7}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  BENCH_NOW=$((T0 + 3600)) run "$SUBJECT" sessions --json
+  assert_success
+  assert_output --partial '"prs_merged":7'
+}
+
+@test "headline: a median ratio prints rounded" {
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 0
+  printf '{"done_epoch":%s,"ratio":1.3900000000000001}\n' "$T0" > "$FLEET_BENCH_DIR/scores.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" headline
+  assert_output --partial 'median 1.39x of predicted'
+}
+
