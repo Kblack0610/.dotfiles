@@ -72,7 +72,27 @@ function tiles(sessions, state) {
   return `<div class="tiles">${html}</div>`;
 }
 
-function card(s, maxCtx) {
+// A session's closed time by what it waited on (fleet-states.md). The line under the bar carries
+// the numbers, in the bar's order, so the colours are only a shape to scan.
+const TIME_PARTS = [["work", "work_min", "var(--c1)"], ["jobs", "jobs_min", "var(--c2)"], ["you", "human_min", "var(--c3)"], ["parked", "parked_min", "var(--c4)"]];
+
+function timeUse(t) {
+  const parts = TIME_PARTS.map(([label, key, color]) => ({ label, color, min: (t && t[key]) || 0 })).filter((p) => p.min);
+  const total = parts.reduce((n, p) => n + p.min, 0);
+  if (!total) return "";
+  const bar = parts.map((p) => `<span style="width:${((p.min / total) * 100).toFixed(1)}%;background:${p.color}" title="${p.label} ${dur(p.min)}"></span>`).join("");
+  return `<div class="tbar">${bar}</div><div class="wn">${parts.map((p) => `${p.label} ${dur(p.min)}`).join(", ")}</div>`;
+}
+
+function prList(prs, now) {
+  if (!(prs || []).length) return "";
+  const merged = prs.filter((p) => p.state === "MERGED");
+  const last = Math.max(0, ...merged.map((p) => Date.parse(p.merged_at) || 0));
+  const items = prs.map((p) => `<li><a href="https://github.com/${esc(p.repo)}/pull/${esc(p.number)}" target="_blank" rel="noopener">${esc(p.repo)}#${esc(p.number)}</a> ${esc((p.state || "unknown").toLowerCase())}</li>`).join("");
+  return `<details><summary>${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}</summary><ul>${items}</ul></details>`;
+}
+
+function card(s, maxCtx, now) {
   const pr = s.pr && s.pr !== "-" ? `PR #${esc(s.pr)}${s.pr_state ? " " + esc(s.pr_state.toLowerCase()) : ""}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "no PR";
   const git = [s.ahead ? `ahead ${s.ahead}` : "", s.behind ? `behind ${s.behind}` : "", s.dirty ? `${s.dirty} dirty` : "", s.conflicts ? "<b class=\"ci fail\">conflicts</b>" : ""].filter(Boolean).join(", ");
   const phases = s.phases_total ? `<span class="kv">phases ${meter(s.phases_done / s.phases_total, "var(--b-done)")} ${s.phases_done}/${s.phases_total}</span>` : "";
@@ -80,14 +100,19 @@ function card(s, maxCtx) {
   return `
     <div class="wcard" data-sid="${esc(s.session_id || "")}" data-t="${esc(s.target)}" style="--c:${bucketColor(s.bucket)}">
       <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span><span class="open">open</span></div>
+      ${s.topic ? `<div class="wtask">${esc(s.topic)}</div>` : ""}
       <div class="wm">${esc(s.branch || "-")} &middot; ${pr}${git ? " &middot; " + git : ""}</div>
-      <div class="wf">${esc(s.reason || s.fact || "")}</div>
+      <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
+      ${timeUse(s.time)}
       <div class="wk">
         <span class="kv">ctx ${meter((s.context_tokens || 0) / maxCtx, "var(--accent)")} ${kfmt(s.context_tokens)}</span>
         ${phases}
         <span class="kv">idle ${dur(s.idle_min)}</span><span class="kv">open ${dur(s.age_min)}</span>
+        ${s.compactions ? `<span class="kv">compactions ${esc(s.compactions)}</span>` : ""}
       </div>
       ${s.next_phase ? `<div class="wn">next: ${esc(s.next_phase)}</div>` : ""}
+      ${s.said ? `<div class="wn" title="${esc(s.said)}">said: ${esc(s.said)}</div>` : ""}
+      ${prList(s.prs, now)}
       ${blockers}
     </div>`;
 }
@@ -130,7 +155,7 @@ function renderWatch() {
   for (const b of BUCKETS) {
     const list = shown.filter((s) => s.bucket === b);
     if (!list.length) continue;
-    html += `<h2 class="sec">${b} <span class="muted">${list.length}</span></h2><div class="wgrid">${list.map((s) => card(s, maxCtx)).join("")}</div>`;
+    html += `<h2 class="sec">${b} <span class="muted">${list.length}</span></h2><div class="wgrid">${list.map((s) => card(s, maxCtx, now)).join("")}</div>`;
   }
   html += `<h2 class="sec">Changes <label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></h2><div class="panel feed">${feed(now)}</div>`;
   const y = el.scrollTop;

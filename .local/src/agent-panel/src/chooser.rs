@@ -202,8 +202,7 @@ pub fn run_list(json: bool) -> Result<()> {
             ),
             None => (jsonl::fleet_info(Path::new("")), 0),
         };
-        // The last entry's own timestamp; the mtime only when no entry carries one.
-        let idle_since = info.last_entry.unwrap_or(mtime);
+        let idle_since = idle_since(info.last_entry, mtime, a.started_at);
         let row = serde_json::json!({
             "target": a.target,
             "pane": a.pane,
@@ -233,6 +232,16 @@ pub fn run_list(json: bool) -> Result<()> {
         println!("{row}");
     }
     Ok(())
+}
+
+/// The last entry's own timestamp; the mtime when no entry carries one; with no transcript at
+/// all, the process start, since the session cannot have been idle for longer than that.
+fn idle_since(last_entry: Option<u64>, mtime: u64, started_at: Option<u64>) -> u64 {
+    last_entry.unwrap_or(if mtime > 0 {
+        mtime
+    } else {
+        started_at.unwrap_or(0)
+    })
 }
 
 /// Jump to the next agent needing attention (`!` or a pending ask), else the next in the list.
@@ -333,6 +342,14 @@ fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_since_prefers_the_entry_then_the_mtime_then_the_process_start() {
+        assert_eq!(idle_since(Some(30), 20, Some(10)), 30);
+        assert_eq!(idle_since(None, 20, Some(10)), 20);
+        assert_eq!(idle_since(None, 0, Some(10)), 10);
+        assert_eq!(idle_since(None, 0, None), 0);
+    }
 
     #[test]
     fn extracts_target_token() {
