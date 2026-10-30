@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: "2026-10-30"
+  reviewed: 2026-10-30
 ---
 
 # fleet-overseer
@@ -125,7 +125,7 @@ One pass. It runs two ways, and only one acts at a time:
 3. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
 4. Skip every row whose `labels` holds `hands-off`: the human has it, so it is never messaged or escalated; list it in the report as hands-off. For each other DONE, LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
    - DONE: "Your plan is finished and nothing is open: every phase in `<plan_file>` is ticked or deferred. Stop any background shell you started, record board done with proof, then run /wind-down auto."
-   - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then ask the human in this conversation and file it with `agent-ask post --recommend <yours>`, giving that reason (it records your session itself)."
+   - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. Where the repo's CLAUDE.md groups phases that touch the same area (unity-core-playground does), put them on that one branch. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then ask the human in this conversation and file it with `agent-ask post --recommend <yours>`, giving that reason (it records your session itself)."
    - LANDED with no checklist (`phases_total` null, nothing merged yet): "No PR of yours has merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then start the first unchecked phase under the same /my:autopilot rules."
    - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
    - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Stop any run on this tree, merge origin/<base> into your branch, resolve it, and run your gate on the merged tree before anything else."
