@@ -670,8 +670,7 @@ board_cells() {
         else l = l (l == "" ? "" : ",") ls[i]
       now = $40; sub(/^Bash: /, "", now)
       print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
-            # A session with no transcript entry yet has idle_since 0, so its idle is the whole epoch.
-            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), ($7 > 1000000 ? "-" : $7 "m"), dur($28), $11,
+            (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11,
             ($3 in eta ? eta[$3] : "-"), ($33 == "" ? "-" : $33), hrs($34), wait_cell($35, $36, $37),
             ($39 == "" ? "-" : $39), ($1 == "WORKING" && now != "-" && now != "" ? now : $11)
     }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-

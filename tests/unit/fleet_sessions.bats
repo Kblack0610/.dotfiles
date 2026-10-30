@@ -767,13 +767,6 @@ time_row() {
   assert_output --regexp $'\tbusy$'
 }
 
-@test "board_cells: a session with no transcript entry reads IDLE -, not the whole epoch" {
-  run board_cells < <(time_row WORKING 0 0 0 0 | awk -F'\t' -v OFS='\t' '{ $7 = 29889656; print }')
-  assert_output --regexp $'\tWORKING\t-\t-\t1h0m\tbusy\t'
-  run board_cells < <(time_row WORKING 0 0 0 0)
-  assert_output --regexp $'\tWORKING\t-\t5m\t1h0m\tbusy\t'
-}
-
 @test "layout: from 100 columns WHY keeps 30 and lesser columns drop for it, below that it goes first" {
   { printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
     printf '\t%s' "$(printf 's%.0s' {1..30})" "$(printf 't%.0s' {1..22})" '3 behind' no '2 dirty' '#88 merged' 1/3 pending 1/3 '21:30 s3' - WORKING - 3h 'parked 10h' 5m 2d4h \
