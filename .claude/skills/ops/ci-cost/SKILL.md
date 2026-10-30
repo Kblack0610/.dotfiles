@@ -9,7 +9,7 @@ metadata:
 
 # CI cost
 
-Turns "CI is slow" into a measured list of where the runner minutes go, a ranked lever, one PR that pulls it, and a before/after number recorded where the next session will read it. On 2026-10-29 the playground pool spent about 36 runner-hours a day: about 20 on branch Multi dispatches that ran every class, 12 on merge gates whose EditMode job ran all 4,419 tests for a one-line change, and 4 on the nightly. None of that was visible until it was counted from run data. This skill is how it gets counted, and recounted after every change.
+Turns "CI is slow" into a measured list of where the runner minutes go, a ranked lever, one PR that pulls it, and a before/after number recorded where the next session will read it. On 2026-10-29 the playground pool spent 119 runner-hours a day, most of it on merge gates whose EditMode job ran all 4,419 tests for a one-line change, and a first estimate from a small sample had said 36. None of that was visible until it was counted from run data. This skill is how it gets counted, and recounted after every change.
 
 The repo doc is the source of truth for the findings and the history: `docs/operations/ci-cost.md` (cost model, levers, measured before/after log) and the script that reproduces its numbers, `scripts/test/ci-cost.py`. This file is only the procedure. When they disagree, the doc wins and this file gets fixed in the same turn.
 
@@ -31,11 +31,20 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
    - Unity fixed cost per launch: from a run's `editor.log` timestamps, launch to first test, then last test to process exit. Name the big phases (asset refresh, script compile, activation, domain reload) with their seconds.
    - Per-class durations and retry counts: the run's results artifacts (`durations.txt`, the suite summary's FAIL, FLAKY, ONMAIN and solo-run lines).
    - Unity measurements on the workstation only when `agent-hold list` shows no `unity` hold.
+   - Check a surprising zero or a missing host against a raw job before quoting it: on 2026-10-30 the script read 16.5 pool hours for a real 95.6 because a label had changed under it.
+   - A window ending now reads low while runs are still going. Read the before window again with `--before` rather than copying an old number: the baseline's 101.7 was 119.4 once its runs had finished.
 3. **Attribute.** Put every minute in one bucket: which workflow and trigger (nightly, gate, branch dispatch, release), then fixed per-launch cost, per-test cost, over-picking (classes picked that the change cannot affect), retries and solo reruns, or a slow test. Check and rule out the cheap suspects too, and write the ruled-out list down so the next pass does not redo it.
 4. **Rank levers** by runner-hours saved per day: minutes saved per run times runs per day that the lever touches. A big saving on a rare run loses to a small one on every gate. Note the floor (a Unity launch costs about a minute however little it runs) so targets stay honest.
 5. **Change one lever per PR.** Each PR carries a test of the new behavior and a negative control (revert the guard, watch the test fail). A picker change ships with a `test_affected_classes.py` case for each rule, plus a replay of past gate picks showing pick sizes before and after and that no class that went red in those runs falls out of its pick.
-6. **Re-measure the same way** after it lands, with the same script and the same window length, and append the before/after row to `docs/operations/ci-cost.md`. An estimate in a plan is replaced by the measured number, never left standing.
-7. **File the next lever** on the agent board (`notes ptask <project> --agent add "ci cost: <lever>" '#tier/3'`), checking for an existing row first.
+6. **Re-measure the same way** after it lands, with `scripts/test/ci-cost.py --days N --before <end of the before window>`, and append the before/after row to `docs/operations/ci-cost.md`. An estimate in a plan is replaced by the measured number, never left standing.
+7. **Report in this shape**, whenever the user asks how CI is doing or what a change bought:
+   1. The answer in one or two sentences, including what got worse.
+   2. One table from `--before`: metric, before, after, and a column for what the plan expected. Keep the rows it prints: pool and gate runner-hours, gate wall, runner-minutes, EditMode, PlayMode, queue, Multi on a branch, nightly.
+   3. A second table of decisions: each one with its PR and what it measured, including what was dropped or deferred and why.
+   4. What makes the windows not comparable: slots, routing, gate count, load, runs still going, one night against one night.
+   5. What has not been measured yet, and the next lever.
+   Say which change caused a number only if that lever was measured alone.
+8. **File the next lever** on the agent board (`notes ptask <project> --agent add "ci cost: <lever>" '#tier/3'`), checking for an existing row first.
 
 ## House rules
 
