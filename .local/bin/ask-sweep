@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# ask-sweep: the nightly catch for work that fell off, called from agentctl-dream. A session files
+# what did not land when it winds down; this finds what still slipped past that.
+#
+#   ask-sweep run [--dry-run] [--date YYYY-MM-DD]   file rows; default date is yesterday
+#   ask-sweep report                                the one line the morning briefing prints
+#
+# Plans: a plan with unticked phases, no live session and no change for a day gets one row, keyed
+# by its slug so it is never filed twice. No model. Plans older than the first run are not
+# back-filled. A plan with no checklist and no Results is only counted, since many of those landed.
+# Asks: one model call over the date's human messages from sessions that have gone quiet, matched
+# against open rows and merged PRs. A session still live at 03:00 is left to its own wind-down.
+# It never closes a row, and files at most ASK_SWEEP_MAX rows a night, reporting the rest as a count.
+set -uo pipefail
+
+: "${ASK_SWEEP_DIR:=$HOME/.agent/ask-sweep}"
+: "${ASK_SWEEP_PLANS:=$HOME/.claude/plans}"
+: "${ASK_SWEEP_PLAN_CACHE:=$HOME/.agent/plans}"
+: "${ASK_SWEEP_TRANSCRIPTS:=$HOME/.claude/projects}"
+: "${ASK_SWEEP_REPOS:=unity-core-playground}"   # repos whose messages are read: work repos stay out
+: "${ASK_SWEEP_BOARD:=unity-playground}"        # the board those asks and the report's counts use
+: "${ASK_SWEEP_PR_REPO:=}"                      # owner/name whose merged PRs count as delivered; the caller sets it
+: "${ASK_SWEEP_MAX:=15}"
+: "${ASK_SWEEP_MSG_BYTES:=70000}"
+: "${ASK_SWEEP_QUIET_MIN:=60}"                  # a transcript written this recently is a live session
+: "${ASK_SWEEP_CMD:=agentctl-run --role observe}"
+
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+SHARED_HOOKS="$HOME/.config/shared-hooks"
+# shellcheck source=/dev/null
+[ -f "$SHARED_HOOKS/project-name.sh" ] && . "$SHARED_HOOKS/project-name.sh"
+
+DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0
+
+say() { printf 'ask-sweep: %s\n' "$*" >&2; }
+ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
+sig() { sha256sum | cut -c1-12; }
+
+# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed.
+file_row() {
+  local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
+  local board="$1" text="$2"
+  if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
+  FILED=$((FILED + 1))
+  if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
+  notes ptask "$board" "${lane[@]}" add "$text" >/dev/null 2>&1
+}
+
+board_of() {
+  local b=""
+  declare -F project_lab_names >/dev/null && b="$(project_lab_names "$1" 2>/dev/null | head -1)"
+  printf '%s' "${b:-$1}"
+}
+
+sweep_plans() {
+  local first live f slug done_n total next project board
+  first="$ASK_SWEEP_DIR/first-run"
+  # The first real run only starts the clock, and a dry run before it has nothing to report.
+  if [ ! -f "$first" ]; then
+    [ "$DRY" = 1 ] || touch "$first"
+    return 0
+  fi
+  live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty' 2>/dev/null)"
+  while IFS= read -r -d '' f; do
+    [ "$f" -ot "$first" ] && continue
+    IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
+    slug="$(basename "$f" .md)"
+    if [ "$total" = - ]; then
+      grep -qi '^## results' "$f" || PLANS_UNCHECKED=$((PLANS_UNCHECKED + 1))
+      continue
+    fi
+    [ "$done_n" -lt "$total" ] || continue
+    PLANS_OPEN=$((PLANS_OPEN + 1))
+    grep -qxF "$f" <<<"$live" && continue
+    grep -qxF "$slug" "$ASK_SWEEP_DIR/plans-filed" 2>/dev/null && continue
+    project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
+    [ -n "$project" ] || continue
+    board="$(board_of "$(basename "$project")")"
+    if notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug"; then
+      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
+      continue
+    fi
+    if file_row "$board" "finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #ask #tier/2"; then
+      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
+    fi
+  done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
+}
+
+# human_messages <date>: what the human typed that day, one JSON string per message.
+human_messages() {
+  local date="$1" repo d f
+  for repo in $ASK_SWEEP_REPOS; do
+    for d in "$ASK_SWEEP_TRANSCRIPTS"/*"$repo"*/; do
+      [ -d "$d" ] || continue
+      while IFS= read -r -d '' f; do
+        jq -c --arg date "$date" '
+          select(.type == "user" and (.isSidechain | not) and (.isMeta | not)
+            and ((.timestamp // "") | startswith($date)))
+          | .message.content
+          | if type == "array" then
+              if any(.[]; .type? == "tool_result") then empty
+              else map(select(.type? == "text") | .text) | join(" ") end
+            else . end
+          | select(type == "string") | gsub("^\\s+"; "")
+          | select(startswith("<") or startswith("Base directory") or startswith("This session")
+              or contains("system-reminder") or startswith("[Request interrupted") | not)
+          | select(length > 0) | .[0:800]' "$f" 2>/dev/null
+      done < <(find "$d" -maxdepth 1 -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -print0 2>/dev/null)
+    done
+  done | awk '!seen[$0]++'
+}
+
+sweep_asks() {
+  local date="$1" msgs open_rows prs prompt wd out rc line quote text state tier size done_is key tags
+  msgs="$(human_messages "$date")"
+  [ -n "$msgs" ] || return 0
+  # The prompt is one argument, and Linux limits one argument to 128 KB.
+  [ "${#msgs}" -le "$ASK_SWEEP_MSG_BYTES" ] || { say "messages cut to $ASK_SWEEP_MSG_BYTES bytes of ${#msgs}"; msgs="${msgs:0:$ASK_SWEEP_MSG_BYTES}"; }
+  open_rows="$({ notes ptask "$ASK_SWEEP_BOARD" --agent list 2>/dev/null; notes ptask "$ASK_SWEEP_BOARD" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
+  prs="$(gh pr list --repo "$ASK_SWEEP_PR_REPO" --state merged --limit 200 \
+    --search "merged:>=$date" --json title -q '.[].title' 2>/dev/null)"
+  prompt="You find what a person asked for that no one recorded. Below are their messages to coding agents on $date, the board's open rows and the PRs merged since.
+
+List each separate thing they asked to have built or changed that NO open row and NO merged PR covers. Match by meaning, not wording: a reworded row counts as covered, and when unsure treat it as covered. Leave out questions, reactions, instructions about how to work, one-off commands, anything they later rejected, and anything they called future or not wanted.
+
+For each one, one JSON object per line, between a line ASK-SWEEP-START and a line ASK-SWEEP-END, nothing else between them:
+{\"quote\": \"<their words, short>\", \"row\": \"<what to do, plain ASCII, under 150 characters>\", \"tier\": 1|2|3, \"size\": \"S|M|L\", \"done_is_stated\": true|false, \"human_only\": true|false}
+tier: 2 is ordinary game code, 3 is CI, build, tooling or dependencies. human_only: only a person can do it (a purchase, a playtest, a decision). done_is_stated: the row says how anyone would know it is finished.
+
+## Messages
+$msgs
+
+## Open rows
+$open_rows
+
+## Merged PRs
+$prs"
+  wd="$(mktemp -d)"
+  # shellcheck disable=SC2086 # a word list by design, overridable in tests
+  # An empty directory, so no repo's Stop hook answers in place of the model.
+  out="$(cd "$wd" && $ASK_SWEEP_CMD -p "$prompt" 2>/dev/null)"; rc=$?
+  rm -rf -- "$wd"
+  [ "$rc" = 0 ] || { say "model call failed"; return 1; }
+  grep -qx 'ASK-SWEEP-START' <<<"$out" || { say "model returned no answer block"; return 1; }
+  while IFS= read -r line; do
+    jq -e 'type == "object" and (.row | type) == "string" and (.quote | type) == "string"' <<<"$line" >/dev/null 2>&1 || continue
+    quote="$(jq -r .quote <<<"$line" | ascii 80)"
+    text="$(jq -r .row <<<"$line" | ascii 150)"
+    tier="$(jq -r '.tier // 3 | floor' <<<"$line" 2>/dev/null)"; [[ "$tier" =~ ^[123]$ ]] || tier=3
+    size="$(jq -r '.size // "L"' <<<"$line")"
+    done_is="$(jq -r '.done_is_stated // false' <<<"$line")"
+    state="$(jq -r '.human_only // false' <<<"$line")"
+    [ -n "$text" ] || continue
+    # The same words on a later night, or the same night run twice, are never filed again.
+    key="$(printf '%s' "$quote" | tr '[:upper:]' '[:lower:]' | sig)"
+    grep -qxF "$key" "$ASK_SWEEP_DIR/asks-filed" 2>/dev/null && continue
+    tags="#ask #tier/$tier"
+    [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$state" != true ] && tags+=" #worker/asks"
+    if [ "$state" = true ]; then
+      file_row --sheet "$ASK_SWEEP_BOARD" "$text; asked ${date:5} \"$quote\" #low" || continue
+    else
+      file_row "$ASK_SWEEP_BOARD" "$text; asked ${date:5} \"$quote\" $tags" || continue
+    fi
+    [ "$DRY" = 1 ] || echo "$key" >> "$ASK_SWEEP_DIR/asks-filed"
+  done < <(sed -n '/^ASK-SWEEP-START$/,/^ASK-SWEEP-END$/p' <<<"$out" | sed '1d;$d')
+}
+
+cmd_run() {
+  local date rc=0
+  date="$(date -d yesterday +%F)"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY=1; shift ;;
+      --date) date="${2:-}"; shift 2 ;;
+      *) say "unknown argument: $1"; return 2 ;;
+    esac
+  done
+  mkdir -p "$ASK_SWEEP_DIR"
+  sweep_plans
+  sweep_asks "$date" || rc=1
+  [ "$DRY" = 1 ] || printf '%s\t%s\t%s\t%s\n' "$FILED" "$OVER" "$PLANS_OPEN" "$PLANS_UNCHECKED" > "$ASK_SWEEP_DIR/last"
+  say "$date: filed $FILED, over the cap $OVER, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED"
+  return "$rc"
+}
+
+cmd_report() {
+  local rows queue asks filed=0 over=0 open=0 unchecked=0
+  rows="$(notes ptask "$ASK_SWEEP_BOARD" --agent list 2>/dev/null | cut -f4)"
+  queue="$(grep -c '#worker/asks' <<<"$rows")"
+  asks="$(grep -c '#ask' <<<"$rows")"
+  [ -f "$ASK_SWEEP_DIR/last" ] && IFS=$'\t' read -r filed over open unchecked < "$ASK_SWEEP_DIR/last"
+  printf 'asks: %s in downtime queue, %s waiting to be scoped, %s filed last night' \
+    "$queue" "$((asks - queue))" "$filed"
+  [ "$over" -gt 0 ] && printf ' (%s more over the cap)' "$over"
+  printf '; plans: %s unfinished, %s with no checklist\n' "$open" "$unchecked"
+}
+
+main() {
+  case "${1:-}" in
+    run) shift; cmd_run "$@" ;;
+    report) cmd_report ;;
+    *) sed -n '2,6p' "$0" >&2; return 2 ;;
+  esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
