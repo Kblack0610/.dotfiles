@@ -181,6 +181,45 @@ EOF
   assert_output --partial '[agent-runtime] runtime row one'
 }
 
+# board_stub <asks> <others>: a notes stub whose agent board holds follow-up rows first, then asks.
+board_stub() {
+  cat > "$SANDBOX/bin/notes" <<EOF
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "board --agent" ]; then
+  for i in \$(seq 1 $2); do printf 'notes-cockpit\tfollow-up %s\n' "\$i"; done
+  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #ask #tier/2\n' "\$i"; done
+fi
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+}
+
+@test "asks lead the agent board, at most 8, so in-flight rows still show" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  board_stub 20 12
+
+  run context
+  assert_success
+  [ "$(grep -c 'the ask ' <<<"$output")" -eq 8 ]
+  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 7 ]
+  [ "$(grep -m1 -n 'the ask 1 ' <<<"$output" | cut -d: -f1)" -lt "$(grep -m1 -n 'follow-up 1$' <<<"$output" | cut -d: -f1)" ]
+  assert_output --partial '+17 more'
+}
+
+@test "spare room on the agent board goes to the asks left over" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  board_stub 20 2
+
+  run context
+  assert_success
+  [ "$(grep -c 'the ask ' <<<"$output")" -eq 13 ]
+  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 2 ]
+}
+
 @test "the agent lane joins through trackers.repo, NOT the directory name" {
   # The whole point. The project resolves to `toolrepo`; its board projects are named
   # something else entirely. A directory-name join asks for the wrong thing and finds

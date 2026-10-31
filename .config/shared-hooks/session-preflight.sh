@@ -231,7 +231,15 @@ CONTEXT=$(
       if [ -n "$AGENT_ALL" ]; then
         agent_total=$(printf '%s\n' "$AGENT_ALL" | grep -c . || true)
         echo "📥 Left in flight on this repo's agent board:"
-        printf '%s\n' "$AGENT_ALL" | head -15 | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+        # The human's asks first, at most 8, so a backlog of asks never hides the in-flight rows a
+        # session needs to resume. Sheet order otherwise; spare room goes to the asks left over.
+        printf '%s\n' "$AGENT_ALL" | awk -F'\t' -v max=15 -v asks=8 '
+          $2 ~ /(^| )#ask( |$)/ { if (shown < asks) { print; shown++ } else extra[++e] = $0; next }
+          { rest[++r] = $0 }
+          END {
+            for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }
+            for (i = 1; i <= e && shown < max; i++) { print extra[i]; shown++ }
+          }' | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         [ "${agent_total:-0}" -gt 15 ] && echo "  … +$((agent_total - 15)) more — \`notes board\` for the rest"
