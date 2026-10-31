@@ -70,6 +70,45 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'closed_reason: session ended (prompt_input_exit)'
 }
 
+@test "an ask its session left unanswered lands on the agent board as a plain row" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"
+  run bash "$SETTLE" stale <<<'{"session_id":"sid-2","reason":"other"}'
+  assert_success
+  assert_called "ptask demo --agent add unanswered ask $a: ship it?"
+  assert_not_called '#ask'
+}
+
+@test "an ask that expires lands on the agent board too" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
+  sed -i -E 's/^created: .*/created: 2026-01-01T00:00:00+0000/' "$HOME"/.agent/asks/demo/*
+  run "$AGENT_ASK" expire --days 14
+  assert_success
+  assert_called "ptask demo --agent add unanswered ask $a: ship it?"
+}
+
+@test "an answered ask, a cancelled ask and a shipped wave file no row" {
+  local a b c
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'one?')"
+  b="$("$AGENT_ASK" post --project demo 'two?')"
+  c="$("$AGENT_ASK" post --project demo 'three?')"
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes"}'
+  "$AGENT_ASK" cancel "$b" 'on the human sheet' 2>/dev/null
+  "$AGENT_ASK" stale "$c" 'wave v1 shipped' 2>/dev/null
+  assert_not_called 'unanswered ask'
+}
+
+@test "a board that refuses the row does not stop the ask going stale" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/notes"
+  run bash "$SETTLE" stale <<<'{"session_id":"sid-2","reason":"other"}'
+  assert_success
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: stale'
+}
+
 @test "the settle hook never fails its caller" {
   run bash "$SETTLE" answered <<<'not json'
   assert_success

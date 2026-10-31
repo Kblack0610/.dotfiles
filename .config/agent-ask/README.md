@@ -50,7 +50,7 @@ agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
 agent-ask answer <id> <answer...>            record answer; status->answered; fire agent-notify
 agent-ask cancel <id>                        status->cancelled
-agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks)
+agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); stale files the question on the agent board as a plain row, and so does expire
 ```
 
 ## Ask file schema

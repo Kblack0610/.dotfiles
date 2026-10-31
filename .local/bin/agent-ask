@@ -358,6 +358,27 @@ deliver_to_session() {
     tmux -L "$server" send-keys -t "$pane" Enter 2>/dev/null || true
 }
 
+# file_stale_row <ask file>: an ask nobody answered is still an open question, and the ask file is
+# about to leave every queue. Put it on the agent board as a plain row: #ask is for the human's
+# own words, and this is an agent's question. Only
+# a session ending and an ask expiring come here; a wave shipping past an ask means it was decided.
+# Runs inside SessionEnd, so it fails silently. 2026-10-30: ask ZFBwVg held a 352-ask audit and
+# went stale when its session closed, with no row anywhere.
+file_stale_row() {
+  local f="$1" project profile board q
+  project="$(field "$f" project)"; profile="$(field "$f" profile)"
+  [ -n "$project" ] || return 0
+  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SHARED_HOOKS/project-name.sh"
+    board="$(project_lab_names "$project" 2>/dev/null | head -1)"
+  fi
+  # Boards are plain ASCII, and a # in the question would read as a tag.
+  q="$(field "$f" question | tr -cd ' -~' | tr -d '#' | cut -c1-160)"
+  notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
+    "unanswered ask $(field "$f" id): $q" >/dev/null 2>&1 || true
+}
+
 # settle-session <claude_session> answered|stale [text...]: close every pending ask that session
 # owns. The UserPromptSubmit hook calls it with `answered` (the human typed into the session,
 # which is the answer) and the SessionEnd hook with `stale` (nobody is left to act on it).
@@ -377,6 +398,7 @@ cmd_settle_session() {
       set_field "$f" status stale
       set_field "$f" closed_at "$(now_iso)"
       set_field "$f" closed_reason "${text:-session ended}"
+      file_stale_row "$f"
     fi
     n=$((n + 1))
   done < <(ask_files --all)
@@ -424,6 +446,7 @@ cmd_expire() {
     [ "$c" -lt "$cutoff" ] || continue
     id="$(field "$f" id)"
     close_ask stale "$id" "no answer in ${days}d" 2>/dev/null || continue
+    file_stale_row "$f"
     cmd_list --all --stale | awk -F'\t' -v id="$id" '$1 == id'
   done < <(ask_files --all)
 }
