@@ -611,6 +611,22 @@ make_squash_candidate() {
   assert_output 'a Unity editor has it open'
 }
 
+@test "a running process inside the worktree pins it" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  export WT_PROC_ROOT="$SANDBOX/proc"
+  mkdir -p "$WT_PROC_ROOT/100" "$WT_PROC_ROOT/200" "$WT_PROC_ROOT/300"
+  ln -s "$SANDBOX" "$WT_PROC_ROOT/100/cwd"
+  ln -s "$WT_ROOT/repo-agent-10" "$WT_PROC_ROOT/200/cwd"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+
+  ln -s "$WT_ROOT/repo-agent-1/Assets/Tests" "$WT_PROC_ROOT/300/cwd"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output 'a running process is inside it'
+}
+
 @test "an editor on ANOTHER project does not pin the worktree" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
