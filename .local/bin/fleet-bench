@@ -48,6 +48,7 @@ set -uo pipefail
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
+: "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_REVIEW_MAX:=5}"           # PRs one review pass reads, at most one per session
 : "${BENCH_REVIEW_MAX_LINES:=2000}"  # diff lines the reviewer model holds with room to reason
 : "${BENCH_REVIEW_TIMEOUT_S:=900}"   # guard on each reviewer call
@@ -461,6 +462,8 @@ cmd_scorecard() {
     echo
     depth_section "$t"
     echo
+    session_time_section "$t"
+    echo
     echo "## ETA accuracy"
     echo
     echo "Error is actual finish minus predicted (positive ran long). Ratio is actual over predicted duration."
@@ -566,6 +569,24 @@ depth_section() {
              | "| \(.target) | \($a.test_runs) | \(if (.prs_merged // 0) > 0 then $a.test_runs / .prs_merged | round1 else "-" end) | \($a.ci_polls) | \($a.tool_calls) | "
                + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages) | \($a.tokens / 1000000 | round1) | "
                + "\(if (.edits // 0) > 0 and $a.tokens > 0 then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
+      end'
+}
+
+# session_time_section <now>: per project, where the hours of human sessions went, from `agent-panel
+# time-use` by way of the nightly. Whole sessions: a long one counts all its hours the week it ends.
+session_time_section() {
+  echo "## Session time"
+  echo
+  echo "Whole sessions the nightly saw in the last $BENCH_TIME_DAYS days, hours by what was running, counted from the transcript's structure. Gate and test are commands named in ~/.config/agent-panel/time-use.conf; jobs is anything else running; parked is nothing running."
+  echo
+  outcomes_newest | jq -rs --argjson since $(( $1 - BENCH_TIME_DAYS * 86400 )) "$JQ_LIB"'
+    def h($k): map(.time_use[$k]) | add / 60 | round1;
+    map(select(.time_use != null and .runner != true and .project != "_runner" and .updated_epoch >= $since))
+    | group_by(.project) | sort_by(-(map(.time_use | add) | add))
+    | if length == 0 then "_No session has a time split from the nightly in this window yet._"
+      else ("| Project | Sessions | Work h | Gate h | Test h | Other jobs h | You h | Parked h |",
+            "|---|---|---|---|---|---|---|---|",
+            (.[] | "| \(.[0].project) | \(length) | \(h("work_min")) | \(h("gate_min")) | \(h("test_min")) | \(h("jobs_min")) | \(h("human_min")) | \(h("parked_min")) |"))
       end'
 }
 

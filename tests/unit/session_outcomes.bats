@@ -237,6 +237,29 @@ EOF
   assert_output '3 0'
 }
 
+@test "time use: the row carries what agent-panel prints, and null when it cannot say" {
+  cat > "$SANDBOX/panel" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = time-use ] || exit 2
+case "$2" in
+  */a.jsonl) echo '{"work_min":5,"gate_min":60,"test_min":7,"jobs_min":1,"human_min":2,"parked_min":3}' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$SANDBOX/panel"
+  AGENT_PANEL="$SANDBOX/panel" "$SUBJECT" run
+  run jq -sc 'map(select(.session_id == "sess-a"))[0].time_use | [.gate_min, .test_min, .parked_min]' "$SO_OUT/proj/2026-10.jsonl"
+  assert_output '[60,7,3]'
+  run jq -s '[.[] | select(.session_id != "sess-a" and .time_use != null)] | length' "$SO_OUT/proj/2026-10.jsonl"
+  assert_output '0'
+}
+
+@test "time use: a panel that is not installed leaves the field null and the run still writes" {
+  AGENT_PANEL="$SANDBOX/no-such-panel" "$SUBJECT" run
+  run jq -sc 'map(select(.session_id == "sess-a"))[0] | [.time_use, .transcript]' "$SO_OUT/proj/2026-10.jsonl"
+  assert_output '[null,true]'
+}
+
 @test "worst ranks the reverted session first and leaves A out" {
   "$SUBJECT" run
   run "$SUBJECT" worst --project proj --days 7 -n 5

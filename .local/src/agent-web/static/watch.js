@@ -74,7 +74,7 @@ function tiles(sessions, state) {
 
 // A session's closed time by what it waited on (fleet-states.md). The line under the bar carries
 // the numbers, in the bar's order, so the colours are only a shape to scan.
-const TIME_PARTS = [["work", "work_min", "var(--c1)"], ["jobs", "jobs_min", "var(--c2)"], ["you", "human_min", "var(--c3)"], ["parked", "parked_min", "var(--c4)"]];
+const TIME_PARTS = [["work", "work_min", "var(--c1)"], ["gate", "gate_min", "var(--c5)"], ["test", "test_min", "var(--c6)"], ["jobs", "jobs_min", "var(--c2)"], ["you", "human_min", "var(--c3)"], ["parked", "parked_min", "var(--c4)"]];
 
 function timeUse(t) {
   const parts = TIME_PARTS.map(([label, key, color]) => ({ label, color, min: (t && t[key]) || 0 })).filter((p) => p.min);
