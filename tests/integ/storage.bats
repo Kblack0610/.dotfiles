@@ -64,10 +64,28 @@ case "$args" in
   case "$last" in "$FAKE_DATA"*) echo /mnt/data ;; *) echo /home ;; esac ;;
 *"--mountpoint"*)
   if [ "$last" = /mnt/data ]; then echo ro,relatime; else echo rw,relatime; fi ;;
+*"-t autofs"*)
+  [ -n "${FAKE_AUTOFS:-}" ] && printf '%s\n' $FAKE_AUTOFS ;;
 *"-t "*)
   [ -n "${FAKE_NAS:-}" ] && printf '%s //nas/share\n' "$FAKE_NAS" ;;
 esac
 exit 0
+EOF
+
+  cat >"$SANDBOX/bin/systemd-escape" <<'EOF'
+#!/usr/bin/env bash
+printf '%s.mount\n' "${!#}"
+EOF
+
+  # Behind a trigger: a CIFS share, unless the path says it is the kernel's binfmt one.
+  cat >"$SANDBOX/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+unit="${!#}"
+case "$3:$unit" in
+Type:*binfmt*) echo binfmt_misc ;;
+Type:*) echo cifs ;;
+What:*) echo "//nas/idle" ;;
+esac
 EOF
 
   cat >"$SANDBOX/bin/df" <<'EOF'
@@ -88,7 +106,7 @@ EOF
 [ "$*" = "gc --dry-run" ] || exit 1
 printf 'would reap  wt-a\nkept        wt-b                         dirty\n'
 EOF
-  chmod +x "$SANDBOX/bin/"{lsblk,findmnt,df,wt}
+  chmod +x "$SANDBOX/bin/"{lsblk,findmnt,df,wt,systemd-escape,systemctl}
 
   mkdir -p "$HOME/trees/wt-a" "$HOME/trees/wt-b" "$HOME/stuff" "$FAKE_DATA/games"
   head -c 3145728 /dev/zero >"$HOME/trees/wt-a/blob"
@@ -220,6 +238,22 @@ field() { awk -F'\t' -v l="$1" -v f="$2" '$2 == l { print $f }'; }
 @test "a network mount that answers is sized" {
   FAKE_NAS=/mnt/nas run "$STORAGE" overview
   assert_output --regexp '//nas/share +1\.9T  /mnt/nas .* 70%  559G free'
+}
+
+@test "an idle automounted share is still listed and sized" {
+  FAKE_AUTOFS=/mnt/idle run "$STORAGE" overview
+  assert_output --regexp '//nas/idle +1\.9T  /mnt/idle .* 70%  559G free'
+}
+
+@test "an automount in use is listed once" {
+  FAKE_NAS=/mnt/nas FAKE_AUTOFS=/mnt/nas run "$STORAGE" overview
+  [ "$(grep -c '/mnt/nas ' <<<"$output")" -eq 1 ] || fail "expected one /mnt/nas row: $output"
+  refute_output --partial '//nas/idle'
+}
+
+@test "an automount that is not a network share is not listed" {
+  FAKE_AUTOFS=/proc/sys/fs/binfmt_misc run "$STORAGE" overview
+  refute_output --partial 'binfmt_misc'
 }
 
 @test "reclaim runs nothing unless the answer is y" {
