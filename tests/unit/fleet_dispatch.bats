@@ -149,6 +149,34 @@ verdict() {
   assert_output ''
 }
 
+@test "candidates: the asks worker takes only #ask rows, only in its project, never tier 3" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  export DISPATCH_WORKER=asks
+  echo '{"asks": {"max_tier": 9, "projects": ["game"], "only_tag": "ask"}}' > "$DISPATCH_WORKERS"
+  row game agent 'real ask' '- [ ] real ask #ask #worker/asks #tier/2'
+  row game agent 'tagged no ask' '- [ ] tagged no ask #worker/asks #tier/2'
+  row game agent 'lookalike' '- [ ] lookalike #asks #worker/asks #tier/2'
+  row game agent 'tier three' '- [ ] tier three #ask #worker/asks #tier/3'
+  row game agent 'other worker' '- [ ] other worker #ask #worker/fleet #tier/1'
+  row app agent 'wrong project' '- [ ] wrong project #ask #worker/asks #tier/2'
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'real ask'
+}
+
+@test "candidates: a worker with no projects or only_tag is unlimited by them" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game agent 'one' "- [ ] one $T"
+  row app agent 'two' "- [ ] two $T"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'one,two'
+}
+
 @test "candidates: a verdict from an older policy, or for the row's older text, is judged again" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'stale policy' "- [ ] stale policy $T"

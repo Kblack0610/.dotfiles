@@ -3,5 +3,12 @@
     "runner": "fleet-dispatch",
     "what": "/one-shot in a detached lab session on the workstation",
     "max_tier": 1
+  },
+  "asks": {
+    "runner": "fleet-dispatch-asks",
+    "what": "/one-shot on an #ask row the human already decided, game work only",
+    "max_tier": 2,
+    "projects": ["unity-playground"],
+    "only_tag": "ask"
   }
 }
