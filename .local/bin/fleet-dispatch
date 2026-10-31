@@ -9,8 +9,10 @@
 #       (--brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--row KEY])
 #                                    start ONE session the way every agent must: see cmd_start
 #
-# A row is only a candidate when the human ASSIGNED it: `#worker/<DISPATCH_WORKER>` plus a
-# `#tier/N` within that worker's max_tier in workers.json (tier meanings: policy.md).
+# A row is only a candidate when it is ASSIGNED: `#worker/<DISPATCH_WORKER>` plus a `#tier/N`
+# within that worker's max_tier in workers.json (tier meanings: policy.md), and inside the
+# worker's `projects` and `only_tag` when it names them. The human assigns `fleet` rows; agents
+# may assign `asks` rows, which must carry `#ask`.
 # Facts are code; the judgment (is this row small, clear, agent-only and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and
@@ -98,6 +100,16 @@ max_tier() {
   [[ "$t" =~ ^[0-9]+$ ]] || t=0
   [ "$t" -gt "$UNATTENDED_TIER_CEILING" ] && t=$UNATTENDED_TIER_CEILING
   echo "$t"
+}
+
+# worker_takes <project> <row text> -> 0 when workers.json lets this worker take the row. A worker
+# may name `projects` it is limited to and an `only_tag` every row it takes must carry.
+worker_takes() {
+  local tag
+  jq -e --arg w "$DISPATCH_WORKER" --arg p "$1" '(.[$w].projects // [$p]) | index($p)' \
+    "$DISPATCH_WORKERS" >/dev/null 2>&1 || return 1
+  tag=$(jq -r --arg w "$DISPATCH_WORKER" '.[$w].only_tag // empty' "$DISPATCH_WORKERS" 2>/dev/null)
+  [ -z "$tag" ] || [[ " $2 " == *" #$tag "* ]]
 }
 
 sig() { sha256sum | cut -c1-12; }
@@ -192,6 +204,7 @@ cmd_candidates() {
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
           [ "$(tag_value "$text" worker)" = "$DISPATCH_WORKER" ] || continue
+          worker_takes "$name" "$text" || continue
           tier=$(row_tier "$text")
           [ -n "$tier" ] && [ "$tier" -le "$max" ] || continue
           line=$(printf '%s' "$text" | sig)
