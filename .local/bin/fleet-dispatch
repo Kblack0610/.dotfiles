@@ -432,9 +432,11 @@ cmd_reap() {
 
 # gate -> why this pass must not start anything, or nothing when it may
 gate() {
-  local load cores
+  local load cores infra
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
   fleet-assess --watch-probe >/dev/null 2>&1 || { echo "fleet-assess says HOLD"; return; }
+  # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
+  infra="$(fleet-shepherd infra 2>/dev/null)" && { echo "$infra"; return; }
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   awk -v l="${load:-0}" -v c="$cores" -v m="$DISPATCH_MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&

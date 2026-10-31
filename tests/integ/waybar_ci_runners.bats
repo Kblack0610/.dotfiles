@@ -3,7 +3,7 @@
 # exporter's series, the same ones command-center.sh reads. What these pin: the bar's
 # busy/slots and queue are the board header's totals (pools plus local gates); its colour
 # is the ci domain status rule, never its own judgement; the hover names which runner on
-# which machine runs which PR; and an unreadable Prometheus shows `CI ?`, never the last
+# which machine runs which PR; and an unreadable Prometheus shows `CI: prom down`, never the last
 # numbers.
 
 setup() {
@@ -205,10 +205,10 @@ PY2
   assert_output --partial "exporter cannot reach GitHub, numbers may be old"
 }
 
-@test "Prometheus unreadable: CI ? in red and no numbers at all" {
+@test "Prometheus unreadable: CI: prom down in red and no numbers at all" {
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ef5734'>CI ?</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ef5734'>CI: prom down</span>"
   assert_equal "$(jq -r .class <<< "$output")" critical
   refute_output --partial "5/16"
 }
