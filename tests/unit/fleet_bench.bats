@@ -721,6 +721,38 @@ kpi_fixture() {
   assert_line --index 3 '## Where the time went'
   assert_line --index 4 '## Sessions'
   assert_line --index 5 '## Agent depth'
+  assert_line --index 6 '## Session time'
+}
+
+@test "scorecard session time: hours per project, biggest first, human sessions the nightly saw this week" {
+  kpi_setup
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  mkdir -p "$BENCH_OUTCOMES_DIR/tools" "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/idle" "$BENCH_OUTCOMES_DIR/_runner"
+  local u='{work_min: 60, gate_min: 120, test_min: 30, jobs_min: 6, human_min: 12, parked_min: 18}'
+  out_row tools "{session_id: \"t1\", project: \"tools\", updated_epoch: (\$t - 86400), time_use: $u}"
+  out_row game "{session_id: \"g1\", project: \"game\", updated_epoch: (\$t - 86400), time_use: $u}"
+  out_row game "{session_id: \"g2\", project: \"game\", updated_epoch: (\$t - 172800), time_use: $u}"
+  # None of these count: too old, headless twice over, and a row from before the field.
+  out_row game "{session_id: \"g3\", project: \"game\", updated_epoch: (\$t - 864000), time_use: $u}"
+  out_row game "{session_id: \"r1\", project: \"game\", runner: true, updated_epoch: (\$t - 86400), time_use: $u}"
+  out_row _runner "{session_id: \"r2\", project: \"_runner\", updated_epoch: (\$t - 86400), time_use: $u}"
+  out_row idle '{session_id: "i1", project: "idle", updated_epoch: ($t - 86400), time_use: null}'
+  "$SUBJECT" scorecard
+  run bash -c "sed -n '/^## Session time/,/^## /p' \"\$1\" | grep '^| '" _ "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 0 '| Project | Sessions | Work h | Gate h | Test h | Other jobs h | You h | Parked h |'
+  assert_line --index 1 '| game | 2 | 2 | 4 | 1 | 0.2 | 0.4 | 0.6 |'
+  assert_line --index 2 '| tools | 1 | 1 | 2 | 0.5 | 0.1 | 0.2 | 0.3 |'
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "scorecard session time: says so when no row has it yet" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## Session time/,/^## /p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '_No session has a time split from the nightly in this window yet._'
 }
 
 # --- findings: the 2026-10-29 outage replayed. A is 06:00 PDT, the start of the recorded day.

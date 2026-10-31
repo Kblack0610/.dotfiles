@@ -91,8 +91,10 @@ cmd_run() {
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
       so_transcript_metrics "$tr" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
+      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null' > "$work/t.$sid.json"
     else
       printf 'null' > "$work/m.$sid.json"
+      printf 'null' > "$work/t.$sid.json"
     fi
     n=$((n + 1))
   done < "$work/due.jsonl"
@@ -118,7 +120,7 @@ cmd_run() {
   : > "$work/lines.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
-    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --arg observed "$observed" '
+    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" --arg observed "$observed" '
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
@@ -146,7 +148,8 @@ cmd_run() {
           board_done: ($mm.board_done // null),
           corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null),
-          activity: ($mm.activity // null) }
+          activity: ($mm.activity // null),
+          time_use: $time_use[0] }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 

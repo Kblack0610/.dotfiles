@@ -24,6 +24,8 @@ own, with no prompt or tool result after it, and either:
 - it hands you a step: one of its last two blocks is a fenced `! <command>` line, or the
   closing paragraph says "when that's done", "once you've", "let me know when" and the like.
 
+`agent-panel time-use <transcript.jsonl>` prints the session's closed time by what it waited on, as one JSON object, the same numbers as `time_use` in `list --json`; the nightly session-outcomes run reads it. The rule is in `.local/src/docs/fleet-states.md`, and `~/.config/agent-panel/time-use.conf` says which commands are a gate or a test.
+
 `shell` keeps the yellow `~`: Claude is at its prompt, but waiting on its own background job
 (usually a gate), and resumes by itself when it ends, so it does not need you. The `A` column
 is what says it does.

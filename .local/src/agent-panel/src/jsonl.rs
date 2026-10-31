@@ -237,7 +237,7 @@ pub fn fleet_info(path: &Path) -> FleetInfo {
         plan_file: plan_file(&text),
         last_entry: last_entry(&text),
         edited_files: edited_files(&text),
-        time_use: time_use(&text),
+        time_use: time_use(&text, &job_patterns(&time_use_conf())),
         doing,
         said,
         compactions: compactions(&text),
@@ -245,62 +245,104 @@ pub fn fleet_info(path: &Path) -> FleetInfo {
 }
 
 /// A gap between entries shorter than this is the session working; a longer one was a wait,
-/// and what ended it says for what.
+/// and what was still running says for what.
 const WORK_GAP_SECS: u64 = 300;
 /// How far past a gap's end to look for the entry that says who ended it.
 const WAKE_SECS: u64 = 60;
+/// A job open longer than this is taken as gone: a session can die with no record of it. The
+/// longest real ones run about 5 hours (p99, 1782 background commands, 2026-10-30).
+const JOB_MAX_SECS: u64 = 12 * 3600;
+/// In the notification a resumed session gets for each job that died with the old process.
+const SESSION_ENDED: &str = "before the previous session ended";
+/// `toolUseResult` fields that mean the call went on in the background under that id.
+const BACKGROUND_IDS: [&str; 4] = ["backgroundTaskId", "taskId", "resumedAgentId", "revivedAgentId"];
+/// Which commands are a merge gate or a test run. Content, so it lives in dotfiles config.
+const TIME_USE_CONF: &str = ".config/agent-panel/time-use.conf";
 const SAID_CHARS: usize = 120;
 const HUMAN_TOOLS: [&str; 2] = ["AskUserQuestion", "ExitPlanMode"];
 
 /// Minutes of a session's closed gaps, by what it was waiting on. The open gap since the last
 /// entry is not here: IDLE already shows it, and what ends it is not known yet.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
 pub struct TimeUse {
     pub work_min: u64,
-    /// A background job or a foreground tool.
+    /// A job whose command `time-use.conf` calls a merge gate was running.
+    pub gate_min: u64,
+    /// A job whose command `time-use.conf` calls a test run was running.
+    pub test_min: u64,
+    /// Any other background job or foreground tool was running.
     pub jobs_min: u64,
-    /// A typed prompt, or an answer to AskUserQuestion or ExitPlanMode.
+    /// An AskUserQuestion or ExitPlanMode was open, or nothing was running and a prompt was typed.
     pub human_min: u64,
-    /// Nothing the session was running: a peer's message or some other record woke it.
+    /// Nothing was running: a peer's message or some other record woke it.
     pub parked_min: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Wait {
     Work,
+    Gate,
+    Test,
     Jobs,
     Human,
     Parked,
 }
 
+/// A tool call still running. Holds what it counts as, never its command, which can hold a secret.
+struct Job {
+    tool_id: String,
+    task_id: Option<String>,
+    wait: Wait,
+    since: u64,
+}
+
+/// `<gate|test> <text in the command>` lines. The first line that matches wins.
+fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
+    conf.lines()
+        .filter_map(|l| {
+            let (kind, text) = l.trim().split_once(char::is_whitespace)?;
+            match kind {
+                "gate" => Some((Wait::Gate, text.trim())),
+                "test" => Some((Wait::Test, text.trim())),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// With no config every job counts as `jobs`, which is still true.
+fn time_use_conf() -> String {
+    fs::read_to_string(crate::session::home().join(TIME_USE_CONF)).unwrap_or_default()
+}
+
+pub fn time_use_at(path: &Path) -> TimeUse {
+    time_use(&read(path), &job_patterns(&time_use_conf()))
+}
+
 /// Split the transcript's elapsed time. Reads every line, so it stays on substring checks and
-/// parses only around a long gap. The first `"timestamp":"` on a line is the entry's own
-/// (escaped copies inside a string do not match); a file-history-snapshot has only a nested one.
-/// The running max keeps a burst written out of order from reading as a gap.
-fn time_use(text: &str) -> TimeUse {
+/// parses only lines that start or end a job, and around a long gap. The first `"timestamp":"`
+/// on a line is the entry's own (escaped copies inside a string do not match); a
+/// file-history-snapshot has only a nested one. The running max keeps a burst written out of
+/// order from reading as a gap. A gap is counted before its last line can end a job.
+fn time_use(text: &str, patterns: &[(Wait, &str)]) -> TimeUse {
     let lines: Vec<&str> = text.lines().filter(|l| !skipped_entry(l)).collect();
-    let mut secs = [0u64; 4];
+    let mut secs = [0u64; 6];
     let mut last: Option<u64> = None;
-    let mut human_ids = std::collections::HashSet::new();
+    let mut jobs: Vec<Job> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        if HUMAN_TOOLS.iter().any(|t| line.contains(&format!("\"name\":\"{t}\""))) {
-            human_tool_ids(line, &mut human_ids);
+        let at = entry_epoch(line);
+        if let (Some(at), Some(prev)) = (at, last) {
+            if at > prev {
+                let gap = at - prev;
+                let wait = if gap < WORK_GAP_SECS { Wait::Work } else { gap_wait(&lines[i..], prev, at, &mut jobs) };
+                secs[wait as usize] += gap;
+            }
         }
-        let Some(at) = entry_epoch(line) else { continue };
-        let Some(prev) = last else {
-            last = Some(at);
-            continue;
-        };
-        if at <= prev {
-            continue;
-        }
-        let gap = at - prev;
-        let wait = if gap < WORK_GAP_SECS { Wait::Work } else { gap_end(&lines[i..], at, &human_ids) };
-        secs[wait as usize] += gap;
-        last = Some(at);
+        last = last.max(at);
+        track_jobs(line, last.unwrap_or(0), patterns, &mut jobs);
     }
-    let [work, jobs, human, parked] = secs.map(|s| s / 60);
-    TimeUse { work_min: work, jobs_min: jobs, human_min: human, parked_min: parked }
+    let [work, gate, test, jobs, human, parked] = secs.map(|s| s / 60);
+    TimeUse { work_min: work, gate_min: gate, test_min: test, jobs_min: jobs, human_min: human, parked_min: parked }
 }
 
 /// A subagent's entry, or a snapshot whose only timestamp is nested.
@@ -316,31 +358,128 @@ fn entry_epoch(line: &str) -> Option<u64> {
         .and_then(iso_epoch)
 }
 
-/// The ids of the HUMAN_TOOLS calls on an assistant line.
-fn human_tool_ids(line: &str, ids: &mut std::collections::HashSet<String>) {
+/// Keep the open jobs current with one entry.
+fn track_jobs(line: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
+    if !["\"tool_use\"", "\"tool_result\"", "<task-notification>"].iter().any(|k| line.contains(k)) {
+        return;
+    }
     let Ok(v) = serde_json::from_str::<Value>(line) else { return };
-    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { return };
-    for c in blocks {
-        let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-        if c.get("type").and_then(Value::as_str) == Some("tool_use") && HUMAN_TOOLS.contains(&name) {
-            if let Some(id) = c.get("id").and_then(Value::as_str) {
-                ids.insert(id.to_string());
+    match v.get("type").and_then(Value::as_str) {
+        Some("assistant") => {
+            for c in content_blocks(&v) {
+                if c.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    open_job(c, at, patterns, jobs);
+                }
             }
         }
+        Some("user") => {
+            if let Some(s) = v.pointer("/message/content").and_then(Value::as_str) {
+                close_notified(s, jobs);
+            }
+            for c in content_blocks(&v) {
+                match c.get("type").and_then(Value::as_str) {
+                    Some("tool_result") => tool_returned(&v, c, jobs),
+                    Some("text") => close_notified(c.get("text").and_then(Value::as_str).unwrap_or(""), jobs),
+                    _ => {}
+                }
+            }
+        }
+        Some("queue-operation") => close_notified(v.get("content").and_then(Value::as_str).unwrap_or(""), jobs),
+        _ => {}
     }
 }
 
-/// What a long gap was waiting on: the first entry at the gap's end that says who woke the
-/// session. Bookkeeping lands around it, sometimes first: an `api-request` written just before
-/// the prompt it sends, a `system` line for a mistyped command. Past WAKE_SECS those are all
-/// there is, and nothing the session was running ended the gap.
-fn gap_end(lines: &[&str], end: u64, human_ids: &std::collections::HashSet<String>) -> Wait {
-    for line in lines {
-        if entry_epoch(line).is_some_and(|at| at > end + WAKE_SECS) {
-            break;
+fn content_blocks(v: &Value) -> &[Value] {
+    v.pointer("/message/content").and_then(Value::as_array).map_or(&[], Vec::as_slice)
+}
+
+fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
+    let name = call.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = call.get("input");
+    if name == "TaskStop" {
+        let id = input.and_then(|i| i.get("task_id")).and_then(Value::as_str);
+        jobs.retain(|j| j.task_id.is_none() || j.task_id.as_deref() != id);
+    }
+    let command = input.and_then(|i| i.get("command")).and_then(Value::as_str).unwrap_or("");
+    let wait = if HUMAN_TOOLS.contains(&name) {
+        Wait::Human
+    } else {
+        patterns.iter().find(|(_, text)| command.contains(text)).map_or(Wait::Jobs, |(wait, _)| *wait)
+    };
+    if let Some(id) = call.get("id").and_then(Value::as_str) {
+        jobs.push(Job { tool_id: id.to_string(), task_id: None, wait, since: at });
+    }
+}
+
+/// A call's result ends it, unless the result says it went on in the background.
+fn tool_returned(entry: &Value, block: &Value, jobs: &mut Vec<Job>) {
+    let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+    match background_id(entry) {
+        Some(task) => {
+            if let Some(job) = jobs.iter_mut().find(|j| j.tool_id == id) {
+                job.task_id = Some(task.to_string());
+            }
         }
+        None => jobs.retain(|j| j.tool_id != id),
+    }
+}
+
+/// An Agent call reports its id whether or not it waits, so only `isAsync` counts there.
+fn background_id(entry: &Value) -> Option<&str> {
+    let result = entry.get("toolUseResult")?;
+    let id = |key: &str| result.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+    BACKGROUND_IDS.iter().find_map(|k| id(k)).or_else(|| {
+        (result.get("isAsync").and_then(Value::as_bool) == Some(true)).then(|| id("agentId")).flatten()
+    })
+}
+
+/// A job's notification ends it. A Monitor's event only reports, and its watch stays open: a
+/// status or the watch expiring is what ends one.
+fn close_notified(s: &str, jobs: &mut Vec<Job>) {
+    if !s.starts_with("<task-notification>") || !(s.contains("<status>") || s.contains("Monitor expired")) {
+        return;
+    }
+    let (tool, task) = (tag_text(s, "tool-use-id"), tag_text(s, "task-id"));
+    jobs.retain(|j| Some(j.tool_id.as_str()) != tool && (task.is_none() || j.task_id.as_deref() != task));
+}
+
+fn tag_text<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let rest = s.get(s.find(&open)? + open.len()..)?;
+    rest.split('<').next()
+}
+
+/// What a long gap was waiting on. A slow model turn is the session working, and an open dialog
+/// is you. Otherwise a running job counts, however the gap ended: a peer's message during a
+/// gate is still a wait on the gate. With nothing running, what ended the gap says.
+fn gap_wait(lines: &[&str], start: u64, end: u64, jobs: &mut Vec<Job>) -> Wait {
+    let wake = gap_end(lines, end);
+    if wake == Wait::Work {
+        return wake;
+    }
+    // The process that ran them is gone, so nothing was running through this gap.
+    if wake_window(lines, end).any(|l| l.contains(SESSION_ENDED)) {
+        jobs.clear();
+    }
+    jobs.retain(|j| start.saturating_sub(j.since) < JOB_MAX_SECS);
+    [Wait::Human, Wait::Gate, Wait::Test, Wait::Jobs]
+        .into_iter()
+        .find(|wait| jobs.iter().any(|j| j.wait == *wait))
+        .unwrap_or(wake)
+}
+
+fn wake_window<'a>(lines: &'a [&'a str], end: u64) -> impl Iterator<Item = &'a &'a str> {
+    lines.iter().take_while(move |l| entry_epoch(l).is_none_or(|at| at <= end + WAKE_SECS))
+}
+
+/// Who ended a long gap: the first entry at the gap's end that says who woke the session.
+/// Bookkeeping lands around it, sometimes first: an `api-request` written just before the prompt
+/// it sends, a `system` line for a mistyped command. Past WAKE_SECS those are all there is, and
+/// nothing the session was running ended the gap.
+fn gap_end(lines: &[&str], end: u64) -> Wait {
+    for line in wake_window(lines, end) {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if let Some(wait) = entry_wait(&v, human_ids) {
+        if let Some(wait) = entry_wait(&v) {
             return wait;
         }
     }
@@ -348,7 +487,7 @@ fn gap_end(lines: &[&str], end: u64, human_ids: &std::collections::HashSet<Strin
 }
 
 /// Who an entry says woke the session, None for bookkeeping.
-fn entry_wait(v: &Value, human_ids: &std::collections::HashSet<String>) -> Option<Wait> {
+fn entry_wait(v: &Value) -> Option<Wait> {
     match v.get("type").and_then(Value::as_str)? {
         // A slow model turn is the session working: nothing arrived to end the gap.
         "assistant" => Some(Wait::Work),
@@ -358,12 +497,8 @@ fn entry_wait(v: &Value, human_ids: &std::collections::HashSet<String>) -> Optio
         "user" => match v.pointer("/message/content")? {
             Value::String(s) => Some(prompt_wait(s)),
             Value::Array(blocks) => {
-                if let Some(id) = blocks
-                    .iter()
-                    .find(|c| c.get("type").and_then(Value::as_str) == Some("tool_result"))
-                    .map(|c| c.get("tool_use_id").and_then(Value::as_str).unwrap_or(""))
-                {
-                    return Some(if human_ids.contains(id) { Wait::Human } else { Wait::Jobs });
+                if blocks.iter().any(|c| c.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                    return Some(Wait::Jobs);
                 }
                 blocks
                     .iter()
@@ -378,7 +513,7 @@ fn entry_wait(v: &Value, human_ids: &std::collections::HashSet<String>) -> Optio
 
 /// Who a prompt came from, by its opening tag: the harness tags everything it injects.
 fn prompt_wait(s: &str) -> Wait {
-    if s.starts_with("<task-notification>") {
+    if s.starts_with("<task-notification>") && !s.contains(SESSION_ENDED) {
         Wait::Jobs
     } else if !s.starts_with('<') || s.starts_with("<command") || s.starts_with("<local-command") {
         Wait::Human
@@ -688,17 +823,19 @@ mod tests {
 
     /// An entry at `min` minutes past 12:00, with the rest of its JSON from `body`.
     fn at(min: u64, body: &str) -> String {
-        format!(r#"{{{body},"timestamp":"2026-10-30T{:02}:{:02}:00.000Z"}}"#, 12 + min / 60, min % 60)
+        let hour = 12 + min / 60;
+        format!(r#"{{{body},"timestamp":"2026-10-{}T{:02}:{:02}:00.000Z"}}"#, 30 + hour / 24, hour % 24, min % 60)
     }
 
     #[test]
     fn time_use_buckets_a_gap_by_what_ended_it() {
         let lines = [
             at(0, r#""type":"user","message":{"content":"go"}"#),
-            at(2, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}},{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}"#),
-            // Ordinary tool result and a task notification: jobs, 10 + 20.
+            at(2, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}}]}"#),
+            // A foreground tool and a task notification: jobs, 10 + 20.
             at(12, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}"#),
             at(32, r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> done""#),
+            at(32, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}"#),
             // AskUserQuestion's answer and a typed prompt: human, 30 + 40.
             at(62, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"a"}]}"#),
             at(102, r#""type":"user","message":{"content":"next"}"#),
@@ -711,8 +848,8 @@ mod tests {
         ];
         let text = lines.join("\n");
         assert_eq!(
-            time_use(&text),
-            TimeUse { work_min: 2 + 7, jobs_min: 30, human_min: 78, parked_min: 110 }
+            time_use(&text, &[]),
+            TimeUse { work_min: 2 + 7, jobs_min: 30, human_min: 78, parked_min: 110, ..TimeUse::default() }
         );
     }
 
@@ -728,8 +865,8 @@ mod tests {
             at(59, r#""type":"assistant","message":{"content":[]}"#),
             at(61, r#""type":"assistant","message":{"content":[]}"#),
         ];
-        assert_eq!(time_use(&lines.join("\n")), TimeUse { work_min: 1, jobs_min: 60, human_min: 0, parked_min: 0 });
-        assert_eq!(time_use(""), TimeUse::default());
+        assert_eq!(time_use(&lines.join("\n"), &[]), TimeUse { work_min: 1, jobs_min: 60, ..TimeUse::default() });
+        assert_eq!(time_use("", &[]), TimeUse::default());
     }
 
     #[test]
@@ -750,7 +887,184 @@ mod tests {
             at(180, r#""type":"pr-link""#),
             at(200, r#""type":"user","message":{"content":"late"}"#),
         ];
-        assert_eq!(time_use(&lines.join("\n")), TimeUse { work_min: 0, jobs_min: 50, human_min: 90, parked_min: 60 });
+        assert_eq!(time_use(&lines.join("\n"), &[]), TimeUse { jobs_min: 50, human_min: 90, parked_min: 60, ..TimeUse::default() });
+    }
+
+    /// An assistant entry calling one tool, with the command already quoted for JSON.
+    fn call(min: u64, id: &str, name: &str, input: &str) -> String {
+        at(min, &format!(r#""type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}"#))
+    }
+
+    /// The result of a call that went on in the background under `field`.
+    fn launched(min: u64, id: &str, field: &str, task: &str) -> String {
+        at(min, &format!(r#""type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"started"}}]}},"toolUseResult":{{"{field}":"{task}"}}"#))
+    }
+
+    fn notified(min: u64, inner: &str) -> String {
+        at(min, &format!(r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> {inner}""#))
+    }
+
+    fn peer(min: u64) -> String {
+        at(min, r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> hi""#)
+    }
+
+    const PATTERNS: [(Wait, &str); 2] = [(Wait::Gate, "ci-gate.sh"), (Wait::Test, "run.sh")];
+    const GATE: &str = r#"{"command":"cd x && scripts/test/ci-gate.sh --pr 1","run_in_background":true}"#;
+    const TEST: &str = r#"{"command":"scripts/test/run.sh Foo","run_in_background":true}"#;
+    const OTHER: &str = r#"{"command":"sleep 1","run_in_background":true}"#;
+
+    fn buckets(lines: &[String]) -> TimeUse {
+        time_use(&lines.join("\n"), &PATTERNS)
+    }
+
+    #[test]
+    fn time_use_counts_a_gap_by_the_job_still_running_whatever_ended_it() {
+        let got = buckets(&[
+            call(0, "g", "Bash", GATE),
+            launched(0, "g", "backgroundTaskId", "tg"),
+            // A peer's message and a typed prompt during the gate: gate, 10 + 20.
+            peer(10),
+            at(30, r#""type":"user","message":{"content":"how is it"}"#),
+            // Its own notification: gate, 30. Nothing is running after it.
+            notified(60, "<tool-use-id>g</tool-use-id> <status>failed</status>"),
+            // A peer's message with nothing running: parked, 40.
+            peer(100),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 60, parked_min: 40, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_splits_gate_test_and_other_jobs_and_ranks_them() {
+        let got = buckets(&[
+            call(0, "o", "Bash", OTHER),
+            launched(0, "o", "backgroundTaskId", "to"),
+            // Other job alone: jobs, 10.
+            peer(10),
+            call(10, "t", "Bash", TEST),
+            launched(10, "t", "backgroundTaskId", "tt"),
+            // Test beside it: test, 20.
+            peer(30),
+            call(30, "g", "Bash", GATE),
+            launched(30, "g", "backgroundTaskId", "tg"),
+            // Gate beside both: gate, 40.
+            notified(70, "<tool-use-id>g</tool-use-id> <status>completed</status>"),
+            // Gate gone: test, 50.
+            notified(120, "<tool-use-id>t</tool-use-id> <status>completed</status>"),
+            // Test gone: jobs, 60.
+            notified(180, "<tool-use-id>o</tool-use-id> <status>completed</status>"),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 40, test_min: 70, jobs_min: 70, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_an_open_dialog_is_you_even_with_a_gate_running() {
+        let got = buckets(&[
+            call(0, "g", "Bash", GATE),
+            launched(0, "g", "backgroundTaskId", "tg"),
+            call(0, "q", "AskUserQuestion", "{}"),
+            at(30, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"a"}]}"#),
+            // The dialog is answered and the gate still runs: gate, 10.
+            peer(40),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 10, human_min: 30, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_a_foreground_gate_counts_and_ends_with_its_result() {
+        let got = buckets(&[
+            call(0, "g", "Bash", r#"{"command":"scripts/test/ci-gate.sh"}"#),
+            at(10, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#),
+            peer(30),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 10, parked_min: 20, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_a_monitor_event_does_not_end_its_watch_but_an_expiry_does() {
+        let got = buckets(&[
+            call(0, "m", "Monitor", r#"{"command":"tail -f scripts/test/ci-gate.sh.log"}"#),
+            launched(0, "m", "taskId", "tm"),
+            // An event, by task id and with no status: the watch stays open, gate, 10 + 10.
+            notified(10, r#"<task-id>tm</task-id> <summary>Monitor event: x</summary>"#),
+            peer(20),
+            // The expiry ends the gap as gate, 10, and ends the watch: parked, 10.
+            notified(30, r#"<task-id>tm</task-id> <event>[Monitor expired after 30m]</event>"#),
+            peer(40),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 30, parked_min: 10, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_a_task_stop_ends_the_job_it_names() {
+        let got = buckets(&[
+            call(0, "g", "Bash", GATE),
+            launched(0, "g", "backgroundTaskId", "tg"),
+            peer(10),
+            call(10, "t2", "Bash", TEST),
+            launched(10, "t2", "backgroundTaskId", "tt"),
+            call(10, "s", "TaskStop", r#"{"task_id":"tg"}"#),
+            at(10, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s","content":"ok"}]},"toolUseResult":{"task_id":"tg"}"#),
+            // The gate was stopped, the test still runs: test, 20.
+            peer(30),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 10, test_min: 20, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_agents_run_in_the_background_only_when_the_result_says_so() {
+        let got = buckets(&[
+            call(0, "a", "Agent", r#"{"prompt":"look"}"#),
+            at(0, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"x"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"ag"}"#),
+            // By task id alone, the way a finished agent can report: jobs, 10, then parked, 10.
+            notified(10, r#"<task-id>ag</task-id> <status>completed</status>"#),
+            peer(20),
+            call(20, "b", "Agent", r#"{"prompt":"look"}"#),
+            // Waited for: the result ends it, jobs, 10, then parked, 10.
+            at(30, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","content":"x"}]},"toolUseResult":{"status":"completed","agentId":"ag2"}"#),
+            peer(40),
+        ]);
+        assert_eq!(got, TimeUse { jobs_min: 20, parked_min: 20, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_a_job_that_never_closes_stops_counting() {
+        // Older than JOB_MAX_SECS when the last gap starts: parked, not gate.
+        let got = buckets(&[
+            call(0, "g", "Bash", GATE),
+            launched(0, "g", "backgroundTaskId", "tg"),
+            peer(600),
+            peer(730),
+            peer(830),
+        ]);
+        assert_eq!(got, TimeUse { gate_min: 730, parked_min: 100, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn time_use_a_resume_means_the_jobs_died_with_the_old_process() {
+        let ended = r#"<tool-use-id>g</tool-use-id> <status>stopped</status> <summary>Background shell command didn't finish before the previous session ended</summary>"#;
+        let got = buckets(&[
+            call(0, "g", "Bash", GATE),
+            launched(0, "g", "backgroundTaskId", "tg"),
+            // The gate "ran" to the resume, by this record, but the session was gone: parked, 300.
+            notified(300, ended),
+            peer(310),
+        ]);
+        assert_eq!(got, TimeUse { parked_min: 310, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn the_shipped_time_use_conf_names_a_gate_and_a_test_and_reads_every_line() {
+        let conf = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../.config/agent-panel/time-use.conf");
+        let conf = fs::read_to_string(conf).unwrap();
+        let patterns = job_patterns(&conf);
+        let rows = conf.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).count();
+        assert_eq!(patterns.len(), rows, "a line in time-use.conf is not `gate <text>` or `test <text>`");
+        let kind = |command: &str| patterns.iter().find(|(_, t)| command.contains(t)).map(|(w, _)| *w);
+        assert!(kind("scripts/test/ci-gate.sh --pr 1") == Some(Wait::Gate));
+        assert!(kind("gh pr checks 12 --watch") == Some(Wait::Gate));
+        assert!(kind("scripts/test/run.sh Foo") == Some(Wait::Test));
+        assert!(kind("make -C tests test-fast") == Some(Wait::Test));
+        assert!(kind("sleep 5").is_none());
     }
 
     #[test]

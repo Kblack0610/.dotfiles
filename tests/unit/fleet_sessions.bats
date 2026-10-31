@@ -746,9 +746,9 @@ age_row() {
   assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy$'
 }
 
-# time_row <stage> <work> <jobs> <human> <parked> [doing]: a collect row with the newer fields set.
+# time_row <stage> <work> <jobs> <human> <parked> [doing] [gate] [test]: a collect row with the newer fields set.
 time_row() {
-  printf '%s\tlab/s1:1\tsid-1\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t60\t0\tfact\t-\t[]\t2/3\t%s\t%s\t%s\t%s\t4\tthe-topic\t%s\tsaid it\n' "$1" "$2" "$3" "$4" "$5" "${6:--}"
+  printf '%s\tlab/s1:1\tsid-1\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t60\t0\tfact\t-\t[]\t2/3\t%s\t%s\t%s\t%s\t4\tthe-topic\t%s\tsaid it\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "${6:--}" "${7:-0}" "${8:-0}"
 }
 
 @test "board_cells: PRS, WORK, the largest WAIT, TASK, and WHY as the last action on a WORKING row" {
@@ -760,6 +760,15 @@ time_row() {
   # a tie goes to jobs: something was running, so it is not the session sitting still
   run board_cells < <(time_row WORKING 0 120 120 120)
   assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy$'
+  run board_cells < <(time_row WORKING 0 120 120 120 - 300 50)
+  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy$'
+  run board_cells < <(time_row WORKING 0 120 120 120 - 50 300)
+  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy$'
+  # a tie goes to the gate ahead of the test, and the test ahead of jobs
+  run board_cells < <(time_row WORKING 0 120 120 120 - 120 120)
+  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy$'
+  run board_cells < <(time_row WORKING 0 120 120 120 - 0 120)
+  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy$'
   run board_cells < <(time_row WORKING 0 0 0 0)
   assert_output --regexp $'\t-\t-\tthe-topic\tbusy$'
   # any other stage keeps its reason: it says what the stage needs
@@ -858,13 +867,13 @@ SH
 }
 
 @test "json_rows: the newer fields, with a row that predates them still parsing" {
-  run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x')
+  run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x' 70 80)
   assert_success
-  [ "$(jq -c '.time' <<<"$output")" = '{"work_min":190,"jobs_min":300,"human_min":60,"parked_min":620}' ]
+  [ "$(jq -c '.time' <<<"$output")" = '{"work_min":190,"gate_min":70,"test_min":80,"jobs_min":300,"human_min":60,"parked_min":620}' ]
   [ "$(jq -c '[.compactions, .topic, .doing, .said, .prs]' <<<"$output")" = '[4,"the-topic","Bash: x","said it",[]]' ]
   run json_rows < <(age_row 45)
   assert_success
-  [ "$(jq -c '[.time.work_min, .compactions, .topic, .prs]' <<<"$output")" = '[0,0,null,[]]' ]
+  [ "$(jq -c '[.time.work_min, .time.gate_min, .compactions, .topic, .prs]' <<<"$output")" = '[0,0,0,null,[]]' ]
 }
 
 # explain_state: a state document with one session, in $FLEET_STATE_FILE.
@@ -875,7 +884,7 @@ explain_state() {
     target: "lab/s1:1", bucket: "WORKING", session_id: "sid-1", branch: "feat/x", pr: "9", reason: "shell",
     age_min: 1440, idle_min: 12, phases_done: 2, phases_total: 5, next_phase: "Phase 3: board", topic: "the-topic",
     doing: "Bash: Run the gate", said: "Gate is running.", compactions: 4, blockers: ["2 dirty file(s)"],
-    time: {work_min: 190, jobs_min: 300, human_min: 45, parked_min: 620},
+    time: {work_min: 190, gate_min: 120, test_min: 30, jobs_min: 300, human_min: 45, parked_min: 620},
     prs: [{repo: "o/one", number: 7, state: "OPEN", merged_at: null},
           {repo: "o/two", number: 9, state: "MERGED", merged_at: "2026-10-30T12:00:00Z"},
           {repo: "o/two", number: 8, state: null, merged_at: null}]}]}' > "$FLEET_STATE_FILE"
@@ -887,7 +896,7 @@ explain_state() {
   assert_success
   assert_line --regexp '^lab/s1:1  WORKING  \(state 3m old\)$'
   assert_line 'task     the-topic'
-  assert_line 'time     open 24h: 3h work, 5h jobs, 45m you, 10h parked; idle 12m now; 4 compactions'
+  assert_line 'time     open 24h: 3h work, 2h gate, 30m test, 5h jobs, 45m you, 10h parked; idle 12m now; 4 compactions'
   assert_line 'plan     2/5, next: Phase 3: board'
   assert_line 'branch   feat/x (PR #9)'
   assert_line 'PRs      1 merged of 3'
@@ -917,7 +926,7 @@ explain_state() {
   jq '.sessions[0] |= del(.time, .prs, .compactions, .topic, .doing, .said)' "$STATE_FILE" > "$STATE_FILE.n" && mv "$STATE_FILE.n" "$STATE_FILE"
   run explain s1
   assert_success
-  assert_line 'time     open 24h: 0m work, 0m jobs, 0m you, 0m parked; idle 12m now; 0 compactions'
+  assert_line 'time     open 24h: 0m work, 0m gate, 0m test, 0m jobs, 0m you, 0m parked; idle 12m now; 0 compactions'
   assert_line 'PRs      0 merged of 0'
 }
 
@@ -926,7 +935,7 @@ explain_state() {
   pr_transcript "$SANDBOX/t.jsonl"
   local since=$(( $(date +%s) - 60 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"started_at\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"edited_files\":[],\"transcript\":\"$SANDBOX/t.jsonl\",\"summary\":\"the-topic\",\"time_use\":{\"work_min\":190,\"jobs_min\":5,\"human_min\":5,\"parked_min\":620},\"doing\":\"Bash: Run the gate\",\"said\":\"Going.\",\"compactions\":2}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"started_at\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"edited_files\":[],\"transcript\":\"$SANDBOX/t.jsonl\",\"summary\":\"the-topic\",\"time_use\":{\"work_min\":190,\"gate_min\":900,\"test_min\":7,\"jobs_min\":5,\"human_min\":5,\"parked_min\":620},\"doing\":\"Bash: Run the gate\",\"said\":\"Going.\",\"compactions\":2}" \
     > "$SANDBOX/bin/agent-panel"
   cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -940,10 +949,10 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
   assert_success
   assert_line --regexp '^SESSION +TASK +SYNC +TREE +PR +PRS +CI +PLAN +STAGE +WORK +WAIT +IDLE +AGE  WHY$'
-  assert_line --regexp '^s1 +the-topic .* 1/2 .* WORKING +3h +parked 10h .*  Run the gate$'
+  assert_line --regexp '^s1 +the-topic .* 1/2 .* WORKING +3h +gate 15h .*  Run the gate$'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -c '[.prs[].number, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,620,2,"Bash: Run the gate"]' ]
+  [ "$(jq -c '[.prs[].number, .time.gate_min, .time.test_min, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,900,7,620,2,"Bash: Run the gate"]' ]
 }
 
 @test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {

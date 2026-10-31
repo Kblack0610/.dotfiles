@@ -536,16 +536,17 @@ collect() {
   [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said
+          work jobs human parked compactions topic doing said gate test
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said < <(jq -r '
+    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
-       (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text)]
+       (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
+       (.time_use.gate_min // 0), (.time_use.test_min // 0)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
@@ -579,11 +580,11 @@ collect() {
     [ "$state" = OPEN ] && [ "$oid" != - ] && fact="$fact@${oid:0:12}"
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
-      "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said"
+      "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test"
   done
   main_rows
 }
@@ -603,7 +604,7 @@ main_rows() {
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -643,14 +644,15 @@ board_cells() {
       if (m !~ /^[0-9]+$/ || m == 0) return "-"
       return m < 60 ? m "m" : int(m / 60 + 0.5) "h"
     }
-    # the largest wait that is not work, named; jobs, then you, then parked on a tie
-    function wait_cell(j, h, p) {
-      if (p + 0 > j + 0 && p + 0 > h + 0) return "parked " hrs(p)
-      if (h + 0 > j + 0) return "you " hrs(h)
-      return j + 0 > 0 ? "jobs " hrs(j) : "-"
+    # the largest wait that is not work, named; a tie goes to the first of gate, test, jobs, you, parked
+    function wait_cell(g, t, j, h, p,    n, i, v, top, name) {
+      n = split(g " " t " " j " " h " " p, v, " ")
+      for (i = 1; i <= n; i++) if (v[i] + 0 > top + 0) { top = v[i]; name = i }
+      return name ? wait_names[name] " " hrs(top) : "-"
     }
     BEGIN {
       n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
+      split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
     $1 == "MAIN" { next }
@@ -671,7 +673,7 @@ board_cells() {
       now = $40; sub(/^Bash: /, "", now)
       print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
             (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11,
-            ($3 in eta ? eta[$3] : "-"), ($33 == "" ? "-" : $33), hrs($34), wait_cell($35, $36, $37),
+            ($3 in eta ? eta[$3] : "-"), ($33 == "" ? "-" : $33), hrs($34), wait_cell($42 + 0, $43 + 0, $35 + 0, $36 + 0, $37 + 0),
             ($39 == "" ? "-" : $39), ($1 == "WORKING" && now != "-" && now != "" ? now : $11)
     }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-
 }
@@ -824,7 +826,7 @@ explain() {
     | (.time // {}) as $t
     | ["\(.target)  \(.bucket)  (state \(($now - $d.generated_epoch) / 60 | floor)m old)",
        line("task"; .topic // "-"),
-       line("time"; "open \(.age_min | hrs): \($t.work_min | hrs) work, \($t.jobs_min | hrs) jobs, \($t.human_min | hrs) you, \($t.parked_min | hrs) parked; idle \(.idle_min | hrs) now; \(.compactions // 0) compactions"),
+       line("time"; "open \(.age_min | hrs): \($t.work_min | hrs) work, \($t.gate_min // 0 | hrs) gate, \($t.test_min // 0 | hrs) test, \($t.jobs_min | hrs) jobs, \($t.human_min | hrs) you, \($t.parked_min | hrs) parked; idle \(.idle_min | hrs) now; \(.compactions // 0) compactions"),
        line("plan"; if .phases_total then "\(.phases_done)/\(.phases_total)\(if .next_phase then ", next: \(.next_phase)" else "" end)" else "no checklist" end),
        line("branch"; "\(.branch)\(if .pr != "-" then " (PR #\(.pr))" else "" end)"),
        line("PRs"; "\($m) merged of \($n)"),
@@ -858,7 +860,8 @@ json_rows() {
       fact: .[29],
       blockers: (if (.[30] // "-") == "-" then [] else .[30] | split("; ") end),
       prs: ((.[31] // "[]") | fromjson),
-      time: {work_min: ((.[33] // "0") | tonumber), jobs_min: ((.[34] // "0") | tonumber),
+      time: {work_min: ((.[33] // "0") | tonumber), gate_min: ((.[41] // "0") | tonumber),
+             test_min: ((.[42] // "0") | tonumber), jobs_min: ((.[34] // "0") | tonumber),
              human_min: ((.[35] // "0") | tonumber), parked_min: ((.[36] // "0") | tonumber)},
       compactions: ((.[37] // "0") | tonumber),
       topic: (if (.[38] // "-") == "-" then null else .[38] end),
