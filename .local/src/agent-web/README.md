@@ -11,7 +11,7 @@ It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux 
 | Agent list | `agent_panel::chooser::collect()` |
 | Transcript | `~/.claude/projects/<cwd>/<session>.jsonl`, paged by byte offset from the end (`src/transcript.rs`) |
 | Live screen | `tmux capture-pane` on the agent's own pane id |
-| Typing | `load-buffer` + `paste-buffer -p` (bracketed paste, so a newline does not submit early), then `Enter` |
+| Typing | `load-buffer` + `paste-buffer -p` (bracketed paste, so a newline does not submit early), then `Enter` once the pane has drawn the paste, since Claude Code drops an Enter sent right behind one |
 | Keys | a fixed list: Enter, Escape, arrows, Tab, Space, 1-9. No `C-c`/`C-d` |
 | Waiting tab | each `waiting` or `idle` session's open question, read from the end of its transcript (`transcript::pending_question`): an AskUserQuestion dialog with its options, a tool waiting on permission, or its last message. Answers go through Typing/Keys into that session's pane, so they land in the conversation that asked; a typed reply to a dialog sends Escape first |
 | Asks | below the sessions on the same tab: `agent-ask list --all --pending` and `agent-ask answer`, for headless runs only (an attended session asks in its conversation) |
