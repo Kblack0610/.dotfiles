@@ -22,6 +22,7 @@ setup() {
   stub_notes
   stub agent-hold 'exit 0'
   stub fleet-assess 'exit 0'
+  stub fleet-shepherd 'exit 1'
   stub wave-lock 'exit 1'
   stub claude-acct 'exit 0'   # main account; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
@@ -339,6 +340,14 @@ game_ready() {
   stub agent-hold 'exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'held'
+  assert_not_called 'wt new'
+}
+
+@test "run starts nothing while the cluster is red or unreadable, and says why" {
+  game_ready
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'infra: k3s domain red'
   assert_not_called 'wt new'
 }
 

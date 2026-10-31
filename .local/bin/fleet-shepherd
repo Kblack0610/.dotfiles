@@ -8,6 +8,9 @@
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
+#   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
+#                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
+#                          fleet-dispatch's gate
 #   fleet-shepherd lease   record that a shepherd pass is running now and tag its tmux pane
 #                          @shepherd; every pass calls it first (fleet-overseer, shepherd step 0)
 #   fleet-shepherd log [--heading] <text>
@@ -27,6 +30,8 @@ LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 LEASE="$LEDGER/.lease"
 BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
+INFRA="$LEDGER/.infra"       # this pass's infra lines
+INFRA_SEEN="$LEDGER/.infra-seen" # the ones a finished pass has already reported
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -107,6 +112,9 @@ cmd_due() {
   local b
   b="$(blocked_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  # Infra leads: on 2026-10-31 eight hours of passes moved sessions and never named the disk.
+  b="$(infra_due)"
+  [ -z "$b" ] || out="$b${out:+$'\n'}$out"
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"
 }
@@ -126,6 +134,46 @@ blocked_due() {
   awk -F'\t' 'NR == FNR { seen[$1] = 1; next }
     ($1 in seen) { printf "blocked: pid %s %s, %s threads on I/O for %s, %s session %s (%s), open %s\n", $1, $4, $2, $3, $5, $6, $7, $9 }' \
     "$BLOCKED.prev" "$BLOCKED"
+}
+
+# infra_now -> a line when the cluster is red or cannot be read. Unreadable counts: Prometheus
+# ran on the node that filled, so silence here is what the outage looked like.
+infra_now() {
+  local json status
+  # shellcheck source=/dev/null
+  . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || { echo "infra: no Prometheus reader"; return 0; }
+  json="$(prom_q 'cc:domain_status{domain="k3s"}')" || { echo "infra: Prometheus not answering"; return 0; }
+  status="$(jq -r '.data.result[0].value[1] // "none"' <<< "$json")"
+  case "${status%%.*}" in
+    2) echo "infra: k3s domain red" ;;
+    none) echo "infra: no k3s status series" ;;
+  esac
+}
+
+cmd_infra() {
+  local out
+  out="$(infra_now)"
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# infra_sample: this pass's cluster state and urgent Sentinel trips. A line that cleared leaves
+# the seen list, so the same trip coming back is news again.
+infra_sample() {
+  {
+    infra_now
+    watch-companion-loop urgent 2>/dev/null | sed 's/^/infra: urgent watch tripped: /'
+  } > "$INFRA"
+  [ -e "$INFRA_SEEN" ] || return 0
+  grep -Fxf "$INFRA" "$INFRA_SEEN" > "$INFRA_SEEN.new"
+  mv -f "$INFRA_SEEN.new" "$INFRA_SEEN"
+}
+
+# infra_due -> the sampled lines no finished pass has reported. Once per trip: a standing red
+# would otherwise start a model pass every 15 minutes with nothing new to say.
+infra_due() {
+  [ -s "$INFRA" ] || return 0
+  if [ -e "$INFRA_SEEN" ]; then grep -Fxvf "$INFRA_SEEN" "$INFRA"; else cat "$INFRA"; fi
 }
 
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
@@ -166,6 +214,7 @@ cmd_run() {
   fi
   fleet-sessions --write >/dev/null || { publish FAILED "fleet-sessions --write failed"; return 1; }
   blocked_sample
+  infra_sample
   local due
   if ! due="$(cmd_due)"; then
     settle
@@ -181,11 +230,12 @@ cmd_run() {
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md"
   local rc=0 log verdict
-  log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+  log="$(mktemp)"; trap "rm -f '$log'" EXIT # expanded now: $log is local, and gone by EXIT
   agentctl-run --role observe -p "/fleet-overseer shepherd
 
 Due this pass (from fleet-shepherd due):
 $due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
+  [ "$rc" != 0 ] || cp -f "$INFRA" "$INFRA_SEEN"
   verdict="$(proof_verdict "$log" "$rc" 2>/dev/null)" || true
   publish "${verdict:-FAILED}" "$(printf '%s' "$due" | wc -l | tr -d ' ') due$([ "$rc" = 0 ] || printf ' (exit %s)' "$rc")"
   return "$rc"
@@ -194,8 +244,9 @@ $due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
 case "${1:-}" in
   run)   cmd_run ;;
   due)   cmd_due ;;
+  infra) cmd_infra ;;
   lease) cmd_lease ;;
   log)   shift; cmd_log "$@" ;;
   -h|--help|"") sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|due|lease|log)" ;;
+  *) die "unknown verb: $1 (run|due|infra|lease|log)" ;;
 esac

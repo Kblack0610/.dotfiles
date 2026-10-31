@@ -8,7 +8,7 @@
 #
 # The chip's colour is cc:domain_status{domain="ci"}, the one CI judgement the board and
 # Grafana also draw, so the bar cannot call CI green while the board calls it red. A failed
-# read shows `CI ?`, never the last numbers.
+# read shows `CI: prom down`, never the last numbers.
 #
 # Forgejo Actions runners export no metrics yet, so they are not here.
 
@@ -22,7 +22,7 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 PASS_RED=70
 PASS_WARN=90
 
-fail() { emit "$(paint "$C_RED" 'CI ?')" "CI runners: $1" critical; exit 0; }
+fail() { emit "$(paint "$C_RED" 'CI: prom down')" "CI runners: $1" critical; exit 0; }
 
 cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)"}
   or cc:component_status{domain="ci"} or cc:domain_status{domain="ci"}

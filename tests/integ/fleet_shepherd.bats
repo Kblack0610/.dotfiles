@@ -16,6 +16,14 @@ setup() {
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  stub watch-companion-loop 'printf "%b" "${STUB_URGENT:-}"'
+  export PROM_LIB="$HOME/prom-stub.sh"
+  cat > "$PROM_LIB" <<'STUB'
+prom_q() {
+  [ -z "${STUB_PROM_FAIL:-}" ] || return 1
+  printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"value\":[0,\"0\"]\}]}"
+}
+STUB
   # A pass that moves something logs it, as the skill says; STUB_SILENT makes one that does not.
   stub agentctl-run 'while [ $# -gt 0 ]; do [ "$1" = -p ] && printf "%s" "$2" > "$HOME/last-prompt"; shift; done
 echo "holder=$FLEET_SHEPHERD_HOLDER" >> "$HOME/run.env"
@@ -168,4 +176,51 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'nothing to move'
   run "$SH" due
   assert_failure 1
+}
+
+@test "infra reads the k3s domain live: red, unreadable and missing report, green and amber do not" {
+  run "$SH" infra
+  assert_failure
+  assert_output ''
+  STUB_K3S='[{"value":[0,"1"]}]' run "$SH" infra
+  assert_failure
+  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: k3s domain red'
+  STUB_PROM_FAIL=1 run "$SH" infra
+  assert_success
+  assert_output 'infra: Prometheus not answering'
+  STUB_K3S='[]' run "$SH" infra
+  assert_success
+  assert_output 'infra: no k3s status series'
+}
+
+@test "an urgent trip and a red cluster lead the due lines, ahead of sessions" {
+  doc "[$(row a DONE false false)]"
+  export STUB_URGENT='home-k3s-node-disk\n' STUB_K3S='[{"value":[0,"2"]}]'
+  run "$SH" run
+  assert_output --partial $': due\ninfra: k3s domain red\ninfra: urgent watch tripped: home-k3s-node-disk\nnudge DONE: a'
+  refute_output --partial 'unbound variable'
+  grep -q 'nudge DONE: a' "$HOME/last-prompt"
+}
+
+@test "a standing trip starts one pass, and coming back after it clears starts another" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_URGENT='home-k3s-node-disk\n'
+  run "$SH" run
+  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
+  run "$SH" run
+  assert_output --partial 'nothing to move'
+  STUB_URGENT='' run "$SH" run
+  assert_output --partial 'nothing to move'
+  run "$SH" run
+  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
+}
+
+@test "a failed pass leaves the trip due, so the next pass reports it" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_URGENT='home-k3s-node-disk\n'
+  STUB_RC=1 run "$SH" run
+  run "$SH" run
+  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
 }
