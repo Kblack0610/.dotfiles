@@ -15,7 +15,7 @@ mod infra;
 mod transcript;
 
 use std::convert::Infallible;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
     let oauth = auth::OAuth::load()?;
     let sessions = auth::Sessions::load();
     let (events, _) = broadcast::channel(256);
-    let _watcher = watch(events.clone())?; // dropping it stops the inotify watch
+    watch(events.clone())?;
     let state = Arc::new(AppState {
         oauth,
         sessions,
@@ -130,23 +130,43 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// A directory just created directly under `projects`: a new project, whose transcripts need a
+/// watch of their own.
+fn is_new_project(kind: &EventKind, p: &Path, projects: &Path) -> bool {
+    matches!(kind, EventKind::Create(_)) && p.parent() == Some(projects)
+}
+
 /// inotify on the session registry and the transcripts. Each change becomes one
-/// small SSE message; the browser decides whether it cares.
-fn watch(tx: broadcast::Sender<String>) -> Result<notify::RecommendedWatcher> {
+/// small SSE message; the browser decides whether it cares. Transcripts sit directly in each
+/// project dir, so nothing below it is watched: a recursive watch took one inotify watch per
+/// `tool-results` and `subagents` dir, and agent-web would not start when the user's limit was
+/// nearly used up.
+fn watch(tx: broadcast::Sender<String>) -> Result<()> {
     let claude = session::home().join(".claude");
+    let projects = claude.join("projects");
+    let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+    let watched = projects.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         if matches!(ev.kind, EventKind::Access(_)) {
             return;
         }
         for p in &ev.paths {
+            if is_new_project(&ev.kind, p, &watched) {
+                let _ = new_dirs.send(p.clone());
+            }
             if let Some(msg) = classify(p) {
                 let _ = tx.send(msg); // no subscribers is fine
             }
         }
     })?;
     w.watch(&claude.join("sessions"), RecursiveMode::NonRecursive)?;
-    w.watch(&claude.join("projects"), RecursiveMode::Recursive)?;
+    w.watch(&projects, RecursiveMode::NonRecursive)?;
+    for entry in std::fs::read_dir(&projects)?.flatten() {
+        if entry.path().is_dir() {
+            w.watch(&entry.path(), RecursiveMode::NonRecursive)?;
+        }
+    }
     let asks = session::home().join(".agent").join("asks");
     if asks.is_dir() {
         w.watch(&asks, RecursiveMode::Recursive)?;
@@ -164,7 +184,16 @@ fn watch(tx: broadcast::Sender<String>) -> Result<notify::RecommendedWatcher> {
             w.watch(&dir, RecursiveMode::NonRecursive)?;
         }
     }
-    Ok(w)
+    // The task owns the watcher, so it lives as long as the server. The watch calls happen here
+    // because notify must not be called from inside its own event handler.
+    tokio::spawn(async move {
+        while let Some(dir) = new_dirs_rx.recv().await {
+            if let Err(e) = w.watch(&dir, RecursiveMode::NonRecursive) {
+                eprintln!("agent-web: cannot watch {}: {e}", dir.display());
+            }
+        }
+    });
+    Ok(())
 }
 
 fn classify(p: &Path) -> Option<String> {
@@ -705,6 +734,17 @@ mod tests {
         )
         .await;
         (settled, read)
+    }
+
+    #[test]
+    fn only_a_dir_directly_under_projects_is_a_new_project() {
+        use notify::event::{CreateKind, ModifyKind};
+        let projects = Path::new("/h/.claude/projects");
+        let create = EventKind::Create(CreateKind::Any);
+        assert!(is_new_project(&create, &projects.join("-new"), projects));
+        assert!(!is_new_project(&create, &projects.join("-new/s.jsonl"), projects));
+        let modify = EventKind::Modify(ModifyKind::Any);
+        assert!(!is_new_project(&modify, &projects.join("-new"), projects));
     }
 
     #[tokio::test]
