@@ -24,10 +24,14 @@ Not for PipeWire graph problems outside REAPER or for other house audio - read h
 ### Run code inside the open REAPER
 
 1. Write a Lua script to the scratchpad. REAPER has no stdout for it, so the script writes its results to a file you name: `local f = io.open("<scratch>/out.txt", "w") ... f:close()`.
-2. Delete the result file, then run `/usr/lib/REAPER/reaper -nonewinst <script.lua>`. Several scripts can be passed in one call; they run in order.
+2. Check REAPER is open (`pgrep -x reaper`): with none running, `-nonewinst` starts a new one with an empty project and does not return, so a session that saw it open minutes ago can end up reading the wrong project. Delete the result file, then run `/usr/lib/REAPER/reaper -nonewinst <script.lua>`. Several scripts can be passed in one call; they run in order.
 3. Wait for the file to appear (bounded loop on `[ -s file ]`), then read it. `-nonewinst` returns before the script runs; the script runs when REAPER is next idle.
 4. No file after a few seconds means REAPER is blocked: list its windows with `hyprctl clients -j | jq '.[]|select(.class|test("reaper";"i"))|.title'`. A file picker, "REAPER Query" (save changes?) or "ReaScript Error" dialog holds the whole queue. An error dialog can be closed with `hyprctl dispatch closewindow 'title:^(ReaScript Error)$'`; anything that asks the user a question, ask the user.
 5. An empty result file means the script died after opening it - check for a ReaScript Error window and read it (screenshot with `grim -g` if needed).
+
+### Render a song
+
+Render a scratch copy of the RPP so the human's project keeps its settings: make each `FILE "..."` path absolute in the copy, open it with `Main_openProject("noprompt:<copy>")`, set `RENDER_FORMAT` to `ZXZhdyAAAQ==` (32-bit float WAV), `RENDER_FILE` and `RENDER_PATTERN`, then run action 42230. Use float, because an amp chain can run over 0 dB and a 24-bit render clips it for good (2026-10-30: a song peaked at +6.8 dB); turn it down afterwards with ffmpeg. Check `ffmpeg -af astats` Flat factor is 0, and render a track on its own if it sounds missing: an armed track can hold an item with no notes.
 
 ### Config files: only while REAPER is closed
 
