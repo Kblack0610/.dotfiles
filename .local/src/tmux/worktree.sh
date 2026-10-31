@@ -305,6 +305,13 @@ wt_pane_inside() {
     awk -v p="$1" '$0 == p || index($0, p "/") == 1 { found = 1 } END { exit !found }'
 }
 
+# wt_process_inside <path> -- true when any process has its working directory in <path> or below.
+# A build, a test run or a subagent's shell holds no tmux pane, and a tree deleted under one fails
+# it halfway. A process of another user cannot be read, and is not ours to keep the tree for.
+wt_process_inside() {
+  [ -n "$(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/cwd -maxdepth 0 \( -lname "$1" -o -lname "$1/*" \) -print -quit 2>/dev/null)" ]
+}
+
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
 # wt_work_reason <path> -- print why <path> still holds WORK; nothing, and rc 0, when the
@@ -390,6 +397,10 @@ wt_reap_reason() {
   fi
   if wt_editor_open "$1"; then
     printf 'a Unity editor has it open\n'
+    return 1
+  fi
+  if wt_process_inside "$1"; then
+    printf 'a running process is inside it\n'
     return 1
   fi
 
