@@ -242,7 +242,26 @@ render_drives() {
   done < <(drives)
 }
 
-# Network mounts, each sized under a timeout so a hung NAS cannot freeze the bar.
+# TARGET SOURCE of every network share: the mounted ones, plus automounts that have gone
+# idle. An idle one is only an autofs trigger, invisible to -t cifs, so without this a share
+# drops off the list 5 minutes after its last use. systemd knows what is behind the trigger.
+net_mounts() {
+  local types=cifs,smb3,nfs,nfs4,fuse.sshfs,fuse.rclone mounted tgt unit
+  mounted=$(findmnt -rn -t "$types" -o TARGET,SOURCE 2>/dev/null)
+  [ -z "$mounted" ] || printf '%s\n' "$mounted"
+  while read -r tgt; do
+    case $'\n'"$mounted" in *$'\n'"$tgt "*) continue ;; esac
+    unit=$(systemd-escape -p --suffix=mount "$tgt" 2>/dev/null) || continue
+    case ",$types," in
+    *",$(systemctl show -p Type --value "$unit" 2>/dev/null),"*)
+      printf '%s %s\n' "$tgt" "$(systemctl show -p What --value "$unit" 2>/dev/null)"
+      ;;
+    esac
+  done < <(findmnt -rn -t autofs -o TARGET 2>/dev/null)
+}
+
+# Network shares, each sized under a timeout so a hung NAS cannot freeze the bar. Sizing an
+# idle automount mounts it, so a share the bar polls stays mounted.
 render_net() {
   local mode=$1 tgt src out size used avail pct line
   while read -r tgt src; do
@@ -256,7 +275,7 @@ render_net() {
     else
       emph "$mode" crit "$(printf '%-35.35s        %-14s not responding' "$src" "$tgt")"
     fi
-  done < <(findmnt -rn -t cifs,smb3,nfs,nfs4,fuse.sshfs,fuse.rclone -o TARGET,SOURCE 2>/dev/null)
+  done < <(net_mounts)
 }
 
 render_biggest() {
