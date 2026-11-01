@@ -255,6 +255,48 @@ LOCKS
   assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
 }
 
+@test "textfile: runs count in the hour they ended, not the hour they began" {
+  textfile_fixture
+  local now; now="$(date +%s)"
+  local ended=$((now - 7200)) hour=$(( (now - 7200) / 3600 * 3600 ))
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"
+  printf '%s\t%s\t%s\tPlayMode\twt\tb\tr\n' \
+    $ended $((ended - 20000)) pass $ended $((ended - 60)) pass $ended $((ended - 60)) fail \
+    $((now - 90000)) $((now - 90600)) pass $ended $ended bogus > "$RUN_LEDGER"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line "fleet_local_gate_by_hour{hour=\"$hour\",result=\"pass\"} 2"
+  assert_line "fleet_local_gate_by_hour{hour=\"$hour\",result=\"fail\"} 1"
+  run grep -c '^fleet_local_gate_by_hour' "$OUT/fleet_local.prom"
+  assert_output 2
+}
+
+@test "textfile: every result but pass is listed by branch, with quotes escaped" {
+  textfile_fixture
+  local now; now="$(date +%s)"
+  local ended=$((now - 7200)) hour=$(( (now - 7200) / 3600 * 3600 ))
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"
+  { printf '%s\t%s\tfail\tPlayMode\twt\tfeat/x\tgame\n' $ended $ended $ended $ended
+    printf '%s\t%s\tkilled\tEditMode\twt\tfeat/"y"\tgame\n' $ended $ended
+    printf '%s\t%s\tpass\tPlayMode\twt\tfeat/x\tgame\n' $ended $ended; } > "$RUN_LEDGER"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line "fleet_local_gate_failed{hour=\"$hour\",repo=\"game\",branch=\"feat/x\",platform=\"PlayMode\",result=\"fail\"} 2"
+  assert_line "fleet_local_gate_failed{hour=\"$hour\",repo=\"game\",branch=\"feat/\\\"y\\\"\",platform=\"EditMode\",result=\"killed\"} 1"
+  run grep -c '^fleet_local_gate_failed' "$OUT/fleet_local.prom"
+  assert_output 2
+}
+
+@test "textfile: no ledger still publishes the hour families, with no rows" {
+  textfile_fixture
+  RUN_LEDGER="$BATS_TEST_TMPDIR/absent.tsv"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line '# TYPE fleet_local_gate_by_hour gauge'
+  refute_output --partial 'fleet_local_gate_by_hour{'
+  refute_output --partial 'fleet_local_gate_failed{'
+}
+
 @test "textfile: no ledger still publishes zero results and no run times" {
   textfile_fixture
   RUN_LEDGER="$BATS_TEST_TMPDIR/absent.tsv"
