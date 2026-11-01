@@ -8,7 +8,11 @@ const INFRA_REFRESH_MS = 60e3;
 // A job running past this shows amber: playground ci.md calls a gate past about an hour a bug.
 const LONG_RUN_SECS = 3600;
 const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "other"];
-const ist = { data: null, err: null, timer: null };
+// A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
+const FAILED_OPEN = 25;
+// `hour` is the column the failed list is filtered to, `open` each group's folded state: both
+// outlive the re-render on every refresh.
+const ist = { data: null, err: null, timer: null, hour: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
@@ -103,9 +107,10 @@ function busyChart(range, t0, t1) {
 
 const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
 
+const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
+
 function kpis(cc) {
   const one = (n) => (cc[n] || {})[""];
-  const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_open_slots"]);
@@ -219,6 +224,96 @@ function finishedTable(inst) {
   return { head, body };
 }
 
+// Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
+// A conclusion that is none of these (skipped, neutral) counts in no column, as in finishedTable.
+const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
+const OUTCOMES = [["ok", "passed", "var(--b-done)"], ["bad", "failed", "var(--b-needs)"], ["can", "cancelled", "var(--b-unclear)"]];
+const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
+const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
+
+function tally(rows) {
+  const t = { ok: 0, bad: 0, can: 0 };
+  for (const r of rows) if (r.out) t[r.out] += r.n;
+  return t;
+}
+const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
+const hh = (hour) => String(new Date(hour * 1e3).getHours()).padStart(2, "0");
+
+function hourChart(title, rows, hours) {
+  const shown = OUTCOMES.filter(([o]) => rows.some((r) => r.out === o && r.n));
+  const cols = hours.map((h) => {
+    const t = tally(rows.filter((r) => r.hour === h));
+    return {
+      key: "t" + h, label: new Date(h * 1e3).getHours() % 3 === 0 ? hh(h) : "",
+      tip: `${hh(h)}:00-${hh(h + 3600)}:00\n` + OUTCOMES.map(([o, w]) => `${t[o]} ${w}`).join("\n"),
+      segs: OUTCOMES.map(([o, , color]) => ({ v: t[o], color })),
+    };
+  });
+  return `<div class="panel"><h3>${title} ${legend(shown.map(([, w, c]) => [w, c]))}</h3>${columns(cols, { height: 110, sel: ist.hour == null ? null : "t" + ist.hour })}</div>`;
+}
+
+// What failed, like the Log tab's merged list: main first because a red there is everyone's
+// problem, then each repo, then the local Unity runs by branch.
+function failedList(inst) {
+  const on = (h) => ist.hour == null || h === ist.hour;
+  const hourOf = (t) => Math.floor(t / 3600) * 3600;
+  const runs = (inst.failed || []).filter((s) => on(hourOf(s.value))).sort((a, b) => b.value - a.value);
+  const group = (key, name, n, body) => {
+    const open = ist.open[key] ?? (key === "main" || n <= FAILED_OPEN);
+    return `<details class="panel area" data-k="${esc(key)}"${open ? " open" : ""}><summary>${esc(name)} <span class="muted">${n}</span></summary>${body}</details>`;
+  };
+  const row = (s) => {
+    const l = s.labels, what = l.pr ? "#" + l.pr : "run";
+    const text = l.pr ? l.title : `${l.branch}${l.title ? ": " + l.title : ""}`;
+    return `<div class="pr" data-tip="${esc(`${l.repo} ${l.workflow}\n${l.branch}\n${l.conclusion} ${clock(s.value * 1e3)}`)}"><span class="ft">${clock(s.value * 1e3)}</span><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(what)}</a><span class="pt">${esc(text)}</span>${l.conclusion === "timed_out" ? '<b class="ci fail">timeout</b>' : ""}</div>`;
+  };
+  const byWorkflow = (rows, name) => {
+    const g = {};
+    for (const s of rows) (g[name(s.labels)] ||= []).push(s);
+    return Object.entries(g).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([w, rs]) => `<div class="grp">${esc(w)}</div>${rs.map(row).join("")}`).join("");
+  };
+  const main = runs.filter((s) => s.labels.scope === "main");
+  const branch = {};
+  for (const s of runs.filter((s) => s.labels.scope !== "main")) (branch[s.labels.repo] ||= []).push(s);
+  let html = main.length ? group("main", "On main", main.length, byWorkflow(main, (l) => `${l.repo} ${l.workflow}`)) : "";
+  html += Object.entries(branch).sort((a, b) => b[1].length - a[1].length).map(([repo, rs]) => group("repo:" + repo, repo, rs.length, byWorkflow(rs, (l) => l.workflow))).join("");
+  // The ledger counts per hour, so a whole day folds one branch's runs into one row.
+  const local = {};
+  for (const s of (inst.local_failed || []).filter((s) => on(+s.labels.hour))) {
+    const l = s.labels, k = [l.repo, l.branch, l.platform, l.result].join("\t");
+    const a = (local[k] ||= { l, n: 0, last: 0 });
+    a.n += s.value || 0; a.last = Math.max(a.last, +l.hour);
+  }
+  const lrows = Object.values(local).sort((a, b) => b.last - a.last || b.n - a.n);
+  if (lrows.length) {
+    html += group("local", "Local Unity", lrows.reduce((x, a) => x + a.n, 0), lrows.map((a) =>
+      `<div class="pr"><span class="ft">${hh(a.last)}:00</span><span class="pt">${esc(a.l.branch)}</span><span class="by">${esc(a.l.platform)} ${esc(a.l.result)}${a.n > 1 ? " x" + a.n : ""}</span></div>`).join(""));
+  }
+  return html || `<div class="panel">Nothing failed${ist.hour == null ? "" : " in this hour"}.</div>`;
+}
+
+function doneToday(inst, t1) {
+  const ci = ciRows(inst), local = localRows(inst);
+  if (!ci.length && !local.length) return `<h2 class="sec">Done today</h2><div class="panel">No hourly data yet.</div>`;
+  const midnight = new Date(t1).setHours(0, 0, 0, 0) / 1e3, today = (r) => r.hour >= midnight;
+  const tc = tally(ci.filter(today)), tl = tally(local.filter(today));
+  const failed = (scope) => tally(ci.filter((r) => today(r) && r.scope === scope)).bad;
+  const onMain = failed("main");
+  const now = Math.floor(t1 / 3600e3) * 3600;
+  const hours = Array.from({ length: 24 }, (_, i) => now - (23 - i) * 3600);
+  if (!hours.includes(ist.hour)) ist.hour = null;
+  const tiles = `<div class="tiles roomy">${
+    tile("CI RUNS", tc.ok + tc.bad + tc.can, "var(--c1)", `${pct(passOf(tc))} pass`)}${
+    tile("FAILED ON MAIN", onMain, onMain ? "var(--b-needs)" : "var(--b-done)")}${
+    tile("FAILED ON BRANCHES", failed("branch"), "var(--b-stalled)")}${
+    tile("CANCELLED", tc.can, "var(--b-unclear)")}${
+    tile("LOCAL UNITY", tl.ok + tl.bad, "var(--c3)", `${pct(passOf(tl))} pass`)}</div>`;
+  const heading = ist.hour == null ? "Failed, last 24h" : `Failed, ${hh(ist.hour)}:00-${hh(ist.hour + 3600)}:00`;
+  const note = "Tiles count from midnight, charts the last 24 hours. A run counts in the hour it finished, and a re-run in the hour of the re-run. CI is read every 10 minutes.";
+  return `<h2 class="sec">Done today</h2>${tiles}<div class="g2">${hourChart("CI runs per hour", ci, hours)}${hourChart("Local Unity runs per hour", local, hours)}</div><div class="muted fold">${note}</div>` +
+    `<h2 class="sec">${heading} <span class="muted">${ist.hour == null ? "click an hour to filter" : "click it again to clear"}</span></h2>${failedList(inst)}`;
+}
+
 function renderInfra() {
   const el = $("infra");
   const d = ist.data;
@@ -234,6 +329,7 @@ function renderInfra() {
   let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span> <span class="muted">needs you: ${(cc["cc:asks_open"] || {})[""] ?? "?"} asks, ${(cc["cc:sessions_attention"] || {})[""] ?? "?"} sessions waiting, read ${clock(t1)}</span></span><span>${links}</span></div>`;
   html += domainTiles(cc);
   html += `<div class="sp"></div>` + kpis(cc);
+  html += doneToday(inst, t1);
   html += `<h2 class="sec">Last 24h ${legend(STATUS.map(([w, c]) => [w, c]).concat([["NO DATA", "var(--b-unclear)"]]))}</h2><div class="panel">${statusStrip(d.range, t0, t1)}</div>`;
   html += `<div class="g2"><div class="panel">${queueChart(d.range, t0, t1)}</div><div class="panel">${busyChart(d.range, t0, t1)}</div></div>`;
   html += `<h2 class="sec">Red right now <span class="muted">${red.length}</span></h2><div class="panel${red.length ? " down" : ""}">${red.length ? red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("") : "Nothing: every rostered runner is registered and online."}</div>`;
@@ -243,6 +339,7 @@ function renderInfra() {
   html += `<h2 class="sec">Machines</h2><div class="panel scroll">${machinesTable(cc)}</div>`;
   html += `<h2 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h2>${fin.body ? `<div class="panel scroll">${fin.body}</div>` : ""}`;
   const y = el.scrollTop;
+  el.querySelectorAll("details[data-k]").forEach((d) => { ist.open[d.dataset.k] = d.open; });
   el.innerHTML = html;
   el.scrollTop = y;
 }
@@ -256,3 +353,11 @@ TABS.infra = {
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") refreshInfra(); },
 };
+
+$("infra").addEventListener("click", (e) => {
+  const col = e.target.closest && e.target.closest('.cc[data-key^="t"]');
+  if (!col) return;
+  const h = +col.dataset.key.slice(1);
+  ist.hour = ist.hour === h ? null : h;
+  renderInfra();
+});

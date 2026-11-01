@@ -22,6 +22,8 @@ const RANGE_HOURS: u64 = 24;
 const RANGE_STEP_SECS: u64 = 600;
 /// Scrape-target labels, stripped so two exporter pods during a rollout read as one row.
 const W: &str = "max without (instance, pod, job, namespace, service, endpoint, container)";
+/// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
+const LOCAL_FRESH: &str = r#"and on (instance) (time() - node_textfile_mtime_seconds{file=~".*fleet_local.prom"} < 180)"#;
 
 /// The board's `fetch()` queries, by name. All but `red` must answer or the tab shows the
 /// error instead of numbers, as the board blanks rather than leave stale values up.
@@ -33,6 +35,12 @@ fn instant_queries() -> Vec<(&'static str, String)> {
         ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
         ("api", "min(github_runner_exporter_api_ok)".into()),
         ("gates", "cc:host_local_gate".into()),
+        // Done today: when runs finished, and which failed. An absent metric is an empty answer,
+        // so the tab says "no data" rather than an error until the exporters publish them.
+        ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
+        ("failed", format!("{W} (github_run_failed)")),
+        ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
+        ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
         // The same three sources as the dashboard's "What is red" table.
         ("red", r#"label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
             or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")

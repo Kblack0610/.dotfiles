@@ -205,6 +205,7 @@ SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
 RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
 LEDGER_WINDOW_SECS=86400
+LEDGER_RESULTS='pass fail timeout killed flood error'
 
 # lock_ids <file...> -> one "<maj:min:inode>" per file, as /proc/locks names it (hex device).
 lock_ids() {
@@ -233,8 +234,8 @@ slot_usage() {
 ledger_stats() {
   # No ledger yet (no run since slots.sh began writing one) reads as no runs, not a failure.
   local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
-  awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" '
-    BEGIN { c["pass"] = c["fail"] = c["timeout"] = c["killed"] = c["flood"] = c["error"] = 0 }
+  awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" -v results="$LEDGER_RESULTS" '
+    BEGIN { split(results, rs, " "); for (i in rs) c[rs[i]] = 0 }
     $1 >= since && ($3 in c) { c[$3]++; d[++n] = $1 - $2 }
     END {
       for (r in c) print r, c[r]
@@ -244,6 +245,25 @@ ledger_stats() {
     }
     # Nearest rank: the smallest run time that q of the runs are at or under.
     function rank(q,  i) { i = int(q * n); if (i < q * n) i++; return i < 1 ? 1 : i }' "$f" | sort
+}
+
+# ledger_hours -> the same runs as prom lines by the hour they ended (its start, epoch seconds):
+# fleet_local_gate_by_hour per result, and fleet_local_gate_failed per branch for any result but
+# pass. A count per branch rather than a row per run: a day is hundreds, with no URL to open.
+ledger_hours() {
+  local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
+  awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" -v results="$LEDGER_RESULTS" '
+    function lab(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v == "" ? "-" : v }
+    BEGIN { split(results, rs, " "); for (i in rs) known[rs[i]] = 1 }
+    $1 >= since && ($3 in known) {
+      h = int($1 / 3600) * 3600
+      by["hour=\"" h "\",result=\"" $3 "\""]++
+      if ($3 != "pass") failed["hour=\"" h "\",repo=\"" lab($7) "\",branch=\"" lab($6) "\",platform=\"" lab($4) "\",result=\"" $3 "\""]++
+    }
+    END {
+      for (k in by) printf "fleet_local_gate_by_hour{%s} %d\n", k, by[k]
+      for (k in failed) printf "fleet_local_gate_failed{%s} %d\n", k, failed[k]
+    }' "$f" | sort
 }
 
 # agent_count -> claude processes whose parent is not claude: one per session.
@@ -260,7 +280,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued stats
+  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued stats hours
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -299,6 +319,13 @@ write_textfile() {
     echo '# HELP fleet_local_gate_duration_seconds Run time of those runs.'
     echo '# TYPE fleet_local_gate_duration_seconds gauge'
     awk '$1 ~ /^p[0-9]/ { printf "fleet_local_gate_duration_seconds{quantile=\"0.%s\"} %s\n", substr($1, 2, 1), $2 }' <<< "$stats"
+    hours="$(ledger_hours)"
+    echo '# HELP fleet_local_gate_by_hour Those runs by the hour they ended; hour = its start, epoch seconds.'
+    echo '# TYPE fleet_local_gate_by_hour gauge'
+    awk '/^fleet_local_gate_by_hour/' <<< "$hours"
+    echo '# HELP fleet_local_gate_failed Those runs that did not pass, by the hour they ended and branch.'
+    echo '# TYPE fleet_local_gate_failed gauge'
+    awk '/^fleet_local_gate_failed/' <<< "$hours"
   } > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$dir/fleet_local.prom" || { rm -f "$tmp"; return 1; }
 }
 
