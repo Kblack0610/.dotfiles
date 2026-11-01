@@ -160,6 +160,25 @@ function machinesTable(cc) {
   }).join("")}</table>`;
 }
 
+// One row per Claude account, from claude-acct's textfile. The weekly percent is what stops work;
+// dollars are the OTel list-price estimate, for scale.
+function accountsTable(inst) {
+  const by = {};
+  for (const s of inst.accounts || []) {
+    (by[s.labels.account] = by[s.labels.account] || {})[s.labels.__name__.replace("claude_account_", "")] = +s.value;
+  }
+  const names = Object.keys(by).sort();
+  if (!names.length) return `<div class="empty">no data</div>`;
+  const when = (t) => (t ? new Date(t * 1e3).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "-");
+  return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>pace</th><th>runs out</th><th>resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
+    const a = by[n];
+    if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="8" class="bad">usage unreadable</td></tr>`;
+    if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="8" class="muted">idle, token refreshes on launch</td></tr>`;
+    const over = a.over_pace === 1;
+    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td>${over ? "over" : "under"}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
+  }).join("")}</table>`;
+}
+
 function runningTable(inst) {
   const prBy = {};
   for (const r of [...(inst.runners || []), ...(inst.waiting || [])]) if (r.labels.pr && r.labels.pr !== "") prBy[`${r.labels.repo}/${r.labels.branch}`] = r.labels.pr;
@@ -329,6 +348,7 @@ function renderInfra() {
   let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span> <span class="muted">needs you: ${(cc["cc:asks_open"] || {})[""] ?? "?"} asks, ${(cc["cc:sessions_attention"] || {})[""] ?? "?"} sessions waiting, read ${clock(t1)}</span></span><span>${links}</span></div>`;
   html += domainTiles(cc);
   html += `<div class="sp"></div>` + kpis(cc);
+  html += `<h2 class="sec">Claude accounts</h2><div class="panel scroll">${accountsTable(inst)}</div>`;
   html += doneToday(inst, t1);
   html += `<h2 class="sec">Last 24h ${legend(STATUS.map(([w, c]) => [w, c]).concat([["NO DATA", "var(--b-unclear)"]]))}</h2><div class="panel">${statusStrip(d.range, t0, t1)}</div>`;
   html += `<div class="g2"><div class="panel">${queueChart(d.range, t0, t1)}</div><div class="panel">${busyChart(d.range, t0, t1)}</div></div>`;
