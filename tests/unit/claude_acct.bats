@@ -349,3 +349,151 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   refute_line --partial 'week_used_percent{account="alt"}'
   [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
 }
+
+@test "room: the emptier account under pace wins; main prints empty, alt its dir" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 40 84
+  week alt 20 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  week main 10 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: today's numbers refuse main and take alt" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 66 102   # 39% of the week gone
+  week alt 32 79     # 53% gone
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: over pace on both accounts is exit 1" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 60 84
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'no account has room'* ]]
+}
+
+@test "room: the slack is the edge of the pace line" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PACE_SLACK_PCT=5
+  week main 55 84
+  week alt 56 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+  week main 56 84
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+}
+
+@test "room: the reserve holds late in the week, even under pace" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 85 2
+  week alt 90 2
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  week main 84 2
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: a nearly spent five hour window refuses when it is reported" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 84
+  week alt 20 84
+  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: an expired token has room; a failed read with no room elsewhere is exit 2" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  creds "$ALT" 1000
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" room
+  assert_failure 2
+}
+
+@test "room: one account unread does not stop a start on the other" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 84
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "pick warns when its account is over pace, and still picks it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 80 84
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output ''
+  [[ "$stderr" == *'main is over its weekly pace'* ]]
+}
+
+@test "check usage: trips on a failed read, naming the account, clears when both read" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$ALT" 99999999999999
+  run "$ACCT" check usage
+  assert_failure 1
+  assert_output 'cannot read usage of alt'
+  week alt 30 84
+  run "$ACCT" check usage
+  assert_success
+  assert_output 'usage read on 2 accounts'
+}
+
+@test "check usage: an expired token is not a failed read" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$ALT" 1000
+  run "$ACCT" check usage
+  assert_success
+}
+
+@test "check pace: one account over its line is fine while the pair lasts" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84   # 140% by its reset
+  week alt 20 84    # 40%
+  run "$ACCT" check pace
+  assert_success
+  assert_output 'main 70%, alt 20%: at this rate 90% of the combined limit by the resets'
+}
+
+@test "check pace: trips when the pair will not last" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 40 84    # 140 + 80 over 2
+  run "$ACCT" check pace
+  assert_failure 1
+  assert_output --partial '110% of the combined limit'
+}
+
+@test "check pace: the first hours of a week say nothing yet" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 5 167    # 500% on a straight line, one hour in
+  week alt 5 167
+  run "$ACCT" check pace
+  assert_success
+}
+
+@test "check: an unknown name is a usage error, not a pass" {
+  run "$ACCT" check nonsense
+  assert_failure 2
+}

@@ -6,6 +6,9 @@
 #   claude-acct pick     # print the CLAUDE_CONFIG_DIR to use (empty = main account)
 #   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
+#   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
+#                        # exit 1 when none has room, 2 when none has room and one cannot be read
+#   claude-acct check usage|pace  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
@@ -37,7 +40,7 @@ SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks s
 MERGE=(sessions)
 
 usage() {
-    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # accounts -> "name US dir" lines (US = \037, never collapsed like a tab), dir empty = default
@@ -141,6 +144,10 @@ cmd_pick() {
     fi
     IFS=$'\037' read -r _ name dir note <<< "$b"
     echo "claude-acct: $name ($note)" >&2
+    # Told, never refused: a human start goes ahead whatever the pace.
+    if [[ "$(usage_json nospend | jq -r --arg n "$name" 'select(.name == $n) | .over_pace')" == true ]]; then
+        echo "claude-acct: $name is over its weekly pace" >&2
+    fi
     printf '%s\n' "$dir"
 }
 
@@ -148,6 +155,8 @@ cmd_pick() {
 # The weekly percent is what stops work, so pace is read against it: under the line the account
 # can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
 WEEK=604800
+PACE_SLACK_PCT="${CLAUDE_ACCT_PACE_SLACK_PCT:-5}"   # how far past the pace line an automatic start may go
+RESERVE_PCT="${CLAUDE_ACCT_RESERVE_PCT:-15}"        # the last of each account, kept for the human
 # The endpoint is private: the hub's own env file, the same one agent-web's Infra tab loads.
 PROM_ENV="${CLAUDE_ACCT_PROM_ENV:-$HOME/.config/command-center/env}"
 
@@ -182,11 +191,12 @@ spend_24h() {
     echo "${out:-null}"
 }
 
-# usage_json -> one JSON object per account. state: ok, expired (idle, refreshes on launch) or unread.
+# usage_json [nospend] -> one JSON object per account. state: ok, expired (idle, refreshes on launch)
+# or unread. nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name dir json rc state now resets start gone used run_out over live spend lives
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
-    spend=$(spend_24h)
+    if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
     while IFS=$'\037' read -r name dir; do
         json=$(fetch "$name" "$dir"); rc=$?
@@ -273,6 +283,63 @@ cmd_textfile() {
     fi
     rm -f "$tmp"
     return 1
+}
+
+# room: where an automatic start may go. Only automatic starts ask this: `cl`, a running session
+# and a hand start are never refused. An expired token means the account has been idle for hours,
+# and launching it is what refreshes it, so it has room, as in pick.
+cmd_room() {
+    local rows row
+    rows=$(usage_json nospend | jq -s .)
+    row=$(jq -c --argjson slack "$PACE_SLACK_PCT" --argjson reserve "$RESERVE_PCT" '
+        [.[] | select(.state != "unread")
+             | select((.week_used == null) or
+                      (.week_used <= .week_gone + $slack and .week_used < 100 - $reserve))
+             | select((.five_hour == null) or (.five_hour < 100 - $reserve))]
+        | sort_by(.week_used // 0) | first // empty' <<< "$rows")
+    if [[ -n "$row" ]]; then
+        echo "claude-acct: room on $(jq -r '"\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"' <<< "$row")" >&2
+        jq -r .dir <<< "$row"
+        return 0
+    fi
+    if [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == true ]]; then
+        echo "claude-acct: no account has room and one cannot be read" >&2
+        return 2
+    fi
+    echo "claude-acct: no account has room under its weekly pace" >&2
+    return 1
+}
+
+# check usage: can every account be read? A failed read sends every start to the default account
+# without a word, which is how the 2026-10-30 API change went two days unseen.
+# check pace: at this rate, does the fleet use more than both limits by the resets? One account
+# over its line alone is fine, since pick moves new work to the other. An unread account counts as
+# nothing here because check usage pages for it, and an account under PACE_MIN_GONE% into its week
+# counts as on pace, because a straight line from so few hours says nothing yet.
+PACE_MIN_GONE=10
+cmd_check() {
+    local rows
+    rows=$(usage_json nospend | jq -s .)
+    case "${1:-}" in
+        usage)
+            jq -r 'map(select(.state == "unread") | .name) as $bad |
+                if ($bad | length) > 0 then "cannot read usage of \($bad | join(", "))"
+                else "usage read on \(length) accounts" end' <<< "$rows"
+            [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == false ]]
+            ;;
+        pace)
+            local line
+            line=$(jq -r --argjson min "$PACE_MIN_GONE" '
+                def proj: if .week_used == null then 0
+                          elif .week_gone < $min then 100
+                          else .week_used * 100 / .week_gone end;
+                ((map(proj) | add) / length) as $p |
+                "\($p | floor) \(map("\(.name) \(.week_used // "?" | if type == "number" then floor else . end)%") | join(", "))"' <<< "$rows")
+            echo "${line#* }: at this rate ${line%% *}% of the combined limit by the resets"
+            ((${line%% *} <= 100))
+            ;;
+        *) echo "usage: claude-acct check usage|pace" >&2; return 2 ;;
+    esac
 }
 
 # --- move ------------------------------------------------------------------------------
@@ -555,6 +622,8 @@ case "${1:-}" in
     pick)   cmd_pick ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
+    room)   cmd_room ;;
+    check)  shift; cmd_check "$@" ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;
     -h|--help|"") usage ;;
