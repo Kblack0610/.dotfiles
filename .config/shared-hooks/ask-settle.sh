@@ -19,7 +19,10 @@ sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
 sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
 [ -n "$sid" ] || exit 0
 if [ "$to" = answered ]; then
-  agent-ask settle-session "$sid" answered "$(jq -r '.prompt // empty' <<<"$payload" 2>/dev/null)" >/dev/null 2>&1
+  prompt=$(jq -r '.prompt // empty' <<<"$payload" 2>/dev/null)
+  # The harness submits these as prompts too, and neither is the human: 29 asks closed that way by 2026-11-01.
+  case "$prompt" in '<task-notification>'* | '<cross-session-message '*) exit 0 ;; esac
+  agent-ask settle-session "$sid" answered "$prompt" >/dev/null 2>&1
 else
   agent-ask settle-session "$sid" stale "session ended ($(jq -r '.reason // "exit"' <<<"$payload" 2>/dev/null))" >/dev/null 2>&1
 fi
