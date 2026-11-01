@@ -33,6 +33,8 @@ BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev 
 INFRA="$LEDGER/.infra"       # this pass's infra lines
 INFRA_SEEN="$LEDGER/.infra-seen" # the ones a finished pass has already reported
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
+: "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
+LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
 
@@ -112,11 +114,53 @@ cmd_due() {
   local b
   b="$(blocked_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(limit_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
+  b="$(findings_due)"
+  [ -z "$b" ] || out="$b${out:+$'\n'}$out"
   # Infra leads: on 2026-10-31 eight hours of passes moved sessions and never named the disk.
   b="$(infra_due)"
   [ -z "$b" ] || out="$b${out:+$'\n'}$out"
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"
+}
+
+# findings_due -> a line per open finding that wants a decision and has not gone out. Report-class
+# findings are not due, and a finding on one sample is not either: on 2026-11-01 throughput-drop
+# fired once on a morning of sessions still starting, and cleared on the next sample. The ledger
+# key holds the class, so a finding promoted from shepherd to human is news.
+findings_due() {
+  local rows id key text
+  rows="$(fleet-bench findings --json 2>/dev/null)" || {
+    echo "finding: fleet-bench findings unreadable, so shared faults are unread"
+    return 0
+  }
+  [ -n "$rows" ] || return 0
+  while IFS=$'\t' read -r id key text; do
+    [ "$(sed -n 's/^escalated: //p' "$LEDGER/$id" 2>/dev/null)" = "$key" ] && continue
+    printf 'finding %s; then: fleet-sessions escalate %s "%s"\n' "$text" "$id" "$key"
+  done < <(jq -r 'select(.decision_class != "report" and .epoch > .episode)
+    | [("finding-\(.rule)-\(.scope)" | gsub("/"; "-")), "\(.fact) \(.decision_class)",
+       "\(.decision_class): \(.rule) \(.scope): \(.conclusion)" + (if (.cost // "") != "" then " (\(.cost))" else "" end)]
+    | @tsv' <<<"$rows")
+}
+
+# limit_due -> a line per session stopped on the account's usage limit. Only the pane says so: no
+# transcript record or session status does. An escalated row is left alone, since that is where a
+# pass puts one no account has room for, and only the human can add room.
+limit_due() {
+  local target pane server
+  while IFS=$'\t' read -r target pane; do
+    server=''
+    case "$target" in */*) server="${target%%/*}" ;; esac
+    tmux ${server:+-L "$server"} capture-pane -p -t "$pane" 2>/dev/null \
+      | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$LIMIT_RE" \
+      && echo "limit: $target stopped on the usage limit"
+  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" '(.sessions // [])[]
+    | select((.labels // []) | index("hands-off") | not)
+    | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
+    | [.target, .pane] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
 # blocked_sample: rotate the blocked rows, so each pass compares itself with the one before.
@@ -215,12 +259,17 @@ cmd_run() {
   fleet-sessions --write >/dev/null || { publish FAILED "fleet-sessions --write failed"; return 1; }
   blocked_sample
   infra_sample
-  local due
-  if ! due="$(cmd_due)"; then
+  # Exit 1 is nothing to move. Exit 2 is a document it could not read, which is not a quiet fleet.
+  local due due_rc=0
+  due="$(cmd_due)" || due_rc=$?
+  if [ "$due_rc" = 1 ]; then
     settle
     echo "$NAME: nothing to move."
     publish NOOP "nothing to move"
     return 0
+  elif [ "$due_rc" != 0 ]; then
+    publish FAILED "could not read the state document"
+    return "$due_rc"
   fi
   rm -f "$LEDGER/.settled"
   printf '%s: due\n%s\n' "$NAME" "$due"

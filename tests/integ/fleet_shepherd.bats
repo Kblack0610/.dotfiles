@@ -17,6 +17,8 @@ setup() {
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub watch-companion-loop 'printf "%b" "${STUB_URGENT:-}"'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; printf "%b" "${STUB_FINDINGS:-}"'
+  stub tmux 'echo "$*" >> "$HOME/tmux.calls"; printf "%b" "${STUB_PANE:-}"'
   export PROM_LIB="$HOME/prom-stub.sh"
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -223,4 +225,77 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   STUB_RC=1 run "$SH" run
   run "$SH" run
   assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
+}
+
+# finding <rule> <scope> <class> <epoch> <episode>: one row of `fleet-bench findings --json`
+finding() {
+  jq -cn --arg r "$1" --arg s "$2" --arg c "$3" --argjson t "$4" --argjson e "$5" \
+    '{rule:$r, scope:$s, decision_class:$c, epoch:$t, episode:$e, conclusion:"c-\($r)", cost:"", fact:"\($r) \($s) @\($e)"}'
+}
+
+@test "a finding seen on two samples is due and leads the sessions, with the exact ledger call" {
+  doc "[$(row a DONE false false)]"
+  export STUB_FINDINGS="$(finding starved pool:unity human 200 100)\n"
+  run "$SH" due
+  assert_success
+  assert_line --index 0 'finding human: starved pool:unity: c-starved; then: fleet-sessions escalate finding-starved-pool:unity "starved pool:unity @100 human"'
+  assert_line --index 1 'nudge DONE: a f-a'
+}
+
+@test "a finding on one sample, and a report-class finding, are not due" {
+  doc "[]"
+  export STUB_FINDINGS="$(finding throughput-drop repo human 100 100)\n$(finding host-overload mac report 200 100)\n"
+  run "$SH" due
+  assert_failure
+  assert_output ''
+}
+
+@test "a recorded finding is not due again, until it is promoted or recurs" {
+  doc "[]"
+  printf 'escalated: starved pool @100 shepherd\n' > "$FLEET_SHEPHERD_DIR/finding-starved-pool"
+  STUB_FINDINGS="$(finding starved pool shepherd 200 100)\n" run "$SH" due
+  assert_failure
+  STUB_FINDINGS="$(finding starved pool human 300 100)\n" run "$SH" due
+  assert_output --partial 'finding human: starved pool'
+  STUB_FINDINGS="$(finding starved pool shepherd 900 800)\n" run "$SH" due
+  assert_output --partial 'finding shepherd: starved pool'
+}
+
+@test "findings that cannot be read say so, instead of reading as none" {
+  doc "[]"
+  STUB_BENCH_FAIL=1 run "$SH" due
+  assert_success
+  assert_output --partial 'fleet-bench findings unreadable'
+}
+
+# idle <target> <pane> <idle_min> [escalated]: a row limit_due reads
+idle_row() {
+  jq -n --arg t "$1" --arg p "$2" --argjson i "$3" --argjson e "${4:-false}" \
+    '{target:$t, pane:$p, idle_min:$i, bucket:"WORKING", nudged:false, escalated:$e, labels:[]}'
+}
+
+@test "an idle pane stopped on the usage limit is due, read on the session's own server" {
+  doc "[$(idle_row lab/agent-1:1 %5 9)]"
+  STUB_PANE='some output\n\nYou have hit your weekly limit\n\n' run "$SH" due
+  assert_success
+  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+  grep -q -- '-L lab capture-pane -p -t %5' "$HOME/tmux.calls"
+}
+
+@test "the usage-limit line needs an idle session, the text near the bottom, and no escalation" {
+  doc "[$(idle_row lab/busy:1 %1 1), $(idle_row lab/told:1 %2 9 true)]"
+  STUB_PANE='hit your weekly limit\n' run "$SH" due
+  assert_failure
+  doc "[$(idle_row lab/old:1 %3 9)]"
+  STUB_PANE='hit your weekly limit\n1\n2\n3\n4\n5\n6\n7\n' run "$SH" due
+  assert_failure
+}
+
+@test "an unreadable state document fails the pass; it does not read as a quiet fleet" {
+  echo 'not json' > "$FLEET_STATE_FILE"
+  run "$SH" run
+  assert_failure 2
+  assert_equal "$(outcome)" FAILED
+  [ ! -e "$HOME/last-prompt" ]
+  [ ! -e "$HOME/pages" ]
 }
