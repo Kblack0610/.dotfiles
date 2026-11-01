@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# fleet-presence - is the human at this machine? Unattended work reads it before starting anything.
+#
+#   fleet-presence                         print "<here|away|unread> <minutes> <source>"
+#   fleet-presence desktop idle <seconds>  hypridle on-timeout: desktop input stopped <seconds> ago
+#   fleet-presence desktop active          hypridle on-resume
+#
+# Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN. tmux alone
+# would call the human away while they play a test build, when extra load hurts most, so the
+# desktop counts too. A source it cannot read prints unread, and readers treat that as here.
+# Agents do not count: send-keys and paste-buffer leave client_activity alone
+# (tests/ui/fleet_presence.bats).
+#
+# Time of day plays no part: a night is a long away.
+
+set -uo pipefail
+
+: "${AWAY_AFTER_MIN:=30}"
+# Runtime dir, so a reboot clears it: a stale time would read as away right after login. Holds the
+# epoch desktop input stopped; empty or absent means active.
+IDLE_FILE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fleet-desktop-idle"
+
+die() { echo "fleet-presence: $*" >&2; exit 2; }
+
+# tmux_activity -> the newest client keypress on any server, as an epoch; nothing when no client
+# is attached. Named sockets only: list-clients never starts a server, and a dead socket is empty.
+tmux_activity() {
+  local dir sock
+  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+  [ -z "${TMUX:-}" ] || dir="$(dirname "${TMUX%%,*}")"
+  for sock in "$dir"/*; do
+    [ -S "$sock" ] || continue
+    tmux -S "$sock" list-clients -F '#{client_activity}' 2>/dev/null
+  done | sort -n | tail -n 1
+}
+
+# desktop_activity -> the last desktop input as an epoch, "now" while active, nothing when there
+# is no desktop session. Exit 1 when there is a session and nothing is reporting on it.
+desktop_activity() {
+  pgrep -xi hyprland >/dev/null 2>&1 || return 0
+  pgrep -x hypridle >/dev/null 2>&1 || return 1
+  if [ -s "$IDLE_FILE" ]; then cat "$IDLE_FILE"; else echo now; fi
+}
+
+cmd_status() {
+  local now desktop t_tmux age source
+  now="$(date +%s)"
+  desktop="$(desktop_activity)" || { echo "unread - hypridle"; return 0; }
+  [ "$desktop" != now ] || desktop="$now"
+  [ -z "$desktop" ] || [[ "$desktop" =~ ^[0-9]+$ ]] || { echo "unread - $IDLE_FILE"; return 0; }
+  t_tmux="$(tmux_activity)"
+  if [ "${t_tmux:-0}" -gt "${desktop:-0}" ]; then
+    age=$(( now - t_tmux )); source=tmux
+  elif [ -n "$desktop" ]; then
+    age=$(( now - desktop )); source=desktop
+  else
+    # No client and no desktop session: nobody can be at this machine.
+    echo "away - none"; return 0
+  fi
+  [ "$age" -ge 0 ] || age=0
+  age=$(( age / 60 ))
+  if [ "$age" -ge "$AWAY_AFTER_MIN" ]; then echo "away $age $source"; else echo "here $age $source"; fi
+}
+
+cmd_desktop() {
+  case "${1:-}" in
+    idle)
+      [[ "${2:-}" =~ ^[0-9]+$ ]] || die "usage: fleet-presence desktop idle <seconds>"
+      printf '%s\n' "$(( $(date +%s) - $2 ))" > "$IDLE_FILE"
+      ;;
+    active) : > "$IDLE_FILE" ;;
+    *) die "usage: fleet-presence desktop idle <seconds> | desktop active" ;;
+  esac
+}
+
+case "${1:-}" in
+  "") cmd_status ;;
+  desktop) shift; cmd_desktop "$@" ;;
+  -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (desktop)" ;;
+esac
