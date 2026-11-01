@@ -50,6 +50,31 @@ creds() {
   [[ "$stderr" == *'claude-acct: main'* ]]
 }
 
+@test "a null five_hour window still scores on the weekly one" {
+  printf '{"five_hour":null,"seven_day":{"utilization":65.0}}\n' > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '{"five_hour":null,"seven_day":{"utilization":32.0}}\n' > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run "$ACCT" pick
+  assert_success
+  assert_line "$ALT"
+  assert_output --partial 'claude-acct: alt (5h -, 7d 32%)'
+}
+
+@test "a fresh answer with a null five_hour is accepted, not read as a failed fetch" {
+  creds "$HOME/.claude" 99999999999999
+  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":{\"utilization\":65.0,\"resets_at\":\"2026-11-06T03:00:00+00:00\"}}'" > "$SANDBOX/bin/curl"
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +65%'
+  refute_line --regexp '^main .*fetch failed'
+}
+
+@test "a response with no usage window at all is still a failed fetch" {
+  creds "$HOME/.claude" 99999999999999
+  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":null}'" > "$SANDBOX/bin/curl"
+  run "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+}
+
 @test "a tie goes to the first account in the file" {
   usage main 40 40
   usage alt 40 40
