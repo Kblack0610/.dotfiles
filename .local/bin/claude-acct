@@ -4,7 +4,8 @@
 #
 # Usage:
 #   claude-acct pick     # print the CLAUDE_CONFIG_DIR to use (empty = main account)
-#   claude-acct status   # 5h / 7d usage per account
+#   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
+#   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
@@ -36,7 +37,7 @@ SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks s
 MERGE=(sessions)
 
 usage() {
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # accounts -> "name US dir" lines (US = \037, never collapsed like a tab), dir empty = default
@@ -143,19 +144,135 @@ cmd_pick() {
     printf '%s\n' "$dir"
 }
 
-cmd_status() {
-    local name dir json rc
-    printf '%-10s %-6s %-6s %-22s %s\n' ACCOUNT 5H 7D 5H-RESETS DIR
+# --- usage -----------------------------------------------------------------------------
+# The weekly percent is what stops work, so pace is read against it: under the line the account
+# can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
+WEEK=604800
+# The endpoint is private: the hub's own env file, the same one agent-web's Infra tab loads.
+PROM_ENV="${CLAUDE_ACCT_PROM_ENV:-$HOME/.config/command-center/env}"
+
+# email_of <dir> -> the address that account is logged in as, empty if unknown
+email_of() {
+    local f="$HOME/.claude.json"
+    [[ -n "$1" ]] && f="$1/.claude.json"
+    jq -r '.oauthAccount.emailAddress // empty' "$f" 2>/dev/null
+}
+
+# live_of -> one line per running claude, the account dir it runs under
+live_of() {
+    local c
+    for c in "$PROC"/[0-9]*/comm; do
+        [[ "$(cat "$c" 2>/dev/null)" == claude ]] || continue
+        c="${c%/comm}"
+        config_dir_of "${c##*/}"
+        echo
+    done
+}
+
+# spend_24h -> {"email": dollars}, or null when Prometheus cannot be read: dollars are for scale,
+# never load-bearing, so the percents still print
+spend_24h() {
+    local url="${CC_PROM_URL:-}" out
+    # shellcheck source=/dev/null
+    [[ -n "$url" || ! -r "$PROM_ENV" ]] || url=$(. "$PROM_ENV" 2>/dev/null; printf '%s' "${CC_PROM_URL:-}")
+    [[ -n "$url" ]] || { echo null; return; }
+    out=$(curl -sf -m 5 --data-urlencode 'query=sum by (user_email) (increase(claude_code_cost_usage_USD_total[24h]))' \
+        "$url/api/v1/query" 2>/dev/null |
+        jq -c '[.data.result[] | {key: (.metric.user_email // ""), value: (.value[1] | tonumber)}] | from_entries' 2>/dev/null)
+    echo "${out:-null}"
+}
+
+# usage_json -> one JSON object per account. state: ok, expired (idle, refreshes on launch) or unread.
+usage_json() {
+    local name dir json rc state now resets start gone used run_out over live spend lives
+    now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    spend=$(spend_24h)
+    lives=$(live_of)
     while IFS=$'\037' read -r name dir; do
         json=$(fetch "$name" "$dir"); rc=$?
         case $rc in
-            0) printf '%-10s %-6s %-6s %-22s %s\n' "$name" \
-                   "$(pct five_hour <<< "$json")" "$(pct seven_day <<< "$json")" \
-                   "$(jq -r '.five_hour.resets_at // "-" | .[0:16]' <<< "$json")" "${dir:-default}" ;;
-            2) printf '%-10s %-6s %-6s %-22s %s\n' "$name" - - "token expired" "${dir:-default}" ;;
-            *) printf '%-10s %-6s %-6s %-22s %s\n' "$name" - - "fetch failed" "${dir:-default}" ;;
+            0) state=ok ;;
+            2) state=expired; json='{}' ;;
+            *) state=unread; json='{}' ;;
         esac
+        used=$(jq -r '.seven_day.utilization // empty' <<< "$json")
+        resets=$(jq -r '.seven_day.resets_at // empty' <<< "$json")
+        resets=$([[ -n "$resets" ]] && date -d "$resets" +%s 2>/dev/null)
+        gone="" over="" run_out=""
+        if [[ -n "$resets" && -n "$used" ]]; then
+            start=$((resets - WEEK))
+            gone=$(awk -v n="$now" -v s="$start" -v w="$WEEK" 'BEGIN { g = (n - s) * 100 / w; print (g < 0 ? 0 : g > 100 ? 100 : g) }')
+            over=$(awk -v u="$used" -v g="$gone" 'BEGIN { print (u > g ? "true" : "false") }')
+            # Straight line from the window start; nothing when it lasts to the reset.
+            run_out=$(awk -v u="$used" -v n="$now" -v s="$start" -v r="$resets" 'BEGIN {
+                if (u <= 0) exit; t = s + (n - s) * 100 / u; if (t < r) printf "%d", t }')
+        fi
+        live=$(grep -cxF -- "$dir" <<< "$lives")
+        jq -cn --arg name "$name" --arg dir "$dir" --arg email "$(email_of "$dir")" --arg state "$state" \
+            --argjson usage "$json" --arg used "$used" --arg gone "$gone" --arg over "$over" \
+            --arg resets "$resets" --arg run_out "$run_out" --argjson live "${live:-0}" --argjson spend "$spend" '
+            def num: if . == "" then null else tonumber end;
+            {name: $name, dir: $dir, email: $email, state: $state,
+             five_hour: ($usage.five_hour.utilization // null),
+             week_used: ($used | num), week_gone: ($gone | num),
+             over_pace: (if $over == "" then null else $over == "true" end),
+             resets: ($resets | num), run_out: ($run_out | num), live: $live,
+             usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}'
     done < <(accounts)
+}
+
+# day_time <epoch> -> "Thu 19:00", or - when there is none
+day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+
+cmd_status() {
+    if [[ "${1:-}" == --json ]]; then
+        usage_json | jq -s .
+        return
+    fi
+    local line state
+    printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %s\n' \
+        ACCOUNT 5H WEEK GONE PACE RUNS-OUT RESETS LIVE '24H-$' EMAIL
+    while IFS= read -r line; do
+        state=$(jq -r .state <<< "$line")
+        if [[ "$state" != ok ]]; then
+            [[ "$state" == expired ]] && state="token expired" || state="fetch failed"
+            printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
+            continue
+        fi
+        printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %s\n' \
+            "$(jq -r .name <<< "$line")" \
+            "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
+            "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
+            "$(jq -r 'if .week_gone == null then "-" else "\(.week_gone | floor)%" end' <<< "$line")" \
+            "$(jq -r 'if .over_pace == null then "-" elif .over_pace then "over" else "under" end' <<< "$line")" \
+            "$(day_time "$(jq -r .run_out <<< "$line")")" \
+            "$(day_time "$(jq -r .resets <<< "$line")")" \
+            "$(jq -r .live <<< "$line")" \
+            "$(jq -r 'if .usd_24h == null then "-" else "$\(.usd_24h | floor)" end' <<< "$line")" \
+            "$(jq -r .email <<< "$line")"
+    done < <(usage_json)
+}
+
+# textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
+cmd_textfile() {
+    local dir="${1:?usage: claude-acct textfile <dir>}" tmp
+    tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
+    if usage_json | jq -rs '
+        def rows($metric; f):
+            .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\"} \($v)";
+        (rows("claude_account_read_ok"; if .state == "unread" then 0 else 1 end)),
+        (rows("claude_account_week_used_percent"; .week_used)),
+        (rows("claude_account_week_gone_percent"; .week_gone)),
+        (rows("claude_account_over_pace"; if .over_pace == null then null elif .over_pace then 1 else 0 end)),
+        (rows("claude_account_resets_timestamp_seconds"; .resets)),
+        (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
+        (rows("claude_account_live_sessions"; .live)),
+        (rows("claude_account_cost_24h_usd"; .usd_24h))' > "$tmp" &&
+        chmod 0644 "$tmp" && mv -f "$tmp" "$dir/claude_acct.prom"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
 # --- move ------------------------------------------------------------------------------
@@ -436,7 +553,8 @@ cmd_move() {
 
 case "${1:-}" in
     pick)   cmd_pick ;;
-    status) cmd_status ;;
+    status) shift; cmd_status "$@" ;;
+    textfile) shift; cmd_textfile "$@" ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;
     -h|--help|"") usage ;;

@@ -244,3 +244,108 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   run bg_shells 50
   assert_output "51  scripts/test/suite.sh --retry' "
 }
+
+# week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
+NOW=1800000000
+week() {
+  local resets
+  resets=$(date -u -d "@$((NOW + $3 * 3600))" +%Y-%m-%dT%H:%M:%S.123456+00:00)
+  printf '{"five_hour":null,"seven_day":{"utilization":%s,"resets_at":"%s"}}\n' "$2" "$resets" \
+    > "$XDG_CACHE_HOME/claude-acct/$1.json"
+}
+field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
+
+@test "status --json: half the week gone, used under it, is under pace and lasts to the reset" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  week alt 80 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .week_gone <<<"$output")" = 50 ]
+  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .run_out <<<"$output")" = null ]
+  [ "$(field alt .over_pace <<<"$output")" = true ]
+  # 84h gone for 80%, so 100% lands 21h from now
+  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 21 * 3600))" ]
+}
+
+@test "status --json: the first hour of a week, and an account past its limit" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 0 167
+  week alt 104 10
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .run_out <<<"$output")" = null ]
+  [ "$(field alt .over_pace <<<"$output")" = true ]
+  [ "$(field alt '.run_out < '$NOW <<<"$output")" = true ]
+}
+
+@test "status --json: an expired token and a failed read say so instead of a number" {
+  creds "$ALT" 1000
+  creds "$HOME/.claude" 99999999999999
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .state <<<"$output")" = unread ]
+  [ "$(field main .week_used <<<"$output")" = null ]
+  [ "$(field alt .state <<<"$output")" = expired ]
+}
+
+@test "status: a table row per account, with email and 24h dollars from Prometheus" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  week alt 80 84
+  echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
+  echo '{"oauthAccount":{"emailAddress":"a@x"}}' > "$ALT/.claude.json"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[0,\"600.4\"]}]}}'" > "$SANDBOX/bin/curl"
+  export CC_PROM_URL=http://prom.test
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +30% +50% +under .*\$600 +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +a@x$'
+}
+
+@test "status: Prometheus down leaves the percents and blanks only the dollars" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
+  export CC_PROM_URL=http://prom.test   # the curl stub fails
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +30% +50% +under .* - +m@x$'
+}
+
+@test "live sessions count per account, only claude processes" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc"
+  week main 30 84
+  week alt 30 84
+  local p
+  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT"; do
+    IFS=: read -r pid comm dir <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo "$comm" > "$SANDBOX/proc/$pid/comm"
+    [ -z "$dir" ] && : > "$SANDBOX/proc/$pid/environ" || printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$SANDBOX/proc/$pid/environ"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .live <<<"$output")" = 2 ]
+  [ "$(field alt .live <<<"$output")" = 1 ]
+}
+
+@test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  mkdir -p "$SANDBOX/tf"
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
+  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":99999999999999}}\n' > "$ALT/.credentials.json"
+  run "$ACCT" textfile "$SANDBOX/tf"
+  assert_success
+  run cat "$SANDBOX/tf/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main"} 1'
+  assert_line 'claude_account_week_used_percent{account="main"} 30'
+  assert_line 'claude_account_week_gone_percent{account="main"} 50'
+  assert_line 'claude_account_over_pace{account="main"} 0'
+  assert_line 'claude_account_read_ok{account="alt"} 0'
+  refute_line --partial 'week_used_percent{account="alt"}'
+  [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
+}

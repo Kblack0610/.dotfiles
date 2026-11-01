@@ -1,0 +1,9 @@
+[Unit]
+Description=Publish each Claude account's weekly usage for node_exporter
+# The directory comes from home-config's node-exporter-linux role (workstation play).
+ConditionPathIsDirectory=/var/lib/node_exporter/textfile
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-acct textfile /var/lib/node_exporter/textfile
+TimeoutStartSec=60
