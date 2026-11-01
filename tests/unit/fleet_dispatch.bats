@@ -514,6 +514,41 @@ refuses() {
   assert_not_called 'judge called'
 }
 
+@test "run starts nothing when no account has room under its weekly pace" {
+  game_ready
+  stub claude-acct 'exit 1'
+  refuses 'no account has room under its weekly pace'
+}
+
+@test "run starts nothing when account usage cannot be read" {
+  game_ready
+  stub claude-acct 'exit 2'
+  refuses 'account usage unreadable'
+}
+
+@test "a run start lands on the account room names, never pick" {
+  game_ready
+  stub claude-acct '[ "$1" = room ] && { echo /home/u/.claude-personal; exit 0; }; echo /wrong/pick'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_not_called '/wrong/pick'
+}
+
+@test "a hand start still goes ahead when no account has room" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  stub claude-acct '[ "$1" = room ] && exit 1; echo /home/u/.claude-personal'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
 @test "run starts nothing while the human is here, and says who saw them" {
   game_ready
   stub fleet-presence 'echo "here 3 desktop"'

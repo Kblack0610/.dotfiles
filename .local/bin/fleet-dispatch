@@ -147,11 +147,13 @@ ledger_field() { sed -n "s/^$2=//p" "$1" | head -1; }
 session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
 
 # The env prefix that starts claude on the account with the most room left (claude-acct pick,
-# the same choice `cl` makes); empty for the main account or when claude-acct is missing.
+# the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
+# pass has already chosen with `claude-acct room`, and passes that account in RUN_ACCOUNT.
 # Accounts share ~/.claude/projects, so a resumed session works from either one.
 account_env() {
   local dir
-  dir=$(claude-acct pick 2>/dev/null) || dir=""
+  if [ "${RUN_ACCOUNT+set}" = set ]; then dir=$RUN_ACCOUNT
+  else dir=$(claude-acct pick) || dir=""; fi
   [ -n "$dir" ] && printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"
   return 0
 }
@@ -332,7 +334,9 @@ launch() {
   area=$(jq -r .area <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
   model=$(model-lane classify "$text" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
-  START_ORIGIN=run cmd_start --profile "$prof" --project "$project" "${flag[@]}" --row "$key" \
+  # Asked again here, so a start never lands on a fallback: the gate's answer may be minutes old.
+  RUN_ACCOUNT=$(claude-acct room 2>/dev/null) || { say "no account has room for $key"; return 1; }
+  START_ORIGIN=run RUN_ACCOUNT=$RUN_ACCOUNT cmd_start --profile "$prof" --project "$project" "${flag[@]}" --row "$key" \
     --server "$DISPATCH_SERVER" --model "${model:-opus}" --cwd "$repo" --area "$area" --brief <(brief_for "$c")
 }
 
@@ -483,6 +487,12 @@ gate() {
   case "$presence" in
     away*) ;;
     *) echo "the human is not away (${presence:-fleet-presence unreadable})"; return ;;
+  esac
+  claude-acct room >/dev/null 2>&1
+  case $? in
+    0) ;;
+    1) echo "no account has room under its weekly pace"; return ;;
+    *) echo "account usage unreadable"; return ;;
   esac
   fleet-assess --watch-probe >/dev/null 2>&1 || { echo "fleet-assess says HOLD"; return; }
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
