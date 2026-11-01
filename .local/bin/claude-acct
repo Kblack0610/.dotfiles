@@ -72,7 +72,7 @@ fetch() {
         -H "Authorization: Bearer $token" \
         -H "anthropic-beta: oauth-2025-04-20" \
         -H "User-Agent: claude-code/${ver:-2}" > "$tmp" 2>/dev/null \
-        && jq -e '.five_hour' "$tmp" >/dev/null 2>&1; then
+        && jq -e '.five_hour or .seven_day' "$tmp" >/dev/null 2>&1; then
         mv "$tmp" "$cache"
         cat "$cache"
         return 0
@@ -81,7 +81,8 @@ fetch() {
     return 1
 }
 
-pct() { jq -r "(.$1.utilization // 0) | floor"; }
+# pct <window> -> whole percent used, or `-` when the endpoint does not report that window
+pct() { jq -r "(.$1.utilization | if . == null then \"-\" else \"\\(floor)%\" end)"; }
 
 # scores -> "score US name US dir US note" per account that can be scored
 scores() {
@@ -89,7 +90,7 @@ scores() {
     while IFS=$'\037' read -r name dir; do
         json=$(fetch "$name" "$dir"); rc=$?
         case $rc in
-            0) printf '%s\037%s\037%s\0375h %s%%, 7d %s%%\n' \
+            0) printf '%s\037%s\037%s\0375h %s, 7d %s\n' \
                    "$(jq -r '[.five_hour.utilization // 0, .seven_day.utilization // 0] | max' <<< "$json")" \
                    "$name" "$dir" "$(pct five_hour <<< "$json")" "$(pct seven_day <<< "$json")" ;;
             # An idle account's token expires; launching it is what refreshes it.
@@ -149,7 +150,7 @@ cmd_status() {
         json=$(fetch "$name" "$dir"); rc=$?
         case $rc in
             0) printf '%-10s %-6s %-6s %-22s %s\n' "$name" \
-                   "$(pct five_hour <<< "$json")%" "$(pct seven_day <<< "$json")%" \
+                   "$(pct five_hour <<< "$json")" "$(pct seven_day <<< "$json")" \
                    "$(jq -r '.five_hour.resets_at // "-" | .[0:16]' <<< "$json")" "${dir:-default}" ;;
             2) printf '%-10s %-6s %-6s %-22s %s\n' "$name" - - "token expired" "${dir:-default}" ;;
             *) printf '%-10s %-6s %-6s %-22s %s\n' "$name" - - "fetch failed" "${dir:-default}" ;;
