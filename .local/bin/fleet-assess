@@ -3,6 +3,7 @@
 #
 #   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (the sentinel `fleet-thermal` probe)
+#   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
@@ -336,6 +337,10 @@ main() {
   fi
   if [ "${1:-}" = --blocked ]; then
     blocked_rows
+    return
+  fi
+  if [ "${1:-}" = --github ]; then
+    gh_budget
     return
   fi
   local load cores tctl mem held=0 verdict blocked
