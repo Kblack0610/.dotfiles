@@ -333,7 +333,7 @@ cmd_check() {
                 def proj: if .week_used == null then 0
                           elif .week_gone < $min then 100
                           else .week_used * 100 / .week_gone end;
-                (map(proj) | add) / length as $p |
+                ((map(proj) | add) / length) as $p |
                 "\($p | floor) \(map("\(.name) \(.week_used // "?" | if type == "number" then floor else . end)%") | join(", "))"' <<< "$rows")
             echo "${line#* }: at this rate ${line%% *}% of the combined limit by the resets"
             ((${line%% *} <= 100))
