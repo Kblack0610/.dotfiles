@@ -18,6 +18,7 @@ setup() {
 #!/usr/bin/env bash
 p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
 printf '%s' "$p" > "$HOME/last-prompt"
+printf '%s\n' "${CLAUDE_CONFIG_DIR:-main}" >> "$HOME/accounts"
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-1","model":"m"}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}'
 if [ "${STUB_STATUS:-ok}" = noblock ]; then r="forgot the block"
@@ -64,6 +65,29 @@ result_of() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print su
   [ "$(result_of bump session)" = sess-1 ]
   run cat "$NIGHT_SHIFT_LOGS/bump.log"
   assert_output --partial '> Bash git status'
+}
+
+@test "run fills the queue first, and a fill that fails still runs what was queued" {
+  export NIGHT_SHIFT_FILL="$NS queue '$REPO' 'filled task' --slug filled"
+  run "$NS" run
+  assert_success
+  [ "$(result_of filled status)" = ok ]
+
+  "$NS" queue "$REPO" "by hand" --slug by-hand
+  export NIGHT_SHIFT_FILL=false
+  run "$NS" run
+  assert_success
+  assert_output --partial 'fill failed (exit 1): false'
+  [ "$(result_of by-hand status)" = ok ]
+}
+
+@test "--account runs that task on that account, and only that task" {
+  "$NS" queue "$REPO" "on alt" --slug on-alt --account /acct/alt
+  "$NS" queue "$REPO" "on main" --slug on-main
+  CLAUDE_CONFIG_DIR='' run "$NS" run
+  assert_success
+  run cat "$HOME/accounts"
+  assert_output "$(printf '/acct/alt\nmain')"
 }
 
 @test "a run with no result block is failed, never ok" {
