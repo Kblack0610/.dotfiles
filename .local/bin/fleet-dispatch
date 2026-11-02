@@ -477,7 +477,7 @@ firing_findings() {
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
-# refuses: a start nobody can justify costs more than a pass that waits 15 minutes.
+# refuses: a start nobody can justify costs more than waiting for the next pass.
 # A red main is deliberately not here: nightlies stay red while sessions merge normally, so it
 # would stop everything, and the shepherd's MAIN row handles it.
 gate() {
