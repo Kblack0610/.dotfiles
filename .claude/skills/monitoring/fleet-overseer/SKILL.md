@@ -151,9 +151,9 @@ A session in a different permission mode holds a peer message for approval. If a
 
 ## Verb: `dispatch`
 
-`fleet-dispatch` feeds the shepherd while the human is away. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` every 15 minutes (off while its conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this verb is for running it by hand and reading what it decided. It is the only thing that starts sessions from the board unasked: a shepherd pass never does, and no order should tell one to.
+`fleet-dispatch` feeds the shepherd while the human is away. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` on the `SCHEDULE` in its conf (off while the conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this verb is for running it by hand and reading what it decided. It is the only thing that starts sessions from the board unasked: a shepherd pass never does, and no order should tell one to.
 
-Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for 30 minutes. It takes no time of day, because a night is a long away. When the human comes back, new starts stop at the next pass and running sessions carry on. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here and starts nothing.
+Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for `AWAY_AFTER_MIN` minutes (set in the conf). It takes no time of day, because a night is a long away. When the human comes back, new starts stop at the next pass and running sessions carry on. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here and starts nothing.
 
 Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
 
@@ -170,7 +170,7 @@ The human sheet stays opt-in: `board` never reads it. Tier 3 never runs unattend
 
 A pass, in order:
 1. Reap. Room is `DISPATCH_MAX_LIVE` minus live dispatched sessions, capped at `DISPATCH_PER_PASS`.
-2. Gates, each refusing when it cannot read its source: no `dispatch` hold; `fleet-presence` says away; `fleet-assess` not HOLD; cluster not red; 1-minute load under `DISPATCH_MAX_LOAD` per core; no `starved`, `throughput-drop` or `blind` finding sampled in the last `DISPATCH_FINDING_FRESH_MIN` minutes; GitHub budget not LOW; real idle above `DISPATCH_MIN_IDLE` percent on a two-frame `top` sample. A red main is deliberately not a gate: nightlies stay red while sessions merge normally, and the MAIN row handles it.
+2. Gates, each refusing when it cannot read its source: no `dispatch` hold; `fleet-presence` says away; `fleet-assess` not HOLD; cluster not red; 1-minute load under `DISPATCH_MAX_LOAD` per core; no `starved`, `throughput-drop` or `blind` finding sampled in the last `DISPATCH_FINDING_FRESH_MIN` minutes; GitHub budget not LOW; real idle above `DISPATCH_MIN_IDLE` percent on a two-frame `top` sample. At launch, `claude-acct room` must name an account under its weekly pace, or the row waits. A red main is deliberately not a gate: nightlies stay red while sessions merge normally, and the MAIN row handles it.
 3. Candidates: every open `[ ]` row a worker may take, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, or when `project-map.json` has no repo for it.
 4. Judgment: one sonnet call for up to `DISPATCH_JUDGE_MAX` rows not judged before, in worker order, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text, the policy or `workers.json` changes. To change what gets picked, edit the policy, not the script.
 5. Picks: verdict `dispatch` with size S or M, clear and agent-only, naming one `area`, judged no higher a tier than the row counts as, made under the current policy. Never two sessions on one area, live or picked now. Worker order first, then `#urgent`, then prod before beta before alpha.
