@@ -151,12 +151,42 @@ function poolsTable(cc, inst) {
   return `<table class="tbl"><tr><th>pool</th><th></th><th class="n">busy</th><th class="n">waiting</th><th class="n">oldest</th><th class="n">done 24h</th><th class="n">pass</th><th>on</th></tr>${rows}</table>`;
 }
 
-function machinesTable(cc) {
+// One bar per core, in core order, from cc:host_core_busy_ratio; amber past 90% as the cpu meter.
+function coreStrip(cores) {
+  const busyColor = (v) => (v > 0.9 ? "var(--b-stalled)" : "var(--c1)");
+  return `<span class="cores">${cores.map(([cpu, v]) => `<i title="cpu ${esc(cpu)}: ${pct(v)}"><b style="height:${(Math.max(0, Math.min(1, v || 0)) * 100).toFixed(0)}%;background:${busyColor(v)}"></b></i>`).join("")}</span>`;
+}
+
+// What each machine carries: CI runners as running/online from the exporter, and the
+// workstation's local Unity gates as busy/slots from fleet-assess.
+function machineRunners(cc, inst) {
+  const by = {};
+  for (const r of inst.runners || []) {
+    const h = (by[r.labels.host] ||= { run: 0, on: 0, off: 0 });
+    if (r.labels.state === "running") h.run++;
+    if (["running", "idle"].includes(r.labels.state)) h.on++; else h.off++;
+  }
+  const out = {};
+  for (const [h, c] of Object.entries(by)) out[h] = { text: `${c.run}/${c.on}${c.off ? ` +${c.off} off` : ""}`, warn: c.off > 0 };
+  for (const [h, slots] of Object.entries(cc["cc:host_local_slots"] || {})) {
+    const local = `local ${(cc["cc:host_local_busy"] || {})[h] ?? "?"}/${slots}`;
+    out[h] = { text: out[h] ? `${out[h].text}, ${local}` : local, warn: out[h] && out[h].warn };
+  }
+  return out;
+}
+
+function machinesTable(cc, inst) {
   const g = (n, h) => (cc[n] || {})[h];
-  const hosts = Object.keys(cc["cc:host_cores"] || {}).sort((a, b) => (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
-  return `<table class="tbl"><tr><th>machine</th><th>cpu</th><th class="n">now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n">temp</th></tr>${hosts.map((h) => {
-    const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), cores = g("cc:host_cores", h);
-    return `<tr><td>${esc(h)}</td><td class="m">${meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > cores * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${cores ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td></tr>`;
+  const cores = {};
+  for (const s of inst.cores || []) (cores[s.labels.host] ||= []).push([s.labels.cpu, s.value]);
+  const num = (c) => c.split(",").map(Number);
+  for (const c of Object.values(cores)) c.sort(([a], [b]) => { const [x, y] = [num(a), num(b)]; return x[0] - y[0] || (x[1] || 0) - (y[1] || 0); });
+  const runners = machineRunners(cc, inst);
+  // Machines that carry CI first, then the busiest.
+  const hosts = Object.keys(cc["cc:host_cores"] || {}).sort((a, b) => (!!runners[b] - !!runners[a]) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
+  return `<table class="tbl"><tr><th>machine</th><th>runners</th><th>cpu (per core)</th><th class="n">now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n">temp</th></tr>${hosts.map((h) => {
+    const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), r = runners[h];
+    return `<tr><td>${esc(h)}</td><td class="${r && r.warn ? "warn" : "muted"}">${r ? esc(r.text) : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td></tr>`;
   }).join("")}</table>`;
 }
 
@@ -356,7 +386,7 @@ function renderInfra() {
   html += `<h2 class="sec">Pools</h2><div class="panel scroll">${poolsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Running</h2><div class="panel scroll">${runningTable(inst)}</div>`;
   html += `<h2 class="sec">Queued</h2><div class="panel scroll">${queuedTable(inst)}</div>`;
-  html += `<h2 class="sec">Machines</h2><div class="panel scroll">${machinesTable(cc)}</div>`;
+  html += `<h2 class="sec">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h2>${fin.body ? `<div class="panel scroll">${fin.body}</div>` : ""}`;
   const y = el.scrollTop;
   el.querySelectorAll("details[data-k]").forEach((d) => { ist.open[d.dataset.k] = d.open; });
