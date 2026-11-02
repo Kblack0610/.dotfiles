@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]
-  reviewed: 2026-10-30
+  reviewed: 2026-11-02
 ---
 
 # fleet-overseer
@@ -79,7 +79,7 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 |---|---|---|
 | MAIN | one row per repo whose default branch is red: the latest decided run of a workflow failed (or `gh` could not read it). Names each red workflow, its sha, and its suspects: the PRs since that workflow's last green, when there are `FLEET_SUSPECTS_MAX` (3) or fewer. `owners` are the live sessions whose merged PR is a suspect | owners get the STALLED nudge; with no owner, it goes to the human, paged high |
 | NEEDS | waiting on a prompt or permission, a plan awaiting approval, a pending ask whose `claude_session` is this session (even while it is busy on other work), or a turn that ended asking the human a question in its own conversation (agent-panel's `question`, the `?` mark) | lists it for the human |
-| STALLED | an open PR that conflicts with the default branch, even while busy (every run on it is wasted); or idle 20m or more with something unlanded: dirty files or changed files not on the default branch and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a red main | nudges once |
+| STALLED | an open PR that conflicts with the default branch, even while busy (it cannot merge until resolved); or idle 20m or more with something unlanded: dirty files or changed files not on the default branch and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a red main | nudges once |
 | DONE | nothing unlanded or open (as LANDED), and every line of its plan's `## Phases` checklist is `[x]` or `[-]`, or its PR merged and the plan has no checklist or there is no plan file (one phase of work) | tells it to wind down, once |
 | LANDED | idle, its PR merged (or it never had one) and the tree clean, nothing after the PR, not a suspect for a red main, and its plan has an unchecked phase (`next_phase`), or no `## Phases` checklist and nothing merged | sends it on to its next phase, once |
 | UNCLEAR | no plan file and nothing merged, a closed PR, no git | lists it with the reason |
@@ -128,7 +128,7 @@ One pass. It runs two ways, and only one acts at a time:
    - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files, main not red), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. Where the repo's CLAUDE.md groups phases that touch the same area (unity-core-playground does), put them on that one branch. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then ask the human in this conversation and file it with `agent-ask post --recommend <yours>`, giving that reason (it records your session itself)."
    - LANDED with no checklist (`phases_total` null, nothing merged yet): "No PR of yours has merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then start the first unchecked phase under the same /my:autopilot rules."
    - STALLED `main red after PR #N`: "Main's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
-   - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Stop any run on this tree, merge origin/<base> into your branch, resolve it, and run your gate on the merged tree before anything else."
+   - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Merge origin/<base> into your branch and resolve it; never rebase a pushed branch. A green gate stays green and a running one keeps running: gate again only when the merge changed files your pick depends on (the repo's CI doc, for unity-core-playground docs/operations/ci.md 'Who gates what'). Then carry on with your plan."
    - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
    The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
 5. Rows for the human: NEEDS and UNCLEAR rows, MAIN rows with empty `owners`, and DONE, LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page. A MAIN row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
