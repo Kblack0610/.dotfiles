@@ -117,3 +117,31 @@ setup() {
   SERVICE_RESULT=exit-code EXIT_STATUS=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
   grep -qx 'state=error' "$AGENTCTL_STATE_DIR/alpha/status"
 }
+
+# --- timer spread and the oneshot restart policy ---
+
+@test "every timer gets a fixed random delay, the default unless the conf opts out" {
+  echo 'RANDOM_DELAY=0' >> "$AGENTCTL_CONF_DIR/beta.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_success
+  grep -qx 'RandomizedDelaySec=5min' "$TIMERS/agentctl-alpha.timer"
+  grep -qx 'FixedRandomDelay=true' "$TIMERS/agentctl-alpha.timer"
+  grep -qx 'RandomizedDelaySec=0' "$TIMERS/agentctl-beta.timer"
+}
+
+@test "a RANDOM_DELAY that is not a time span is an invalid conf" {
+  echo 'RANDOM_DELAY=soon' >> "$AGENTCTL_CONF_DIR/alpha.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_output --partial 'skipping invalid config alpha: invalid RANDOM_DELAY=soon'
+  [ ! -f "$TIMERS/agentctl-alpha.timer" ]
+}
+
+@test "a oneshot restarts only on an abnormal end; a persistent runner keeps the template's policy" {
+  printf 'NAME=gamma\nKIND=persistent\nLANE=observe\nDESCRIPTION=\047test daemon\047\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/gamma.conf"
+  mkdir -p "$TIMERS/agentctl@gamma.service.d"
+  echo stale > "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf"   # it was a oneshot once
+  run "$AGENTCTL_BIN" reload
+  assert_success
+  grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
+}

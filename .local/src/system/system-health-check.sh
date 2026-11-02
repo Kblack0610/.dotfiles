@@ -22,8 +22,15 @@ MEM_PCT=$(free | grep Mem | awk '{printf "%.0f", $3/$2*100}')
 DISK_ROOT=$(df -h / | tail -1 | awk '{print $5}')
 DISK_HOME=$(df -h /home | tail -1 | awk '{print $5}')
 PING_LOSS=$(ping -c 5 -q 8.8.8.8 2>/dev/null | grep -oP '\d+(?=% packet loss)' || echo "100")
-FAILING_SERVICES=$(systemctl --user --failed --no-legend 2>/dev/null | wc -l)
-FAILING_SYSTEM=$(systemctl --failed --no-legend 2>/dev/null | wc -l || echo "0")
+# Failed units by name, not a count: "5 user service(s) failed" sat in the briefing from
+# 2026-10-28 while fleet-state.path and agent-mqtt-sessions.path stayed dead, because a
+# number names nothing to restart.
+failed_units() { systemctl "$@" --failed --no-legend --plain 2>/dev/null | awk '{printf "%s%s", sep, $1; sep=", "}'; }
+FAILED_USER=$(failed_units --user)
+FAILED_SYSTEM=$(failed_units)
+count_units() { [ -n "$1" ] && awk -F', ' '{print NF}' <<<"$1" || echo 0; }
+FAILING_SERVICES=$(count_units "$FAILED_USER")
+FAILING_SYSTEM=$(count_units "$FAILED_SYSTEM")
 ZOMBIE_COUNT=$(ps aux 2>/dev/null | awk '$8 ~ /Z/ {count++} END {print count+0}')
 TOP_CPU=$(ps aux --sort=-%cpu 2>/dev/null | head -6 | tail -5 | awk '{printf "- %s (%.1f%%)\n", $11, $3}')
 
@@ -38,8 +45,8 @@ SWAP_IN=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $7+0}')  # si: KB/s swa
 STATUS="OK"
 ISSUES=()
 [[ ${PING_LOSS} -gt 10 ]] && { STATUS="WARNING"; ISSUES+=("Network: ${PING_LOSS}% packet loss"); }
-[[ $FAILING_SERVICES -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("$FAILING_SERVICES user service(s) failed"); }
-[[ $FAILING_SYSTEM -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("$FAILING_SYSTEM system service(s) failed"); }
+[[ $FAILING_SERVICES -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("user units failed: $FAILED_USER -> do: systemctl --user status <unit>, fix it, then restart or reset-failed"); }
+[[ $FAILING_SYSTEM -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("system units failed: $FAILED_SYSTEM -> do: systemctl status <unit>"); }
 [[ $ZOMBIE_COUNT -gt 0 ]] && { STATUS="WARNING"; ISSUES+=("$ZOMBIE_COUNT zombie process(es)"); }
 [[ ${MEM_PCT} -gt 90 ]] && { STATUS="WARNING"; ISSUES+=("Memory usage high: ${MEM_PCT}%"); }
 [[ ${SWAP_PCT} -gt 25 ]] && { STATUS="WARNING"; ISSUES+=("Swap thrash risk: ${SWAP_PCT}% swap used (idle pages on VHD)"); }

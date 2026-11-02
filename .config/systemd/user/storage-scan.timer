@@ -1,10 +1,13 @@
 [Unit]
-Description=Hourly sizing of the storage buckets
+Description=Daily sizing of the storage buckets
 
 [Timer]
 # A steady cadence on purpose: disk usage changing emits no event to wait on.
+# Daily, not hourly: a scan takes about 6.5 minutes and an 18.7G page-cache peak, and its
+# only readers are the waybar tooltip and the storage picker, which show the scan's age and
+# rescan on ctrl-r. The disk alert reads node_exporter, not this cache.
 OnBootSec=5min
-OnUnitActiveSec=1h
+OnUnitActiveSec=1d
 Persistent=true
 
 [Install]

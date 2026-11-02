@@ -54,8 +54,11 @@
 #              SIGNAL, not a verdict: a release runbook fires per release and is
 #              supposed to look idle.
 #
-# Deliberately trivial and dependency-free: it is polled by a sentinel watch and
-# a checker that needs a working environment cannot report a broken one.
+# Deliberately trivial and dependency-free: a checker that needs a working
+# environment cannot report a broken one. CI runs --lint and the weekly skill-refine
+# run reads --json. The 12h sentinel watch on --quiet was deleted 2026-11-02: it was red
+# for 84 days, 33 of its 53 NEW findings UNUSED (a signal, not drift) and the rest
+# false positives, so nobody read it.
 #
 # Escape hatch: a line containing `skill-drift: ignore` is skipped entirely.
 # Hostnames of the form *.example.internal are SANITIZATION for the public repo
@@ -69,7 +72,7 @@
 #
 # Usage:
 #   skill-drift                  human-readable report (everything)
-#   skill-drift --quiet          print nothing; exit 1 on NEW drift only (for a watch)
+#   skill-drift --quiet          print nothing; exit 1 on NEW drift only
 #   skill-drift --json           machine-readable (everything, with "new": true|false)
 #   skill-drift --new            human-readable, NEW findings only
 #   skill-drift --write-baseline freeze current findings as accepted
