@@ -29,7 +29,7 @@ const LOCAL_FRESH: &str = r#"and on (instance) (time() - node_textfile_mtime_sec
 /// error instead of numbers, as the board blanks rather than leave stale values up.
 fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
-        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio"}"#.into()),
+        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
@@ -37,6 +37,10 @@ fn instant_queries() -> Vec<(&'static str, String)> {
         ("gates", "cc:host_local_gate".into()),
         // Each core's busy share, keyed by host and cpu, so it stays out of `cc` (keyed by host).
         ("cores", "cc:host_core_busy_ratio".into()),
+        // Cores each CI runner's job uses, and a pinned slot's CPUs, keyed by host and runner.
+        ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
+        // Runners the governor holds back: idle but not taking jobs, so not online capacity.
+        ("withheld", format!("{W} (github_runner_withheld) == 1")),
         // Done today: when runs finished, and which failed. An absent metric is an empty answer,
         // so the tab says "no data" rather than an error until the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
@@ -52,7 +56,7 @@ fn instant_queries() -> Vec<(&'static str, String)> {
             or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")"#.into()),
     ]
 }
-const OPTIONAL: &[&str] = &["red", "accounts", "cores"];
+const OPTIONAL: &[&str] = &["red", "accounts", "cores", "runner_cores", "withheld"];
 
 /// The last day of what the tab charts. A failed range query only leaves its chart empty.
 fn range_queries() -> Vec<(&'static str, String)> {
@@ -264,9 +268,9 @@ mod tests {
     }
 
     #[test]
-    fn only_red_accounts_and_cores_are_optional() {
+    fn only_red_accounts_and_cpu_and_withheld_are_optional() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
-        assert_eq!(OPTIONAL, ["red", "accounts", "cores"]);
+        assert_eq!(OPTIONAL, ["red", "accounts", "cores", "runner_cores", "withheld"]);
     }
 }
