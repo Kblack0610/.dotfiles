@@ -259,7 +259,8 @@ cmd_fire() {
     scratch_cmd="; rm -rf -- '$(scratch_root)'/*/'$sid'"
   fi
 
-  $TM run-shell -b "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
+  # `-c /`: the job would start in this hook's cwd, the worktree, and hold it against the reap.
+  $TM run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
   local sched_rc=$?
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"

@@ -21,6 +21,7 @@
 #   tmux.session                name returned for `#{session_name}`
 #   tmux.sessions.<server>      sessions on `-L <server>`, for has-session and list-sessions
 #   tmux.panes.<server>         lines for `-L <server> list-panes -a -F ...`
+#   tmux.jobs                   written: one `cwd<TAB>command` per `run-shell` call
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -201,6 +202,27 @@ case "$verb" in
     # state a fresh attach after a cross-server hop is in. Default to that, so a test wanting
     # tmux's own last-session to answer has to say so with STUB_LAST_SESSION_RC=0.
     case " $* " in *" -l "*) exit "${STUB_LAST_SESSION_RC:-1}" ;; esac
+    ;;
+  run-shell)
+    # Queued, not run: the server runs a -b job after the caller has gone, and the cwd it
+    # starts in is the caller's unless -c says otherwise (tmux's server_client_get_cwd for a
+    # command client). Both are recorded to tmux.jobs, `cwd<TAB>command`, for a test to run.
+    cwd="$PWD" cmd=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "-c" ] && cwd="$a"
+      prev="$a"
+      cmd="$a"
+    done
+    printf '%s\t%s\n' "$cwd" "$cmd" >> "$FIX/tmux.jobs"
+    ;;
+  kill-session)
+    # The session leaves tmux.sessions[.<server>], so a later has-session answers "gone".
+    f="$FIX/tmux.sessions${server:+.$server}"
+    if [ -f "$f" ]; then
+      grep -vxF -- "${target#=}" "$f" > "$f.tmp"
+      mv "$f.tmp" "$f"
+    fi
     ;;
   *)
     : ;;   # new-window, display-popup, set-option, ...: recorded no-ops

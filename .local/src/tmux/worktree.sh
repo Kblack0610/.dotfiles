@@ -929,10 +929,14 @@ cmd_done() {
   # kill THEN reap, in one chain on the server. The deferred reap re-runs the FULL policy
   # including the live-session check -- which passes honestly by then, because the session it
   # would have objected to is the one just killed. Nothing is waived anywhere.
-  tmux run-shell -b "sleep 1; tmux kill-session -t '=$name' 2>/dev/null; $me reap '$path' >> '$logf' 2>&1" 2>/dev/null ||
+  #
+  # `-c /` is load-bearing. A run-shell job starts in the cwd of the client that asked for it,
+  # which is this shell, inside the tree: the chain and the reap it starts then held the tree
+  # themselves, wt_process_inside saw them, and every `done` since #652 was kept.
+  tmux run-shell -b -c / "sleep 1; tmux kill-session -t '=$name' 2>/dev/null; $me reap '$path' >> '$logf' 2>&1" 2>/dev/null ||
     panel_die "could not schedule the teardown on the tmux server"
 
-  printf 'done: killing %s and reaping its worktree (log: %s)\n' "$name" "$logf"
+  printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
 cmd_gc() {

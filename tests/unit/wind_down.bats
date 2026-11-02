@@ -198,6 +198,8 @@ EOF
   run bash "$WIND_DOWN" fire "$SENTINEL"
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_output --partial 'run-shell -b'
+  # From /, not the hook's cwd: a job started in the worktree holds it against the reap.
+  assert_output --partial 'run-shell -b -c /'
 }
 
 @test "a protected window keeps its note and is never closed" {
