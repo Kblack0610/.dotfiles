@@ -101,6 +101,7 @@ Media/Music
 !.claude/skills/SKILL-TEMPLATE.md
 !.claude/skills/*/
 .claude/skills/*/*
+!.claude/skills/authoring/docs-write/
 !.claude/skills/authoring/figma-use/
 !.claude/skills/authoring/flow-review/
 !.claude/skills/authoring/marp-slide/
