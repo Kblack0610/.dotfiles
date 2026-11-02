@@ -1,14 +1,19 @@
 {
-  "fleet": {
-    "runner": "fleet-dispatch",
-    "what": "/one-shot in a detached lab session on the workstation",
-    "max_tier": 1
-  },
   "asks": {
-    "runner": "fleet-dispatch-asks",
     "what": "/one-shot on an #ask row the human already decided, game work only",
     "max_tier": 2,
     "projects": ["unity-playground"],
     "only_tag": "ask"
+  },
+  "fleet": {
+    "what": "/one-shot on a row the human assigned with #worker/fleet",
+    "max_tier": 1
+  },
+  "board": {
+    "what": "/one-shot on an agent-board row of the game, no tags needed, the judge reads the tier",
+    "max_tier": 2,
+    "projects": ["unity-playground"],
+    "lane": "agent",
+    "untagged": true
   }
 }

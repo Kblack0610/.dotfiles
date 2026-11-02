@@ -369,6 +369,14 @@ gh_stub() {
   assert_output 'github: rate limit unreadable'
 }
 
+@test "--github prints the budget line and samples nothing else" {
+  gh_stub 4000 "$(( $(date +%s) + 2000 ))"
+  run main --github
+  assert_success
+  assert_output --partial 'github: 4000/5000 REST calls left'
+  assert_equal "${#lines[@]}" 1
+}
+
 @test "gh_budget: the actions/workflows bucket rate_limit hides is reported when it is the emptier" {
   # 2026-10-29: rate_limit read 2,964 left while every actions/workflows call was refused
   local now; now="$(date +%s)"

@@ -50,6 +50,31 @@ creds() {
   [[ "$stderr" == *'claude-acct: main'* ]]
 }
 
+@test "a null five_hour window still scores on the weekly one" {
+  printf '{"five_hour":null,"seven_day":{"utilization":65.0}}\n' > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '{"five_hour":null,"seven_day":{"utilization":32.0}}\n' > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run "$ACCT" pick
+  assert_success
+  assert_line "$ALT"
+  assert_output --partial 'claude-acct: alt (5h -, 7d 32%)'
+}
+
+@test "a fresh answer with a null five_hour is accepted, not read as a failed fetch" {
+  creds "$HOME/.claude" 99999999999999
+  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":{\"utilization\":65.0,\"resets_at\":\"2026-11-06T03:00:00+00:00\"}}'" > "$SANDBOX/bin/curl"
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +65%'
+  refute_line --regexp '^main .*fetch failed'
+}
+
+@test "a response with no usage window at all is still a failed fetch" {
+  creds "$HOME/.claude" 99999999999999
+  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":null}'" > "$SANDBOX/bin/curl"
+  run "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+}
+
 @test "a tie goes to the first account in the file" {
   usage main 40 40
   usage alt 40 40
@@ -218,4 +243,257 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   printf '/bin/zsh\0-c\0source /x/shell-snapshots/s.sh\0' > "$SANDBOX/proc/53/cmdline"
   run bg_shells 50
   assert_output "51  scripts/test/suite.sh --retry' "
+}
+
+# week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
+NOW=1800000000
+week() {
+  local resets
+  resets=$(date -u -d "@$((NOW + $3 * 3600))" +%Y-%m-%dT%H:%M:%S.123456+00:00)
+  printf '{"five_hour":null,"seven_day":{"utilization":%s,"resets_at":"%s"}}\n' "$2" "$resets" \
+    > "$XDG_CACHE_HOME/claude-acct/$1.json"
+}
+field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
+
+@test "status --json: half the week gone, used under it, is under pace and lasts to the reset" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  week alt 80 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .week_gone <<<"$output")" = 50 ]
+  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .run_out <<<"$output")" = null ]
+  [ "$(field alt .over_pace <<<"$output")" = true ]
+  # 84h gone for 80%, so 100% lands 21h from now
+  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 21 * 3600))" ]
+}
+
+@test "status --json: the first hour of a week, and an account past its limit" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 0 167
+  week alt 104 10
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .run_out <<<"$output")" = null ]
+  [ "$(field alt .over_pace <<<"$output")" = true ]
+  [ "$(field alt '.run_out < '$NOW <<<"$output")" = true ]
+}
+
+@test "status --json: an expired token and a failed read say so instead of a number" {
+  creds "$ALT" 1000
+  creds "$HOME/.claude" 99999999999999
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .state <<<"$output")" = unread ]
+  [ "$(field main .week_used <<<"$output")" = null ]
+  [ "$(field alt .state <<<"$output")" = expired ]
+}
+
+@test "status: a table row per account, with email and 24h dollars from Prometheus" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  week alt 80 84
+  echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
+  echo '{"oauthAccount":{"emailAddress":"a@x"}}' > "$ALT/.claude.json"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[0,\"600.4\"]}]}}'" > "$SANDBOX/bin/curl"
+  export CC_PROM_URL=http://prom.test
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +30% +50% +under .*\$600 +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +a@x$'
+}
+
+@test "status: Prometheus down leaves the percents and blanks only the dollars" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
+  export CC_PROM_URL=http://prom.test   # the curl stub fails
+  run "$ACCT" status
+  assert_success
+  assert_line --regexp '^main +- +30% +50% +under .* - +m@x$'
+}
+
+@test "live sessions count per account, only claude processes" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc"
+  week main 30 84
+  week alt 30 84
+  local p
+  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT"; do
+    IFS=: read -r pid comm dir <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo "$comm" > "$SANDBOX/proc/$pid/comm"
+    [ -z "$dir" ] && : > "$SANDBOX/proc/$pid/environ" || printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$SANDBOX/proc/$pid/environ"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .live <<<"$output")" = 2 ]
+  [ "$(field alt .live <<<"$output")" = 1 ]
+}
+
+@test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  mkdir -p "$SANDBOX/tf"
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
+  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":99999999999999}}\n' > "$ALT/.credentials.json"
+  run "$ACCT" textfile "$SANDBOX/tf"
+  assert_success
+  run cat "$SANDBOX/tf/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main"} 1'
+  assert_line 'claude_account_week_used_percent{account="main"} 30'
+  assert_line 'claude_account_week_gone_percent{account="main"} 50'
+  assert_line 'claude_account_over_pace{account="main"} 0'
+  assert_line 'claude_account_read_ok{account="alt"} 0'
+  refute_line --partial 'week_used_percent{account="alt"}'
+  [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
+}
+
+@test "room: the emptier account under pace wins; main prints empty, alt its dir" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 40 84
+  week alt 20 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  week main 10 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: today's numbers refuse main and take alt" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 66 102   # 39% of the week gone
+  week alt 32 79     # 53% gone
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: over pace on both accounts is exit 1" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 60 84
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'no account has room'* ]]
+}
+
+@test "room: the slack is the edge of the pace line" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PACE_SLACK_PCT=5
+  week main 55 84
+  week alt 56 84
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+  week main 56 84
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+}
+
+@test "room: the reserve holds late in the week, even under pace" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 85 2
+  week alt 90 2
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  week main 84 2
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: a nearly spent five hour window refuses when it is reported" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 84
+  week alt 20 84
+  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: an expired token has room; a failed read with no room elsewhere is exit 2" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  creds "$ALT" 1000
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" room
+  assert_failure 2
+}
+
+@test "room: one account unread does not stop a start on the other" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 84
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "pick warns when its account is over pace, and still picks it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 80 84
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output ''
+  [[ "$stderr" == *'main is over its weekly pace'* ]]
+}
+
+@test "check usage: trips on a failed read, naming the account, clears when both read" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$ALT" 99999999999999
+  run "$ACCT" check usage
+  assert_failure 1
+  assert_output 'cannot read usage of alt'
+  week alt 30 84
+  run "$ACCT" check usage
+  assert_success
+  assert_output 'usage read on 2 accounts'
+}
+
+@test "check usage: an expired token is not a failed read" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$ALT" 1000
+  run "$ACCT" check usage
+  assert_success
+}
+
+@test "check pace: one account over its line is fine while the pair lasts" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84   # 140% by its reset
+  week alt 20 84    # 40%
+  run "$ACCT" check pace
+  assert_success
+  assert_output 'main 70%, alt 20%: at this rate 90% of the combined limit by the resets'
+}
+
+@test "check pace: trips when the pair will not last" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 70 84
+  week alt 40 84    # 140 + 80 over 2
+  run "$ACCT" check pace
+  assert_failure 1
+  assert_output --partial '110% of the combined limit'
+}
+
+@test "check pace: the first hours of a week say nothing yet" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 5 167    # 500% on a straight line, one hour in
+  week alt 5 167
+  run "$ACCT" check pace
+  assert_success
+}
+
+@test "check: an unknown name is a usage error, not a pass" {
+  run "$ACCT" check nonsense
+  assert_failure 2
 }

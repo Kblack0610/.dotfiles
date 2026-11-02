@@ -41,13 +41,16 @@ fn instant_queries() -> Vec<(&'static str, String)> {
         ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
+        // claude-acct's textfile, only while it is fresh; no `max without` here, which would drop
+        // the metric names the card reads. An empty answer makes the card say no data.
+        ("accounts", r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#.into()),
         // The same three sources as the dashboard's "What is red" table.
         ("red", r#"label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
             or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
             or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")"#.into()),
     ]
 }
-const OPTIONAL: &[&str] = &["red"];
+const OPTIONAL: &[&str] = &["red", "accounts"];
 
 /// The last day of what the tab charts. A failed range query only leaves its chart empty.
 fn range_queries() -> Vec<(&'static str, String)> {
@@ -262,6 +265,6 @@ mod tests {
     fn red_is_the_only_optional_query() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
-        assert_eq!(OPTIONAL, ["red"]);
+        assert_eq!(OPTIONAL, ["red", "accounts"]);
     }
 }

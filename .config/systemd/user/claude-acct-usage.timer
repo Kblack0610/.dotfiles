@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish Claude account usage every 15 minutes
+
+# The usage endpoint has no event and rate-limits per token, so this samples, well above
+# claude-acct's own 5-minute cache.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

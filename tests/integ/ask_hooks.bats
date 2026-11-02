@@ -70,6 +70,18 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'closed_reason: session ended (prompt_input_exit)'
 }
 
+@test "a task notification or a peer message is not the human answering" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "ship it?")"
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<task-notification> <task-id>x</task-id>"}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<cross-session-message from=\"uds:/run/x.sock\"> do not arm"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes, arm it"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+}
+
 @test "an ask its session left unanswered lands on the agent board as a plain row" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"
