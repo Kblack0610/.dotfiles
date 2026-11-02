@@ -4,7 +4,7 @@ description: Cleanly wrap up and spin down the current Claude session - write a 
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-10-28"
+  reviewed: "2026-11-02"
 ---
 
 # wind-down
@@ -205,6 +205,8 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    the directory and frees the `agent-N` slot for reuse.
 
    The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
+
+   When `wt done` keeps the tree, file one agent-board row for it, `worktree <name> held: <reason>` (check both lanes first), and name it in step 7. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it and marks it `stranded, nobody in it`, and that board row is what brings it back. Why: 2026-11-02, about 30 of 70 playground worktrees were held this way, some for weeks.
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another

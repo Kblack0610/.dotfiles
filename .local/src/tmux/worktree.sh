@@ -380,7 +380,17 @@ wt_reap_reason() {
     printf '%s\n' "$reason"
     return 1
   }
+  reason=$(wt_occupied_reason "$1") || {
+    printf '%s\n' "$reason"
+    return 1
+  }
+  return 0
+}
 
+# wt_occupied_reason <path> -- print what is running in <path>; nothing, and rc 0, when
+# nobody is in it. Split out so `gc` can tell a tree held for work someone is still doing
+# from one whose owner is gone, which is the tree nobody will ever come back to.
+wt_occupied_reason() {
   # A LIVE SESSION IS NEVER REAPED, attached or not. "Clean and pushed" is a snapshot, not a
   # promise: an agent working detached in this worktree is clean-and-pushed for a moment after
   # every push, and a `gc` that happened to run in that window would delete the tree out from
@@ -956,7 +966,10 @@ cmd_gc() {
     return 0
   fi
 
-  local reaped=0 kept=0 reason
+  # STRANDED: kept, and nobody is in it, so it is held for its work (dirty, unlanded) by an
+  # owner that is gone. Nothing comes back for such a tree on its own, so gc names it every
+  # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
+  local reaped=0 kept=0 stranded=0 reason
   for path in "${candidates[@]}"; do
     if reason=$(wt_reap_reason "$path"); then
       if [ "$dry" -eq 1 ]; then
@@ -966,12 +979,16 @@ cmd_gc() {
       fi
       reaped=$((reaped + 1))
     else
+      if wt_occupied_reason "$path" >/dev/null; then
+        reason="$reason; stranded, nobody in it"
+        stranded=$((stranded + 1))
+      fi
       printf '%skept%s        %-28s %s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$C_OFF"
       kept=$((kept + 1))
     fi
   done
 
-  printf '\n%s of %s reapable, %s kept%s\n' "$reaped" "${#candidates[@]}" "$kept" \
+  printf '\n%s of %s reapable, %s kept, %s stranded%s\n' "$reaped" "${#candidates[@]}" "$kept" "$stranded" \
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 
