@@ -4,7 +4,7 @@ description: "Cut CI run time from measured data, one lever at a time: measure w
 metadata:
   category: ops
   tags: [ci, cost, benchmark, testing, unity, playground]
-  reviewed: "2026-10-29"
+  reviewed: "2026-11-02"
 ---
 
 # CI cost
@@ -34,7 +34,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
    - Check a surprising zero or a missing host against a raw job before quoting it: on 2026-10-30 the script read 16.5 pool hours for a real 95.6 because a label had changed under it.
    - A window ending now reads low while runs are still going. Read the before window again with `--before` rather than copying an old number: the baseline's 101.7 was 119.4 once its runs had finished.
 3. **Attribute.** Put every minute in one bucket: which workflow and trigger (nightly, gate, branch dispatch, release), then fixed per-launch cost, per-test cost, over-picking (classes picked that the change cannot affect), retries and solo reruns, or a slow test. Check and rule out the cheap suspects too, and write the ruled-out list down so the next pass does not redo it.
-4. **Rank levers** by runner-hours saved per day: minutes saved per run times runs per day that the lever touches. A big saving on a rare run loses to a small one on every gate. Note the floor (a Unity launch costs about a minute however little it runs) so targets stay honest.
+4. **Rank levers, deletion first.** A lever that removes a mechanism, a knob, a rule or a duplicate step ranks above any that adds one; a lever that adds one names what it removes (`docs/operations/ci-cost.md` Rules). Then rank by runner-hours saved per day: minutes saved per run times runs per day that the lever touches. A big saving on a rare run loses to a small one on every gate. Note the floor (a Unity launch costs about a minute however little it runs) so targets stay honest.
 5. **Change one lever per PR.** Each PR carries a test of the new behavior and a negative control (revert the guard, watch the test fail). A picker change ships with a `test_affected_classes.py` case for each rule, plus a replay of past gate picks showing pick sizes before and after and that no class that went red in those runs falls out of its pick.
 6. **Re-measure the same way** after it lands, with `scripts/test/ci-cost.py --days N --before <end of the before window>`, and append the before/after row to `docs/operations/ci-cost.md`. An estimate in a plan is replaced by the measured number, never left standing.
 7. **Report in this shape**, whenever the user asks how CI is doing or what a change bought:
@@ -48,10 +48,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
 
 ## House rules
 
-- The nightly on main stays full: every test, every class, every multi-process job. Breadth moves to the nightly, never out of CI.
-- Never widen a gate to catch what the nightly catches; teach the picker the dependency it missed, with a test (docs/operations/ci.md "Who gates what").
-- Harness, CI and gate changes are tier 3: run them attended, never through unattended dispatch.
-- Never cancel a pool gate run another session started; measure around it.
+The rules live in `docs/operations/ci-cost.md` "Rules" and `docs/operations/ci.md` "Who gates what"; read them there, never from a copy here. Why: on 2026-11-02 this section had drifted from ci.md (it still said never cancel a gate run).
 
 ## Do NOT
 
