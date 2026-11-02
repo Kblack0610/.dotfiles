@@ -3,14 +3,15 @@
 # results in the morning.
 #
 #   night-shift queue <repo> <task...> [--slug s] [--after slug] [--project p]
-#                     [--data-class personal|work] [--model m] [--max-turns n]
+#                     [--data-class personal|work] [--model m] [--max-turns n] [--account dir]
 #   night-shift list [--date YYYY-MM-DD]   TSV: state slug repo when pr summary
 #   night-shift report [YYYY-MM-DD]        one night as markdown bullets (default: latest)
 #   night-shift cancel <slug> | log [slug] | status
 #   night-shift run                        work the queue once (the agentctl timer)
 #
 # Each task is one `/one-shot --pr-only` run under agentctl-run's build role, one at a time,
-# in queue order. Nothing here merges, deploys or tags. Layout, file format and the morning
+# in queue order. Before it, `run` runs NIGHT_SHIFT_FILL (the conf names `fleet-dispatch night`,
+# which queues tier-3 board rows) under the same lock. Nothing here merges, deploys or tags. Layout, file format and the morning
 # view: ~/.claude/skills/night-shift/SKILL.md.
 set -uo pipefail
 
@@ -26,6 +27,7 @@ NS_MAX_TURNS="${NIGHT_SHIFT_MAX_TURNS:-200}"
 # rest of the queue. 5h covers a Unity reimport plus a full test pass.
 NS_TASK_TIMEOUT="${NIGHT_SHIFT_TASK_TIMEOUT:-5h}"
 NS_RUN="${NIGHT_SHIFT_RUNNER:-agentctl-run}"
+NS_FILL="${NIGHT_SHIFT_FILL:-}"
 
 die() { echo "night-shift: $*" >&2; exit 1; }
 
@@ -58,7 +60,7 @@ result_status() { # slug
 # --- queue / cancel ---
 cmd_queue() {
   local repo="${1:-}"; shift || true
-  local slug="" after="" project="" dc="personal" model="" turns="" task=()
+  local slug="" after="" project="" dc="personal" model="" turns="" account="" task=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --slug) slug="${2:?}"; shift 2 ;;
@@ -67,6 +69,7 @@ cmd_queue() {
       --data-class) dc="${2:?}"; shift 2 ;;
       --model) model="${2:?}"; shift 2 ;;
       --max-turns) turns="${2:?}"; shift 2 ;;
+      --account) account="${2:?}"; shift 2 ;;
       *) task+=("$1"); shift ;;
     esac
   done
@@ -88,6 +91,7 @@ cmd_queue() {
     printf 'data_class: %s\n' "$dc"
     [ -n "$model" ] && printf 'model: %s\n' "$model"
     [ -n "$turns" ] && printf 'max_turns: %s\n' "$turns"
+    [ -n "$account" ] && printf 'account: %s\n' "$account"
     printf -- '---\n%s\n' "${task[*]}"
   } > "$f"
   echo "queued $slug -> $f"
@@ -228,9 +232,10 @@ skip_result() { # task out status summary
 }
 
 run_one() { # task-file night-dir
-  local task="$1" out="$2" slug repo after dc model turns started rc
+  local task="$1" out="$2" slug repo after dc model turns account started rc
   slug="$(fm_get "$task" slug)"; repo="$(fm_get "$task" repo)"; after="$(fm_get "$task" after)"
   dc="$(fm_get "$task" data_class)"; model="$(fm_get "$task" model)"; turns="$(fm_get "$task" max_turns)"
+  account="$(fm_get "$task" account)"
   if [ -n "$after" ] && [ "$(result_status "$after")" != ok ]; then
     skip_result "$task" "$out/$slug.result.md" skipped "after $after, which ended ${after:+$(result_status "$after")}"
     mv -- "$task" "$out/$slug.md"
@@ -248,6 +253,8 @@ run_one() { # task-file night-dir
   echo "$NS_NAME: running $slug in $repo"
   (
     cd "$repo" || exit 1
+    # The account the queuer chose with `claude-acct room`; none means the runner's own.
+    [ -n "$account" ] && export CLAUDE_CONFIG_DIR="$account"
     # A task's own model wins; otherwise MODEL in the runner conf (agentctl-run).
     AGENTCTL_MODEL="${model:-}" timeout --kill-after=60 "$NS_TASK_TIMEOUT" "$NS_RUN" --role build --data-class "${dc:-personal}" \
       -p "$(prompt_for "$task")" --max-turns "${turns:-$NS_MAX_TURNS}" \
@@ -266,6 +273,11 @@ cmd_run() {
   flock -n 9 || { echo "$NS_NAME: a run is already in progress"; exit 0; }
   local night out f s n=0 bad=0 failed=0
   night="$(date +%F)"; out="$NS_DIR/done/$night"; mkdir -p "$out"
+  # The fill queues its tasks under this lock, so a second run cannot queue them twice. Its
+  # failure is said and the queue still runs: what the human queued must not wait on it.
+  if [ -n "$NS_FILL" ]; then
+    bash -c "$NS_FILL" || echo "$NS_NAME: fill failed (exit $?): $NS_FILL"
+  fi
   # Under the lock nothing can be running, so anything in running/ was orphaned by a crash
   # or reboot. Report it as failed rather than leave it there forever.
   while IFS= read -r f; do

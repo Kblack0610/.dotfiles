@@ -39,9 +39,9 @@ Not for work to do right now (`one-shot`), a ticket batch (`/captain`), or anyth
 
 ## How a run works
 
-`agentctl` fires `night-shift run` at 01:00 (`~/.config/agentctl/agents/night-shift.conf`). With an empty queue it publishes NOOP and spends no tokens. Otherwise it takes tasks in queue order under a `flock`, and for each one:
+`agentctl` fires `night-shift run` at 01:00 (`~/.config/agentctl/agents/night-shift.conf`). Under its `flock` it first runs the conf's `NIGHT_SHIFT_FILL`, `fleet-dispatch night`, which queues up to 3 tier-3 rows from the agent-runtime and notes-cockpit agent boards (skill: fleet-overseer, verb dispatch); a failed fill is logged and the queue still runs. With the queue still empty it publishes NOOP and spends no tokens. Otherwise it takes tasks in queue order, and for each one:
 
-- `queue/<stamp>-<slug>.md` moves to `running/`. The file is `key: value` lines (slug, repo, project, after, data_class, model, max_turns), then `---`, then the brief.
+- `queue/<stamp>-<slug>.md` moves to `running/`. The file is `key: value` lines (slug, repo, project, after, data_class, model, max_turns, account: the `CLAUDE_CONFIG_DIR` the task runs under), then `---`, then the brief.
 - It runs `agentctl-run --role build` with `/one-shot --pr-only <brief>`, plus the overnight rules: decide reversible forks yourself and log `assumed:`, do not merge, post hard gates with `agent-ask`, and end with a `NIGHT-SHIFT-RESULT` block. Output is stream-json, saved to `<slug>.jsonl` and formatted into `<slug>.log` under `~/.local/state/agentctl/night-shift/`. A 5h timeout guards each task.
 - The result block becomes `done/<night>/<slug>.result.md` (status ok|blocked|failed|skipped, pr, asks, summary, exit, session, log, then the final text). If the block is missing, the status is `failed`, never `ok`.
 - A task left in `running/` by a crash or reboot is reported `failed` (interrupted) on the next run.

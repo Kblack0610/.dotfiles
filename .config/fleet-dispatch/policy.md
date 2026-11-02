@@ -12,7 +12,8 @@ This section is the one definition of the tiers. Humans tagging rows, agents fil
 
 - `1`: cannot break anything others depend on. Docs, copy and text, one contained bug fix or a new test in one product module.
 - `2`: an ordinary product change in product code, a small feature or bug fix that the row fully describes.
-- `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Tier 3 never runs unattended, whatever the row is tagged.
+- `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Tier 3 never gets a merging session, whatever the row is tagged.
+- Tier 3 may run unattended to an open PR only, via night-shift, never past it (human decision 2026-11-02). That is `fleet-dispatch night`, which reads `tier3_only` below; your verdict for a tier 3 row is still `skip`.
 
 Judge the tier from what the change touches, not from the tag. A row tagged `#tier/1` that changes a test gate is tier 3.
 
@@ -54,5 +55,6 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. Use the row's own prefix when it names one (`wilds`, `dodginballs`, `skyline`, `fx`, `perf`), otherwise the game or system it names, spelled as the directory under `Assets/Games` (`barrage`, `apociseum`). Empty when it spans several.
 - `clear`: true only if the row says what done looks like, so the session would not need to ask anything.
 - `agent_only`: true only if no step needs the human (see Always skip).
+- `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run. False for every row below tier 3.
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
