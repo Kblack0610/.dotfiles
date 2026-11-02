@@ -194,7 +194,7 @@ EOF
   chmod +x "$SANDBOX/bin/notes"
 }
 
-@test "asks lead the agent board, at most 8, so in-flight rows still show" {
+@test "asks lead the agent board, at most 3 of its 6 rows, so in-flight rows still show" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
@@ -202,10 +202,10 @@ EOF
 
   run context
   assert_success
-  [ "$(grep -c 'the ask ' <<<"$output")" -eq 8 ]
-  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 7 ]
+  [ "$(grep -c 'the ask ' <<<"$output")" -eq 3 ]
+  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 3 ]
   [ "$(grep -m1 -n 'the ask 1 ' <<<"$output" | cut -d: -f1)" -lt "$(grep -m1 -n 'follow-up 1$' <<<"$output" | cut -d: -f1)" ]
-  assert_output --partial '+17 more'
+  assert_output --partial '+26 more'
 }
 
 @test "spare room on the agent board goes to the asks left over" {
@@ -216,7 +216,7 @@ EOF
 
   run context
   assert_success
-  [ "$(grep -c 'the ask ' <<<"$output")" -eq 13 ]
+  [ "$(grep -c 'the ask ' <<<"$output")" -eq 4 ]
   [ "$(grep -c 'follow-up ' <<<"$output")" -eq 2 ]
 }
 
@@ -300,19 +300,82 @@ EOF
   refute_output --partial 'Agent board clear'
 }
 
-@test "the injected context stays well under the old 28.5 KB" {
-  # The budget this rewrite exists for. Not a hard 8 KB: measured, the anchor's
-  # non-truncatable sections alone are 5.3 KB and its newest single decision entry is
-  # 2.9 KB, so ~8.3 KB is the anchor's floor before anything else is added.
+# -- the one size budget -------------------------------------------------------------
+#
+# Past Claude Code's ~10 KB hook-output cap the whole preflight is saved to a file and
+# the model gets a 2 KB preview: on 2026-11-02 that was the anchor header and one
+# decisions entry, and nothing after it arrived. The budget keeps the context under
+# 9,000 B by leaving out the lowest-priority sections and naming them.
+
+# seed_anchor_sized <blocker-lines> <lesson-lines> -- an anchor whose decisions log is
+# far over the cap on its own (40 entries of ~420 B), with <n> 200-byte lines in the
+# blockers and lessons sections so the NON-log sections can be made to overflow too.
+seed_anchor_sized() {
+  mkdir -p "$HOME/.agent/anchors"
+  local a="$HOME/.agent/anchors/toolrepo.md" i pad
+  pad=$(printf 'x%.0s' $(seq 1 190))
+  {
+    echo "# toolrepo - anchor"
+    echo "## Key URLs & facts"
+    echo "- **Repo:** a fact that must survive"
+    echo "## Decisions log"
+    for i in $(seq 40 -1 1); do echo "- **2026-08-01:** decision $i $pad$pad"; done
+    echo "## Blockers / known issues"
+    for i in $(seq 1 "$1"); do echo "- blocker $i $pad"; done
+    echo "## Active plans (most recent)"
+    echo "- \`a-plan.md\`"
+    echo "## Recent lessons (digest)"
+    echo "- a digest lesson"
+    for i in $(seq 2 "$2"); do echo "- lesson $i $pad"; done
+  } > "$a"
+}
+
+# fat_board_stub <rows> <bytes-per-row>
+fat_board_stub() {
+  cat > "$SANDBOX/bin/notes" <<EOF
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "board --agent" ]; then
+  for i in \$(seq 1 $1); do printf 'notes-cockpit\trow %s %s\n' "\$i" "\$(printf 'y%.0s' \$(seq 1 $2))"; done
+fi
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+}
+
+@test "a large anchor and a 40-row board stay under 9,000 B and keep the board" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
+  seed_anchor_sized 30 10
+  fat_board_stub 40 200
+
+  local out n
+  out=$(context)
+  n=$(printf '%s' "$out" | wc -c)
+  [ "$n" -lt 9000 ] || { echo "turn-1 context is $n bytes, over 9,000" >&2; return 1; }
+  [[ "$out" == *"Left in flight"* ]]
+  [[ "$out" == *"a fact that must survive"* ]]
+  [[ "$out" == *"Decisions log: 40 entries"* ]]
+  [[ "$out" == *"+ omitted to fit the 9000 B turn-1 budget:"* ]]
+  [[ "$out" == *"lessons digest ("* ]]
+  [[ "$out" == *"commits (git log)"* ]]
+}
+
+@test "small inputs omit nothing, and the lessons digest and plans arrive" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  seed_anchor_sized 1 1
   seed_agent_stub
 
-  local n
-  n=$(context | wc -c)
-  [ "$n" -lt 16384 ] || {
-    echo "turn-1 context is ${n} bytes, over the 16 KB ceiling" >&2
-    return 1
-  }
+  run context
+  assert_success
+  refute_output --partial 'omitted to fit'
+  assert_output --partial 'Left in flight'
+  assert_output --partial '## Recent lessons (digest)'
+  assert_output --partial 'a digest lesson'
+  assert_output --partial 'a-plan.md'
+  assert_output --partial 'first commit'
+  # Each generated section once: from its own slot, not also inside the anchor.
+  [ "$(grep -c 'a digest lesson' <<<"$output")" -eq 1 ]
 }
