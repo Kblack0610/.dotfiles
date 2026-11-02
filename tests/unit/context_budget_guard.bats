@@ -1,14 +1,18 @@
 #!/usr/bin/env bats
-# memory-index-guard.sh: warns when a write leaves an auto-memory index over budget.
+# context-budget-guard.sh: warns when a write leaves an always-loaded file over its budget.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
-  HOOK="$BATS_TEST_DIRNAME/../../.claude/hooks/memory-index-guard.sh"
+  HOOK="$BATS_TEST_DIRNAME/../../.claude/hooks/context-budget-guard.sh"
   DIR="$BATS_TEST_TMPDIR/proj/memory"
   mkdir -p "$DIR"
   IDX="$DIR/MEMORY.md"
+  export CONTEXT_BUDGET_GLOBAL_FILE="$BATS_TEST_TMPDIR/home/.claude/CLAUDE.md"
+  mkdir -p "${CONTEXT_BUDGET_GLOBAL_FILE%/*}"
 }
+
+fill() { head -c "$2" /dev/zero | tr '\0' x > "$1"; }
 
 payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_string":"x"}}' "$1"; }
 
@@ -45,5 +49,41 @@ payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_stri
   run bash "$HOOK" <<< "$(payload "$BATS_TEST_TMPDIR/MEMORY.md")"
   assert_success
   run bash "$HOOK" <<< "$(payload "$BATS_TEST_TMPDIR/other.md")"
+  assert_success
+}
+
+@test "the global CLAUDE.md over 20 KB warns" {
+  fill "$CONTEXT_BUDGET_GLOBAL_FILE" 20481
+  run bash "$HOOK" <<< "$(payload "$CONTEXT_BUDGET_GLOBAL_FILE")"
+  assert_failure 2
+  assert_output --partial "global CLAUDE.md"
+  assert_output --partial "> 20480"
+}
+
+@test "the global CLAUDE.md under budget passes, line length is not checked there" {
+  fill "$CONTEXT_BUDGET_GLOBAL_FILE" 20000
+  run bash "$HOOK" <<< "$(payload "$CONTEXT_BUDGET_GLOBAL_FILE")"
+  assert_success
+  assert_output ""
+}
+
+@test "a repo root CLAUDE.md or AGENTS.md over 12 KB warns" {
+  repo="$BATS_TEST_TMPDIR/repo"
+  git init -q "$repo"
+  fill "$repo/CLAUDE.md" 12289
+  run bash "$HOOK" <<< "$(payload "$repo/CLAUDE.md")"
+  assert_failure 2
+  assert_output --partial "repo root CLAUDE.md"
+  fill "$repo/AGENTS.md" 12289
+  run bash "$HOOK" <<< "$(payload "$repo/AGENTS.md")"
+  assert_failure 2
+}
+
+@test "a CLAUDE.md below a repo root is not a root file and passes" {
+  repo="$BATS_TEST_TMPDIR/repo"
+  git init -q "$repo"
+  mkdir -p "$repo/sub"
+  fill "$repo/sub/CLAUDE.md" 30000
+  run bash "$HOOK" <<< "$(payload "$repo/sub/CLAUDE.md")"
   assert_success
 }

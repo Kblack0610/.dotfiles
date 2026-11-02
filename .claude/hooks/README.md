@@ -79,7 +79,7 @@ These read the project transcript and print a compliance audit. They are not wir
 |---------|------|-----|
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/board-observe.sh` | Record a sprint-board stage transition when the board is edited |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
-| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/memory-index-guard.sh` | Warn when an auto-memory `MEMORY.md` passes 8 KB or has a line over 200 chars |
+| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when an always-loaded file passes its budget: `MEMORY.md` 8 KB (or a line over 200 chars), global `CLAUDE.md` 20 KB, repo root `CLAUDE.md`/`AGENTS.md` 12 KB |
 
 ## File layout
 

@@ -132,7 +132,7 @@
           },
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/memory-index-guard.sh"
+            "command": "bash ~/.claude/hooks/context-budget-guard.sh"
           }
         ]
       }

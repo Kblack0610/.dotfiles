@@ -40,7 +40,7 @@ Under `~/.agent/dreams/<project>/`:
 - `mem0-queue.md`: cross-project facts staged for you, each with a ready `curl`. Never posted for you.
 - `mem0-queue.expired.md`: queue blocks nobody approved within `MEM0_QUEUE_TTL_DAYS` (30), moved there by the script before the model runs.
 
-Outside it, a live sweep may append to `~/.agent/lessons/<project>.md` and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
+Outside it, a live sweep may edit or append to `~/.agent/lessons/<project>.md` (superseded lessons are listed in the diary for a human to delete) and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
 
 ## Report back
 
