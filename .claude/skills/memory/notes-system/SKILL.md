@@ -107,6 +107,19 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 - **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
 - **Vs Vikunja:** complementary, not synced. Vikunja tickets use their own P-labels for tracked work; these tags are for lightweight in-note prioritisation.
 
+## Project board
+
+The rules every agent follows on a project's two lanes. The verbs are in the CLI README, Projects cheatsheet. Every lane goes through the `notes` CLI (never hand-edit a sheet); items are a couple of words, plain ASCII.
+
+- Your own subtasks, follow-ups and in-flight state go on the agent board: `notes ptask <project> --agent add|start|done "<title>"`. That is what lets another session resume your work. Project names come from `~/.dotfiles-private/.config/shared-hooks/project-map.json`.
+- The project sheet (no `--agent`) is the human's queue. Every open row on its current wave is the work, whoever does it; `start`/`done` the rows you take. Add to it only (1) asks the human wrote, (2) human-only actions (prod writes, releasing, money, legal, product decisions, device runs), or (3) findings with prod user, PHI, security or money impact, each with a `file:line` and a one-line impact. Anything else: fix it in the PR that found it, put it on the agent board and finish it before the wave rolls, or drop it. Check both lanes before adding.
+- `done` needs `--proof <ref>` checkable later (`pr:1142`, `run:<id>`, a URL) or `--unverified "<why>"` when that is the truth. Why: a version cannot roll while its wave has open tasks, and that gate is only worth anything if a ticked box means done.
+- Agents never write into a planned wave (`add --to`, `move --to`). A bare add is tagged `#high`, meaning "nobody decided"; pass `#urgent` or `#low` when that is your judgment. Why: otherwise agent-filed `#high` rows, most of them agent-board work, fill the human's planned wave.
+- What the human asked for goes in a plan; the board gets one `#ask` row per unfinished plan, never one per phase. An ask with no plan, unlanded at session end, gets one row in their words. Closing an `#ask` needs proof of every clause, with what is left on a new `#ask`; only the human drops an undelivered one. `agent-ask` is a different thing: a question for the human. Why: an ask with no row is lost when the session ends.
+- Unattended dispatch (`fleet-dispatch`) picks rows by tag; what is eligible is the `fleet-overseer` skill, "dispatch". When you file a row you may tag your own `#tier/N`, never `#worker/*`, except `#worker/asks` on an `#ask` row that is tier 2 or lower, size S and says what done looks like. Untagged `unity-playground` agent-board rows are eligible as they stand: file them clear and in one area, or tag them `#tier/3`.
+- Today's `## Focus` (`notes focus`) is the human's list; the preflight shows it as context, never as your queue.
+- After creating, staging, rolling or archiving a lab project, moving rows, or editing a summary or index, run `lab-refresh` (the `lab-sync` skill, "After any lab change").
+
 ## Other scripts
 
 ### `notes-bootstrap`
