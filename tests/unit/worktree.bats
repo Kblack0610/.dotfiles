@@ -627,6 +627,44 @@ make_squash_candidate() {
   assert_output 'a running process is inside it'
 }
 
+# -- done: kill, then reap, on the server --
+
+# done_from_inside <tree> -- `wt done` the way an agent runs it: from a shell in its own tree,
+# inside tmux, with the tree's session live. Then run what it queued, as the server would,
+# after the caller has gone. Real /proc: the job and the reap it starts are real processes.
+done_from_inside() {
+  printf '%s\n' "$(basename "$1")" >> "$NOTES_FIXTURE/tmux.sessions"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  (cd "$1" && TMUX="$SANDBOX/tmp/tmux-0/default,1,0" cmd_done)
+  local cwd cmd
+  while IFS=$'\t' read -r cwd cmd; do
+    (cd "$cwd" && sh -c "$cmd") || : # a kept tree is a failing job, as on the server
+  done < "$NOTES_FIXTURE/tmux.jobs"
+}
+
+@test "done reaps its tree once the session it killed is gone" {
+  # Every done since #652 was kept "a running process is inside it": the job ran in the
+  # caller's cwd, so the reap counted itself. done.log:386 on, 68 of 69 lines.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  done_from_inside "$WT_ROOT/repo-agent-1"
+  run cat "$HOME/.agent/wt/done.log"
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -d "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "done keeps its tree while another session has a pane in it" {
+  # A peer session in the same slot outlives the kill, which is by name.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'peer\n' > "$NOTES_FIXTURE/tmux.sessions"
+  printf '%s\n' "$WT_ROOT/repo-agent-1" > "$NOTES_FIXTURE/tmux.panes"
+  done_from_inside "$WT_ROOT/repo-agent-1"
+  run cat "$HOME/.agent/wt/done.log"
+  assert_output --partial 'kept repo-agent-1: a tmux pane is open inside it'
+  [ -d "$WT_ROOT/repo-agent-1" ]
+}
+
 @test "an editor on ANOTHER project does not pin the worktree" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
