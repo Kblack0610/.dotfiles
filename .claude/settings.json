@@ -139,6 +139,15 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
@@ -197,6 +206,10 @@
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh answered"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
           }
         ]
       }
