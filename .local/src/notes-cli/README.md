@@ -114,7 +114,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 
 The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It lists every profile's projects, main ones first (drafts behind `d`), each with its open work by priority and wave. `1`-`9` or Enter opens a project's tasks, where `a` adds, `m` moves a task to another project, `x` checks it off (asks for a proof), `+`/`-` change its wave and `o` opens the sheet at that row. On the project list, `n` is new, `s` stage, `x` archive and `o` open. `/` searches; Esc steps out of the search, then the filter, then the view. Moving a project between profiles and changing its group stay CLI-only (the table above).
 
-The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in `~/.claude/CLAUDE.md`, Workflow Expectations.
+The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
 ## Daily-note model
 
