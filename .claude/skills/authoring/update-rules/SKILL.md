@@ -102,7 +102,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 ### Add a project-specific rule
 
 1. Use `<project>/CLAUDE.md` (Claude) or `<project>/AGENTS.md` (Codex / others). Don't put project-only rules in the dotfiles layer.
-2. For project-specific *corrections* (the kind that come from a user redirect), use `~/.agent/lessons/{project}.md` instead - the SessionStart hook auto-injects the last 20.
+2. For project-specific *corrections* (the kind that come from a user redirect), use `~/.agent/lessons/{project}.md` instead - the SessionStart hook injects a digest of them.
 
 ### Register a new MCP server
 
@@ -112,7 +112,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 
 ### A new skill and CLAUDE.md
 
-Skills are not listed in CLAUDE.md: every skill's description is injected automatically, and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins). A skill that replaces another deletes the old one in the same PR; there is no "retired" list to keep. `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
+Skills are not listed in CLAUDE.md: skill descriptions are injected (kept short by `skill-drift --lint`), and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins). A skill that replaces another deletes the old one in the same PR; there is no "retired" list to keep. `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
 
 ### Remove a rule
 
