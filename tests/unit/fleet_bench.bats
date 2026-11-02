@@ -12,6 +12,7 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export BENCH_SESSIONS_CMD=sessions-stub   # on PATH: the sandbox path has a space
   export BENCH_DEFAULT_PHASE_MIN=60
+  export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   SNAP="$SANDBOX/snap.jsonl"
@@ -122,6 +123,40 @@ PROM
   sample_at 2400
   run jq -r 'select(.session_id != "a") | [.session_id, .basis, .per_phase_min] | @tsv' "$FLEET_BENCH_DIR/estimates.jsonl"
   assert_output "$(printf 'b\tproject-median(1)\t20\nc\tdefault\t60')"
+}
+
+@test "below BENCH_BASIS_MIN_N measured phases neither the session nor its project makes the ETA" {
+  export BENCH_BASIS_MIN_N=3
+  row a lab/game-agent-1:1 0 6 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 1 6 > "$SNAP"; sample_at 600
+  row a lab/game-agent-1:1 2 6 > "$SNAP"; sample_at 1800    # one 20 min phase measured
+  { row a lab/game-agent-1:1 2 6; row b lab/game-agent-2:1 0 3; } > "$SNAP"; sample_at 2400
+  run jq -r 'select(.phases_done == 2 or .session_id == "b") | [.session_id, .basis] | @tsv' "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output "$(printf 'a\tdefault\nb\tdefault')"
+}
+
+@test "at BENCH_BASIS_MIN_N measured phases the session's own median makes the ETA" {
+  export BENCH_BASIS_MIN_N=3
+  local i=0
+  for off in 0 600 1800 3000 4200; do row a lab/game-agent-1:1 $i 6 > "$SNAP"; sample_at $off; i=$((i + 1)); done
+  run jq -r 'select(.phases_done == 4) | [.basis, .per_phase_min] | @tsv' "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output "$(printf 'session-median(3)\t20')"
+}
+
+@test "an ETA the newest sample has passed shows as late, and the estimate is not redone" {
+  row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0          # default: ETA T0 + 120 min
+  sample_at 3600
+  run "$SUBJECT" eta
+  assert_output --partial "$(jq -rn --argjson t $((T0 + 7200)) '$t | strflocaltime("%a %H:%M")')"
+  sample_at 9000                                                # 30 min past the ETA
+  run "$SUBJECT" eta
+  assert_output --partial 'late 30m'
+  run "$SUBJECT" report
+  assert_output --partial 'late 30m'
+  run jq -c '{eta_epoch, late_min}' < <("$SUBJECT" eta --json)
+  assert_output "{\"eta_epoch\":$((T0 + 7200)),\"late_min\":30}"
+  run jq -s length "$FLEET_BENCH_DIR/estimates.jsonl"
+  assert_output 1
 }
 
 @test "one estimate per phase count, however many samples" {
