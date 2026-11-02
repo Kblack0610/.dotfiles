@@ -1,6 +1,7 @@
 ---
 name: night-shift
-description: Queue agent tasks during the day to run unattended overnight, then read what happened in the morning. Each queued task becomes one headless `/one-shot --pr-only` run at 01:00 (agentctl runner `night-shift`), one at a time, deciding its own questions with its own recommendation and stopping at an open PR. Hard gates go to `agent-ask` for the morning. Use when the user says "do this tonight", "run it overnight", "queue this for later", "have agents work on it while I sleep", "what did the night shift do", "show me the overnight agents", or "/night-shift queue|list|report|cancel". The live view is tmux prefix C. Other skills cover the neighbours - a task to run now is `one-shot`, a batch of tracker tickets is `/captain`, a release is `release-coordinator`, and watching a running wave is `wave-overseer`.
+description: >-
+  Queue tasks to run unattended overnight as `/one-shot --pr-only`, then read the morning report. Use for "do this tonight", "run it overnight", "what did the night shift do", "/night-shift". Run now: one-shot.
 metadata:
   category: workstreams
   tags: [delivery, autonomy, scheduling, overnight]
@@ -10,6 +11,10 @@ metadata:
 # night-shift
 
 Turns "do this tonight" into a queued task that runs while the human sleeps and leaves a result they can read over coffee. The task procedure (worktree, gate, PR, board row, wind-down note) is `one-shot`'s. This skill only queues tasks, runs them one at a time, and reports. Everything goes through the `night-shift` CLI (`~/.local/bin/night-shift --help`).
+
+## Scope and triggers
+
+Queue agent tasks during the day to run unattended overnight, then read what happened in the morning. Each queued task becomes one headless `/one-shot --pr-only` run at 01:00 (agentctl runner `night-shift`), one at a time, deciding its own questions with its own recommendation and stopping at an open PR. Hard gates go to `agent-ask` for the morning. Use when the user says "do this tonight", "run it overnight", "queue this for later", "have agents work on it while I sleep", "what did the night shift do", "show me the overnight agents", or "/night-shift queue|list|report|cancel". The live view is tmux prefix C. Other skills cover the neighbours - a task to run now is `one-shot`, a batch of tracker tickets is `/captain`, a release is `release-coordinator`, and watching a running wave is `wave-overseer`.
 
 ## When to Use
 

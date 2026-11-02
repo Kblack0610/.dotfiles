@@ -1,15 +1,7 @@
 ---
 name: sprint-overseer
 description: >-
- Sprint Overseer - watchdog and single notification voice for /kb:sprint batch runs. Use when
-  the user says "watch the sprint", "how's the batch going", "is the sprint stuck", "escalate
- that block", or "wrap up the sprint report" - and as the recurring half of a sprint via
-  `/loop 10m /sprint-overseer watch`. Verbs: watch | status | escalate | report. It OBSERVES,
- VERIFIES, and NOTIFIES - it has no execution verb: it never dispatches agents, never merges or
-  closes PRs, never flips tracker state, and never touches release gates. Execution belongs to
-  the /kb:sprint dispatcher; queueing to kb-sprint-owner; release analysis to release-coordinator.
- Prefer /captain as the user entry point - this skill is internal watchdog machinery; the
-  canonical loop line is `/loop 10m /captain watch` (which runs this skill's watch pass).
+  Observe-only watchdog for /kb:sprint batches. Use for "watch the sprint", "is the sprint stuck", "wrap up the sprint report". Internal: enter via `/loop 10m /captain watch`. A /wave is wave-overseer.
 metadata:
   category: workstreams
   tags: [sprint, watchdog, observe-only]
@@ -33,6 +25,10 @@ watches the shared blackboard, independently verifies what the dispatcher claims
 The blackboard: `~/.agent/plans/{project}/sprint-{YYYY-MM-DD}.md` (newest file with non-terminal
 rows is "the active sprint"). Delegate the legwork to the `sprint-overseer` agent (Argus 👁️) for
 headless/loop runs.
+
+## Scope and triggers
+
+Sprint Overseer - watchdog and single notification voice for /kb:sprint batch runs. Use when the user says "watch the sprint", "how's the batch going", "is the sprint stuck", "escalate that block", or "wrap up the sprint report" - and as the recurring half of a sprint via `/loop 10m /sprint-overseer watch`. Verbs: watch | status | escalate | report. It OBSERVES, VERIFIES, and NOTIFIES - it has no execution verb: it never dispatches agents, never merges or closes PRs, never flips tracker state, and never touches release gates. Execution belongs to the /kb:sprint dispatcher; queueing to kb-sprint-owner; release analysis to release-coordinator. Prefer /captain as the user entry point - this skill is internal watchdog machinery; the canonical loop line is `/loop 10m /captain watch` (which runs this skill's watch pass).
 
 ## Hard constraints (read first, non-negotiable)
 

@@ -1,6 +1,7 @@
 ---
 name: ingest-worktree
-description: Land a dirty working tree correctly - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob). It HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. It also checks the checkout is not stale before landing, because a tree edited against an old base can silently revert work that has since landed on the default branch. Use when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles", or "what is all this uncommitted stuff". Branch-first off the default branch. Differs from sc:git (single commit helper), my:pr-merge-flow (drives ONE existing PR), and ingest-prs (drains the open-PR queue on the FORGE - use that one when the user points at open PRs rather than at their own dirty tree). Do NOT `git add -A` a mixed tree, and do NOT commit theme/ephemeral churn or unscanned untracked files.
+description: >-
+  Fan a dirty working tree into scoped PRs, one per concern, secret-scanning untracked files. Use for "get my hanging changes in", "land the worktree", "clean up my git status into PRs". Open PRs: ingest-prs.
 metadata:
   category: workstreams
   tags: [git, pull-requests, landing]
@@ -18,6 +19,10 @@ dirty tree ->  survey  ->  classify by concern  ->  HOLD churn/secrets  ->  land
 ```
 
 **Pointed at the forge instead?** "we have N open PRs", "land the open PRs", "should I close all these" -> use **`ingest-prs`**. Draining an existing queue needs a per-PR definition table (what / who / why / where / tier / blocker) before any close-or-land verdict, which is a different shape of work than fanning a dirty tree out.
+
+## Scope and triggers
+
+Land a dirty working tree correctly - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob). It HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. It also checks the checkout is not stale before landing, because a tree edited against an old base can silently revert work that has since landed on the default branch. Use when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles", or "what is all this uncommitted stuff". Branch-first off the default branch. Differs from sc:git (single commit helper), my:pr-merge-flow (drives ONE existing PR), and ingest-prs (drains the open-PR queue on the FORGE - use that one when the user points at open PRs rather than at their own dirty tree). Do NOT `git add -A` a mixed tree, and do NOT commit theme/ephemeral churn or unscanned untracked files.
 
 ## 1. Survey
 ```bash

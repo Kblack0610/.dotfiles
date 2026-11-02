@@ -177,24 +177,66 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_output --partial "CATCOLLIDE"
 }
 
-@test "LONGDESC: a description past the 1536-char listing cap" {
+# desc <bytes>: a plain description of exactly that many bytes.
+desc() { printf 'x%.0s' $(seq 1 "$1"); }
+
+@test "LONGDESC: a 301-byte description fails" {
   d=$(mkskill ops verbose)
-  long=$(printf 'x%.0s' $(seq 1 1700))
-  sed -i "s/^description: .*/description: $long/" "$d/SKILL.md"
+  sed -i "s/^description: .*/description: $(desc 301)/" "$d/SKILL.md"
   lint
   assert_failure
   assert_output --partial "LONGDESC"
-  assert_output --partial "truncated away"
+  assert_output --partial "301B"
 }
 
-@test "DESCNEAR is a WARNING, not a failure" {
-  d=$(mkskill ops chatty)
-  long=$(printf 'x%.0s' $(seq 1 1300))
-  sed -i "s/^description: .*/description: $long/" "$d/SKILL.md"
+@test "LONGDESC: a 300-byte description passes" {
+  d=$(mkskill ops exact)
+  sed -i "s/^description: .*/description: $(desc 300)/" "$d/SKILL.md"
   lint
   assert_success
-  assert_output --partial "warn"
-  assert_output --partial "DESCNEAR"
+}
+
+# A folded block counts its folded value, not its raw lines. Six 49-byte lines
+# fold to 299 bytes (6*49 plus 5 joining spaces) while the raw block, with its
+# indent and newlines, is over 310: a raw-line counter fails a skill that fits.
+# mkfolded <dir> <lines> <width> <style>
+mkfolded() {
+  local d="$1" n="$2" w="$3" style="$4" line
+  line=$(desc "$w")
+  python3 - "$d/SKILL.md" "$line" "$style" "$n" <<'PY'
+import sys
+p, line, style, n = sys.argv[1:]
+s = open(p).read()
+block = "description: " + style + "\n" + "".join("  " + line + "\n" for _ in range(int(n)))
+s = s.replace(next(l for l in s.split("\n") if l.startswith("description:")) + "\n", block)
+open(p, "w").write(s)
+PY
+}
+
+@test "LONGDESC: a >- block under the cap passes on its folded value" {
+  d=$(mkskill ops folded)
+  mkfolded "$d" 6 49 '>-'
+  lint
+  assert_success
+}
+
+@test "LONGDESC: a >- block over the cap fails on its folded value" {
+  d=$(mkskill ops foldedlong)
+  mkfolded "$d" 4 75 '>-'
+  lint
+  assert_failure
+  assert_output --partial "LONGDESC"
+  assert_output --partial "303B"
+}
+
+# A literal block keeps its newlines: the same four 75-byte lines are 304 bytes
+# under `|` (each line plus its newline) where `>-` gave 303.
+@test "LONGDESC: a | block counts its kept newlines" {
+  d=$(mkskill ops literal)
+  mkfolded "$d" 4 75 '|'
+  lint
+  assert_failure
+  assert_output --partial "304B"
 }
 
 @test "NONASCII: an em dash trips the house plain-ASCII rule" {

@@ -1,10 +1,7 @@
 ---
 name: one-pager
 description: >-
-  Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~½
-  page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem +
-  appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full
-  PRD or tech spec. Saves to ~/.notes/lab/briefs/.
+  Write a 1-2 page problem doc (Brief, One-pager or Shape Up Pitch) to ~/.notes/lab/briefs/. Use to frame a problem without a full PRD or tech spec. A PRD, TSD and SOW set is scope.
 metadata:
   category: authoring
   tags: [docs, briefs, writing]
@@ -14,6 +11,10 @@ metadata:
 # one-pager
 
 Produce a short, focused problem doc and save it to `~/.notes/lab/briefs/`. Three formats are supported; pick one before drafting.
+
+## Scope and triggers
+
+Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~half page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to ~/.notes/lab/briefs/.
 
 ## When to use this skill
 

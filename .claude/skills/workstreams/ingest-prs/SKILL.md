@@ -1,6 +1,7 @@
 ---
 name: ingest-prs
-description: Triage and land the open pull-request queue on the forge. Its FIRST and mandatory output is a definition table naming every open PR - number, title, author, age, head -> base, what it does, why it exists, where it lands, size, review tier, CI, conflict state, and a per-PR verdict (LAND / FIX-THEN-LAND / DRAFT / CLOSE / KEEP) - because you cannot decide what to close until every PR is defined. Only after that table is on screen may it propose merging, drafting, or closing anything. Use when the user says "what are all these open PRs", "define every open PR", "should I close all of these", "drain the PR queue", "land the open PRs", "why is this still open", "what's blocking these", or points at a list/screenshot of PRs. Also answers "what should be on my env branch" by checking which PR heads are already contained in it. Differs from pr-review (ONE PR, deep review + bot comments), my:pr-merge-flow (babysits ONE PR to merge), release-ingest (batch-lands WITH version/CHANGELOG/tag discipline for a release cut), and ingest-worktree (LOCAL dirty working tree, not the forge). Do NOT merge a conflicted or failing-CI PR, do NOT self-merge or --admin anything in the repo's human-approval tier, and NEVER `gh pr close --delete-branch` an unmerged PR.
+description: >-
+  Triage and land the open PR queue: define every open PR with a verdict first, then act. Use for "what are all these open PRs", "drain the PR queue", "land the open PRs". A local dirty tree: ingest-worktree.
 metadata:
   category: workstreams
   tags: [git, pull-requests, triage]
@@ -20,6 +21,10 @@ list -> DEFINE every PR (mandatory table) -> tier + blocker per PR -> verdict ->
                     |
         never skip to a verdict from a bare list
 ```
+
+## Scope and triggers
+
+Triage and land the open pull-request queue on the forge. Its FIRST and mandatory output is a definition table naming every open PR - number, title, author, age, head -> base, what it does, why it exists, where it lands, size, review tier, CI, conflict state, and a per-PR verdict (LAND / FIX-THEN-LAND / DRAFT / CLOSE / KEEP) - because you cannot decide what to close until every PR is defined. Only after that table is on screen may it propose merging, drafting, or closing anything. Use when the user says "what are all these open PRs", "define every open PR", "should I close all of these", "drain the PR queue", "land the open PRs", "why is this still open", "what's blocking these", or points at a list/screenshot of PRs. Also answers "what should be on my env branch" by checking which PR heads are already contained in it. Differs from pr-review (ONE PR, deep review + bot comments), my:pr-merge-flow (babysits ONE PR to merge), release-ingest (batch-lands WITH version/CHANGELOG/tag discipline for a release cut), and ingest-worktree (LOCAL dirty working tree, not the forge). Do NOT merge a conflicted or failing-CI PR, do NOT self-merge or --admin anything in the repo's human-approval tier, and NEVER `gh pr close --delete-branch` an unmerged PR.
 
 ## 1. Collect, in as few calls as possible
 

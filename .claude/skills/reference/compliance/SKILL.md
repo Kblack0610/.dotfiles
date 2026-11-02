@@ -1,17 +1,7 @@
 ---
 name: compliance
 description: >-
- Reference lookup for regulated-data compliance - the regulatory-scope decision tree
-  (covered entity vs business associate vs non-HIPAA regimes like FTC/CMIA/MHMDA), the
-  method for verifying whether a vendor/product is HIPAA/SOC2/GDPR-covered under a BAA,
-  and a DATED snapshot of cloud-vendor covered-product coverage (DigitalOcean, AWS, GCP).
-  Use when you need to look up "which regime applies", "how do I confirm <vendor> covers
- <product>", or a quick covered/not-covered hint before a deeper check - for PHI/HIPAA,
-  PII, GDPR, BAA/DPA, data-residency, or "are we compliant?" questions. This is the
-  reference card; the `compliance-counsel` agent is the one that REASONS about a specific
- situation. Do NOT treat this skill's vendor matrix as authoritative - it is a dated
-  snapshot to be re-verified. Do NOT use for code security review (that's security-engineer)
-  or for definitive legal advice (that's qualified human counsel).
+  Reference card for regulated data: which regime applies (HIPAA, FTC, CMIA, GDPR), vendor BAA checks, a dated coverage snapshot. Use for "which regime applies", "are we compliant?". Case reasoning: compliance-counsel.
 metadata:
   category: reference
   tags: [reference, regulatory, hipaa, privacy]
@@ -22,6 +12,10 @@ metadata:
 
 Reference card for handling regulated or sensitive data. The `compliance-counsel` agent does the
 *reasoning*; this skill is the *lookup* it (and you) pull from. Keep it lean and keep it dated.
+
+## Scope and triggers
+
+Reference lookup for regulated-data compliance - the regulatory-scope decision tree (covered entity vs business associate vs non-HIPAA regimes like FTC/CMIA/MHMDA), the method for verifying whether a vendor/product is HIPAA/SOC2/GDPR-covered under a BAA, and a DATED snapshot of cloud-vendor covered-product coverage (DigitalOcean, AWS, GCP). Use when you need to look up "which regime applies", "how do I confirm <vendor> covers <product>", or a quick covered/not-covered hint before a deeper check - for PHI/HIPAA, PII, GDPR, BAA/DPA, data-residency, or "are we compliant?" questions. This is the reference card; the `compliance-counsel` agent is the one that REASONS about a specific situation. Do NOT treat this skill's vendor matrix as authoritative - it is a dated snapshot to be re-verified. Do NOT use for code security review (that's security-engineer) or for definitive legal advice (that's qualified human counsel).
 
 ## ⚠️ Lead rule - this is a dated snapshot, not the source of truth
 

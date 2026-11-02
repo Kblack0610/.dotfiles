@@ -1,7 +1,7 @@
 ---
 name: work-comms
 description: >-
-  Draft work communication in the user's voice - warm, short, technical. Two modes. Reply mode (Slack/email to a colleague) emits a FULL version stacked above a tightened SHORT version to compare and pick. Report/comment mode (ticket comments, findings reviews, status write-ups) emits one clean, scannable, takeaway-first version. Use when the user says "draft a reply to <name>", "help me write a Slack/email", "reply to <colleague>", "tighten this message", "shorten this", "give me a short + long version", "write this up for the ticket", "draft a ClickUp comment", "make this less roboty", or "post a summary/status". This is the *work* voice, invoked by the day-job context-selves (gigantic, lazer); it syncs across machines but personal contexts (home, lab) use their own lighter voice instead. Builds on de-ai-writing, which owns the general AI-tell rules and checker; this skill adds the work voice and output shapes.
+  Draft work messages in the user's voice: warm, short, technical. Use for "draft a reply to <name>", "help me write a Slack/email", "tighten this message", "draft a ClickUp comment". AI-tell cleanup: de-ai-writing.
 metadata:
   category: messaging
   tags: [writing, voice, work]
@@ -13,6 +13,10 @@ metadata:
 Draft work communication in the user's voice. This skill *is* the voice spec: apply it whenever drafting anything that goes to colleagues (a Slack/email reply, a ticket comment, a findings review, a status write-up), even if invoked implicitly.
 
 The general rules for prose that should not read machine-written live in the `de-ai-writing` skill (hard rules, pattern catalog, `scripts/check.py`). Apply its hard rules to every draft here. This file adds only what is specific to work messages: the voice, the two output shapes, and the conventions for pasting into Slack, email and tickets.
+
+## Scope and triggers
+
+Draft work communication in the user's voice - warm, short, technical. Two modes. Reply mode (Slack/email to a colleague) emits a FULL version stacked above a tightened SHORT version to compare and pick. Report/comment mode (ticket comments, findings reviews, status write-ups) emits one clean, scannable, takeaway-first version. Use when the user says "draft a reply to <name>", "help me write a Slack/email", "reply to <colleague>", "tighten this message", "shorten this", "give me a short + long version", "write this up for the ticket", "draft a ClickUp comment", "make this less roboty", or "post a summary/status". This is the *work* voice, invoked by the day-job context-selves (gigantic, lazer); it syncs across machines but personal contexts (home, lab) use their own lighter voice instead. Builds on de-ai-writing, which owns the general AI-tell rules and checker; this skill adds the work voice and output shapes.
 
 ## Modes
 

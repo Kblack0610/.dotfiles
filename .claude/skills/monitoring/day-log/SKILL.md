@@ -1,7 +1,7 @@
 ---
 name: day-log
 description: >-
-  What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (MAIN reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub:log board (Prefix O) shows the same data. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (fleet-sessions watch, fleet-overseer status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
+  What a day shipped: merged PRs by area, the session behind each, what waits on the human, spend. Use for "what got done today", "what merged this week", "which session landed #N". ETAs are fleet-bench.
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]
@@ -11,6 +11,10 @@ metadata:
 # day-log
 
 Answers "what did the day produce" from one record per day, so a chat answer, the `hub:log` board, the notes ref and an Artifact page all say the same thing. The producer is `day-log` (`~/.local/bin/day-log`); this skill only reads it.
+
+## Scope and triggers
+
+What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (MAIN reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub:log board (Prefix O) shows the same data. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (fleet-sessions watch, fleet-overseer status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
 
 ## When to Use
 

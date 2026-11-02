@@ -2,18 +2,7 @@
 name: hz-quest-verify-first
 license: Apache-2.0
 description: >-
-  MANDATORY pre-flight check before answering any question or writing any code
-  related to Meta Quest VR headsets (Quest 2, Quest 3, Quest 3S, Quest Pro)
-  or apps that target them. Forces verification against authoritative Meta
-  sources via the metavr CLI / metavr MCP tools BEFORE relying on training-data
-  knowledge. Counters the failure mode where agents answer Quest-related
-  questions from stale memory and ship deprecated APIs, broken Android
-  manifests, and store-rejected builds. Loads automatically when the user is
-  in a Quest project (any reference to Oculus / Meta Quest / Horizon OS,
-  Unity OVR or Meta XR packages, com.meta.* / com.oculus.* package IDs,
-  Quest-targeted AndroidManifest, .meta files, or developers.meta.com /
-  developer.oculus.com URLs). Build paths: all; use this skill first whenever
-  the path is unknown or a Quest-specific claim is involved.
+  MANDATORY before answering or coding for Meta Quest or Horizon OS: check Meta sources via metavr before trusting memory. Applies in any Quest project (OVR, Meta XR, com.oculus.*).
 allowed-tools: Bash(metavr:*), Bash(npx:*)
 metadata:
   category: reference
@@ -22,6 +11,10 @@ metadata:
 ---
 
 # Verify First - Meta Quest Development
+
+## Scope and triggers
+
+MANDATORY pre-flight check before answering any question or writing any code related to Meta Quest VR headsets (Quest 2, Quest 3, Quest 3S, Quest Pro) or apps that target them. Forces verification against authoritative Meta sources via the metavr CLI / metavr MCP tools BEFORE relying on training-data knowledge. Counters the failure mode where agents answer Quest-related questions from stale memory and ship deprecated APIs, broken Android manifests, and store-rejected builds. Loads automatically when the user is in a Quest project (any reference to Oculus / Meta Quest / Horizon OS, Unity OVR or Meta XR packages, com.meta.* / com.oculus.* package IDs, Quest-targeted AndroidManifest, .meta files, or developers.meta.com / developer.oculus.com URLs). Build paths: all; use this skill first whenever the path is unknown or a Quest-specific claim is involved.
 
 ## What you need to know before reading the rest of this
 

@@ -1,6 +1,7 @@
 ---
 name: session-registry
-description: Find, resume, or compact important past Claude sessions from the agent-facing session registry. Use when the user (or you) wants to revisit an earlier session's history - "what did I work on before", "reopen that session", "resume the session where we did X", "compact/summarize that old session", or when you need context from a prior meaningful session in this project. The registry auto-captures only sessions that did real work (edits or a dirty tree), one entry per session, on the agent axis (~/.agent/sessions), never the human notes inbox.
+description: >-
+  Find, resume or compact past Claude sessions from the session registry. Use for "what did I work on before", "reopen that session", "resume the session where we did X". Verbatim search: claude-recall.
 metadata:
   category: memory
   tags: [session, transcripts, resume]
@@ -8,6 +9,10 @@ metadata:
 ---
 
 # session-registry
+
+## Scope and triggers
+
+Find, resume, or compact important past Claude sessions from the agent-facing session registry. Use when the user (or you) wants to revisit an earlier session's history - "what did I work on before", "reopen that session", "resume the session where we did X", "compact/summarize that old session", or when you need context from a prior meaningful session in this project. The registry auto-captures only sessions that did real work (edits or a dirty tree), one entry per session, on the agent axis (~/.agent/sessions), never the human notes inbox.
 
 ## What this is
 

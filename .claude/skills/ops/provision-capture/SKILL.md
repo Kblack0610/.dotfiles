@@ -1,6 +1,7 @@
 ---
 name: provision-capture
-description: Fold a feature you just set up by hand into the dotfiles provisioning system so a fresh-machine install reproduces it. Use when you've just installed/configured something manually (a peripheral, service, package, PAM/config edit) and want it captured following the repo's convention - triggers like "we just set up X by hand", "fold this into provisioning", "capture this feature", "make sure provisioning is up to date", "add this to the installer". Produces an idempotent setup_<feature>() in the OS installer + a .config/<feature>/README.md runbook. Does NOT replace packages.conf for the cross-OS CLI/GUI floor.
+description: >-
+  Fold something set up by hand into dotfiles provisioning so a fresh install reproduces it. Use for "we just set up X by hand", "fold this into provisioning", "add this to the installer".
 metadata:
   category: ops
   tags: [provisioning, dotfiles, installer]
@@ -19,6 +20,10 @@ The provisioning system lives at `~/.dotfiles/.local/src/installation_scripts/`.
 The canonical examples to mirror are `setup_printing()` /
 `setup_fingerprint()` in `linux/install_arch.sh` and `.config/cups/README.md` /
 `.config/fprintd/README.md`.
+
+## Scope and triggers
+
+Fold a feature you just set up by hand into the dotfiles provisioning system so a fresh-machine install reproduces it. Use when you've just installed/configured something manually (a peripheral, service, package, PAM/config edit) and want it captured following the repo's convention - triggers like "we just set up X by hand", "fold this into provisioning", "capture this feature", "make sure provisioning is up to date", "add this to the installer". Produces an idempotent setup_<feature>() in the OS installer + a .config/<feature>/README.md runbook. Does NOT replace packages.conf for the cross-OS CLI/GUI floor.
 
 ## The 3-part convention
 

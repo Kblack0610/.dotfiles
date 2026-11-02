@@ -1,6 +1,7 @@
 ---
 name: flow-review
-description: Walk one user flow end to end (web at desktop and phone width, mobile app) and write it up as a markdown report with a screenshot per step and a severity on every note (FIX / POLISH / VERIFY / OK), saved to `~/.notes/ref/<project>/<date>-<slug>/` (synced to every device) with a PDF beside it, readable in the terminal with glow or yazi. Use when the user says "walk the payment flow and write it up", "do a flow review", "summary like the Julie one", "screenshot every step of X", "put it in my ref folder", "make a PDF of the review", or wants a readable walkthrough of one journey for a human. Can also convert an existing HTML walkthrough artifact into this format with `scripts/extract-artifact.py`. For a whole-app screen sweep with a coverage matrix use `ui-audit`; for audit-then-fix-and-merge use `delta-audit`; for a wave sign-off gate use `wave-closeout`. This skill reports; it does not fix.
+description: >-
+  Walk one user flow end to end and write a markdown and PDF report, a screenshot and severity per step. Use for "do a flow review", "walk the payment flow and write it up". A whole-app sweep is ui-audit.
 metadata:
   category: authoring
   tags: [review, screenshots, markdown, walkthrough]
@@ -10,6 +11,10 @@ metadata:
 # flow-review
 
 Produces a step-by-step walkthrough of ONE user flow as a markdown file, real screenshot files and a PDF, in a folder under `~/.notes` that the notes sync carries to every device. The reader should be able to act on the tally line alone, then scroll for the evidence. The worked example is `references/example.md`; the full original is the 2026-09-23 Julie payment flow under `~/.notes/ref/` (find it with `ls ~/.notes/ref/*/`).
+
+## Scope and triggers
+
+Walk one user flow end to end (web at desktop and phone width, mobile app) and write it up as a markdown report with a screenshot per step and a severity on every note (FIX / POLISH / VERIFY / OK), saved to `~/.notes/ref/<project>/<date>-<slug>/` (synced to every device) with a PDF beside it, readable in the terminal with glow or yazi. Use when the user says "walk the payment flow and write it up", "do a flow review", "summary like the Julie one", "screenshot every step of X", "put it in my ref folder", "make a PDF of the review", or wants a readable walkthrough of one journey for a human. Can also convert an existing HTML walkthrough artifact into this format with `scripts/extract-artifact.py`. For a whole-app screen sweep with a coverage matrix use `ui-audit`; for audit-then-fix-and-merge use `delta-audit`; for a wave sign-off gate use `wave-closeout`. This skill reports; it does not fix.
 
 ## When to Use
 

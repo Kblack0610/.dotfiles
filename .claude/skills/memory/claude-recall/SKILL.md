@@ -1,17 +1,7 @@
 ---
 name: claude-recall
 description: >-
-  On-demand pull-recall over the RAW verbatim Claude Code session transcripts
-  (~/.claude/projects/**/*.jsonl) via the `claude-recall` CLI. Use when you need to retrieve something
-  that was actually SAID in a past session but was never distilled into a lesson / wind-down / mem0 /
-  anchor - "what did we decide about X", "find the session where we debugged Y", "what was that
-  command/path/error from last week", "show me that earlier conversation". This is the lossless raw
-  layer BELOW the curated recall stack: lessons/dreams/mem0/anchors are push-based distilled signal
-  injected at SessionStart; this is pull-based verbatim search you invoke on demand. Local-only, no
-  index, no cloud - reads the .jsonl on each call (full scan ~0.3s). The skill-and-script equivalent
-  of local-claude-chat-history-mcp, reached via Bash instead of a standing MCP so it costs zero
-  session context until used. Do NOT use for curated/summarized recall (that's mem0-ops / lessons /
-  the anchor) or for searching the current live conversation (you already have that in context).
+  Verbatim search over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "that command from last week". Curated recall is mem0-ops.
 metadata:
   category: memory
   tags: [memory, recall, session]
@@ -23,6 +13,10 @@ metadata:
 Verbatim search over Claude Code's own session record. Every Code session is
 appended to `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`; this tool reads
 those files directly. No database, no embeddings, no daemon, nothing uploaded.
+
+## Scope and triggers
+
+On-demand pull-recall over the RAW verbatim Claude Code session transcripts (~/.claude/projects/**/*.jsonl) via the `claude-recall` CLI. Use when you need to retrieve something that was actually SAID in a past session but was never distilled into a lesson / wind-down / mem0 / anchor - "what did we decide about X", "find the session where we debugged Y", "what was that command/path/error from last week", "show me that earlier conversation". This is the lossless raw layer BELOW the curated recall stack: lessons/dreams/mem0/anchors are push-based distilled signal injected at SessionStart; this is pull-based verbatim search you invoke on demand. Local-only, no index, no cloud - reads the .jsonl on each call (full scan ~0.3s). The skill-and-script equivalent of local-claude-chat-history-mcp, reached via Bash instead of a standing MCP so it costs zero session context until used. Do NOT use for curated/summarized recall (that's mem0-ops / lessons / the anchor) or for searching the current live conversation (you already have that in context).
 
 ## When to reach for it
 

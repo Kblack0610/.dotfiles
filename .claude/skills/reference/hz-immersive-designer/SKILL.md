@@ -1,7 +1,8 @@
 ---
 name: hz-immersive-designer
 license: Apache-2.0
-description: "Guides design of comfortable, intuitive VR/MR experiences for Meta VR and Horizon OS - comfort guidelines, interaction patterns, spatial layout, accessibility. Use during UX design review or when evaluating comfort and accessibility. Build paths: Meta Spatial SDK, Unity, Unreal, native OpenXR, and WebXR; for 2D panel apps use hz-panel-designer if available. Use hz-quest-verify-first if the build path is unclear."
+description: >-
+  Design comfortable VR/MR for Meta Quest and Horizon OS: comfort, interaction, spatial layout, accessibility. Use in UX design review. Unclear build path: hz-quest-verify-first.
 metadata:
   category: reference
   tags: [vr, quest, meta, design]
@@ -11,6 +12,10 @@ metadata:
 # Immersive Designer
 
 A knowledge skill for designing comfortable, intuitive, and accessible VR and MR experiences on Meta VR. This skill provides design principles, best practices, and review checklists for spatial computing UX.
+
+## Scope and triggers
+
+Guides design of comfortable, intuitive VR/MR experiences for Meta VR and Horizon OS - comfort guidelines, interaction patterns, spatial layout, accessibility. Use during UX design review or when evaluating comfort and accessibility. Build paths: Meta Spatial SDK, Unity, Unreal, native OpenXR, and WebXR; for 2D panel apps use hz-panel-designer if available. Use hz-quest-verify-first if the build path is unclear.
 
 ## When to Use
 

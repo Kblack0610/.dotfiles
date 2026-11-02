@@ -1,6 +1,7 @@
 ---
 name: svg-diagram
-description: Author clean, hand-editable SVG diagrams in a shared house theme (flowchart / sequence / component / state / ER-style boxes-and-arrows, layered C4 architecture, option-comparison matrices, and branch/release lane timelines), render a paste-safe PNG with rsvg-convert, and publish both to a Windows/desktop docs home with a live watch loop. Use when the user wants a diagram, a flowchart, an architecture/sequence/state diagram, "diagram this", "draw this flow", "compare these options", "show the branching strategy", a clean SVG they can fix by hand, a diagram to paste into Confluence/docs, or diagrams to embed in a Marp deck. The SVG is the editable master (no Mermaid); one <style> block + a held shape vocabulary make every diagram in a set read as one system. Sibling of marp-slide (marp renders slides and embeds these SVGs).
+description: >-
+  Hand-editable SVG diagrams in the house theme (flowchart, sequence, C4, state, matrix, lane timeline) plus a PNG. Use for "diagram this", "draw this flow", "compare these options", or a Marp deck. No Mermaid.
 metadata:
   category: authoring
   tags: [diagrams, svg, docs]
@@ -12,6 +13,10 @@ metadata:
 Author clean, legible diagrams as **hand-authored SVG** - the `.svg` is the editable source of truth (move a `<rect>`, retype a `<text>`, redraw a `<path>`), not a generated artifact. A crisp PNG is rendered alongside for surfaces that cannot embed SVG (Confluence paste). Every diagram in a set shares one `<style>` block and one shape vocabulary, so the set reads as one visual system.
 
 Why hand-authored SVG over Mermaid/auto-layout: you control every coordinate, the output is a clean native-`<text>` SVG (no `foreignObject`/HTML soup), and you can fix it yourself in the file or in Figma/Illustrator. The cost is manual layout - fine for the deliberate, docs-defining diagrams this skill is for.
+
+## Scope and triggers
+
+Author clean, hand-editable SVG diagrams in a shared house theme (flowchart / sequence / component / state / ER-style boxes-and-arrows, layered C4 architecture, option-comparison matrices, and branch/release lane timelines), render a paste-safe PNG with rsvg-convert, and publish both to a Windows/desktop docs home with a live watch loop. Use when the user wants a diagram, a flowchart, an architecture/sequence/state diagram, "diagram this", "draw this flow", "compare these options", "show the branching strategy", a clean SVG they can fix by hand, a diagram to paste into Confluence/docs, or diagrams to embed in a Marp deck. The SVG is the editable master (no Mermaid); one <style> block + a held shape vocabulary make every diagram in a set read as one system. Sibling of marp-slide (marp renders slides and embeds these SVGs).
 
 ## When to use this skill
 
