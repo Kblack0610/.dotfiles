@@ -73,6 +73,14 @@ If `~/.config/rulesync-global` is absent (a public-only machine with no private 
 
 ## Workflows
 
+### Before any add: subtract first
+
+Every add below starts here (global CLAUDE.md, Subtract First).
+
+1. Grep every layer for the rule's keywords: the three files in the tree above, the repo's CLAUDE.md and `docs/`, `~/.claude/skills/*/SKILL.md`, `~/.agent/anchors/`, the project's `memory/` and `~/.agent/lessons/{project}.md`.
+2. If an existing rule covers it, rewrite that one; do not add a second. If the new rule supersedes or contradicts one, delete the old one in the same commit. A copy in a lower layer becomes a one-line pointer or goes.
+3. Record `wc -c` before and after for each file touched. The commit or PR body has a `Removes:` line naming what went, or one line on why nothing could. At a budget (`context-budget-guard.sh` warns), make room by deleting, never by squeezing wording.
+
 ### Add a rule that applies to every AI tool
 
 1. Open `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md`.
@@ -104,18 +112,19 @@ If `~/.config/rulesync-global` is absent (a public-only machine with no private 
 
 ### A new skill and CLAUDE.md
 
-Skills are not listed in CLAUDE.md: every skill's description is injected automatically, and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins) or retires one (add it under "Retired"). `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
+Skills are not listed in CLAUDE.md: every skill's description is injected automatically, and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins). A skill that replaces another deletes the old one in the same PR; there is no "retired" list to keep. `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
 
 ### Remove a rule
 
-1. Locate it - it lives in exactly one of the three files (or a project repo):
+1. Locate it - its home is one of the three files (or a project repo):
    ```bash
    grep -n "<keyword>" ~/.dotfiles-private/.claude/CLAUDE.md \
                        ~/.dotfiles-private/AGENTS.md \
                        ~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md
    ```
 2. Remove the bullet, leave neighboring sections untouched.
-3. Run the sync if the file was the rulesync overview or `mcp.json`.
+3. Grep the lower layers (same list as "Before any add") for copies or pointers to it and remove those too, or the copy keeps the rule alive.
+4. Run the sync if the file was the rulesync overview or `mcp.json`.
 
 ### Audit drift between layers
 
@@ -160,5 +169,5 @@ For drift between the rules and *reality* (paths that moved, retired skills stil
   ```
   Then open a new Claude session and check the rule appears in the CLAUDE.md system-reminder block.
 - **MCP additions:** list servers in the target tool (`claude mcp list`) and confirm the new one is enumerated.
-- **Global CLAUDE.md edits:** `wc -c` is under the budget and `skill-drift` reports no new `GHOST`.
+- **Global CLAUDE.md edits:** `wc -c` is under the budget (`context-budget-guard.sh` warns on the write when it is not), no larger than before unless the add could not be paid for, and `skill-drift` reports no new `GHOST`.
 - **Landing:** rule content is private, this skill is public. `dotfiles-land` splits a cross-repo change into two PRs.

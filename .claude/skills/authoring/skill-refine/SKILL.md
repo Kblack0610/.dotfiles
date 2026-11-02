@@ -80,7 +80,7 @@ The `description` is the only thing the model sees when deciding whether to invo
 
 **Output.** Write `~/.agent/plans/dotfiles/skill-refine-{YYYY-MM-DD}.md`:
 
-- A findings table: skill | type | severity | what | proposed fix.
+- A findings table: skill | type | severity | what | proposed fix. A proposed fix tries, in order: delete the stale text, merge it into a sibling, replace it with a pointer to the doc that owns it; new text only when none of those works (global CLAUDE.md, Subtract First).
 - Proposed diffs for the mechanical ones, as fenced blocks - not applied.
 - A "skill candidates" section from layer 2.
 - An explicit "verified / unverified" split. A finding you could not check live is labelled as such, never asserted.
@@ -106,7 +106,7 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 1. Name the evidence: which sessions/lessons show the repetition.
 2. Confirm scope and name with the user. **Never auto-create a skill file.**
 3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. Which repo is decided by `.githooks/sensitive-tokens.txt`, not by taste: if the draft matches any of those patterns it goes in `~/.dotfiles-private`, otherwise public plus a `.gitignore` allowlist line.
-4. Run `skill-deploy` - never hand-write the symlink - then register it in CLAUDE.md via `update-rules`. A skill that is neither linked nor listed is invisible.
+4. Run `skill-deploy` - never hand-write the symlink. A skill that is not linked is invisible. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.
 
 ## Hard rules
