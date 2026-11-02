@@ -141,8 +141,7 @@ jobs:
       - uses: actions/checkout@v4
       # The STATIC subset only. A runner has no ~/.claude/skills, no private
       # overlay and no CLAUDE.md, so DEADPATH/NOCMD/UNDEPLOYED/GHOST/UNLISTED
-      # cannot be attempted here - those stay on the 12h sentinel watch and the
-      # weekly skill-refine pass. What CI can decide, CI should decide: a
+      # cannot be attempted here - those stay with the weekly skill-refine pass. What CI can decide, CI should decide: a
       # SKILL.md has no compiler, so before this job the only thing standing
       # between a broken skill and main was somebody reading the diff.
       #

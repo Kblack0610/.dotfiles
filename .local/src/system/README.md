@@ -42,7 +42,7 @@ Steam|~/.local/share/Steam|
 
 ## Scanning
 
-`storage-scan.timer` runs `storage scan` hourly and 5 minutes after boot, at idle I/O priority. Enable it once per machine:
+`storage-scan.timer` runs `storage scan` daily and 5 minutes after boot, at idle I/O priority. Daily because a full scan takes minutes and nothing reads it hourly: the disk alert uses node_exporter, and the picker's ctrl-r rescans on demand. Enable it once per machine:
 
 ```
 systemctl --user enable --now storage-scan.timer
@@ -74,7 +74,7 @@ Needs `jq`, `fzf`, and `dua-cli` (for browsing): `sudo pacman -S dua-cli`. All t
 | Symptom | Cause and fix |
 |---|---|
 | Tooltip says `No scan yet` | The timer has not run. `systemctl --user enable --now storage-scan.timer`, or run `storage scan`. |
-| `sizes scanned 5h ago` | The timer stopped. `systemctl --user status storage-scan.timer`, and `journalctl --user -u storage-scan` for the last run. |
+| `sizes scanned 2d ago` | The timer stopped. `systemctl --user status storage-scan.timer`, and `journalctl --user -u storage-scan` for the last run. |
 | Root's "everything else" reads `none (compressed fs)` | The root btrfs is mounted with `compress=zstd`. `du` counts files at their uncompressed size, so the buckets add up to more than the drive has used. Bucket sizes on that drive run a little high for the same reason. |
 | enter says `dua is not installed` | `sudo pacman -S dua-cli`. |
 | A network mount says `not responding` | The NAS did not answer `df` within 2 seconds. Check it with `findmnt -t nfs,nfs4,cifs` and `ls <mountpoint>`. |

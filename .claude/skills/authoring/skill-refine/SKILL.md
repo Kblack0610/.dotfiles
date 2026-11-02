@@ -50,7 +50,7 @@ skill-drift --json
 
 **Static** (`skill-drift --lint .`, and CI already gates every PR on these, so a finding here means something landed before the gate existed): `NOFRONTMATTER`, `BADNAME`, `DUPNAME`, `BADMETA`, `CATCOLLIDE`, `LONGDESC`, `NONASCII`, plus the advisory `DESCNEAR`.
 
-`skill-drift` reports **all** findings and marks which are `new` relative to `~/.agent/skill-drift.baseline`. Read the whole set in an audit; the baseline exists so the *watch* only pages on new drift, not so old debt disappears.
+`skill-drift` reports **all** findings and marks which are `new` relative to `~/.agent/skill-drift.baseline`. Read the whole set in an audit; the baseline marks what is new, not so old debt disappears.
 
 Two of these need judgment rather than a fix:
 
@@ -122,13 +122,13 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 
 | Piece | Runs | Does |
 |---|---|---|
-| `skill-drift` | on demand; every 12h via the sentinel watch | deterministic, zero-token; pages only on NEW drift |
+| `skill-drift` | on demand; `--lint` in CI on every PR | deterministic, zero-token |
 | `agentctl@skill-refine` | Mon 05:00 | full audit -> report at `~/.agent/plans/dotfiles/`; edits nothing |
 | `/skill-refine apply` | when you choose | the only thing that changes a file |
 
 05:00 Monday is deliberate: after `dream` (03:00) so the audit sees the latest consolidation, and after `lab-sync` (04:00).
 
-The sentinel watch is observe-only by contract - it notifies, it never runs the refine. That separation is why the weekly job is an `agentctl` timer and not a `probe: agent` watch.
+There is no sentinel watch on skill-drift: it was deleted on 2026-11-02 after 84 days red on UNUSED signals and false positives. The weekly audit reads the same findings.
 
 ## Verification
 

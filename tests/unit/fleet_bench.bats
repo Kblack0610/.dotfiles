@@ -371,11 +371,12 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   refute_output --partial 'fleet-bench-nightly'
 }
 
-# --- review: CI reds on merged PRs, and the reviewer sample ---
+# --- review: CI reds before merge on merged PRs ---
 
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# A gh stand-in: pr view/diff and run list served from $GHD, every call logged.
+# A gh stand-in: pr view and run list served from $GHD, every call logged. agentctl-run is
+# stubbed too, so a test can prove the count never launches a model.
 stub_review() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
@@ -385,16 +386,13 @@ echo "gh $*" >> "$D/calls.log"
 case "$1 $2" in
   "pr view") cat "$D/pr-$3.json" ;;
   "run list") cat "$D/runs-$6.json" ;;
-  "pr diff") echo "diff --git a/x b/x" ;;
 esac
 GH
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
-echo "family=$AGENT_AUTHOR_FAMILY $1 $2" >> "$D/reviewer.log"
-cat "$D/reviewer.out"
+echo "agentctl-run $*" >> "$D/reviewer.log"
 AR
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run"
-  printf 'FINDING BLOCK a.sh:3 the guard is inverted\n- FINDING NIT b.md:1 wording\nREVIEW DONE\n' > "$GHD/reviewer.out"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -413,7 +411,7 @@ merged_pr() {
   jq -cn --arg c "$(iso $((m - 60)))" '[{conclusion: "success", createdAt: $c}]' > "$GHD/runs-b$2.json"
 }
 
-@test "review counts CI reds from first commit to merge, once per PR, and is off without a ROUTE" {
+@test "review counts CI reds from first commit to merge, once per PR, and launches no model" {
   stub_review
   merged_pr s1 7 35                                          # first commit T0-7800, opened T0-7200
   # b7: a red from a reused branch name (not counted), a red pushed before the PR opened, a red
@@ -428,9 +426,9 @@ merged_pr() {
   echo '{"session_id":"s2","prs":[{"repo":"o/r","number":9,"state":"OPEN","merged_at":null}]}' \
     >> "$HOME/.agent/outcomes/game/2026-10.jsonl"            # s2's newest row: only that one counts
   merged_pr s2 10 10                                         # newest again, listing #10
-  BENCH_NOW=$T0 run "$SUBJECT" review
+  ROUTE=leftover-route BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
-  assert_output --partial 'review off'
+  assert_output --partial '2 PRs counted, 2 CI reds'
   run jq -sc 'sort_by(.number) | map([.number, .ci_red, .ci_runs])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[[7,2,4],[10,0,1]]'
   [ ! -e "$GHD/reviewer.log" ]
@@ -441,33 +439,6 @@ merged_pr() {
   [ "$(wc -l < "$FLEET_BENCH_DIR/pr-ci.jsonl")" -eq 2 ]
   run outcome
   assert_output NOOP
-}
-
-@test "with a ROUTE the reviewer reads the largest PR per session under the cap, and only its FINDING lines count" {
-  stub_review
-  merged_pr s1 7 35; merged_pr s1 11 500; merged_pr s2 10 10; merged_pr s3 12 5000
-  ROUTE=test-route BENCH_NOW=$T0 run "$SUBJECT" review
-  assert_success
-  run jq -sc 'map([.number, .status, .block, .flag, .nit])' "$FLEET_BENCH_DIR/reviews.jsonl"
-  assert_output '[[11,"ok",1,0,1],[10,"ok",1,0,1]]'
-  run cat "$GHD/reviewer.log"
-  assert_line 'family=anthropic --role review'
-  run "$SUBJECT" review --pick
-  assert_output ''
-  run outcome
-  assert_output WORKED
-}
-
-@test "a reviewer that never says REVIEW DONE is a failed review: FAILED with exit 1" {
-  stub_review
-  merged_pr s1 7 35
-  echo 'FINDING BLOCK a.sh:3 something, then the run died' > "$GHD/reviewer.out"
-  ROUTE=test-route BENCH_NOW=$T0 run "$SUBJECT" review
-  assert_failure
-  run jq -r .status "$FLEET_BENCH_DIR/reviews.jsonl"
-  assert_output failed
-  run outcome
-  assert_output FAILED
 }
 
 @test "gh failing while counting is FAILED with exit 1 and writes nothing" {
@@ -481,7 +452,7 @@ merged_pr() {
   assert_output FAILED
 }
 
-@test "scorecard and headline carry CI reds and the review sample" {
+@test "scorecard and headline carry CI reds, and no review section" {
   stub_review
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'session_id: "s1", phases_done: 1' > "$SNAP"; sample_at 0
@@ -489,16 +460,14 @@ merged_pr() {
   jq -cn --arg b "$(iso $((T0 - 5000)))" '[{conclusion: "failure", createdAt: $b}]' > "$GHD/runs-b7.json"
   BENCH_NOW=$((T0 + 60)) run "$SUBJECT" scorecard
   assert_success
-  run cat "$HOME/lab/bench/latest.md"
-  assert_output --partial 'No PR was reviewed in the window'
-  ROUTE=test-route BENCH_NOW=$((T0 + 60)) "$SUBJECT" review
+  BENCH_NOW=$((T0 + 60)) "$SUBJECT" review
   BENCH_NOW=$((T0 + 120)) run "$SUBJECT" headline
-  assert_output --partial '1 CI reds before merge in 1 PRs, review: 1 BLOCK 0 FLAG in 1 PRs'
+  assert_output --partial '1 CI reds before merge in 1 PRs'
+  refute_output --partial 'review:'
   BENCH_NOW=$((T0 + 120)) "$SUBJECT" scorecard
   run cat "$HOME/lab/bench/latest.md"
   assert_output --partial '| 1 | - | - |'
-  assert_output --partial '- o/r#7: 1 BLOCK, 0 FLAG, 1 NIT'
-  assert_output --partial '  - BLOCK a.sh:3 the guard is inverted'
+  refute_output --partial 'Review sample'
 }
 
 # ask <id> <session> <hours old> [recommend] [kind]: one agent-ask list row, stamped -0700
