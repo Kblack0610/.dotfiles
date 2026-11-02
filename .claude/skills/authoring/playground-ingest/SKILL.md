@@ -4,7 +4,7 @@ description: "Bring an Asset Store pack into the BNB asset-library and then into
 metadata:
   category: authoring
   tags: [unity, asset-library, ingest, addressables, playground]
-  reviewed: "2026-10-26"
+  reviewed: "2026-11-02"
 ---
 
 # Playground ingest
@@ -32,7 +32,7 @@ Not for judging a pack: that is `asset-store-audit`. Not for a map or character 
    - `CatalogAddressablesSetup.RefreshCli -catalogs <name>.catalog`, then the ItemLibrary refresh, then rebuild the scene that shows the art;
    - a `-hd` package needs the runner copies refreshed before the manifest PR.
 5. Push the library side, then move the pin forward in the playground (`scripts/test/pin-forward.sh origin/main` must pass) and add the manifest line only for packages a game places.
-6. Gate and land per playground-headless-test: push, `scripts/test/ci-gate.sh`, its line in the PR body, `gh pr checks <n> --watch`, squash merge.
+6. Gate and land per `playground-headless-test`.
 7. Tick every box in the runbook's Done when, `LibraryContentTests` included (no built-in shader, no Premultiply Lit glass, every item prefab addressable).
 
 ## Do NOT

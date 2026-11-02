@@ -4,7 +4,7 @@ description: Take one task from description to landed and wound down with no che
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
-  reviewed: "2026-10-27"
+  reviewed: "2026-11-02"
 ---
 
 # one-shot
@@ -31,7 +31,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
    3a. **Final pass.** Run `final-pass` on the diff (`~/.claude/skills/final-pass/SKILL.md`). It skips small or docs-only diffs on its own. It goes here, before Validate, so the gate checks its edits too.
 
-4. **Validate.** Run the project's merge gate exactly as its CLAUDE.md defines it. Example, unity-core-playground: EditMode, plus each class from `scripts/test/affected-classes.py origin/main HEAD`, one `scripts/test/run.sh --filter <class>` per call, reading the counts (0/0 means the arguments were refused, not a pass). If the repo defines no gate, run its lint, typecheck and tests. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 8 in blocked mode.
+4. **Validate.** Run the project's merge gate exactly as its CLAUDE.md defines it. For unity-core-playground that is the gate in `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`. If the repo defines no gate, run its lint, typecheck and tests. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 8 in blocked mode.
 
 5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, and the classes/checks run with their counts. Follow the writing-style rules (ASCII, `de-ai-writing`). With `--pr-only`, skip to step 7.
 
