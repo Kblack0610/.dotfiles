@@ -11,8 +11,10 @@ metadata:
 # project-index
 
 Maintain the per-project **anchor** at `~/.agent/anchors/{project}.md` - a project's single
-front door. The SessionStart hook (`session-preflight.sh`) injects the whole anchor at the
-top of turn-1 context, before plans and lessons, so every session opens already oriented.
+front door. The SessionStart hook (`session-preflight.sh`) injects it first in turn-1
+context: Key facts, Blockers and the AUTO block, inside the preflight's 9,000 B budget, which
+drops trailing sections when it is full. The Decisions log is not injected; the preflight
+prints one pointer line to it instead.
 
 See `~/.agent/anchors/README.md` for the region/marker contract. In short: an anchor has
 **hand-curated** sections (Key URLs & facts, Decisions log, Blockers) and one **auto-generated**
