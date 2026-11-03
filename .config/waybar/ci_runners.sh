@@ -4,7 +4,10 @@
 # local Unity gates). The hover adds the jobs finished in the last day, painted by their pass
 # rate on the board's lines (red under 70%, amber under 90%), and lists each pool's queue,
 # oldest wait, finished jobs and pass rate, then each machine's runners with the job every
-# busy one is on, then any runner that is down.
+# busy one is on, then any runner that is down. A runner the governor withholds is counted
+# apart (`unity 6/6 withheld 1/2`), so a machine reads what it is meant to run. A local row
+# is busy of its open slots; its burst slots, which open only while the machine has room,
+# are named in a legend line instead of the cell.
 #
 # The chip's colour is cc:domain_status{domain="ci"}, the one CI judgement the board and
 # Grafana also draw, so the bar cannot call CI green while the board calls it red. A failed
@@ -29,6 +32,9 @@ cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_2
   or label_replace(min(github_runner_exporter_api_ok), "__name__", "api_ok", "", "")')" \
   || fail "cannot read $PROM_URL"
 runners="$(prom_q "$W (github_runner_state)")" || fail "cannot read $PROM_URL"
+withheld="$(prom_q "$W (github_runner_withheld) == 1")" || fail "cannot read $PROM_URL"
+declare -A WITHHELD=()
+while read -r name; do [ -n "$name" ] && WITHHELD[$name]=1; done < <(jq -r '.data.result[].metric.name' <<< "$withheld")
 
 # name/key -> value, key = pool, host or component. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
@@ -54,7 +60,7 @@ pass_cell() {
 # Every pool with slots or finished jobs (github-hosted has only the latter) and every
 # local-gate host, queue length first (longest on top), then name.
 # queue|pool|busy/slots|done|pass ratio
-pool_rows=() busy=0 slots=0 waiting=0 done_total=0 passes=""
+pool_rows=() busy=0 slots=0 waiting=0 done_total=0 passes="" burst_legend=""
 for key in "${!V[@]}"; do
   case "$key" in
     cc:pool_slots/*) p="${key#*/}" pre=cc:pool b="${V[cc:pool_busy/$p]:-0}" q="${V[cc:pool_waiting/$p]:-0}" ;;
@@ -66,11 +72,12 @@ for key in "${!V[@]}"; do
   esac
   s="${V[${pre}_slots/$p]:-}" d="${V[${pre}_done_24h/$p]:-}" r="${V[${pre}_pass_ratio_24h/$p]:-}"
   cell="${s:+$b/$s}"
-  # A local row counts its open slots: room slots run only while the machine has room.
+  # A local row counts its open slots, and a burst slot only while one runs: burst slots
+  # open only while the machine has room, so the legend names them instead of the cell.
   if [ "$pre" = cc:host_local ]; then
     open="${V[cc:host_local_open_slots/$p]:-0}" room=$((s - ${V[cc:host_local_open_slots/$p]:-0}))
-    s="$open" cell="$b/$open"
-    ((room > 0)) && cell+="+$room"
+    s=$((b > open ? b : open)) cell="$b/$s"
+    ((room > 0)) && burst_legend+=$'\n'"local:$p has $room burst slots more, opened only while the CPU has room"
   fi
   ((busy += ${b/-/0}, slots += ${s:-0}, waiting += q, done_total += ${d:-0}))
   [ -n "$d" ] && [ -n "$r" ] && passes+=" $d:$r"
@@ -97,12 +104,15 @@ for row in "${pool_rows[@]}"; do
   printf -v line "%-${pw}s %6s %s %7s %5s  %s" "$p" "${bs:--}" "$qs" "$oldest" "${d:--}" "$(pass_cell "$r")"
   body+=$'\n'"$line"
 done
+body+="$burst_legend"
 
 # --- runners by machine, one pass over rows sorted by host then pool ---------------------
 # host|pool|state|name|repo|pr|workflow|job_name|seconds
+# A withheld runner is keyed <host>/<pool> withheld, so it prints after its pool's admitted ones.
 declare -A ALL=() BUSY=() JOBS=() DOWN=()
 hosts=()
 while IFS='|' read -r h p state name repo pr workflow job secs; do
+  [ -z "${WITHHELD[$name]:-}" ] || p+=" withheld"
   [ -n "${ALL[$h/$p]:-}" ] || { [[ " ${hosts[*]} " == *" $h "* ]] || hosts+=("$h"); }
   ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1))
   case "$state" in

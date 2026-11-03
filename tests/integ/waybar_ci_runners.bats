@@ -19,6 +19,7 @@ setup() {
 case "$*" in
   *cc:pool_*) cat "$FX/cc.json" ;;
   *github_runner_state*) cat "$FX/runners.json" ;;
+  *github_runner_withheld*) cat "$FX/withheld.json" ;;
   *) exit 22 ;;
 esac
 STUB
@@ -26,7 +27,8 @@ STUB
   fixtures idle
 }
 
-# fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/4+6 q1.
+# fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/4 q1
+# with 6 burst slots, hp-unity-3 withheld by the governor.
 # Finished in 24h: unity 40 at 95%, pmp-light 10 at 60%, github-hosted (no slots) 50 at
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
@@ -71,9 +73,11 @@ runners = [
     r("razer-laptop", "pmp-light", "idle", "razer-light-1"),
     r("hp-victus", "unity", "running", "hp-unity-1", "60", repo="playground", workflow="Release", job_name="Mac"),
     r("hp-victus", "unity", "idle", "hp-unity-2"),
+    r("hp-victus", "unity", "idle", "hp-unity-3"),
     r("hp-victus", "pmp-light", "offline" if mode == "offline" else "idle", "hp-light-1"),
 ]
 out("runners", runners)
+out("withheld", [({"name": "hp-unity-3"}, "1")])
 PY
 }
 
@@ -89,7 +93,30 @@ tip() { jq -r .tooltip <<< "$output"; }
   run "$MODULE"
   run tip
   assert_line --index 4 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
-  assert_line --index 5 --regexp "^local:workstation +2/4\+6 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
+  assert_line --index 5 --regexp "^local:workstation +2/4 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
+}
+
+# The burst slots open only with room, so they are a legend line, never a +N in the cell.
+@test "a local row is busy of its open slots, and its burst slots are a legend line" {
+  run "$MODULE"
+  run tip
+  refute_output --partial "2/4+6"
+  assert_line --index 8 "local:workstation has 6 burst slots more, opened only while the CPU has room"
+}
+
+@test "a local row running burst slots reads busy of busy" {
+  python3 - "$FX/cc.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    if r["metric"]["__name__"] == "cc:host_local_busy":
+        r["value"][1] = "6"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 9/12 <span color='#ffcc2f'>q6</span>"
+  run tip
+  assert_line --index 5 --regexp "^local:workstation +6/6 "
 }
 
 @test "a pool with finished jobs but no slots still gets a row, with no busy count" {
@@ -163,11 +190,19 @@ PY2
   run "$MODULE"
   run tip
   assert_output --partial "<b>razer-laptop  pmp-light 0/1 unity 2/2</b>"
-  assert_output --partial "<b>hp-victus  pmp-light 0/1 unity 1/2</b>"
+  assert_output --partial "<b>hp-victus  pmp-light 0/1 unity 1/2 unity withheld 0/1</b>"
   assert_output --partial "  razer-unity-1  playground#1210  Tests: PlayMode 4  9m"
   # No PR: the repo alone, no dangling #.
   assert_output --partial "  hp-unity-1  playground  Release: Mac  1m"
   refute_output --partial "razer-light-1"
+}
+
+# Negative control for the withheld count: a machine with none withheld never says so.
+@test "a machine with no withheld runner has no withheld count" {
+  run "$MODULE"
+  run tip
+  assert_output --partial "<b>razer-laptop  pmp-light 0/1 unity 2/2</b>"
+  refute_output --regexp "razer-laptop .*withheld"
 }
 
 @test "a job past an hour is painted amber" {
