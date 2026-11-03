@@ -123,7 +123,7 @@ pub struct Job {
 }
 
 impl Job {
-    fn new(source: Source, name: impl Into<String>, state: State) -> Job {
+    pub fn new(source: Source, name: impl Into<String>, state: State) -> Job {
         Job {
             source,
             name: name.into(),
@@ -235,7 +235,13 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
                         Source::Agentctl => systemd::agentctl(paths, since, at),
                         Source::Timer => systemd::timers(since, at),
                         Source::Night => local::night(paths, since, at),
-                        Source::Unity => local::unity(paths, since),
+                        Source::Unity => {
+                            let (mut j, mut e) = local::unity(paths, since);
+                            let (g, ge) = remote::gates(at);
+                            j.extend(g);
+                            e.extend(ge);
+                            (j, e)
+                        }
                         Source::Ci => remote::ci(at),
                         Source::K8s => remote::k8s(at, since),
                     };

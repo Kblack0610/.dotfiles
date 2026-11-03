@@ -20,7 +20,7 @@
 
 set -uo pipefail
 
-# The shared column fitter, the same one fleet-sessions watch and command-center use.
+# The shared column fitter, the same one fleet-sessions watch uses.
 # shellcheck source=/dev/null
 . "${TABLE_FIT_LIB:-/nonexistent}" 2>/dev/null \
   || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \

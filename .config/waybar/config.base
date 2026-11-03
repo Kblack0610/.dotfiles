@@ -171,7 +171,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/load $HOME/.config/waybar/load.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub infra",
         "tooltip": true
     },
     // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
@@ -183,7 +183,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/ci $HOME/.config/waybar/ci_runners.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub infra",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
@@ -197,7 +197,7 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/day-log watch",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/src/tmux/command-center.sh",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub infra",
         "tooltip": true
     },
     "custom/timebox": {

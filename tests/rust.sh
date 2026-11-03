@@ -5,7 +5,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# Four crates ship from this repo -- notes-cli, agent-panel, agent-web, timebox -- carrying 188
+# The crates in this repo (notes-cli, agent-panel, agent-web, hub-core, hub-tui, timebox) carry
 # in-tree tests between them, and until this file NONE of them ran anywhere. The CI
 # workflow had four jobs and zero cargo. The failure was silent in both directions:
 # nothing ran the tests, and build_local_rust_tools() in the installer treats a build

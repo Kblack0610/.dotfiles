@@ -1,5 +1,6 @@
-//! Prometheus answers as flat series. The endpoint is `CC_PROM_URL`, from the boards'
-//! `~/.config/command-center/env`.
+//! Prometheus answers as flat series. The endpoint is `CC_PROM_URL`, from the environment or
+//! else the boards' `~/.config/command-center/env` (stowed from the private overlay, and the
+//! file agent-web's unit loads as its EnvironmentFile).
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -68,9 +69,40 @@ pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
         .collect())
 }
 
+/// A board setting: the environment wins, else its `KEY=value` line in
+/// `~/.config/command-center/env`, so a TUI started from tmux or waybar needs no wrapper.
+pub fn config(key: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(key) {
+        return Some(v).filter(|v| !v.is_empty());
+    }
+    let home = std::env::var("HOME").ok()?;
+    let file = std::fs::read_to_string(format!("{home}/.config/command-center/env")).ok()?;
+    env_line(&file, key)
+}
+
+/// The value of `key` in a shell env file: the last `KEY=value` (or `export KEY=value`) line,
+/// with one level of quotes removed. Anything fancier than that is not read.
+fn env_line(file: &str, key: &str) -> Option<String> {
+    file.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let l = l.strip_prefix("export ").unwrap_or(l);
+            let v = l.strip_prefix(key)?.strip_prefix('=')?;
+            let v = v.trim();
+            let v = v
+                .strip_prefix('"')
+                .and_then(|x| x.strip_suffix('"'))
+                .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+                .unwrap_or(v);
+            Some(v.to_string())
+        })
+        .next_back()
+        .filter(|v| !v.is_empty())
+}
+
 /// `CC_PROM_URL`, or why it is missing.
 pub fn base() -> Result<String, String> {
-    std::env::var("CC_PROM_URL").map_err(|_| {
+    config("CC_PROM_URL").ok_or_else(|| {
         "CC_PROM_URL is not set: it comes from ~/.config/command-center/env".to_string()
     })
 }
@@ -129,6 +161,22 @@ mod tests {
         let s = flatten(&v).unwrap();
         assert_eq!(s[0].points, vec![(100.0, 0.0), (700.0, 2.0)]);
         assert_eq!(s[0].value, None);
+    }
+
+    #[test]
+    fn reads_a_setting_from_an_env_file() {
+        let f = "# endpoints\nCC_PROM_URL=http://old\nexport CC_PROM_URL=\"http://prom.lan\"\nCC_GRAFANA_URL='http://g'\nCC_HOSTS=\n";
+        assert_eq!(
+            env_line(f, "CC_PROM_URL").as_deref(),
+            Some("http://prom.lan")
+        );
+        assert_eq!(env_line(f, "CC_GRAFANA_URL").as_deref(), Some("http://g"));
+        assert_eq!(env_line(f, "CC_HOSTS"), None, "an empty value is no value");
+        assert_eq!(
+            env_line(f, "CC_PROM"),
+            None,
+            "a prefix of a key is not the key"
+        );
     }
 
     #[test]

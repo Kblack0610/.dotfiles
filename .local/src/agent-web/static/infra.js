@@ -1,5 +1,5 @@
 "use strict";
-// The Infra tab: the hub:infra board (`command-center.sh`, Prefix i) for the browser. /api/infra
+// The Infra tab: the hub:infra board (`hub infra`, Prefix i) for the browser. /api/infra
 // asks Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
@@ -44,7 +44,7 @@ function ccIndex(series) {
 
 const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
 const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" : dur(s / 60));
-const grafanaBase = () => ((ist.data && ist.data.grafana) || "").replace(/\/d\/.*$/, "");
+const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)} &rarr;</a>` : "";
 
 const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
