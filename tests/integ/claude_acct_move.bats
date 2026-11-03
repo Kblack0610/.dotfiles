@@ -90,14 +90,26 @@ case "$verb" in
   has-session) grep -qxF -- "${target#=}" "$FIX/sessions.$server" 2>/dev/null; exit ;;
   list-panes) t="${target#=}"; cat "$FIX/panes.$server.${t%:}" 2>/dev/null ;;
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
+  display-message)
+    if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/copy-mode" ] && echo 1 || echo 0; fi
+    exit 0 ;;
   send-keys)
+    # copy mode takes every key until it is cancelled
+    if [ -f "$FIX/copy-mode" ]; then [ "$last" = cancel ] && rm -f "$FIX/copy-mode"; exit 0; fi
     if [ "$2" = -l ] || [ "$3" = -l ]; then printf '%s' "$last" > "$FIX/typed"; exit 0; fi
     case "$last" in
       Enter)
         typed=$(cat "$FIX/typed" 2>/dev/null); : > "$FIX/typed"
         if [ "$typed" = /exit ]; then
           if [ -f "$FIX/dialog" ]; then cp "$FIX/dialog" "$FIX/screen"; else end_claude; fi
-        elif [ -n "$typed" ]; then start_claude "$typed"; fi ;;
+        elif [ -n "$typed" ] && [ -f "$FIX/trust" ]; then
+          # an account new to the folder asks to trust it first; "No, exit" is the default
+          printf '%s' "$typed" > "$FIX/pending"; mv "$FIX/trust" "$FIX/screen"
+        elif [ -n "$typed" ]; then start_claude "$typed"
+        elif [ -f "$FIX/pending" ] && [ -f "$FIX/down" ]; then
+          rm -f "$FIX/screen" "$FIX/down"; start_claude "$(cat "$FIX/pending")"; rm -f "$FIX/pending"
+        fi ;;
+      Down) touch "$FIX/down" ;;
       [0-9]) [ "$last" = "$(cat "$FIX/bg-option" 2>/dev/null)" ] && end_claude ;;
     esac ;;
   respawn-pane) start_claude "$last" ;;
@@ -378,6 +390,35 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_output --partial "cd $(q "$HOME/wt") && env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume sid-1 This\ session\ was\ parked\ to\ save\ Claude\ usage"
   assert_output --partial 're-check\ it'
   [ ! -e "$(PARKED_LEDGER agent-1)" ]
+}
+
+@test "unpark answers the trust prompt of an account new to the folder, once, and resumes" {
+  session lab agent-3 %8 300 301 idle "$ALT" --permission-mode bypassPermissions
+  run "$ACCT" park agent-3 --server lab
+  assert_success
+  usage main 5 10
+  usage alt 90 95
+  printf ' Quick safety check: Is this a project you created or one you trust?\n \xe2\x9d\xaf No, exit\n   Yes, I trust this folder\n' > "$FIX/trust"
+  run "$ACCT" unpark agent-3
+  assert_success
+  assert_output 'claude-acct: unparked agent-3 on main (5h 5%, 7d 10%): claude 900, busy'
+  [ "$(grep -c 'send-keys -t %8 Down' "$FIX/calls.log")" -eq 1 ]
+  [ ! -e "$(PARKED_LEDGER agent-3)" ]
+}
+
+@test "unpark leaves copy mode in a scrolled pane before it types the resume" {
+  session lab agent-4 %10 400 401 idle "$ALT" --permission-mode bypassPermissions
+  run "$ACCT" park agent-4 --server lab
+  assert_success
+  usage main 5 10
+  usage alt 90 95
+  touch "$FIX/copy-mode"
+  run "$ACCT" unpark agent-4
+  assert_success
+  assert_output 'claude-acct: unparked agent-4 on main (5h 5%, 7d 10%): claude 900, busy'
+  run tmux_calls
+  assert_line 'tmux -L lab send-keys -t %10 -X cancel'
+  [ ! -e "$(PARKED_LEDGER agent-4)" ]
 }
 
 @test "unpark respawns a pane that was its claude, held open while parked" {

@@ -588,6 +588,22 @@ exited() {
 
 # resumed <session id> <old pid> <to dir> -- a new claude registered that session id on the
 # target account; prints "pid status" for it
+# resumed_or_trusted <server> <pane> <resumed args...> -- resumed, answering Claude's folder
+# trust prompt once on the way: an account that never opened the ledger's cwd asks for it, and
+# its default is "No, exit". The same conversation already ran in that folder on its old
+# account, so the trust carries over; Claude keeps trust per account in .claude.json, which
+# claude-acct never writes. TRUSTED is set empty by unpark_ledger before its wait.
+resumed_or_trusted() {
+    local server="$1" pane="$2"
+    shift 2
+    resumed "$@" && return 0
+    if [[ -z "$TRUSTED" ]] && tmux -L "$server" capture-pane -p -t "$pane" 2>/dev/null | grep -qF 'Yes, I trust this folder'; then
+        TRUSTED=1
+        tmux -L "$server" send-keys -t "$pane" Down
+        tmux -L "$server" send-keys -t "$pane" Enter
+    fi
+    return 1
+}
 resumed() {
     local f pid
     for f in "$REGISTRY"/*.json; do
@@ -756,7 +772,7 @@ park_flow() {
 # pane, on that account or else the one best() names now, await it, then delete the ledger.
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
-    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got
+    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got TRUSTED
     session="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
@@ -782,10 +798,15 @@ unpark_ledger() {
         tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
+        # A pane someone scrolled is in copy mode, which would swallow the typed resume.
+        if [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" == 1 ]]; then
+            tmux -L "$server" send-keys -t "$pane" -X cancel
+        fi
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
-    await "session $sid to register on $name" resumed "$sid" "$pid" "$to" ||
+    TRUSTED=""
+    await "session $sid to register on $name" resumed_or_trusted "$server" "$pane" "$sid" "$pid" "$to" ||
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
     rm -f "$file"
     got=$(resumed "$sid" "$pid" "$to")
