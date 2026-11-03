@@ -1,4 +1,4 @@
-# yazi - image browser for ~/Media/Pictures (prefix i in tmux).
+# yazi - image browser for ~/Media/Pictures (prefix u in tmux).
 #
 # Deliberately minimal. yazi's DEFAULT keymap is already vim-style (hjkl, gg/G,
 # C-u/C-d, v/V, /, n/N), so there is no keymap.toml here on purpose - overriding it

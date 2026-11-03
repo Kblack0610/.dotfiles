@@ -1,5 +1,5 @@
 "use strict";
-// The Infra tab: the hub:infra board (`command-center.sh`, Prefix e) for the browser. /api/infra
+// The Infra tab: the hub:infra board (`command-center.sh`, Prefix i) for the browser. /api/infra
 // asks Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
