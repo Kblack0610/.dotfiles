@@ -188,6 +188,7 @@ theme stops being the theme it claims to be. Every deviation is a comment in
 | ---------- | ---------------------------------------------------------------- | -------- |
 | kitty      | full template copy + `SIGUSR1` live reload                        | generated |
 | waybar     | full template copy + `SIGUSR2` live reload                        | generated |
+| dunst      | `dunstrc.d/50-theme.conf` colors rebuilt from the palette, then `dunstctl reload`; layout stays in the tracked `dunstrc` | generated |
 | sketchybar | `colors.sh` rebuilt from the palette (no per-theme template)      | generated |
 | nvim       | colorscheme name patched in `init.lua`                            | tracked  |
 | lualine    | branch fg color patched                                           | tracked  |
