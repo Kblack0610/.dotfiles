@@ -3,3 +3,4 @@
 # On a tie the first line wins.
 main -
 alt  ~/.claude-personal
+bnb  ~/.claude-bnb
