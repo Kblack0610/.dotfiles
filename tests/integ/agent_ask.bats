@@ -63,7 +63,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'session: agent-1'
 }
 
-@test "an attended session files its ask, sees it in its pane, and pages the human once" {
+@test "an attended session files its ask and sees it in its pane, with no page per ask" {
   # 2026-10-28: agent-27 asked only in the conversation and waited unflagged; the ask file is
   # the one record every board and the phone read.
   CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-1 run --separate-stderr \
@@ -74,7 +74,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   [[ "$stderr" == *"ASK $id (question) - waiting on you"* ]]
   [[ "$stderr" == *"merge it?"* ]]
   [[ "$stderr" == *"options: [now] [later] (recommended)"* ]]
-  [ "$(grep -c '^agent-notify -p high -t ask: demo' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
 @test "a headless post neither renders nor pages: the briefing pages headless asks" {
