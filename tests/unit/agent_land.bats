@@ -85,6 +85,8 @@ EOF
   run cat "$LOG"
   assert_output - <<'EOF'
 gh pr view 42 --json state,baseRefName -q .state + " " + .baseRefName
+git fetch -q origin
+git rev-list --count HEAD..origin/main
 gh pr checks 42 --watch --fail-fast
 git fetch -q origin
 git rev-list --count HEAD..origin/main
@@ -97,14 +99,17 @@ notes ptask dotfiles done ship it #oneshot --proof pr:42
 EOF
 }
 
-@test "a failing PR check stops before the fetch and the merge, naming the check" {
+@test "a failing PR check stops before the second fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   run "$LAND" 42 --project dotfiles --title "ship it"
   assert_failure 1
   assert_output --partial 'checks failed: Checks'
-  run grep -c 'pr merge\|^git\|^notes' "$LOG"
+  run grep -c 'pr merge\|^notes' "$LOG"
   assert_output 0
+  # only the fetch before the checks ran
+  run grep -c '^git fetch' "$LOG"
+  assert_output 1
 }
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
