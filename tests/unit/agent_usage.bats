@@ -148,7 +148,7 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   assert_output ''
 }
 
-# ── wakes: API calls per wake-up ─────────────────────────────────────────────
+# -- wakes: API calls per wake-up --
 #
 # The fixture holds two background wakes (pass with 2 calls, fail with 3), one peer wake (1 call)
 # and one human wake (2 calls), plus a tool_result, two <system-reminder> entries and a skill
