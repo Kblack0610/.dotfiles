@@ -6,6 +6,7 @@
 #   agent-usage rollup [--project P] [--since E] [--until E]   per-project totals + TOTAL
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
+#   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.
 #
@@ -479,9 +480,115 @@ cmd_backfill() {
   echo "agent-usage: backfilled $n session(s)" >&2
 }
 
+# --- wakes -----------------------------------------------------------------
+
+# API calls per wake-up. Every Claude Code API call re-reads the session's whole context (~150k
+# tokens at the cache-read price), so how many calls a wake takes drives the cost.
+#
+#   wakes [--since 24h] [--project SUBSTR] [--json]
+#
+# A wake is a `user` entry that is not a tool_result and not a bare <system-reminder> or skill
+# injection. Its trigger: <task-notification> -> background-task; "Another Claude session sent a
+# message" -> peer-message; "continued from a previous conversation" -> compaction;
+# <command-message>NAME -> command:NAME; "Stop hook" -> stop-hook; anything else -> human.
+# A background-task wake also gets a verdict from the first tool_result after it: pass, fail or
+# other. Calls are the distinct assistant message ids up to the next wake; only wakes stamped
+# inside the window count. Reads the main transcripts (~/.claude/projects/*/*.jsonl) modified
+# in the window; subagent transcripts (subdirectories) are NOT read, they are other threads.
+WAKE_JQ='
+def text: .message.content as $c
+  | if ($c | type) == "string" then $c
+    elif ($c | type) == "array" then [$c[] | select(.type == "text") | .text] | join("\n")
+    else "" end;
+def result_text: [.message.content[] | select(.type == "tool_result") | .content
+  | if type == "string" then . elif type == "array" then [.[] | .text? // ""] | join("\n") else "" end] | join("\n");
+def trigger($t):
+  if ($t | contains("<task-notification>")) then "background-task"
+  elif ($t | ltrimstr("\n") | startswith("Another Claude session sent a message")) then "peer-message"
+  elif ($t | contains("continued from a previous conversation")) then "compaction"
+  elif ($t | test("<command-message>[^<]+")) then "command:" + ($t | capture("<command-message>(?<n>[^<]+)").n)
+  elif ($t | ltrimstr("\n") | startswith("Stop hook")) then "stop-hook"
+  else "human" end;
+def verdict($t):
+  if ($t | test("FAIL|(^|[^0-9])[1-9][0-9]* failed|(exit(ed)?|rc)[ =:]*(with )?(code )?[ =:]*[1-9]")) then "fail"
+  elif ($t | test("passed, 0 failed|(exit(ed)?|rc)[ =:]*(with )?(code )?[ =:]*0([^0-9]|$)|green")) then "pass"
+  else "other" end;
+select(.type == "user" or .type == "assistant") | select(.isSidechain != true)
+| if .type == "assistant" then
+    select(.message.id != null) | ["A", .message.id, (.message.usage.cache_read_input_tokens // 0)]
+  elif ((.message.content | type) == "array") and ([.message.content[] | .type] | index("tool_result")) then
+    ["R", verdict(result_text)]
+  else
+    text as $t
+    | select(($t | gsub("<system-reminder>[\\s\\S]*?</system-reminder>"; "") | gsub("^\\s+|\\s+$"; "")) != "")
+    | select($t | ltrimstr("\n") | startswith("Base directory for this skill") | not)
+    | ["W", .timestamp, trigger($t)]
+  end | @tsv'
+
+# One line per wake in the window: trigger, verdict ("-" unless background-task), calls, cache_read.
+_wake_rows() { # $1=since ISO  $2..=transcripts
+  local since="$1" f; shift
+  for f in "$@"; do
+    printf 'F\n'
+    jq -r "$WAKE_JQ" "$f" 2>/dev/null
+  done | awk -F'\t' -v since="$since" '
+    function close_wake() {
+      if (live) printf "%s\t%s\t%d\t%d\n", trig, (trig == "background-task" ? (verd == "" ? "other" : verd) : "-"), calls, cr
+      live = 0; calls = 0; cr = 0; delete seen
+    }
+    $1 == "F" { close_wake(); open = 0; next }
+    $1 == "W" { close_wake(); open = 1; live = ($2 >= since); trig = $3; verd = ""; next }
+    $1 == "R" { if (live && trig == "background-task" && verd == "") verd = $2; next }
+    $1 == "A" { if (live && !($2 in seen)) { seen[$2] = 1; calls++; cr += $3 } next }
+    END { close_wake() }'
+}
+
+cmd_wakes() {
+  local since="24h" project="" json=0 secs n u
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:-}"; shift ;;
+      --project) project="${2:-}"; shift ;;
+      --json) json=1 ;;
+      *) echo "usage: agent-usage wakes [--since 24h] [--project SUBSTR] [--json]" >&2; return 2 ;;
+    esac
+    shift
+  done
+  n="${since%[smhd]}"; u="${since#"$n"}"
+  case "$n" in ''|*[!0-9]*) echo "agent-usage: bad --since '$since' (use 90m, 24h, 7d)" >&2; return 2 ;; esac
+  case "${u:-s}" in s) secs=$n ;; m) secs=$((n * 60)) ;; h) secs=$((n * 3600)) ;; d) secs=$((n * 86400)) ;; *) echo "agent-usage: bad --since '$since'" >&2; return 2 ;; esac
+  local start iso files=()
+  start=$(( $(date +%s) - secs ))
+  iso="$(date -u -d "@$start" +%Y-%m-%dT%H:%M:%S.000Z)"
+  while IFS= read -r -d '' f; do
+    case "$(basename "$(dirname "$f")")" in *"$project"*) files+=("$f") ;; esac
+  done < <(find "$PROJECTS_ROOT" -mindepth 2 -maxdepth 2 -name '*.jsonl' -newermt "@$start" -print0 2>/dev/null | sort -z)
+
+  local rows
+  rows="$([ ${#files[@]} -gt 0 ] && _wake_rows "$iso" "${files[@]}")"
+  local out
+  out="$(printf '%s' "$rows" | jq -Rn --arg since "$since" --argjson files "${#files[@]}" '
+    def pct($a; $p): ($a | length) as $n | if $n == 0 then null else $a[(($n * $p) | ceil) - 1] end;
+    def med($a): ($a | length) as $n | if $n == 0 then null
+      elif $n % 2 == 1 then $a[($n - 1) / 2] else ($a[$n / 2 - 1] + $a[$n / 2]) / 2 end;
+    def stat: sort_by(.calls) as $w | ($w | map(.calls)) as $c
+      | {wakes: length, calls: ($c | add // 0), median: med($c), p90: pct($c; 0.9),
+         cache_read_m: (((map(.cache_read) | add // 0) / 10000 | round) / 100)};
+    [inputs | select(. != "") | split("\t") | {trigger: .[0], verdict: (if .[1] == "-" then null else .[1] end), calls: (.[2] | tonumber), cache_read: (.[3] | tonumber)}] as $w
+    | {since: $since, files: $files,
+       rows: ($w | group_by([.trigger, .verdict]) | map({trigger: .[0].trigger, verdict: .[0].verdict} + stat) | sort_by(-.calls)),
+       all: ($w | stat)}')"
+  if [ "$json" = 1 ]; then jq -c . <<<"$out"; return 0; fi
+  printf 'wakes in the last %s (%s transcripts; subagent transcripts not read)\n\n' "$since" "${#files[@]}"
+  { printf 'trigger\tverdict\twakes\tcalls\tmedian\tp90\tcache_read_M\n'
+    jq -r '(.rows[], ({trigger: "all", verdict: null} + .all))
+      | [.trigger, (.verdict // "-"), .wakes, .calls, (.median // "-"), (.p90 // "-"), .cache_read_m] | @tsv' <<<"$out"
+  } | column -t -s "$TAB"
+}
+
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -493,6 +600,7 @@ case "$sub" in
   rollup)    cmd_rollup "$@" ;;
   changelog) cmd_changelog "$@" ;;
   backfill)  cmd_backfill "$@" ;;
+  wakes)     cmd_wakes "$@" ;;
   -h|--help|help|'') usage ;;
   *) echo "agent-usage: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac
