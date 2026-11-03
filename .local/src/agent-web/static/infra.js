@@ -31,11 +31,12 @@ const STATUS = [["OK", "var(--b-done)"], ["WARN", "var(--b-stalled)"], ["RED", "
 const statusOf = (v) => STATUS[v] || ["NO DATA", "var(--b-unclear)"];
 const statusColor = (v) => statusOf(v)[1];
 
-// cc: "cc:pool_busy" -> {unity: 4, ...} by the given label, or the bare value with no label.
+// cc: "cc:pool_busy" -> {unity: 4, ...} by the series' key label (pool, host, site, or
+// domain/component), or the bare value with no label.
 function ccIndex(series) {
   const by = {};
   for (const s of series || []) {
-    const l = s.labels, key = l.domain && l.__name__ === "cc:domain_status" ? l.domain : l.pool || l.host || l.component && `${l.domain}/${l.component}`;
+    const l = s.labels, key = l.domain && l.__name__ === "cc:domain_status" ? l.domain : l.pool || l.host || l.site || l.component && `${l.domain}/${l.component}`;
     (by[l.__name__] ||= {});
     if (key) by[l.__name__][key] = s.value; else by[l.__name__][""] = s.value;
   }
@@ -57,12 +58,17 @@ function kpis(cc) {
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_open_slots"]);
   const waiting = sumOf(cc["cc:pool_waiting"]) + sumOf(cc["cc:host_local_queued"]);
+  // cc:site_* already fold the local gates into local. No site series at all is "?", while a
+  // site with none of its own reads 0 (no cloud host up).
+  const site = (n, s) => (cc[n] || {})[s] ?? (cc["cc:site_slots"] ? 0 : "?");
+  const hosted = one("cc:github_hosted_running");
+  const where = `local ${site("cc:site_busy", "local")}/${site("cc:site_slots", "local")}, cloud ${site("cc:site_busy", "cloud")}/${site("cc:site_slots", "cloud")}${hosted > 0 ? ` +${hosted} github-hosted` : ""}`;
   const lazer = [one("cc:lazer_spend_usd"), one("cc:lazer_budget_usd")];
   const ok = (a, b) => (a != null && a === b ? "var(--b-done)" : "var(--b-needs)");
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI BUSY", `${busy}/${slots}`, "var(--c1)", `${waiting} waiting`)}${
+    tile("CI BUSY", `${busy}/${slots}`, "var(--c1)", `${where}, ${waiting} waiting`)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`)}${
     tile("LAZER", usd(lazer[0]), "var(--c2)", `${meter(lazer[1] ? lazer[0] / lazer[1] : 0, "var(--c2)")} of ${usd(lazer[1])}`)}${
@@ -79,11 +85,14 @@ function domainTiles(cc) {
   }).join("")}</div>`;
 }
 
+// Pools with slots or a queue, the longest queue first.
+const poolOrder = (cc) => [...new Set([...Object.keys(cc["cc:pool_slots"] || {}), ...Object.keys(cc["cc:pool_waiting"] || {})])]
+  .sort((a, b) => ((cc["cc:pool_waiting"] || {})[b] || 0) - ((cc["cc:pool_waiting"] || {})[a] || 0) || a.localeCompare(b));
+
 function poolsTable(cc, inst) {
   const on = {}, ri = runnerIndex(inst);
   for (const r of inst.runners || []) if (isOnline(r, ri)) ((on[r.labels.pool] ||= {})[r.labels.host] = (on[r.labels.pool][r.labels.host] || 0) + 1);
-  const pools = [...new Set([...Object.keys(cc["cc:pool_slots"] || {}), ...Object.keys(cc["cc:pool_waiting"] || {})])]
-    .sort((a, b) => ((cc["cc:pool_waiting"] || {})[b] || 0) - ((cc["cc:pool_waiting"] || {})[a] || 0) || a.localeCompare(b));
+  const pools = poolOrder(cc);
   const g = (n, p) => (cc[n] || {})[p];
   const row = (p, busy, slots, waiting, oldest, done, pass, hosts, room, held) => `<tr><td>${esc(p)}</td><td class="m">${meter(slots ? busy / slots : 0, "var(--c1)")}</td><td class="n">${busy ?? "-"}/${slots ?? "-"}${room > 0 ? `+${room}` : ""}${held > 0 ? ` <span class="muted">+${held} held</span>` : ""}</td><td class="n${waiting ? " warn" : ""}">${waiting ?? "-"}</td><td class="n">${secs(oldest)}</td><td class="n">${done ?? "-"}</td><td class="n ${pass == null ? "" : pass < 0.7 ? "bad" : pass < 0.9 ? "warn" : ""}">${pct(pass)}</td><td class="muted">${esc(hosts)}</td></tr>`;
   let rows = pools.map((p) => row(p, g("cc:pool_busy", p), g("cc:pool_slots", p), g("cc:pool_waiting", p), g("cc:pool_oldest_wait_seconds", p), g("cc:pool_done_24h", p), g("cc:pool_pass_ratio_24h", p),
@@ -110,28 +119,50 @@ function runnerIndex(inst) {
 // Online means it can take a job: running, or idle and not withheld (the cc:pool_slots rule).
 const isOnline = (r, ri) => r.labels.state === "running" || (r.labels.state === "idle" && !(ri[r.labels.name] || {}).held);
 
-// What each machine carries: CI runners as running/online from the exporter, withheld ones
-// apart, and the workstation's local Unity gates as busy/slots from fleet-assess. The hover
-// lists the cores each runner's job is using.
-function machineRunners(cc, inst) {
-  const by = {}, ri = runnerIndex(inst);
+// Each machine's CI slots, counted as cc:pool_slots counts them and as the hub board's
+// machine_slots does: a slot is a running runner, or an idle one the governor does not
+// withhold. A withheld runner shows as `<pool> withheld` and is no slot; an offline or missing
+// one counts in `off`. The workstation's local gates fold into its row as unity-local, as
+// cc:site_slots folds them into local. `cpu` is the cores each runner's job is using.
+function machineSlots(cc, inst) {
+  const by = {}, ri = runnerIndex(inst), per = {}, order = poolOrder(cc);
+  const at = (h) => (by[h] ||= { host: h, cloud: false, busy: 0, slots: 0, off: 0, pools: [], cpu: [] });
+  const rank = (p) => { const i = order.indexOf(p); return i < 0 ? order.length : i; };
   for (const r of inst.runners || []) {
-    const h = (by[r.labels.host] ||= { run: 0, on: 0, held: 0, off: 0, cpu: [] });
-    if (r.labels.state === "running") h.run++;
-    if (isOnline(r, ri)) h.on++; else if (r.labels.state === "idle") h.held++; else h.off++;
-    const busy = (ri[r.labels.name] || {}).busy;
-    if (busy != null) h.cpu.push([r.labels.name, busy]);
+    const l = r.labels, m = at(l.host), c = ri[l.name] || {};
+    m.cloud ||= l.site === "cloud";
+    if (c.busy != null) m.cpu.push([l.name, c.busy]);
+    if (l.state !== "running" && l.state !== "idle") { m.off++; continue; }
+    const run = l.state === "running";
+    if (run || !c.held) m.slots++;
+    if (run) m.busy++;
+    const pool = l.pool + (c.held ? " withheld" : "");
+    const e = ((per[l.host] ||= {})[pool] ||= { rank: rank(l.pool), b: 0, n: 0 });
+    e.n++; if (run) e.b++;
   }
-  const out = {};
-  for (const [h, c] of Object.entries(by)) out[h] = {
-    text: `${c.run}/${c.on}${c.held ? ` +${c.held} held` : ""}${c.off ? ` +${c.off} off` : ""}`, warn: c.off > 0,
-    title: c.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n"),
-  };
-  for (const [h, slots] of Object.entries(cc["cc:host_local_slots"] || {})) {
-    const local = `local ${(cc["cc:host_local_busy"] || {})[h] ?? "?"}/${slots}`;
-    out[h] = { text: out[h] ? `${out[h].text}, ${local}` : local, warn: out[h] && out[h].warn };
+  for (const [h, ps] of Object.entries(per)) at(h).pools.push(...Object.entries(ps).sort(([a, x], [b, y]) => x.rank - y.rank || a.localeCompare(b)).map(([p, e]) => `${p} ${e.b}/${e.n}`));
+  const g = (n, h) => (cc[n] || {})[h];
+  const gates = {};
+  for (const r of inst.gates || []) gates[r.labels.host] = (gates[r.labels.host] || 0) + 1;
+  for (const [h, n] of Object.entries(gates)) if (g("cc:host_local_slots", h) == null) at(h).pools.push(`${n} gates`);
+  for (const [h, total] of Object.entries(cc["cc:host_local_slots"] || {})) {
+    const busy = g("cc:host_local_busy", h) || 0, open = g("cc:host_local_open_slots", h) || 0, room = Math.round(total - open), m = at(h);
+    m.busy += busy; m.slots += Math.max(open, busy);
+    m.pools.push(`unity-local ${g("cc:host_local_busy", h) ?? "?"}/${g("cc:host_local_open_slots", h) ?? "?"}${room > 0 ? `+${room}` : ""}`);
   }
-  return out;
+  return Object.values(by);
+}
+const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
+const whereCell = (m) => (m.cloud ? "cloud" : "local");
+const cpuTitle = (m) => m.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
+
+// The Overview's rollup, shaped like the Pools table: one row per machine that carries CI,
+// the busiest first.
+function machineSlotsTable(cc, inst) {
+  const rows = machineSlots(cc, inst).filter((m) => m.slots || m.busy || m.pools.length).sort((a, b) => b.busy - a.busy || a.host.localeCompare(b.host));
+  if (!rows.length) return '<div class="empty">No CI slot up.</div>';
+  return `<table class="tbl"><tr><th>machine</th><th>where</th><th></th><th class="n">busy</th><th>pools</th></tr>${rows.map((m) =>
+    `<tr><td>${esc(m.host)}</td><td class="muted">${whereCell(m)}</td><td class="m">${meter(m.slots ? m.busy / m.slots : 0, "var(--c1)")}</td><td class="n"${m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}</td><td class="wrap">${esc(m.pools.join("  ") || "-")}${m.off ? ` <span class="bad">+${m.off} off</span>` : ""}</td></tr>`).join("")}</table>`;
 }
 
 function machinesTable(cc, inst) {
@@ -140,12 +171,13 @@ function machinesTable(cc, inst) {
   for (const s of inst.cores || []) (cores[s.labels.host] ||= []).push([s.labels.cpu, s.value]);
   const num = (c) => c.split(",").map(Number);
   for (const c of Object.values(cores)) c.sort(([a], [b]) => { const [x, y] = [num(a), num(b)]; return x[0] - y[0] || (x[1] || 0) - (y[1] || 0); });
-  const runners = machineRunners(cc, inst);
+  const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
+  const carries = (h) => !!(ci[h] && (ci[h].slots || ci[h].pools.length));
   // Machines that carry CI first, then the busiest.
-  const hosts = Object.keys(cc["cc:host_cores"] || {}).sort((a, b) => (!!runners[b] - !!runners[a]) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
-  return `<table class="tbl"><tr><th>machine</th><th>runners</th><th>cpu (per core)</th><th class="n">now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n">temp</th></tr>${hosts.map((h) => {
-    const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), r = runners[h];
-    return `<tr><td>${esc(h)}</td><td class="${r && r.warn ? "warn" : "muted"}"${r && r.title ? ` title="${esc(r.title)}"` : ""}>${r ? esc(r.text) : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td></tr>`;
+  const hosts = Object.keys(cc["cc:host_cores"] || {}).sort((a, b) => carries(b) - carries(a) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
+  return `<table class="tbl"><tr><th>machine</th><th>where</th><th class="n">busy</th><th>cpu (per core)</th><th class="n">now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n">temp</th><th>pools</th></tr>${hosts.map((h) => {
+    const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), m = ci[h];
+    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td><td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
   }).join("")}</table>`;
 }
 
@@ -168,21 +200,35 @@ function accountsTable(inst) {
   }).join("")}</table>`;
 }
 
+// The CI section's running jobs, grouped by machine (the most jobs first, each group longest
+// first): the group row carries the machine and its busy/slots, so pool and host columns go.
 // A job using more than half its machine's cores shows amber: one job starving the rest.
 function runningTable(cc, inst) {
   const ri = runnerIndex(inst), hostCores = cc["cc:host_cores"] || {};
   const prBy = {};
   for (const r of [...(inst.runners || []), ...(inst.waiting || [])]) if (r.labels.pr && r.labels.pr !== "") prBy[`${r.labels.repo}/${r.labels.branch}`] = r.labels.pr;
-  const rows = [
-    ...(inst.runners || []).filter((r) => r.labels.state === "running").map((r) => ({ v: r.value, name: r.labels.name, host: r.labels.host, pool: r.labels.pool, repo: r.labels.repo, pr: r.labels.pr, job: r.labels.job_name, branch: (r.labels.branch || "") + (r.labels.title && r.labels.title !== r.labels.workflow ? " - " + r.labels.title : "") })),
-    ...(inst.gates || []).map((r) => { const repo = r.labels.repo || r.labels.worktree; return { v: r.value, host: r.labels.host, pool: "unity-local", repo, pr: prBy[`${repo}/${r.labels.branch}`], job: r.labels.platform, branch: r.labels.branch }; }),
-  ].sort((a, b) => (b.v || 0) - (a.v || 0));
-  if (!rows.length) return '<div class="empty">Nothing running.</div>';
-  return `<table class="tbl"><tr><th>host</th><th>pool</th><th>repo</th><th>PR</th><th>job</th><th class="n">for</th><th class="n">cores</th><th>branch</th></tr>${rows.map((r) => {
-    const c = ri[r.name] || {}, n = hostCores[r.host];
-    const cores = c.busy == null ? "-" : `${c.busy.toFixed(1)}/${c.allowed ?? n ?? "?"}`;
-    return `<tr><td>${esc(r.host || "-")}</td><td>${esc(r.pool || "-")}</td><td>${esc(r.repo || "-")}</td><td>${r.pr ? "#" + esc(r.pr) : "-"}</td><td>${esc(r.job || "-")}</td><td class="n${r.v > LONG_RUN_SECS ? " warn" : ""}">${secs(r.v)}</td><td class="n${c.busy > n / 2 ? " warn" : ""}"${c.allowed ? ` title="pinned to ${c.allowed} CPUs of ${n ?? "?"}"` : ""}>${cores}</td><td class="wrap">${esc(r.branch || "-")}</td></tr>`;
-  }).join("")}</table>`;
+  const by = {};
+  for (const r of (inst.runners || []).filter((r) => r.labels.state === "running")) {
+    const l = r.labels;
+    (by[l.host || "-"] ||= []).push({ v: r.value, name: l.name, repo: l.repo, pr: l.pr, job: l.job_name, detail: l.title && l.title !== l.workflow ? l.title : l.branch });
+  }
+  // A machine that is not a runner runs its gates locally: the PR from a runner or queue row on
+  // the same branch.
+  for (const r of inst.gates || []) {
+    const l = r.labels, repo = l.repo || l.worktree;
+    (by[l.host || "-"] ||= []).push({ v: r.value, repo, pr: prBy[`${repo}/${l.branch}`], job: `${l.platform} (local)`, detail: l.branch });
+  }
+  const groups = Object.entries(by).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  const jobs = groups.reduce((x, [, js]) => x + js.length, 0);
+  if (!jobs) return { head: "nothing", body: '<div class="empty">Nothing running.</div>' };
+  const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
+  const body = `<table class="tbl"><tr><th>PR</th><th>job</th><th class="n">for</th><th class="n">cores</th><th>PR title or branch</th></tr>${groups.map(([host, js]) =>
+    `<tr class="hgrp"><td colspan="5">${esc(host)} <span class="muted">${ci[host] ? `${whereCell(ci[host])}, ${busyCell(ci[host])} busy` : ""}</span></td></tr>${js.sort((a, b) => (b.v || 0) - (a.v || 0)).map((r) => {
+      const c = ri[r.name] || {}, n = hostCores[host];
+      const cores = c.busy == null ? "-" : `${c.busy.toFixed(1)}/${c.allowed ?? n ?? "?"}`;
+      return `<tr><td>${esc(r.repo || "-")}${r.pr ? "#" + esc(r.pr) : ""}</td><td>${esc(r.job || "-")}</td><td class="n${r.v > LONG_RUN_SECS ? " warn" : ""}">${secs(r.v)}</td><td class="n${c.busy > n / 2 ? " warn" : ""}"${c.allowed ? ` title="pinned to ${c.allowed} CPUs of ${n ?? "?"}"` : ""}>${cores}</td><td class="wrap">${esc(r.detail || "-")}</td></tr>`;
+    }).join("")}`).join("")}</table>`;
+  return { head: `${jobs} job${jobs === 1 ? "" : "s"}`, body };
 }
 
 function queuedTable(inst) {
@@ -199,13 +245,19 @@ function queuedTable(inst) {
 }
 
 // What is red: the dashboard's table (watches tripped, runners failed, nodes NotReady) plus the
-// board's DOWN line (offline runners, stuck runs, the GitHub API).
+// board's DOWN line (offline runners, stuck runs, the exporter and GitHub).
 function redItems(inst) {
   const items = (inst.red || []).map((s) => s.labels.item).filter(Boolean).sort();
   for (const r of inst.runners || []) if (["offline", "missing"].includes(r.labels.state)) items.push(`runner ${r.labels.name} ${r.labels.state}`);
   for (const r of inst.waiting || []) if (r.labels.stuck === "true") items.push(`stuck run: ${r.labels.repo} ${r.labels.branch}, ${secs(r.value)}, no jobs`);
-  if (((inst.api || [])[0] || {}).value !== 1) items.unshift("GitHub API not answering: runner rows may be missing");
-  if (!(inst.runners || []).length) items.push("no runner series (exporter down?)");
+  // The likeliest cause first, as the hub board's DOWN line: a missed scrape (exporter_up 0 or
+  // absent) blanks every exporter series, a spent rate limit leaves jobs and history unread,
+  // and api counts only the runner sources, so one repo's failed run list says nothing here.
+  const v = (q) => ((inst[q] || [])[0] || {}).value;
+  if (v("exporter_up") !== 1) items.unshift("runner exporter missed its last scrape: runner rows may be missing");
+  else if (v("rate_left") === 0) items.unshift("GitHub rate limit spent: runner jobs and history unread until it resets");
+  else if (v("api") !== 1) items.unshift("GitHub not answering the exporter: runner rows may be missing");
+  else if (!(inst.runners || []).length) items.push("no runner series from the exporter");
   return items;
 }
 
@@ -335,7 +387,7 @@ function renderInfra() {
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
   const red = redItems(inst);
-  const fin = finishedTable(inst);
+  const fin = finishedTable(inst), run = runningTable(cc, inst);
   let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span> <span class="muted">needs you: ${(cc["cc:asks_open"] || {})[""] ?? "?"} asks, ${(cc["cc:sessions_attention"] || {})[""] ?? "?"} sessions waiting, read ${clock(t1)}</span></span><span>${links}</span></div>`;
   html += domainTiles(cc);
   html += `<div class="sp"></div>` + kpis(cc);
@@ -343,8 +395,9 @@ function renderInfra() {
   html += doneToday(inst, t1);
   html += `<h2 class="sec">Red right now <span class="muted">${red.length}</span></h2><div class="panel${red.length ? " down" : ""}">${red.length ? red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("") : "Nothing: every rostered runner is registered and online."}</div>`;
   html += `<h2 class="sec">Pools</h2><div class="panel scroll">${poolsTable(cc, inst)}</div>`;
-  html += `<h2 class="sec">Running</h2><div class="panel scroll">${runningTable(cc, inst)}</div>`;
+  html += `<h2 class="sec">CI by machine</h2><div class="panel scroll">${machineSlotsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Queued</h2><div class="panel scroll">${queuedTable(inst)}</div>`;
+  html += `<h2 class="sec">Running <span class="muted">${esc(run.head)}</span></h2><div class="panel scroll">${run.body}</div>`;
   html += `<h2 class="sec">Recent runs <span class="muted">every job, any source: the Jobs tab</span></h2>${recentTable(inst)}`;
   html += `<h2 class="sec">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h2>${fin.body ? `<div class="panel scroll">${fin.body}</div>` : ""}`;

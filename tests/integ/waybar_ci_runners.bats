@@ -36,13 +36,14 @@ STUB
 # Finished in 24h: unity 40 at 95%, light 10 at 60%, github-hosted (no slots) 50 at
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
-# the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it).
+# the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it), RATE_LEFT
+# the token's emptiest bucket.
 fixtures() {
   python3 - "$FX" "$1" <<'PY'
 import json, os, sys
 d, mode = sys.argv[1], sys.argv[2]
 status, api = os.environ.get("CI_STATUS", "1"), os.environ.get("API_OK", "1")
-up = os.environ.get("EXPORTER_UP", "1")
+up, rate_left = os.environ.get("EXPORTER_UP", "1"), os.environ.get("RATE_LEFT", "3000")
 no_done, no_site = os.environ.get("NO_DONE") == "1", os.environ.get("NO_SITE") == "1"
 def out(name, rows):
     res = [{"metric": m, "value": [0, v]} for m, v in rows]
@@ -57,7 +58,7 @@ cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
        ({"__name__": "cc:host_local_open_slots", "host": "workstation"}, "4"),
        ({"__name__": "cc:host_local_busy", "host": "workstation"}, "2"),
        ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
-       ({"__name__": "api_ok", "src": "api"}, api)]
+       ({"__name__": "api_ok", "src": "api"}, api), ({"__name__": "rate_left", "src": "rate"}, rate_left)]
 if up != "none":
     cc.append(({"__name__": "exporter_up", "src": "up"}, up))
 if not no_site:
@@ -326,12 +327,21 @@ PY
   refute_output --partial "missed its last scrape"
 }
 
+@test "a spent rate limit says so, ahead of the vaguer GitHub line" {
+  API_OK=0 RATE_LEFT=0 fixtures idle
+  run "$MODULE"
+  run tip
+  assert_output --partial "GitHub rate limit spent, runner jobs and history unread until it resets"
+  refute_output --partial "GitHub not answering"
+}
+
 # Negative control: a healthy exporter adds neither line.
 @test "a healthy exporter adds no exporter line" {
   run "$MODULE"
   run tip
   refute_output --partial "missed its last scrape"
   refute_output --partial "GitHub not answering"
+  refute_output --partial "rate limit spent"
 }
 
 # One repo's run list failing must not doubt the runner rows: api_ok reads runner sources.

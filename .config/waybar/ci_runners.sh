@@ -31,12 +31,15 @@ fail() { emit "$(paint "$C_RED" 'CI: prom down')" "CI runners: $1" critical; exi
 
 # api_ok reads the runner sources only: a failed call to one repo's run list leaves every
 # runner row intact, so it is no reason to doubt them. exporter_up tells a missed scrape
-# (every exporter series gone stale) apart from GitHub not answering. `or` matches label sets
-# with the name ignored, so the two carry a src label or the second would be dropped.
+# (every exporter series gone stale) apart from GitHub not answering, and rate_left (the
+# token's emptiest bucket; the budget is per user, shared with every gh session) names the
+# usual reason it stops answering. `or` matches label sets with the name ignored, so each
+# carries a src label or all but the first would be dropped.
 cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)|cc:site_(slots|busy)|cc:github_hosted_running"}
   or cc:component_status{domain="ci"} or cc:domain_status{domain="ci"}
   or label_replace(label_replace(min(github_runner_exporter_api_ok{kind="runners"}), "__name__", "api_ok", "", ""), "src", "api", "", "")
-  or label_replace(label_replace(max(up{job="github-runner-exporter"}), "__name__", "exporter_up", "", ""), "src", "up", "", "")')" \
+  or label_replace(label_replace(max(up{job="github-runner-exporter"}), "__name__", "exporter_up", "", ""), "src", "up", "", "")
+  or label_replace(label_replace(min(github_runner_exporter_rate_remaining), "__name__", "rate_left", "", ""), "src", "rate", "", "")')" \
   || fail "cannot read $PROM_URL"
 runners="$(prom_q "$W (github_runner_state)")" || fail "cannot read $PROM_URL"
 withheld="$(prom_q "$W (github_runner_withheld) == 1")" || fail "cannot read $PROM_URL"
@@ -226,6 +229,8 @@ if [ -z "$level" ]; then
 fi
 if [ "${V[exporter_up/]:-0}" != 1 ]; then
   status+=" $(paint "$C_RED" 'runner exporter missed its last scrape, runner rows may be missing'),"
+elif [ "${V[rate_left/]:-}" = 0 ]; then
+  status+=" $(paint "$C_RED" 'GitHub rate limit spent, runner jobs and history unread until it resets'),"
 elif [ "${V[api_ok/]:-0}" != 1 ]; then
   status+=" $(paint "$C_RED" 'GitHub not answering the exporter, runner rows may be missing'),"
 fi
