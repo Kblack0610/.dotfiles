@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# aws-rbw-creds <rbw-entry>: AWS CLI `credential_process` helper. Prints the
+# Version 1 credential JSON from a Bitwarden (rbw) login entry whose username is
+# the access key id and whose password is the secret, so no AWS secret lives on
+# disk. Used by the profiles in ~/.aws/config.
+set -euo pipefail
+entry=${1:?usage: aws-rbw-creds <rbw-entry>}
+rbw get --raw "$entry" | jq -ce '
+  if (.data.username // "") == "" or (.data.password // "") == ""
+  then error("rbw entry needs username = access key id, password = secret")
+  else {Version: 1, AccessKeyId: .data.username, SecretAccessKey: .data.password}
+  end'
