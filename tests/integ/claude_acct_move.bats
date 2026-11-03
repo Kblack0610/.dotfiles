@@ -92,16 +92,10 @@ case "$verb" in
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
   display-message)
     if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
-    if [ "$last" = '#{pane_mode}' ]; then cat "$FIX/mode" 2>/dev/null; fi
     exit 0 ;;
   send-keys)
-    # a pane mode takes every key until its own exit key: cancel for copy mode, Escape for
-    # the others; a stuck mode (FIX/mode-stuck) takes them all
-    if [ -f "$FIX/mode" ]; then
-      [ -f "$FIX/mode-stuck" ] && { printf '%s\n' "$last" >> "$FIX/mode-keys"; exit 0; }
-      case "$(cat "$FIX/mode"):$last" in copy-mode:cancel|tree-mode:Escape) rm -f "$FIX/mode" ;; *) printf '%s\n' "$last" >> "$FIX/mode-keys" ;; esac
-      exit 0
-    fi
+    # a pane in a mode takes every key, logged so a test can assert none reached one
+    if [ -f "$FIX/mode" ]; then printf '%s\n' "$last" >> "$FIX/mode-keys"; exit 0; fi
     if [ "$2" = -l ] || [ "$3" = -l ]; then printf '%s' "$last" > "$FIX/typed"; exit 0; fi
     case "$last" in
       Enter)
@@ -118,6 +112,8 @@ case "$verb" in
       Down) touch "$FIX/down" ;;
       [0-9]) [ "$last" = "$(cat "$FIX/bg-option" 2>/dev/null)" ] && end_claude ;;
     esac ;;
+  # copy-mode -q leaves any mode, unless the test made it stick
+  copy-mode) [ "$1" = -q ] && [ ! -f "$FIX/mode-stuck" ] && rm -f "$FIX/mode"; exit 0 ;;
   respawn-pane) start_claude "$last" ;;
 esac
 exit 0
@@ -423,7 +419,8 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_success
   assert_output 'claude-acct: unparked agent-4 on main (5h 5%, 7d 10%): claude 900, busy'
   run tmux_calls
-  assert_line 'tmux -L lab send-keys -t %10 -X cancel'
+  assert_line 'tmux -L lab copy-mode -q -t %10'
+  [ ! -e "$FIX/mode-keys" ]
   [ ! -e "$(PARKED_LEDGER agent-4)" ]
 }
 
@@ -437,7 +434,7 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   run "$ACCT" unpark agent-4
   assert_success
   run tmux_calls
-  assert_line 'tmux -L lab send-keys -t %10 Escape'
+  assert_line 'tmux -L lab copy-mode -q -t %10'
   [ ! -e "$FIX/mode-keys" ]
   [ ! -e "$(PARKED_LEDGER agent-4)" ]
 }
@@ -452,8 +449,27 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   run "$ACCT" unpark agent-4
   assert_failure
   assert_output --partial 'in a tmux mode that did not close; typed nothing'
-  [ "$(cat "$FIX/mode-keys")" = Escape ]
+  [ ! -e "$FIX/mode-keys" ]
   [ -e "$(PARKED_LEDGER agent-4)" ]
+}
+
+@test "park closes the session picker before it types /exit" {
+  session lab agent-5 %11 500 501 idle "$ALT" --permission-mode bypassPermissions
+  echo tree-mode > "$FIX/mode"
+  run "$ACCT" park agent-5 --server lab
+  assert_success
+  [ ! -e "$FIX/mode-keys" ]
+  [ -e "$(PARKED_LEDGER agent-5)" ]
+}
+
+@test "park types nothing into a pane mode that will not close, and writes no ledger" {
+  session lab agent-5 %11 500 501 idle "$ALT" --permission-mode bypassPermissions
+  echo tree-mode > "$FIX/mode"; touch "$FIX/mode-stuck"
+  run "$ACCT" park agent-5 --server lab
+  assert_failure
+  assert_output --partial 'in a tmux mode that did not close; typed nothing'
+  [ ! -e "$FIX/mode-keys" ]
+  [ ! -e "$(PARKED_LEDGER agent-5)" ]
 }
 
 @test "unpark respawns a pane that was its claude, held open while parked" {
