@@ -34,13 +34,15 @@ The document holds `activity` as of `generated_at`. A view that needs it live (t
 | `waiting` | Blocked on a prompt or a permission in the pane |
 | `shell` | Turn ended, a background shell is still running |
 | `idle` | Turn ended, nothing running |
+| `parked` | No Claude process: `claude-acct park` exited it, and its ledger is in `~/.agent/parked/<tmux session>` |
 
 ### bucket
 
-Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first match wins). The `reason` field carries the detail. A pending ask and a ready open PR that conflicts with the default branch decide before `activity`: a session busy on other work still waits on its ask, and a PR that is otherwise ready waits on nothing but the conflict. Ready is green checks, or no checks and the session idle 20m or more. A conflict on a PR whose checks are red or running is named in the reason of its other bucket (`PR #9 CI red, conflicts with the default branch`) and is not a conflict nudge: resolving it before the PR is ready invites the next conflict and a fresh gate.
+Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first match wins). The `reason` field carries the detail. A parked session decides first: its claude is gone, so a message would wake nothing. A pending ask and a ready open PR that conflicts with the default branch decide before `activity`: a session busy on other work still waits on its ask, and a PR that is otherwise ready waits on nothing but the conflict. Ready is green checks, or no checks and the session idle 20m or more. A conflict on a PR whose checks are red or running is named in the reason of its other bucket (`PR #9 CI red, conflicts with the default branch`) and is not a conflict nudge: resolving it before the PR is ready invites the next conflict and a fresh gate.
 
 | Value | Meaning | Who acts |
 | --- | --- | --- |
+| `PARKED` | `claude-acct park` exited its claude to save usage while it waits, and `~/.agent/parked/<tmux session>` holds the resume. agent-panel cannot list it, so the pass reads the ledger; a ledger beside a live claude is stale and the live row wins | Nobody: never nudged or escalated. `claude-acct unpark` resumes it |
 | `NEEDS` | Waiting on a prompt or dialog, a pending ask (even while busy; an attended session files every question it leaves the human, `stop-post.d/88-ask-filed.sh`), or plan approval | The human |
 | `STALLED` | A ready open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |

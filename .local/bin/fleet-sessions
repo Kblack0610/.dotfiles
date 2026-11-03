@@ -17,7 +17,8 @@
 #                                     where its time went, and what it is doing
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
-# STALLED (nudge once), UNCLEAR, plus one MAIN row per repo whose default branch is red (the
+# STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
+# escalated, `claude-acct unpark` resumes it), plus one MAIN row per repo whose default branch is red (the
 # latest decided run of a workflow failed), naming the PRs merged since that workflow was
 # last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
@@ -65,6 +66,9 @@ ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # fleet-dispatch writes live/<tmux session> for each session it starts; its label= line is
 # the row that session is working, shown so the shepherd knows which sessions it fed.
 DISPATCH_LIVE="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/live"
+# claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
+# Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
+PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # Labels say what git, gh and the transcript cannot: a human's `hands-off` (the shepherd
 # leaves that session alone), or a session's own `quality:<step>` while a cleanup pass runs.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
@@ -88,6 +92,9 @@ LABELS="$LEDGER/labels"
 # several times and ~30 open PRs drew 55 conflict nudges in 6h, most of them not ready.
 session_bucket() {
   local st="$1" note="" cn=""
+  # Parked on purpose: its claude is gone, so a message would wake nothing, and nothing in it
+  # moves until it is unparked.
+  [ "$st" = parked ] && { echo "PARKED claude exited to save usage; claude-acct unpark resumes it"; return; }
   [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
   [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
   if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
@@ -520,6 +527,24 @@ git_facts() {
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--}"
 }
 
+# parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
+# ledger whose tmux session has no live claude again, so a parked session's git, PR and main
+# facts are read like any other's. A ledger beside a live claude is stale: the live row wins.
+parked_lines() {
+  local f live
+  live="$(jq -r '.target | sub(":[^:]*$"; "")' <<<"$1" 2>/dev/null)"
+  for f in "$PARKED_DIR"/*; do
+    [ -f "$f" ] || continue
+    jq -cn --rawfile l "$f" --arg live "$live" '
+      ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
+      | ($p.target // "\($p.server)/\($p.session)") as $t
+      | select(($live | split("\n") | index($t | sub(":[^:]*$"; ""))) | not)
+      | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
+         session_id: $p.session_id, cwd: $p.cwd, idle_since: ($p.parked | tonumber? // 0),
+         context_tokens: 0, plan_file: ""}' 2>/dev/null
+  done
+}
+
 collect() {
   local now heavy line
   now="$(date +%s)"
@@ -528,7 +553,8 @@ collect() {
   # A pass that could not read a source says so in $CACHE/unreadable, so watch never logs a
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
-  [ -n "$panel" ] && printf '%s\n' "$panel" | while IFS= read -r line; do
+  { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; } | while IFS= read -r line; do
+    [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test
@@ -651,7 +677,7 @@ board_cells() {
       return name ? wait_names[name] " " hrs(top) : "-"
     }
     BEGIN {
-      n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
+      n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
@@ -932,7 +958,7 @@ sessions_prom() {
       | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
       (.sessions | map(.bucket)) as $b
-      | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR"] + $b | unique)[]
+      | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "PARKED"] + $b | unique)[]
       | . as $k | [{bucket: $k}, ($b | map(select(. == $k)) | length)]),
     gauge("agent_asks_open"; "Pending asks waiting on the human.";
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
@@ -956,7 +982,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING; do
+  for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do

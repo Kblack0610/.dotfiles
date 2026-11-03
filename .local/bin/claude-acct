@@ -13,7 +13,12 @@
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
-#                        # returns, in the same pane
+#                        # returns, in the same pane: park, then unpark
+#   claude-acct park <tmux-session> [--server S] [--stop-shells] [--dry-run]
+#                        # exit that session's claude so it costs nothing while it waits,
+#                        # keeping the pane; the resume goes to ~/.agent/parked/<tmux-session>
+#   claude-acct unpark <tmux-session>|--all
+#                        # resume a parked session in its pane, on the account pick returns now
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
 # One account per session via CLAUDE_CONFIG_DIR; nothing here writes a credential,
@@ -41,7 +46,7 @@ SHARED=(settings.json settings.local.json CLAUDE.md PERSONAS.md commands hooks s
 MERGE=(sessions)
 
 usage() {
-    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,/^$/s/^# \{0,1\}//p' "$0"
 }
 
 # accounts -> "name US dir" lines (US = \037, never collapsed like a tab), dir empty = default
@@ -449,25 +454,64 @@ carry_flags() {
     return 0
 }
 
-# refusal <status> <from dir> <to dir> <best score> <best name> <best note> <stop shells 0|1>
-#   -> why this session must not move, or nothing (exit 1) when it may
-# A session with background shells moves only with --stop-shells. The /exit dialog's other
+# hold_refusal <verb> <status> <stop shells 0|1> -> why this session's claude must not exit
+#   now, or nothing (exit 1) when it may
+# A session with background shells exits only with --stop-shells. The /exit dialog's other
 # way out, "Move to background", forks the conversation into a `claude daemon` session that
 # stays on the old account: a second agent in the same worktree once that account resets,
 # and on 2026-10-29 it did not keep agent-35's shell alive either.
-refusal() {
-    case "$1" in
-        busy)    echo "busy mid-turn; move it once the turn ends"; return 0 ;;
+hold_refusal() {
+    case "$2" in
+        busy)    echo "busy mid-turn; $1 it once the turn ends"; return 0 ;;
         waiting) echo "waiting in a permission or question dialog; answer it first"; return 0 ;;
-        shell)   [[ "${7:-0}" == 1 ]] || { echo "background shells are running; move it once they finish, or pass --stop-shells to stop them"; return 0; } ;;
+        shell)   [[ "${3:-0}" == 1 ]] || { echo "background shells are running; $1 it once they finish, or pass --stop-shells to stop them"; return 0; } ;;
         idle) ;;
-        *)       echo "unknown session status '${1:-none}'"; return 0 ;;
+        *)       echo "unknown session status '${2:-none}'"; return 0 ;;
     esac
+    return 1
+}
+
+# refusal <status> <from dir> <to dir> <best score> <best name> <best note> <stop shells 0|1>
+#   -> why this session must not move, or nothing (exit 1) when it may: hold_refusal, then
+#   whether another account has room for it
+refusal() {
+    hold_refusal move "$1" "${7:-0}" && return 0
     if [[ -z "$4" ]]; then echo "no usage data, so no account is known to have room"; return 0; fi
     if awk -v s="$4" 'BEGIN { exit !(s >= 100) }'; then
         echo "no account has room (the best is $5: $6)"; return 0
     fi
     if [[ "$2" == "$3" ]]; then echo "already on $5, the account with the most room ($6)"; return 0; fi
+    return 1
+}
+
+# shell_kind <command> -> local, remote or other. local is a gate, suite or Unity run on this
+# machine: stopping it throws the run away. remote is a wait on GitHub (`gh run watch`,
+# `gh pr checks --watch`, an `until ... gh ...; do sleep` loop): the run goes on without it,
+# and a resumed session re-checks it in one call. A command that is both is local.
+shell_kind() {
+    local re_local='(^|[^[:alnum:]_.-])(ci-gate|suite|run)\.sh([^[:alnum:]_.-]|$)|(^|[/[:space:]])Unity([[:space:]]|$)|-batchmode'
+    local re_loop='(^|[;&|({[:space:]])(until|while)[[:space:]].*gh[[:space:]].*;[[:space:]]*do[[:space:]].*sleep'
+    if [[ "$1" =~ $re_local ]]; then echo local
+    elif [[ "$1" =~ gh[[:space:]]+run[[:space:]]+watch || "$1" =~ $re_loop ||
+            ( "$1" =~ gh[[:space:]]+pr[[:space:]]+checks && "$1" == *--watch* ) ]]; then echo remote
+    else echo other; fi
+}
+
+# shells_refusal <bg_shells lines> -> why park must not stop these shells, or nothing (exit 1)
+# when every one is a remote wait. A local run is named first: it is the costly one to lose.
+shells_refusal() {
+    local kind pid cmd
+    for kind in local other; do
+        while read -r pid cmd; do
+            [[ -n "$pid" && "$(shell_kind "$cmd")" == "$kind" ]] || continue
+            if [[ "$kind" == local ]]; then
+                echo "a local gate or suite is running ($pid: ${cmd:0:80}); stopping it throws the run away, so park it once the run ends"
+            else
+                echo "a background shell is not a remote wait ($pid: ${cmd:0:80}); park it once it ends"
+            fi
+            return 0
+        done <<< "$1"
+    done
     return 1
 }
 
@@ -477,7 +521,8 @@ dialog_choice() {
 }
 
 # bg_shells <pid> -> "pid  command" for each background shell that claude runs: a child
-# shell sourcing one of its shell snapshots, the way the Bash tool starts a command
+# shell sourcing one of its shell snapshots, the way the Bash tool starts a command. The whole
+# command, since shell_kind reads its tail; a listing cuts it.
 bg_shells() {
     local f st c
     for f in "$PROC"/[0-9]*/stat; do
@@ -488,7 +533,7 @@ bg_shells() {
         [[ "$c" == *shell-snapshots* ]] || continue
         [[ "$c" == *"eval '"* ]] && c="${c#*eval \'}"
         f="${f%/stat}"
-        printf '%s  %s\n' "${f##*/}" "${c:0:100}"
+        printf '%s  %s\n' "${f##*/}" "$c"
     done
 }
 
@@ -551,27 +596,62 @@ resumed() {
     return 1
 }
 
+# --- park and unpark -------------------------------------------------------------------
+# A parked session costs nothing: its claude has exited, so no background task finishing and
+# no peer's message can wake it to re-read its context (on 2026-11-02, 48% of the fleet's
+# tokens were such wakes on sessions waiting on CI). park exits it and writes a ledger with
+# what unpark needs; unpark resumes it in the same pane on the account best() names then.
+# move is park and unpark back to back, so there is one exit path and one resume path.
+PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
+
+# ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
+ledger_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }
+
+# refuse <why...> -- one line naming the caller's $verb and $session, exit 1
+refuse() { echo "claude-acct: $verb $session: $*" >&2; return 1; }
+
+# resume_prompt <move|park> <from name> <to name> <status> -> what the resumed session is told
 resume_prompt() {
-    local p="This session was moved from the $1 Claude account to $2, because $1 is out of usage. Nothing else changed: same conversation, same worktree. Pick up where you left off."
-    [[ "$3" == shell ]] && p+=" The move stopped your background shells: restart any you still need."
+    local p
+    if [[ "$1" == move ]]; then
+        p="This session was moved from the $2 Claude account to $3, because $2 is out of usage. Nothing else changed: same conversation, same worktree. Pick up where you left off."
+        [[ "$4" == shell ]] && p+=" The move stopped your background shells: restart any you still need."
+    else
+        p="This session was parked to save Claude usage: its claude exited while it waited, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
+        [[ "$4" == shell ]] && p+=" Parking stopped your background waits: check what they watched directly instead of restarting them."
+    fi
     printf '%s' "$p"
 }
 
-cmd_move() {
-    local session="" server="" dry=0 stop=0
+# resume_cmd <direct 0|1> <cwd> <to dir> <claude ... --resume <id>> <prompt> -> the command
+# that resumes the session on that account: run as the pane's process when direct, typed into
+# the pane's shell (after a cd) when not
+resume_cmd() {
+    local c
+    c="$4 $(printf %q "$5")"
+    if [[ -n "$3" ]]; then c="CLAUDE_CONFIG_DIR=$(printf %q "$3") $c"
+    else c="env -u CLAUDE_CONFIG_DIR $c"; fi
+    [[ "$1" == 1 ]] || c="cd $(printf %q "$2") && $c"
+    printf '%s' "$c"
+}
+
+# park_flow <park|move> <tmux-session> [--server S] [--stop-shells] [--dry-run]
+park_flow() {
+    local verb="$1" session="" server="" dry=0 stop=0
+    shift
     while (($#)); do
         case "$1" in
-            --server) [[ -n "${2:-}" ]] || { echo "claude-acct: move: --server needs a value" >&2; return 2; }
+            --server) [[ -n "${2:-}" ]] || { echo "claude-acct: $verb: --server needs a value" >&2; return 2; }
                       server="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
             --stop-shells) stop=1; shift ;;
-            -*) echo "claude-acct: move: unknown flag '$1'" >&2; return 2 ;;
-            *) [[ -z "$session" ]] || { echo "claude-acct: move: one session at a time" >&2; return 2; }
+            -*) echo "claude-acct: $verb: unknown flag '$1'" >&2; return 2 ;;
+            *) [[ -z "$session" ]] || { echo "claude-acct: $verb: one session at a time" >&2; return 2; }
                session="$1"; shift ;;
         esac
     done
-    [[ -n "$session" ]] || { echo "claude-acct: move: name the tmux session to move" >&2; return 2; }
-    refuse() { echo "claude-acct: move $session: $*" >&2; return 1; }
+    [[ -n "$session" ]] || { echo "claude-acct: $verb: name the tmux session to $verb" >&2; return 2; }
+    [[ "$session" != */* ]] || { echo "claude-acct: $verb: '$session' is not a tmux session name" >&2; return 2; }
 
     if [[ -z "$server" ]]; then
         local s found=()
@@ -588,44 +668,64 @@ cmd_move() {
 
     local hits pid pane pane_pid reg
     hits=$(find_claude "$server" "$session")
-    [[ -n "$hits" ]] || { refuse "no live claude in its panes"; return; }
+    if [[ -z "$hits" ]]; then
+        [[ -f "$PARKED/$session" ]] && { refuse "no live claude in its panes: it is parked (claude-acct unpark $session)"; return; }
+        refuse "no live claude in its panes"; return
+    fi
     (( $(wc -l <<< "$hits") == 1 )) || { refuse "more than one claude in its panes"; return; }
     IFS=$'\037' read -r pid pane pane_pid reg <<< "$hits"
 
-    local status sid cwd from b score name to note why
+    local status sid cwd from b score name to note why shells=""
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
     [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
     from=$(config_dir_of "$pid")
-    b=$(best)
-    IFS=$'\037' read -r score name to note <<< "$b"
-    if why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop"); then
+    [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
+    if [[ "$verb" == move ]]; then
+        b=$(best)
+        IFS=$'\037' read -r score name to note <<< "$b"
+        why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop")
+    else
+        why=$(hold_refusal park "$status" "$stop") || why=$(shells_refusal "$shells")
+    fi
+    if [[ -n "$why" ]]; then
         refuse "$why"
-        [[ "$status" == shell ]] && bg_shells "$pid" | sed 's/^/  shell /' >&2
+        [[ -n "$shells" ]] && cut -c1-100 <<< "$shells" | sed 's/^/  shell /' >&2
         return 1
     fi
 
-    local direct=0 claude cmd
+    local direct=0 base win
     [[ "$pid" == "$pane_pid" ]] && direct=1
-    claude="claude $(carry_flags "$pid")--resume $(printf %q "$sid") $(printf %q "$(resume_prompt "$(name_of "$from")" "$name" "$status")")"
-    if [[ -n "$to" ]]; then claude="CLAUDE_CONFIG_DIR=$(printf %q "$to") $claude"
-    else claude="env -u CLAUDE_CONFIG_DIR $claude"; fi
-
-    echo "claude-acct: move $session ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
+    base="claude $(carry_flags "$pid")--resume $(printf %q "$sid")"
+    if [[ "$verb" == move ]]; then
+        echo "claude-acct: move $session ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
+    else
+        echo "claude-acct: park $session ($server $pane, claude $pid, $status) on $(name_of "$from")"
+    fi
     if ((direct)); then
         echo "  claude is the pane's own process: keep the pane on exit, respawn it in $cwd"
-        cmd="$claude"
     else
         echo "  claude runs under the pane's shell: exit it and type the resume there"
-        cmd="cd $(printf %q "$cwd") && $claude"
     fi
     if [[ "$status" == shell ]]; then
         echo "  --stop-shells: answer /exit's dialog with 'Exit and stop tasks', stopping:"
-        bg_shells "$pid" | sed 's/^/    /'
+        cut -c1-100 <<< "$shells" | sed 's/^/    /'
     fi
-    echo "  then: $cmd"
+    if [[ "$verb" == move ]]; then
+        echo "  then: $(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt move "$(name_of "$from")" "$name" "$status")")"
+    else
+        echo "  then: write $PARKED/$session; claude-acct unpark $session resumes it with $base, on the account with room then"
+    fi
     ((dry)) && return 0
 
-    cmd_link
+    # Written beside the ledger and renamed into place once the claude is gone, so a reader
+    # never sees half of one, and a claude that would not exit leaves none.
+    local tmp
+    if ! mkdir -p "$PARKED" || ! tmp=$(mktemp "$PARKED/.$session.XXXXXX"); then refuse "cannot write to $PARKED"; return; fi
+    win=$(tmux -L "$server" display-message -p -t "$pane" '#{window_index}' 2>/dev/null)
+    printf '%s\n' "session=$session" "server=$server" "target=$server/$session${win:+:$win}" "pane=$pane" \
+        "direct=$direct" "pid=$pid" "session_id=$sid" "cwd=$cwd" "from=$from" "status=$status" \
+        "why=$verb" "parked=$(date +%s)" "resume=$base" > "$tmp"
+
     # A fleet-dispatch pane closes with its claude, and with it the session, its @dispatch
     # label and the name its ledger is filed under; held open, it is respawned in place.
     ((direct)) && tmux -L "$server" set-option -p -t "$pane" remain-on-exit on
@@ -633,21 +733,82 @@ cmd_move() {
     tmux -L "$server" send-keys -t "$pane" -l /exit
     tmux -L "$server" send-keys -t "$pane" Enter
     if ! await "claude $pid to exit" exited "$server" "$pane" "$pid" "$stop"; then
+        rm -f "$tmp"
         tmux -L "$server" send-keys -t "$pane" Escape   # closes a dialog left open
         ((direct)) && tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
         refuse "claude $pid did not exit; look at the pane"; return
     fi
-    if ((direct)); then
+    mv -f "$tmp" "$PARKED/$session"
+    if [[ "$verb" == park ]]; then
+        echo "claude-acct: parked $session: $PARKED/$session; claude-acct unpark $session resumes it"
+        return 0
+    fi
+    unpark_ledger move "$PARKED/$session" "$to" "$name" "$note"
+}
+
+# unpark_ledger <verb> <ledger> [<to dir> <to name> <note>] -- resume the parked session in its
+# pane, on that account or else the one best() names now, await it, then delete the ledger.
+# A failure keeps the ledger, so `claude-acct unpark` can try again.
+unpark_ledger() {
+    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got
+    session="${file##*/}"
+    [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
+    server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
+    pid=$(ledger_get "$file" pid); sid=$(ledger_get "$file" session_id); cwd=$(ledger_get "$file" cwd)
+    from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
+    base=$(ledger_get "$file" resume)
+    [[ -n "$server" && -n "$pane" && -n "$sid" && -n "$cwd" && -n "$base" ]] || { refuse "$file is missing a field"; return; }
+    if (($# > 2)); then
+        to="$3" name="$4" note="$5"
+    elif b=$(best) && [[ -n "$b" ]]; then
+        IFS=$'\037' read -r _ name to note <<< "$b"
+    else
+        to="" name=$(name_of "") note="no usage data"
+    fi
+    tmux -L "$server" has-session -t "=$session" 2>/dev/null ||
+        { refuse "its tmux session is gone from server $server; resume it by hand in $cwd with $base"; return; }
+    [[ -z "$(find_claude "$server" "$session")" ]] ||
+        { refuse "a claude is already live in its panes; delete $file if it is this session"; return; }
+    cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")")
+
+    cmd_link
+    if [[ "$direct" == 1 ]]; then
         tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
-    local got
-    await "session $sid to register on $name" resumed "$sid" "$pid" "$to" || { refuse "resume did not register; look at the pane"; return; }
+    await "session $sid to register on $name" resumed "$sid" "$pid" "$to" ||
+        { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
+    rm -f "$file"
     got=$(resumed "$sid" "$pid" "$to")
-    echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
+    if [[ "$verb" == move ]]; then echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
+    else echo "claude-acct: unparked $session on $name ($note): claude ${got% *}, ${got#* }"; fi
+}
+
+cmd_park() { park_flow park "$@"; }
+cmd_move() { park_flow move "$@"; }
+
+# unpark <tmux-session>|--all
+cmd_unpark() {
+    local verb=unpark session="" f rc=0 n=0
+    case "${1:-}" in
+        "") echo "claude-acct: unpark: name the tmux session, or --all" >&2; return 2 ;;
+        --all)
+            (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
+            for f in "$PARKED"/*; do
+                [[ -f "$f" ]] || continue
+                ((n++))
+                unpark_ledger unpark "$f" || rc=1
+            done
+            ((n)) || echo "claude-acct: unpark: nothing is parked"
+            return "$rc" ;;
+        -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
+    esac
+    (($# == 1)) || { echo "claude-acct: unpark: one session at a time" >&2; return 2; }
+    [[ "$1" != */* ]] || { echo "claude-acct: unpark: '$1' is not a tmux session name" >&2; return 2; }
+    unpark_ledger unpark "$PARKED/$1"
 }
 
 # Sourceable for tests; the dispatch runs only when executed.
@@ -661,6 +822,8 @@ case "${1:-}" in
     check)  shift; cmd_check "$@" ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;
+    park)   shift; cmd_park "$@" ;;
+    unpark) shift; cmd_unpark "$@" ;;
     -h|--help|"") usage ;;
     *) echo "claude-acct: unknown verb '$1'" >&2; usage >&2; exit 1 ;;
 esac

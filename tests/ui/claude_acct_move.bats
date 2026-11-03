@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tier 3: claude-acct move against a REAL tmux server and real processes, container only.
+# Tier 3: claude-acct move, park and unpark against a REAL tmux server and real processes, container only.
 # The integ tier pins the decisions against a stub; this pins what only tmux can answer: a
 # pane held open by remain-on-exit survives its claude and is respawned in place, keeping
 # the session and its @dispatch label, and a resume typed into a real shell starts there.
@@ -94,4 +94,62 @@ registered() {
   [ "$(cat "$HOME/choices")" = 1 ]
   wait_until 'registered "$ALT"'
   wait_until 't capture-pane -pJ -t "=agent-s:" | grep -q "account=$ALT args=--dangerously-skip-permissions --resume sid-1"'
+}
+
+# registered_sid <sid> <account dir|main> -- a live fake claude holds that session id there
+registered_sid() {
+  local f pid
+  for f in "$REG"/*.json; do
+    [ -f "$f" ] && [ "$(jq -r .sessionId "$f")" = "$1" ] || continue
+    pid=$(jq -r .pid "$f")
+    [ -d "/proc/$pid" ] || continue
+    if [ "$2" = main ]; then ! tr '\0' '\n' < "/proc/$pid/environ" | grep -q '^CLAUDE_CONFIG_DIR='
+    else tr '\0' '\n' < "/proc/$pid/environ" | grep -qxF "CLAUDE_CONFIG_DIR=$2"; fi && return 0
+  done
+  return 1
+}
+
+no_claude() { [ -z "$(ls -A "$REG")" ]; }
+
+@test "park leaves a shell pane at its shell with the ledger written; unpark resumes the same session id" {
+  t new-session -d -s agent-p -c "$HOME/wt" "bash --norc --noprofile"
+  t send-keys -t '=agent-p:' -l 'claude --resume sid-park --model opus'
+  t send-keys -t '=agent-p:' Enter
+  wait_until 'registered_sid sid-park main'
+  run "$ACCT" park agent-p --server "$SRV"
+  assert_success
+  assert_output --partial 'claude-acct: parked agent-p'
+  wait_until no_claude
+  [ "$(t display-message -p -t '=agent-p:' '#{pane_dead} #{pane_current_command}')" = '0 bash' ]
+  run cat "$HOME/.agent/parked/agent-p"
+  assert_line 'session_id=sid-park'
+  assert_line 'resume=claude --model opus --resume sid-park'
+  assert_line --regexp "^target=$SRV/agent-p:[0-9]+$"
+
+  run "$ACCT" unpark agent-p
+  assert_success
+  assert_output --partial 'claude-acct: unparked agent-p on alt'
+  wait_until 'registered_sid sid-park "$ALT"'
+  wait_until 't capture-pane -pJ -t "=agent-p:" | grep -q "account=$ALT args=--model opus --resume sid-park This session was parked"'
+  [ ! -e "$HOME/.agent/parked/agent-p" ]
+}
+
+@test "park holds a fleet-dispatch pane open, dead, and unpark respawns it in place" {
+  t new-session -d -s agent-q -c "$HOME/wt" "exec claude --resume sid-q"
+  t set-option -t '=agent-q:' @dispatch 'proj: row'
+  wait_until 'registered_sid sid-q main'
+  run "$ACCT" park agent-q --server "$SRV"
+  assert_success
+  wait_until no_claude
+  t has-session -t '=agent-q'
+  [ "$(t display-message -p -t '=agent-q:' '#{pane_dead}')" = 1 ]
+  run cat "$HOME/.agent/parked/agent-q"
+  assert_line 'direct=1'
+
+  run "$ACCT" unpark agent-q
+  assert_success
+  wait_until 'registered_sid sid-q "$ALT"'
+  [ "$(t show-options -qv -t '=agent-q:' @dispatch)" = 'proj: row' ]
+  [ -z "$(t show-options -p -qv -t '=agent-q:' remain-on-exit)" ]
+  [ ! -e "$HOME/.agent/parked/agent-q" ]
 }

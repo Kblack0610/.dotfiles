@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# claude-acct move: exit a session's claude and resume it on the account with room, in the
-# same pane. No tmux server and no real claude: tmux is a stub that plays the pane (it
+# claude-acct move, park and unpark: exit a session's claude and resume it on the account
+# with room, in the same pane (move), or exit it and leave a ledger (park) that resumes it
+# later (unpark). No tmux server and no real claude: tmux is a stub that plays the pane (it
 # "exits" the fake claude when /exit is entered, shows the background-shell dialog when
 # asked to, and "starts" a claude when a resume is typed or respawned), and /proc is a
 # directory the test writes. The same flow against a real tmux server is
@@ -70,8 +71,11 @@ target=""; prev=""; last=""
 for a in "$@"; do [ "$prev" = -t ] && target="$a"; prev="$a"; last="$a"; done
 start_claude() {
   local dir pid=900 cmd="$1"
-  eval "set -- ${1#*CLAUDE_CONFIG_DIR=}"   # the command's own shell words; the first is the dir
-  dir="$1"
+  case "$cmd" in
+    *"env -u CLAUDE_CONFIG_DIR "*) dir="" ;;   # the main account
+    *) eval "set -- ${1#*CLAUDE_CONFIG_DIR=}"   # the command's own shell words; the first is the dir
+       dir="$1" ;;
+  esac
   [ -f "$FIX/wrong-account" ] && dir=$(cat "$FIX/wrong-account")
   mkdir -p "$CLAUDE_ACCT_PROC/$pid"
   printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$CLAUDE_ACCT_PROC/$pid/environ"
@@ -269,4 +273,191 @@ tmux_calls() { cat "$FIX/calls.log"; }
   [ "$status" -eq 2 ]; assert_output --partial "unknown flag '--force'"
   run "$ACCT" move a --server
   [ "$status" -eq 2 ]
+}
+
+
+# --- park and unpark ---
+
+PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
+
+@test "park exits the claude, leaves the pane at its shell, and writes the ledger" {
+  session lab agent-1 %5 100 101 idle "" --model opus 'old brief'
+  run "$ACCT" park agent-1 --server lab
+  assert_success
+  assert_output --partial 'claude-acct: park agent-1 (lab %5, claude 101, idle) on main'
+  assert_output --partial "claude-acct: parked agent-1: $(PARKED_LEDGER agent-1); claude-acct unpark agent-1 resumes it"
+  [ ! -d "$CLAUDE_ACCT_PROC/101" ]
+  [ ! -f "$FIX/started" ]
+  run tmux_calls
+  assert_line 'tmux -L lab send-keys -t %5 -l /exit'
+  refute_output --partial 'remain-on-exit'
+  refute_output --partial 'respawn-pane'
+  run cat "$(PARKED_LEDGER agent-1)"
+  assert_line 'session=agent-1'
+  assert_line 'server=lab'
+  assert_line 'target=lab/agent-1'
+  assert_line 'pane=%5'
+  assert_line 'direct=0'
+  assert_line 'pid=101'
+  assert_line 'session_id=sid-1'
+  assert_line "cwd=$HOME/wt"
+  assert_line 'from='
+  assert_line 'status=idle'
+  assert_line 'why=park'
+  assert_line 'resume=claude --model opus --resume sid-1'
+  assert_line --regexp '^parked=[0-9]+$'
+  refute_output --partial 'old brief'
+  # renamed into place: no temp file is left beside it
+  [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
+}
+
+@test "park never refuses over accounts: already on the best one, or no usage data at all" {
+  session lab onalt %3 30 31 idle "$ALT"
+  rm "$XDG_CACHE_HOME"/claude-acct/*.json
+  run "$ACCT" park onalt --server lab
+  assert_success
+  run cat "$(PARKED_LEDGER onalt)"
+  assert_line "from=$ALT"
+  # parked again, it has no claude to exit, and says where it is
+  run "$ACCT" park onalt --server lab
+  assert_failure
+  assert_output --partial 'it is parked (claude-acct unpark onalt)'
+}
+
+@test "park --stop-shells stops remote waits, and refuses a local run without writing a ledger" {
+  session lab wait %9 300 301 shell ""
+  proc 302 301 ""
+  printf '/bin/zsh\0-c\0source /s/shell-snapshots/x.sh && eval '"'"'until gh pr checks 9 | grep -q pass; do sleep 60; done'"'"'\0' > "$CLAUDE_ACCT_PROC/302/cmdline"
+  printf '  1. Stay\n  2. Move to background and exit\n  3. Exit and stop tasks\n' > "$FIX/dialog"
+  echo 3 > "$FIX/bg-option"
+  run "$ACCT" park wait --server lab
+  assert_failure; assert_output --partial 'pass --stop-shells'
+  run "$ACCT" park wait --server lab --stop-shells
+  assert_success
+  assert_line --partial '    302  until gh pr checks 9'
+  run tmux_calls
+  assert_line 'tmux -L lab send-keys -t %9 3'
+  run cat "$(PARKED_LEDGER wait)"
+  assert_line 'status=shell'
+
+  session lab gate %11 400 401 shell ""
+  proc 402 401 ""
+  printf '/bin/zsh\0-c\0source /s/shell-snapshots/x.sh && eval '"'"'scripts/test/ci-gate.sh --pr 9'"'"'\0' > "$CLAUDE_ACCT_PROC/402/cmdline"
+  : > "$FIX/calls.log"
+  run "$ACCT" park gate --server lab --stop-shells
+  assert_failure
+  assert_output --partial 'claude-acct: park gate: a local gate or suite is running (402: scripts/test/ci-gate.sh --pr 9'
+  assert_output --partial 'stopping it throws the run away, so park it once the run ends'
+  assert_output --partial 'shell 402  scripts/test/ci-gate.sh'
+  [ ! -e "$(PARKED_LEDGER gate)" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
+@test "park --dry-run says what it would do and writes nothing" {
+  session lab agent-5 %13 500 501 idle ""
+  run "$ACCT" park agent-5 --server lab --dry-run
+  assert_success
+  assert_output --partial "then: write $(PARKED_LEDGER agent-5); claude-acct unpark agent-5 resumes it with claude --resume sid-1"
+  [ ! -e "$HOME/.agent/parked" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
+@test "unpark resumes in the same pane on the account with room now, and deletes the ledger" {
+  session lab agent-1 %5 100 101 idle "$ALT" --permission-mode bypassPermissions
+  run "$ACCT" park agent-1 --server lab
+  assert_success
+  # parked on alt; by unpark time main has the room
+  usage main 5 10
+  usage alt 90 95
+  run "$ACCT" unpark agent-1
+  assert_success
+  assert_output 'claude-acct: unparked agent-1 on main (5h 5%, 7d 10%): claude 900, busy'
+  run cat "$FIX/started"
+  assert_output --partial "cd $(q "$HOME/wt") && env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume sid-1 This\ session\ was\ parked\ to\ save\ Claude\ usage"
+  assert_output --partial 're-check\ it'
+  [ ! -e "$(PARKED_LEDGER agent-1)" ]
+}
+
+@test "unpark respawns a pane that was its claude, held open while parked" {
+  session lab agent-2 %7 200 200 idle "" --model opus
+  run "$ACCT" park agent-2 --server lab
+  assert_success
+  run tmux_calls
+  assert_line 'tmux -L lab set-option -p -t %7 remain-on-exit on'
+  refute_line 'tmux -L lab set-option -p -u -t %7 remain-on-exit'
+  run cat "$(PARKED_LEDGER agent-2)"
+  assert_line 'direct=1'
+  run "$ACCT" unpark agent-2
+  assert_success
+  run tmux_calls
+  assert_line --partial "tmux -L lab respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") claude --model opus --resume sid-1 This\ session\ was\ parked"
+  assert_line 'tmux -L lab set-option -p -u -t %7 remain-on-exit'
+  [ ! -e "$(PARKED_LEDGER agent-2)" ]
+}
+
+@test "unpark refuses a session not parked, one whose tmux session is gone, and one already live" {
+  run "$ACCT" unpark nope
+  assert_failure; assert_output "claude-acct: unpark nope: not parked: no $(PARKED_LEDGER nope)"
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=ghost server=lab pane=%1 direct=0 pid=1 session_id=sid-1 "cwd=$HOME/wt" status=idle why=park 'resume=claude --resume sid-1' > "$(PARKED_LEDGER ghost)"
+  run "$ACCT" unpark ghost
+  assert_failure; assert_output --partial "its tmux session is gone from server lab; resume it by hand in $HOME/wt with claude --resume sid-1"
+  [ -e "$(PARKED_LEDGER ghost)" ]
+  session lab live %3 30 31 idle ""
+  sed 's/^session=ghost$/session=live/' "$(PARKED_LEDGER ghost)" > "$(PARKED_LEDGER live)"
+  run "$ACCT" unpark live
+  assert_failure; assert_output --partial 'a claude is already live in its panes'
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
+@test "unpark --all resumes every parked session, and says so when none is" {
+  run "$ACCT" unpark --all
+  assert_success; assert_output 'claude-acct: unpark: nothing is parked'
+  session lab a1 %5 100 101 idle ""
+  "$ACCT" park a1 --server lab
+  session lab a2 %6 110 111 idle ""
+  "$ACCT" park a2 --server lab
+  run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked a1 on alt'
+  assert_line --partial 'claude-acct: unparked a2 on alt'
+  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+}
+
+@test "unpark takes one session or --all and nothing else" {
+  run "$ACCT" unpark
+  [ "$status" -eq 2 ]; assert_output --partial 'name the tmux session, or --all'
+  run "$ACCT" unpark a b
+  [ "$status" -eq 2 ]; assert_output --partial 'one session at a time'
+  run "$ACCT" unpark --all a
+  [ "$status" -eq 2 ]
+  run "$ACCT" unpark --force
+  [ "$status" -eq 2 ]; assert_output --partial "unknown flag '--force'"
+  run "$ACCT" unpark ../x
+  [ "$status" -eq 2 ]; assert_output --partial 'is not a tmux session name'
+}
+
+@test "move leaves no ledger; a move whose resume fails keeps one that unpark finishes" {
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" move agent-1 --server lab
+  assert_success
+  [ ! -e "$HOME/.agent/parked/agent-1" ]
+
+  session lab agent-6 %15 600 601 idle ""
+  echo "$HOME/.claude" > "$FIX/wrong-account"
+  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" move agent-6 --server lab
+  assert_failure
+  assert_output --partial "$(PARKED_LEDGER agent-6) is kept for claude-acct unpark"
+  run cat "$(PARKED_LEDGER agent-6)"
+  assert_line 'why=move'
+  rm "$FIX/wrong-account" "$HOME/.claude/sessions/900.json"
+  rm -rf "$CLAUDE_ACCT_PROC/900"
+  run "$ACCT" unpark agent-6
+  assert_success
+  run cat "$FIX/started"
+  assert_output --partial 'This\ session\ was\ moved\ from\ the\ main\ Claude\ account\ to\ alt'
+  [ ! -e "$(PARKED_LEDGER agent-6)" ]
 }

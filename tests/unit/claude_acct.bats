@@ -269,6 +269,73 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output "51  scripts/test/suite.sh --retry' "
 }
 
+# --- park: which shells may be stopped, and what it refuses ---
+
+@test "park: a wait on GitHub is remote, a gate, suite or Unity run is local, anything else is other" {
+  src
+  local c
+  for c in 'gh run watch 123 --exit-status' 'gh pr checks 9 --watch --interval 60' \
+           'until gh pr checks 9 | grep -q pass; do sleep 60; done' \
+           'while ! gh run view 1 --json status | grep -q completed; do sleep 30; done'; do
+    run shell_kind "$c"; assert_output remote
+  done
+  for c in 'scripts/test/ci-gate.sh --pr 9' 'scripts/test/suite.sh --retry' './run.sh EditMode' \
+           '/opt/Unity/Editor/Unity -projectPath x' 'unity-editor -batchmode -quit' \
+           'until scripts/test/ci-gate.sh; do sleep 5; done' 'gh run watch 1 && scripts/test/suite.sh'; do
+    run shell_kind "$c"; assert_output local
+  done
+  for c in 'npm run dev' 'tail -f build.log' 'sleep 600' 'gh run list' 'gh pr checks 9' 'scripts/test/rerun.sh'; do
+    run shell_kind "$c"; assert_output other
+  done
+}
+
+@test "park: stopping shells is refused for a local run first, then for anything not a remote wait" {
+  src
+  run shells_refusal $'41  gh run watch 1\n42  until gh pr checks 9; do sleep 60; done'
+  assert_failure; assert_output ''
+  run shells_refusal ''
+  assert_failure
+  run shells_refusal $'41  tail -f x.log\n42  scripts/test/ci-gate.sh --pr 9'
+  assert_success
+  assert_output 'a local gate or suite is running (42: scripts/test/ci-gate.sh --pr 9); stopping it throws the run away, so park it once the run ends'
+  run shells_refusal $'41  gh run watch 1\n43  npm run dev'
+  assert_success
+  assert_output 'a background shell is not a remote wait (43: npm run dev); park it once it ends'
+}
+
+@test "park: refuses on the session's state alone, never on which account has room" {
+  src
+  run hold_refusal park busy 0
+  assert_success; assert_output 'busy mid-turn; park it once the turn ends'
+  run hold_refusal park waiting 1
+  assert_success; assert_output --partial 'permission or question dialog'
+  run hold_refusal park shell 0
+  assert_success; assert_output 'background shells are running; park it once they finish, or pass --stop-shells to stop them'
+  run hold_refusal park shell 1
+  assert_failure; assert_output ''
+  run hold_refusal park idle 0
+  assert_failure; assert_output ''
+  run hold_refusal park compacting 0
+  assert_success; assert_output --partial "unknown session status 'compacting'"
+}
+
+@test "unpark: the resume is told it was parked and to re-check its wait, on the account named" {
+  src
+  run resume_prompt park main alt idle
+  assert_output --partial 'This session was parked to save Claude usage'
+  assert_output --partial 'resumed on the alt account'
+  assert_output --partial 're-check it before you carry on'
+  refute_output --partial 'Parking stopped'
+  run resume_prompt park main alt shell
+  assert_output --partial 'Parking stopped your background waits'
+  run resume_prompt move main alt idle
+  assert_output --partial 'moved from the main Claude account to alt'
+  run resume_cmd 0 "/w t" "" 'claude --resume s1' 'hi there'
+  assert_output "cd /w\\ t && env -u CLAUDE_CONFIG_DIR claude --resume s1 hi\\ there"
+  run resume_cmd 1 /w /a 'claude --resume s1' hi
+  assert_output 'CLAUDE_CONFIG_DIR=/a claude --resume s1 hi'
+}
+
 # week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
 NOW=1800000000
 week() {
