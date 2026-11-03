@@ -30,13 +30,14 @@ fail() {
 }
 lastline() { printf '%s' "$1" | tail -n 1; }
 
-# A PR opened seconds ago reports no checks yet, and GitHub has no event for the first one to
-# appear, so that one state is polled CHECKS_POLL seconds apart, CHECKS_TRIES times; a repo with
-# no PR checks at all then lands on its local gate. `gh pr checks --watch` waits out the rest.
+# Until a CI job starts, a PR reports no checks, and GitHub has no event for the first one: that
+# one state is polled CHECKS_POLL seconds apart. While an Actions run for HEAD is still queued it
+# waits on; with none, it gives up after CHECKS_TRIES polls and lands on the local gate (a repo
+# with no PR checks). `gh pr checks --watch` waits out the rest.
 CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 wait_checks() {
-  local try out failed
+  local try out failed queued
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" --watch --fail-fast 2>&1) && {
       echo "checks: green"
@@ -49,6 +50,8 @@ wait_checks() {
       fail checks "${failed:-$(lastline "$out")}"
       ;;
     esac
+    queued=$(gh run list --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+    [ "${queued:-0}" -eq 0 ] || try=0
     [ "$try" -lt "$CHECKS_TRIES" ] || {
       echo "checks: none reported"
       return 0

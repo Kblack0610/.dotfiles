@@ -26,6 +26,10 @@ case "$1 $2" in
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
+'run list')
+  # runs.queued: one count per poll, popped as read; 0 once empty
+  q="$NOTES_FIXTURE/runs.queued"
+  if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
 'pr checks')
   case "$*" in
   *--json*) cat "$NOTES_FIXTURE/checks.failed" ;;
@@ -110,6 +114,16 @@ EOF
   assert_line --index 0 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
+}
+
+@test "no checks reported while an Actions run is queued: it keeps waiting past the bound" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  printf '1\n1\n1\n' >"$NOTES_FIXTURE/runs.queued"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_success
+  # 3 polls see a queued run (the bound never counts), then 2 more see none
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 5
 }
 
 @test "--plan ticks exactly the named phase" {
