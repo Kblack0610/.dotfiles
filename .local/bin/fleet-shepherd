@@ -5,6 +5,10 @@
 #                          interactive shepherd, refresh the state document, and run a headless
 #                          `/fleet-overseer shepherd` pass only when the document holds
 #                          something to move
+#   fleet-shepherd check   refresh the state document and samples as `run` does, then print
+#                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
+#                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
+#                          and ends the turn on 1, so a quiet tick costs one call, not a pass
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -247,6 +251,22 @@ settle() {
   agent-notify -p normal -t shepherd "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
+# check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
+# Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
+# a quiet fleet.
+cmd_check() {
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  fleet-sessions --write >/dev/null || { echo "$NAME: fleet-sessions --write failed" >&2; return 2; }
+  blocked_sample
+  infra_sample
+  local due due_rc=0
+  due="$(cmd_due)" || due_rc=$?
+  if [ "$due_rc" = 1 ]; then settle; return 1; fi
+  [ "$due_rc" = 0 ] || return "$due_rc"
+  rm -f "$LEDGER/.settled"
+  printf '%s\n' "$due"
+}
+
 cmd_run() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local age
@@ -256,22 +276,16 @@ cmd_run() {
     publish NOOP "interactive shepherd live (${age}m)"
     return 0
   fi
-  fleet-sessions --write >/dev/null || { publish FAILED "fleet-sessions --write failed"; return 1; }
-  blocked_sample
-  infra_sample
-  # Exit 1 is nothing to move. Exit 2 is a document it could not read, which is not a quiet fleet.
   local due due_rc=0
-  due="$(cmd_due)" || due_rc=$?
+  due="$(cmd_check)" || due_rc=$?
   if [ "$due_rc" = 1 ]; then
-    settle
     echo "$NAME: nothing to move."
     publish NOOP "nothing to move"
     return 0
   elif [ "$due_rc" != 0 ]; then
-    publish FAILED "could not read the state document"
+    publish FAILED "could not refresh or read the state document"
     return "$due_rc"
   fi
-  rm -f "$LEDGER/.settled"
   printf '%s: due\n%s\n' "$NAME" "$due"
   export FLEET_SHEPHERD_HOLDER=runner
   # Scored here, by the shared verdict: a pass that was due moves something, and every
@@ -292,10 +306,11 @@ $due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
 
 case "${1:-}" in
   run)   cmd_run ;;
+  check) cmd_check ;;
   due)   cmd_due ;;
   infra) cmd_infra ;;
   lease) cmd_lease ;;
   log)   shift; cmd_log "$@" ;;
-  -h|--help|"") sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|due|infra|lease|log)" ;;
+  -h|--help|"") sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (run|check|due|infra|lease|log)" ;;
 esac

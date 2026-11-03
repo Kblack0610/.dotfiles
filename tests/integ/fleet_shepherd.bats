@@ -299,3 +299,30 @@ idle_row() {
   [ ! -e "$HOME/last-prompt" ]
   [ ! -e "$HOME/pages" ]
 }
+
+@test "check refreshes like run and prints what is due, calling no model" {
+  doc "[$(row a DONE false false)]"
+  run "$SH" check
+  assert_success
+  assert_line 'nudge DONE: a f-a'
+  assert_equal "$(cat "$HOME/sessions.calls")" --write
+  [ ! -e "$HOME/last-prompt" ]
+}
+
+@test "check on a quiet fleet exits 1 and pages settled once" {
+  doc "[$(row a NEEDS false true)]"
+  run "$SH" check
+  assert_failure 1
+  assert_output ''
+  "$SH" check || true
+  [ "$(wc -l < "$HOME/pages")" -eq 1 ] || { cat "$HOME/pages"; false; }
+}
+
+@test "check exits 2 when the document cannot be refreshed, and run records FAILED" {
+  stub fleet-sessions 'exit 1'
+  run "$SH" check
+  assert_failure 2
+  run "$SH" run
+  assert_failure
+  assert_equal "$(outcome)" FAILED
+}
