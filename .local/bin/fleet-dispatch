@@ -494,8 +494,8 @@ firing_findings() {
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
 # refuses: a start nobody can justify costs more than waiting for the next pass.
-# A red main is deliberately not here: nightlies stay red while sessions merge normally, so it
-# would stop everything, and the shepherd's MAIN row handles it.
+# A nightly red is deliberately not here: nightlies stay red while sessions merge normally, so it
+# would stop everything, and the shepherd's NIGHTLY row handles it.
 gate() {
   local load cores infra presence findings github idle
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }

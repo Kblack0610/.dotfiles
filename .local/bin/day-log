@@ -290,7 +290,7 @@ sec_body() {
       wait="$(jq -r --argjson n "$DAYLOG_ASKS" --argjson full "$full" '
         (.waiting // {main: [], needs: [], asks: []}) as $w
         | (if $full == 1 then ($w.asks | length) else $n end) as $n
-        | ($w.main | map("\tMAIN\t\(.repo)\t\(.reason | sub("^[^ ]+ red: "; "red: "))")),
+        | ($w.main | map("\tNIGHTLY\t\(.repo)\t\(.reason | sub("^[^ ]+ red: "; "red: "))")),
           ($w.needs | map("\tNEEDS\t\(.who)\t\(.reason) (idle \(.idle_min)m)")),
           ($w.asks[:$n] | map("\tASK\t\(.id) \(.project)\t\(.question | gsub("[\t\n]"; " "))")),
           (if ($w.asks | length) > $n then ["\t\t\t+\(($w.asks | length) - $n) older asks (1 opens them)"] else [] end)
@@ -405,7 +405,7 @@ markdown() {
     | "# Day log, \(.date)", "",
       "\(.merged | length) merged in \(.merged | map(.repo) | unique | length) repos, \($u.sessions) sessions active, whose whole-session spend is \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
       (if .waiting then "## Waiting on you (as last gathered)", "",
-        (.waiting.main[] | "- MAIN \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
+        (.waiting.main[] | "- NIGHTLY \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
         (.waiting.needs[] | "- NEEDS \(.who): \(.reason)"),
         (.waiting.asks[] | "- ASK \(.id) (\(.project)): \(.question | gsub("\n"; " "))"), "" else empty end),
       "## Merged", "",
@@ -461,7 +461,7 @@ term_size() {
 # paint <open> <colour 0|1>: section headers bold, the open one in reverse, alarms in red.
 paint() {
   if [ "$2" = 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    sed -E -e $'s/\\b(MAIN|NEEDS|HOLD|FAIL)\\b/\033[31m&\033[0m/g' -e $'s/\\b(ASK|draft)\\b/\033[33m&\033[0m/g' \
+    sed -E -e $'s/\\b(NIGHTLY|NEEDS|HOLD|FAIL)\\b/\033[31m&\033[0m/g' -e $'s/\\b(ASK|draft)\\b/\033[33m&\033[0m/g' \
            -e $'s/^'"$1"$' [A-Z].*/\033[7m&\033[0m/' \
            -e $'s/^[1-5] (WAITING ON YOU|MERGED|STILL OPEN|SESSIONS|TIMELINE).*/\033[1m&\033[0m/'
   else cat; fi

@@ -67,7 +67,7 @@ function tiles(sessions, state) {
       <span class="tl">${b}</span><span class="tv">${n(b)}</span>
     </button>`).join("");
   html += `<div class="tile" style="--c:var(--b-needs)"><span class="tl">ASKS</span><span class="tv">${asks.length}</span></div>`;
-  html += `<div class="tile wide" style="--c:${main.length ? "var(--b-needs)" : "var(--b-done)"}"><span class="tl">MAIN</span>${
+  html += `<div class="tile wide" style="--c:${main.length ? "var(--b-needs)" : "var(--b-done)"}"><span class="tl">NIGHTLY</span>${
     main.length ? main.map((m) => `<span class="ts1" title="${esc(m.reason)}">${esc(m.repo)} red</span>`).join("") : '<span class="ts1">all green</span>'}</div>`;
   return `<div class="tiles">${html}</div>`;
 }

@@ -39,7 +39,7 @@ if [ -s "$rec" ] && summary="$(jq -r --argjson n "$LATEST" '
       ($m | sort_by(.merged_at) | reverse | .[:$n][] | "  \(.repo)#\(.number) \(.title)"),
       "--",
       "waiting on you: \(.waiting.asks // [] | length) asks, \(.waiting.needs // [] | length) sessions need you"
-        + (if (.waiting.main // [] | length) > 0 then ", main red: \(.waiting.main | map(.repo) | join(", "))" else "" end),
+        + (if (.waiting.main // [] | length) > 0 then ", nightly red: \(.waiting.main | map(.repo) | join(", "))" else "" end),
       "open PRs: \(.open // [] | length)"' "$rec" 2>/dev/null)"; then
   mapfile -t L <<< "$summary"
   count="${L[0]}"
