@@ -252,10 +252,11 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output --regexp '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
 }
 
-@test "answer notifies so a waiting producer learns the answer landed" {
+@test "answer does not page the human about their own answer" {
   local id; id="$(post demo 'ship it?')"
+  : > "$NOTES_FIXTURE/calls.log"
   "$AGENT_ASK" answer "$id" yes 2>/dev/null
-  assert_called 'agent-notify'
+  ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
 @test "answering does not destroy the original question" {
