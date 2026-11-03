@@ -17,8 +17,8 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-h` / `C-n` | Server layer: pick a world (compact) or every session everywhere (full); hop to lab / hub |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
-| `tags.sh` | `Prefix+a` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
-| `harpoon.sh` | `Prefix+a s` / `M-1`..`M-4` / `Prefix+e` | Harpoon for sessions: `a s` pins this session to the next slot (again unpins), `M-1`..`M-4` jump to a slot on any server, `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
+| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `harpoon.sh` | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Harpoon for sessions: `Prefix+a` pins this session to the next slot (again unpins), `M-1`..`M-4` jump to a slot on any server, `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
 | `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens a project's tasks: `a` add, `m` move to another project, `x` done, `+`/`-` change wave, `o` open the sheet. `/` searches. Also nvim `<leader>np`. |
 | `fleet-sessions watch` | `Prefix+o` | The fleet watch, in the `hub:watch` window beside infra: one row per agent session with its stages (behind main, conflicts, tree, PR, CI, plan phases, bucket, labels, idle) and a log of every change since the last tick, one line per session fitted to the window (columns at their content's width, all-default ones hidden, the least important dropped first when narrow, WHY taking the rest). A declared window, so it is always running and its log keeps building while you are elsewhere. `Prefix+o` goes there from any world (`tmx goto hub hub:watch`, which rebuilds it if it was killed); `Prefix+L` comes back, and never returns TO a board: when the last session is sitting on one, L goes to the session you worked in before it. `n` refreshes now, `q` quits the board itself. |
 | `day-log watch` | `Prefix+O` | The day log, in the `hub:log` window beside watch: everything merged today in every repo grouped by area and conventional-commit scope (`.config/day-log/groups`), the PRs still open with their CI and session, what waits on you (MAIN reds, NEEDS sessions, pending asks), the `fleet-bench` scorecard headline and its top sessions, spend and tokens from `agent-usage`, merges per hour, and the last watch-log transitions. Deterministic: gh search, the fleet state document and the tools above, no model. Each pass (every 5 min) writes `~/.agent/daylog/<date>.json`, so `[` and `]` step through past days and `t` returns; `l` pages every PR as markdown; `n` refreshes, `q` quits. The briefing files each day as `refs/<date>/shipped.md` with `day-log finalize`. The `day-log` skill reads the same records. |
@@ -46,8 +46,8 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **View agents**: `Prefix+g` → choose active agent windows
 - **Fleet watch**: `Prefix+o` → every session's stages and what just changed (the `hub:watch` window; the same board with charts is the Watch tab of agent-web)
 - **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
-- **Tag a window**: `Prefix+a` then `i`/`p`/`a`/`g` → important / pinned / agent / group
-- **Pin a session**: `Prefix+a s` pins it, `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
+- **Tag a window**: `Prefix+t` then `i`/`p`/`a`/`g` → important / pinned / agent / group
+- **Pin a session**: `Prefix+a` pins it (again unpins), `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
 - **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
 
 ## Window Tags
@@ -57,7 +57,7 @@ agents can tell them apart. A tag is a tmux **window user-option** (`@tag_*`),
 not part of the window name: the `.zshrc` precmd hook rewrites window names to
 the git branch on every prompt, so a name-based marker never survives.
 
-- `Prefix+a` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
+- `Prefix+t` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
   `x` clear · `l` list. It is a native one-shot key table, so one key and you
   are back to normal.
 - Status bar shows `*` for important and `+` for pinned.

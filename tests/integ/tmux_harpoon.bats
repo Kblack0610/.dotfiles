@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# tmux-harpoon (harpoon.sh): session slots, Prefix+a s / M-1..M-4 / Prefix+E.
+# tmux-harpoon (harpoon.sh): session slots, Prefix+a / M-1..M-4 / Prefix+e.
 #
 # integ tier: the script runs against the recording tmux and tmx stubs, so each jump
 # assertion is "which command did it issue". The crossing itself is tmx's contract,
@@ -132,4 +132,19 @@ EOF
   run cat "$SANDBOX/nvim.args"
   assert_output --partial 'nnoremap <buffer> <Esc> <Cmd>wq<CR>'
   assert_output --partial 'nnoremap <buffer> q <Cmd>wq<CR>'
+}
+
+@test "prefix+a and C-a pin the session; t and C-t open the window-tags table" {
+  # The C- twins catch Ctrl still held from the C-b prefix, which otherwise lands on an
+  # unbound key and looks like the bind "not working half the time".
+  local k conf="$REPO_ROOT/.tmux.conf"
+  for k in a C-a; do
+    grep -qE "^bind $k run-shell \"\\\$HOME/.local/bin/tmux-harpoon toggle\"\$" "$conf" ||
+      fail "prefix+$k is not the harpoon toggle"
+  done
+  for k in t C-t; do
+    grep -qE "^bind $k switch-client -T tags\$" "$conf" || fail "prefix+$k does not open the tags table"
+  done
+  run grep -nE '^bind -T tags s ' "$conf"
+  assert_failure
 }

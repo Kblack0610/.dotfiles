@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # harpoon.sh (`tmux-harpoon`) - pin tmux SESSIONS to numbered slots, like nvim's harpoon.
-#   Prefix+a s  toggle     pin / unpin this session
+#   Prefix+a    toggle     pin / unpin this session
 #   M-1..M-4    jump <n>   jump to slot n
 #   Prefix+e    menu       edit the list in $EDITOR: reorder lines, delete to unpin, Esc/q
 #   ls | file              print the slots | print the list's path
@@ -101,7 +101,7 @@ cmd_ls() {
     state=""; tmux -L "$srv" has-session -t "=$sess" 2>/dev/null || state="  (gone)"
     printf '%s %d  %-8s %s%s\n' "$mark" "$i" "$srv" "$sess" "$state"
   done < <(slots)
-  [ "$i" -gt 0 ] || echo "no sessions pinned (Prefix+a s pins this one)"
+  [ "$i" -gt 0 ] || echo "no sessions pinned (Prefix+a pins this one)"
 }
 
 case "${1:-}" in

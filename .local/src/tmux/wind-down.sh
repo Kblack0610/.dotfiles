@@ -202,7 +202,7 @@ cmd_fire() {
     fi
   fi
 
-  # Honour window tags (Prefix+a, see tags.sh): a pinned/important window keeps
+  # Honour window tags (Prefix+t, see tags.sh): a pinned/important window keeps
   # its wrap-up note but is never auto-closed. Window scope only — an explicit
   # `--session` teardown is a deliberate, wider ask.
   if [ "$scope" != "session" ] && [ -x "$HOME/.local/bin/tmux-tags" ]; then
