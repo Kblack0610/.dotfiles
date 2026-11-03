@@ -90,12 +90,11 @@ case "$verb" in
   has-session) grep -qxF -- "${target#=}" "$FIX/sessions.$server" 2>/dev/null; exit ;;
   list-panes) t="${target#=}"; cat "$FIX/panes.$server.${t%:}" 2>/dev/null ;;
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
-  display-message)
-    if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/copy-mode" ] && echo 1 || echo 0; fi
-    exit 0 ;;
+  copy-mode) [ "$1" = -q ] && rm -f "$FIX/mode"; exit 0 ;;
   send-keys)
-    # copy mode takes every key until it is cancelled
-    if [ -f "$FIX/copy-mode" ]; then [ "$last" = cancel ] && rm -f "$FIX/copy-mode"; exit 0; fi
+    # a pane in a mode (copy mode, the session picker) takes every key until it is cancelled;
+    # each one is logged, so a test can assert none reached it
+    if [ -f "$FIX/mode" ]; then printf '%s\n' "$last" >> "$FIX/mode-keys"; exit 0; fi
     if [ "$2" = -l ] || [ "$3" = -l ]; then printf '%s' "$last" > "$FIX/typed"; exit 0; fi
     case "$last" in
       Enter)
@@ -406,19 +405,29 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   [ ! -e "$(PARKED_LEDGER agent-3)" ]
 }
 
-@test "unpark leaves copy mode in a scrolled pane before it types the resume" {
+@test "unpark takes the pane out of a mode (copy mode, the session picker) before it types the resume" {
   session lab agent-4 %10 400 401 idle "$ALT" --permission-mode bypassPermissions
   run "$ACCT" park agent-4 --server lab
   assert_success
   usage main 5 10
   usage alt 90 95
-  touch "$FIX/copy-mode"
+  touch "$FIX/mode"
   run "$ACCT" unpark agent-4
   assert_success
   assert_output 'claude-acct: unparked agent-4 on main (5h 5%, 7d 10%): claude 900, busy'
   run tmux_calls
-  assert_line 'tmux -L lab send-keys -t %10 -X cancel'
+  assert_line 'tmux -L lab copy-mode -q -t %10'
+  [ ! -e "$FIX/mode-keys" ]
   [ ! -e "$(PARKED_LEDGER agent-4)" ]
+}
+
+@test "park takes the pane out of a mode before it types /exit" {
+  session lab agent-5 %11 500 501 idle "$ALT" --permission-mode bypassPermissions
+  touch "$FIX/mode"
+  run "$ACCT" park agent-5 --server lab
+  assert_success
+  [ ! -e "$FIX/mode-keys" ]
+  [ -e "$(PARKED_LEDGER agent-5)" ]
 }
 
 @test "unpark respawns a pane that was its claude, held open while parked" {

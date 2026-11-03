@@ -575,6 +575,13 @@ await() {
     done
 }
 
+# leave_mode <server> <pane> -- take the pane out of any tmux mode before keys are typed into
+# it. Copy mode swallows them; the session picker (choose-tree) acts on them, and its `x` then
+# `y` kill a session. `copy-mode -q` cancels every mode, and does nothing to a pane in none.
+leave_mode() {
+    tmux -L "$1" copy-mode -q -t "$2" 2>/dev/null
+}
+
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
 # it answers the background-shell dialog on the way with "Exit and stop tasks".
 exited() {
@@ -599,6 +606,7 @@ resumed_or_trusted() {
     resumed "$@" && return 0
     if [[ -z "$TRUSTED" ]] && tmux -L "$server" capture-pane -p -t "$pane" 2>/dev/null | grep -qF 'Yes, I trust this folder'; then
         TRUSTED=1
+        leave_mode "$server" "$pane"
         tmux -L "$server" send-keys -t "$pane" Down
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
@@ -751,6 +759,7 @@ park_flow() {
     # A fleet-dispatch pane closes with its claude, and with it the session, its @dispatch
     # label and the name its ledger is filed under; held open, it is respawned in place.
     ((direct)) && tmux -L "$server" set-option -p -t "$pane" remain-on-exit on
+    leave_mode "$server" "$pane"
     tmux -L "$server" send-keys -t "$pane" Escape
     tmux -L "$server" send-keys -t "$pane" -l /exit
     tmux -L "$server" send-keys -t "$pane" Enter
@@ -798,10 +807,7 @@ unpark_ledger() {
         tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
-        # A pane someone scrolled is in copy mode, which would swallow the typed resume.
-        if [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" == 1 ]]; then
-            tmux -L "$server" send-keys -t "$pane" -X cancel
-        fi
+        leave_mode "$server" "$pane"
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
