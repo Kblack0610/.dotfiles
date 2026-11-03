@@ -4,7 +4,7 @@ description: GitHub operations via the gh CLI - pull requests, issues, CI checks
 metadata:
   category: ops
   tags: [git, github, pull-requests, ci]
-  reviewed: "2026-08-09"
+  reviewed: "2026-11-03"
 ---
 
 # gh-workflows
@@ -38,7 +38,7 @@ EOF
 
 # Comment, merge, close
 gh pr comment <number> --body "..."
-gh pr merge <number> --squash --delete-branch
+gh pr merge <number> --squash --delete-branch --match-head-commit <sha>
 gh pr close <number>
 ```
 
@@ -62,13 +62,15 @@ gh run list -L 10
 gh run list --workflow=ci.yml --branch=main
 gh run view <run-id>
 gh run view <run-id> --log-failed
-gh run watch <run-id>              # stream until finished
+gh run watch <run-id> --exit-status   # wait on the run; exit code is its result
+gh pr checks <number> --watch --fail-fast
 gh run cancel <run-id>
-gh run rerun <run-id> --failed
 
 gh workflow list
 gh workflow run <workflow.yml> -f key=value
 ```
+
+Wait on a run with `--watch` / `--exit-status`, never a sleep loop. A red check is diagnosed, not rerun: diff `--log-failed` against the last green run of the same workflow. `gh run rerun <run-id> --failed` is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip; a test failure is never rerun. Fixing reds: `/my:fix-ci`. Landing a gated PR and recording it: `agent-land`.
 
 ## Search
 

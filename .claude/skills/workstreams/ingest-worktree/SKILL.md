@@ -22,7 +22,7 @@ dirty tree ->  survey  ->  classify by concern  ->  HOLD churn/secrets  ->  land
 
 ## Scope and triggers
 
-Land a dirty working tree correctly - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob). It HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. It also checks the checkout is not stale before landing, because a tree edited against an old base can silently revert work that has since landed on the default branch. Use when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles", or "what is all this uncommitted stuff". Branch-first off the default branch. Differs from sc:git (single commit helper), my:pr-merge-flow (drives ONE existing PR), and ingest-prs (drains the open-PR queue on the FORGE - use that one when the user points at open PRs rather than at their own dirty tree). Do NOT `git add -A` a mixed tree, and do NOT commit theme/ephemeral churn or unscanned untracked files.
+Land a dirty working tree correctly - survey it, group every change by concern, write conventional-commit messages, and ship each concern as its own branch + PR (never one mixed blob). It HOLDS machine-local/ephemeral churn (theme-switch output, caches) and scans untracked files for secrets before they go public. It also checks the checkout is not stale before landing, because a tree edited against an old base can silently revert work that has since landed on the default branch. Use when the user says "get my hanging changes in", "land the worktree", "ingest the worktree", "clean up my git status into PRs", "ship the dotfiles", or "what is all this uncommitted stuff". Branch-first off the default branch. Differs from sc:git (single commit helper), agent-land (lands ONE gated PR), and ingest-prs (drains the open-PR queue on the FORGE - use that one when the user points at open PRs rather than at their own dirty tree). Do NOT `git add -A` a mixed tree, and do NOT commit theme/ephemeral churn or unscanned untracked files.
 
 ## 1. Survey
 ```bash
@@ -78,7 +78,7 @@ Per concern: the PR link + merge state. Then the HELD items and why (so nothing 
 
 ## Triggers
 - Manual: `/ingest-worktree` (or the phrases in the description). Typically at the end of a work batch or when `git status` has sprawled.
-- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). Hand off to `ingest-prs` when the queue on the forge is the problem, and to `my:pr-merge-flow` to babysit one PR deeply.
+- Pairs with `wind-down` (land before teardown) and `gh-workflows` (PR mechanics). Hand off to `ingest-prs` when the queue on the forge is the problem, and to `agent-land` to land one gated PR.
 
 ## Boundaries
 - Never `git add -A`/`git commit -am` a mixed tree; one concern per commit, one file per PR.
