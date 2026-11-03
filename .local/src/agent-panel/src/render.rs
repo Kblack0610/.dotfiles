@@ -112,7 +112,7 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
             let ask = if a.ask { format!("{BLUE}A{RESET}") } else { " ".to_string() };
-            // Window tags (Prefix+a) sit between the target and the summary so
+            // Window tags (Prefix+t) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
                 String::new()

@@ -61,7 +61,7 @@ setup() {
   # Space's stock binding is next-layout, which is tmux's own and not a surface in this
   # repo. Every other key in .tmux.conf must still point where it did.
   local k
-  for k in e i u U o p g w m a f S A W r N H; do
+  for k in e i u U o p g w m a t f S A W r N H; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }
