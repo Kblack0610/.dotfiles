@@ -178,21 +178,21 @@ in_landing() {
 
 # --- the page's window, not a board beside it ---
 #
-# The boards (hub:infra, hub:watch, hub:log) are declared windows of the landing session,
-# and a session remembers its last-selected window. Prefix+O leaves hub on hub:log, so a
-# root that only attached to the session landed on the log board instead of the daily, and
-# the shell branch typed the daily's startup command into the board.
+# The board (hub:board) is a declared window of the landing session, and a session remembers
+# its last-selected window. Prefix+O leaves hub on hub:board, so a root that only attached to
+# the session landed on the board instead of the daily, and the shell branch typed the
+# daily's startup command into the board.
 
 # windows <index ident>... -- the landing session's windows, in index order.
 windows() { printf '%s\n' "$@" > "$NOTES_FIXTURE/tmux.window_idents"; }
 
 boards_declared() {
-  printf 'hub:infra %s\nhub:log %s day-log watch\n' "$BASE" "$BASE" >> "$TMUX_SERVERS_DIR/hub.conf"
+  printf 'hub:board %s hub\n' "$BASE" >> "$TMUX_SERVERS_DIR/hub.conf"
 }
 
 @test "root selects the page's window when the session was left on a board" {
   boards_declared
-  windows "1 master" "2 infra" "3 log"
+  windows "1 master" "2 board"
   in_landing hub hub
   STUB_PANE_CMD=nvim run "$TMX" land hub root
   assert_success
@@ -202,19 +202,19 @@ boards_declared() {
 
 @test "the page's window is found by identity, not by being first" {
   boards_declared
-  windows "1 infra" "2 log" "3 main"
+  windows "1 board" "2 main"
   in_landing hub hub
   STUB_PANE_CMD=nvim run "$TMX" land hub root
   assert_success
   run bash -c "cat '$NOTES_FIXTURE/calls.log'"
-  assert_output --partial "select-window -t hub:3"
+  assert_output --partial "select-window -t hub:2"
 }
 
 @test "the window is selected before the page is restored into it" {
   # _refresh_landing types into the session's CURRENT window, so selecting after it
   # would still have sent the keys to the board.
   boards_declared
-  windows "1 log" "2 master"
+  windows "1 board" "2 master"
   in_landing hub hub
   STUB_PANE_CMD=bash run "$TMX" land hub root
   assert_success

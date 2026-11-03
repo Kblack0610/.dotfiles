@@ -121,7 +121,7 @@ EOF
   refute_output --partial '105'
 }
 
-# --- --textfile: what node_exporter publishes for the hub:infra board ---------------------
+# --- --textfile: what node_exporter publishes for the hub board ---------------------
 # gate_rows, session_of and agent_count read /proc and tmux; stubbed here so the rows are
 # fixtures, not whatever this machine is running.
 textfile_fixture() {

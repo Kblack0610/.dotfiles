@@ -182,7 +182,7 @@ blocked_rows() {
 # --- textfile ---------------------------------------------------------------------------
 # This machine is not a runner, so its CI is the headless Unity gates agents run here.
 # Published through node_exporter's textfile collector, they sit under the workstation's
-# row on the hub:infra board and in Grafana, beside the runner pools.
+# row on the hub board and in Grafana, beside the runner pools.
 
 # gate_rows -> per headless Unity run: <seconds running> TAB <projectPath> TAB <what> TAB <pid>.
 # <what> is its -testPlatform, else the Class.Method it executes, else "editor": a run says

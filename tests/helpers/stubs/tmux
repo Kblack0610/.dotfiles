@@ -172,7 +172,7 @@ case "$verb" in
       echo "${STUB_CLIENT_LAST_SESSION:-}"
     elif printf '%s ' "$@" | grep -q 'tmx_window'; then
       # servers.sh `_is_board` asks a window's declared identity. Empty by default, which
-      # is an ordinary window; STUB_WINDOW_IDENT=watch makes it the hub:watch board.
+      # is an ordinary window; STUB_WINDOW_IDENT=watch makes it a declared board.
       echo "${STUB_WINDOW_IDENT:-}"
     elif printf '%s ' "$@" | grep -q 'window_activity'; then
       f="$FIX/tmux.activity.$(target_key "$target")"

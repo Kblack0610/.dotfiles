@@ -8,7 +8,6 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
-  unset COLUMNS # the board fits a width only when one is given
   export FLEET_MAIN_TTL=0 # each test's gh answers decide; the reuse test sets its own
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
@@ -641,7 +640,7 @@ landed_fixture() {
   git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m theirs
   git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
 
-  # without a fetch the clone has not seen it; watch fetches first (FLEET_FETCH=1)
+  # without a fetch the clone has not seen it; tick fetches first (FLEET_FETCH=1)
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .behind <<<"$output")" = 0 ]
   FLEET_FETCH=1 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -690,21 +689,23 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   assert_line 's-c  gone'
 }
 
-@test "end to end: watch --once draws the board and logs a change once, on the next tick" {
+@test "end to end: tick writes the state document and logs a change once, on the next tick" {
   landed_fixture
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  # CONFLICTS, QUALITY and LABELS are hidden while every cell is the default
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +STAGE +IDLE +AGE  WHY$'
-  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +LANDED +60m +3h5m  PR #875 merged'
+  assert_output ''
+  [ "$(jq -r '.sessions[0].bucket' "$doc")" = LANDED ]
+  [ "$(jq -r '.sessions[0] | has("eta")' "$doc")" = false ]
+  [ -s "$FLEET_SHEPHERD_DIR/watch.state" ]
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
   "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
   assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
-  assert_line --regexp '^SESSION .* QUALITY +STAGE '
-  assert_line --regexp '^s1 .* simplifying +LANDED '
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
@@ -757,38 +758,15 @@ bench_eta() {
   assert_output ''
 }
 
-@test "end to end: watch --once shows the session's ETA next to PLAN, and no ETA column without one" {
+@test "end to end: tick puts the session's ETA in the state document, and its moving is not a change" {
   landed_fixture
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
-  refute_line --partial 'ETA'
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
   bench_eta "{\"session_id\":\"sid-9\",\"finished\":false,\"eta_epoch\":$(( $(date +%s) + 2 * 86400 )),\"basis\":\"project-median(12)\"}"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +ETA +STAGE +IDLE +AGE  WHY$'
-  assert_line --regexp '^s1 +current +clean +#875 merged +pass +1/2 +[A-Z][a-z]{2} [0-9]{2}:[0-9]{2} p12 +LANDED '
-  # the ETA moving is not a stage change
+  [[ "$(jq -r '.sessions[0].eta' "$doc")" =~ ^[A-Z][a-z]{2}\ [0-9]{2}:[0-9]{2}\ p12$ ]]
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-}
-
-# frame_fixture -> a watch frame as watch_tick emits it: plain lines, then the tab-led table.
-frame_fixture() {
-  printf 'fleet watch  12:00:00  2 session(s)  %s\n\n' "$(printf 'x%.0s' {1..120})"
-  printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
-  printf '\t%s' 'unity-core-playground-agent-12:1' - '3 behind' no '2 dirty' '#88 open' - pending 1/3 '21:30 s3' - WORKING - - - 5m 2d4h \
-    "busy $(printf 'y%.0s' {1..150})"; echo
-  printf '\t%s' 'dotfiles:4' - current "${1:-no}" clean - - - 2/2 - - DONE hands-off - - 40m 45m 'plan finished'; echo
-}
-
-@test "layout: at a width every line fits, and a long WHY is clipped with ~" {
-  local w l
-  for w in 130 80; do
-    run layout "$w" < <(frame_fixture)
-    assert_success
-    for l in "${lines[@]}"; do [ "${#l}" -le "$w" ] || fail "over $w: $l"; done
-    assert_line --regexp '^fleet watch .*~$'
-  done
-  run layout 130 < <(frame_fixture)
-  assert_line --regexp '^unity-core-playground-agent-12 .* busy y+~$'
 }
 
 # age_row <age minutes|->: one collect row, every field fixed but the session's age (field 28).
@@ -835,32 +813,11 @@ time_row() {
   assert_output --regexp $'\tbusy$'
 }
 
-@test "layout: from 100 columns WHY keeps 30 and lesser columns drop for it, below that it goes first" {
-  { printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
-    printf '\t%s' "$(printf 's%.0s' {1..30})" "$(printf 't%.0s' {1..22})" '3 behind' no '2 dirty' '#88 merged' 1/3 pending 1/3 '21:30 s3' - WORKING - 3h 'parked 10h' 5m 2d4h \
-      "Run $(printf 'w%.0s' {1..60})"; echo; } > "$SANDBOX/frame"
-  run layout 120 < "$SANDBOX/frame"
-  assert_line --regexp '^SESSION .* STAGE +WORK +WAIT +AGE  WHY$'
-  refute_line --regexp '^SESSION .* (SYNC|TREE|CI) '
-  assert_line --regexp '  Run w{20,}~$'
-  # the negative control: at 99 WHY does not hold its place and is the first to go
-  run layout 99 < "$SANDBOX/frame"
-  refute_line --partial 'WHY'
-}
-
 @test "eta_cells: a calibrated basis is shortened like a plain one" {
   export TZ=UTC
   bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$(date +%s),\"basis\":\"project-median(34) x1.15 (n=70)\"}"
   run eta_cells
   assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34$'
-}
-
-@test "end to end: a long session name keeps its tail on the board" {
-  landed_fixture
-  sed -i 's|lab/s1:1|lab/unity-core-playground-agent-16:1|' "$SANDBOX/bin/agent-panel"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
-  assert_success
-  assert_line --regexp '^~playground-agent-16 +'
 }
 
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {
@@ -989,7 +946,7 @@ explain_state() {
   assert_line 'PRs      0 merged of 0'
 }
 
-@test "end to end: the board and the state row carry a session's PRs, time and last action" {
+@test "end to end: the state row carries a session's PRs, time and last action" {
   landed_fixture
   pr_transcript "$SANDBOX/t.jsonl"
   local since=$(( $(date +%s) - 60 ))
@@ -1005,108 +962,30 @@ case "$*" in
 esac
 SH
   export XDG_CACHE_HOME="$SANDBOX/xdg"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
-  assert_success
-  assert_line --regexp '^SESSION +TASK +SYNC +TREE +PR +PRS +CI +PLAN +STAGE +WORK +WAIT +IDLE +AGE  WHY$'
-  assert_line --regexp '^s1 +the-topic .* 1/2 .* WORKING +3h +gate 15h .*  Run the gate$'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -c '[.prs[].number, .time.gate_min, .time.test_min, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,900,7,620,2,"Bash: Run the gate"]' ]
 }
 
-@test "layout: a narrow width drops SYNC and TREE before STAGE and PLAN" {
-  run layout 50 < <(frame_fixture)
-  assert_line --regexp '^SESSION +PLAN +STAGE$'
-  refute_line --partial 'SYNC'
-  refute_line --partial 'WHY'
-}
-
-@test "layout: with no width nothing is clipped, defaults are hidden, :1 is stripped" {
-  run layout 0 < <(frame_fixture)
-  assert_line --regexp '^SESSION +SYNC +TREE +PR +CI +PLAN +ETA +STAGE +LABELS +IDLE +AGE  WHY$'
-  assert_line --regexp '^unity-core-playground-agent-12 .*  busy y{150}$'
-  run layout 0 < <(frame_fixture CONFLICT)
-  assert_line --regexp '^SESSION +SYNC +CONFLICTS +TREE '
-  assert_line --regexp '^dotfiles:4 +current +CONFLICT +clean '
-}
-
-@test "end to end: watch --once with COLUMNS fits the board to it" {
+@test "end to end: a tick that cannot read agent-panel or gh keeps the last stage cells and logs nothing" {
   landed_fixture
-  COLUMNS=60 run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
-  assert_success
-  local l; for l in "${lines[@]}"; do [ "${#l}" -le 60 ] || fail "over 60: $l"; done
-  assert_line --regexp '^s1 +.*LANDED'
-}
-
-@test "end to end: on a terminal the board fits the terminal, whatever COLUMNS says" {
-  # The width is read inside $(...), where stdout is a pipe; a [ -t 1 ] there never fired
-  # and the live board laid itself out unlimited and wrapped. Only a real pty shows that.
-  landed_fixture
-  run env SHELL=/bin/bash script -qec \
-    "stty cols 50 rows 40; COLUMNS=200 '$REPO_ROOT/.local/bin/fleet-sessions' watch --once" /dev/null
-  assert_success
-  local l n=0
-  while IFS= read -r l; do
-    l="$(sed -E $'s/\033\\[[0-9;]*[A-Za-z]//g; s/\r$//' <<<"$l")"
-    [ "${#l}" -le 50 ] || fail "over 50: $l"
-    [[ "$l" =~ ^s1\  ]] && n=$((n + 1))
-  done <<<"$output"
-  [ "$n" -eq 1 ] || fail "expected one s1 row, got $n: $output"
-}
-
-# caught <pid> <signo>: the process has a handler installed for that signal (/proc SigCgt).
-caught() {
-  local m; m="$(awk '/^SigCgt:/ { print $2 }' "/proc/$1/status" 2>/dev/null)"
-  [ -n "$m" ] && (( (16#$m >> ($2 - 1)) & 1 ))
-}
-
-@test "wait_key: a resize ends the wait at once, a key comes back" {
-  # bash 5.3 runs a trap during `read -t` and keeps reading, so a WINCH trap in the main shell
-  # never ended the board's wait. The read must sit in a subshell that exits on WINCH.
-  local fifo="$BATS_TEST_TMPDIR/in" pid kid start
-  mkfifo "$fifo"; exec 7<>"$fifo"
-  start=$SECONDS
-  wait_key 30 <&7 > "$BATS_TEST_TMPDIR/out" & pid=$!
-  # Signal only once the subshell's trap is in place: before that a WINCH is simply ignored.
-  for _ in $(seq 200); do
-    for kid in $pid $(pgrep -P "$pid"); do caught "$kid" 28 && break 2; done
-    sleep 0.05
-  done
-  caught "$kid" 28 || fail "no process caught WINCH"
-  kill -WINCH "$kid"
-  wait "$pid"
-  [ $((SECONDS - start)) -lt 10 ] || fail "the wait ran to its timeout"
-  [ ! -s "$BATS_TEST_TMPDIR/out" ]
-  printf n >&7
-  run wait_key 30 <&7
-  assert_output n
-  exec 7>&-
-}
-
-@test "watch refuses a bad --every" {
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every 0
-  assert_failure 2
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --every
-  assert_failure 2
-}
-
-@test "end to end: a pass that cannot read agent-panel or gh keeps the last board and logs nothing" {
-  landed_fixture
-  "$REPO_ROOT/.local/bin/fleet-sessions" watch --once >/dev/null
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
   cp "$SANDBOX/bin/agent-panel" "$SANDBOX/panel.ok"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  assert_line 'could not read agent-panel this tick: showing the last good board, no changes logged'
-  assert_line --regexp '^s1 +current '
+  [ "$(jq -c .unreadable "$doc")" = '["agent-panel"]' ]
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
   # gh down: every PR would read "-", which is a blink, not a change
   cp "$SANDBOX/panel.ok" "$SANDBOX/bin/agent-panel"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" watch --once
-  assert_line --partial 'could not read gh pr list (wt) this tick'
-  assert_line --regexp '^s1 .* #875 merged '
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  jq -r '.unreadable[]' "$doc" | grep -q '^gh pr list (wt)$'
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
 

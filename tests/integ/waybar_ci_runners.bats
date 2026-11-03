@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # ci_runners.sh: the waybar CI chip. It lays out the cc:pool_* rules and the runner
-# exporter's series, the same ones hub infra reads. What these pin: the bar's
+# exporter's series, the same ones the hub board reads. What these pin: the bar's
 # busy/slots and queue are the board header's totals (pools plus local gates); its colour
 # is the ci domain status rule, never its own judgement; the hover names which runner on
 # which machine runs which PR; and an unreadable Prometheus shows `CI: prom down`, never the last

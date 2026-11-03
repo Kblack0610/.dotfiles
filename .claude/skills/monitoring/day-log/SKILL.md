@@ -5,16 +5,16 @@ description: >-
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]
-  reviewed: "2026-10-28"
+  reviewed: "2026-11-03"
 ---
 
 # day-log
 
-Answers "what did the day produce" from one record per day, so a chat answer, the `hub:log` board, the notes ref and an Artifact page all say the same thing. The producer is `day-log` (`~/.local/bin/day-log`); this skill only reads it.
+Answers "what did the day produce" from one record per day, so a chat answer, the hub Today tab, the notes ref and an Artifact page all say the same thing. The producer is `day-log` (`~/.local/bin/day-log`); this skill only reads it.
 
 ## Scope and triggers
 
-What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub:log board (Prefix O) shows the same data. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (fleet-sessions watch, fleet-overseer status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
+What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub board's Today tab (Prefix O) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Sessions tab, fleet-overseer status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
 
 ## When to Use
 
@@ -22,7 +22,7 @@ What a day shipped, from the day-log record: every PR merged in any repo grouped
 - The user asks for the week: read each day's record and add them up.
 - The user wants the day as a page to look at or share.
 
-Not for what sessions are doing right now (`fleet-overseer status`, the `hub:watch` board) and not for how the scorecard is computed (`fleet-bench`).
+Not for what sessions are doing right now (`fleet-overseer status`, the hub Sessions tab) and not for how the scorecard is computed (`fleet-bench`).
 
 ## Steps
 
@@ -33,7 +33,7 @@ Not for what sessions are doing right now (`fleet-overseer status`, the `hub:wat
 
 Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, area, by), `open[]` (repo, number, title, created_at, updated_at, draft, ci, by), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`.
 
-The board (`day-log watch`, hub:log, Prefix O) folds each section to fit the pane. When the user wants a full list there, point them at the keys rather than dumping it: `1`-`5` or a click on a section header opens that section in full and folds the others (again or Esc closes it), and j/k, space/b, g/G or the mouse wheel scroll it. `day-log watch --once --open merged` prints the same view.
+The board is the hub's Today tab (Prefix O, `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; the History tab (7) lists every recorded day. `hub --once --tab today` prints it as text. `day-log show` prints the same record as markdown.
 
 ## Do NOT
 

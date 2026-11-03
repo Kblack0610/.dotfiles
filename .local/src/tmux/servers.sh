@@ -158,7 +158,7 @@ cmd_ensure() {
     [ -n "$dir" ] || continue
     dir="${dir/#\~/$HOME}"           # manifests are written with ~
     # `<session>:<window>` adds a named window to a session declared on an earlier line
-    # (hub.conf's `hub:infra`, the Command Center board beside the daily note). It never
+    # (hub.conf's `hub:board`, the hub board beside the daily note). It never
     # creates the session: an undeclared or skipped session skips its windows too.
     if [[ "$name" == *:* ]]; then
       sess="${name%%:*}" win="${name#*:}"
@@ -244,10 +244,10 @@ _landing() {
   awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
 }
 
-# The landing session's OWN window: the first one that is not a declared board. The boards
-# (hub:infra, hub:watch, hub:log) are windows of the landing session too, and a session
-# remembers its last-selected window, so after Prefix+O a bare attach to hub opened the log
-# board, not the daily. Identity is the one ensure finds declared windows by: @tmx_window,
+# The landing session's OWN window: the first one that is not a declared board. The board
+# (hub:board) is a window of the landing session too, and a session remembers its
+# last-selected window, so after Prefix+O a bare attach to hub opened the board, not the
+# daily. Identity is the one ensure finds declared windows by: @tmx_window,
 # else the name. One list-windows rather than _is_board per window.
 _landing_window() {
   local srv="$1" sess="$2"
@@ -527,7 +527,7 @@ _recent_session() {
 }
 
 # _is_board <server> <session>[:<window>] -- is that window (the session's current one when
-# none is given) a declared window of the manifest, like hub:watch? Identity is the one
+# none is given) a declared window of the manifest, like hub:board? Identity is the one
 # ensure finds declared windows by: @tmx_window, else the name for windows made before it.
 _is_board() {
   local srv="$1" sess="${2%%:*}" win="" id
@@ -564,8 +564,8 @@ cmd_goto() {
 # answer whenever it has one; it only has none on a fresh attach, which is exactly the state
 # a cross-server hop leaves you in - and that is the one case the crumb exists for.
 #
-# A board is never a place to go BACK to. The boards (Prefix o -> hub:watch, Prefix O ->
-# hub:log) are declared windows of the landing session, and tmux keeps one last-session
+# A board is never a place to go BACK to. The board (Prefix i, o and O -> hub:board) is
+# a declared window of the landing session, and tmux keeps one last-session
 # slot, so a glance at one took it: A, o, L, L landed on the board instead of the session
 # before A. When tmux's answer (or the crumb) is a board, L goes to the session you were
 # last working on instead, and to the board only when there is nowhere else.

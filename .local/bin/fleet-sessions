@@ -5,14 +5,14 @@
 #   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
 #   fleet-sessions --write            --json, and the fleet state document every view renders
 #                                     ($FLEET_STATE_FILE; schema and vocabulary in
-#                                     .local/src/docs/fleet-states.md), and fleet_sessions.prom
+#                                     .local/src/docs/fleet-states.md), each session with its
+#                                     eta from `fleet-bench eta`, and fleet_sessions.prom
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
-#   fleet-sessions watch [--every N] [--once]  stage board: one column per delivery stage, plus a
-#                                     log of what changed since the last tick, and each
-#                                     session's expected finish from `fleet-bench eta`
-#                                     (fitted to the terminal, or to $COLUMNS off one)
+#   fleet-sessions tick               --write after a fetch, plus the stage changes since the
+#                                     last tick appended to watch.log (fleet-state.service, every
+#                                     minute and on each ask change); the hub Sessions tab
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #
@@ -35,12 +35,6 @@
 
 set -uo pipefail
 
-# The shared column fitter (layout below wraps it).
-# shellcheck source=/dev/null
-. "${TABLE_FIT_LIB:-/nonexistent}" 2>/dev/null \
-  || . "$HOME/.local/lib/table-fit.sh" 2>/dev/null \
-  || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/table-fit.sh" 2>/dev/null \
-  || { echo "fleet-sessions: table-fit.sh not found" >&2; exit 1; }
 # --write also publishes the rows to Prometheus (fleet_sessions.prom).
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
@@ -74,10 +68,6 @@ PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # leaves that session alone), or a session's own `quality:<step>` while a cleanup pass runs.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"
-# watch: git, gh and the transcripts have no change event to await, so the board samples them
-# on this one cadence. A pass costs ~12s of gh and git, so a minute keeps it well under 10%.
-: "${FLEET_WATCH_EVERY:=60}"
-: "${FLEET_WATCH_LOG_LINES:=12}" # transitions shown above the table
 
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
@@ -482,7 +472,7 @@ ahead_files() {
            <(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort) | wc -l
 }
 
-# fetch_once <dir>: with FLEET_FETCH=1 (watch sets it), fetch origin once per repo per pass,
+# fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch origin once per repo per pass,
 # so behind and conflicts are measured against the remote tip, not the last manual fetch.
 # Worktrees of one repo share its refs, so one fetch covers them all.
 fetch_once() {
@@ -551,7 +541,7 @@ collect() {
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
   local panel
-  # A pass that could not read a source says so in $CACHE/unreadable, so watch never logs a
+  # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; } | while IFS= read -r line; do
@@ -635,7 +625,7 @@ main_rows() {
   done
 }
 
-# --- watch: the stage board -------------------------------------------------------------
+# --- tick: the stage cells and their changes -------------------------------------------------------------
 # eta_cells -> "sid <TAB> eta" for each session fleet-bench has an estimate for: the expected
 # finish (HH:MM today, else "Thu HH:MM") and its basis, short: "<word>-median(N)" as its first
 # letter and N ("21:30 s3" is the session's own median over 3 phases, "p16" the project's), its
@@ -722,11 +712,16 @@ transitions() {
     END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
 }
 
-# watch_tick -> one frame: run a pass, log what moved since the last tick (any watcher's: the
-# state file is shared and locked, so two boards log each change once), then the board.
-watch_tick() {
-  local rows cur new f now
-  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT # runs in $(...), so this is its own exit
+# tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Sessions tab. git, gh and the
+# transcripts have no change event to await, so fleet-state.timer runs it every minute; a pass
+# costs ~12s of gh and git. It logs what moved since the last tick to watch.log (the state file
+# is shared and locked, so two ticks log each change once), keeps watch.state for the next
+# compare, and writes the state document with each session's eta.
+tick() {
+  export FLEET_FETCH=1
+  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
+  local rows cur new now t0
+  t0="$(date +%s)"
   rows="$(collect)"
   eta_cells > "$CACHE/eta"
   cur="$CACHE/cells"; board_cells "$CACHE/eta" <<<"$rows" > "$cur"
@@ -743,98 +738,7 @@ watch_tick() {
     fi
     cp "$cur" "$LEDGER/watch.state"
   ) 9>"$LEDGER/watch.lock"
-
-  printf 'fleet watch  %s  %s session(s)\n' "$(date +%H:%M:%S)" "$(wc -l < "$cur")"
-  [ -s "$CACHE/unreadable" ] && printf 'could not read %s this tick: showing the last good board, no changes logged\n' \
-    "$(sort -u "$CACHE/unreadable" | paste -sd, - | sed 's/,/, /g')"
-  echo
-  if [ -s "$LEDGER/watch.log" ]; then
-    tail -n "$FLEET_WATCH_LOG_LINES" "$LEDGER/watch.log"; echo
-  fi
-  # The table goes out as tab-led TSV; layout fits it to the terminal at draw time.
-  printf '\t%s' SESSION TASK SYNC CONFLICTS TREE PR PRS CI PLAN ETA QUALITY STAGE LABELS WORK WAIT IDLE AGE WHY; echo
-  # A blind pass redraws a watch.state that may predate the newer cells.
-  # A long session name keeps its tail, which is the part that tells sessions apart, whole words only.
-  awk -F'\t' -v OFS='\t' 'function d(v) { return v == "" ? "-" : v }
-    function tail(s, t) {
-      if (length(s) <= 24) return s
-      t = substr(s, length(s) - 22); sub(/^[^-]*-/, "~", t); return t
-    }
-    { print "", tail($2), d($19), $3, $4, $5, $6, d($16), $7, $8, d($15), $9, $10, $11, d($17), d($18), $12, $13, ($20 == "" ? $14 : $20) }' "$cur"
-  awk -F'\t' '$1 == "NIGHTLY" { if (!h++) print "\nNIGHTLY"; print "  " $11 }' <<<"$rows"
-}
-
-# layout <width|0>: a watch frame on stdin -> the frame fitted to <width> columns (0: no
-# limit). Tab-led lines are the table: each column takes its content's width, TASK, CONFLICTS,
-# PRS, ETA, QUALITY, LABELS, WORK and WAIT are hidden while every cell is the default, and
-# columns drop from the least important end until the rest fit. WHY takes whatever is left and
-# goes once that is under 12; from 100 columns it is what the session is doing, worth more than
-# the columns it costs, so they drop until it has 30. Every line, table or not, is then clipped
-# to <width> with a trailing ~.
-layout() {
-  local why=(flexmin=12)
-  [ "${1:-0}" -ge 100 ] && why=(flexmin=30 flexkeep=1)
-  awk -F'\t' 'BEGIN { OFS = FS } /^\t/ && seen++ { sub(/:1$/, "", $2) } 1' |
-    table_fit "${1:-0}" keep="1 12 9 6 7 14 15 17 16 2 10 8 5 3 4 11 13" flex=18 "${why[@]}" \
-      opt="2 4 7 10 11 13 14 15" right="14 16 17" cap="1:34 2:22"
-}
-
-# term_width -> the controlling terminal's columns, or nothing when there is none or it
-# reports no size. It asks /dev/tty because it runs inside $(...), where stdout is a pipe.
-term_width() {
-  local w
-  w="$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2)"
-  [ "${w:-0}" -gt 0 ] 2>/dev/null && echo "$w"
-}
-
-# wait_key <secs> -> the key pressed, or nothing on a timeout or a resize. bash 5.3 runs a
-# trap during `read -t` and then keeps reading, so the read sits in a subshell whose WINCH
-# trap exits it: that is what lets a resize end the wait at once (CONVENTIONS.md).
-wait_key() {
-  (trap 'exit 0' WINCH; read -rsn1 -t "$1" k && printf '%s' "$k")
-}
-
-# paint: colour the words that need an eye, only on a terminal and without NO_COLOR.
-paint() {
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    sed -E -e $'s/\\b(STALLED|NEEDS|CONFLICT|fail|red)\\b/\033[31m&\033[0m/g' \
-           -e $'s/\\b(DONE|pass)\\b/\033[32m&\033[0m/g' -e $'s/\\b(LANDED|pending)\\b/\033[33m&\033[0m/g'
-  else cat; fi
-}
-
-# watch [--every N] [--once]: redraw the board every N seconds (FLEET_WATCH_EVERY); on a
-# terminal, n redraws now and q quits. --once draws one frame and exits.
-watch() {
-  local every="$FLEET_WATCH_EVERY" once=0 key frame
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --every) every="${2:-}"; shift 2 || shift ;;
-      --once) once=1; shift ;;
-      *) echo "usage: fleet-sessions watch [--every N] [--once]" >&2; return 2 ;;
-    esac
-  done
-  [[ "$every" =~ ^[1-9][0-9]*$ ]] || { echo "fleet-sessions: --every takes whole seconds" >&2; return 2; }
-  export FLEET_FETCH=1
-  # A resize (the hub:watch window or its pane changing size) ends the wait early, and the frame
-  # already in hand is re-fitted to the new width: no pass is run for it.
-  trap 'resized=1' WINCH
-  local width tick=1 deadline=0 resized=0
-  while :; do
-    [ "$tick" = 1 ] && { frame="$(watch_tick)"; deadline=$((SECONDS + every)); }
-    width=""; [ -t 1 ] && width="$(term_width)"; width="${width:-${COLUMNS:-0}}"
-    [ -t 1 ] && printf '\033[H\033[2J'
-    printf '%s\n' "$frame" | layout "$width" | paint
-    [ "$once" = 1 ] && return 0
-    if [ -t 0 ]; then
-      printf '\nnext tick in %ss - n run now - q quit' "$((deadline - SECONDS))"
-      resized=0
-      key="$(wait_key "$((deadline > SECONDS ? deadline - SECONDS : 1))")"
-      [ "$key" = q ] && { echo; return 0; }
-      tick=1; [ "$resized" = 1 ] && [ -z "$key" ] && [ "$SECONDS" -lt "$deadline" ] && tick=0
-    else
-      sleep "$every"
-    fi
-  done
+  write_state "$t0" "$rows" > /dev/null
 }
 
 # explain <who>: one session as the last pass saw it, from the state document. It runs no pass,
@@ -898,11 +802,12 @@ json_rows() {
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
-# document with them. The document is built beside the target and renamed into place, so a
+# document with them, each session carrying its eta cell (eta_cells, reused from tick's pass). The document is built beside the target and renamed into place, so a
 # reader never sees half of one, and a pass that started before the one already written
 # (a slow 10-minute pass finishing after an ask-event pass) leaves the newer document alone.
 write_state() {
   local t="$1" rows="$2" json dir tmp asks prev
+  [ -f "$CACHE/eta" ] || eta_cells > "$CACHE/eta"
   json="$( [ -n "$rows" ] && json_rows <<<"$rows")"
   [ -n "$json" ] && printf '%s\n' "$json"
   dir="$(dirname "$STATE_FILE")"
@@ -910,11 +815,14 @@ write_state() {
   asks="$(agent-ask list --all --pending 2>/dev/null)" || echo agent-ask >> "$CACHE/unreadable"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
-       --arg asks "$asks" --arg rows "$json" '
+       --arg asks "$asks" --arg rows "$json" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
+      | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]})
+         | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
-         sessions: ($r | map(select(.bucket != "NIGHTLY"))),
+         sessions: ($r | map(select(.bucket != "NIGHTLY")
+                     | if $e[.session_id] then .eta = $e[.session_id] else . end)),
          main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
@@ -970,7 +878,7 @@ main() {
     mark) shift; mark "$@"; return ;;
     escalate) shift; escalate "$@"; return ;;
     label) shift; label "$@"; return ;;
-    watch) shift; watch "$@"; return ;;
+    tick) tick; return ;;
     explain) shift; explain "$@"; return ;;
     -h|--help) sed -n '2,19p' "$0"; return ;;
   esac

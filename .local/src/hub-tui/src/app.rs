@@ -1,10 +1,11 @@
-//! `hub infra`: the state, the keys and the drawing. Reads run in worker threads and come back
-//! as messages; a read asked for while one is running is coalesced into one more after it.
+//! `hub`: the state, the keys and the drawing. Reads run in worker threads and come back as
+//! messages; a read asked for while one is running is coalesced into one more after it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -13,9 +14,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::board;
 use crate::fmt::{clock, Palette};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
+use crate::{board, day, fleet};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -28,16 +29,30 @@ pub enum Tab {
     Jobs,
     Ci,
     Machines,
+    Sessions,
+    Today,
+    History,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Jobs, Tab::Ci, Tab::Machines];
+    pub const ALL: [Tab; 7] = [
+        Tab::Overview,
+        Tab::Jobs,
+        Tab::Ci,
+        Tab::Machines,
+        Tab::Sessions,
+        Tab::Today,
+        Tab::History,
+    ];
     pub fn title(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Jobs => "Jobs",
             Tab::Ci => "CI",
             Tab::Machines => "Machines",
+            Tab::Sessions => "Sessions",
+            Tab::Today => "Today",
+            Tab::History => "History",
         }
     }
     pub fn parse(s: &str) -> Option<Tab> {
@@ -48,12 +63,63 @@ impl Tab {
     fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
-    /// The Grafana dashboard that keeps this page's trends.
-    fn dashboard(self) -> &'static str {
+    /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
+    fn dashboard(self) -> Option<&'static str> {
         match self {
-            Tab::Overview => "kb-command-center",
-            Tab::Jobs | Tab::Ci => "kb-ci-runners",
-            Tab::Machines => "kb-fleet",
+            Tab::Overview => Some("kb-command-center"),
+            Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
+            Tab::Machines => Some("kb-fleet"),
+            Tab::Sessions | Tab::Today | Tab::History => None,
+        }
+    }
+}
+
+/// The files the Sessions, Today and History tabs are read from.
+#[derive(Clone)]
+pub struct BoardFiles {
+    pub state: PathBuf,
+    pub shepherd: PathBuf,
+    pub daylog: PathBuf,
+}
+
+impl BoardFiles {
+    pub fn from_env() -> BoardFiles {
+        BoardFiles {
+            state: boards::fleet_state(),
+            shepherd: boards::shepherd_dir(),
+            daylog: boards::daylog_dir(),
+        }
+    }
+    fn watch_log(&self) -> PathBuf {
+        self.shepherd.join("watch.log")
+    }
+    /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
+    pub fn is_board_file(&self, p: &Path) -> bool {
+        p == self.state
+            || p == self.watch_log()
+            || p.parent() == Some(self.daylog.as_path())
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(".json"))
+                    .is_some_and(boards::is_day)
+    }
+}
+
+/// One read of the board files.
+pub struct Boards {
+    pub watch: Watch,
+    pub days: Vec<String>,
+    pub rec: Option<serde_json::Value>,
+    pub hist: Vec<DayRow>,
+}
+
+impl Boards {
+    pub fn read(f: &BoardFiles, day: Option<&str>) -> Boards {
+        Boards {
+            watch: boards::watch(&f.state, &f.watch_log()),
+            days: boards::days(&f.daylog),
+            rec: boards::record(&f.daylog, day),
+            hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
         }
     }
 }
@@ -63,6 +129,11 @@ pub enum Msg {
     Tick,
     /// A job source's file changed (a run started or ended).
     Files,
+    /// The fleet state, watch.log or a day record changed.
+    BoardFiles,
+    /// `hub tab <name>` asked for a page (tabreq.rs).
+    Tab(Tab),
+    Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
     Log(u64, Result<String, String>),
@@ -101,15 +172,28 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
-    /// Lines scrolled down on the Prometheus pages.
+    pub files: BoardFiles,
+    pub boards: Option<Boards>,
+    /// The day the Today tab shows; None follows the newest record.
+    pub day: Option<String>,
+    /// The History tab's selected row, newest first.
+    pub hist_sel: usize,
+    /// Where the Today tab's sections start, from the last draw (n/N jump between them).
+    sections: Vec<usize>,
+    /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
     tx: Sender<Msg>,
     infra_read: Read,
     jobs_read: Read,
+    boards_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
+    /// Why a file watch could not be set (inotify full), shown in the tab bar.
+    pub watch_failed: Option<String>,
+    /// Why `hub tab` cannot reach this hub (its socket would not bind), shown in the tab bar.
+    pub tab_failed: Option<String>,
 }
 
 impl App {
@@ -122,27 +206,50 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
+            files: BoardFiles::from_env(),
+            boards: None,
+            day: None,
+            hist_sel: 0,
+            sections: vec![],
             scroll: 0,
             quit: false,
             tx,
             infra_read: Read::default(),
             jobs_read: Read::default(),
+            boards_read: Read::default(),
             log_gen: 0,
             page: 20,
+            watch_failed: None,
+            tab_failed: None,
         }
     }
 
-    /// The files whose change means a job started or ended: agentctl's ledger and run
-    /// markers, the night-shift queue, the Unity gate ledger.
+    /// The directories to watch: agentctl's ledger and run markers, the night-shift queue and
+    /// the Unity gate ledger (a job started or ended), then the board files.
     pub fn watched(&self) -> Vec<(PathBuf, bool)> {
         let mut v = vec![
             (self.paths.agentctl.clone(), true),
             (self.paths.night.clone(), true),
+            (self.files.shepherd.clone(), false),
+            (self.files.daylog.clone(), false),
         ];
-        if let Some(d) = self.paths.unity_runs.parent() {
-            v.push((d.to_path_buf(), false));
+        for f in [&self.paths.unity_runs, &self.files.state] {
+            if let Some(d) = f.parent() {
+                v.push((d.to_path_buf(), false));
+            }
         }
         v
+    }
+
+    pub fn read_boards(&mut self) {
+        if self.boards_read.want() {
+            let tx = self.tx.clone();
+            let f = self.files.clone();
+            let day = self.day.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Boards(Box::new(Boards::read(&f, day.as_deref()))));
+            });
+        }
     }
 
     pub fn read_infra(&mut self) {
@@ -182,8 +289,20 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
+                // With no file watch, the board files are only read here.
+                if self.watch_failed.is_some() {
+                    self.read_boards();
+                }
             }
             Msg::Files => self.read_jobs(),
+            Msg::BoardFiles => self.read_boards(),
+            Msg::Tab(t) => self.go(t),
+            Msg::Boards(b) => {
+                self.boards = Some(*b);
+                if self.boards_read.done() {
+                    self.read_boards();
+                }
+            }
             Msg::Infra(i) => {
                 self.infra = Some(*i);
                 if self.infra_read.done() {
@@ -227,23 +346,32 @@ impl App {
         if self.tab == Tab::Jobs && self.jobs_key(k) {
             return;
         }
+        if self.tab == Tab::Today && self.today_key(k) {
+            return;
+        }
+        if self.tab == Tab::History && self.history_key(k) {
+            return;
+        }
         let n = self.page.max(1);
+        let tabs = Tab::ALL.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char(c @ '1'..='4') => self.go(Tab::ALL[c as usize - '1' as usize]),
-            KeyCode::Tab => self.go(Tab::ALL[(self.tab.index() + 1) % 4]),
-            KeyCode::BackTab => self.go(Tab::ALL[(self.tab.index() + 3) % 4]),
+            KeyCode::Char(c @ '1'..='9') => {
+                if let Some(t) = Tab::ALL.get(c as usize - '1' as usize) {
+                    self.go(*t);
+                }
+            }
+            KeyCode::Tab => self.go(Tab::ALL[(self.tab.index() + 1) % tabs]),
+            KeyCode::BackTab => self.go(Tab::ALL[(self.tab.index() + tabs - 1) % tabs]),
             KeyCode::Char('r') => {
                 self.read_infra();
                 self.read_jobs();
+                self.read_boards();
             }
             KeyCode::Char('o') => {
-                if let Some(g) = self.infra.as_ref().and_then(|i| i.grafana.clone()) {
-                    open(&format!(
-                        "{}/d/{}",
-                        g.trim_end_matches('/'),
-                        self.tab.dashboard()
-                    ));
+                let g = self.infra.as_ref().and_then(|i| i.grafana.clone());
+                if let (Some(g), Some(d)) = (g, self.tab.dashboard()) {
+                    open(&format!("{}/d/{d}", g.trim_end_matches('/')));
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => self.scroll += 1,
@@ -259,6 +387,80 @@ impl App {
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
+    }
+
+    /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
+    fn today_key(&mut self, k: KeyEvent) -> bool {
+        let days = self.boards.as_ref().map_or(&[][..], |b| b.days.as_slice());
+        let at = match &self.day {
+            Some(d) => days.iter().position(|x| x == d),
+            None => days.len().checked_sub(1),
+        };
+        match k.code {
+            KeyCode::Char('[') => {
+                if let Some(i) = at.filter(|i| *i > 0) {
+                    self.open_day(Some(days[i - 1].clone()));
+                }
+            }
+            KeyCode::Char(']') => match at {
+                Some(i) if i + 2 < days.len() => self.open_day(Some(days[i + 1].clone())),
+                Some(i) if i + 2 == days.len() => self.open_day(None),
+                _ => {}
+            },
+            KeyCode::Char('t') if self.day.is_some() => self.open_day(None),
+            KeyCode::Char('n') => {
+                if let Some(s) = self.sections.iter().find(|s| **s > self.scroll) {
+                    self.scroll = *s;
+                }
+            }
+            KeyCode::Char('N') => {
+                if let Some(s) = self.sections.iter().rev().find(|s| **s < self.scroll) {
+                    self.scroll = *s;
+                } else {
+                    self.scroll = 0;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Show a day on the Today tab (None: the newest, live one) and read its record.
+    fn open_day(&mut self, d: Option<String>) {
+        self.day = d;
+        self.scroll = 0;
+        if let Some(b) = self.boards.as_mut() {
+            b.rec = boards::record(&self.files.daylog, self.day.as_deref());
+        }
+    }
+
+    /// History's own keys: j/k pick a day, Enter opens it on the Today tab.
+    fn history_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.boards.as_ref().map_or(0, |b| b.hist.len());
+        let last = n.saturating_sub(1);
+        let page = self.page.max(1);
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down => self.hist_sel = (self.hist_sel + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.hist_sel = self.hist_sel.saturating_sub(1),
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.hist_sel = (self.hist_sel + page).min(last)
+            }
+            KeyCode::PageUp => self.hist_sel = self.hist_sel.saturating_sub(page),
+            KeyCode::Char('g') | KeyCode::Home => self.hist_sel = 0,
+            KeyCode::Char('G') | KeyCode::End => self.hist_sel = last,
+            KeyCode::Enter => {
+                let Some(b) = &self.boards else { return true };
+                // Rows are newest first; the newest is the live day.
+                let Some(row) = b.hist.iter().rev().nth(self.hist_sel) else {
+                    return true;
+                };
+                let d = (self.hist_sel > 0 || !row.live).then(|| row.date.clone());
+                self.open_day(d);
+                self.tab = Tab::Today;
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// The Jobs page's own keys; false hands the key to the global ones.
@@ -374,8 +576,11 @@ impl App {
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Jobs {
             self.draw_jobs(f, body);
+        } else if self.tab == Tab::History && self.boards.is_some() {
+            self.draw_history(f, body);
         } else {
-            let lines = self.page_lines(body.width as usize);
+            let (lines, sections) = self.body(body.width as usize);
+            self.sections = sections;
             let max = lines.len().saturating_sub(body.height as usize);
             self.scroll = self.scroll.min(max);
             f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)), body);
@@ -387,7 +592,7 @@ impl App {
     }
 
     fn tab_bar(&self) -> Line<'static> {
-        let mut s = vec![Span::styled(" INFRA ", self.p.head())];
+        let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for (i, t) in Tab::ALL.iter().enumerate() {
             let label = format!(" {} {} ", i + 1, t.title());
             s.push(if *t == self.tab {
@@ -416,6 +621,18 @@ impl App {
             ));
         }
         s.push(Span::raw(format!("  {}", clock(now, now))));
+        if let Some(why) = &self.watch_failed {
+            s.push(Span::styled(
+                format!("  no file watch ({why}): files re-read every 60s"),
+                self.p.warn(),
+            ));
+        }
+        if let Some(why) = &self.tab_failed {
+            s.push(Span::styled(
+                format!("  hub tab cannot reach this hub ({why})"),
+                self.p.warn(),
+            ));
+        }
         Line::from(s)
     }
 
@@ -426,18 +643,58 @@ impl App {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
             Tab::Jobs => {
-                "Enter log  s source  f state  / search  h history  o open url  r refresh  1-4 tabs  q quit".into()
+                "Enter log  s source  f state  / search  h history  o open url  r refresh  1-7 tabs  q quit".into()
             }
-            _ => "1-4/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit".into(),
+            Tab::Sessions => "1-7/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit".into(),
+            Tab::Today if self.day.is_some() => {
+                "[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  1-7 tabs  q quit".into()
+            }
+            Tab::Today => "[ ] day  n/N section  j/k PgUp/PgDn scroll  1-7 tabs  q quit".into(),
+            Tab::History => "j/k pick a day  Enter open it in Today  1-7 tabs  q quit".into(),
+            _ => "1-7/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit".into(),
         }
     }
 
-    /// A Prometheus page as lines, or what is being waited for.
-    pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
-        match &self.infra {
-            None => vec![Line::styled("Reading Prometheus...", self.p.dim())],
-            Some(i) => board::page(self.tab, i, self.p, jobs::now(), w, &self.hosts),
+    /// A page as lines (or what is being waited for), and where its sections start.
+    pub fn body(&self, w: usize) -> (Vec<Line<'static>>, Vec<usize>) {
+        let now = jobs::now();
+        let reading = |what: &str| {
+            (
+                vec![Line::styled(format!("Reading {what}..."), self.p.dim())],
+                vec![],
+            )
+        };
+        match (self.tab, &self.boards, &self.infra) {
+            (Tab::Sessions | Tab::Today | Tab::History, None, _) => reading("the board files"),
+            (Tab::Sessions, Some(b), _) => (fleet::page(&b.watch, self.p, now, w), vec![]),
+            (Tab::Today, Some(b), _) => {
+                let pg = day::today(b.rec.as_ref(), self.p, now, w);
+                (pg.lines, pg.sections)
+            }
+            (Tab::History, Some(b), _) => (day::history(&b.hist, self.hist_sel, self.p, w), vec![]),
+            (_, _, None) => reading("Prometheus"),
+            (t, _, Some(i)) => (board::page(t, i, self.p, now, w, &self.hosts), vec![]),
         }
+    }
+
+    pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
+        self.body(w).0
+    }
+
+    /// The day list keeps its header and scrolls its rows to keep the selection in view.
+    fn draw_history(&mut self, f: &mut Frame, area: Rect) {
+        let lines = self.page_lines(area.width as usize);
+        let h = (area.height as usize).saturating_sub(1).max(1);
+        let n = lines.len().saturating_sub(1);
+        self.hist_sel = self.hist_sel.min(n.saturating_sub(1));
+        if self.hist_sel < self.scroll {
+            self.scroll = self.hist_sel;
+        } else if self.hist_sel >= self.scroll + h {
+            self.scroll = self.hist_sel + 1 - h;
+        }
+        let mut out: Vec<Line> = lines.iter().take(1).cloned().collect();
+        out.extend(lines.into_iter().skip(1 + self.scroll).take(h));
+        f.render_widget(Paragraph::new(out), area);
     }
 
     fn draw_jobs(&mut self, f: &mut Frame, area: Rect) {
@@ -562,6 +819,39 @@ mod tests {
         assert!(screen(&mut a, 80, 10).contains("Reading Prometheus..."));
         a.tab = Tab::Jobs;
         assert!(screen(&mut a, 80, 10).contains("Reading jobs..."));
+    }
+
+    fn key(c: char) -> Msg {
+        Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))))
+    }
+
+    #[test]
+    fn a_tab_request_switches_the_running_board() {
+        let mut a = app(Tab::Overview);
+        a.handle(Msg::Tab(Tab::Sessions));
+        assert_eq!(a.tab, Tab::Sessions);
+        a.handle(key('6'));
+        assert_eq!(a.tab, Tab::Today);
+    }
+
+    #[test]
+    fn a_failed_watch_or_socket_is_on_screen_and_the_tick_reads_the_boards() {
+        let mut a = app(Tab::Sessions);
+        assert!(!screen(&mut a, 160, 6).contains("no file watch"));
+        a.watch_failed = Some("inotify full".into());
+        a.tab_failed = Some("path must be shorter than SUN_LEN".into());
+        let s = screen(&mut a, 240, 6);
+        let bar = s.lines().next().unwrap();
+        assert!(bar.contains("no file watch (inotify full)"), "{s}");
+        assert!(
+            bar.contains("hub tab cannot reach this hub (path must"),
+            "{s}"
+        );
+        // Prometheus and the job sources are not what this checks: mark them already reading.
+        a.infra_read.busy = true;
+        a.jobs_read.busy = true;
+        a.handle(Msg::Tick);
+        assert!(a.boards_read.busy, "the tick stands in for the watch");
     }
 
     #[test]

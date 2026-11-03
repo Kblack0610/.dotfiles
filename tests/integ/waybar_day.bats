@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # day.sh: the waybar day chip. The bar is today's merged PRs from day-log's record plus a
-# red !N for what is red now. What these pin: no record reads -, never 0; a record hub:log
-# stopped refreshing is dimmed with its age; Prometheus down still shows the merged count
+# red !N for what is red now. What these pin: no record reads -, never 0; a record
+# day-log.timer stopped refreshing is dimmed with its age; Prometheus down still shows the merged count
 # and says !? instead of a quiet nothing; PR titles with quotes and markup stay valid.
 
 setup() {
@@ -94,12 +94,12 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "red now: nothing"
 }
 
-@test "a record hub:log stopped refreshing is dimmed, with its age" {
+@test "a record day-log.timer stopped refreshing is dimmed, with its age" {
   record 3600
   run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#7f7f7f'>$MERGE 4</span> <span color='#ef5734'>!2</span>"
   run tip
-  assert_output --partial "record 1h00m old, hub:log is not refreshing it"
+  assert_output --partial "record 1h00m old, day-log.timer is not refreshing it"
 }
 
 # Negative control: no record is -, never a 0 nobody counted.

@@ -3,7 +3,7 @@
 #
 # It once ran `tmux rename-window "$name"` with no -t, which renames the session's ACTIVE
 # window: a background shell's prompt renamed the window you were looking at, and a declared
-# window (tmx's hub:watch) lost its name the moment it was selected, so tmx ensure built a
+# window (tmx's hub:board) lost its name the moment it was selected, so tmx ensure built a
 # duplicate on every Prefix+o. The library is sourced under bash with a stub tmux, so no tmux
 # server is involved.
 

@@ -2,7 +2,7 @@
 Description=Publish local Unity gates every minute
 
 # A process starting has no event to await, so this samples. One minute matches the
-# Prometheus scrape and the hub:infra refresh; sooner would show nothing new.
+# Prometheus scrape and the hub board refresh; sooner would show nothing new.
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min

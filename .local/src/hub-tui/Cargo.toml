@@ -2,7 +2,7 @@
 name = "hub-tui"
 version = "0.1.0"
 edition = "2021"
-description = "The hub boards as terminal pages: `hub infra` (tmux Prefix i)"
+description = "The hub boards as terminal tabs: `hub` (tmux Prefix i, o, O)"
 
 [[bin]]
 name = "hub"
@@ -13,7 +13,5 @@ hub-core = { path = "../hub-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 notify = { version = "8", default-features = false }
 ratatui = "0.30"
-unicode-width = "0.2"
-
-[dev-dependencies]
 serde_json = "1"
+unicode-width = "0.2"

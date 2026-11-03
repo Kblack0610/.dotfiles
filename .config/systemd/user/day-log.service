@@ -1,0 +1,10 @@
+[Unit]
+Description=Snapshot today's day log (day-log snapshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/day-log snapshot
+StandardOutput=null
+TimeoutStartSec=180

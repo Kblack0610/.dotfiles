@@ -5,9 +5,9 @@
 # what is red.
 #
 # Merged PRs come from day-log's record for today (DAYLOG_DIR/<YYYY-MM-DD>.json, local
-# day), which hub:log's `day-log watch` keeps fresh; this chip only reads it, so it spends
+# day), which day-log.timer refreshes every 5 minutes; this chip only reads it, so it spends
 # no gh calls. A record older than STALE_SECS is shown dimmed with its age, and no record
-# reads -, never 0. Red-now is PROM_RED_NOW, the query the hub:infra board's "red now" line
+# reads -, never 0. Red-now is PROM_RED_NOW, the query the hub board's "red now" line
 # uses; Prometheus unreadable reads !? in amber, never a quiet nothing.
 
 set -u
@@ -19,7 +19,7 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
 # nf-oct-git_merge, written as an escape so an editor cannot strip the glyph from this file.
 MERGE_ICON=$'\uf419'
-# hub:log refreshes the record every few minutes while it runs; past this it is not running.
+# day-log.timer refreshes the record every 5 minutes; past this the timer is not running.
 STALE_SECS=900
 C_DIM="#7f7f7f"
 LATEST=5
@@ -28,7 +28,7 @@ LATEST=5
 now="${DAYLOG_NOW:-$(date +%s)}"
 rec="$DAYLOG_DIR/$(date -d "@$now" +%F).json"
 
-merged_text="${MERGE_ICON} -" merged_tip="merged today: no record (hub:log, Prefix O, writes it)"
+merged_text="${MERGE_ICON} -" merged_tip="merged today: no record (day-log.timer writes it)"
 if [ -s "$rec" ] && summary="$(jq -r --argjson n "$LATEST" '
     def tally(f): group_by(f) | map({k: (.[0] | f // "other"), n: length}) | sort_by(-.n, .k)
       | map("\(.k) \(.n)") | join(", ");
@@ -48,7 +48,7 @@ if [ -s "$rec" ] && summary="$(jq -r --argjson n "$LATEST" '
   stamp="record $(prom_dur "$age") old"
   if ((age > STALE_SECS)); then
     merged_text="$(paint "$C_DIM" "$merged_text")"
-    stamp+=", hub:log is not refreshing it"
+    stamp+=", day-log.timer is not refreshing it"
   fi
   merged_tip="merged today: $count"
   for line in "${L[@]:1}"; do

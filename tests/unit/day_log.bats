@@ -8,7 +8,6 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export TZ=America/Los_Angeles
-  export TABLE_FIT_LIB="$REPO_ROOT/.local/lib/table-fit.sh"
   export DAYLOG_DIR="$HOME/.agent/daylog" DAYLOG_REFS_DIR="$HOME/refs"
   export DAYLOG_STATE="$SANDBOX/state.json" DAYLOG_WATCH_LOG="$SANDBOX/watch.log"
   export DAYLOG_GROUPS="$SANDBOX/groups" DAYLOG_OUTCOMES_DIR="$HOME/.agent/outcomes"
@@ -151,107 +150,16 @@ rec() { local day="${*: -1}"; jq "${@:1:$#-1}" "$DAYLOG_DIR/$day.json"; }
 
 @test "spend is the rollup's TOTAL row, not the sum of every row with it" {
   printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\ntools\\t1\\t2\\t1000000\\t2.5\\t0\\nTOTAL\\t4\\t12\\t3000000\\t15\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
-  COLUMNS=120 run "$SUBJECT" watch --once
+  run "$SUBJECT" show
   assert_success
-  assert_output --partial '4 sessions $15  3M tokens'
+  assert_output --partial '4 sessions active, whose whole-session spend is $15.'
+  assert_output --partial '| TOTAL | 4 | 3M | $15 |'
 }
 
 @test "negative control: a rollup with no TOTAL row is summed" {
-  COLUMNS=120 run "$SUBJECT" watch --once
+  run "$SUBJECT" show
   assert_success
-  assert_output --partial '3 sessions $12.5  2M tokens'
-}
-
-@test "watch --once draws every section and no line passes the width" {
-  { pr game 1 'feat(raiders): bosses stay in their lairs and start over when they are left alone' 2026-10-28T20:00:00Z; } | merged
-  jq -n '[{number: 9, title: "feat: open thing", url: "u", repository: {name: "game"}, createdAt: "2026-10-28T20:00:00Z", updatedAt: "2026-10-28T21:00:00Z", isDraft: false}]' > "$GHD/open"
-  echo '{"sessions":[],"main":[{"repo":"game","reason":"game red: Tests (no green in window)"}],"asks":[{"id":"Ab12","project":"game","kind":"decision","question":"ship it?","created":"2026-10-28T10:00:00-0700"}]}' > "$DAYLOG_STATE"
-  echo '2026-10-28 15:00  lab/game-agent-3:1  plan 1/4 -> 2/4' > "$DAYLOG_WATCH_LOG"
-  COLUMNS=80 run "$SUBJECT" watch --once
-  assert_success
-  for s in 'WAITING ON YOU (2)' 'MERGED BY GROUP' 'STILL OPEN' 'SESSIONS' 'TIMELINE' 'HOLD unity since 15:49'; do
-    assert_output --partial "$s"
-  done
-  assert_output --partial '15:00  lab/game-agent-3:1  plan 1/4 -> 2/4'
-  run awk 'length > 80' <<<"$output"
-  assert_output ''
-}
-
-@test "a short pane keeps the summary: each table is cut to its share and says how many more" {
-  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
-  LINES=34 COLUMNS=100 run "$SUBJECT" watch --once
-  assert_success
-  assert_line --index 0 --partial 'day log  Wed 2026-10-28'
-  assert_output --partial '+26 more (2 opens it)'
-  [ "${#lines[@]}" -le 32 ]
-}
-
-@test "negative control: with no height every merged group is drawn" {
-  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
-  COLUMNS=100 run "$SUBJECT" watch --once
-  refute_output --partial 'more (2 opens it)'
-  assert_output --partial 'g30'
-}
-
-@test "an open section lists everything in full and folds every other section to its header" {
-  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" "2026-10-28T20:$(printf %02d "$i"):00Z"; done | merged
-  COLUMNS=100 run "$SUBJECT" watch --once --open merged
-  assert_success
-  assert_output --partial '2 MERGED, EVERY PR (30)'
-  assert_output --partial '1 WAITING ON YOU (0)'
-  assert_output --partial '5 TIMELINE (0)'
-  refute_output --partial 'nothing'
-  refute_output --partial 'opens it'
-  run grep -c 'game#' <<<"$output"
-  assert_output 30
-  run grep -m1 'game#' <<<"$(COLUMNS=100 "$SUBJECT" watch --once --open 2)"
-  assert_output --partial 'game#30'
-}
-
-@test "an open section taller than the pane scrolls: it says which rows show, and the board still fits" {
-  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
-  LINES=24 COLUMNS=100 run "$SUBJECT" watch --once --open 2
-  assert_success
-  assert_output --regexp 'rows 1-[0-9]+ of 30'
-  assert_output --partial '5 TIMELINE (0)'
-  [ "${#lines[@]}" -le 22 ]
-}
-
-@test "scrolling stops at the end of the list, so the last row is on screen and no further" {
-  for i in $(seq 1 30); do pr game "$i" "feat(g$i): thing $i" 2026-10-28T20:00:00Z; done | merged
-  f="$("$SUBJECT" snapshot --date 2026-10-28)"
-  source "$SUBJECT"
-  frame "$f" 100 24 2 999 > "$SANDBOX/frame"
-  [ "$FRAME_OPEN" = 2 ]
-  [ "$FRAME_SCROLL" -eq $((30 - FRAME_PAGE)) ]
-  run grep -c 'game#1 ' "$SANDBOX/frame"
-  assert_output 1
-  run grep "of 30" "$SANDBOX/frame"
-  assert_output "  rows $((FRAME_SCROLL + 1))-30 of 30"
-}
-
-@test "the folded board shows the first asks and points at 1 for the rest; opened, every ask" {
-  jq -n '{sessions: [], main: [], asks: [range(1; 10) | {id: "a\(.)", project: "game", kind: "decision", question: "q\(.)?", created: "2026-10-28T10:00:00-0700"}]}' > "$DAYLOG_STATE"
-  COLUMNS=100 run "$SUBJECT" watch --once
-  assert_output --partial '1 WAITING ON YOU (9)'
-  assert_output --partial '+3 older asks (1 opens them)'
-  COLUMNS=100 run "$SUBJECT" watch --once --open waiting
-  refute_output --partial 'older asks'
-  run grep -c 'ASK' <<<"$output"
-  assert_output 9
-}
-
-@test "a section the day does not have opens nothing, and an unknown one is refused" {
-  { pr game 1 'feat: x' 2026-10-28T03:00:00Z; } | merged
-  "$SUBJECT" snapshot --date 2026-10-27
-  rm -f "$DAYLOG_DIR/2026-10-27.json.tmp"
-  jq '.open = null | .bench = null' "$DAYLOG_DIR/2026-10-27.json" > "$SANDBOX/r" && mv "$SANDBOX/r" "$DAYLOG_DIR/2026-10-27.json"
-  COLUMNS=100 run "$SUBJECT" watch --once --date 2026-10-27 --open open
-  assert_success
-  assert_output --partial '2 MERGED BY GROUP'
-  refute_output --partial 'STILL OPEN'
-  run "$SUBJECT" watch --once --open bogus
-  assert_failure 2
+  assert_output --partial '3 sessions active, whose whole-session spend is $12.5.'
 }
 
 @test "a snapshot of today publishes merged PRs per area and spend per project, TOTAL left out" {

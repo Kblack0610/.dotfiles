@@ -10,7 +10,6 @@
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
 mod auth;
-mod boards;
 mod infra;
 mod jobs;
 mod transcript;
@@ -30,6 +29,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use hub_core::boards;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
