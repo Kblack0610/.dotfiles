@@ -30,10 +30,11 @@
     text_icon_padding = 12
     progress_bar_corner_radius = 4
 
-    # -- text: Inter is a UI face with real weights; the title is semibold, the body regular
-    font = Inter 10.5
+    # -- text: the terminal's font (kitty's Hack, installed as the Nerd Font build by
+    #    NERD_FONTS in packages.conf), bold title over a regular body
+    font = Hack Nerd Font Mono 10
     markup = full
-    format = "<span weight='600'>%s</span>\n%b"
+    format = "<b>%s</b>\n%b"
     line_height = 3
     alignment = left
     vertical_alignment = top
