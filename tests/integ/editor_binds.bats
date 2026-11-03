@@ -96,10 +96,11 @@ setup() {
 
 @test "the editor claimed no Alt key, so nvim and the shell still see them" {
   # A root-table (-n) bind is swallowed by tmux everywhere. The pane nav owns M-hjkl/HJKL
-  # by design; the editor must not have quietly added to that set.
+  # and the session harpoon owns M-1..M-4 (harpoon.sh), both by design; the editor must
+  # not have quietly added to that set.
   local extra
   extra="$(grep -E '^[[:space:]]*bind(-key)? -n ' "$TMUX_CONF" \
-    | grep -vE ' -n M-[hjklHJKL] ' | grep -c . || true)"
+    | grep -vE ' -n M-[hjklHJKL1-4] ' | grep -c . || true)"
   [ "$extra" -eq 0 ] || fail "$extra unexpected no-prefix binding(s) -- a global key was taken"
 }
 
