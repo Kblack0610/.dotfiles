@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# tmux-harpoon (harpoon.sh): session slots, Prefix+a / M-1..M-4 / Prefix+e.
+# tmux-harpoon (harpoon.sh): window slots, Prefix+a / M-1..M-4 / Prefix+e.
 #
 # integ tier: the script runs against the recording tmux and tmx stubs, so each jump
 # assertion is "which command did it issue". The crossing itself is tmx's contract,
@@ -19,43 +19,125 @@ setup() {
   export TMUX="/tmp/fake,1,0"
 }
 
-# at <server> <session> -- where the stub says this client is sitting.
-at() { export STUB_SOCKET="/tmp/tmux-1000/$1" STUB_SESSION="$2" STUB_WINDOW_INDEX=0; }
+# at <server> <session> [window_id [session_created [name]]] -- where the stub says this
+# client is sitting.
+at() {
+  export STUB_SOCKET="/tmp/tmux-1000/$1" STUB_SESSION="$2" STUB_WINDOW_INDEX=0 \
+    STUB_WINDOW_ID="${3:-@7}" STUB_SESSION_CREATED="${4:-1000}" STUB_WINDOW_NAME="${5:-zsh}"
+}
 
+# pinned <server> <session> ... -- 2-field lines: plain session pins, the pre-window format.
 pinned() {
   mkdir -p "${LIST%/*}"
   : > "$LIST"
   while [ $# -gt 0 ]; do printf '%s\t%s\n' "$1" "$2" >> "$LIST"; shift 2; done
 }
 
-@test "toggle appends the current session, keyed by server and name" {
+# pinw <server> <session> <window_id> <stamp> <name> -- append one window pin.
+pinw() { mkdir -p "${LIST%/*}"; printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$LIST"; }
+
+# windows [<server>] -- the live windows list-windows reports, rows read from stdin.
+windows() { cat > "$NOTES_FIXTURE/tmux.window_stamps${1:+.$1}"; }
+
+@test "toggle appends the current window, keyed by server, session, id and stamp" {
   at hub daily
   run "$H" toggle
   assert_success
-  assert_output --partial "daily -> slot 1"
-  at lab work
+  assert_output --partial "daily:zsh -> slot 1"
+  at lab work @3 2000 nvim
   run "$H" toggle
-  assert_output --partial "work -> slot 2"
-  assert_equal "$(cat "$LIST")" "$(printf 'hub\tdaily\nlab\twork')"
+  assert_output --partial "work:nvim -> slot 2"
+  assert_equal "$(cat "$LIST")" "$(printf 'hub\tdaily\t@7\t1000\tzsh\nlab\twork\t@3\t2000\tnvim')"
 }
 
-@test "toggle on a pinned session unpins it and closes the gap" {
-  pinned hub daily lab work hub notes
-  at lab work
+@test "two windows of one session take two slots" {
+  at hub daily @1 1000 zsh
+  run "$H" toggle
+  at hub daily @2 1000 vim
+  run "$H" toggle
+  assert_output --partial "daily:vim -> slot 2"
+  assert_equal "$(wc -l < "$LIST" | tr -d ' ')" 2
+}
+
+@test "toggle on a pinned window unpins it and closes the gap" {
+  pinw hub daily @1 1000 zsh
+  pinw lab work @3 1000 vim
+  pinw hub notes @4 1000 zsh
+  at lab work @3 1000 renamed-since
   run "$H" toggle
   assert_success
-  assert_output --partial "unpinned work"
-  assert_equal "$(cat "$LIST")" "$(printf 'hub\tdaily\nhub\tnotes')"
+  assert_output --partial "unpinned work:renamed-since"
+  assert_equal "$(cut -f2 "$LIST" | tr '\n' ' ')" "daily notes "
 }
 
 @test "a session of the same name on another server is a different pin" {
-  pinned hub work
+  pinw hub work @7 1000 zsh
   at lab work
   run "$H" toggle
-  assert_output --partial "work -> slot 2"
+  assert_output --partial "work:zsh -> slot 2"
 }
 
-@test "jump in the same server is a switch-client, not a hop" {
+@test "jump to a live window selects it, then switches to its session" {
+  pinw hub daily @1 1000 zsh
+  pinw hub daily @2 1000 vim
+  printf '1000\t@1\tzsh\n1000\t@2\tvim\n' | windows
+  at hub daily @1
+  run "$H" jump 2
+  assert_success
+  assert_called 'tmux select-window -t =daily:@2'
+  assert_called 'tmux switch-client -t =daily'
+}
+
+@test "jump from the pinned window itself does nothing" {
+  pinw hub daily @2 1000 vim
+  printf '1000\t@2\tvim\n' | windows
+  at hub daily @2
+  run "$H" jump 1
+  assert_success
+  assert_not_called 'switch-client'
+  assert_not_called 'select-window'
+}
+
+@test "a recreated session reuses window ids, so a stale stamp lands on the session" {
+  # Ids restart after a kill-server: @2 now exists again, but it is not the pinned window.
+  pinw hub daily @2 1000 vim
+  printf '2000\t@2\tsomething-else\n' | windows
+  at hub notes
+  run "$H" jump 1
+  assert_called 'tmux switch-client -t =daily'
+  assert_not_called 'select-window'
+}
+
+@test "a closed window lands on its session" {
+  pinw hub daily @2 1000 vim
+  printf '1000\t@1\tzsh\n' | windows
+  at hub notes
+  run "$H" jump 1
+  assert_called 'tmux switch-client -t =daily'
+  assert_not_called 'select-window'
+}
+
+@test "a window on another server goes to tmx goto as session:window" {
+  pinw lab work @3 1000 nvim
+  printf '1000\t@3\tnvim\n' | windows lab
+  at hub daily
+  run "$H" jump 1
+  assert_success
+  assert_called 'tmx goto lab work:@3'
+}
+
+@test "ls shows the live window name, and says when a window has gone" {
+  pinw hub daily @2 1000 old-name
+  pinw hub daily @9 1000 closed
+  printf '1000\t@2\tnew-name\n' | windows
+  at hub daily @2
+  run "$H" ls
+  assert_success
+  assert_line --index 0 --partial '* 1  hub      daily:new-name'
+  assert_line --index 1 --partial 'daily:closed  (window gone)'
+}
+
+@test "a session pin (2-field line) in the same server is a switch-client, not a hop" {
   pinned hub daily hub notes
   at hub daily
   run "$H" jump 2
@@ -92,7 +174,7 @@ pinned() {
   assert_not_called 'tmx goto'
 }
 
-@test "jump to the session you are already in does nothing" {
+@test "a session pin to the session you are already in does nothing" {
   pinned hub daily
   at hub daily
   run "$H" jump 1
@@ -134,7 +216,7 @@ EOF
   assert_output --partial 'nnoremap <buffer> q <Cmd>wq<CR>'
 }
 
-@test "prefix+a and C-a pin the session; t and C-t open the window-tags table" {
+@test "prefix+a and C-a pin the window; t and C-t open the window-tags table" {
   # The C- twins catch Ctrl still held from the C-b prefix, which otherwise lands on an
   # unbound key and looks like the bind "not working half the time".
   local k conf="$REPO_ROOT/.tmux.conf"
