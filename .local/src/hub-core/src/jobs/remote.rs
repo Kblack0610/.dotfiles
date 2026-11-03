@@ -220,6 +220,12 @@ pub(super) fn k8s_rows(
             }
             let mut j = Job::new(Source::K8s, name, state);
             j.started = k.started;
+            j.log = k.started.map(|from| LogRef::K8s {
+                ns: ns.clone(),
+                job: job.clone(),
+                from,
+                to: k.finished,
+            });
             j.detail = job;
             if k.active {
                 j.secs = k.started.map(|s| at - s);
@@ -396,6 +402,16 @@ mod tests {
         assert_eq!(
             (j[1].name.as_str(), j[1].secs, j[1].ok),
             ("nas/backup", Some(60), Some(true))
+        );
+        assert_eq!(
+            j[1].log,
+            Some(LogRef::K8s {
+                ns: "nas".into(),
+                job: "backup-1".into(),
+                from: 100,
+                to: Some(160)
+            }),
+            "a row opens its own Job's pods, not the CronJob's"
         );
     }
 }
