@@ -12,10 +12,13 @@
 //! | ci       | runner-exporter `github_runner_state`, `github_actions_job_waiting` | `github_actions_run_recent` |
 //! | k8s      | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
 //!
+//! A k8s Job's log is its pods' lines in Loki (`loki.rs`), read only when a row is opened.
+//!
 //! An unreadable source is named in `errors` and the rest still list: a run list judges nothing.
 
 mod local;
 pub mod log;
+mod loki;
 mod remote;
 mod systemd;
 
@@ -93,6 +96,13 @@ pub enum LogRef {
     Night { slug: String },
     /// A GitHub Actions run or job, by its URL.
     Gh { url: String, done: bool },
+    /// A k8s Job's pod logs in Loki, from its start to its end (None: to now).
+    K8s {
+        ns: String,
+        job: String,
+        from: i64,
+        to: Option<i64>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

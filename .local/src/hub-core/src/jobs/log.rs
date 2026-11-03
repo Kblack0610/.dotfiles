@@ -48,7 +48,7 @@ fn tail_file(path: &Path) -> Result<String, String> {
     slice(path, 0, None)
 }
 
-fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     let out = Command::new(cmd)
         .args(args)
         .output()
@@ -168,6 +168,7 @@ pub fn read_log(paths: &Paths, r: &LogRef) -> Result<String, String> {
             tail_file(&paths.night_logs.join(format!("{slug}.log")))
         }
         LogRef::Gh { url, done } => gh_log(paths, url, *done),
+        LogRef::K8s { ns, job, from, to } => super::loki::job_log(ns, job, *from, *to),
     }
 }
 
