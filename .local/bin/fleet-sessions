@@ -26,8 +26,8 @@
 # its PR merged with the tree clean is DONE.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
 # A pending ask (NEEDS; the one record of waiting on the human, which a Stop check makes an
-# attended session file) and an open PR that conflicts with the default branch (STALLED) decide before the session's status,
-# so none can hide behind WORKING or read as DONE.
+# attended session file) and a ready open PR that conflicts with the default branch (STALLED)
+# decide before the session's status, so none can hide behind WORKING or read as DONE.
 # Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
 # `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -80,31 +80,39 @@ LABELS="$LEDGER/labels"
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)>
 #   -> "BUCKET reason"
-# Who must act decides before whether the session is active: an ask waits on the human and a
-# PR that cannot merge wastes every run on it, however busy the session is. On 2026-10-28
-# agent-12's ask sat 14h behind "WORKING busy", and five PRs that conflicted on the
-# unity-core pin read "WORKING shell", so the shepherd, which skips WORKING, saw none of it.
+# Who must act decides before whether the session is active: an ask waits on the human, and
+# a PR that is otherwise ready but cannot merge wastes the wait, however busy the session is.
+# Ready is green checks, or no checks and the session idle. A conflict on a red or running PR
+# only rides along in the reason of its other bucket: resolving it before the PR is ready
+# invites the next conflict and a fresh gate. On 2026-11-02 main's submodule pin moved
+# several times and ~30 open PRs drew 55 conflict nudges in 6h, most of them not ready.
 session_bucket() {
-  local st="$1" note=""
+  local st="$1" note="" cn=""
   [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
   [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
   if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
-    echo "STALLED PR #$9 conflicts with the default branch"; return
+    case "${11}" in
+      PASS) echo "STALLED PR #$9 conflicts with the default branch"; return ;;
+      FAIL|PENDING) ;;
+      *) [ "$st" = idle ] && [ "$5" -ge "$FLEET_IDLE_MIN" ] \
+           && { echo "STALLED PR #$9 conflicts with the default branch"; return; } ;;
+    esac
+    cn=", conflicts with the default branch"
   fi
   case "$st" in
-    busy) echo "WORKING busy"; return ;;
+    busy) echo "WORKING busy$cn"; return ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
       if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then
         note=", background shell still running"
       elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then
-        echo "WORKING shell"; return
+        echo "WORKING shell$cn"; return
       else
         # The threshold, not the minutes: a reason that changed every pass would re-nudge every pass.
         note=", background shell idle over ${FLEET_SHELL_STALE_MIN}m"
       fi ;;
   esac
-  echo "$(bucket_facts "$@")$note"
+  echo "$(bucket_facts "$@")$cn$note"
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -476,23 +484,26 @@ fetch_once() {
   [ -f "$key" ] || { git -C "$1" fetch -q origin 2>/dev/null; : > "$key"; }
 }
 
-# sync_facts <dir> <base> -> "behind conflicts": commits on the base this branch lacks, and
-# whether merging the base in would conflict (yes|no). merge-tree touches no checkout.
+# sync_facts <dir> <base> -> "behind conflicts fork": commits on the base this branch lacks,
+# whether merging the base in would conflict (yes|no), and on a conflict the merge base (else
+# -). merge-tree touches no checkout. The merge base moves only when the branch takes the base
+# in, so it names one conflict across pushes and the base moving on.
 sync_facts() {
-  local d="$1" base="$2" behind conflicts=no
-  behind="$(git -C "$d" rev-list --count "HEAD..$base" 2>/dev/null)" || { echo "- -"; return; }
+  local d="$1" base="$2" behind conflicts=no fork=-
+  behind="$(git -C "$d" rev-list --count "HEAD..$base" 2>/dev/null)" || { echo "- - -"; return; }
   if [ "$behind" -gt 0 ]; then
     git -C "$d" merge-tree --write-tree --no-messages "$base" HEAD >/dev/null 2>&1
     case $? in 0) ;; 1) conflicts=yes ;; *) conflicts=- ;; esac
   fi
-  echo "$behind $conflicts"
+  [ "$conflicts" = yes ] && fork="$(git -C "$d" merge-base "$base" HEAD 2>/dev/null)"
+  echo "$behind $conflicts ${fork:--}"
 }
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
-# plus branch, sync and the PR head: "git dirty ahead pr state ci in_pr branch behind conflicts oid".
+# plus branch, sync and the PR head: "git dirty ahead pr state ci in_pr branch behind conflicts fork oid".
 git_facts() {
   local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
-  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - -"; return; }
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - -"; return; }
   fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   dirty="$(dirty_count "$d" "$edited")"
@@ -539,19 +550,20 @@ collect() {
     askids="$(asks_for "$sid" | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch behind conflicts oid < <(git_facts "$cwd" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
     else phases="$pdone/$ptotal"; fi
-    local red=- mh mwfs msuspects
-    if [ "$g" = 1 ] && [ "$state" = MERGED ]; then
+    # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
+    local red=- mh=- mwfs msuspects
+    if [ "$g" = 1 ]; then
       IFS=$'\t' read -r mh mwfs _ msuspects < <(main_health "$cwd")
-      if [ "$mh" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$msuspects")"; then
+      if [ "$state" = MERGED ] && [ "$mh" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$msuspects")"; then
         red="$mwfs"
         printf '%s\t%s\n' "$(repo_slug "$cwd")" "$sid" >> "$CACHE/owners"
       fi
-    elif [ "$g" = 1 ]; then main_health "$cwd" >/dev/null; fi
+    fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -559,16 +571,20 @@ collect() {
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
-    # and gets a new nudge, while the same commit is never nudged twice.
+    # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
+    # carries the merge base instead: a push that leaves it unresolved is the same fact, and
+    # only a branch that took the base in (was clean) and conflicts again is a new one.
     fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
-    [ "$state" = OPEN ] && [ "$oid" != - ] && fact="$fact@${oid:0:12}"
+    if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
+      fact="$fact base ${fork:0:12}"
+    elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
-      "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test"
+      "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh"
   done
   main_rows
 }
@@ -850,7 +866,8 @@ json_rows() {
       compactions: ((.[37] // "0") | tonumber),
       topic: (if (.[38] // "-") == "-" then null else .[38] end),
       doing: (if (.[39] // "-") == "-" then null else .[39] end),
-      said: (if (.[40] // "-") == "-" then null else .[40] end)}'
+      said: (if (.[40] // "-") == "-" then null else .[40] end),
+      main_red: (if (.[43] // "-") == "RED" then true elif (.[43] // "-") == "OK" then false else null end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
