@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-acct - start each `cl` session on the Claude account with the most room left
+# claude-acct - start each `cl` session on the Claude account whose week is cheapest to spend from
 #
 # Usage:
 #   claude-acct pick [name]   # print the CLAUDE_CONFIG_DIR to use (empty = main account);
@@ -86,22 +86,17 @@ fetch() {
     return 1
 }
 
-# pct <window> -> whole percent used, or `-` when the endpoint does not report that window
-pct() { jq -r "(.$1.utilization | if . == null then \"-\" else \"\\(floor)%\" end)"; }
-
-# scores -> "score US name US dir US note" per account that can be scored
+# scores -> "rank US score US name US dir US note" per account that can be scored. Lower rank is
+# better (see usage_json); score is the fuller of the two windows, which `move` compares to 100.
 scores() {
-    local name dir json rc
-    while IFS=$'\037' read -r name dir; do
-        json=$(fetch "$name" "$dir"); rc=$?
-        case $rc in
-            0) printf '%s\037%s\037%s\0375h %s, 7d %s\n' \
-                   "$(jq -r '[.five_hour.utilization // 0, .seven_day.utilization // 0] | max' <<< "$json")" \
-                   "$name" "$dir" "$(pct five_hour <<< "$json")" "$(pct seven_day <<< "$json")" ;;
-            # An idle account's token expires; launching it is what refreshes it.
-            2) printf '0\037%s\037%s\037token expired, refreshes on launch\n' "$name" "$dir" ;;
-        esac
-    done < <(accounts)
+    usage_json nospend | jq -r '
+        select(.state != "unread") |
+        def p: if . == null then "-" else "\(floor)%" end;
+        [.rank, ([.five_hour // 0, .week_used // 0] | max), .name, .dir,
+         # An idle account token expires; launching it is what refreshes it.
+         (if .state == "expired" then "token expired, refreshes on launch"
+          else "5h \(.five_hour | p), 7d \(.week_used | p)" end)]
+        | map(tostring) | join("\u001f")'
 }
 
 cmd_link() {
@@ -129,10 +124,11 @@ cmd_link() {
     done < <(accounts)
 }
 
-# best -> "score US name US dir US note" of the account with the most room, nothing without data
+# best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
+# nothing without data
 best() {
     # Stable sort keeps file order on a tie, so the first account (main) wins it.
-    scores | sort -s -t$'\037' -g -k1,1 | head -n1
+    scores | sort -s -t$'\037' -g -k1,1 | head -n1 | cut -d$'\037' -f2-
 }
 
 cmd_pick() {
@@ -228,14 +224,25 @@ usage_json() {
         live=$(grep -cxF -- "$dir" <<< "$lives")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$(email_of "$dir")" --arg state "$state" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" --arg over "$over" \
-            --arg resets "$resets" --arg run_out "$run_out" --argjson live "${live:-0}" --argjson spend "$spend" '
+            --arg resets "$resets" --arg run_out "$run_out" --argjson live "${live:-0}" --argjson spend "$spend" \
+            --argjson now "$now" --argjson reserve "$RESERVE_PCT" --argjson week "$WEEK" '
             def num: if . == "" then null else tonumber end;
+            # Hours to the weekly reset per % left, so the account about to reset spends first:
+            # what is left there is lost anyway. Lower is better. A 5h window near full goes last.
+            def rank:
+                (.week_used // 0) as $u
+                | (if .state == "expired" then 0
+                   elif $u >= 100 then 1e9
+                   else ((if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end)
+                         / (100 - $u)) end)
+                  + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
             {name: $name, dir: $dir, email: $email, state: $state,
              five_hour: ($usage.five_hour.utilization // null),
              week_used: ($used | num), week_gone: ($gone | num),
              over_pace: (if $over == "" then null else $over == "true" end),
              resets: ($resets | num), run_out: ($run_out | num), live: $live,
-             usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}'
+             usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}
+            | .rank = rank'
     done < <(accounts)
 }
 
@@ -304,7 +311,7 @@ cmd_room() {
              | select((.week_used == null) or
                       (.week_used <= .week_gone + $slack and .week_used < 100 - $reserve))
              | select((.five_hour == null) or (.five_hour < 100 - $reserve))]
-        | sort_by(.week_used // 0) | first // empty' <<< "$rows")
+        | sort_by(.rank) | first // empty' <<< "$rows")
     if [[ -n "$row" ]]; then
         echo "claude-acct: room on $(jq -r '"\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"' <<< "$row")" >&2
         jq -r .dir <<< "$row"

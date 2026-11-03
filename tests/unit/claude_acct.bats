@@ -21,9 +21,12 @@ setup() {
   chmod +x "$SANDBOX/bin/curl" "$SANDBOX/bin/claude"
 }
 
-# usage <account> <5h%> <7d%> -- a fresh cached answer from the usage endpoint
+# usage <account> <5h%> <7d%> [resets_at] -- a fresh cached answer from the usage endpoint;
+# without resets_at the week counts as fully ahead
 usage() {
-  printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s}}\n' "$2" "$3" \
+  local resets=null
+  [[ -n "${4:-}" ]] && resets="\"$4\""
+  printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s,"resets_at":%s}}\n' "$2" "$3" "$resets" \
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
 
@@ -32,7 +35,7 @@ creds() {
   printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":%s}}\n' "$2" > "$1/.credentials.json"
 }
 
-@test "the account with the lower of its two windows' max wins" {
+@test "the account whose fuller window is lower wins when resets are unknown" {
   usage main 10 80   # weekly nearly spent
   usage alt 50 50
   run "$ACCT" pick
@@ -42,12 +45,33 @@ creds() {
 }
 
 @test "the default account wins and prints an empty dir" {
-  usage main 20 30
-  usage alt 60 10
+  usage main 20 10
+  usage alt 60 30
   run --separate-stderr "$ACCT" pick
   assert_success
   assert_output ''
   [[ "$stderr" == *'claude-acct: main'* ]]
+}
+
+@test "a sooner reset beats a lower percent used" {
+  export CLAUDE_ACCT_NOW=1800000000
+  usage main 10 70 "$(date -u -d @$((1800000000 + 6 * 86400)) +%Y-%m-%dT%H:%M:%S+00:00)"
+  usage alt 10 75 "$(date -u -d @$((1800000000 + 2 * 3600)) +%Y-%m-%dT%H:%M:%S+00:00)"
+  run "$ACCT" pick
+  assert_line "$ALT"
+}
+
+@test "an account with its five hour window nearly full loses to one that can run now" {
+  export CLAUDE_ACCT_NOW=1800000000
+  r1=$(date -u -d @$((1800000000 + 2 * 3600)) +%Y-%m-%dT%H:%M:%S+00:00)
+  r2=$(date -u -d @$((1800000000 + 6 * 86400)) +%Y-%m-%dT%H:%M:%S+00:00)
+  usage main 90 75 "$r1"
+  usage alt 10 70 "$r2"
+  run "$ACCT" pick
+  assert_line "$ALT"
+  usage main 84 75 "$r1"
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
 }
 
 @test "a null five_hour window still scores on the weekly one" {
@@ -361,6 +385,15 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
+}
+
+@test "room: of the accounts under pace the sooner reset wins" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 150
+  week alt 20 30
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
 }
 
 @test "room: today's numbers refuse main and take alt" {

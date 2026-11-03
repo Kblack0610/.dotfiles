@@ -81,7 +81,7 @@ _claude_launch() {
     fi
 }
 
-# cl starts on whichever Claude account has the most 5h/7d room left (claude-acct,
+# cl starts on whichever Claude account is cheapest to spend from (claude-acct,
 # accounts in ~/.config/claude-acct/accounts); `cl --acct <name>` forces one.
 # Plain `claude` stays on the default one.
 unalias cl 2>/dev/null
