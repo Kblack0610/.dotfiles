@@ -1,36 +1,24 @@
 ---
 name: fix-ci
-description: "Fix all CI errors: lint, e2e, integration tests, and status checks"
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task, WebFetch, WebSearch, TodoWrite, AskUserQuestion, mcp__github-gh__gh_pr_checks, mcp__github-gh__gh_run_list, mcp__github-gh__gh_run_view, mcp__github-gh__gh_pr_view, mcp__github-gh__gh_pr_list]
+description: "Fix the red checks on the current PR at their root cause: two attempts, then file it and stop"
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task]
 ---
 
-Please fix all errors with lint, end-to-end testing, integration testing, and any other status check. Make sure to monitor CI and test locally to continually fix these issues until they are completely fixed, and CI is green.
+Fix the failing checks on the current branch's PR. If the repo has a CI doc (`docs/operations/ci.md` or what its CLAUDE.md names), it wins over this file.
 
-## Workflow
+## Steps
 
-1. **Identify the current branch and PR** - Check git status and find the associated PR
-2. **Check CI status** - Look at GitHub Actions runs and PR checks to identify failures
-3. **Run local checks first** - Run lint, typecheck, tests locally to reproduce issues
-4. **Fix issues iteratively** - For each failing check:
-   - Understand the error
-   - Fix the root cause
-   - Verify the fix locally
-   - Commit the fix
-5. **Push and monitor** - Push fixes and monitor CI until all checks pass
-6. **Repeat** - If new failures appear, go back to step 2
+1. Find the PR (`gh pr view --json number,headRefOid`) and its red checks (`gh pr checks`).
+2. Read the failure: `gh run view <run> --log-failed`. Diff it against the last green run of the same workflow on the base branch (`gh run list --workflow <wf> --branch <base> --status success -L 1`); a line both logs share is not the cause.
+3. Check the base: if the same check is red on a clean `origin/<base>`, it is not this PR's red. File a board row naming the check and the base run, and stop.
+4. Reproduce locally with the repo's own scripts (read `package.json`, `Makefile`, `scripts/`), fix the root cause, and rerun only what the change can affect.
+5. Push, then wait on the event: `gh pr checks <pr> --watch --fail-fast` in the background. Never a sleep loop.
+6. Two fix attempts at most. Still red: file a board row with the run URL and what you tried, and stop.
 
-## Local Commands to Try
+## Never, to get green
 
-- `pnpm lint` - Run linting
-- `pnpm typecheck` or `pnpm tsc --noEmit` - Type checking
-- `pnpm test` - Unit/integration tests
-- `pnpm e2e` or `pnpm test:e2e` - End-to-end tests
-- `pnpm build` - Build check
+- Rerun a test failure. A rerun is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip.
+- Raise a timeout, add a retry, add a skip, or silence logged errors.
+- Treat a red check as optional.
 
-## Important
-
-- Always check package.json scripts to find the correct commands
-- Fix the root cause, not symptoms
-- Commit fixes with clear messages describing what was fixed
-- Monitor CI after pushing to catch any remaining issues
-- Don't stop until ALL checks are green
+A test that is truly flaky goes into the repo's quarantine (owner plus expiry) per its CI doc, or gets fixed. Nothing else.
