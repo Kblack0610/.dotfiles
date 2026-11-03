@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
+#
+#   agent-land <pr> --project <board project> --title "<board row title>"
+#              [--plan <file> --phase "<text>"] [--sheet] [--dry-run]
+#
+# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base>), merge
+# (--squash --match-head-commit HEAD, then gh pr view must say MERGED), board (agent row done
+# with pr:<pr>), sheet (--sheet: a "<title> #oneshot" row added and closed), plan (--plan: the
+# one "- [ ] <phase>" line becomes "- [x] <phase> (#<pr>)"). One line per step.
+# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it, re-gate, re-run.
+# An already MERGED PR skips fetch and merge, so a re-run finishes a failed record step.
+# --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
+# ends the caller's own tmux session, so wind-down releases the worktree.
+
+set -euo pipefail
+
+usage() {
+  sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0" >&2
+  exit 2
+}
+die() {
+  printf 'agent-land: %s\n' "$1" >&2
+  exit 2
+}
+fail() {
+  printf 'agent-land: %s failed: %s\n' "$1" "$2" >&2
+  exit 1
+}
+lastline() { printf '%s' "$1" | tail -n 1; }
+
+pr='' project='' title='' plan='' phase='' sheet=0 dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --project) project="${2:?--project needs a value}" && shift ;;
+  --title) title="${2:?--title needs a value}" && shift ;;
+  --plan) plan="${2:?--plan needs a value}" && shift ;;
+  --phase) phase="${2:?--phase needs a value}" && shift ;;
+  --sheet) sheet=1 ;;
+  --dry-run) dry=1 ;;
+  -h | --help) usage ;;
+  -*) die "unknown flag: $1" ;;
+  *) [ -z "$pr" ] || die "one PR only"; pr="$1" ;;
+  esac
+  shift
+done
+[[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
+[ -n "$project" ] && [ -n "$title" ] || die "--project and --title are required"
+if [ -n "$plan$phase" ]; then
+  [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
+  [ -f "$plan" ] || die "no plan file: $plan"
+  # Checked before the merge, so a bad phase name cannot leave a merged PR half recorded.
+  n=$(P="- [ ] $phase" awk 'index($0, ENVIRON["P"]) == 1 { n++ } END { print n + 0 }' "$plan")
+  [ "$n" -eq 1 ] || die "plan: $n unchecked lines start with \"- [ ] $phase\", need exactly 1"
+fi
+
+if [ "$dry" -eq 1 ]; then
+  echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (must be 0)"
+  echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
+  echo "board: notes ptask $project --agent done \"$title\" --proof pr:$pr"
+  [ "$sheet" -eq 0 ] || echo "sheet: notes ptask $project add \"$title #oneshot\" '#low' && notes ptask $project done \"$title #oneshot\" --proof pr:$pr"
+  [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
+  exit 0
+fi
+
+info=$(gh pr view "$pr" --json state,baseRefName -q '.state + " " + .baseRefName' 2>&1) ||
+  fail fetch "gh pr view $pr: $(lastline "$info")"
+state="${info%% *}" base="${info#* }"
+
+if [ "$state" = MERGED ]; then
+  echo "merge: #$pr already MERGED, recording it"
+else
+  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
+  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
+  if [ "$behind" -ne 0 ]; then
+    printf 'agent-land: behind origin/%s by %s, merge it and re-gate\n' "$base" "$behind" >&2
+    exit 3
+  fi
+  echo "fetch: current with origin/$base"
+
+  head=$(git rev-parse HEAD)
+  out=$(gh pr merge "$pr" --squash --match-head-commit "$head" 2>&1) || fail merge "$(lastline "$out")"
+  state=$(gh pr view "$pr" --json state -q .state 2>&1) || fail merge "gh pr view: $(lastline "$state")"
+  [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
+  echo "merge: #$pr MERGED at ${head:0:8}"
+fi
+
+out=$(notes ptask "$project" --agent "done" "$title" --proof "pr:$pr" 2>&1) || fail board "$(lastline "$out")"
+echo "board: closed \"$title\" with pr:$pr"
+
+if [ "$sheet" -eq 1 ]; then
+  if out=$(notes ptask "$project" add "$title #oneshot" '#low' 2>&1); then
+    out=$(notes ptask "$project" "done" "$title #oneshot" --proof "pr:$pr" 2>&1) || fail sheet "$(lastline "$out")"
+    echo "sheet: added and closed \"$title #oneshot\""
+  else
+    case "$out" in
+    *'no current project named'*) echo "sheet: $project has no sheet, skipped" ;;
+    *) fail sheet "$(lastline "$out")" ;;
+    esac
+  fi
+fi
+
+if [ -n "$plan" ]; then
+  tmp=$(mktemp)
+  P="- [ ] $phase" PR="$pr" awk '
+    index($0, ENVIRON["P"]) == 1 { sub(/^- \[ \]/, "- [x]"); $0 = $0 " (#" ENVIRON["PR"] ")" }
+    { print }' "$plan" >"$tmp" || fail plan "awk could not rewrite $plan"
+  cat "$tmp" >"$plan" && rm -f "$tmp"
+  echo "plan: ticked \"$phase\""
+fi
+
+echo "landed #$pr"
