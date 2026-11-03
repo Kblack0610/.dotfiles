@@ -497,6 +497,39 @@ landed_fixture() {
   assert_line --index 1 --partial '[dispatch: apociseum: fix wave save]'
 }
 
+@test "a parked session is PARKED whatever its facts, so it is never nudged" {
+  run b parked 0 2 1 99 1 4 0 9 OPEN PASS 1 - 1/3 x yes
+  assert_output 'PARKED claude exited to save usage; claude-acct unpark resumes it'
+}
+
+@test "end to end: a park ledger with no live claude is a PARKED row with its git facts; a live claude wins" {
+  landed_fixture
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=s2 server=lab target=lab/s2:3 pane=%9 direct=0 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=shell why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s2"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = PARKED ]
+  [ "$(jq -r .target <<<"$output")" = lab/s2:3 ]
+  [ "$(jq -r .session_id <<<"$output")" = sid-2 ]
+  [ "$(jq -r .pane <<<"$output")" = %9 ]
+  [ "$(jq -r .activity <<<"$output")" = parked ]
+  [ "$(jq -r .idle_min <<<"$output")" = 30 ]
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+  [ "$(jq -r .nudged <<<"$output")" = false ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --index 0 PARKED
+  assert_line --index 1 --partial 'claude exited to save usage'
+
+  # a claude live in that tmux session again: the stale ledger does not hide it
+  sed -i 's|lab/s2:3|lab/s1:7|' "$HOME/.agent/parked/s2"
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
+}
+
 @test "end to end: the plan's checklist decides DONE, LANDED with next_phase, or null phases" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -1141,7 +1174,7 @@ caught() {
   run grep '^agent_session_context_tokens' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
   assert_output 'agent_session_context_tokens{target="lab/s1:1",project="wt",bucket="LANDED"} 5'
   run grep -c '^agent_sessions{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
-  assert_output 6
+  assert_output 7
 }
 
 # A state document with one session that has every fact and one that has almost none.
@@ -1195,6 +1228,7 @@ agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id
 agent_sessions{bucket="DONE"} 0
 agent_sessions{bucket="LANDED"} 0
 agent_sessions{bucket="NEEDS"} 1
+agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
 agent_sessions{bucket="UNCLEAR"} 0
 agent_sessions{bucket="WORKING"} 1
