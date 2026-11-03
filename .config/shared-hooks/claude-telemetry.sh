@@ -37,6 +37,16 @@
 # telemetry stays off, which is the intent. That timeout matters even more on the headless
 # path: a runner fires every 12 minutes, and an 8s stall on each would be permanent.
 
+# --- Launch env every Claude start shares (outside the LAN guard) -----------
+# This file is the one env that both .ai-rc and the agentctl unit source, so a launch
+# setting that is not telemetry also lives here.
+# The claude.ai connectors (Gmail, Calendar, Drive, Docs, artifacts) add about 2.7k tokens
+# to every API call. Over 30 days, 2905 sessions made 10 connector calls. Off by default;
+# `ENABLE_CLAUDEAI_MCP_SERVERS=true claude` turns them on for one session. Project or user
+# settings `env` cannot do this: it is read after the connectors load (checked 2026-11-02).
+: "${ENABLE_CLAUDEAI_MCP_SERVERS:=false}"
+export ENABLE_CLAUDEAI_MCP_SERVERS
+
 if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # claude_otel_attr <key> [value] -> OTEL_RESOURCE_ATTRIBUTES with <key> set to <value>, or
     # dropped when there is none, and every other attribute kept: a value someone else set
