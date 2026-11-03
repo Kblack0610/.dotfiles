@@ -21,7 +21,17 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
-        ("api", "min(github_runner_exporter_api_ok)".into()),
+        // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
+        // out: one failed call there leaves every runner row intact, so it is no reason to say
+        // runner rows may be missing.
+        ("api", r#"min(github_runner_exporter_api_ok{kind="runners"})"#.into()),
+        // The exporter's last scrape. 0 or absent means every exporter series went stale, which
+        // is a missed scrape, not GitHub down.
+        ("exporter_up", r#"max(up{job="github-runner-exporter"})"#.into()),
+        // Calls GitHub says the exporter's token has left this hour, its emptiest bucket. The
+        // budget is per user, shared with every gh session, so 0 is the usual reason GitHub
+        // stops answering (2026-11-03: repos at 0 from 21:25Z, every job unattributed).
+        ("rate_left", "min(github_runner_exporter_rate_remaining)".into()),
         ("gates", "cc:host_local_gate".into()),
         // Each core's busy share, keyed by host and cpu, so it stays out of `cc` (keyed by host).
         ("cores", "cc:host_core_busy_ratio".into()),
@@ -49,6 +59,8 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
 }
 pub const OPTIONAL: &[&str] = &[
     "red",
+    "exporter_up",
+    "rate_left",
     "accounts",
     "cores",
     "runner_cores",
@@ -164,6 +176,8 @@ mod tests {
             OPTIONAL,
             [
                 "red",
+                "exporter_up",
+                "rate_left",
                 "accounts",
                 "cores",
                 "runner_cores",

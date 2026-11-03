@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Waybar module: CI runners. The bar is busy of slots and the queue, summed the way the
 # hub board's header sums them (the GitHub self-hosted pools plus the workstation's
-# local Unity gates). The hover adds the jobs finished in the last day, painted by their pass
-# rate on the board's lines (red under 70%, amber under 90%), and lists each pool's queue,
-# oldest wait, finished jobs and pass rate, then each machine's runners with the job every
-# busy one is on, then any runner that is down. A runner the governor withholds is counted
-# apart (`unity 6/6 withheld 1/2`), so a machine reads what it is meant to run. A local row
-# is busy of its open slots; its burst slots, which open only while the machine has room,
-# are named in a legend line instead of the cell.
+# local Unity gates). The hover says how many run locally and in the cloud (cc:site_*, each
+# cloud host by name, plus jobs on GitHub's own runners), the jobs finished in the last day
+# painted by their pass rate on the board's lines (red under 70%, amber under 90%), each
+# pool's queue, oldest wait, finished jobs and pass rate, then one row per machine: where it
+# is, busy/slots, and busy/slots per pool, busiest first. Below that, any runner that is down
+# and the jobs running past LONG_RUN_SECS. A runner the governor withholds is counted apart
+# (`unity withheld 1/2`), so a machine reads what it is meant to run. A local row is busy of
+# its open slots; its burst slots, which open only while the machine has room, are named in
+# a legend line instead of the cell. The per-job list is the board's CI tab, not this hover.
 #
 # The chip's colour is cc:domain_status{domain="ci"}, the one CI judgement the board and
 # Grafana also draw, so the bar cannot call CI green while the board calls it red. A failed
@@ -27,16 +29,24 @@ PASS_WARN=90
 
 fail() { emit "$(paint "$C_RED" 'CI: prom down')" "CI runners: $1" critical; exit 0; }
 
-cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)"}
+# api_ok reads the runner sources only: a failed call to one repo's run list leaves every
+# runner row intact, so it is no reason to doubt them. exporter_up tells a missed scrape
+# (every exporter series gone stale) apart from GitHub not answering, and rate_left (the
+# token's emptiest bucket; the budget is per user, shared with every gh session) names the
+# usual reason it stops answering. `or` matches label sets with the name ignored, so each
+# carries a src label or all but the first would be dropped.
+cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)|cc:site_(slots|busy)|cc:github_hosted_running"}
   or cc:component_status{domain="ci"} or cc:domain_status{domain="ci"}
-  or label_replace(min(github_runner_exporter_api_ok), "__name__", "api_ok", "", "")')" \
+  or label_replace(label_replace(min(github_runner_exporter_api_ok{kind="runners"}), "__name__", "api_ok", "", ""), "src", "api", "", "")
+  or label_replace(label_replace(max(up{job="github-runner-exporter"}), "__name__", "exporter_up", "", ""), "src", "up", "", "")
+  or label_replace(label_replace(min(github_runner_exporter_rate_remaining), "__name__", "rate_left", "", ""), "src", "rate", "", "")')" \
   || fail "cannot read $PROM_URL"
 runners="$(prom_q "$W (github_runner_state)")" || fail "cannot read $PROM_URL"
 withheld="$(prom_q "$W (github_runner_withheld) == 1")" || fail "cannot read $PROM_URL"
 declare -A WITHHELD=()
 while read -r name; do [ -n "$name" ] && WITHHELD[$name]=1; done < <(jq -r '.data.result[].metric.name' <<< "$withheld")
 
-# name/key -> value, key = pool, host or component. Counts are cut to whole numbers for bash
+# name/key -> value, key = pool, host, component or site. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
 # would collapse an empty field.
 declare -A V=()
@@ -44,7 +54,7 @@ while IFS='|' read -r key val; do
   [ -n "$key" ] || continue
   case "$key" in *pass_ratio*) V["$key"]="$val" ;; *) V["$key"]="${val%.*}" ;; esac
 done < <(jq -r '.data.result[]
-    | [(.metric.__name__ + "/" + (.metric.pool // .metric.host // .metric.component // "")), .value[1]]
+    | [(.metric.__name__ + "/" + (.metric.pool // .metric.host // .metric.component // .metric.site // "")), .value[1]]
     | join("|")' <<< "$cc")
 
 # pass_cell <ratio> -> "87%" painted red/amber on the board's lines, "-" with no ratio.
@@ -106,36 +116,86 @@ for row in "${pool_rows[@]}"; do
 done
 body+="$burst_legend"
 
-# --- runners by machine, one pass over rows sorted by host then pool ---------------------
-# host|pool|state|name|repo|pr|workflow|job_name|seconds
-# A withheld runner is keyed <host>/<pool> withheld, so it prints after its pool's admitted ones.
-declare -A ALL=() BUSY=() JOBS=() DOWN=()
-hosts=()
-while IFS='|' read -r h p state name repo pr workflow job secs; do
-  [ -z "${WITHHELD[$name]:-}" ] || p+=" withheld"
-  [ -n "${ALL[$h/$p]:-}" ] || { [[ " ${hosts[*]} " == *" $h "* ]] || hosts+=("$h"); }
-  ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1))
+# --- machines, one pass over the runner rows ---------------------------------------------
+# host|pool|state|name|site|repo|pr|seconds
+# A slot is what cc:pool_slots counts: running, or idle and not withheld. A withheld runner
+# is keyed <host>/<pool> withheld, so it prints after its pool's admitted ones.
+declare -A ALL=() BUSY=() HB=() HS=() SITE=() DOWN=()
+long=()
+while IFS='|' read -r h p state name site repo pr secs; do
+  [ "$site" = cloud ] && SITE[$h]=cloud
+  [ -n "${SITE[$h]:-}" ] || SITE[$h]=local
+  [ -n "${HS[$h]:-}" ] || HS[$h]=0 HB[$h]=0
+  w="${WITHHELD[$name]:-}"
   case "$state" in
     running)
-      BUSY[$h/$p]=$((${BUSY[$h/$p]:-0} + 1))
-      t="$(prom_dur "$secs")"
-      ((${secs%.*} > LONG_RUN_SECS)) && t="$(paint "$C_YEL" "$t")"
-      JOBS[$h]+=$'\n'"  $(pango_esc "$name  ${repo:--}${pr:+#$pr}  ${workflow:+$workflow: }$job")  $t" ;;
+      [ -z "$w" ] || p+=" withheld"
+      ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1)) BUSY[$h/$p]=$((${BUSY[$h/$p]:-0} + 1))
+      ((HB[$h]++, HS[$h]++))
+      ((${secs%.*} > LONG_RUN_SECS)) && long+=("${secs%.*}|$name ${repo:--}${pr:+#$pr}") ;;
+    idle)
+      [ -z "$w" ] || p+=" withheld"
+      ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1))
+      [ -n "$w" ] || ((HS[$h]++)) ;;
     offline | missing) DOWN[$h/$state]=$((${DOWN[$h/$state]:-0} + 1)) ;;
   esac
 done < <(jq -r '.data.result[]
-    | [.metric.host, .metric.pool, .metric.state, .metric.name, .metric.repo, .metric.pr,
-       .metric.workflow, .metric.job_name, .value[1]]
-    | map(. // "" | gsub("[|\n]"; " ")) | join("|")' <<< "$runners" | sort -t'|' -k1,1 -k2,2)
+    | [.metric.host, .metric.pool, .metric.state, .metric.name, .metric.site, .metric.repo,
+       .metric.pr, .value[1]]
+    | map(. // "" | gsub("[|\n]"; " ")) | join("|")' <<< "$runners")
 
-((${#hosts[@]})) && body+=$'\n'
-for h in "${hosts[@]}"; do
-  line="$h "
+# busy|host|where|busy/slots|pools. A machine with no runner up is under DOWN instead.
+# The workstation's local gates are a machine row of their own, busy of their open slots
+# like the POOL table's local row.
+machine_rows=()
+for h in "${!HS[@]}"; do
+  ((HS[$h] > 0 || HB[$h] > 0)) || continue
+  pools=""
   while read -r key; do
-    [[ "$key" == "$h/"* ]] && line+=" ${key#*/} ${BUSY[$key]:-0}/${ALL[$key]}"
+    [[ "$key" == "$h/"* ]] && pools+=" ${key#*/} ${BUSY[$key]:-0}/${ALL[$key]}"
   done < <(printf '%s\n' "${!ALL[@]}" | sort)
-  body+=$'\n'"<b>$(pango_esc "$line")</b>${JOBS[$h]:-}"
+  machine_rows+=("${HB[$h]}|$h|${SITE[$h]}|${HB[$h]}/${HS[$h]}|${pools# }")
 done
+for key in "${!V[@]}"; do
+  [[ "$key" == cc:host_local_slots/* ]] || continue
+  h="${key#*/}" b="${V[cc:host_local_busy/${key#*/}]:-0}" open="${V[cc:host_local_open_slots/${key#*/}]:-0}"
+  s=$((b > open ? b : open))
+  machine_rows+=("$b|$h|local|$b/$s|gates $b/$s")
+done
+if ((${#machine_rows[@]})); then
+  mapfile -t machine_rows < <(printf '%s\n' "${machine_rows[@]}" | sort -t'|' -k1,1nr -k2,2)
+  mw=7
+  for row in "${machine_rows[@]}"; do
+    IFS='|' read -r _ h _ <<< "$row"
+    ((${#h} > mw)) && mw=${#h}
+  done
+  printf -v line "%-${mw}s %-5s %5s  %s" MACHINE WHERE BUSY POOLS
+  body+=$'\n\n'"$line"
+  for row in "${machine_rows[@]}"; do
+    IFS='|' read -r _ h where bs pools <<< "$row"
+    printf -v line "%-${mw}s %-5s %5s  %s" "$h" "$where" "$bs" "$pools"
+    body+=$'\n'"$(pango_esc "$line")"
+  done
+fi
+
+# --- local vs cloud: cc:site_* totals, each cloud machine by name, GitHub's runners -------
+# A cloud host with no runner up (aws-burst-1 is kept stopped when idle) reads "off".
+hosted="${V[cc:github_hosted_running/]:-0}"
+if [ -n "${V[cc:site_slots/local]:-}${V[cc:site_slots/cloud]:-}" ]; then
+  cloud_list=()
+  while read -r h; do
+    [ -n "$h" ] || continue
+    if ((HS[$h] > 0 || HB[$h] > 0)); then cloud_list+=("$h ${HB[$h]}/${HS[$h]}"); else cloud_list+=("$h off"); fi
+  done < <(for h in "${!SITE[@]}"; do [ "${SITE[$h]}" = cloud ] && echo "$h"; done | sort)
+  ((hosted > 0)) && cloud_list+=("github-hosted $hosted")
+  running="running: local ${V[cc:site_busy/local]:-0}/${V[cc:site_slots/local]:-0}  cloud $((${V[cc:site_busy/cloud]:-0} + hosted))"
+  if ((${#cloud_list[@]})); then
+    printf -v joined '%s, ' "${cloud_list[@]}"
+    running+=" (${joined%, })"
+  fi
+else
+  running="running: no cc:site_* series (recording rules not loaded?)"
+fi
 
 # Counted per machine and state: a roster slot that never registered is one line per box,
 # not one per slot.
@@ -144,6 +204,15 @@ if ((${#DOWN[@]})); then
   while read -r key; do
     body+=$'\n'"  $(pango_esc "${key%/*}  ${DOWN[$key]} ${key#*/}")"
   done < <(printf '%s\n' "${!DOWN[@]}" | sort)
+fi
+
+# Only the jobs past LONG_RUN_SECS, longest first, on one line: the full list is the board's.
+if ((${#long[@]})); then
+  line=""
+  while IFS='|' read -r secs what; do
+    line+=" $(pango_esc "$what") $(paint "$C_YEL" "$(prom_dur "$secs")"),"
+  done < <(printf '%s\n' "${long[@]}" | sort -t'|' -k1,1nr)
+  body+=$'\n\n'"long runs:${line%,}"
 fi
 
 # --- status: the ci domain's components, worst first -----------------------------------
@@ -158,7 +227,13 @@ if [ -z "$level" ]; then
   # No status series is not a green light: the board prints NO DATA here.
   level=1 status=" no data,"
 fi
-[ "${V[api_ok/]:-0}" = 1 ] || status+=" $(paint "$C_RED" 'exporter cannot reach GitHub, numbers may be old'),"
+if [ "${V[exporter_up/]:-0}" != 1 ]; then
+  status+=" $(paint "$C_RED" 'runner exporter missed its last scrape, runner rows may be missing'),"
+elif [ "${V[rate_left/]:-}" = 0 ]; then
+  status+=" $(paint "$C_RED" 'GitHub rate limit spent, runner jobs and history unread until it resets'),"
+elif [ "${V[api_ok/]:-0}" != 1 ]; then
+  status+=" $(paint "$C_RED" 'GitHub not answering the exporter, runner rows may be missing'),"
+fi
 
 label=CI
 ((level > 0)) && label="$(paint "${LEVEL_COLOUR[$level]}" CI)"
@@ -175,5 +250,5 @@ if ((done_total > 0)); then
 fi
 
 emit "$label $busy/$slots $q" \
-  "<b>CI runners</b>  busy/slots, queued"$'\n'"ci:${status%,}"$'\n'"$finished"$'\n'"<tt>$body</tt>" \
+  "<b>CI runners</b>  busy/slots, queued"$'\n'"ci:${status%,}"$'\n'"$running"$'\n'"$finished"$'\n'"<tt>$body</tt>" \
   "${LEVEL_CLASS[$level]}"
