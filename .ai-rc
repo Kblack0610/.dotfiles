@@ -83,6 +83,7 @@ _claude_launch() {
 
 # cl starts on whichever Claude account is cheapest to spend from (claude-acct,
 # accounts in ~/.config/claude-acct/accounts); `cl --acct <name>` forces one.
+# `cl --lazer` runs on the paid Lazer reserve instead (claude-lazer: Sonnet only, capped).
 # Plain `claude` stays on the default one.
 unalias cl 2>/dev/null
 cl() {
@@ -90,6 +91,13 @@ cl() {
     case "${1:-}" in
         --acct) acct="${2:?cl: --acct needs an account name}"; shift 2 ;;
         --acct=*) acct="${1#--acct=}"; shift ;;
+        --lazer)
+            shift
+            ( unset CLAUDE_CONFIG_DIR
+              command -v claude_telemetry_project >/dev/null 2>&1 \
+                  && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"
+              claude-lazer --dangerously-skip-permissions "$@" )
+            return ;;
     esac
     if [ -n "$acct" ]; then
         dir=$(claude-acct pick "$acct") || return 1

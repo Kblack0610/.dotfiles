@@ -53,6 +53,23 @@ creds() {
   [[ "$stderr" == *'claude-acct: main'* ]]
 }
 
+@test "every account spent: the Lazer reserve is named, the pick stays on the subscription" {
+  usage main 100 40
+  usage alt 20 100
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  [[ "$stderr" == *'cl --lazer runs Sonnet on the Lazer reserve'* ]]
+  [[ "$output" != *lazer* ]]
+}
+
+@test "an account with room left: no Lazer hint" {
+  usage main 100 40
+  usage alt 20 99
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  [[ "$stderr" != *lazer* ]]
+}
+
 @test "a sooner reset beats a lower percent used" {
   export CLAUDE_ACCT_NOW=1800000000
   usage main 10 70 "$(date -u -d @$((1800000000 + 6 * 86400)) +%Y-%m-%dT%H:%M:%S+00:00)"
