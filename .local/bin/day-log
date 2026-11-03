@@ -203,7 +203,7 @@ markdown() {
     | "# Day log, \(.date)", "",
       "\(.merged | length) merged in \(.merged | map(.repo) | unique | length) repos, \($u.sessions) sessions active, whose whole-session spend is \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
       (if .waiting then "## Waiting on you (as last gathered)", "",
-        (.waiting.main[] | "- MAIN \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
+        (.waiting.main[] | "- NIGHTLY \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
         (.waiting.needs[] | "- NEEDS \(.who): \(.reason)"),
         (.waiting.asks[] | "- ASK \(.id) (\(.project)): \(.question | gsub("\n"; " "))"), "" else empty end),
       "## Merged", "",

@@ -45,12 +45,12 @@ row() { # target bucket nudged escalated [labels-json]
 
 outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
 
-@test "due lists unnudged DONE/LANDED/STALLED, unescalated rows for the human, and red main" {
+@test "due lists unnudged DONE/LANDED/STALLED, unescalated rows for the human, and nightly red" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
       '[{"repo":"r1","reason":"ci red","escalated":false},{"repo":"r2","escalated":true}]'
   run "$SH" due
   assert_success
-  assert_line 'main red: r1 (ci red)'
+  assert_line 'nightly red: r1 (ci red)'
   assert_line 'nudge DONE: a f-a'
   assert_line 'escalate LANDED: b r-b'
   assert_line 'escalate NEEDS: c r-c'

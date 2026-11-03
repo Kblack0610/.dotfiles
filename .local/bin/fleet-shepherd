@@ -95,7 +95,7 @@ cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r '
-    ( (.main // [])[] | select(.escalated | not) | "main red: \(.repo) (\(.reason // "-"))" )
+    ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("hands-off") | not)
       | if (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then

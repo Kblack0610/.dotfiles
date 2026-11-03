@@ -39,7 +39,7 @@ or it is likely to give a bad result for the player. "Unsure" is not a risk; nam
 **Sanity check before each new phase** - re-read my ask and your plan (still wanted?);
 `git fetch` and check origin/main has not already done or changed it; check no other live
 session or open PR is on the same files (`gh pr list --state open`, `fleet-sessions`); check
-main is not red (`fleet-sessions` MAIN rows). All pass -> start it. One fails -> that failure is
+the repo has no nightly red (`fleet-sessions` NIGHTLY rows). All pass -> start it. One fails -> that failure is
 your named risk.
 
 **Log assumptions** — each non-obvious choice as `assumed: <X> because <Y>`, persisted into

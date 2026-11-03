@@ -104,12 +104,12 @@ b() { session_bucket "$@"; }
   assert_output --partial LANDED
 }
 
-@test "a merged PR suspected of turning main red is STALLED, not LANDED" {
+@test "a merged PR suspected of turning a nightly red is STALLED, not LANDED" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 'Tests @f1602292 (#875)'
-  assert_output 'STALLED main red after PR #875: Tests @f1602292 (#875)'
-  # red main wins over a dirty tree: fixing main comes first
+  assert_output 'STALLED nightly red after PR #875: Tests @f1602292 (#875)'
+  # a nightly red wins over a dirty tree: fixing it comes first
   run b idle 0 0 0 30 1 2 0 875 MERGED PASS 1 'Tests'
-  assert_output --partial 'STALLED main red'
+  assert_output --partial 'STALLED nightly red'
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/2 'ship it'
   assert_output --partial 'LANDED PR #875 merged, tree clean'
 }
@@ -230,7 +230,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   run wb '' busy 0 0 0 0 1 0 0 875 MERGED PASS 1 - 3/3 - no
   assert_output ''
   run wb 'aB12cd,Xy34zw' busy 0 2 0 0 1 3 0 875 MERGED PASS 0 'Tests' 1/3 'Phase 2' no
-  assert_output 'open ask aB12cd; open ask Xy34zw; main red after PR #875: Tests; 3 dirty file(s); commits after merged PR #875; next phase: Phase 2'
+  assert_output 'open ask aB12cd; open ask Xy34zw; nightly red after PR #875: Tests; 3 dirty file(s); commits after merged PR #875; next phase: Phase 2'
   run wb '' busy 0 0 0 0 1 0 0 9 OPEN FAIL 1 - - - no
   assert_output 'PR #9 open, CI FAIL; no plan file and nothing merged'
   run wb '' busy 0 0 0 0 0 0 0 - - - 1 - - -
@@ -417,7 +417,7 @@ landed_fixture() {
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
 
-@test "end to end: main red after a merge names the merging session as owner" {
+@test "end to end: a nightly red after a merge names the merging session as owner" {
   git init -q --bare "$SANDBOX/origin.git"
   git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
   git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -436,19 +436,26 @@ landed_fixture() {
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  session="$(jq -c 'select(.bucket != "MAIN")' <<<"$output")"
-  main="$(jq -c 'select(.bucket == "MAIN")' <<<"$output")"
+  session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
+  main="$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")"
   [ "$(jq -r .bucket <<<"$session")" = STALLED ]
-  [ "$(jq -r .reason <<<"$session")" = "main red after PR #875: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r .reason <<<"$session")" = "nightly red after PR #875: Tests @${red:0:8} (#875)" ]
   [ "$(jq -r .target <<<"$main")" = origin ]
   [ "$(jq -r '.owners | join(",")' <<<"$main")" = sid-9 ]
-  [ "$(jq -r .fact <<<"$main")" = "MAIN origin red: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r .fact <<<"$main")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
+  # the table a person reads names the bucket NIGHTLY, never MAIN
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  assert_line NIGHTLY
+  assert_output --partial 'nightly red after PR #875'
+  refute_output --partial MAIN
+  refute_output --partial 'main red'
 
   # an unreadable CI is reported, never read as green
   printf '#!/usr/bin/env bash\n[ "$1" = api ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
-  [ "$(jq -r 'select(.bucket != "MAIN") | .bucket' <<<"$output")" = LANDED ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
 @test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
@@ -478,7 +485,7 @@ landed_fixture() {
   printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo run >> "$HOME/runcalls"; exit 1; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(wc -l < "$HOME/runcalls")" -eq 2 ]
-  [ "$(jq -r 'select(.bucket == "MAIN") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(wc -l < "$HOME/runcalls")" -eq 3 ]
 }
@@ -1249,15 +1256,15 @@ main_change() {
   [ "$(jq -r .nudged <<<"$output")" = false ]
 }
 
-@test "end to end: under a red main a non-owner's conflict row says main_red, and the MAIN row does not own it" {
-  # The shepherd leaves a non-owner's STALLED row alone while its repo's main is red
+@test "end to end: under a nightly red a non-owner's conflict row says main_red, and the NIGHTLY row does not own it" {
+  # The shepherd leaves a non-owner's STALLED row alone while its repo has a nightly red
   # (fleet-overseer shepherd step 4); these are the facts it reads to do that.
   conflict_fixture
   local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
   open_pr_gh '[{"conclusion":"SUCCESS"}]' "$(page "[$(r Tests failure "$tip" 1)]")"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  session="$(jq -c 'select(.bucket != "MAIN")' <<<"$output")"
-  main="$(jq -c 'select(.bucket == "MAIN")' <<<"$output")"
+  session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
+  main="$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")"
   [ "$(jq -r .reason <<<"$session")" = 'PR #9 conflicts with the default branch' ]
   [ "$(jq -r .main_red <<<"$session")" = true ]
   [ "$(jq -r '.owners | length' <<<"$main")" = 0 ]

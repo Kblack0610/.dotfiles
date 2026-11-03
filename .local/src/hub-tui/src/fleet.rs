@@ -275,7 +275,7 @@ pub fn page(watch: &Watch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
 
         if let Some(main) = st["main"].as_array().filter(|m| !m.is_empty()) {
             out.push(Line::raw(""));
-            out.push(Line::styled("MAIN", p.head()));
+            out.push(Line::styled("NIGHTLY", p.head()));
             for m in main {
                 out.push(clip_line(
                     Line::styled(format!("  {}", s(m, "reason")), p.bad()),

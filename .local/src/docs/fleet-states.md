@@ -45,13 +45,13 @@ Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first
 | --- | --- | --- |
 | `PARKED` | `claude-acct park` exited its claude to save usage while it waits, and `~/.agent/parked/<tmux session>` holds the resume. agent-panel cannot list it, so the pass reads the ledger; a ledger beside a live claude is stale and the live row wins | Nobody: never nudged or escalated. `claude-acct unpark` resumes it |
 | `NEEDS` | Waiting on a prompt or dialog, a pending ask (even while busy; an attended session files every question it leaves the human, `stop-post.d/88-ask-filed.sh`), or plan approval | The human |
-| `STALLED` | A ready open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning main red | The shepherd nudges once |
+| `STALLED` | A ready open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning a nightly red | The shepherd nudges once |
 | `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
 | `LANDED` | Tree clean and the plan has a next phase, or a plan with no `## Phases` checklist and nothing merged | The session starts it |
 | `DONE` | Nothing unlanded, no ask of its own open, idle, and either every `## Phases` line ticked or a merged PR with no checklist (one phase of work) | The shepherd winds it down |
 | `UNCLEAR` | Not in a git repo, or its PR closed unmerged | A human look |
 
-Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default branch is not a session: it is listed under `main`.
+Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default branch is not a session: it is a `NIGHTLY` row in `fleet-sessions` output and is listed under `main` here (in practice a nightly or scheduled suite; the field keeps its name for its readers).
 
 ## Schema (version 1)
 

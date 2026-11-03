@@ -246,7 +246,11 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         let r = r
             .split_once(" red: ")
             .map_or(r.to_string(), |(_, x)| format!("red: {x}"));
-        rows.push(vec![cell("MAIN", p.bad()), s(m, "repo").into(), r.into()]);
+        rows.push(vec![
+            cell("NIGHTLY", p.bad()),
+            s(m, "repo").into(),
+            r.into(),
+        ]);
     }
     for n in needs {
         rows.push(vec![

@@ -35,7 +35,7 @@ PY
 }
 
 # record [age-seconds] -> today's day-log record: 4 merged (3 Games, 1 Fleet tooling), 1 ask,
-# 1 session needing you, main red in unity-core-playground, 2 open PRs.
+# 1 session needing you, nightly red in unity-core-playground, 2 open PRs.
 record() {
   local f="$DAYLOG_DIR/2026-10-29.json"
   python3 - "$f" <<'PY'
@@ -73,7 +73,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 3 "by repo: unity-core-playground 2, .dotfiles 1, unity-core 1"
   assert_line --index 4 "  unity-core-playground#2 fix \"quoted\" &lt;b&gt;&amp;&lt;/b&gt;"
   assert_line --index 5 "  .dotfiles#4 fourth"
-  assert_output --partial "waiting on you: 1 asks, 1 sessions need you, main red: unity-core-playground"
+  assert_output --partial "waiting on you: 1 asks, 1 sessions need you, nightly red: unity-core-playground"
   assert_output --partial "open PRs: 2"
   assert_output --partial "record 2m old"
   assert_output --partial "red now (2): runner wave, watch deploy_drift"
