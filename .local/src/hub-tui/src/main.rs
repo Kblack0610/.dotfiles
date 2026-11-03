@@ -168,6 +168,9 @@ fn run(tab: Tab) -> std::io::Result<()> {
     let boards = app.files.clone();
     let watcher = notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
         let Ok(e) = r else { return };
+        if !app::is_write(&e.kind) {
+            return;
+        }
         if e.paths.iter().any(|p| app::is_job_file(&probe, p)) {
             let _ = files.send(Msg::Files);
         }

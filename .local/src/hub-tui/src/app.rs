@@ -750,6 +750,14 @@ impl App {
     }
 }
 
+/// Whether a watch event wrote something. notify also asks inotify for opens, and every read
+/// here opens the files it watches: counted as changes, each read started the next one, back to
+/// back for as long as hub ran (a full 24h journalctl each time).
+pub fn is_write(k: &notify::EventKind) -> bool {
+    use notify::EventKind::{Create, Modify, Remove};
+    matches!(k, Create(_) | Modify(_) | Remove(_))
+}
+
 /// Whether a changed path means a job started or ended (agentctl's stdout logs change all the
 /// time and mean neither).
 pub fn is_job_file(paths: &Paths, p: &std::path::Path) -> bool {
@@ -875,6 +883,27 @@ mod tests {
         assert!(!is_job_file(&a.paths, &st.join("dream.stdout.log")));
         assert!(is_job_file(&a.paths, &a.paths.night.join("done/x.md")));
         assert!(is_job_file(&a.paths, &a.paths.unity_runs));
+    }
+
+    #[test]
+    fn a_read_opening_a_watched_file_is_not_a_change() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
+        use notify::event::{RemoveKind, RenameMode};
+        use notify::EventKind;
+        assert!(!is_write(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!is_write(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(is_write(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(is_write(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::To
+        ))));
+        assert!(is_write(&EventKind::Create(CreateKind::File)));
+        assert!(is_write(&EventKind::Remove(RemoveKind::File)));
     }
 
     #[test]
