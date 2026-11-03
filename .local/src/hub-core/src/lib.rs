@@ -3,6 +3,7 @@
 //! (curl for Prometheus, systemctl and journalctl, gh); an async caller wraps it in
 //! `spawn_blocking`.
 
+pub mod boards;
 pub mod infra;
 pub mod jobs;
 pub mod prom;

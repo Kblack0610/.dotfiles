@@ -1,6 +1,6 @@
-//! Fit a table to a width, as `.local/lib/table-fit.sh` does for the bash boards: columns
-//! take their content's width and drop from the least important end until the rest fit, the
-//! flex column (always the last) takes what is left, and every line is clipped with `~`.
+//! Fit a table to a width: columns take their content's width and drop from the least
+//! important end until the rest fit, the flex column (always the last) takes what is left, and
+//! every line is clipped with `~`.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -165,7 +165,7 @@ impl Table {
     }
 }
 
-/// Drop trailing blanks, as the bash fitter's `sub(/ +$/, "")`.
+/// Drop trailing blanks.
 fn trim_end(mut spans: Vec<Span<'static>>) -> Line<'static> {
     while let Some(last) = spans.last_mut() {
         let t = last.content.trim_end().to_string();
@@ -177,6 +177,22 @@ fn trim_end(mut spans: Vec<Span<'static>>) -> Line<'static> {
         }
     }
     Line::from(spans)
+}
+
+/// Items joined by `sep` into as few lines as fit in `w` (0: one line). An item wider than `w`
+/// gets a line of its own and is clipped where it is drawn.
+pub fn wrap<S: AsRef<str>>(items: &[S], sep: &str, w: usize) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for it in items.iter().map(AsRef::as_ref) {
+        match out.last_mut() {
+            Some(l) if w == 0 || len(l) + len(sep) + len(it) <= w => {
+                l.push_str(sep);
+                l.push_str(it);
+            }
+            _ => out.push(it.to_string()),
+        }
+    }
+    out
 }
 
 /// A line's text, styles dropped.
@@ -249,6 +265,25 @@ mod tests {
         let mut tb = t(&[&["alpha", "7", "a long note"]]);
         tb.flexkeep = true;
         assert_eq!(texts(&tb, 13), ["NAME   NOTE", "alpha  a lon~"]);
+    }
+
+    #[test]
+    fn wrap_breaks_between_items_never_inside_one() {
+        let items: Vec<String> = ["nodes 3/3", "heartbeats 7/8", "lazer $1/$5"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            wrap(&items, "  ", 0),
+            ["nodes 3/3  heartbeats 7/8  lazer $1/$5"]
+        );
+        assert_eq!(
+            wrap(&items, "  ", 26),
+            ["nodes 3/3  heartbeats 7/8", "lazer $1/$5"]
+        );
+        assert_eq!(
+            wrap(&items, "  ", 5),
+            ["nodes 3/3", "heartbeats 7/8", "lazer $1/$5"]
+        );
     }
 
     #[test]

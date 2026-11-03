@@ -1,30 +1,45 @@
-//! The hub boards, read for the browser. Each board's own tool writes the files read here
-//! (`fleet-sessions --write`, its watch ticks, `day-log`); this module only parses them, so
-//! the web tabs and the tmux boards can never disagree about what happened.
+//! The fleet and day-log boards' files. Their own tools write them (`fleet-sessions tick`, run
+//! every minute by fleet-state.timer, and `day-log snapshot`, by day-log.timer); this module
+//! only parses them, for agent-web's Watch and Log tabs and the hub TUI's Sessions, Today and
+//! History tabs, so the surfaces can never disagree about what happened.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::Value;
 
-use agent_panel::session;
-
 /// Transitions sent to the Watch tab: about a day of a busy fleet, sync lines included.
 pub const WATCH_LOG_LINES: usize = 1500;
 
-pub fn fleet_state() -> PathBuf {
-    session::home().join(".local/state/fleet/state.json")
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
+fn env(k: &str) -> Option<PathBuf> {
+    std::env::var_os(k)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `fleet-sessions`' state document, by the same variables it resolves.
+pub fn fleet_state() -> PathBuf {
+    env("FLEET_STATE_FILE").unwrap_or_else(|| {
+        env("XDG_STATE_HOME")
+            .unwrap_or_else(|| home().join(".local/state"))
+            .join("fleet/state.json")
+    })
+}
+
+/// Where `fleet-sessions` keeps watch.log (`FLEET_SHEPHERD_DIR`).
 pub fn shepherd_dir() -> PathBuf {
-    session::home().join(".agent/shepherd")
+    env("FLEET_SHEPHERD_DIR").unwrap_or_else(|| home().join(".agent/shepherd"))
 }
 
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
 pub fn daylog_dir() -> PathBuf {
     std::env::var_os("DAYLOG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| session::home().join(".agent/daylog"))
+        .unwrap_or_else(|| home().join(".agent/daylog"))
 }
 
 /// A day name the API accepts: exactly `YYYY-MM-DD`, so it can never name another file.

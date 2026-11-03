@@ -1,6 +1,6 @@
 "use strict";
-// The Watch tab: the hub:watch board (`fleet-sessions watch`, Prefix o) for the browser. It reads
-// what that board writes, `state.json` and `watch.log`, through /api/watch; nothing is judged here.
+// The Watch tab: the hub board's Sessions tab (Prefix o) for the browser. It reads
+// what fleet-state.timer writes, `state.json` and `watch.log`, through /api/watch; nothing is judged here.
 
 const WATCH_HOURS = 24;
 // Fields that move on almost every tick and drown the stage changes; the feed hides lines that
@@ -136,7 +136,7 @@ function renderWatch() {
   const el = $("watch");
   if (!wst.data) { el.innerHTML = '<div class="empty">Loading...</div>'; return; }
   const state = wst.data.state;
-  if (!state) { el.innerHTML = '<div class="empty">No fleet state yet: fleet-state.path has not written ~/.local/state/fleet/state.json.</div>'; return; }
+  if (!state) { el.innerHTML = '<div class="empty">No fleet state yet: fleet-state.timer has not written ~/.local/state/fleet/state.json.</div>'; return; }
   const now = Date.now();
   const sessions = sessionsOf();
   const shown = sessions.filter((s) => !wst.filter || s.bucket === wst.filter);

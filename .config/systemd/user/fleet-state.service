@@ -1,8 +1,8 @@
 [Unit]
-Description=Write the fleet state document (fleet-sessions --write)
+Description=Fleet state document and stage changes (fleet-sessions tick)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/fleet-sessions --write
+ExecStart=%h/.local/bin/fleet-sessions tick
 StandardOutput=null
 TimeoutStartSec=120

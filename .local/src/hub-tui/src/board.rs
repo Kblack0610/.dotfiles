@@ -1,4 +1,4 @@
-//! The Prometheus pages of `hub infra` (Overview, CI, Machines), laid out from one
+//! The Prometheus pages of `hub` (Overview, CI, Machines), laid out from one
 //! `hub_core::infra::Infra` answer. It judges nothing: statuses are `cc:*` rules and rows are
 //! runner-exporter series, so it cannot disagree with Grafana or agent-web's Infra tab.
 
@@ -8,7 +8,7 @@ use hub_core::infra::Infra;
 use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, dur, pct, Palette};
 
 /// A job running longer than this shows its time amber: playground ci.md calls a gate that
@@ -205,27 +205,43 @@ impl<'a> Board<'a> {
             strip.push(Span::raw(" "));
         }
         out.push(Line::from(strip));
-        let here = self
-            .get("cc:agent_sessions_running")
-            .map_or(String::new(), |_| {
-                format!("  agent sessions {}", self.num("cc:agent_sessions_running"))
-            });
-        out.push(self.dim(format!(
-            "nodes {}/{}  heartbeats {}/{}  ci busy {}/{} waiting {}  agent runners {} failed  watches {}/{} tripped  lazer {}/{}  claude 24h {}{here}",
-            self.num("cc:k3s_nodes_ready"),
-            self.num("cc:k3s_nodes_total"),
-            self.num("cc:machines_up"),
-            self.num("cc:machines_total"),
-            self.sum(&["cc:pool_busy", "cc:host_local_busy"]),
-            self.sum(&["cc:pool_slots", "cc:host_local_open_slots"]),
-            self.sum(&["cc:pool_waiting", "cc:host_local_queued"]),
-            self.num("cc:runners_failed"),
-            self.num("cc:watches_tripped"),
-            self.num("cc:watches_total"),
-            self.usd("cc:lazer_spend_usd"),
-            self.usd("cc:lazer_budget_usd"),
-            self.usd("cc:claude_code_cost_24h_usd"),
-        )));
+        let mut items = vec![
+            format!(
+                "nodes {}/{}",
+                self.num("cc:k3s_nodes_ready"),
+                self.num("cc:k3s_nodes_total")
+            ),
+            format!(
+                "heartbeats {}/{}",
+                self.num("cc:machines_up"),
+                self.num("cc:machines_total")
+            ),
+            format!(
+                "ci busy {}/{} waiting {}",
+                self.sum(&["cc:pool_busy", "cc:host_local_busy"]),
+                self.sum(&["cc:pool_slots", "cc:host_local_open_slots"]),
+                self.sum(&["cc:pool_waiting", "cc:host_local_queued"])
+            ),
+            format!("agent runners {} failed", self.num("cc:runners_failed")),
+            format!(
+                "watches {}/{} tripped",
+                self.num("cc:watches_tripped"),
+                self.num("cc:watches_total")
+            ),
+            format!(
+                "lazer {}/{}",
+                self.usd("cc:lazer_spend_usd"),
+                self.usd("cc:lazer_budget_usd")
+            ),
+            format!("claude 24h {}", self.usd("cc:claude_code_cost_24h_usd")),
+        ];
+        if self.get("cc:agent_sessions_running").is_some() {
+            items.push(format!(
+                "agent sessions {}",
+                self.num("cc:agent_sessions_running")
+            ));
+        }
+        out.extend(wrap(&items, "  ", w).into_iter().map(|l| self.dim(l)));
         out.into_iter().map(|l| clip_line(l, w)).collect()
     }
 
@@ -878,7 +894,7 @@ pub fn page(
             out.push(blank());
             out.extend(b.recent(w));
         }
-        Tab::Jobs => {}
+        Tab::Jobs | Tab::Sessions | Tab::Today | Tab::History => {}
     }
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
@@ -1281,6 +1297,26 @@ pub(crate) mod tests {
         assert!(has(&out, "k3s OK ci NODATA llm RED"));
         assert!(has(&out, "ci busy 3/7 waiting 4"));
         assert!(has(&out, "red now: watch mac_studio_mlx"));
+    }
+
+    #[test]
+    fn a_narrow_header_wraps_its_numbers_instead_of_cutting_them() {
+        let i = fixture();
+        let b = Board::new(&i, Palette { no_color: true }, 0, hosts());
+        let wide: Vec<String> = b.header(200).iter().map(plain).collect();
+        let narrow: Vec<String> = b.header(40).iter().map(plain).collect();
+        assert!(narrow.len() > wide.len(), "{narrow:?}");
+        let joined = narrow.join("\n");
+        for item in [
+            "nodes ",
+            "heartbeats ",
+            "ci busy 3/7 waiting 4",
+            "claude 24h ",
+        ] {
+            assert!(joined.contains(item), "{item} lost: {narrow:?}");
+        }
+        // Only the status lines may clip; every numbers line fits whole.
+        assert!(narrow[2..].iter().all(|l| !l.ends_with('~')), "{narrow:?}");
     }
 
     #[test]

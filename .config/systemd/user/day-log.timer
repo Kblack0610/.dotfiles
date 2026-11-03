@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot today's day log every 5 minutes (the hub Today tab, the waybar day chip)
+
+# Merges have no local event to await, so this samples. Each pass is three gh searches; five
+# minutes keeps the day chip inside its 900s stale check.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

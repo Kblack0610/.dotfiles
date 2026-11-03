@@ -1,5 +1,5 @@
 "use strict";
-// The Log tab: the hub:log board (`day-log watch`, Prefix O) for the browser. It reads day-log's
+// The Log tab: the hub board's Today tab (Prefix O) for the browser. It reads day-log's
 // records through /api/log and /api/log/history; every number here is in the record already.
 
 // The charts show this many days; the day picker can step back through the fetched history.

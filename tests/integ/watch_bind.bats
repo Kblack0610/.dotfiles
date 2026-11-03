@@ -1,12 +1,11 @@
 #!/usr/bin/env bats
-# Tier 2: Prefix+o goes to the fleet watch, read out of .tmux.conf and hub.conf as text.
+# Tier 2: Prefix i, o and O land on a tab of the hub board, read out of .tmux.conf and
+# hub.conf as text.
 #
-# The watch is a declared window (hub:watch) beside infra, not its own session and not a
-# popup: one place to find it, and its transition log builds while it runs. #538 moved it
-# to a session to stop Prefix o making a board per press; the cause was the prompt hook
-# renaming the window, fixed in the same PR by ensure matching @tmx_window, so the window
-# is safe again (tests/ui/servers_isolation.bats pins that). The key and the manifest line
-# are two halves of one feature, so both are asserted here.
+# The board is one declared window (hub:board) running `hub`, a ratatui app with a tab per
+# board. Each key asks it for a tab (`hub tab <name>`) and then goes to the window. The key
+# and the manifest line are two halves of one feature, so both are asserted here; the tab
+# request itself is pinned in hub-tui's own tests (app::tests).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -17,39 +16,24 @@ setup() {
   HUB_CONF="$REPO_ROOT/.config/tmux-servers/hub.conf"
 }
 
-@test "prefix+o goes to the hub:watch window, from any world" {
-  assert_equal "$(bind_for o)" 'run-shell "tmx goto hub hub:watch"'
+@test "prefix+i, o and O ask the hub for overview, sessions and today, then go to its window" {
+  assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab overview; tmx goto hub hub:board"'
+  assert_equal "$(bind_for o)" 'run-shell "$HOME/.local/bin/hub tab sessions; tmx goto hub hub:board"'
+  assert_equal "$(bind_for O)" 'run-shell "$HOME/.local/bin/hub tab today; tmx goto hub hub:board"'
 }
 
-@test "hub.conf declares the watch window running fleet-sessions watch" {
-  run awk '$1 == "hub:watch" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
+@test "hub.conf declares one board window running hub, and none of the old board windows" {
+  run awk '$1 == "hub:board" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
   assert_success
-  assert_output 'fleet-sessions watch'
-}
-
-@test "the watch is declared once, as a window, and not on ~/.dotfiles" {
-  # A watch session beside the window would be two boards writing one watch.log, and a
-  # second declaration of ~/.dotfiles would make Prefix+f's routing ambiguous.
-  run awk '$1 == "watch" || $1 == "?watch"' "$HUB_CONF"
+  assert_output '~/.local/bin/hub'
+  # The bash boards these replaced must not come back beside it: two windows would be two
+  # copies of the same board, and a tmux goto to one that is gone rebuilds it.
+  run awk '$1 ~ /^\??(hub:)?(watch|log|infra)$/' "$HUB_CONF"
   assert_output ''
-  run awk '$1 == "hub:watch" { print $2 }' "$HUB_CONF"
-  refute_output '~/.dotfiles'
 }
 
-@test "the watch window lives in an always-on session, not an on-demand one" {
+@test "the board window lives in an always-on session, not an on-demand one" {
   # A `?name` session is not booted by ensure, so a window inside one would never run.
   run awk '$1 == "hub" || $1 == "?hub" { print $1; exit }' "$HUB_CONF"
   assert_output 'hub'
-}
-
-@test "prefix+O goes to the hub:log window, and hub.conf declares it running day-log watch" {
-  assert_equal "$(bind_for O)" 'run-shell "tmx goto hub hub:log"'
-  run awk '$1 == "hub:log" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
-  assert_output 'day-log watch'
-}
-
-@test "prefix+i goes to the hub:infra window, and hub.conf declares it running hub infra" {
-  assert_equal "$(bind_for i)" 'run-shell "tmx goto hub hub:infra"'
-  run awk '$1 == "hub:infra" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
-  assert_output '~/.local/bin/hub infra'
 }

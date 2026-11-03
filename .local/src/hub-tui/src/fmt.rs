@@ -75,14 +75,16 @@ impl Palette {
     pub fn sel(&self) -> Style {
         Style::new().add_modifier(Modifier::REVERSED)
     }
-    /// A `cc:*_status` value: 0 OK, 1 WARN, 2 RED, anything else NODATA (never OK).
+    /// A `cc:*_status` value: 0 OK, 1 WARN, 2 RED, anything else NODATA (never OK). Black text
+    /// on every chip: a theme may map red and green to light shades (batman maps both to
+    /// yellows), so the word carries the state and the background only backs it up.
     pub fn status(&self, v: Option<f64>) -> (Style, &'static str) {
         let b = Style::new().add_modifier(Modifier::BOLD);
         match v.map(|v| v as i64) {
             Some(0) => (self.c(b.fg(Color::Black).bg(Color::Green)), "OK"),
             Some(1) => (self.c(b.fg(Color::Black).bg(Color::Yellow)), "WARN"),
-            Some(2) => (self.c(b.fg(Color::White).bg(Color::Red)), "RED"),
-            _ => (self.c(b.fg(Color::White).bg(Color::Magenta)), "NODATA"),
+            Some(2) => (self.c(b.fg(Color::Black).bg(Color::Red)), "RED"),
+            _ => (self.c(b.fg(Color::Black).bg(Color::Magenta)), "NODATA"),
         }
     }
     /// A pass rate: red under 70%, amber under 90%.
@@ -107,6 +109,17 @@ mod tests {
         assert_eq!(dur(3949200.0), "45d17h");
         assert_eq!(dur(f64::NAN), "-");
         assert_eq!(dur(-1.0), "-");
+    }
+
+    #[test]
+    fn every_chip_is_black_text_on_its_colour() {
+        // A theme may map red and green to light shades, so the text never takes the colour.
+        let p = Palette::default();
+        for v in [Some(0.0), Some(1.0), Some(2.0), None] {
+            let (s, _) = p.status(v);
+            assert_eq!(s.fg, Some(Color::Black), "{v:?}");
+            assert!(s.bg.is_some_and(|b| b != Color::Black), "{v:?}");
+        }
     }
 
     #[test]

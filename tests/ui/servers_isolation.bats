@@ -103,7 +103,7 @@ server_alive() { "${REAL_TMUX}" -L "$1" has-session 2>/dev/null; }
 windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 2>/dev/null; }
 
 @test "a session:window line adds a named window to that session, not a session" {
-  # hub.conf's `hub:infra` line: the Command Center board lives beside the daily note.
+  # hub.conf's `hub:board` line: the hub board lives beside the daily note.
   manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
   run "$TMX" ensure "$SRV_A"
   assert_success

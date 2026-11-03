@@ -486,8 +486,8 @@ in_world() {
 }
 
 @test "--route ignores a session:window line, which declares a window and not a session" {
-  # hub.conf's `hub:infra ~/.agent/watches` must not make that directory route to a
-  # session named "hub:infra" that tmx never creates.
+  # hub.conf's `hub:board ~/dev/home/home-config` must not make that directory route to a
+  # session named "hub:board" that tmx never creates.
   mkdir -p "$HOME/declared-win"
   printf 'hub:board ~/declared-win  some-board\n' >> "$TMUX_SERVERS_DIR/hub.conf"
   run "$SESSIONIZER" --route "$HOME/declared-win"

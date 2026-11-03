@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Waybar module: CI runners. The bar is busy of slots and the queue, summed the way the
-# hub:infra board's header sums them (the GitHub self-hosted pools plus the workstation's
+# hub board's header sums them (the GitHub self-hosted pools plus the workstation's
 # local Unity gates). The hover adds the jobs finished in the last day, painted by their pass
 # rate on the board's lines (red under 70%, amber under 90%), and lists each pool's queue,
 # oldest wait, finished jobs and pass rate, then each machine's runners with the job every

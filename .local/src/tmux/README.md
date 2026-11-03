@@ -20,11 +20,9 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `harpoon.sh` | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Harpoon for windows: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
 | `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens a project's tasks: `a` add, `m` move to another project, `x` done, `+`/`-` change wave, `o` open the sheet. `/` searches. Also nvim `<leader>np`. |
-| `fleet-sessions watch` | `Prefix+o` | The fleet watch, in the `hub:watch` window beside infra: one row per agent session with its stages (behind main, conflicts, tree, PR, CI, plan phases, bucket, labels, idle) and a log of every change since the last tick, one line per session fitted to the window (columns at their content's width, all-default ones hidden, the least important dropped first when narrow, WHY taking the rest). A declared window, so it is always running and its log keeps building while you are elsewhere. `Prefix+o` goes there from any world (`tmx goto hub hub:watch`, which rebuilds it if it was killed); `Prefix+L` comes back, and never returns TO a board: when the last session is sitting on one, L goes to the session you worked in before it. `n` refreshes now, `q` quits the board itself. |
-| `day-log watch` | `Prefix+O` | The day log, in the `hub:log` window beside watch: everything merged today in every repo grouped by area and conventional-commit scope (`.config/day-log/groups`), the PRs still open with their CI and session, what waits on you (MAIN reds, NEEDS sessions, pending asks), the `fleet-bench` scorecard headline and its top sessions, spend and tokens from `agent-usage`, merges per hour, and the last watch-log transitions. Deterministic: gh search, the fleet state document and the tools above, no model. Each pass (every 5 min) writes `~/.agent/daylog/<date>.json`, so `[` and `]` step through past days and `t` returns; `l` pages every PR as markdown; `n` refreshes, `q` quits. The briefing files each day as `refs/<date>/shipped.md` with `day-log finalize`. The `day-log` skill reads the same records. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). |
 | `night-shift.sh` | `Prefix+C` | The overnight agent queue (`night-shift`): a `night-shift` session with the board on top (queued, running, last night's results with PRs and pending asks) and the running task's live log below. Both redraw on inotify events. Queue work with `night-shift queue <repo> <task>`. |
-| `hub infra` | `Prefix+i`, window `hub:infra` | The infra board (Rust, `.local/src/hub-tui`): tabs Overview (pools, running, queue, down, red now), Jobs (every agentctl, timer, night-shift, Unity, CI and k8s job, queued/running/done, with its log), CI and Machines. Reads Prometheus through hub-core, the same reader as agent-web's Infra tab; `o` opens the Grafana dashboard. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
+| `hub` | `Prefix+i` / `Prefix+o` / `Prefix+O`, window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board: Overview (pools, running, queue, down, red now), Jobs (every agentctl, timer, night-shift, Unity, CI and k8s job, queued/running/done, with its log), CI, Machines, Sessions (each agent session's stages and what just changed), Today (what the day shipped and what waits on you) and History. `Prefix+i` lands on Overview, `Prefix+o` on Sessions, `Prefix+O` on Today: each runs `hub tab <name>; tmx goto hub hub:board`, which rebuilds the window if it was killed. `Prefix+L` comes back, and never returns TO the board: when the last session is sitting on it, L goes to the session you worked in before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
 ## Usage
@@ -44,7 +42,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows
-- **Fleet watch**: `Prefix+o` → every session's stages and what just changed (the `hub:watch` window; the same board with charts is the Watch tab of agent-web)
+- **Fleet watch**: `Prefix+o` -> every session's stages and what just changed (the Sessions tab of the `hub:board` window; the same board with charts is the Watch tab of agent-web)
 - **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
 - **Tag a window**: `Prefix+t` then `i`/`p`/`a`/`g` → important / pinned / agent / group
 - **Pin a window**: `Prefix+a` pins it (again unpins), `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
@@ -167,7 +165,7 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `infra`: hub infra), dotfiles, watch (fleet-sessions watch), home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
@@ -493,7 +491,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `infra`: hub infra), dotfiles, watch (fleet-sessions watch), home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 

@@ -188,8 +188,8 @@ sessions_on() {
   done
 }
 
-# daily:watch is the board, declared the way hub.conf declares hub:watch.
-board_declared() { printf 'daily:watch ~ fleet-sessions watch\n' >> "$TMUX_SERVERS_DIR/hub.conf"; }
+# daily:watch is the board, declared the way hub.conf declares hub:board.
+board_declared() { printf 'daily:watch ~ hub\n' >> "$TMUX_SERVERS_DIR/hub.conf"; }
 
 @test "when tmux's last session is sitting on a board, L goes to the session worked in before" {
   # A, Prefix o, L back to A: tmux now says the last session is the board's.

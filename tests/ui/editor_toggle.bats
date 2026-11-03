@@ -266,7 +266,7 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   conf_server
   local e
   e="$(conf_tmux list-keys -T prefix | awk '$4 == "i" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  grep -qF 'hub:infra' <<< "$e" || fail "prefix+i is not infra: [$e]"
+  grep -qF 'hub tab overview' <<< "$e" || fail "prefix+i is not infra: [$e]"
   conf_tmux kill-server 2>/dev/null || true
 }
 
