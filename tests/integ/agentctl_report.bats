@@ -254,3 +254,65 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
   assert_success
   [ ! -e "$AGENTCTL_STATE_DIR/never/last-outcome" ]
 }
+
+# --- the run ledger (runs.jsonl) ---
+# One line per finished run, with that run's byte range in the shared stdout/stderr logs:
+# hub-core's Jobs view lists the lines and opens a run's log by its range.
+
+ledger() { cat "$AGENTCTL_STATE_DIR/runs.jsonl"; }
+line() { sed -n "${1}p" "$AGENTCTL_STATE_DIR/runs.jsonl"; }
+
+@test "a start/stop pair appends one ledger line with the run's own log range" {
+  printf 'old run\n' > "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  INVOCATION_ID=abc123 "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'this run\n' >> "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  printf 'WORKED' > "$AGENTCTL_STATE_DIR/probe/last-outcome"
+  INVOCATION_ID=abc123 SERVICE_RESULT=success EXIT_STATUS=0 \
+    run "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_success
+  assert_equal "$(wc -l < "$AGENTCTL_STATE_DIR/runs.jsonl")" '1'
+  run jq -c '[.name, .invocation, .result, .outcome, .out, .err]' "$AGENTCTL_STATE_DIR/runs.jsonl"
+  assert_output '["probe","abc123","success","WORKED",[8,17],[0,0]]'
+  run jq -e '.finished >= .started' "$AGENTCTL_STATE_DIR/runs.jsonl"
+  assert_success
+}
+
+@test "the next run starts where the last one stopped" {
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'one\n' >> "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  SERVICE_RESULT=success "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'two\n' >> "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  SERVICE_RESULT=exit-code EXIT_STATUS=1 "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  run jq -c '.out' "$AGENTCTL_STATE_DIR/runs.jsonl"
+  assert_output $'[0,4]\n[4,8]'
+  assert_equal "$(line 2 | jq -r '.result + " " + .exit')" 'exit-code 1'
+}
+
+@test "a log truncated by logrotate mid-run reads from its start, not past its end" {
+  printf '%0100d\n' 0 > "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  printf 'after rotate\n' > "$AGENTCTL_STATE_DIR/probe.stdout.log"
+  SERVICE_RESULT=success "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_equal "$(jq -c .out "$AGENTCTL_STATE_DIR/runs.jsonl")" '[0,13]'
+}
+
+@test "a paused skip writes no ledger line" {
+  SERVICE_RESULT=exec-condition run "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  assert_success
+  [ ! -e "$AGENTCTL_STATE_DIR/runs.jsonl" ]
+}
+
+@test "a stop with no recorded start still writes valid JSON" {
+  # Negative control for the start sidecar: a run that began before this code shipped.
+  SERVICE_RESULT=success "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  run jq -e '.started == null and .name == "probe"' "$AGENTCTL_STATE_DIR/runs.jsonl"
+  assert_success
+}
+
+@test "a hostile value cannot break the line's JSON" {
+  "$AGENTCTL_BIN" report --name probe --lifecycle start
+  SERVICE_RESULT='x","injected":"1' EXIT_STATUS='2\' "$AGENTCTL_BIN" report --name probe --lifecycle stop
+  run jq -e 'has("injected") | not' "$AGENTCTL_STATE_DIR/runs.jsonl"
+  assert_success
+}
