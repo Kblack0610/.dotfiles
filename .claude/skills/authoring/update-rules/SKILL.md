@@ -113,7 +113,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 
 ### A new skill and CLAUDE.md
 
-Skills are not listed in CLAUDE.md: skill descriptions are injected (kept short by `skill-drift --lint`), and that is the index. Add a line to the global "Prefer skills" section only when the new skill collides with an existing one (say which wins). A skill that replaces another deletes the old one in the same PR; there is no "retired" list to keep. `skill-drift` reports `GHOST` for a skill bulleted there that is no longer on disk.
+Skills are not listed in CLAUDE.md: skill descriptions are injected (kept short by `skill-drift --lint`), and that is the index. When a new skill collides with an existing one, each description names the other (for example "Whole app: ui-audit."); CLAUDE.md gets no line. A skill that replaces another deletes the old one in the same PR; there is no "retired" list to keep.
 
 ### Remove a rule
 
