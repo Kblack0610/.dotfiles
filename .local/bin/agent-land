@@ -4,9 +4,9 @@
 #   agent-land <pr> --project <board project> --title "<board row title>"
 #              [--plan <file> --phase "<text>"] [--sheet] [--dry-run]
 #
-# Steps, stopping at the first failure: checks (the PR's checks pass: CI, a required check),
-# fetch (HEAD must contain origin/<base>), merge (--squash --match-head-commit HEAD, then gh pr
-# view must say MERGED), board (agent row done with pr:<pr>), sheet (--sheet: a "<title>
+# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base>, checked before
+# and after the checks), checks (the PR's checks pass: CI, a required check), merge (--squash
+# --match-head-commit HEAD, then gh pr view must say MERGED), board (agent row done with pr:<pr>), sheet (--sheet: a "<title>
 # #oneshot" row added and closed), plan (--plan: the one "- [ ] <phase>" line becomes
 # "- [x] <phase> (#<pr>)"). One line per step.
 # Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it, re-gate, re-run.
@@ -60,6 +60,16 @@ wait_checks() {
   done
 }
 
+current_with_base() {
+  local out behind
+  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
+  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
+  if [ "$behind" -ne 0 ]; then
+    printf 'agent-land: behind origin/%s by %s, merge it and re-gate\n' "$base" "$behind" >&2
+    exit 3
+  fi
+}
+
 pr='' project='' title='' plan='' phase='' sheet=0 dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -102,13 +112,11 @@ state="${info%% *}" base="${info#* }"
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
 else
+  # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
+  # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
+  current_with_base
   wait_checks
-  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
-  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
-  if [ "$behind" -ne 0 ]; then
-    printf 'agent-land: behind origin/%s by %s, merge it and re-gate\n' "$base" "$behind" >&2
-    exit 3
-  fi
+  current_with_base
   echo "fetch: current with origin/$base"
 
   head=$(git rev-parse HEAD)
