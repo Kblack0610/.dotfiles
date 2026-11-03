@@ -12,7 +12,7 @@
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
 #
 # tmux tests are NOT parallel-safe: upstream tmux sets `.NOTPARALLEL: all` on its own
-# regress suite for the same reason. Only the unit tier may use `bats --jobs`.
+# regress suite for the same reason. Only the unit tier may use `bats --jobs` (UNIT_PAR below).
 .NOTPARALLEL:
 
 SHELL     := /bin/bash
@@ -70,8 +70,14 @@ test: test-fast test-ui
 
 test-fast: test-unit test-integ
 
+# The unit tier runs its files in parallel when GNU parallel is there (bats needs it for
+# --jobs): serial it is about half the fast job, which has a 10-minute cap.
+UNIT_JOBS ?= $(shell nproc 2>/dev/null || echo 2)
+UNIT_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
+
 test-unit: $(BATS)
-	@$(BATS) $(BATS_FLAGS) $(HERE)unit
+	@$(if $(UNIT_PAR),echo "==> unit tier: bats $(UNIT_PAR)",echo "==> unit tier: serial (no GNU parallel)")
+	@$(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(HERE)unit
 
 test-integ: $(BATS)
 	@$(BATS) $(BATS_FLAGS) $(HERE)integ
