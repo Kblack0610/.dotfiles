@@ -82,15 +82,25 @@ _claude_launch() {
 }
 
 # cl starts on whichever Claude account has the most 5h/7d room left (claude-acct,
-# accounts in ~/.config/claude-acct/accounts). Plain `claude` stays on the default one.
+# accounts in ~/.config/claude-acct/accounts); `cl --acct <name>` forces one.
+# Plain `claude` stays on the default one.
 unalias cl 2>/dev/null
 cl() {
-    local dir=""
-    command -v claude-acct >/dev/null && dir=$(claude-acct pick)
+    local dir="" acct=""
+    case "${1:-}" in
+        --acct) acct="${2:?cl: --acct needs an account name}"; shift 2 ;;
+        --acct=*) acct="${1#--acct=}"; shift ;;
+    esac
+    if [ -n "$acct" ]; then
+        dir=$(claude-acct pick "$acct") || return 1
+    elif command -v claude-acct >/dev/null; then
+        dir=$(claude-acct pick)
+    fi
     if [ -n "$dir" ]; then
         CLAUDE_CONFIG_DIR="$dir" _claude_launch --dangerously-skip-permissions "$@"
     else
-        _claude_launch --dangerously-skip-permissions "$@"
+        # Main is the unset dir; a shell spawned by an alt session would otherwise pass alt on.
+        ( unset CLAUDE_CONFIG_DIR; _claude_launch --dangerously-skip-permissions "$@" )
     fi
 }
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"

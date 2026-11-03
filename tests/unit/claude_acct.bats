@@ -497,3 +497,17 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   run "$ACCT" check nonsense
   assert_failure 2
 }
+
+@test "pick <name> prints that account's dir whatever the usage, and refuses an unknown one" {
+  usage main 10 10
+  usage alt 90 90
+  run --separate-stderr "$ACCT" pick alt
+  assert_success
+  assert_output "$ALT"
+  run --separate-stderr "$ACCT" pick main
+  assert_success
+  assert_output ''
+  run --separate-stderr "$ACCT" pick nope
+  assert_failure
+  [[ "$stderr" == *"no account 'nope'"*"have: main alt"* ]]
+}
