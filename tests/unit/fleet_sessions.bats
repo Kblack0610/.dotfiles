@@ -39,11 +39,11 @@ b() { session_bucket "$@"; }
   assert_output 'NEEDS 1 pending ask(s)'
 }
 
-@test "an open PR that conflicts with the default branch is STALLED whatever the status" {
+@test "a green PR that conflicts with the default branch is STALLED whatever the status" {
   # 2026-10-28: five PRs conflicted on the unity-core pin while reading "WORKING shell".
   run b shell 0 0 0 5 1 0 0 1092 OPEN PASS 1 - 1/3 x yes
   assert_output 'STALLED PR #1092 conflicts with the default branch'
-  run b busy 0 0 1 0 1 2 0 1099 OPEN PENDING 1 - - - yes
+  run b busy 0 0 1 0 1 2 0 1099 OPEN PASS 1 - - - yes
   assert_output 'STALLED PR #1099 conflicts with the default branch'
   # an ask still outranks it: the human is needed first
   run b busy 0 1 0 0 1 0 0 1099 OPEN PASS 1 - - - yes
@@ -55,6 +55,25 @@ b() { session_bucket "$@"; }
   assert_output 'WORKING shell'
   run b busy 0 0 0 0 1 3 0 - - - 1 - - - yes
   assert_output 'WORKING busy'
+}
+
+@test "a conflict on a red or running PR stays in its other bucket, named in the reason" {
+  # 2026-11-02: ~30 PRs drew 55 conflict nudges in 6h, most of them red or still gating.
+  run b idle 0 0 0 30 1 0 0 1092 OPEN FAIL 1 - 1/3 x yes
+  assert_output 'STALLED PR #1092 CI red, conflicts with the default branch'
+  run b idle 0 0 0 30 1 0 0 1092 OPEN PENDING 1 - 1/3 x yes
+  assert_output 'WORKING PR #1092 CI running, conflicts with the default branch'
+  run b busy 0 0 0 0 1 0 0 1092 OPEN FAIL 1 - 1/3 x yes
+  assert_output 'WORKING busy, conflicts with the default branch'
+  run b shell 0 0 0 5 1 0 0 1092 OPEN PENDING 1 - 1/3 x yes
+  assert_output 'WORKING shell, conflicts with the default branch'
+  # no checks: ready once the session is idle past FLEET_IDLE_MIN, not before
+  run b busy 0 0 0 0 1 0 0 1092 OPEN NONE 1 - 1/3 x yes
+  assert_output 'WORKING busy, conflicts with the default branch'
+  run b idle 0 0 0 19 1 0 0 1092 OPEN NONE 1 - 1/3 x yes
+  assert_output 'WORKING idle 19m, conflicts with the default branch'
+  run b idle 0 0 0 20 1 0 0 1092 OPEN NONE 1 - 1/3 x yes
+  assert_output 'STALLED PR #1092 conflicts with the default branch'
 }
 
 @test "an idle session with a heavy child is still WORKING" {
@@ -1203,15 +1222,17 @@ PROM
 }
 
 
-# open_pr_gh <json rollup>: a gh whose `pr list` answers one OPEN PR for feat/x at the
-# worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under test.
+# open_pr_gh <json rollup> [main runs page]: a gh whose `pr list` answers one OPEN PR for feat/x
+# at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under
+# test. `api` answers the main runs page (see page) when given, else no runs.
 open_pr_gh() {
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
     "$oid" "$1" > "$SANDBOX/prs.json"
+  printf '%s' "${2:-}" > "$SANDBOX/runs.json"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
-[ "\$1" = api ] && { echo "[]"; exit 0; }
+if [ "\$1" = api ]; then [ -s "$SANDBOX/runs.json" ] && jq -c "\${@: -1}" "$SANDBOX/runs.json" || echo "[]"; exit 0; fi
 while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
 GH
   chmod +x "$SANDBOX/bin/gh"
@@ -1244,4 +1265,87 @@ GH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .nudged <<<"$output")" = false ]
+}
+
+# conflict_fixture: landed_fixture with feat/x and origin/main changing a.txt differently,
+# fetched, so merging the default branch in would conflict.
+conflict_fixture() {
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo mine > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m mine
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  main_change theirs
+}
+
+# main_change <text>: origin/main writes a.txt as <text>, and the worktree fetches it.
+main_change() {
+  echo "$1" > "$SANDBOX/other/a.txt"
+  git -C "$SANDBOX/other" add a.txt
+  git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m "$1"
+  git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" fetch -q origin
+}
+
+@test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
+  conflict_fixture
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .conflicts <<<"$output")" = true ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, conflicts with the default branch' ]
+  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red, conflicts with the default branch @feat/x@${oid:0:12}" ]
+
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  local fork; fork="$(git -C "$SANDBOX/wt" merge-base origin/main HEAD)"
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
+  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 conflicts with the default branch @feat/x base ${fork:0:12}" ]
+  [ "$(jq -r .nudged <<<"$output")" = false ]
+  [ "$(jq -r .main_red <<<"$output")" = false ]
+  mark sid-9 "$(jq -r .fact <<<"$output")"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+}
+
+@test "end to end: the same conflict at a new head is the same fact; conflicting again after a resolve is new" {
+  conflict_fixture
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  local first; first="$(jq -r .fact <<<"$output")"
+  mark sid-9 "$first"
+
+  # a push that does not take main in, and main moving on again: still the same conflict
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'more work'
+  main_change 'theirs again'
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = "$first" ]
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+
+  # the session resolves it (merges main in), is clean, then main conflicts with it again
+  "${g[@]}" merge -q -X ours origin/main -m 'merge main' >/dev/null
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .conflicts <<<"$output")" = false ]
+  main_change 'theirs a third time'
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
+  [ "$(jq -r .fact <<<"$output")" != "$first" ]
+  [ "$(jq -r .nudged <<<"$output")" = false ]
+}
+
+@test "end to end: under a red main a non-owner's conflict row says main_red, and the MAIN row does not own it" {
+  # The shepherd leaves a non-owner's STALLED row alone while its repo's main is red
+  # (fleet-overseer shepherd step 4); these are the facts it reads to do that.
+  conflict_fixture
+  local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' "$(page "[$(r Tests failure "$tip" 1)]")"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  session="$(jq -c 'select(.bucket != "MAIN")' <<<"$output")"
+  main="$(jq -c 'select(.bucket == "MAIN")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$session")" = 'PR #9 conflicts with the default branch' ]
+  [ "$(jq -r .main_red <<<"$session")" = true ]
+  [ "$(jq -r '.owners | length' <<<"$main")" = 0 ]
 }
