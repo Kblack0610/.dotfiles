@@ -112,7 +112,7 @@
     "disableAutoMode": "disable"
   },
   "model": "opus[1m]",
-  "autoCompactWindow": 275000,
+  "autoCompactWindow": 200000,
   "fallbackModel": [
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001"
