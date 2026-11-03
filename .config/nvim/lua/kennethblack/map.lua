@@ -43,7 +43,7 @@ vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww tmux-sessionizer<CR>", { de
 -- that does not clip to the window and leaves artifacts). `vim.ui.image` does not
 -- exist in 0.12.x and neovim#38612, which would have added passthrough, was closed
 -- unmerged. Shelling out to a tmux window is the only place previews render properly
--- - same pattern as <C-f> above. Mirrors tmux `prefix i`.
+-- - same pattern as <C-f> above. Mirrors tmux `prefix u`.
 --
 -- Add locations here as they come up; each gets its own <leader>p… binding.
 local image_locations = {

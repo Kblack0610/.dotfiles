@@ -9,8 +9,8 @@
 # The editor deliberately took a key nothing else wanted (Space, whose stock binding is
 # next-layout), so no existing surface was rebound to make room. That is worth ASSERTING
 # rather than trusting: an earlier revision of this feature moved mail off prefix+e, and a
-# rekey is exactly the kind of change that silently strands a key you use daily. e is the
-# infra board now (mail retired 2026-10-28), and is pinned here for the same reason.
+# rekey is exactly the kind of change that silently strands a key you use daily. i is the
+# infra board now, and is pinned here for the same reason.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -61,7 +61,7 @@ setup() {
   # Space's stock binding is next-layout, which is tmux's own and not a surface in this
   # repo. Every other key in .tmux.conf must still point where it did.
   local k
-  for k in e i I o p g w m a f S A W r N H; do
+  for k in e i u U o p g w m a f S A W r N H; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }
@@ -77,21 +77,21 @@ setup() {
   assert_output '0'
 }
 
-# ── prefix+e, which this feature must NOT have touched ───────────────────────
+# ── prefix+i, which this feature must NOT have touched ───────────────────────
 
-@test "infra is still on prefix+e, exactly where it was" {
+@test "infra is still on prefix+i, exactly where it was" {
   local infra
-  infra="$(bind_for e)"
-  [ -n "$infra" ] || fail "prefix+e is not bound -- infra was dropped"
-  grep -qF 'hub:infra' <<< "$infra" || fail "prefix+e is bound to something that is not infra: $infra"
+  infra="$(bind_for i)"
+  [ -n "$infra" ] || fail "prefix+i is not bound -- infra was dropped"
+  grep -qF 'hub:infra' <<< "$infra" || fail "prefix+i is bound to something that is not infra: $infra"
 }
 
-@test "prefix+e is bound exactly once" {
+@test "prefix+i is bound exactly once" {
   # A duplicate bind is silent: tmux keeps the LAST one, so a stray editor bind on e
   # further down the file would beat infra with no diagnostic at load.
   local n
-  n="$(root_binds | awk -F'\t' '$1 == "e"' | grep -c .)"
-  [ "$n" -eq 1 ] || fail "prefix+e is bound $n times -- tmux silently keeps only the last"
+  n="$(root_binds | awk -F'\t' '$1 == "i"' | grep -c .)"
+  [ "$n" -eq 1 ] || fail "prefix+i is bound $n times -- tmux silently keeps only the last"
 }
 
 @test "the editor claimed no Alt key, so nvim and the shell still see them" {

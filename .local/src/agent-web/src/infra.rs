@@ -1,4 +1,4 @@
-//! The Infra tab: the hub:infra board (`command-center.sh`, Prefix e) for the browser. It asks
+//! The Infra tab: the hub:infra board (`command-center.sh`, Prefix i) for the browser. It asks
 //! Prometheus the board's own questions, so the tab, the board and Grafana's kb-command-center
 //! all read the same `cc:*` rules (home-config `apps/monitoring/prometheus-rules-command-center.yaml`)
 //! and the same runner-exporter series, and none of them judges anything itself.

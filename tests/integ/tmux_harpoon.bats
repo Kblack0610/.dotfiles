@@ -121,3 +121,15 @@ EOF
   assert_success
   assert_equal "$(cat "$LIST")" "$(printf 'lab\twork\nhub\tdaily')"
 }
+
+@test "menu in nvim maps Esc and q to save and close" {
+  pinned hub daily
+  mkdir -p "$SANDBOX/edbin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/nvim.args"\n' "$SANDBOX" > "$SANDBOX/edbin/nvim"
+  chmod +x "$SANDBOX/edbin/nvim"
+  EDITOR="$SANDBOX/edbin/nvim" run "$H" menu
+  assert_success
+  run cat "$SANDBOX/nvim.args"
+  assert_output --partial 'nnoremap <buffer> <Esc> <Cmd>wq<CR>'
+  assert_output --partial 'nnoremap <buffer> q <Cmd>wq<CR>'
+}

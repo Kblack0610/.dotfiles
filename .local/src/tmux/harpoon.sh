@@ -2,7 +2,7 @@
 # harpoon.sh (`tmux-harpoon`) - pin tmux SESSIONS to numbered slots, like nvim's harpoon.
 #   Prefix+a s  toggle     pin / unpin this session
 #   M-1..M-4    jump <n>   jump to slot n
-#   Prefix+E    menu       edit the list in $EDITOR: reorder lines, delete to unpin
+#   Prefix+e    menu       edit the list in $EDITOR: reorder lines, delete to unpin, Esc/q
 #   ls | file              print the slots | print the list's path
 #
 # The list is a file of "<server><TAB><session>" lines, line number = slot, not a tmux
@@ -81,7 +81,12 @@ cmd_menu() {
   mkdir -p "${HARPOON_FILE%/*}"
   tmp="$(mktemp "${HARPOON_FILE}.XXXXXX")" || panel_die "cannot create a temp file"
   slots > "$tmp"
-  "${EDITOR:-nvim}" "$tmp"
+  local ed="${EDITOR:-nvim}"
+  case "${ed##*/}" in
+    # Esc and q save and close, like the nvim harpoon menu with save_on_toggle.
+    nvim|vim) "$ed" -c 'nnoremap <buffer> <Esc> <Cmd>wq<CR>' -c 'nnoremap <buffer> q <Cmd>wq<CR>' "$tmp" ;;
+    *) "$ed" "$tmp" ;;
+  esac
   # Normalise on the way back in: blank lines dropped, duplicates collapsed to the first.
   awk -F'\t' 'NF >= 2 && $1 != "" && $2 != "" && !seen[$0]++' "$tmp" > "$HARPOON_FILE"
   rm -f "$tmp"
