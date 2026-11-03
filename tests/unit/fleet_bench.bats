@@ -462,7 +462,7 @@ merged_pr() {
   assert_success
   BENCH_NOW=$((T0 + 60)) "$SUBJECT" review
   BENCH_NOW=$((T0 + 120)) run "$SUBJECT" headline
-  assert_output --partial '1 CI reds before merge in 1 PRs'
+  assert_output --partial '1 failed CI runs before merge in 1 PRs'
   refute_output --partial 'review:'
   BENCH_NOW=$((T0 + 120)) "$SUBJECT" scorecard
   run cat "$HOME/lab/bench/latest.md"

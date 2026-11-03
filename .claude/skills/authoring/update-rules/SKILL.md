@@ -60,6 +60,7 @@ The sync script reads `$RULESYNC_ROOT` (default `~/.config/rulesync-global`, the
 What it writes, and what it explicitly does NOT:
 
 - Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`
+- `~/.config/opencode/` is stowed from `~/.dotfiles-private`, so the opencode output is tracked: commit it in the PR that changes the rule. From a worktree, point the sync at it: `RULESYNC_ROOT=<wt>/.config/rulesync-global OPENCODE_HOME=<wt>/.config/opencode`. Why: left uncommitted from 2026-09-25 to 2026-11-02, it sat stale in git and dirty in the main checkout.
 - Does NOT write: `~/.claude/CLAUDE.md` (a symlink into `~/.dotfiles-private/.claude/`; editing the private file IS the deploy) or any Claude MCP config.
 
 ## Running the sync
