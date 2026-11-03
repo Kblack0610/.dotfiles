@@ -43,6 +43,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
         run: make -C tests bootstrap
+      # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
+      - name: GNU parallel
+        run: command -v parallel || { sudo apt-get update -qq && sudo apt-get install -y -qq parallel; }
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
