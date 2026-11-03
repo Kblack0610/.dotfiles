@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
-# ci_runners.sh: the waybar CI chip. It lays out the cc:pool_* rules and the runner
-# exporter's series, the same ones the hub board reads. What these pin: the bar's
+# ci_runners.sh: the waybar CI chip. It lays out the cc:pool_* and cc:site_* rules and the
+# runner exporter's series, the same ones the hub board reads. What these pin: the bar's
 # busy/slots and queue are the board header's totals (pools plus local gates); its colour
-# is the ci domain status rule, never its own judgement; the hover names which runner on
-# which machine runs which PR; and an unreadable Prometheus shows `CI: prom down`, never the last
-# numbers.
+# is the ci domain status rule, never its own judgement; the hover counts local vs cloud,
+# names each cloud machine, and lists one row per machine instead of one per job; a missed
+# scrape and GitHub not answering read differently; and an unreadable Prometheus shows
+# `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,6 +17,7 @@ setup() {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
+printf '%s\n' "$*" >> "$FX/queries"
 case "$*" in
   *cc:pool_*) cat "$FX/cc.json" ;;
   *github_runner_state*) cat "$FX/runners.json" ;;
@@ -27,18 +29,21 @@ STUB
   fixtures idle
 }
 
-# fixtures [idle|offline]: unity 3/4 with 5 queued, light 0/2, workstation gates 2/4 q1
-# with 6 burst slots, hp-unity-3 withheld by the governor.
+# fixtures [idle|offline|cloud-off]: unity 3/4 with 5 queued, light 0/2, workstation gates 2/4 q1
+# with 6 burst slots, hp-unity-3 withheld by the governor, aws-burst-1 in the cloud running
+# 2/2 (cloud-off: both offline), 3 jobs on GitHub's own runners. cc:site_* says local 5/9,
+# cloud 2/2 (NO_SITE=1 drops it).
 # Finished in 24h: unity 40 at 95%, light 10 at 60%, github-hosted (no slots) 50 at
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
-# the exporter's last GitHub call.
+# the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it).
 fixtures() {
   python3 - "$FX" "$1" <<'PY'
 import json, os, sys
 d, mode = sys.argv[1], sys.argv[2]
 status, api = os.environ.get("CI_STATUS", "1"), os.environ.get("API_OK", "1")
-no_done = os.environ.get("NO_DONE") == "1"
+up = os.environ.get("EXPORTER_UP", "1")
+no_done, no_site = os.environ.get("NO_DONE") == "1", os.environ.get("NO_SITE") == "1"
 def out(name, rows):
     res = [{"metric": m, "value": [0, v]} for m, v in rows]
     json.dump({"status": "success", "data": {"result": res}}, open(f"{d}/{name}.json", "w"))
@@ -52,7 +57,13 @@ cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
        ({"__name__": "cc:host_local_open_slots", "host": "workstation"}, "4"),
        ({"__name__": "cc:host_local_busy", "host": "workstation"}, "2"),
        ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
-       ({"__name__": "api_ok"}, api)]
+       ({"__name__": "api_ok", "src": "api"}, api)]
+if up != "none":
+    cc.append(({"__name__": "exporter_up", "src": "up"}, up))
+if not no_site:
+    cc += [({"__name__": "cc:site_slots", "site": "local"}, "9"), ({"__name__": "cc:site_busy", "site": "local"}, "5"),
+           ({"__name__": "cc:site_slots", "site": "cloud"}, "2"), ({"__name__": "cc:site_busy", "site": "cloud"}, "2"),
+           ({"__name__": "cc:github_hosted_running"}, "3")]
 if not no_done:
     for pre, key, k, done, ratio in [("cc:pool", "pool", "unity", "40", "0.95"), ("cc:pool", "pool", "light", "10", "0.6"),
                                      ("cc:pool", "pool", "github-hosted", "50", "1"),
@@ -63,8 +74,9 @@ if status != "none":
            ({"__name__": "cc:component_status", "domain": "ci", "component": "pools"}, status),
            ({"__name__": "cc:component_status", "domain": "ci", "component": "watches"}, "0")]
 out("cc", cc)
-def r(host, pool, state, name, val="0", **kw):
-    return ({"host": host, "pool": pool, "state": state, "name": name, **kw}, val)
+def r(host, pool, state, name, val="0", site="local", **kw):
+    return ({"host": host, "pool": pool, "state": state, "name": name, "site": site, **kw}, val)
+aws = "offline" if mode == "cloud-off" else "running"
 runners = [
     r("razer-laptop", "unity", "running", "razer-unity-1", "545", repo="playground", pr="1210",
       workflow="Tests", job_name="PlayMode 4"),
@@ -75,6 +87,10 @@ runners = [
     r("hp-victus", "unity", "idle", "hp-unity-2"),
     r("hp-victus", "unity", "idle", "hp-unity-3"),
     r("hp-victus", "light", "offline" if mode == "offline" else "idle", "hp-light-1"),
+    r("aws-burst-1", "unity", aws, "aws-unity-1", "120", site="cloud", repo="playground", pr="1300",
+      workflow="Tests", job_name="EditMode"),
+    r("aws-burst-1", "unity", aws, "aws-unity-2", "30", site="cloud", repo="playground", pr="1301",
+      workflow="Tests", job_name="EditMode"),
 ]
 out("runners", runners)
 out("withheld", [({"name": "hp-unity-3"}, "1")])
@@ -92,8 +108,8 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "pools and local gates list busy/slots, queue and oldest wait, longest queue first" {
   run "$MODULE"
   run tip
-  assert_line --index 4 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
-  assert_line --index 5 --regexp "^local:workstation +2/4 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
+  assert_line --index 5 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
+  assert_line --index 6 --regexp "^local:workstation +2/4 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
 }
 
 # The burst slots open only with room, so they are a legend line, never a +N in the cell.
@@ -101,7 +117,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   run "$MODULE"
   run tip
   refute_output --partial "2/4+6"
-  assert_line --index 8 "local:workstation has 6 burst slots more, opened only while the CPU has room"
+  assert_line --index 9 "local:workstation has 6 burst slots more, opened only while the CPU has room"
 }
 
 @test "a local row running burst slots reads busy of busy" {
@@ -116,21 +132,21 @@ PY
   run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 9/12 <span color='#ffcc2f'>q6</span>"
   run tip
-  assert_line --index 5 --regexp "^local:workstation +6/6 "
+  assert_line --index 6 --regexp "^local:workstation +6/6 "
 }
 
 @test "a pool with finished jobs but no slots still gets a row, with no busy count" {
   run "$MODULE"
   run tip
-  assert_line --index 6 --regexp "^github-hosted +- +0 +- +50  100%$"
-  assert_line --index 7 --regexp "^light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
+  assert_line --index 7 --regexp "^github-hosted +- +0 +- +50  100%$"
+  assert_line --index 8 --regexp "^light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
 }
 
 @test "finished jobs stay off the bar; the hover paints them by the pass rate over all of them" {
   run "$MODULE"
   refute_output --partial "120</span>"
   run tip
-  assert_line --index 2 "finished 24h: 120, <span color='#ffcc2f'>87%</span> passed"
+  assert_line --index 3 "finished 24h: 120, <span color='#ffcc2f'>87%</span> passed"
 }
 
 @test "under 70% passed the hover's finished line is red" {
@@ -144,7 +160,7 @@ json.dump(d, open(sys.argv[1], "w"))
 PY2
   run "$MODULE"
   run tip
-  assert_line --index 2 "finished 24h: 120, <span color='#ef5734'>50%</span> passed"
+  assert_line --index 3 "finished 24h: 120, <span color='#ef5734'>50%</span> passed"
 }
 
 # Negative control: with no finished series the count is -, never a 0 nobody measured.
@@ -153,7 +169,7 @@ PY2
   run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 <span color='#ffcc2f'>q6</span>"
   run tip
-  assert_line --index 2 "finished 24h: none reported"
+  assert_line --index 3 "finished 24h: none reported"
 }
 
 @test "the colour and class are the ci domain status, and the hover names each component" {
@@ -186,36 +202,90 @@ PY2
   assert_line --index 1 "ci: no data"
 }
 
-@test "each machine lists its pools, and every busy runner names repo#PR, job and time" {
+@test "running counts local and cloud, naming each cloud machine and GitHub's runners" {
   run "$MODULE"
   run tip
-  assert_output --partial "<b>razer-laptop  light 0/1 unity 2/2</b>"
-  assert_output --partial "<b>hp-victus  light 0/1 unity 1/2 unity withheld 0/1</b>"
-  assert_output --partial "  razer-unity-1  playground#1210  Tests: PlayMode 4  9m"
-  # No PR: the repo alone, no dangling #.
-  assert_output --partial "  hp-unity-1  playground  Release: Mac  1m"
-  refute_output --partial "razer-light-1"
+  assert_line --index 2 "running: local 5/9  cloud 5 (aws-burst-1 2/2, github-hosted 3)"
+}
+
+# A cloud machine is kept stopped when idle: it reads off, not 0/0, and not missing.
+@test "a cloud machine with no runner up reads off" {
+  fixtures cloud-off
+  run "$MODULE"
+  run tip
+  assert_line --index 2 "running: local 5/9  cloud 5 (aws-burst-1 off, github-hosted 3)"
+  refute_line --regexp "^aws-burst-1 +cloud"
+}
+
+# Negative control: with no job on GitHub's runners the list does not name them.
+@test "no GitHub-hosted job running leaves github-hosted out" {
+  python3 - "$FX/cc.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    if r["metric"]["__name__"] == "cc:github_hosted_running":
+        r["value"][1] = "0"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$MODULE"
+  run tip
+  assert_line --index 2 "running: local 5/9  cloud 2 (aws-burst-1 2/2)"
+}
+
+@test "no cc:site series says so instead of a 0/0 nobody measured" {
+  NO_SITE=1 fixtures idle
+  run "$MODULE"
+  run tip
+  assert_line --index 2 "running: no cc:site_* series (recording rules not loaded?)"
+}
+
+@test "one row per machine: where, busy/slots and per pool, busiest first" {
+  run "$MODULE"
+  run tip
+  assert_line --index 10 --regexp "^MACHINE +WHERE +BUSY +POOLS$"
+  assert_line --index 11 --regexp "^aws-burst-1 +cloud +2/2  unity 2/2$"
+  assert_line --index 12 --regexp "^razer-laptop +local +2/3  light 0/1 unity 2/2$"
+  assert_line --index 13 --regexp "^workstation +local +2/4  gates 2/4$"
+  assert_line --index 14 --regexp "^hp-victus +local +1/3  light 0/1 unity 1/2 unity withheld 0/1$"
+}
+
+# The per-job list is the board's CI tab now: the hover never names a job.
+@test "the hover lists no job lines" {
+  run "$MODULE"
+  run tip
+  refute_output --partial "PlayMode"
+  refute_output --partial "Release: Mac"
 }
 
 # Negative control for the withheld count: a machine with none withheld never says so.
 @test "a machine with no withheld runner has no withheld count" {
   run "$MODULE"
   run tip
-  assert_output --partial "<b>razer-laptop  light 0/1 unity 2/2</b>"
-  refute_output --regexp "razer-laptop .*withheld"
+  refute_line --regexp "^razer-laptop .*withheld"
 }
 
-@test "a job past an hour is painted amber" {
+@test "only jobs past an hour are listed under long runs, painted amber" {
   run "$MODULE"
   run tip
-  assert_output --partial "<span color='#ffcc2f'>1h06m</span>"
+  assert_output --partial "long runs: razer-unity-2 playground#1183 <span color='#ffcc2f'>1h06m</span>"
+  refute_output --partial "razer-unity-1 playground#1210"
 }
 
-@test "markup and quotes in a job name are escaped and the output stays valid JSON" {
+@test "with no job past an hour there is no long runs line" {
+  python3 - "$FX/runners.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    r["value"][1] = "60" if r["metric"]["state"] == "running" else r["value"][1]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$MODULE"
+  refute_output --partial "long runs"
+}
+
+@test "the output stays valid JSON" {
   run "$MODULE"
   jq -e . <<< "$output" > /dev/null
-  run tip
-  assert_output --partial 'PlayMode &lt;2&gt; &amp; "quoted"'
 }
 
 @test "an offline runner is counted under DOWN by machine and state" {
@@ -233,11 +303,42 @@ PY2
   refute_output --partial "DOWN"
 }
 
-@test "an exporter that cannot reach GitHub says the numbers may be old" {
+@test "a missed exporter scrape says so, and does not blame GitHub" {
+  EXPORTER_UP=0 fixtures idle
+  run "$MODULE"
+  run tip
+  assert_output --partial "runner exporter missed its last scrape, runner rows may be missing"
+  refute_output --partial "GitHub not answering"
+}
+
+@test "no exporter up series reads as a missed scrape too" {
+  EXPORTER_UP=none fixtures idle
+  run "$MODULE"
+  run tip
+  assert_output --partial "runner exporter missed its last scrape"
+}
+
+@test "GitHub not answering the runner calls says so" {
   API_OK=0 fixtures idle
   run "$MODULE"
   run tip
-  assert_output --partial "exporter cannot reach GitHub, numbers may be old"
+  assert_output --partial "GitHub not answering the exporter, runner rows may be missing"
+  refute_output --partial "missed its last scrape"
+}
+
+# Negative control: a healthy exporter adds neither line.
+@test "a healthy exporter adds no exporter line" {
+  run "$MODULE"
+  run tip
+  refute_output --partial "missed its last scrape"
+  refute_output --partial "GitHub not answering"
+}
+
+# One repo's run list failing must not doubt the runner rows: api_ok reads runner sources.
+@test "api_ok is read from the runner sources only" {
+  run "$MODULE"
+  run grep -c 'github_runner_exporter_api_ok{kind="runners"}' "$FX/queries"
+  assert_output 1
 }
 
 @test "Prometheus unreadable: CI: prom down in red and no numbers at all" {
