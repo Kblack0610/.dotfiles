@@ -9,7 +9,7 @@
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
-#   claude-acct check usage|pace  # one line, exit 1 when tripped (the Sentinel watch probes)
+#   claude-acct check usage|burn  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
@@ -182,15 +182,20 @@ live_of() {
     done
 }
 
+# prom_q <promql> -> the instant-query answer on stdout, exit 1 when Prometheus cannot be read
+prom_q() {
+    local url="${CC_PROM_URL:-}"
+    # shellcheck source=/dev/null
+    [[ -n "$url" || ! -r "$PROM_ENV" ]] || url=$(. "$PROM_ENV" 2>/dev/null; printf '%s' "${CC_PROM_URL:-}")
+    [[ -n "$url" ]] || return 1
+    curl -sf -m 5 --data-urlencode "query=$1" "$url/api/v1/query" 2>/dev/null
+}
+
 # spend_24h -> {"email": dollars}, or null when Prometheus cannot be read: dollars are for scale,
 # never load-bearing, so the percents still print
 spend_24h() {
-    local url="${CC_PROM_URL:-}" out
-    # shellcheck source=/dev/null
-    [[ -n "$url" || ! -r "$PROM_ENV" ]] || url=$(. "$PROM_ENV" 2>/dev/null; printf '%s' "${CC_PROM_URL:-}")
-    [[ -n "$url" ]] || { echo null; return; }
-    out=$(curl -sf -m 5 --data-urlencode 'query=sum by (user_email) (increase(claude_code_cost_usage_USD_total[24h]))' \
-        "$url/api/v1/query" 2>/dev/null |
+    local out
+    out=$(prom_q 'sum by (user_email) (increase(claude_code_cost_usage_USD_total[24h]))' |
         jq -c '[.data.result[] | {key: (.metric.user_email // ""), value: (.value[1] | tonumber)}] | from_entries' 2>/dev/null)
     echo "${out:-null}"
 }
@@ -327,33 +332,48 @@ cmd_room() {
 
 # check usage: can every account be read? A failed read sends every start to the default account
 # without a word, which is how the 2026-10-30 API change went two days unseen.
-# check pace: at this rate, does the fleet use more than both limits by the resets? One account
-# over its line alone is fine, since pick moves new work to the other. An unread account counts as
-# nothing here because check usage pages for it, and an account under PACE_MIN_GONE% into its week
-# counts as on pace, because a straight line from so few hours says nothing yet.
-PACE_MIN_GONE=10
+# check burn: is the last 2h of use faster than the rest of the week can carry? Both rates are
+# percentage points of an account's week, summed over accounts: used per hour over the last 2h
+# (from Prometheus), against the points left divided by the hours to the later reset. The
+# week-to-date average this replaced read 122% after a day at 3%/h; a 2h window sees a burst
+# within the hour. A reset inside the window hides that account's use (clamped at 0), which only
+# makes the alarm late. The line names the live sessions and the three costliest, so the human
+# knows what to cut.
+cmd_check_burn() {
+    local rows now left hours sustainable rate live top
+    live=$(live_of | wc -l)
+    rows=$(usage_json nospend | jq -s .)
+    now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    read -r left hours < <(jq -r --argjson now "$now" '
+        [.[] | select(.state == "ok" and .week_used != null and .resets != null)] as $a
+        | if ($a | length) == 0 then "- -"
+          else "\([$a[] | 100 - .week_used] | add) \(([($a | map(.resets) | max) - $now, 360] | max) / 3600)" end' <<< "$rows")
+    if [[ "$left" == - ]]; then echo "cannot read any account usage"; return 2; fi
+    if ! rate=$(prom_q 'sum(clamp_min(claude_account_week_used_percent - claude_account_week_used_percent offset 2h, 0))' |
+            jq -er '.data.result[0].value[1] | tonumber'); then
+        echo "cannot read the 2h burn rate: Prometheus is unreachable or has no claude_account_week_used_percent"
+        return 2
+    fi
+    sustainable=$(awk -v l="$left" -v h="$hours" 'BEGIN { printf "%.1f", l / h }')
+    rate=$(awk -v r="$rate" 'BEGIN { printf "%.1f", r / 2 }')
+    top=$(prom_q 'topk(3, sum by (session_id) (increase(claude_code_cost_usage_USD_total[2h])))' |
+        jq -r '[.data.result | sort_by(-(.value[1] | tonumber))[] | "\(.metric.session_id[0:8]) $\(.value[1] | tonumber | floor)"] | join(", ")' 2>/dev/null)
+    echo "burning ${rate}%/h over 2h, the week can carry ${sustainable}%/h (${left}% left, resets in $(awk -v h="$hours" 'BEGIN { printf "%.0f", h }')h); ${live} live sessions${top:+; top by 2h spend: $top}"
+    awk -v r="$rate" -v s="$sustainable" 'BEGIN { exit !(r <= s) }'
+}
+
 cmd_check() {
     local rows
-    rows=$(usage_json nospend | jq -s .)
     case "${1:-}" in
         usage)
+            rows=$(usage_json nospend | jq -s .)
             jq -r 'map(select(.state == "unread") | .name) as $bad |
                 if ($bad | length) > 0 then "cannot read usage of \($bad | join(", "))"
                 else "usage read on \(length) accounts" end' <<< "$rows"
             [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == false ]]
             ;;
-        pace)
-            local line
-            line=$(jq -r --argjson min "$PACE_MIN_GONE" '
-                def proj: if .week_used == null then 0
-                          elif .week_gone < $min then 100
-                          else .week_used * 100 / .week_gone end;
-                ((map(proj) | add) / length) as $p |
-                "\($p | floor) \(map("\(.name) \(.week_used // "?" | if type == "number" then floor else . end)%") | join(", "))"' <<< "$rows")
-            echo "${line#* }: at this rate ${line%% *}% of the combined limit by the resets"
-            ((${line%% *} <= 100))
-            ;;
-        *) echo "usage: claude-acct check usage|pace" >&2; return 2 ;;
+        burn) cmd_check_burn ;;
+        *) echo "usage: claude-acct check usage|burn" >&2; return 2 ;;
     esac
 }
 
