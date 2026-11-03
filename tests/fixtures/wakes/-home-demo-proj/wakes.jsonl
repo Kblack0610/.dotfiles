@@ -1,0 +1,20 @@
+{"type": "user", "timestamp": "2026-01-01T00:01:00.000Z", "message": {"role": "user", "content": "<system-reminder>\nnothing to see\n</system-reminder>"}}
+{"type": "user", "timestamp": "2026-01-01T00:02:00.000Z", "message": {"role": "user", "content": "<task-notification>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>"}}
+{"type": "assistant", "timestamp": "2026-01-01T00:03:00.000Z", "requestId": "r1", "message": {"id": "msg_1", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "assistant", "timestamp": "2026-01-01T00:04:00.000Z", "requestId": "r1", "message": {"id": "msg_1", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:05:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "Passed: 12, passed, 0 failed\n[exited with code 0]"}]}}
+{"type": "user", "timestamp": "2026-01-01T00:06:00.000Z", "message": {"role": "user", "content": "<system-reminder>\nTask list changed\n</system-reminder>"}}
+{"type": "assistant", "timestamp": "2026-01-01T00:07:00.000Z", "requestId": "r2", "message": {"id": "msg_2", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:08:00.000Z", "message": {"role": "user", "content": "<task-notification>\n<status>completed</status>\n<summary>Background command failed (exit code 1)</summary>\n</task-notification>"}}
+{"type": "assistant", "timestamp": "2026-01-01T00:09:00.000Z", "requestId": "r3", "message": {"id": "msg_3", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:10:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "Failed: 3 failed\n[exited with code 1]"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:11:00.000Z", "requestId": "r4", "message": {"id": "msg_4", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:12:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "grep output"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:13:00.000Z", "requestId": "r5", "message": {"id": "msg_5", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:14:00.000Z", "message": {"role": "user", "content": "Another Claude session sent a message: rebase when you can"}}
+{"type": "assistant", "timestamp": "2026-01-01T00:15:00.000Z", "requestId": "r6", "message": {"id": "msg_6", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:16:00.000Z", "message": {"role": "user", "content": "please look at the build"}}
+{"type": "user", "timestamp": "2026-01-01T00:17:00.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "Base directory for this skill: /x/skills/one-shot"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:18:00.000Z", "requestId": "r7", "message": {"id": "msg_7", "usage": {"cache_read_input_tokens": 1000000}}}
+{"type": "user", "timestamp": "2026-01-01T00:19:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:20:00.000Z", "requestId": "r8", "message": {"id": "msg_8", "usage": {"cache_read_input_tokens": 1000000}}}

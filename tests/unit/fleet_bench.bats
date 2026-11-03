@@ -20,6 +20,10 @@ setup() {
   chmod +x "$SANDBOX/bin/sessions-stub"
   SUBJECT="$REPO_ROOT/.local/bin/fleet-bench"
   T0=1793160000
+  # agent-usage wakes, canned: serves $WAKES when it exists, else fails like a missing transcript tree
+  export BENCH_WAKES_CMD=wakes-stub WAKES="$SANDBOX/wakes.json"
+  printf '#!/usr/bin/env bash\n[ "$1 $2 $3" = "--since 24h --json" ] && cat "%s"\n' "$WAKES" > "$SANDBOX/bin/wakes-stub"
+  chmod +x "$SANDBOX/bin/wakes-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -726,6 +730,37 @@ kpi_fixture() {
   assert_line --index 4 '## Sessions'
   assert_line --index 5 '## Agent depth'
   assert_line --index 6 '## Session time'
+}
+
+@test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  echo '{"since":"24h","files":3,"rows":[{"trigger":"human","verdict":null,"wakes":4,"calls":40,"median":9,"p90":20,"cache_read_m":1},{"trigger":"background-task","verdict":"pass","wakes":231,"calls":2150,"median":6,"p90":14,"cache_read_m":2}],"all":{"wakes":235,"calls":2190,"median":6,"p90":17,"cache_read_m":3}}' > "$WAKES"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- calls per passing wake (24h): median 6 over 231 wakes, target 2 or fewer: past'
+  assert_output --partial '- calls per wake, all (24h): median 6, p90 17 over 235 wakes'
+}
+
+@test "scorecard calls per wake: at target reads ok, no passing wake and an unreadable source say so" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  echo '{"rows":[{"trigger":"background-task","verdict":"pass","wakes":5,"calls":10,"median":2,"p90":2,"cache_read_m":1}],"all":{"wakes":5,"calls":10,"median":2,"p90":2,"cache_read_m":1}}' > "$WAKES"
+  run "$SUBJECT" scorecard; assert_success
+  run grep 'calls per passing wake' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output '- calls per passing wake (24h): median 2 over 5 wakes, target 2 or fewer: ok'
+  echo '{"rows":[],"all":{"wakes":0,"calls":0,"median":null,"p90":null,"cache_read_m":0}}' > "$WAKES"
+  "$SUBJECT" scorecard
+  run grep 'calls per' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 0 '- calls per passing wake (24h): - (no passing background-task wake)'
+  assert_line --index 1 '- calls per wake, all (24h): -'
+  rm "$WAKES"
+  "$SUBJECT" scorecard
+  run grep 'calls per' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 0 --partial '- calls per passing wake (24h): ? '
+  assert_line --index 1 '- calls per wake, all (24h): ?'
 }
 
 @test "scorecard session time: hours per project, biggest first, human sessions the nightly saw this week" {

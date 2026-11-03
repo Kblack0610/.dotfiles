@@ -28,7 +28,7 @@
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP.
+# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP.
 
 set -uo pipefail
 
@@ -59,6 +59,8 @@ set -uo pipefail
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_NOTES_CMD:=notes}"
+: "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
+: "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -446,6 +448,8 @@ cmd_scorecard() {
     echo "Human sessions by when session-outcomes last saw them; (now) is a count taken at this run. Thresholds: $KPI_THRESHOLDS. \`fleet-bench retro\` files a board row for each one past it."
     echo
     kpi_table "$(kpi_json "$t" "$counts")"
+    echo
+    wakes_lines
     echo
     bottleneck_section "$t"
     echo
@@ -881,6 +885,21 @@ kpi_table() {
   jq -r '"| KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|",
     (to_entries[] | .value as $v
      | "| \(.key)\(if $v.now then " (now)" else "" end) | \($v["7d"] // "-") | \($v["28d"] // "-") | \(if $v.bound then "\($v.bound) \($v.threshold)" else "-" end) | \($v.status) |")' <<<"$1"
+}
+
+# wakes_lines -> the calls-per-wake lines under the KPI table, from `agent-usage wakes` over the
+# scorecard window. Each API call re-reads the session's whole context, so calls per wake is the cost.
+# A background-task wake whose run passed has nothing left to decide: its target is WAKE_CALLS_TARGET.
+wakes_lines() {
+  local w win="${BENCH_WINDOW_H}h"
+  w=$($BENCH_WAKES_CMD --since "$win" --json 2>/dev/null) && jq -e .all <<<"$w" >/dev/null 2>&1 \
+    || { echo "- calls per passing wake ($win): ? (\`agent-usage wakes\` unreadable)"; echo "- calls per wake, all ($win): ?"; return 0; }
+  jq -r --argjson target "$WAKE_CALLS_TARGET" --arg win "$win" '
+    (.rows | map(select(.trigger == "background-task" and .verdict == "pass")) | first) as $p
+    | (if $p == null then "- calls per passing wake (\($win)): - (no passing background-task wake)"
+       else "- calls per passing wake (\($win)): median \($p.median) over \($p.wakes) wakes, target \($target) or fewer: \(if $p.median > $target then "past" else "ok" end)" end),
+      "- calls per wake, all (\($win)): " + (if .all.wakes == 0 then "-"
+        else "median \(.all.median), p90 \(.all.p90) over \(.all.wakes) wakes" end)' <<<"$w"
 }
 
 cmd_kpi() {

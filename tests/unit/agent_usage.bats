@@ -147,3 +147,74 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   run "$AU" changelog demo --since 1000 --until 1500
   assert_output ''
 }
+
+# ── wakes: API calls per wake-up ─────────────────────────────────────────────
+#
+# The fixture holds two background wakes (pass with 2 calls, fail with 3), one peer wake (1 call)
+# and one human wake (2 calls), plus a tool_result, two <system-reminder> entries and a skill
+# injection that must NOT start a wake. The pass wake's first call is streamed as two records
+# with one message id, and every call reads 1M tokens from the cache.
+
+wakes_fixture() {
+  mkdir -p "$HOME/.claude/projects"
+  cp -r "$REPO_ROOT/tests/fixtures/wakes/-home-demo-proj" "$HOME/.claude/projects/"
+}
+
+wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg t "$1" --arg v "${2:-}" \
+  ".rows[] | select(.trigger == \$t and (.verdict // \"\") == \$v) | $3"; }
+
+@test "wakes: one row per trigger and verdict, with wakes, calls, median and p90" {
+  wakes_fixture
+  assert_equal "$(wakes_row background-task pass '[.wakes, .calls, .median, .p90] | @tsv')" "$(printf '1\t2\t2\t2')"
+  assert_equal "$(wakes_row background-task fail '[.wakes, .calls, .median, .p90] | @tsv')" "$(printf '1\t3\t3\t3')"
+  assert_equal "$(wakes_row peer-message '' '[.wakes, .calls] | @tsv')" "$(printf '1\t1')"
+  assert_equal "$(wakes_row human '' '[.wakes, .calls] | @tsv')" "$(printf '1\t2')"
+}
+
+@test "wakes: tool results, system reminders and skill injections start no wake; streamed chunks are one call" {
+  wakes_fixture
+  run bash -c '"$AU" wakes --since 3650d --project demo-proj --json | jq -c "[.all.wakes, .all.calls, (.rows | length)]"'
+  assert_output '[4,8,4]'
+}
+
+@test "wakes: cache_read is summed once per message id, in millions" {
+  wakes_fixture
+  assert_equal "$(wakes_row background-task pass '.cache_read_m')" '2'
+  assert_equal "$("$AU" wakes --since 3650d --project demo-proj --json | jq .all.cache_read_m)" '8'
+}
+
+@test "wakes: the table prints a row per trigger and an all row" {
+  wakes_fixture
+  run "$AU" wakes --since 3650d --project demo-proj
+  assert_success
+  assert_output --partial 'background-task  pass'
+  assert_output --regexp 'all +- +4 +8 +2 +3'
+}
+
+@test "wakes: only wakes stamped inside the window count, and old transcripts are not read" {
+  mkdir -p "$HOME/.claude/projects/-new" "$HOME/.claude/projects/-old"
+  local now; now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+  {
+    echo '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z","message":{"id":"stale","usage":{}}}'
+    echo '{"type":"user","timestamp":"2020-01-01T00:00:01.000Z","message":{"content":"old question"}}'
+    echo '{"type":"assistant","timestamp":"2020-01-01T00:00:02.000Z","message":{"id":"older","usage":{}}}'
+    echo "{\"type\":\"user\",\"timestamp\":\"$now\",\"message\":{\"content\":\"new question\"}}"
+    echo "{\"type\":\"assistant\",\"timestamp\":\"$now\",\"message\":{\"id\":\"fresh\",\"usage\":{}}}"
+  } > "$HOME/.claude/projects/-new/a.jsonl"
+  cp "$HOME/.claude/projects/-new/a.jsonl" "$HOME/.claude/projects/-old/b.jsonl"
+  touch -d '3 days ago' "$HOME/.claude/projects/-old/b.jsonl"
+  run bash -c '"$AU" wakes --since 24h --project -new --json | jq -c "[.files, .all.wakes, .all.calls]"'
+  assert_output '[1,1,1]'
+  assert_equal "$("$AU" wakes --since 24h --project -old --json | jq .files)" '0'
+}
+
+@test "wakes: no transcripts is an empty table, not an error" {
+  run "$AU" wakes --since 1h --project nothing-matches --json
+  assert_success
+  assert_equal "$(jq -c '[.all.wakes, .all.calls, .rows]' <<<"$output")" '[0,0,[]]'
+}
+
+@test "wakes: a bad --since is refused" {
+  run "$AU" wakes --since soon
+  assert_failure 2
+}

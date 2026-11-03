@@ -85,6 +85,8 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 
 Thresholds are data in `KPI_THRESHOLDS` (default `~/.config/agentctl/kpi-thresholds`, private overlay), one `<kpi>_max=` or `<kpi>_min=` line each. A KPI with no line has status `-`; a missing file leaves every status `-` and makes `retro` a NOOP.
 
+Under the table the scorecard prints two lines from `agent-usage wakes --since <window>h --json` (seam `BENCH_WAKES_CMD`): calls per passing wake (the median calls of a background-task wake whose run passed, `past` above `WAKE_CALLS_TARGET`, default 2) and calls per wake over every trigger (median, p90). Each API call re-reads the whole context, so calls per wake is the cost; a source that cannot be read prints `?`.
+
 ## How the numbers are made
 
 State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
