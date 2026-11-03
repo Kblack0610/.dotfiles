@@ -48,7 +48,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
 agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session
 agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
-agent-ask answer <id> <answer...>            record answer; status->answered; fire agent-notify
+agent-ask answer <id> <answer...>            record answer; status->answered; type it into the live session; run `resume`
 agent-ask cancel <id>                        status->cancelled
 agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); stale files the question on the agent board as a plain row, and so does expire
 ```

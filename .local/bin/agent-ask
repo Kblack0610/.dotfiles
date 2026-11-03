@@ -9,7 +9,7 @@
 #   agent-ask list [project|--all] [--pending|--answered|--stale] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
-#   agent-ask answer <id> <answer...>   record the answer; flip to answered; notify;
+#   agent-ask answer <id> <answer...>   record the answer; flip to answered;
 #                                       run its `resume` command (via ask-resume)
 #   agent-ask cancel <id> [reason...]   flip to cancelled
 #   agent-ask stale <id> [reason...]    flip a pending ask to stale (still answerable)
@@ -327,9 +327,8 @@ cmd_answer() {
   set_field "$f" answered_at "$(now_iso)"
   queue_changed
 
-  # let a watching resume / the producer's next fire know the answer landed
-  local project; project="$(field "$f" project)"
-  agent-notify -t "ask answered" "${project}: ${answer}" >/dev/null 2>&1 || true
+  # No page: only the human answers, so "ask answered" told them what they just did. The
+  # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
 
   deliver_to_session "$f" "$answer"
