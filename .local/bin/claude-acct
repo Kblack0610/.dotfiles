@@ -798,10 +798,15 @@ unpark_ledger() {
         tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
-        # A pane someone scrolled is in copy mode, which would swallow the typed resume.
-        if [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" == 1 ]]; then
-            tmux -L "$server" send-keys -t "$pane" -X cancel
-        fi
+        # A pane in a mode takes the typed resume as mode keys: scrolled (copy mode), or the
+        # session picker (tree mode), where some keys kill sessions. Leave it, or type nothing.
+        case "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_mode}' 2>/dev/null)" in
+            "") ;;
+            copy-mode|view-mode) tmux -L "$server" send-keys -t "$pane" -X cancel ;;
+            *) tmux -L "$server" send-keys -t "$pane" Escape ;;
+        esac
+        [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" != 1 ]] ||
+            { refuse "pane $pane is in a tmux mode that did not close; typed nothing ($file is kept)"; return; }
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi

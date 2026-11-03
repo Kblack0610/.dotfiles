@@ -91,11 +91,17 @@ case "$verb" in
   list-panes) t="${target#=}"; cat "$FIX/panes.$server.${t%:}" 2>/dev/null ;;
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
   display-message)
-    if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/copy-mode" ] && echo 1 || echo 0; fi
+    if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
+    if [ "$last" = '#{pane_mode}' ]; then cat "$FIX/mode" 2>/dev/null; fi
     exit 0 ;;
   send-keys)
-    # copy mode takes every key until it is cancelled
-    if [ -f "$FIX/copy-mode" ]; then [ "$last" = cancel ] && rm -f "$FIX/copy-mode"; exit 0; fi
+    # a pane mode takes every key until its own exit key: cancel for copy mode, Escape for
+    # the others; a stuck mode (FIX/mode-stuck) takes them all
+    if [ -f "$FIX/mode" ]; then
+      [ -f "$FIX/mode-stuck" ] && { printf '%s\n' "$last" >> "$FIX/mode-keys"; exit 0; }
+      case "$(cat "$FIX/mode"):$last" in copy-mode:cancel|tree-mode:Escape) rm -f "$FIX/mode" ;; *) printf '%s\n' "$last" >> "$FIX/mode-keys" ;; esac
+      exit 0
+    fi
     if [ "$2" = -l ] || [ "$3" = -l ]; then printf '%s' "$last" > "$FIX/typed"; exit 0; fi
     case "$last" in
       Enter)
@@ -412,13 +418,42 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_success
   usage main 5 10
   usage alt 90 95
-  touch "$FIX/copy-mode"
+  echo copy-mode > "$FIX/mode"
   run "$ACCT" unpark agent-4
   assert_success
   assert_output 'claude-acct: unparked agent-4 on main (5h 5%, 7d 10%): claude 900, busy'
   run tmux_calls
   assert_line 'tmux -L lab send-keys -t %10 -X cancel'
   [ ! -e "$(PARKED_LEDGER agent-4)" ]
+}
+
+@test "unpark closes the session picker (tree mode) before it types the resume" {
+  session lab agent-4 %10 400 401 idle "$ALT" --permission-mode bypassPermissions
+  run "$ACCT" park agent-4 --server lab
+  assert_success
+  usage main 5 10
+  usage alt 90 95
+  echo tree-mode > "$FIX/mode"
+  run "$ACCT" unpark agent-4
+  assert_success
+  run tmux_calls
+  assert_line 'tmux -L lab send-keys -t %10 Escape'
+  [ ! -e "$FIX/mode-keys" ]
+  [ ! -e "$(PARKED_LEDGER agent-4)" ]
+}
+
+@test "unpark types nothing into a pane mode that will not close, and keeps the ledger" {
+  session lab agent-4 %10 400 401 idle "$ALT" --permission-mode bypassPermissions
+  run "$ACCT" park agent-4 --server lab
+  assert_success
+  usage main 5 10
+  usage alt 90 95
+  echo tree-mode > "$FIX/mode"; touch "$FIX/mode-stuck"
+  run "$ACCT" unpark agent-4
+  assert_failure
+  assert_output --partial 'in a tmux mode that did not close; typed nothing'
+  [ "$(cat "$FIX/mode-keys")" = Escape ]
+  [ -e "$(PARKED_LEDGER agent-4)" ]
 }
 
 @test "unpark respawns a pane that was its claude, held open while parked" {
