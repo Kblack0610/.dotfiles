@@ -1,6 +1,7 @@
 ---
 name: update-rules
-description: Add, edit, or remove AI assistant rules across the right layer (rulesync overview / project CLAUDE.md / AGENTS.md / project-repo rules) and run the sync so Claude, Codex, Gemini, and OpenCode all see the change. Use when the user says "add a rule", "from now on always X", "stop doing Y everywhere", "update CLAUDE.md", "update AGENTS.md", "add this to the rules", "where should this rule go", or "register a new MCP server". Differs from update-config (settings.json/permissions/hooks).
+description: >-
+  Add, edit or remove AI assistant rules in the right layer (rulesync, CLAUDE.md, AGENTS.md) and sync. Use for "add a rule", "from now on always X", "update CLAUDE.md", "register a new MCP server". Settings and hooks: update-config.
 metadata:
   category: authoring
   tags: [rules, claude-md, sync]

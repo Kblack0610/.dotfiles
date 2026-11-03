@@ -1,6 +1,7 @@
 ---
 name: deep-research-code
-description: Multi-agent deep investigation of YOUR OWN systems - decompose a question into independent threads, fan out subagents across code (Explore) AND live infrastructure/tooling (kubectl, doctl, gh, curl, psql, MCP), cross-section the web where external tool/API behavior is in doubt, then adversarially RE-VERIFY every load-bearing claim against live evidence before trusting it. Produces a synthesized report with a verified/contradicted/unverified column and an explicit "contradicted & unresolved" section. Use when the user wants a deep, evidence-based answer about their own codebase + deployment + pipeline ("what will it take to get X to prod", "why does Y keep failing", "is Z actually fixed", "audit our release pipeline", "what's truly left"). Differs from deep-research (web/market questions). Differs from Explore agents (code search only, no live probing, no verify pass). Differs from bug-bash (fix-dispatch workstream). This skill INVESTIGATES across code+infra+web and trusts nothing until it's checked live.
+description: >-
+  Multi-agent investigation of your own code and live infra, every key claim re-verified live. Use for "what will it take to get X to prod", "why does Y keep failing", "is Z actually fixed". The web: deep-research.
 metadata:
   category: research
   tags: [research, codebase, infrastructure, multi-agent]
@@ -12,6 +13,10 @@ metadata:
 Investigate a question about your own systems - code, deployment, CI/CD, live cluster, third-party tools - by fanning out isolated subagents across every relevant surface, then **adversarially re-verifying the claims that drive the answer against live evidence**. The differentiator over plain Explore: it crosses code + infra + web in one investigation, and it does not trust any finding (its own agents', the docs', the CHANGELOG's) until live state confirms it.
 
 Core idea: **breadth from isolated parallel contexts + truth from a live-verify pass.** Docs lie, CHANGELOGs claim fixes that regressed, agents hallucinate confident-but-wrong verdicts. The verify pass is where wrong answers get caught before they reach the user.
+
+## Scope and triggers
+
+Multi-agent deep investigation of YOUR OWN systems - decompose a question into independent threads, fan out subagents across code (Explore) AND live infrastructure/tooling (kubectl, doctl, gh, curl, psql, MCP), cross-section the web where external tool/API behavior is in doubt, then adversarially RE-VERIFY every load-bearing claim against live evidence before trusting it. Produces a synthesized report with a verified/contradicted/unverified column and an explicit "contradicted & unresolved" section. Use when the user wants a deep, evidence-based answer about their own codebase + deployment + pipeline ("what will it take to get X to prod", "why does Y keep failing", "is Z actually fixed", "audit our release pipeline", "what's truly left"). Differs from deep-research (web/market questions). Differs from Explore agents (code search only, no live probing, no verify pass). Differs from bug-bash (fix-dispatch workstream). This skill INVESTIGATES across code+infra+web and trusts nothing until it's checked live.
 
 ## When to invoke
 - "What will it actually take to get X to prod / launch?" / "what's truly left?"

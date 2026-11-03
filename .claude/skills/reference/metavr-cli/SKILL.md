@@ -2,13 +2,7 @@
 name: metavr-cli
 license: Apache-2.0
 description: >-
-  Provides the complete metavr (Meta VR CLI) reference for Meta VR
-  and Horizon OS development - installation, device setup, command discovery,
-  MCP server mode, documentation search, app deployment, device testing setup,
-  audio control, screenshots, and performance analysis. Use when the user needs
-  to install metavr, asks what commands are available, needs CLI syntax help, or
-  wants to know what metavr can do. Build paths: all Meta VR app stacks; use
-  hz-quest-verify-first if the build path is unclear.
+  Reference for the metavr (Meta VR) CLI: install, devices, commands, MCP mode, docs search, deploy, perf. Use for metavr install, syntax, or "what can metavr do". Unclear build path: hz-quest-verify-first.
 allowed-tools: Bash(metavr:*), Bash(npx:*)
 metadata:
   category: reference
@@ -17,6 +11,10 @@ metadata:
 ---
 
 # metavr CLI Reference
+
+## Scope and triggers
+
+Provides the complete metavr (Meta VR CLI) reference for Meta VR and Horizon OS development - installation, device setup, command discovery, MCP server mode, documentation search, app deployment, device testing setup, audio control, screenshots, and performance analysis. Use when the user needs to install metavr, asks what commands are available, needs CLI syntax help, or wants to know what metavr can do. Build paths: all Meta VR app stacks; use hz-quest-verify-first if the build path is unclear.
 
 ## What metavr Does
 

@@ -1,6 +1,7 @@
 ---
 name: notes-system
-description: User's notes toolchain rooted at ~/.notes, driven by the profile-aware `notes` Rust CLI. Use when creating or reading daily journal entries, managing backlogs/zettels, bootstrapping notes on a new machine, syncing notes to git, diagnosing notes issues, or answering questions about the notes layout. Do NOT hand-write markdown into ~/.notes/journal/ - use the CLI.
+description: >-
+  The ~/.notes toolchain and its profile-aware `notes` Rust CLI: journal, backlogs, zettels, sync, doctor. Use for any notes read, write or layout question. Never hand-write into ~/.notes/journal/.
 metadata:
   category: memory
   tags: [notes, journal, cli]

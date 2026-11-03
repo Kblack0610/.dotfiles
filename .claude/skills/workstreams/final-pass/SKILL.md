@@ -1,7 +1,7 @@
 ---
 name: final-pass
 description: >-
-  The last cleanup on a finished diff before the merge gate runs: the built-in /simplify for reuse and simplification, then the house checks only this fleet knows (an existing helper one file over, one source of truth, content in config, no sleep-and-hope, shell quoting), then code-hygiene clean. Guards anything the project's lessons call load-bearing and skips diffs too small to be worth it. Use when the user says "final pass", "clean this up before the PR", "tidy the diff", "simplify this our way", or as one-shot step 3a. Diff-scoped and behavior-preserving. Defects are /code-review's job, a whole-repo audit is stack-review, and comments and residue alone are code-hygiene, which this skill runs as its last step.
+  Last cleanup on a finished diff before the gate: /simplify, house checks, code-hygiene. Use for "final pass", "clean this up before the PR", "tidy the diff", or one-shot step 3a. Defects: /code-review.
 metadata:
   category: workstreams
   tags: [review, hygiene, simplify]

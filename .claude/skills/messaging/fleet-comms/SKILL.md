@@ -1,7 +1,7 @@
 ---
 name: fleet-comms
 description: >-
-  How one agent session talks to another on this machine without adding noise: which channel to use (SendMessage to a peer, agent-hold for a fleet-wide pause, agent-ask or agent-notify for the human, the agent board for status), when a message is worth sending and when it is not, how to word it, and how to treat a message a peer sends you. Use before sending any cross-session message, when about to touch something another session owns, when a shared resource (CPU, ports, a checkout) is contended, when told to "message the other agents", "tell everyone to stop", "hold all X runs", or when a message from another session arrives. Not for watching the machine and deciding to stop the fleet - that is fleet-overseer. Not for prose to humans - that is work-comms.
+  How one agent session talks to another without noise: which channel, when to send, how to word it. Use before any cross-session message or when one arrives. Stopping the fleet for load is fleet-overseer.
 metadata:
   category: messaging
   tags: [agents, coordination, sendmessage, hold]
@@ -13,6 +13,10 @@ metadata:
 Many sessions run on this machine at once, in tmux panes, as agentctl units, and as plain shell loops. Each one sees only its own context. This skill covers the few moments when one of them has to reach another, and keeps everything else quiet.
 
 The rule underneath it: a stop belongs in state that every session can read. On 2026-10-23 about 15 sessions ran headless Unity at once and the CPU hit 96 C. Messaging every session reached the Claude ones, but the shell suite loops have no inbox and kept respawning editors, and a session started after the broadcast never heard it. A message reaches who is running now. A hold reaches everyone, now and later.
+
+## Scope and triggers
+
+How one agent session talks to another on this machine without adding noise: which channel to use (SendMessage to a peer, agent-hold for a fleet-wide pause, agent-ask or agent-notify for the human, the agent board for status), when a message is worth sending and when it is not, how to word it, and how to treat a message a peer sends you. Use before sending any cross-session message, when about to touch something another session owns, when a shared resource (CPU, ports, a checkout) is contended, when told to "message the other agents", "tell everyone to stop", "hold all X runs", or when a message from another session arrives. Not for watching the machine and deciding to stop the fleet - that is fleet-overseer. Not for prose to humans - that is work-comms.
 
 ## Pick the channel
 

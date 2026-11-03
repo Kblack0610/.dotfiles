@@ -1,14 +1,7 @@
 ---
 name: session-snapshot
 description: >-
-  Snapshot every live working process before a reboot/logout and restore it after. Capture the things
-  that DIE on reboot - tmux/Claude sessions (cwd + branch), dev servers (command line + port),
-  `systemd --user` services split into auto-start-vs-manual, docker containers (with restart policy),
-  and dirty/unpushed git repos - into a dated checklist in the notes inbox, then offer to recreate
-  them. Use when the user says "snapshot running agents/tasks/processes", "what's running before I
-  reboot", "what do I need to bring back up", "save my session state", "restore my sessions", or
-  before any planned reboot/logout. Verbs: snapshot | restore. It OBSERVES and REPORTS, and on restore
-  only acts with confirmation - it never kills sessions or force-restarts on its own.
+  Snapshot what dies on reboot (tmux and Claude sessions, dev servers, services, containers, dirty repos), then restore it. Use for "what's running before I reboot", "save my session state", "restore my sessions".
 metadata:
   category: memory
   tags: [session, reboot, inventory]
@@ -24,6 +17,10 @@ thing genuinely at risk), writes it all to a dated file in the **notes inbox**, 
 boot helps you bring the right things back.
 
 Two verbs: **`snapshot`** (default) and **`restore`**.
+
+## Scope and triggers
+
+Snapshot every live working process before a reboot/logout and restore it after. Capture the things that DIE on reboot - tmux/Claude sessions (cwd + branch), dev servers (command line + port), `systemd --user` services split into auto-start-vs-manual, docker containers (with restart policy), and dirty/unpushed git repos - into a dated checklist in the notes inbox, then offer to recreate them. Use when the user says "snapshot running agents/tasks/processes", "what's running before I reboot", "what do I need to bring back up", "save my session state", "restore my sessions", or before any planned reboot/logout. Verbs: snapshot | restore. It OBSERVES and REPORTS, and on restore only acts with confirmation - it never kills sessions or force-restarts on its own.
 
 ## Where the artifact lives
 

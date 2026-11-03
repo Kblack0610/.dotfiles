@@ -1,19 +1,7 @@
 ---
 name: stack-review
 description: >-
-  Whole-repo, current-state health review of any codebase and any stack - what is broken
-  right now, what is slow on the hot path, what is duplicated or has drifted between copies,
-  where module boundaries and folder structure will not scale, and which quality gates are
-  missing - with a file:line, a measured or first-hand-verified piece of evidence, and a
-  concrete why for every finding, ranked by impact x effort. Use when the user asks "any
-  cleanup we should do", "review the stack", "how healthy is this codebase", "what should we
-  fix before this scales", "DRY this up", "is the folder structure right", "performance pass",
-  "tech debt scan", or "make the components modular". Verbs - review (default, report only) |
-  fix (land the safe tier as scoped PRs, only on request) | plan (rest into board rows and
-  kb-architect specs). Differs from drift-audit (a time window of recent work), code-hygiene
-  and simplify (one diff), bug-bash (functional bugs), ui-audit / delta-audit (screens), and
-  sc:analyze (one generic focus, no verify pass). kb-architect's audit / debt-scan commands
-  point here for the procedure; kb-architect designs the fixes this hands over.
+  Whole-repo health review: broken, slow, duplicated or will not scale, with file:line evidence ranked by impact. Use for "review the stack", "how healthy is this codebase", "DRY this up", "tech debt scan". One diff: final-pass.
 metadata:
   category: workstreams
   tags: [audit, architecture, performance, refactor, tech-debt]
@@ -25,6 +13,10 @@ metadata:
 A codebase rots in five ways that no diff review sees: wiring breaks silently (a unit points at a moved file and fails every hour), a hot path grows O(n) with data nobody prunes, the same helper is copied until one copy drifts, module and folder boundaries stop matching how the code is actually used, and the gates that would have caught all of it run at the wrong severity or not at all. This skill finds those, proves each one, and ranks them so the first fix is the one that matters most. The output is a report; fixes happen only when asked.
 
 It is stack-agnostic. The procedure is fixed; the tools come from whatever the repo already uses (`references/tools.md`).
+
+## Scope and triggers
+
+Whole-repo, current-state health review of any codebase and any stack - what is broken right now, what is slow on the hot path, what is duplicated or has drifted between copies, where module boundaries and folder structure will not scale, and which quality gates are missing - with a file:line, a measured or first-hand-verified piece of evidence, and a concrete why for every finding, ranked by impact x effort. Use when the user asks "any cleanup we should do", "review the stack", "how healthy is this codebase", "what should we fix before this scales", "DRY this up", "is the folder structure right", "performance pass", "tech debt scan", or "make the components modular". Verbs - review (default, report only) | fix (land the safe tier as scoped PRs, only on request) | plan (rest into board rows and kb-architect specs). Differs from drift-audit (a time window of recent work), code-hygiene and simplify (one diff), bug-bash (functional bugs), ui-audit / delta-audit (screens), and sc:analyze (one generic focus, no verify pass). kb-architect's audit / debt-scan commands point here for the procedure; kb-architect designs the fixes this hands over.
 
 ## When to Use
 

@@ -1,6 +1,7 @@
 ---
 name: deep-research
-description: Multi-agent deep-research harness - decompose a question into independent threads, fan out one subagent per thread, collect structured briefs, adversarially verify the load-bearing claims, then synthesize a cited report with a verified/unverified column. Use when the user wants a deep, multi-source, fact-checked answer on a broad or contested question (market analysis, competitive intel, "what should I buy/sell", current-events synthesis). Differs from /sc:research + deep-research-agent (single-agent, in-context multi-hop) - this skill ORCHESTRATES multiple isolated researcher subagents and adds an adversarial verification pass. Differs from Explore agents (codebase search, not web).
+description: >-
+  Multi-agent web research with adversarial verification and a cited report. Use for deep, fact-checked answers on broad or contested questions (market analysis, "what should I buy/sell"). Own code: deep-research-code.
 metadata:
   category: research
   tags: [research, web, multi-agent]
@@ -12,6 +13,10 @@ metadata:
 Orchestrate a fleet of researcher subagents to answer a broad or contested question, then verify the claims that actually drive the decision before trusting them.
 
 Core idea: depth comes from **isolated parallel contexts + an adversarial verify pass**, not from one agent doing many searches in one window. Each thread gets its own clean context (so later threads don't starve), and every load-bearing number is independently challenged before it reaches the report.
+
+## Scope and triggers
+
+Multi-agent deep-research harness - decompose a question into independent threads, fan out one subagent per thread, collect structured briefs, adversarially verify the load-bearing claims, then synthesize a cited report with a verified/unverified column. Use when the user wants a deep, multi-source, fact-checked answer on a broad or contested question (market analysis, competitive intel, "what should I buy/sell", current-events synthesis). Differs from /sc:research + deep-research-agent (single-agent, in-context multi-hop) - this skill ORCHESTRATES multiple isolated researcher subagents and adds an adversarial verification pass. Differs from Explore agents (codebase search, not web).
 
 ## When to invoke
 - "deep research X", "fact-checked report on X", "research the market for X"

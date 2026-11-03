@@ -1,6 +1,7 @@
 ---
 name: wind-down
-description: Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+description: >-
+  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session.
 metadata:
   category: memory
   tags: [session, teardown, tmux]
@@ -13,6 +14,10 @@ Lets Claude end a work session the way a person would: leave a note about what h
 then close the window behind itself. The teardown is **deferred to the Stop hook** so the
 normal end-of-turn pipeline (content checks, plan-sync, eval judge) still runs - Claude does
 not kill its own window mid-turn.
+
+## Scope and triggers
+
+Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 

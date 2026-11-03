@@ -1,6 +1,7 @@
 ---
 name: shell-test-harness
-description: Test a shell or TUI surface in this repo correctly, then land it. Covers the three-tier bats suite in `tests/` (unit = sourced functions, integ = the `$SELF --verb` contract, ui = a REAL tmux server), the hard rule that anything starting a real server/daemon runs ONLY in the disposable container, the mandatory negative control (a test that cannot fail is not a test), and the pre-flight checks that stop you clobbering a concurrent session. Use when adding or changing any script under `.local/src/tmux/`, `.local/bin/`, `.config/shared-hooks/`, or a stop-hook check; when asked to "add tests for X", "is X tested", "harness this", "make sure this is tested properly"; or before landing shell work. Do NOT run the ui tier on this machine (it starts real tmux servers and has destroyed live sessions), do NOT trust `TMUX_TMPDIR` or `command tmux` as isolation, do NOT let a gate report success on an empty input list, and do NOT claim a test works until you have watched it fail. Hands landing off to ingest-worktree (fan a dirty tree into PRs) and dotfiles-land (public/private routing).
+description: >-
+  Test a dotfiles shell or TUI surface: three-tier bats suite, a negative control, ui tier only in the container. Use for "add tests for X", "is X tested", "harness this", or before landing shell work.
 metadata:
   category: authoring
   tags: [testing, shell, bats, dotfiles]
@@ -19,6 +20,10 @@ The founding incident: writing the tmux UI tests destroyed every live tmux sessi
                    host-safe or          negative control
                    container-only?         (not optional)
 ```
+
+## Scope and triggers
+
+Test a shell or TUI surface in this repo correctly, then land it. Covers the three-tier bats suite in `tests/` (unit = sourced functions, integ = the `$SELF --verb` contract, ui = a REAL tmux server), the hard rule that anything starting a real server/daemon runs ONLY in the disposable container, the mandatory negative control (a test that cannot fail is not a test), and the pre-flight checks that stop you clobbering a concurrent session. Use when adding or changing any script under `.local/src/tmux/`, `.local/bin/`, `.config/shared-hooks/`, or a stop-hook check; when asked to "add tests for X", "is X tested", "harness this", "make sure this is tested properly"; or before landing shell work. Do NOT run the ui tier on this machine (it starts real tmux servers and has destroyed live sessions), do NOT trust `TMUX_TMPDIR` or `command tmux` as isolation, do NOT let a gate report success on an empty input list, and do NOT claim a test works until you have watched it fail. Hands landing off to ingest-worktree (fan a dirty tree into PRs) and dotfiles-land (public/private routing).
 
 ## 0. Pre-flight: are you alone in this checkout?
 

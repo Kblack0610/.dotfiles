@@ -1,6 +1,7 @@
 ---
 name: playground-headless-test
-description: "Run unity-core-playground tests the safe way: iterate on one class locally with scripts/test/run.sh, gate a merge with the command in the repo's CI page, prove a new check with a negative control, and read the nightly. Use when the user says \"run the tests\", \"gate this PR\", \"is this green\", \"run <Class> headless\", \"why did the nightly fail\", or before merging any playground change to code, assets or game data. It is a thin driver over the repo's docs/development/testing.md and docs/operations/ci.md (Rules) plus the local-run traps that have hung runs. Not for driving a live editor over MCP (CLAUDE.md, Driving the sandbox) and not for content work itself (playground-new-content, playground-ingest)."
+description: >-
+  Run unity-core-playground tests safely: one class locally, gate a merge on the runner pool, read the nightly. Use for "run the tests", "gate this PR", "is this green", "why did the nightly fail". Not for a live editor.
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]

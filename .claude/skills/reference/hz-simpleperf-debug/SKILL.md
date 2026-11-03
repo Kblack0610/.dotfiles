@@ -1,7 +1,8 @@
 ---
 name: hz-simpleperf-debug
 license: Apache-2.0
-description: "Profiles Meta VR and Horizon OS application CPU performance using simpleperf - workload classification, CPU hotspot recording, kernel overhead measurement. Use when diagnosing whether an app is CPU-bound, memory-bound, or I/O-bound on Meta VR devices. Build paths: all Meta VR app stacks; use hz-quest-verify-first if the build path is unclear."
+description: >-
+  Profile Meta Quest app CPU with simpleperf: workload class, hotspots, kernel overhead. Use to tell CPU-, memory- or I/O-bound. Unclear build path: hz-quest-verify-first.
 allowed-tools: Bash(metavr:*), Bash(hzdb:*)
 metadata:
   category: reference
@@ -10,6 +11,10 @@ metadata:
 ---
 
 # Simpleperf Debug Skill
+
+## Scope and triggers
+
+Profiles Meta VR and Horizon OS application CPU performance using simpleperf - workload classification, CPU hotspot recording, kernel overhead measurement. Use when diagnosing whether an app is CPU-bound, memory-bound, or I/O-bound on Meta VR devices. Build paths: all Meta VR app stacks; use hz-quest-verify-first if the build path is unclear.
 
 ## When to Use
 

@@ -1,6 +1,7 @@
 ---
 name: one-shot
-description: Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
+description: >-
+  Take one task to landed with no check-ins: worktree, final-pass, gate, PR, merge, board proof, wind-down. Use for "one shot this", "/one-shot <task>", "just ship this end to end". --pr-only stops at the PR.
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
@@ -10,6 +11,10 @@ metadata:
 # one-shot
 
 Carries one task the whole way: work, validation, PR, merge, board record, wind-down, in a single run with no questions. It owns no procedure of its own. Each step points at the rule or skill that already owns it, so when that source changes this skill does not drift.
+
+## Scope and triggers
+
+Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
 
 ## When to Use
 

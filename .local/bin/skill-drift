@@ -28,10 +28,11 @@
 #   CATCOLLIDE a category sharing a name with a skill. `comms/comms/` makes
 #              `git mv` refuse, and the first attempt at the category migration
 #              silently moved two sibling skills INSIDE the comms skill.
-#   LONGDESC   description + when_to_use over 1536 chars, the documented cap on
-#              the skill listing. Past it the trailing trigger phrases are
-#              truncated away, so the skill stops being found by the thing the
-#              description exists to do.
+#   LONGDESC   description + when_to_use over 300 bytes, measured on the PARSED
+#              value (a `>-` or `|` block counts its folded text, not its raw
+#              lines). The session's skill listing has one shared budget of
+#              about 30 KB for every skill and command; past it the rest arrive
+#              as a bare name, so a long description costs other skills theirs.
 #   NONASCII   the house plain-ASCII rule (em/en dash, arrows, >=, ellipsis...).
 #              Ratcheted against tests/skill-lint.baseline, not all-or-nothing.
 #
@@ -98,10 +99,11 @@ TRANSCRIPTS="${CLAUDE_TRANSCRIPTS:-$HOME/.claude/projects}"
 # conversation, not a silent new directory.
 CATEGORIES=" authoring memory messaging monitoring ops reference research tickets workstreams "
 
-# The listing cap. description + when_to_use are concatenated and truncated at
-# this many characters, so everything past it is invisible to skill selection.
-DESC_MAX=1536
-DESC_WARN=1200
+# The per-skill description budget, in bytes. Measured 2026-11-02: the listing
+# shares about 30 KB across 129 skills and commands, and with descriptions
+# totalling 72 KB, 88 of them arrived as a bare name. 300 B each keeps the
+# whole corpus inside the listing.
+DESC_MAX=300
 
 MODE=report LINT_DIR=""
 case "${1:-}" in
@@ -234,24 +236,35 @@ check_meta() {
   return 0
 }
 
-# description + when_to_use are concatenated into the skill listing and truncated
-# at DESC_MAX. Past that the trailing trigger phrases - the whole reason the
-# description is long in this corpus - are silently cut off.
+# description + when_to_use are what the skill listing shows, so that is what is
+# measured, and measured the way the consumer reads it: parsed YAML, so a folded
+# `>-` block counts its folded value, not its indentation and line breaks. The
+# old awk counter read raw lines and so over- or under-counted every block.
 check_desc_len() {
   local skill="$1" f="$2" n
-  n=$(fm "$f" | awk '
-    /^(description|when_to_use):/ { grab=1; sub(/^[a-z_]+:[[:space:]]*/, ""); }
-    /^[a-z_-]+:/ && !/^(description|when_to_use):/ { grab=0 }
-    grab { total += length($0) + 1 }
-    END { print total + 0 }')
-  if [ "$n" -gt "$DESC_MAX" ]; then
-    add LONGDESC "$skill" "${n}c" "over the ${DESC_MAX}-char listing cap - the tail is truncated away"
-  elif [ "$n" -gt "$DESC_WARN" ]; then
-    # Advisory. Failing a PR for a description that is merely LONG would train
-    # people to pad the limit down, and the limit is not the problem - silent
-    # truncation past it is.
-    add DESCNEAR "$skill" "${n}c" "within $((DESC_MAX - n)) chars of the ${DESC_MAX} cap"
-  fi
+  n=$(fm "$f" | python3 -c '
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+lines = sys.stdin.read().split("\n")
+while lines and not lines[-1].strip():
+    lines.pop()
+if lines and lines[-1].strip() == "---":
+    lines.pop()
+try:
+    d = yaml.safe_load("\n".join(lines))
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict):
+    v = "".join(str(d.get(k) or "") for k in ("description", "when_to_use"))
+    print(len(v.encode("utf-8")))
+' 2>/dev/null)
+  # No number means the frontmatter did not parse; check_yaml already reports that.
+  [ -n "$n" ] || return 0
+  [ "$n" -gt "$DESC_MAX" ] \
+    && add LONGDESC "$skill" "${n}B" "description over ${DESC_MAX} bytes - it spends the listing budget other skills need"
   return 0
 }
 
@@ -570,15 +583,12 @@ if [ "$MODE" = write_lint_baseline ]; then
 fi
 
 if [ "$MODE" = lint ]; then
-  errs=0 warns=0
+  errs=0
   for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
     IFS='|' read -r t s p d <<< "$f"
     if [ "$t" = NONASCII ] && [ -f "$LINT_BASELINE" ] && grep -qxF "NONASCII|$s" "$LINT_BASELINE"; then
       continue   # known debt, tracked in the baseline
     fi
-    case "$t" in
-      DESCNEAR) printf '  warn  %-13s %-24s %-24s %s\n' "$t" "$s" "$p" "$d"; warns=$((warns + 1)); continue ;;
-    esac
     printf '  FAIL  %-13s %-24s %-24s %s\n' "$t" "$s" "$p" "$d"
     errs=$((errs + 1))
   done
@@ -591,10 +601,10 @@ if [ "$MODE" = lint ]; then
     exit 2
   fi
   if [ "$errs" -gt 0 ]; then
-    printf '\nskill-lint: %d error(s), %d warning(s) across %d skill(s)\n' "$errs" "$warns" "$scanned"
+    printf '\nskill-lint: %d error(s) across %d skill(s)\n' "$errs" "$scanned"
     exit 1
   fi
-  printf 'skill-lint: %d skill(s) valid (%d warning(s))\n' "$scanned" "$warns"
+  printf 'skill-lint: %d skill(s) valid\n' "$scanned"
   exit 0
 fi
 
@@ -649,8 +659,8 @@ cat <<'EOF'
   DUPNAME    -> one flat namespace across both repos; rename one of them
   BADMETA    -> fix the metadata block (see .claude/skills/SKILL-TEMPLATE.md)
   CATCOLLIDE -> rename the category; it cannot share a name with a skill
-  LONGDESC   -> cut the description; past the cap the trigger phrases vanish
-  DESCNEAR   -> advisory only, but the cap is closer than it looks
+  LONGDESC   -> cut the description to a trigger line (what it is, the main
+                "use when" phrases, one "not this, use X"); detail goes in the body
   NONASCII   -> plain ASCII (see the Writing Style rules); `--write-lint-baseline`
                 only freezes debt, it does not make the rule optional
   STALE      -> re-verify the skill against reality, THEN bump metadata.reviewed.

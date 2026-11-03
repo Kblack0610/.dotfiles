@@ -1,6 +1,7 @@
 ---
 name: <skill-name>
-description: <What it does AND when to use it, key use case first. Include the trigger phrases a user would actually type. Say what it is NOT for and which sibling skill covers that instead - the router picks between 60 of these on description alone. Hard cap 1536 chars: past that the tail is silently truncated away, so do not let the "differs from" clause be the part that gets cut.>
+description: >-
+  <A trigger line, at most 300 bytes (skill-drift LONGDESC): what it is in a few words, the main "use when" phrases a user would type, and the one most important "not this, use X". Detail goes in the body. Every skill shares one listing budget, and past it skills arrive as a bare name.>
 metadata:
   category: <authoring|memory|messaging|monitoring|ops|reference|research|tickets|workstreams>
   tags: [<tag>, <tag>]

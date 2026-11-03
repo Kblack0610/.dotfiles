@@ -1,6 +1,7 @@
 ---
 name: ci-cost
-description: "Cut CI run time from measured data, one lever at a time: measure where the minutes go (job timings per workflow, runner-hours per day, gate median split by EditMode and PlayMode, queue time, Unity launch and exit cost, per-class durations, retries), attribute them, rank the levers by runner-hours times the share of runs they touch, change one lever per PR with a test and a negative control, re-measure the same way, and append the before/after to the repo's cost doc. Use when the user asks \"why does CI take so long\", \"why is a small change a 40 minute gate\", \"cut our CI time\", \"where do the runner hours go\", \"is the pool overloaded\", \"did that harness change actually save anything\", or to pick the next CI cost lever. Playground-first (unity-core-playground: scripts/ci-cost.py, docs/operations/ci-cost.md) but the procedure fits any repo with self-hosted runners. Elsewhere: running or gating tests and reading a red nightly is playground-headless-test, agent fleet ETAs are fleet-bench, game frame-time perf is game-eval."
+description: >-
+  Cut CI time from measured data, one lever per PR, re-measured. Use for "why does CI take so long", "cut our CI time", "where do the runner hours go", "is the pool overloaded". Running tests: playground-headless-test.
 metadata:
   category: ops
   tags: [ci, cost, benchmark, testing, unity, playground]

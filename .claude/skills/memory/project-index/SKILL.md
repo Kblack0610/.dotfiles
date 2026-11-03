@@ -1,6 +1,7 @@
 ---
 name: project-index
-description: Create or refresh a project's anchor - the per-project memory/index.md front door at ~/.agent/anchors/{project}.md that the SessionStart hook injects at turn 1. Regenerates only the auto-generated block (links to plans/lessons/outcomes/ideation/repo-docs/tracker + active plans + lessons digest) from the filesystem; never touches the hand-curated Key URLs / Decisions log / Blockers sections. Use when the user says "update the anchor", "refresh the project index", "scaffold an anchor for X", "regenerate the memory index", or after a batch of plans/lessons land and the index feels stale.
+description: >-
+  Create or refresh a project anchor at ~/.agent/anchors/{project}.md (auto block only). Use for "update the anchor", "refresh the project index", "scaffold an anchor for X", or after plans and lessons land.
 metadata:
   category: memory
   tags: [anchor, project-bus, index]
@@ -10,13 +11,19 @@ metadata:
 # project-index
 
 Maintain the per-project **anchor** at `~/.agent/anchors/{project}.md` - a project's single
-front door. The SessionStart hook (`session-preflight.sh`) injects the whole anchor at the
-top of turn-1 context, before plans and lessons, so every session opens already oriented.
+front door. The SessionStart hook (`session-preflight.sh`) injects it first in turn-1
+context: Key facts, Blockers and the AUTO block, inside the preflight's 9,000 B budget, which
+drops trailing sections when it is full. The Decisions log is not injected; the preflight
+prints one pointer line to it instead.
 
 See `~/.agent/anchors/README.md` for the region/marker contract. In short: an anchor has
 **hand-curated** sections (Key URLs & facts, Decisions log, Blockers) and one **auto-generated**
 block delimited by `<!-- AUTO:START -->` / `<!-- AUTO:END -->`. This skill owns *only* the
 AUTO block.
+
+## Scope and triggers
+
+Create or refresh a project's anchor - the per-project memory/index.md front door at ~/.agent/anchors/{project}.md that the SessionStart hook injects at turn 1. Regenerates only the auto-generated block (links to plans/lessons/outcomes/ideation/repo-docs/tracker + active plans + lessons digest) from the filesystem; never touches the hand-curated Key URLs / Decisions log / Blockers sections. Use when the user says "update the anchor", "refresh the project index", "scaffold an anchor for X", "regenerate the memory index", or after a batch of plans/lessons land and the index feels stale.
 
 ## When to use
 

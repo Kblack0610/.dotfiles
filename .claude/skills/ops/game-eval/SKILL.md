@@ -1,6 +1,7 @@
 ---
 name: game-eval
-description: "Evaluate a game the same way every time, on any engine and platform, in lanes: perf (lag, hitches, low fps, GC, server tick) and look (style, design and look of worlds and UI). One spine of nine steps (report, adapter, rule out the harness, capture against a baseline, localize, generalize to the pattern, repeatable probe, file rows, fix and prove) plus a lane file for each lane's instruments and patterns. Verbs: triage <lane> for a reported problem or a capture/mark file, review <lane> for a whole-game pass. Use when the user says \"it lags here\", \"is it the editor or the game\", \"why is this slow\", \"perf pass\", \"this looks off\", \"review the look of <game>\", \"art/style pass\", \"go through my lag marks\", or after a big content wave. Each game repo keeps one adapter doc (commands, budgets, views, boards); the skill never hardcodes a repo's tools. Not for network feel under load or server capacity (the repo's multiplayer ladder, e.g. load.sh / Edgegap bench), not for functional bugs (bug-bash), not for a whole-repo code health pass (stack-review, which this hands structural findings to), and not for menu-by-menu coverage audits (ui-audit)."
+description: >-
+  Evaluate a game the same way every time: perf (lag, hitches, fps, GC) and look (style, worlds, UI). Use for "it lags here", "why is this slow", "perf pass", "this looks off", "art/style pass". Bugs: bug-bash.
 metadata:
   category: ops
   tags: [games, performance, profiling, art-direction, ui, triage]
@@ -10,6 +11,10 @@ metadata:
 # Game eval
 
 Turns "it lagged here" or "this looks wrong" into numbers or pictures, a named cause, a fix to the pattern behind it, and board rows in one shape. One spine, many lanes: the steps are shared, only the instruments, budgets and probes differ. A new lane (audio, load times, memory, network feel) is one file in `lanes/` plus one section in each repo's adapter doc.
+
+## Scope and triggers
+
+Evaluate a game the same way every time, on any engine and platform, in lanes: perf (lag, hitches, low fps, GC, server tick) and look (style, design and look of worlds and UI). One spine of nine steps (report, adapter, rule out the harness, capture against a baseline, localize, generalize to the pattern, repeatable probe, file rows, fix and prove) plus a lane file for each lane's instruments and patterns. Verbs: triage <lane> for a reported problem or a capture/mark file, review <lane> for a whole-game pass. Use when the user says "it lags here", "is it the editor or the game", "why is this slow", "perf pass", "this looks off", "review the look of <game>", "art/style pass", "go through my lag marks", or after a big content wave. Each game repo keeps one adapter doc (commands, budgets, views, boards); the skill never hardcodes a repo's tools. Not for network feel under load or server capacity (the repo's multiplayer ladder, e.g. load.sh / Edgegap bench), not for functional bugs (bug-bash), not for a whole-repo code health pass (stack-review, which this hands structural findings to), and not for menu-by-menu coverage audits (ui-audit).
 
 ## When to Use
 

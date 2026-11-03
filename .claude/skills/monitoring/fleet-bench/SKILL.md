@@ -1,7 +1,7 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+  Benchmark the agent fleet from counted facts: ETAs and their accuracy, scorecard, KPIs, blocking asks. Use for "when will agent-N be done", "show me the scorecard", "what is waiting on me". Load: fleet-overseer.
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
@@ -13,6 +13,10 @@ metadata:
 On 2026-10-27 the shepherd told the human when each session would finish ("about 9:00 PM", "tomorrow around midday") by assuming one phase per hour. Nothing kept those numbers and nothing checked them. The first one scored, an hour later, took up to 2.6x as long as predicted. This skill is the record and the check. It is a component of its own, like `fleet-dispatch`: the shepherd only reads it.
 
 Every number here is counted from samples. None is a model's grade, because model-graded evals on this fleet read 10/10 almost every time and rank nothing.
+
+## Scope and triggers
+
+Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
 
 ## Where to look
 

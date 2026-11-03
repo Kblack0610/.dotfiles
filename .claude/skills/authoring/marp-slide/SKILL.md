@@ -1,6 +1,7 @@
 ---
 name: marp-slide
-description: Create professional Marp presentation slides with 7 beautiful themes (default, minimal, colorful, dark, gradient, tech, business). Use when users request slide creation, presentations, or Marp documents. Supports custom themes, image layouts, and "make it look good" requests with automatic quality improvements.
+description: >-
+  Create Marp presentation slides in 7 themes. Use for slides, a presentation, a deck or a Marp document, including "make it look good". Diagrams for a deck: svg-diagram.
 metadata:
   category: authoring
   tags: [slides, presentations, docs]
@@ -10,6 +11,10 @@ metadata:
 # Marp Slide Creator
 
 Create professional, visually appealing Marp presentation slides with 7 pre-designed themes and built-in best practices.
+
+## Scope and triggers
+
+Create professional Marp presentation slides with 7 beautiful themes (default, minimal, colorful, dark, gradient, tech, business). Use when users request slide creation, presentations, or Marp documents. Supports custom themes, image layouts, and "make it look good" requests with automatic quality improvements.
 
 ## When to Use This Skill
 

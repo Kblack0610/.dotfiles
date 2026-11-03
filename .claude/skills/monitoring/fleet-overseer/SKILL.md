@@ -1,7 +1,7 @@
 ---
 name: fleet-overseer
 description: >-
-  Watch every running agent session on this machine: its share of the machine (CPU load, memory, temperature) and where it is in its delivery. Decide when the fleet must stop, stop it with the least force that works, tell each session when to continue, and shepherd idle sessions to the end of their work (wind down what landed, nudge what stalled, list what needs the human), and feed it new work by starting a session for each easy board row (dispatch). Verbs: assess | hold | go | status | shepherd | dispatch. Use when the box is hot or slow, when many agents run heavy jobs at once (headless Unity, builds, test suites), when the sentinel fleet-thermal watch trips or clears, or when the user says "the machine is melting", "stop all the agents", "cut the runs", "tell everyone to pause", "can they start again", "who is using all the CPU", "what are my agents doing", "are any of them done", "wind down the finished ones", "make sure they all finish", "start sessions on the easy rows", "what did dispatch pick". Not for wave or sprint delivery state - that is wave-overseer and sprint-overseer. Not for how to word a peer message - that is fleet-comms, which this skill uses.
+  Watch agent sessions for machine load and delivery state: hold, resume, shepherd, dispatch easy rows. Use for "the machine is melting", "stop all the agents", "what are my agents doing", "wind down the finished ones".
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold, coordination]

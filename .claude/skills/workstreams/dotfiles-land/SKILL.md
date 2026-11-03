@@ -1,6 +1,7 @@
 ---
 name: dotfiles-land
-description: Land a dotfiles change that spans the TWO-repo public/private split correctly - `~/.dotfiles` (public GitHub `Kblack0610/.dotfiles`) + `~/.dotfiles-private` (private overlay, stowed alongside). Use whenever you edit anything under `~/.dotfiles` and need to commit/PR/merge it, ESPECIALLY when a file turns out to be gitignored in the public repo (it lives in the private overlay). It tells you which repo each file belongs to (filesystem-decidable, never ask the user), branches + PRs each side separately (a cross-repo change = two PRs, normal), uses a worktree to avoid disturbing an unrelated dirty branch in the private repo, and merges both. Do NOT commit infra/secret-bearing files to the public repo, do NOT ask the user "which repo does this go in" (grep decides), and do NOT mix both repos' changes into one branch. Differs from ingest-worktree (generic dirty-tree fan-out / PR-queue drain) - this one encodes the SPECIFIC dotfiles two-repo topology and the public/private classification rule.
+description: >-
+  Land a change across the dotfiles public/private split: grep decides the repo, one PR per repo. Use whenever you commit under ~/.dotfiles or ~/.dotfiles-private. Never ask "which repo does this go in".
 metadata:
   category: workstreams
   tags: [git, pull-requests, dotfiles, landing]
@@ -11,6 +12,10 @@ metadata:
 
 Land a change to the dotfiles across the two-repo split without asking obvious questions. The
 answer to "which repo?" is always decidable from the filesystem - never an AskUserQuestion.
+
+## Scope and triggers
+
+Land a dotfiles change that spans the TWO-repo public/private split correctly - `~/.dotfiles` (public GitHub `Kblack0610/.dotfiles`) + `~/.dotfiles-private` (private overlay, stowed alongside). Use whenever you edit anything under `~/.dotfiles` and need to commit/PR/merge it, ESPECIALLY when a file turns out to be gitignored in the public repo (it lives in the private overlay). It tells you which repo each file belongs to (filesystem-decidable, never ask the user), branches + PRs each side separately (a cross-repo change = two PRs, normal), uses a worktree to avoid disturbing an unrelated dirty branch in the private repo, and merges both. Do NOT commit infra/secret-bearing files to the public repo, do NOT ask the user "which repo does this go in" (grep decides), and do NOT mix both repos' changes into one branch. Differs from ingest-worktree (generic dirty-tree fan-out / PR-queue drain) - this one encodes the SPECIFIC dotfiles two-repo topology and the public/private classification rule.
 
 ## The topology (load-bearing)
 

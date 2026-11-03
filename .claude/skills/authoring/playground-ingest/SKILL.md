@@ -1,6 +1,7 @@
 ---
 name: playground-ingest
-description: "Bring an Asset Store pack into the BNB asset-library and then into a unity-core-playground game, in the order the repo runbook gives, ending on its Done when list. Use when the user says \"bring this pack in\", \"ingest X into the library\", \"add this asset store pack to the game\", \"make these items usable in <game>\", or after asset-store-audit marked a pack Adopt. It is a thin driver: the procedure lives in the playground's docs/authoring/asset-library.md (Bringing a package in) and the library's docs/ingesting-a-pack.md, and this skill only says where to start, what to read, and which traps have cost sessions hours. Not for deciding whether a pack is worth bringing in (that is asset-store-audit, run it first), not for adding a map or character that uses library art (that is playground-new-content), and not for running tests (that is playground-headless-test)."
+description: >-
+  Bring an Asset Store pack into the BNB asset-library and a unity-core-playground game, by the runbook. Use for "bring this pack in", "ingest X into the library". Whether a pack is worth it: asset-store-audit first.
 metadata:
   category: authoring
   tags: [unity, asset-library, ingest, addressables, playground]
@@ -10,6 +11,10 @@ metadata:
 # Playground ingest
 
 Takes one downloaded Asset Store pack to a library package a playground game places, with the pin moved forward, the items loadable, and the checks green. The repo docs are the source of truth; when this skill and a doc disagree, the doc wins and this file gets fixed in the same turn.
+
+## Scope and triggers
+
+Bring an Asset Store pack into the BNB asset-library and then into a unity-core-playground game, in the order the repo runbook gives, ending on its Done when list. Use when the user says "bring this pack in", "ingest X into the library", "add this asset store pack to the game", "make these items usable in <game>", or after asset-store-audit marked a pack Adopt. It is a thin driver: the procedure lives in the playground's docs/authoring/asset-library.md (Bringing a package in) and the library's docs/ingesting-a-pack.md, and this skill only says where to start, what to read, and which traps have cost sessions hours. Not for deciding whether a pack is worth bringing in (that is asset-store-audit, run it first), not for adding a map or character that uses library art (that is playground-new-content), and not for running tests (that is playground-headless-test).
 
 ## When to Use
 
