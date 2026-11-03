@@ -1,7 +1,7 @@
 ---
 name: ingest-worktree
 description: >-
-  Fan a dirty working tree into scoped PRs, one per concern, secret-scanning untracked files. Use for "get my hanging changes in", "land the worktree", "clean up my git status into PRs". Open PRs: ingest-prs.
+  Fan a dirty working tree into scoped PRs, one per concern, secret-scanning untracked files. Use for "get my hanging changes in", "land the worktree", "clean up my git status into PRs". Open PRs: ingest-prs; dotfiles repos: dotfiles-land.
 metadata:
   category: workstreams
   tags: [git, pull-requests, landing]
