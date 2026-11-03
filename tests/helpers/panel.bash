@@ -276,9 +276,9 @@ panel_ratchet() {
 # panel_conf_bindings' full parser.
 #
 # "Is this a table bind" is decided by WHERE -T sits, not by whether the line contains one.
-# `bind -T tags i ...` binds INTO a table; `bind a switch-client -T tags` is an ordinary root
+# `bind -T tags i ...` binds INTO a table; `bind t switch-client -T tags` is an ordinary root
 # bind whose COMMAND happens to name one. A naive !/-T/ filter drops the second, which made
-# prefix+a look unbound and this file report that the editor had displaced it.
+# prefix+t look unbound and this file report that the editor had displaced it.
 root_binds() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ {

@@ -203,7 +203,7 @@ EOF
 }
 
 @test "a protected window keeps its note and is never closed" {
-  # Window tags (Prefix+a). A pinned window is exactly the one a teardown must not take.
+  # Window tags (Prefix+t). A pinned window is exactly the one a teardown must not take.
   mk_sentinel <<'EOF'
 scope=window
 target=@7

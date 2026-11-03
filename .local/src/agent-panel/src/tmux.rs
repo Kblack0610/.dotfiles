@@ -20,7 +20,7 @@ pub struct Pane {
     /// split window may not be the agent, so anything that types into a pane uses this.
     pub pane_id: String,
     pub title: String,
-    /// Window tags set via Prefix+a (see .local/src/tmux/tags.sh), rendered by
+    /// Window tags set via Prefix+t (see .local/src/tmux/tags.sh), rendered by
     /// tmux itself from the `@tag_*` window options. Empty when untagged.
     pub tags: String,
 }
