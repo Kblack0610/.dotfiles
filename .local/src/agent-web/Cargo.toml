@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent-panel = { path = "../agent-panel" }
+hub-core = { path = "../hub-core" }
 anyhow = "1"
 axum = "0.8"
 notify = "8"

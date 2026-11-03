@@ -12,6 +12,7 @@
 mod auth;
 mod boards;
 mod infra;
+mod jobs;
 mod transcript;
 
 use std::convert::Infallible;
@@ -60,6 +61,11 @@ const STATIC: &[(&str, &str, &str)] = &[
         "text/javascript",
         include_str!("../static/infra.js"),
     ),
+    (
+        "jobs.js",
+        "text/javascript",
+        include_str!("../static/jobs.js"),
+    ),
 ];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -77,6 +83,7 @@ struct AppState {
     sessions: auth::Sessions,
     events: broadcast::Sender<String>,
     infra: infra::Cache,
+    jobs: jobs::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -97,6 +104,7 @@ async fn main() -> Result<()> {
         sessions,
         events,
         infra: infra::Cache::default(),
+        jobs: jobs::Cache::default(),
     });
 
     let api = Router::new()
@@ -110,6 +118,8 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/infra", get(infra_board))
+        .route("/api/jobs", get(jobs_list))
+        .route("/api/jobs/log", get(job_log))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -696,6 +706,28 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
+async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.jobs.get(q).await,
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct JobLogQuery {
+    #[serde(rename = "ref")]
+    log: String,
+}
+
+async fn job_log(Query(q): Query<JobLogQuery>) -> ApiResult<Response> {
+    let text = jobs::log(q.log)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
 async fn static_file(UrlPath(name): UrlPath<String>) -> Response {
     match STATIC.iter().find(|(n, _, _)| *n == name) {
         Some((_, ctype, body)) => ([(header::CONTENT_TYPE, *ctype)], *body).into_response(),
@@ -742,7 +774,11 @@ mod tests {
         let projects = Path::new("/h/.claude/projects");
         let create = EventKind::Create(CreateKind::Any);
         assert!(is_new_project(&create, &projects.join("-new"), projects));
-        assert!(!is_new_project(&create, &projects.join("-new/s.jsonl"), projects));
+        assert!(!is_new_project(
+            &create,
+            &projects.join("-new/s.jsonl"),
+            projects
+        ));
         let modify = EventKind::Modify(ModifyKind::Any);
         assert!(!is_new_project(&modify, &projects.join("-new"), projects));
     }

@@ -279,6 +279,45 @@ _outcome_promote() {
     printf 'STALLED' > "$f" 2>/dev/null || true
 }
 
+# The run ledger: one JSON line per finished run in $STATE_DIR/runs.jsonl, read by hub-core's
+# Jobs view. The stdout/stderr logs are appended across runs with no boundaries, so each line
+# carries its run's byte range. `log-mark` is where the last run stopped writing; nothing
+# writes between runs, so it is the next run's start.
+_ledger_size() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+_ledger_start() {
+    local d="$STATE_DIR/$1" out err mo="" me=""
+    out=$(_ledger_size "$STATE_DIR/$1.stdout.log"); err=$(_ledger_size "$STATE_DIR/$1.stderr.log")
+    read -r mo me 2>/dev/null < "$d/log-mark" || true
+    # A mark past the end means logrotate truncated the file since: the run starts at its end.
+    [[ "$mo" =~ ^[0-9]+$ ]] && [ "$mo" -le "$out" ] && out=$mo
+    [[ "$me" =~ ^[0-9]+$ ]] && [ "$me" -le "$err" ] && err=$me
+    mkdir -p "$d" 2>/dev/null || return 0
+    printf '%s %s %s %s\n' "$(date +%s)" "${INVOCATION_ID:--}" "$out" "$err" > "$d/run" 2>/dev/null || true
+}
+
+_ledger_stop() {
+    local d="$STATE_DIR/$1" started="" inv="" so=0 se=0 eo ee outcome
+    mkdir -p "$d" 2>/dev/null || return 0
+    read -r started inv so se 2>/dev/null < "$d/run" || true
+    [[ "$started" =~ ^[0-9]+$ ]] || started=null
+    inv="${INVOCATION_ID:-$inv}"; [ "$inv" = - ] && inv=
+    eo=$(_ledger_size "$STATE_DIR/$1.stdout.log"); ee=$(_ledger_size "$STATE_DIR/$1.stderr.log")
+    [[ "$so" =~ ^[0-9]+$ ]] && [ "$so" -le "$eo" ] || so=0
+    [[ "$se" =~ ^[0-9]+$ ]] && [ "$se" -le "$ee" ] || se=0
+    outcome=$(cat "$(_outcome_file "$1")" 2>/dev/null) || outcome=""
+    # Every field is a runner name, a hex id, a systemd word or a number: strip what could
+    # break the JSON rather than escape it. One short write to an O_APPEND file is atomic.
+    local clean='s/[^A-Za-z0-9@._:-]//g'
+    printf '{"name":"%s","invocation":"%s","started":%s,"finished":%s,"result":"%s","exit":"%s","outcome":"%s","out":[%s,%s],"err":[%s,%s]}\n' \
+        "$(sed "$clean" <<<"$1")" "$(sed "$clean" <<<"$inv")" "$started" "$(date +%s)" \
+        "$(sed "$clean" <<<"${SERVICE_RESULT:-}")" "$(sed "$clean" <<<"${EXIT_STATUS:-}")" \
+        "$(sed "$clean" <<<"$outcome")" "$so" "$eo" "$se" "$ee" \
+        >> "$STATE_DIR/runs.jsonl" 2>/dev/null || true
+    printf '%s %s\n' "$eo" "$ee" > "$d/log-mark" 2>/dev/null || true
+    rm -f "$d/run"
+}
+
 cmd_report() {
     local name="${AGENTCTL_NAME:-}" lifecycle=""
     local -a kvs=()
@@ -306,7 +345,8 @@ cmd_report() {
             # runner was never wired", NOT "it ran and said nothing" - those need
             # different fixes and looked identical before. A run that STARTS declares
             # PENDING and is expected to overwrite it.
-            _outcome_seed "$name" ;;
+            _outcome_seed "$name"
+            _ledger_start "$name" ;;
         stop)
             # systemd sets these for ExecStopPost only. Anything but `success` is a fault
             # worth a glyph, which is the distinction `inactive` alone can never make.
@@ -322,7 +362,9 @@ cmd_report() {
             # this engine-side means every runner inherits the guard instead of adopting
             # it one at a time - which is exactly how nightly-sync missed the guard dream
             # already had, and went six nights writing nothing.
-            _outcome_promote "$name" ;;
+            _outcome_promote "$name"
+            # A paused skip is not a run, so it gets no ledger line.
+            [ "${SERVICE_RESULT:-}" = exec-condition ] || _ledger_stop "$name" ;;
         "") ;;
         *) die "report: unknown lifecycle '$lifecycle' (start|stop)" ;;
     esac
