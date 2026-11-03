@@ -14,7 +14,7 @@ agent-web's asks list.
 
 An ask file is the only record that something waits on the human, for attended sessions as much as headless runs. The sessions and boards around it work like this:
 
-- An attended session asks in its conversation and runs `agent-ask post` in the same turn. `post` prints the ask in the session's pane and pages the human once (`agent-notify -p high`).
+- An attended session asks in its conversation and runs `agent-ask post` in the same turn. `post` prints the ask in the session's pane and does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - When the session ends, the SessionEnd hook (`ask-settle.sh stale`) marks what is left stale.

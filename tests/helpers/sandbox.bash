@@ -106,7 +106,7 @@ sandbox_init() {
   unset AGENTCTL_STATE AGENTCTL_NAME
 
   # The suite runs from inside a Claude session, whose id and attended flag would otherwise
-  # be read as the test's own: an attended post pages the human.
+  # be read as the test's own: an attended post renders into the pane.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
 
   # `agent-ask answer` runs the ask's resume command, and `wave-start` on the real PATH
