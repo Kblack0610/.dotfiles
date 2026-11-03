@@ -122,3 +122,23 @@ attrs_in() {
   assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
   assert_line --index 1 "service.name=claude-code,host.name=$(hostname),project=my-app"
 }
+
+# The connectors default sits outside the LAN guard: every launch gets it, on or off the LAN.
+connectors_env() {
+  printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"
+  chmod +x "$FAKEBIN/getent"
+  env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" ${2:+"$2"} bash -c \
+    ". '$SNIP' >/dev/null 2>&1; echo \"connectors=\${ENABLE_CLAUDEAI_MCP_SERVERS-unset}\""
+}
+
+@test "claude.ai connectors default off, on and off the LAN" {
+  run connectors_env 0
+  assert_output 'connectors=false'
+  run connectors_env 1
+  assert_output 'connectors=false'
+}
+
+@test "a launch-time ENABLE_CLAUDEAI_MCP_SERVERS wins over the default" {
+  run connectors_env 1 ENABLE_CLAUDEAI_MCP_SERVERS=true
+  assert_output 'connectors=true'
+}
