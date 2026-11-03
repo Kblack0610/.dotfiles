@@ -153,9 +153,15 @@ cmd_pick() {
     fi
     IFS=$'\037' read -r _ name dir note <<< "$b"
     echo "claude-acct: $name ($note)" >&2
-    # Told, never refused: a human start goes ahead whatever the pace.
-    if [[ "$(usage_json nospend | jq -r --arg n "$name" 'select(.name == $n) | .over_pace')" == true ]]; then
+    # Told, never refused: a human start goes ahead whatever the pace, and never moves to the
+    # paid Lazer reserve on its own; the hint names it, `cl --lazer` is the human's choice.
+    local rows
+    rows=$(usage_json nospend | jq -s .)
+    if [[ "$(jq -r --arg n "$name" '.[] | select(.name == $n) | .over_pace' <<< "$rows")" == true ]]; then
         echo "claude-acct: $name is over its weekly pace" >&2
+    fi
+    if jq -e 'length > 0 and all(.[]; (.week_used // 0) >= 100 or (.five_hour // 0) >= 100)' <<< "$rows" >/dev/null; then
+        echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve" >&2
     fi
     printf '%s\n' "$dir"
 }
