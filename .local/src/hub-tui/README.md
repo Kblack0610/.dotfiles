@@ -21,14 +21,14 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 | Tab | What it shows | Grafana (`o`) |
 |---|---|---|
 | 1 Overview | Header (overall status, CI busy/slots, waiting), POOLS, RUNNING (longest first, amber past an hour), the queue grouped by pool, repo, PR and branch (8 groups, then a "+N more" hint), DOWN (offline or missing runners, stuck runs, GitHub API failing), the finished headline and what is red now | `kb-command-center` |
-| 2 Jobs | Every job `hub_core::jobs::collect` finds: agentctl runners (the run ledger), user timers (journald), night shift, Unity gates (the ledger plus running gates from `cc:host_local_gate`), CI and k8s from Prometheus. Queued, running and done with start, duration and result; Enter opens the log under the list | `kb-ci-runners` |
+| 2 Jobs | Every job `hub_core::jobs::collect` finds: agentctl runners (the run ledger), user timers (journald), night shift, Unity gates (the ledger plus running gates from `cc:host_local_gate`), CI and k8s from Prometheus. Queued, running and done with start, duration and result; Enter opens the log under the list. A k8s Job's log is its pods' lines in Loki, read through the API server's service proxy (`kubectl get --raw`, cluster `CC_KUBE_CONTEXT`, service `CC_LOKI_SERVICE`), so Loki needs no ingress and no token | `kb-ci-runners` |
 | 3 CI | Finished runs per workflow with failures, then the recent runs list | `kb-ci-runners` |
 | 4 Machines | One row per machine: CPU now and over 6h, load per core, memory, temperature, slots per pool. Machines with no runner show when named in `CC_HOSTS` | `kb-fleet` |
 | 5 Sessions | Every agent session's stages (sync, conflicts, tree, PR, CI, plan phases, ETA, bucket, idle, why) from `~/.local/state/fleet/state.json`, the open asks, and the newest changes from `~/.agent/shepherd/watch.log`. `fleet-state.timer` writes both every minute (`fleet-sessions tick`) | - |
 | 6 Today | The day-log record (`~/.agent/daylog/<date>.json`, `day-log.timer` every 5 minutes): waiting on you, merged, still open, sessions bench, timeline, spend. `[`/`]` step a day, `t` back to today | - |
 | 7 History | One row per recorded day: merges, repos, sessions, cost, areas. Enter opens that day on Today | - |
 
-Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file changes (inotify): Jobs on the agentctl state dir, `~/.agent/night` and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
+Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file is written (inotify; an open is not a write): Jobs on the agentctl state dir, `~/.agent/night` and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
 
 ## Keys
 
@@ -71,10 +71,14 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `o` opens a 404 like `.../d/kb-ci-runners/d/...` | `CC_GRAFANA_URL` is cut to its base in `hub_core::infra::gather`; an older binary does not. Rebuild |
 | "QUERY FAILED" and no machines | Prometheus did not answer or `cc:overall_status` is missing. The board never shows the last numbers after a failed read; check `CC_PROM_URL` and the recording rules in home-config `apps/monitoring/prometheus-rules-command-center.yaml` |
 | "unread: ..." under the Jobs status line | That source failed to read (named in the line); the other sources still show |
-| "no log kept for this row" | That source keeps no log (Unity gates, k8s until phase 4) |
+| "no log kept for this row" | That source keeps no log (Unity gates) |
+| "CC_KUBE_CONTEXT is not set" or "CC_LOKI_SERVICE is not set" on a k8s log | The cluster and the Loki service come from `~/.config/command-center/env` (private repo): `CC_KUBE_CONTEXT=home-k3s`, `CC_LOKI_SERVICE=monitoring/loki:3100` |
+| A k8s log says "kubectl: ..." | The API server refused or timed out (10s guard). `kubectl --context home-k3s get --raw /api/v1/namespaces/monitoring/services/loki:3100/proxy/ready` shows whether Loki answers |
+| "Loki has no lines from this Job's pods" | The pod wrote nothing, or Alloy (home-config `apps/alloy`) did not ship it. Loki keeps a year |
 | Sessions says no fleet state, or its changes stop moving | `fleet-state.timer` is not running: `systemctl --user enable --now fleet-state.timer`. The timer builds the log whether or not the tab is open |
 | Today is a day behind or empty | `day-log.timer` is not running: `systemctl --user enable --now day-log.timer`; `day-log snapshot` writes one record by hand |
 | Prefix o or O lands on the wrong tab | A hub older than the tab socket ignores the request. Rebuild, then `tmux kill-window -t hub:board` and press the key again |
 | "hub tab cannot reach this hub (...)" in the tab bar | `tab.sock` would not bind; the reason is in the brackets. A socket path is limited to 108 bytes, so a long `XDG_STATE_HOME` cannot hold one |
 | "no file watch (inotify full)" in the tab bar | Every inotify watch is taken. `grep -c '^inotify' /proc/[0-9]*/fdinfo/* 2>/dev/null \| awk -F'[/:]' '{n[$3]+=$NF} END{for(p in n) if(n[p]) print n[p], p}' \| sort -rn \| head -3` prints watches and pid, biggest first; an open Unity Editor's `Unity.ILPP.Runner` can hold nearly all of `fs.inotify.max_user_watches`. Closing it or raising the limit is the human's call. Until then the board re-reads its files every 60s, and agent-web will not start, so do not restart it |
+| hub holds 100%+ CPU and a `journalctl --user ... MESSAGE_ID=...` child respawns non-stop | notify asks inotify for opens too, and each jobs read opens the files it watches, so every read woke the next. `is_write` in `app.rs` drops everything but create, modify and remove (fixed 2026-11-03). Rebuild and restart the hub |
 | Status chips unreadable (yellow on yellow) | Chips are black text on the status colour, so a theme that maps red and green to light shades still reads; the word (OK, WARN, RED, NODATA) carries the state |
