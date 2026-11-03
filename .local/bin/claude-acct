@@ -575,6 +575,15 @@ await() {
     done
 }
 
+# leave_mode <server> <pane> -- take the pane out of any tmux mode before keys are typed into
+# it; fails if it is still in one. Copy mode swallows typed keys, and the session picker
+# (choose-tree) acts on them: its x then y kill a session. `copy-mode -q` cancels every mode,
+# and does nothing to a pane in none.
+leave_mode() {
+    tmux -L "$1" copy-mode -q -t "$2" 2>/dev/null
+    [[ "$(tmux -L "$1" display-message -p -t "$2" '#{pane_in_mode}' 2>/dev/null)" != 1 ]]
+}
+
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
 # it answers the background-shell dialog on the way with "Exit and stop tasks".
 exited() {
@@ -599,6 +608,7 @@ resumed_or_trusted() {
     resumed "$@" && return 0
     if [[ -z "$TRUSTED" ]] && tmux -L "$server" capture-pane -p -t "$pane" 2>/dev/null | grep -qF 'Yes, I trust this folder'; then
         TRUSTED=1
+        leave_mode "$server" "$pane" || return 1
         tmux -L "$server" send-keys -t "$pane" Down
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
@@ -738,6 +748,7 @@ park_flow() {
         echo "  then: write $PARKED/$session; claude-acct unpark $session resumes it with $base, on the account with room then"
     fi
     ((dry)) && return 0
+    leave_mode "$server" "$pane" || { refuse "pane $pane is in a tmux mode that did not close; typed nothing"; return; }
 
     # Written beside the ledger and renamed into place once the claude is gone, so a reader
     # never sees half of one, and a claude that would not exit leaves none.
@@ -798,14 +809,7 @@ unpark_ledger() {
         tmux -L "$server" respawn-pane -t "$pane" -c "$cwd" "$cmd" || { refuse "respawn-pane failed; the pane is held open, dead"; return; }
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
-        # A pane in a mode takes the typed resume as mode keys: scrolled (copy mode), or the
-        # session picker (tree mode), where some keys kill sessions. Leave it, or type nothing.
-        case "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_mode}' 2>/dev/null)" in
-            "") ;;
-            copy-mode|view-mode) tmux -L "$server" send-keys -t "$pane" -X cancel ;;
-            *) tmux -L "$server" send-keys -t "$pane" Escape ;;
-        esac
-        [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" != 1 ]] ||
+        leave_mode "$server" "$pane" ||
             { refuse "pane $pane is in a tmux mode that did not close; typed nothing ($file is kept)"; return; }
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
