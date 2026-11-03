@@ -162,8 +162,8 @@ ledger_field() { sed -n "s/^$2=//p" "$1" | head -1; }
 # session_live <session> [server] -- a ledger older than the server= line was always on DISPATCH_SERVER.
 session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
 
-# The env prefix that starts claude on the account with the most room left (claude-acct pick,
-# the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
+# The env prefix that starts claude on the account claude-acct pick chooses
+# (the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
 # pass has already chosen with `claude-acct room`, and passes that account in RUN_ACCOUNT.
 # Accounts share ~/.claude/projects, so a resumed session works from either one.
 account_env() {

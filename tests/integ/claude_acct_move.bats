@@ -234,7 +234,7 @@ tmux_calls() { cat "$FIX/calls.log"; }
   assert_failure; assert_output --partial 'already on alt, the account with the most room'
   usage alt 100 40
   run "$ACCT" move onalt --server lab
-  assert_failure; assert_output --partial 'no account has room (the best is main: 5h 30%, 7d 100%)'
+  assert_failure; assert_output --partial 'no account has room (the best is alt: 5h 100%, 7d 40%)'
   rm "$XDG_CACHE_HOME"/claude-acct/*.json
   run "$ACCT" move onalt --server lab
   assert_failure; assert_output --partial 'no usage data'
