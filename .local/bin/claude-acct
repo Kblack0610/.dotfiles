@@ -3,7 +3,8 @@
 # claude-acct - start each `cl` session on the Claude account with the most room left
 #
 # Usage:
-#   claude-acct pick     # print the CLAUDE_CONFIG_DIR to use (empty = main account)
+#   claude-acct pick [name]   # print the CLAUDE_CONFIG_DIR to use (empty = main account);
+#                             # with a name, that account's dir (`cl --acct <name>`)
 #   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
@@ -137,6 +138,13 @@ best() {
 cmd_pick() {
     cmd_link
     local b name dir note
+    if [[ -n "${1:-}" ]]; then
+        while IFS=$'\037' read -r name dir; do
+            [[ "$name" == "$1" ]] && { printf '%s\n' "$dir"; return 0; }
+        done < <(accounts)
+        echo "claude-acct: no account '$1' in $CONF (have: $(accounts | cut -d$'\037' -f1 | paste -sd' '))" >&2
+        return 1
+    fi
     b=$(best)
     if [[ -z "$b" ]]; then
         echo "claude-acct: no usage data, using the default account" >&2
@@ -619,7 +627,7 @@ cmd_move() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
-    pick)   cmd_pick ;;
+    pick)   shift; cmd_pick "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     room)   cmd_room ;;
