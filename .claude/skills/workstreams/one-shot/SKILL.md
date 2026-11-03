@@ -36,19 +36,22 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
    3a. **Final pass.** Run `final-pass` on the diff (`~/.claude/skills/final-pass/SKILL.md`). It skips small or docs-only diffs on its own. It goes here, before Validate, so the gate checks its edits too.
 
-4. **Validate.** Run the project's merge gate exactly as its CLAUDE.md defines it. For unity-core-playground that is the gate in `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`. If the repo defines no gate, run its lint, typecheck and tests. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 7 in blocked mode.
+4. **Validate.** A project with a gate script (its CLAUDE.md names it; unity-core-playground: `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`) runs it in step 6, once the PR is open. A repo with no gate script runs its lint, typecheck and tests now, before the PR. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 7 in blocked mode.
 
-5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, and the classes/checks run with their counts. Follow the writing-style rules (ASCII, `de-ai-writing`). With `--pr-only`, go to the `--pr-only` line of step 6.
+5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, and the classes/checks run with their counts. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
 
-6. **Land and record.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. One command merges the validated head, closes the agent-board row, adds and closes the human's `#oneshot` sheet row (a one-shot is always an ask the human wrote), and ticks the plan phase, stopping at the first failure:
+6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Start ONE background command and act only on its result:
    ```bash
-   agent-land <N> --project <project> --title "<title>" --sheet --plan ~/.claude/plans/<slug>.md --phase "<task>"
+   <the project's gate command> && agent-land <N> --project <project> --title "<title>" --sheet --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
-   - Exit 3: the branch is behind. `git merge origin/<base>`, re-run the affected part of step 4, then the same command.
-   - Exit 1 names the failed step. Fix it and re-run the same command; a PR already merged skips straight to recording.
+   `agent-land` waits for the PR's checks, merges the validated head, closes the agent-board row, adds and closes the human's `#oneshot` sheet row (a one-shot is always an ask the human wrote), and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--sheet --plan --phase` to its `agent-land`.
+   - `landed #N`: go to step 7.
+   - A red gate: back to step 3, commit, push, and start the same command.
+   - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.
+   - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row that already asked for this work: drop `--sheet` and `notes ptask <project> done "<row>" --proof pr:<N>` that row instead. A project with no sheet prints `sheet: ... skipped`; say so in the wind-down note.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
-   - **`--pr-only`**: no `agent-land`. Add the sheet row open with the PR in its title, `notes ptask <project> add "<title> (#N) #oneshot" '#low'` (`#low` stops the CLI defaulting it to `#high`; quote it, or zsh reads a comment), and leave the agent row started.
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Add the sheet row open with the PR in its title, `notes ptask <project> add "<title> (#N) #oneshot" '#low'` (`#low` stops the CLI defaulting it to `#high`; quote it, or zsh reads a comment), and leave the agent row started.
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.

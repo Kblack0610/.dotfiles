@@ -4,12 +4,13 @@
 #   agent-land <pr> --project <board project> --title "<board row title>"
 #              [--plan <file> --phase "<text>"] [--sheet] [--dry-run]
 #
-# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base>), merge
-# (--squash --match-head-commit HEAD, then gh pr view must say MERGED), board (agent row done
-# with pr:<pr>), sheet (--sheet: a "<title> #oneshot" row added and closed), plan (--plan: the
-# one "- [ ] <phase>" line becomes "- [x] <phase> (#<pr>)"). One line per step.
+# Steps, stopping at the first failure: checks (the PR's checks pass: CI, a required check),
+# fetch (HEAD must contain origin/<base>), merge (--squash --match-head-commit HEAD, then gh pr
+# view must say MERGED), board (agent row done with pr:<pr>), sheet (--sheet: a "<title>
+# #oneshot" row added and closed), plan (--plan: the one "- [ ] <phase>" line becomes
+# "- [x] <phase> (#<pr>)"). One line per step.
 # Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it, re-gate, re-run.
-# An already MERGED PR skips fetch and merge, so a re-run finishes a failed record step.
+# An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
 
@@ -28,6 +29,36 @@ fail() {
   exit 1
 }
 lastline() { printf '%s' "$1" | tail -n 1; }
+
+# Until a CI job starts, a PR reports no checks, and GitHub has no event for the first one: that
+# one state is polled CHECKS_POLL seconds apart. While an Actions run for HEAD is still queued it
+# waits on; with none, it gives up after CHECKS_TRIES polls and lands on the local gate (a repo
+# with no PR checks). `gh pr checks --watch` waits out the rest.
+CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
+CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
+wait_checks() {
+  local try out failed queued
+  for ((try = 1; ; try++)); do
+    out=$(gh pr checks "$pr" --watch --fail-fast 2>&1) && {
+      echo "checks: green"
+      return 0
+    }
+    case "$out" in
+    *'no checks reported'*) ;;
+    *)
+      failed=$(gh pr checks "$pr" --json name,bucket -q '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' 2>/dev/null || true)
+      fail checks "${failed:-$(lastline "$out")}"
+      ;;
+    esac
+    queued=$(gh run list --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+    [ "${queued:-0}" -eq 0 ] || try=0
+    [ "$try" -lt "$CHECKS_TRIES" ] || {
+      echo "checks: none reported"
+      return 0
+    }
+    sleep "$CHECKS_POLL"
+  done
+}
 
 pr='' project='' title='' plan='' phase='' sheet=0 dry=0
 while [ $# -gt 0 ]; do
@@ -55,6 +86,7 @@ if [ -n "$plan$phase" ]; then
 fi
 
 if [ "$dry" -eq 1 ]; then
+  echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (must be 0)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
   echo "board: notes ptask $project --agent done \"$title\" --proof pr:$pr"
@@ -70,6 +102,7 @@ state="${info%% *}" base="${info#* }"
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
 else
+  wait_checks
   out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
   behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
   if [ "$behind" -ne 0 ]; then
