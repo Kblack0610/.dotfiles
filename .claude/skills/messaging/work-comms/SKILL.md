@@ -69,6 +69,7 @@ Markdown is fine here (headings, bullets, tables) since these go to a ticket or 
 - Keep output copy-friendly. Reply mode uses plain fenced code blocks, flush-left, with no blockquotes or leading indentation, so the user copies straight into Slack/email. Report/comment mode is markdown the user pastes into a ticket/doc, still with no leading indentation or stray wrapping.
 - Plain ASCII only (hard rule). No em/en dash (use a hyphen, comma, or colon), no arrows, no middot, ellipsis, or emoji. Fancy symbols are the giveaway that a work message was machine-authored. This mirrors the global Writing Style rule (rulesync overview + CLAUDE.md) and is non-negotiable here since these go straight to colleagues.
 - Match the medium of the thread. If it's a Slack reply, both versions read like Slack; if email, keep a subject line only when the thread has one. Don't add salutations or sign-offs the thread doesn't use.
+- No "the docs are in <path>" line. Do not close a message by pointing the reader at a repo doc, a file path, or "see the docs". If a detail matters, put it in the message; otherwise leave it out. Why: Ken has asked repeatedly; a pointer line is filler the recipient will not open, and a repo path means nothing to someone outside the repo.
 - Never invent facts or commitments that are absent from the source thread: no made-up dates, owners, or promises. If a detail is missing, leave a `<...>` placeholder.
 - Match the recipient's register: a manager or exec gets the same brevity with a touch more context; a close teammate can get something terser.
 
