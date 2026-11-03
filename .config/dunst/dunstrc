@@ -1,0 +1,71 @@
+# dunst - layout and behavior. Colors are NOT here: theme-switch renders them from the
+# active palette into dunstrc.d/50-theme.conf (gitignored), which dunst reads as a
+# drop-in and which overrides anything set below. Edit the palette, not that file.
+#
+# Geometry follows hyprland's look-and-feel.conf (rounding 10, gaps_out 20) so a
+# notification reads as one more window. Keyboard: Super+N close, Super+Shift+N close
+# all, Super+Ctrl+N reopen the last one from history, Super+Alt+N hide/show the stack
+# (keybindings.conf).
+
+[global]
+    # -- placement: waybar's exclusive zone already pushes this below the bar
+    follow = none
+    origin = top-right
+    offset = (20, 12)
+    layer = overlay
+
+    # -- size: a long Sentinel body is cut at the max height, not grown down the screen
+    width = (320, 440)
+    height = (0, 170)
+    notification_limit = 4
+    indicate_hidden = true
+
+    # -- box
+    frame_width = 2
+    corner_radius = 10
+    gap_size = 8
+    separator_height = 0
+    padding = 12
+    horizontal_padding = 14
+    text_icon_padding = 12
+    progress_bar_corner_radius = 4
+
+    # -- text: Inter is a UI face with real weights; the title is semibold, the body regular
+    font = Inter 10.5
+    markup = full
+    format = "<span weight='600'>%s</span>\n%b"
+    line_height = 3
+    alignment = left
+    vertical_alignment = top
+    word_wrap = true
+    ellipsize = end
+    ignore_newline = false
+    show_age_threshold = 60
+
+    # -- icons
+    icon_position = left
+    min_icon_size = 24
+    max_icon_size = 40
+    icon_corner_radius = 6
+
+    # -- stacking: urgent first, identical repeats collapse into one with a count
+    sort = urgency_descending
+    stack_duplicates = true
+    hide_duplicate_count = false
+    show_indicators = true
+    history_length = 50
+
+    # -- mouse: left dismisses, middle runs the default action, right clears the stack
+    mouse_left_click = close_current
+    mouse_middle_click = do_action, close_current
+    mouse_right_click = close_all
+
+# Critical stays until dismissed on purpose: it is an agent ask or a Sentinel trip.
+[urgency_low]
+    timeout = 4
+
+[urgency_normal]
+    timeout = 8
+
+[urgency_critical]
+    timeout = 0

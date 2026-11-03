@@ -77,6 +77,18 @@ is_ignored() {
   assert_success
 }
 
+@test "dunst's rendered color drop-in is ignored" {
+  run is_ignored .config/dunst/dunstrc.d/50-theme.conf
+  assert_success
+}
+
+@test "dunst's hand-authored dunstrc is tracked, not swept up with its drop-in" {
+  # The drop-in sits under the same .config/dunst/ directory as the layout file it
+  # overrides; an ignore rule one level too wide would untrack the layout too.
+  run is_ignored .config/dunst/dunstrc
+  assert_failure
+}
+
 # ── negative control ─────────────────────────────────────────────────────────
 
 @test "a TRACKED theme target is reported as not ignored" {
@@ -96,7 +108,7 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the ten that were classified" {
+@test "theme-switch's write targets are still the eleven that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
   # switch; converting each to its tool's native include (hyprland `source =`, lazygit
   # LG_CONFIG_FILE, an nvim palette module) is the unfinished half of the job.
@@ -108,6 +120,7 @@ is_ignored() {
   # target that pays the twice-daily churn on purpose.
   local expected
   expected="$(printf '%s\n' \
+    .config/dunst/dunstrc.d/50-theme.conf \
     .config/hypr/conf.d/look-and-feel.conf \
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \

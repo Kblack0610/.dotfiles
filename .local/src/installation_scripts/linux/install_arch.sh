@@ -571,12 +571,12 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css and sketchybar's colors.sh are NOT tracked -- they are the render of
+# style.css, sketchybar's colors.sh and dunst's dunstrc.d/50-theme.conf are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
 #
-# --only the three generated targets on purpose: every other tool theme-switch
+# --only the generated targets on purpose: every other tool theme-switch
 # touches is a TRACKED file that already ships correct, and re-patching those
 # here would leave a fresh install with a dirty tree before first login.
 setup_theme() {
@@ -585,7 +585,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst"
         return 0
     fi
 
@@ -596,7 +596,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst
 }
 
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
@@ -784,7 +784,7 @@ install_all() {
     step dotfiles    setup_profile
 
     # Generated theme files (must come after apply_dotfiles -- writes into the
-    # stowed config tree, and these three are gitignored so a clone lacks them)
+    # stowed config tree, and these are gitignored so a clone lacks them)
     step dotfiles    setup_theme
 
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
