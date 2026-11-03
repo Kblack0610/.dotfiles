@@ -1,6 +1,7 @@
 # shellcheck shell=bash disable=SC2034  # PROM_URL, W, PROM_RED_NOW and LONG_RUN_SECS are for the scripts that source this
-# prom.sh - the one Prometheus reader for the hub:infra board (.local/src/tmux/command-center.sh)
-# and the waybar load, CI and day chips (.config/waybar/load.sh, ci_runners.sh, day.sh).
+# prom.sh - the one bash Prometheus reader, for the waybar load, CI and day chips
+# (.config/waybar/load.sh, ci_runners.sh, day.sh) and the fleet scripts. The hub:infra board
+# is Rust (.local/src/hub-tui) and reads through hub-core's prom module.
 #
 # All of them draw the cc:* recording rules and runner-exporter series (home-config
 # apps/monitoring/prometheus-rules-command-center.yaml, apps/github-runner-exporter), so
@@ -11,7 +12,7 @@
 # Endpoints stay out of this public repo. Set them in ~/.config/command-center/env (stowed
 # from the private overlay):
 #   CC_PROM_URL=https://prometheus.your.lan
-#   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-ci-runners
+#   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-ci-runners   a dashboard link; the boards link from its base
 #   CC_HOSTS="workstation"   board: machines shown even with no runner, first
 
 # shellcheck source=/dev/null

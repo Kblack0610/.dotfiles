@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # table-fit.sh (sourced) - fit a tab-led TSV table to a terminal width: the one column
-# fitter the terminal boards share (fleet-sessions watch, command-center.sh).
+# fitter the terminal boards share (fleet-sessions watch, day-log watch).
 #
 # Lines starting with a TAB are table rows (the first is the header); other lines pass
 # through. Columns take their content's width and drop from the least important end until

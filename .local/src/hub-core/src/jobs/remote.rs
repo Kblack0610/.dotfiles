@@ -22,7 +22,37 @@ fn conclusion_ok(c: &str) -> Option<bool> {
     }
 }
 
-/// CI rows from the exporter's three series: busy runners, waiting jobs, recent runs.
+/// Local Unity gates running now. `runs.tsv` gets a gate only once it ends, so the running ones
+/// come from `cc:host_local_gate` (value: seconds running), as on the infra board.
+pub(super) fn gates(at: i64) -> Got {
+    match prom::base().and_then(|b| prom::instant(&b, "cc:host_local_gate")) {
+        Ok(s) => (gate_rows(&s, at), vec![]),
+        Err(e) => (vec![], vec![e]),
+    }
+}
+
+pub(super) fn gate_rows(gates: &[Series], at: i64) -> Vec<Job> {
+    gates
+        .iter()
+        .map(|g| {
+            let repo = match g.label("repo") {
+                "" => g.label("worktree"),
+                r => r,
+            };
+            let mut j = Job::new(
+                Source::Unity,
+                join(&[repo, g.label("platform")]),
+                State::Running,
+            );
+            j.secs = g.value.map(|v| v as i64);
+            j.started = j.secs.map(|v| at - v);
+            j.detail = join(&[g.label("branch"), g.label("worktree"), g.label("host")]);
+            j
+        })
+        .collect()
+}
+
+/// CI rows from the exporter's three series: running runners, waiting jobs, recent runs.
 pub(super) fn ci_rows(
     busy: &[Series],
     waiting: &[Series],
@@ -116,7 +146,7 @@ pub(super) fn ci(at: i64) -> Got {
     };
     let q = |m: &str| prom::instant(&base, &format!("{W} ({m})"));
     let (busy, waiting, recent, durs) = (
-        q("github_runner_state{state=\"busy\"}"),
+        q("github_runner_state{state=\"running\"}"),
         q("github_actions_job_waiting"),
         q("github_actions_run_recent"),
         q("github_actions_run_recent_duration_seconds"),
@@ -253,6 +283,27 @@ mod tests {
             value: Some(v),
             points: vec![],
         }
+    }
+
+    #[test]
+    fn a_running_local_gate_is_a_unity_row_started_its_seconds_ago() {
+        let g = [s(
+            &[
+                ("host", "workstation"),
+                ("worktree", "pg-agent-9"),
+                ("branch", "fix/x"),
+                ("platform", "EditMode"),
+                ("repo", ""),
+            ],
+            45.0,
+        )];
+        let j = gate_rows(&g, 1000);
+        assert_eq!((j[0].source, j[0].state), (Source::Unity, State::Running));
+        assert_eq!(
+            (j[0].name.as_str(), j[0].started),
+            ("pg-agent-9 EditMode", Some(955))
+        );
+        assert_eq!(j[0].detail, "fix/x pg-agent-9 workstation");
     }
 
     #[test]

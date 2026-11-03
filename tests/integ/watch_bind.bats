@@ -48,8 +48,8 @@ setup() {
   assert_output 'day-log watch'
 }
 
-@test "prefix+i goes to the hub:infra window, and hub.conf declares it running the command center" {
+@test "prefix+i goes to the hub:infra window, and hub.conf declares it running hub infra" {
   assert_equal "$(bind_for i)" 'run-shell "tmx goto hub hub:infra"'
   run awk '$1 == "hub:infra" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
-  assert_output '~/.local/src/tmux/command-center.sh'
+  assert_output '~/.local/bin/hub infra'
 }
