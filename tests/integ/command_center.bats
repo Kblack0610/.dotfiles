@@ -47,7 +47,7 @@ cc.append(({"__name__": "cc:host_cpu_busy_ratio", "host": "mac-mini"}, "0.03"))
 # windows has slots and nothing waiting: it must read 0, never vanish.
 # windows has no finished series: DONE and PASS read -, never 0.
 for pool, slots, busy, waiting, oldest, done, ratio in [("unity", "4", "3", "3", "8880", "72", "0.24"),
-                                                        ("pmp-light", "2", "0", "1", "60", "40", "0.8"),
+                                                        ("light", "2", "0", "1", "60", "40", "0.8"),
                                                         ("windows", "1", "0", "0", None, None, None)]:
     cc += [({"__name__": "cc:pool_slots", "pool": pool}, slots), ({"__name__": "cc:pool_busy", "pool": pool}, busy),
            ({"__name__": "cc:pool_waiting", "pool": pool}, waiting)]
@@ -72,7 +72,7 @@ out("runners", [
 ])
 out("waiting", [({"pool": "unity", "repo": "unity-core-playground", "pr": "412", "stuck": "false",
                   "branch": "feat/apociseum-third"}, v) for v in ("600", "8880", "120")] +
-               [({"pool": "pmp-light", "repo": "platform", "branch": "develop", "stuck": "false"}, "60"),
+               [({"pool": "light", "repo": "platform", "branch": "develop", "stuck": "false"}, "60"),
                 # A run queued 45 days with no jobs: DOWN's, and never the queue's age.
                 ({"pool": "other", "repo": "platform", "branch": "develop", "stuck": "true"}, "3949200")])
 def fin(repo, wf, **by):
@@ -113,11 +113,11 @@ PY
 @test "pools show busy of slots, waiting, oldest, the last day's done and pass rate, and the hosts, longest queue first" {
   run "$CC" --once
   assert_line --regexp '^unity +3/4 +3 +2h28m +72 +24% +razer-laptop:4$'
-  assert_line --regexp '^pmp-light +0/2 +1 +1m +40 +80% +-$'
+  assert_line --regexp '^light +0/2 +1 +1m +40 +80% +-$'
   assert_line --regexp '^windows +0/1 +0 +- +- +- +-$'
   local order
   order="$(awk '/^POOL /{on=1; next} on && NF == 0 {exit} on {print $1}' <<< "$output" | paste -sd' ')"
-  assert_equal "$order" "unity pmp-light windows"
+  assert_equal "$order" "unity light windows"
 }
 
 @test "a job past an hour is marked, and painted amber when colour is on" {
@@ -143,7 +143,7 @@ PY
   run "$CC" --once
   assert_output --partial 'QUEUED  4 jobs in 2 groups, oldest waiting 2h28m'
   assert_output --regexp 'unity +unity-core-playground +#412 +3 +2h28m +feat/apociseum-third'
-  assert_output --regexp 'pmp-light +platform +- +1 +1m +develop'
+  assert_output --regexp 'light +platform +- +1 +1m +develop'
 }
 
 @test "finished runs list the worst pass rate first, cancels apart, and fold the green workflows" {

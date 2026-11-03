@@ -27,9 +27,9 @@ STUB
   fixtures idle
 }
 
-# fixtures [idle|offline]: unity 3/4 with 5 queued, pmp-light 0/2, workstation gates 2/4 q1
+# fixtures [idle|offline]: unity 3/4 with 5 queued, light 0/2, workstation gates 2/4 q1
 # with 6 burst slots, hp-unity-3 withheld by the governor.
-# Finished in 24h: unity 40 at 95%, pmp-light 10 at 60%, github-hosted (no slots) 50 at
+# Finished in 24h: unity 40 at 95%, light 10 at 60%, github-hosted (no slots) 50 at
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
 # the exporter's last GitHub call.
@@ -43,7 +43,7 @@ def out(name, rows):
     res = [{"metric": m, "value": [0, v]} for m, v in rows]
     json.dump({"status": "success", "data": {"result": res}}, open(f"{d}/{name}.json", "w"))
 cc = []
-for pool, slots, busy, waiting, oldest in [("unity", "4", "3", "5", "18900"), ("pmp-light", "2", "0", "0", None)]:
+for pool, slots, busy, waiting, oldest in [("unity", "4", "3", "5", "18900"), ("light", "2", "0", "0", None)]:
     cc += [({"__name__": "cc:pool_slots", "pool": pool}, slots), ({"__name__": "cc:pool_busy", "pool": pool}, busy),
            ({"__name__": "cc:pool_waiting", "pool": pool}, waiting)]
     if oldest:
@@ -54,7 +54,7 @@ cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
        ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
        ({"__name__": "api_ok"}, api)]
 if not no_done:
-    for pre, key, k, done, ratio in [("cc:pool", "pool", "unity", "40", "0.95"), ("cc:pool", "pool", "pmp-light", "10", "0.6"),
+    for pre, key, k, done, ratio in [("cc:pool", "pool", "unity", "40", "0.95"), ("cc:pool", "pool", "light", "10", "0.6"),
                                      ("cc:pool", "pool", "github-hosted", "50", "1"),
                                      ("cc:host_local", "host", "workstation", "20", "0.5")]:
         cc += [({"__name__": f"{pre}_done_24h", key: k}, done), ({"__name__": f"{pre}_pass_ratio_24h", key: k}, ratio)]
@@ -70,11 +70,11 @@ runners = [
       workflow="Tests", job_name="PlayMode 4"),
     r("razer-laptop", "unity", "running", "razer-unity-2", "4000", repo="playground", pr="1183",
       workflow="Tests", job_name="PlayMode <2> & \"quoted\""),
-    r("razer-laptop", "pmp-light", "idle", "razer-light-1"),
+    r("razer-laptop", "light", "idle", "razer-light-1"),
     r("hp-victus", "unity", "running", "hp-unity-1", "60", repo="playground", workflow="Release", job_name="Mac"),
     r("hp-victus", "unity", "idle", "hp-unity-2"),
     r("hp-victus", "unity", "idle", "hp-unity-3"),
-    r("hp-victus", "pmp-light", "offline" if mode == "offline" else "idle", "hp-light-1"),
+    r("hp-victus", "light", "offline" if mode == "offline" else "idle", "hp-light-1"),
 ]
 out("runners", runners)
 out("withheld", [({"name": "hp-unity-3"}, "1")])
@@ -123,7 +123,7 @@ PY
   run "$MODULE"
   run tip
   assert_line --index 6 --regexp "^github-hosted +- +0 +- +50  100%$"
-  assert_line --index 7 --regexp "^pmp-light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
+  assert_line --index 7 --regexp "^light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
 }
 
 @test "finished jobs stay off the bar; the hover paints them by the pass rate over all of them" {
@@ -189,8 +189,8 @@ PY2
 @test "each machine lists its pools, and every busy runner names repo#PR, job and time" {
   run "$MODULE"
   run tip
-  assert_output --partial "<b>razer-laptop  pmp-light 0/1 unity 2/2</b>"
-  assert_output --partial "<b>hp-victus  pmp-light 0/1 unity 1/2 unity withheld 0/1</b>"
+  assert_output --partial "<b>razer-laptop  light 0/1 unity 2/2</b>"
+  assert_output --partial "<b>hp-victus  light 0/1 unity 1/2 unity withheld 0/1</b>"
   assert_output --partial "  razer-unity-1  playground#1210  Tests: PlayMode 4  9m"
   # No PR: the repo alone, no dangling #.
   assert_output --partial "  hp-unity-1  playground  Release: Mac  1m"
@@ -201,7 +201,7 @@ PY2
 @test "a machine with no withheld runner has no withheld count" {
   run "$MODULE"
   run tip
-  assert_output --partial "<b>razer-laptop  pmp-light 0/1 unity 2/2</b>"
+  assert_output --partial "<b>razer-laptop  light 0/1 unity 2/2</b>"
   refute_output --regexp "razer-laptop .*withheld"
 }
 
