@@ -58,7 +58,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 ## Do NOT
 
-- Land on a red gate, a 0/0 count, or a branch behind its base. The local gate is often the only check a PR gets.
+- Land on a red gate, a 0/0 count, or a branch behind its base. The gate is often the only check a PR gets.
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
 - Cross the autopilot hard-stop boundary: no release tags, deploys, secrets or external sends, even though the rest of the run is autonomous.

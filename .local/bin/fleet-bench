@@ -11,7 +11,7 @@
 #   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench sessions --json  the scorecard's session rows, one JSON object each (day-log reads them)
-#   fleet-bench review           count CI reds before merge on PRs merged in the window
+#   fleet-bench review           count failed CI runs (any workflow) before merge on PRs merged in the window
 #   fleet-bench asks [--write|--page]
 #                                pending asks, the ones blocking a live session ranked first;
 #                                --write also writes asks.md and prints one line, --page pages it
@@ -385,7 +385,7 @@ cmd_headline() {
          + ($s | map(.cal_ratio // empty) | if length == 0 then ""
             else " (\(length) calibrated, median \(median | round2)x)" end) end)
     + (if ($c | length) == 0 then ""
-       else ", \($c | map(.ci_red) | add) CI reds before merge in \($c | length) PRs" end)'
+       else ", \($c | map(.ci_red) | add) failed CI runs before merge in \($c | length) PRs" end)'
 }
 
 # runs_between <from> <to> -> the run ledger's rows that ended in that time
