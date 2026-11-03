@@ -131,11 +131,11 @@ def phase_minutes:
   | [range(1; $s | length) | ($s[.].epoch - $s[. - 1].epoch) / 60 / ($s[.].to - $s[.].from)];
 '
 
-# sample_rows -> the live fleet-sessions rows as progress lines (MAIN rows have no session)
+# sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY rows have no session)
 sample_rows() {
   local t="$1"
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
-    select(type == "object" and (.session_id // "") != "" and .bucket != "MAIN")
+    select(type == "object" and (.session_id // "") != "" and .bucket != "NIGHTLY")
     | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
        context_tokens, nudged, escalated, pr, plan_file}'

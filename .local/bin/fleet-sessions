@@ -18,8 +18,9 @@
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
 # STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
-# escalated, `claude-acct unpark` resumes it), plus one MAIN row per repo whose default branch is red (the
-# latest decided run of a workflow failed), naming the PRs merged since that workflow was
+# escalated, `claude-acct unpark` resumes it), plus one NIGHTLY row per repo whose default branch is red
+# (the latest decided run of a workflow failed; in practice a nightly or scheduled suite, since the
+# PR gate keeps main green), naming the PRs merged since that workflow was
 # last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn,
@@ -133,8 +134,8 @@ bucket_facts() {
   [ "$git" = 1 ] || { echo "UNCLEAR not in a git repo"; return; }
   case "$state" in
     MERGED)
-      # A merge that may have turned main red is not landed, whatever the tree says.
-      if [ "$red" != - ]; then echo "STALLED main red after PR #$pr: $red"
+      # A merge that may have turned a nightly red is not landed, whatever the tree says.
+      if [ "$red" != - ]; then echo "STALLED nightly red after PR #$pr: $red"
       elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1; fi ;;
@@ -176,7 +177,7 @@ work_blockers() {
   case "$state" in
     MERGED)
       merged=1
-      [ "$red" != - ] && b+=("main red after PR #$pr: $red")
+      [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
@@ -298,7 +299,7 @@ heavy_sessions() {
   "$fa" 2>/dev/null | awk 'f && $5 != "-" { print $5 } /^PID /{ f = 1 }' | sort -u
 }
 
-# repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, MAIN ledger ids).
+# repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
 repo_slug() {
   local url
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
@@ -615,8 +616,8 @@ collect() {
   main_rows
 }
 
-# One MAIN row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
-# escalates a red main once per fact; owners are the live sessions whose merge is a suspect.
+# One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
+# escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect.
 main_rows() {
   local f slug st wfs sha prs repo sid reason owners e
   for f in "$CACHE"/main_*; do
@@ -629,8 +630,8 @@ main_rows() {
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
-    e=0; escalated "$sid" "MAIN $reason" && e=1
-    printf 'MAIN\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tMAIN %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    e=0; escalated "$sid" "NIGHTLY $reason" && e=1
+    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -654,7 +655,7 @@ eta_cells() {
 # Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
 # changing, and reason rides along to explain a stage change. Newer cells come last so a
 # watch.state written before them still lines up. now is what WHY shows: on a WORKING row, the
-# session's last action (its reason only says busy or shell), else the reason. MAIN rows are
+# session's last action (its reason only says busy or shell), else the reason. NIGHTLY rows are
 # rendered separately.
 board_cells() {
   awk -F'\t' -v OFS='\t' -v etaf="${1:-}" '
@@ -681,7 +682,7 @@ board_cells() {
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
-    $1 == "MAIN" { next }
+    $1 == "NIGHTLY" { next }
     {
       t = $2; sub(/^[^\/]*\//, "", t)
       git = ($5 != "-")
@@ -760,7 +761,7 @@ watch_tick() {
       t = substr(s, length(s) - 22); sub(/^[^-]*-/, "~", t); return t
     }
     { print "", tail($2), d($19), $3, $4, $5, $6, d($16), $7, $8, d($15), $9, $10, $11, d($17), d($18), $12, $13, ($20 == "" ? $14 : $20) }' "$cur"
-  awk -F'\t' '$1 == "MAIN" { if (!h++) print "\nMAIN"; print "  " $11 }' <<<"$rows"
+  awk -F'\t' '$1 == "NIGHTLY" { if (!h++) print "\nNIGHTLY"; print "  " $11 }' <<<"$rows"
 }
 
 # layout <width|0>: a watch frame on stdin -> the frame fitted to <width> columns (0: no
@@ -913,8 +914,8 @@ write_state() {
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
-         sessions: ($r | map(select(.bucket != "MAIN"))),
-         main: ($r | map(select(.bucket == "MAIN")
+         sessions: ($r | map(select(.bucket != "NIGHTLY"))),
+         main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
@@ -982,7 +983,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in MAIN NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED; do
+  for b in NIGHTLY NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do

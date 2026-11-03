@@ -37,8 +37,8 @@ sample_at() { BENCH_NOW=$((T0 + $1)) "$SUBJECT" sample; }
 
 outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
 
-@test "sample writes one progress line per live session, skips MAIN, publishes WORKED" {
-  { row a lab/game-agent-1:1 0 4; echo '{"session_id":"m","target":"game","bucket":"MAIN"}'; } > "$SNAP"
+@test "sample writes one progress line per live session, skips NIGHTLY, publishes WORKED" {
+  { row a lab/game-agent-1:1 0 4; echo '{"session_id":"m","target":"game","bucket":"NIGHTLY"}'; } > "$SNAP"
   run sample_at 0
   assert_success
   run jq -r '[.session_id, .project, .phases_done] | @tsv' "$FLEET_BENCH_DIR/progress.jsonl"
@@ -57,7 +57,7 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
 }
 
 @test "no live session is NOOP" {
-  echo '{"session_id":"m","target":"game","bucket":"MAIN"}' > "$SNAP"
+  echo '{"session_id":"m","target":"game","bucket":"NIGHTLY"}' > "$SNAP"
   run sample_at 0
   assert_success
   run outcome

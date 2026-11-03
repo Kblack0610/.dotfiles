@@ -113,7 +113,7 @@ function openList(rec) {
 function waiting(rec) {
   const w = rec.waiting || {};
   const rows = [
-    ...(w.main || []).map((m) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">MAIN</span><span class="pt">${esc(m.reason)}</span></div>`),
+    ...(w.main || []).map((m) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">NIGHTLY</span><span class="pt">${esc(m.reason)}</span></div>`),
     ...(w.needs || []).map((n) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">NEEDS</span><span class="pt">${esc(n.who)}: ${esc(n.reason)}</span><span class="muted">idle ${dur(n.idle_min)}</span></div>`),
     ...(w.asks || []).map((a) => `<div class="pr"><span class="chip sm" style="--c:var(--b-stalled)">ASK</span><span class="pt">${esc(a.project)}: ${esc(a.question)}</span><a href="#" data-asks>answer</a></div>`),
   ];
@@ -145,7 +145,7 @@ function renderLog() {
     <button class="btn" data-today${lst.day ? "" : " disabled"}>today</button></span>
     <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? ", could not read " + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
   html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
-    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} main, ${(w.asks || []).length} asks`)}${
+    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
     tile("SPEND", usd(total.cost_usd), "var(--c2)", `${kfmt(total.tokens)} tokens`)}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
   html += historyCharts(day);
