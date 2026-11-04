@@ -230,6 +230,11 @@ pub struct FleetInfo {
     /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,
+    /// What the session is waiting on right now, from the jobs still open at its last entry:
+    /// `human`, `gate`, `test`, `agent` (a background subagent), `jobs` (any other command) or
+    /// `none`. Only the class, never the command. fleet-sessions trusts a `gate`, `test` or
+    /// `agent` shell for longer than a `jobs` one, which is a sleep loop or a watch on a file.
+    pub open_job: &'static str,
     /// The last main-thread tool call, `<Tool>: <description>`, empty when there is none.
     pub doing: String,
     /// The last main-thread assistant text on one line, clipped to `SAID_CHARS`.
@@ -242,13 +247,15 @@ pub fn fleet_info(path: &Path) -> FleetInfo {
     let text = read(path);
     let (context_tokens, model) = last_usage(&text);
     let (doing, said) = doing_said(&text);
+    let (time_use, open_job) = walk(&text, &job_patterns(&time_use_conf()));
     FleetInfo {
         context_tokens,
         model,
         plan_file: plan_file(&text),
         last_entry: last_entry(&text),
         edited_files: edited_files(&text),
-        time_use: time_use(&text, &job_patterns(&time_use_conf())),
+        time_use,
+        open_job,
         doing,
         said,
         compactions: compactions(&text),
@@ -304,6 +311,8 @@ struct Job {
     tool_id: String,
     task_id: Option<String>,
     wait: Wait,
+    /// A background subagent: its session is idle while the subagent works.
+    agent: bool,
     since: u64,
 }
 
@@ -336,6 +345,11 @@ pub fn time_use_at(path: &Path) -> TimeUse {
 /// file-history-snapshot has only a nested one. The running max keeps a burst written out of
 /// order from reading as a gap. A gap is counted before its last line can end a job.
 fn time_use(text: &str, patterns: &[(Wait, &str)]) -> TimeUse {
+    walk(text, patterns).0
+}
+
+/// time_use, plus the class of what is still open at the last entry (FleetInfo::open_job).
+fn walk(text: &str, patterns: &[(Wait, &str)]) -> (TimeUse, &'static str) {
     let lines: Vec<&str> = text.lines().filter(|l| !skipped_entry(l)).collect();
     let mut secs = [0u64; 6];
     let mut last: Option<u64> = None;
@@ -352,8 +366,28 @@ fn time_use(text: &str, patterns: &[(Wait, &str)]) -> TimeUse {
         last = last.max(at);
         track_jobs(line, last.unwrap_or(0), patterns, &mut jobs);
     }
+    let open = open_class(&jobs, last.unwrap_or(0));
     let [work, gate, test, jobs, human, parked] = secs.map(|s| s / 60);
-    TimeUse { work_min: work, gate_min: gate, test_min: test, jobs_min: jobs, human_min: human, parked_min: parked }
+    (TimeUse { work_min: work, gate_min: gate, test_min: test, jobs_min: jobs, human_min: human, parked_min: parked }, open)
+}
+
+/// The strongest wait among the jobs open at `last`, skipping any older than JOB_MAX_SECS.
+fn open_class(jobs: &[Job], last: u64) -> &'static str {
+    let live: Vec<&Job> = jobs.iter().filter(|j| last.saturating_sub(j.since) < JOB_MAX_SECS).collect();
+    let has = |w: Wait| live.iter().any(|j| j.wait == w);
+    if has(Wait::Human) {
+        "human"
+    } else if has(Wait::Gate) {
+        "gate"
+    } else if has(Wait::Test) {
+        "test"
+    } else if live.iter().any(|j| j.agent) {
+        "agent"
+    } else if live.is_empty() {
+        "none"
+    } else {
+        "jobs"
+    }
 }
 
 /// A subagent's entry, or a snapshot whose only timestamp is nested.
@@ -418,7 +452,8 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
         patterns.iter().find(|(_, text)| command.contains(text)).map_or(Wait::Jobs, |(wait, _)| *wait)
     };
     if let Some(id) = call.get("id").and_then(Value::as_str) {
-        jobs.push(Job { tool_id: id.to_string(), task_id: None, wait, since: at });
+        let agent = name == "Agent" || name == "Task";
+        jobs.push(Job { tool_id: id.to_string(), task_id: None, wait, agent, since: at });
     }
 }
 
@@ -1019,6 +1054,34 @@ mod tests {
             peer(30),
         ]);
         assert_eq!(got, TimeUse { gate_min: 10, test_min: 20, ..TimeUse::default() });
+    }
+
+    #[test]
+    fn open_job_names_the_strongest_wait_still_running_at_the_last_entry() {
+        let open = |lines: &[String]| walk(&lines.join("\n"), &PATTERNS).1;
+        // A sleep loop alone is `jobs`: fleet-sessions stops trusting it after FLEET_IDLE_MIN.
+        assert_eq!(open(&[call(0, "o", "Bash", OTHER), launched(0, "o", "backgroundTaskId", "to")]), "jobs");
+        // A gate beside it wins, and so does a test.
+        assert_eq!(
+            open(&[
+                call(0, "o", "Bash", OTHER),
+                launched(0, "o", "backgroundTaskId", "to"),
+                call(1, "g", "Bash", GATE),
+                launched(1, "g", "backgroundTaskId", "tg"),
+            ]),
+            "gate"
+        );
+        assert_eq!(open(&[call(0, "t", "Bash", TEST), launched(0, "t", "backgroundTaskId", "tt")]), "test");
+        // A background subagent is work done elsewhere, not a wait loop.
+        assert_eq!(
+            open(&[call(0, "a", "Agent", r#"{"prompt":"x"}"#), launched(0, "a", "resumedAgentId", "ta")]),
+            "agent"
+        );
+        // A job whose result came back, or a job older than JOB_MAX_SECS, is not open.
+        let done = at(1, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#);
+        assert_eq!(open(&[call(0, "g", "Bash", GATE), done]), "none");
+        assert_eq!(open(&[call(0, "o", "Bash", OTHER), launched(0, "o", "backgroundTaskId", "to"), peer(13 * 60)]), "none");
+        assert_eq!(open(&[]), "none");
     }
 
     #[test]

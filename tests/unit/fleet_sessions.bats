@@ -255,6 +255,21 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'STALLED 2 dirty file(s), no PR, background shell idle over 30m'
 }
 
+@test "a background shell waits FLEET_SHELL_STALE_MIN only on a gate, a test or a subagent" {
+  # 2026-11-03: 13 of 24 "WORKING shell" sessions waited on no gate or test, idle up to 107m.
+  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
+  run b shell 0 0 0 25 1 2 0 - - - 1 - 1/2 x - none
+  assert_output 'STALLED 2 dirty file(s), no PR, background shell is not a gate or test'
+  # negative controls: real waits, unknown class (an older agent-panel) and under FLEET_IDLE_MIN
+  for job in gate test agent human -; do
+    run b shell 0 0 0 90 1 0 0 875 MERGED PASS 1 - 2/3 x - "$job"
+    assert_output 'WORKING shell'
+  done
+  run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
+  assert_output 'WORKING shell'
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -

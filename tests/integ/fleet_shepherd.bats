@@ -17,7 +17,7 @@ setup() {
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub watch-companion-loop 'printf "%b" "${STUB_URGENT:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; printf "%b" "${STUB_FINDINGS:-}"'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; printf "%b" "${STUB_PANE:-}"'
   export PROM_LIB="$HOME/prom-stub.sh"
   cat > "$PROM_LIB" <<'STUB'
@@ -296,6 +296,57 @@ finding() {
   assert_output --partial 'fleet-bench findings unreadable'
 }
 
+# phase <sid> <reason> <phase_min> <age_min> [done/total]: a WORKING state row and its `fleet-bench eta --json` row
+phase() {
+  local d="${5:-1/4}"
+  jq -cn --arg s "$1" --arg r "$2" '{target:"t-\($s)", session_id:$s, bucket:"WORKING", reason:$r, nudged:false,
+    escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0}' >> "$HOME/rows"
+  jq -cn --arg s "$1" --argjson m "$3" --argjson a "$4" --argjson d "${d%/*}" --argjson n "${d#*/}" \
+    '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
+      phase_since_epoch:(now - $a * 60 - 30 | floor), basis:"b"}' >> "$HOME/eta"
+}
+phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; export STUB_ETA; }
+
+@test "a WORKING phase open twice its estimate and the floor is overdue, with the exact ledger call" {
+  phase s1 shell 40 81
+  phase s2 'idle 3m' 40 79                # under 2x its estimate
+  phase s3 shell 20 59                    # 2x is 40m, but the floor is 60m
+  phase s4 busy 40 500                    # mid-turn: a message would only queue
+  phase s5 shell 40 500 4/4               # every box ticked: DONE's to say, not overdue's
+  phases_doc
+  run "$SH" due
+  assert_success
+  assert_line "overdue: t-s1 phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-sessions mark s1 \"overdue phase 2/4\""
+  refute_output --partial t-s2
+  refute_output --partial t-s3
+  refute_output --partial t-s4
+  refute_output --partial t-s5
+}
+
+@test "an overdue phase is nudged once, escalated once a phase-length after, then left to the human" {
+  phase s1 shell 40 200
+  phases_doc
+  printf 'fact: overdue phase 2/4\nat: %s\n' "$(date -Iseconds -d '-30 min')" > "$FLEET_SHEPHERD_DIR/s1"
+  run "$SH" due
+  refute_output --partial 't-s1'          # nudged 30m ago, floor 60m: give it time
+  printf 'fact: overdue phase 2/4\nat: %s\n' "$(date -Iseconds -d '-61 min')" > "$FLEET_SHEPHERD_DIR/s1"
+  run "$SH" due
+  assert_line "escalate overdue: t-s1 phase 2/4 'P2 the thing' open 200m, expected 40m (b), nudged and not moved; then: fleet-sessions escalate s1 \"overdue phase 2/4\""
+  printf 'fact: overdue phase 2/4\nescalated: overdue phase 2/4\nat: x\n' > "$FLEET_SHEPHERD_DIR/s1"
+  run "$SH" due
+  refute_output --partial 't-s1'
+  # a different fact on the ledger (an older nudge) does not hide the overdue phase
+  printf 'fact: PR #9 merged\nat: x\n' > "$FLEET_SHEPHERD_DIR/s1"
+  run "$SH" due
+  assert_output --partial 'overdue: t-s1 phase 2/4'
+}
+
+@test "phase ages that cannot be read say so, instead of reading as none" {
+  doc "[]"
+  STUB_BENCH_FAIL=1 run "$SH" due
+  assert_output --partial 'overdue: fleet-bench eta unreadable'
+}
+
 # idle <target> <pane> <idle_min> [escalated]: a row limit_due reads
 idle_row() {
   jq -n --arg t "$1" --arg p "$2" --argjson i "$3" --argjson e "${4:-false}" \
@@ -353,4 +404,46 @@ idle_row() {
   run "$SH" run
   assert_failure
   assert_equal "$(outcome)" FAILED
+}
+
+@test "a due line the last pass left as it was leads the next check as unhandled" {
+  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  run "$SH" check
+  assert_output "$(printf 'nudge DONE: a f-a\nnudge LANDED: b f-b')"
+  # the pass nudged a (so it is an escalate line now) and did nothing about b
+  doc "[$(row a DONE true false), $(row b LANDED false false)]"
+  run "$SH" check
+  assert_success
+  assert_line --index 0 'unhandled: nudge LANDED: b f-b'
+  assert_line --index 1 'escalate DONE: a r-a'
+}
+
+@test "a skipped line stays out while it is due, and is new again once it was not" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'unhandled: nudge DONE: a f-a' 'the human is on it in chat'
+  assert_success
+  run "$SH" check
+  assert_failure 1
+  assert_output ''
+  run cut -f2 "$FLEET_SHEPHERD_DIR/.skipped"
+  assert_output 'the human is on it in chat'
+  run tail -1 "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output --partial 'skipped: nudge DONE: a f-a: the human is on it in chat'
+  doc "[]"; "$SH" check || true        # no longer due: the skip is spent
+  doc "[$(row a DONE false false)]"
+  run "$SH" check
+  assert_output 'nudge DONE: a f-a'
+}
+
+@test "an overdue line an hour older is still the same line, and skip needs a why" {
+  phase s1 shell 40 100
+  phases_doc
+  "$SH" check >/dev/null
+  : > "$HOME/rows"; : > "$HOME/eta"; phase s1 shell 40 160; phases_doc
+  run "$SH" check
+  assert_line --partial 'unhandled: overdue: t-s1 phase 2/4'
+  assert_line --partial 'open 160m'
+  run "$SH" skip 'overdue: t-s1 phase 2/4'
+  assert_failure 2
 }

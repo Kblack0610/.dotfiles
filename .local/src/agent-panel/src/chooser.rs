@@ -324,6 +324,7 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
             "edited_files": info.edited_files,
             "summary": a.summary,
             "time_use": info.time_use,
+            "open_job": info.open_job,
             "doing": info.doing,
             "said": info.said,
             "compactions": info.compactions,
