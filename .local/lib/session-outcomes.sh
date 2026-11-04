@@ -25,6 +25,9 @@
 # its usage, so each id counts once, and tokens include cache reads, as the bill does. Tokens
 # after the last edit are what it spent past its last commit or change to anything but its
 # own notes; a commit counts because an edit made through Bash is not a tool call of its own.
+# uses counts what the session reached for, by name: Agent spawns by subagent_type, Skill
+# calls, and typed /commands. Calls made inside a subagent live in its own transcript and
+# are not counted here; `claude-recall stats` folds those in.
 so_transcript_metrics() {
   jq -nR '
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
@@ -36,7 +39,8 @@ so_transcript_metrics() {
       { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
-        tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {} };
+        tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
+        uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
       | if $r.type == "assistant" then
         (if $r.isApiErrorMessage == true then .api_error += 1 else . end)
@@ -48,6 +52,11 @@ so_transcript_metrics() {
         | reduce ($r.message.content | if type == "array" then .[] else empty end
                   | select(.type == "tool_use")) as $u (.;
             .tool_calls += 1
+            | (if $u.name == "Agent" or $u.name == "Task" then
+                 .uses.subagents[($u.input.subagent_type // "general-purpose") | tostring] += 1
+               elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
+                 .uses.skills[$u.input.skill] += 1
+               else . end)
             | (if (["Edit", "Write", "MultiEdit", "NotebookEdit"] | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
@@ -69,7 +78,12 @@ so_transcript_metrics() {
               .lesson_ids[$u.id] = true
             else . end)
       elif $r.type == "user" then
-        if ($r.message.content | type) == "string" then
+        reduce ($r.message.content
+                | if type == "array" and any(.[]?; .type? == "tool_result") then "" else text_of end
+                | select(test("^\\s*<command-(name|message)>"))
+                | scan("<command-name>/?([^<\\s]+)</command-name>")[0]) as $cmd (.;
+          .uses.slash[$cmd] += 1)
+        | if ($r.message.content | type) == "string" then
           (if ($r.message.content | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)
         else
           reduce ($r.message.content | if type == "array" then .[] else empty end) as $c (.;
@@ -99,7 +113,8 @@ so_transcript_metrics() {
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
-                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0) } }
+                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0) },
+        uses }
   ' < "$1"
 }
 
