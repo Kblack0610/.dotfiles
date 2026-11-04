@@ -16,8 +16,6 @@
 #   notes-version-summary <profile> <project> <frozen-file.md>   # one version
 #   notes-version-summary --backfill <profile> <project>         # every version in a project
 #   notes-version-summary --backfill --all                       # every project, every profile
-#   notes-version-summary --overview <profile> <project>         # write the "Next up" index into summary.md
-#   notes-version-summary --overview --all                       # overview for every project
 #   flags: --dry-run (print, write nothing)  --force (regenerate an existing block)
 #          --rewrite (also rewrite the changelog BODY into clean legible prose, then summarize)
 #
@@ -62,7 +60,6 @@ FORCE=0
 BACKFILL=0
 ALL=0
 REWRITE=0
-OVERVIEW=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
@@ -177,8 +174,8 @@ sanitize() {
 _one_call() {
   local key="$1" model="$2" maxtok="$3" sys="$4" usr="$5" resp content tmp
 
-  # The prompt is UNBOUNDED — the overview pass feeds it a project's whole
-  # accumulated agent changelog — so it must never travel as a command-line
+  # The prompt is UNBOUNDED - a --rewrite pass feeds it a version's whole
+  # accumulated agent changelog - so it must never travel as a command-line
   # ARGUMENT. Both jq's --arg and curl's -d are argv, and argv is capped at
   # ARG_MAX (2 MiB here); past that the kernel refuses the exec and you get
   # "Argument list too long", which names the shell rather than the prompt and
@@ -270,38 +267,6 @@ splice() {
       sed '/./,$!d' "$tmp"
     fi
   } > "$file"
-  rm -f "$tmp"
-}
-
-# splice_nextup <file> <block> — replace the <!-- nextup:auto --> block in a project summary.md,
-# inserting it just ABOVE the first "## " heading (i.e. above `## → For the agents`, under the
-# title/markers), else after frontmatter, else at top. Leaves every other region untouched.
-splice_nextup() {
-  local file="$1" block="$2" tmp ins fm_end
-  tmp="$(mktemp)" || return 1
-  awk '
-    /<!-- nextup:auto -->/   { inblk=1; next }
-    /<!-- \/nextup:auto -->/ { inblk=0; next }
-    !inblk { print }
-  ' "$file" > "$tmp"
-  ins="$(awk '/^## /{print NR; exit}' "$tmp")"
-  if [ -n "$ins" ]; then
-    {
-      sed -n "1,$((ins - 1))p" "$tmp"
-      printf '%s\n\n' "$block"
-      sed -n "${ins},\$p" "$tmp"
-    } > "$file"
-  else
-    fm_end=""
-    [ "$(head -1 "$tmp")" = "---" ] && fm_end="$(awk 'NR>1 && $0=="---"{print NR; exit}' "$tmp")"
-    {
-      if [ -n "$fm_end" ]; then
-        sed -n "1,${fm_end}p" "$tmp"; printf '\n%s\n' "$block"; sed -n "$((fm_end + 1)),\$p" "$tmp"
-      else
-        printf '%s\n\n' "$block"; cat "$tmp"
-      fi
-    } > "$file"
-  fi
   rm -f "$tmp"
 }
 
@@ -447,95 +412,6 @@ backfill_all() {
   return $rc
 }
 
-# ── project overview (the "Now / Next" index in summary.md) ─────────
-# latest_summaries <root> [n=3] -> the ## Summary block from each of the last n releases, newest first,
-# version-labeled (compact - summaries, not full bodies). Feeds the "Now" narrative with the recent arc.
-latest_summaries() {
-  local root="$1" n="${2:-3}" ver path body out=""
-  while IFS=$'\t' read -r ver path; do
-    [ -n "$path" ] && [ -f "$path" ] || continue
-    if grep -q '<!-- summary:auto -->' "$path"; then
-      body="$(awk '/<!-- summary:auto -->/{s=1;next} /<!-- \/summary:auto -->/{s=0} s' "$path")"
-    else
-      body="$(note_body "$path")"
-    fi
-    out="$out== $ver =="$'\n'"$body"$'\n\n'
-  done < <(all_versions "$root" | head -n "$n")
-  printf '%s' "$out"
-}
-
-# sheet_text <root> -> the working sheet (README.md) body — the current plan, all waves + tasks.
-sheet_text() {
-  local f="$1/README.md"
-  [ -f "$f" ] || return 0
-  note_body "$f"
-}
-
-# generate_overview <profile> <project> — write the <!-- nextup:auto --> block into summary.md as a
-# thorough "## Now" (where we are) + "## Next" (direction + [ ] tasks), from the last few release
-# summaries + a dated git log + the full working sheet. One deepseek pass (local fallback), ASCII.
-generate_overview() {
-  local profile="$1" project="$2" root summary_md releases sheet recent sys usr sum block
-  root="$(root_of "$profile" "$project")" || return 1
-  [ -n "$root" ] || { echo "no such project: $profile/$project" >&2; return 1; }
-  summary_md="$root/summary.md"
-  [ -f "$summary_md" ] || { echo "no summary.md for $profile/$project" >&2; return 1; }
-  releases="$(latest_summaries "$root" 3)"
-  sheet="$(sheet_text "$root")"
-  repo_of "$project"; recent=""
-  if [ -n "$REPO" ] && [ -d "$REPO/.git" ]; then
-    if [ -n "$PATHFILTER" ]; then
-      recent="$(git -C "$REPO" log --no-merges --date=short --pretty=format:'%ad %s' -n 40 -- "$PATHFILTER" 2>/dev/null)"
-    else
-      recent="$(git -C "$REPO" log --no-merges --date=short --pretty=format:'%ad %s' -n 40 2>/dev/null)"
-    fi
-  fi
-  sys='You write a concise but THOROUGH "where we are / where we are going" index for a developer'\''s
-project. Study ALL the inputs (recent releases, the dated commit history, the working sheet) before
-writing. Plain ASCII ONLY: no emoji, no em dashes (use a hyphen), no curly quotes, no marketing words.
-Name real features and reference ticket/PR refs (e.g. Vikunja 563, #490) when the inputs mention them.
-Output EXACTLY these two sections and nothing else:
-
-## Now
-<2 to 4 sentences: the current version, what was recently shipped, the state and health of the app, and
-what is actively in flight>
-
-## Next
-<1 to 2 sentences of direction, then 2 to 4 concrete next tasks as a checklist. Propose NEW next steps
-(unfinished threads, verification, known gaps); do NOT repeat tasks already on the working sheet.>
-- [ ] <task>
-- [ ] <task>'
-  usr="Project: $project"
-  usr="$usr"$'\n\n'"Recent releases (newest first):"$'\n'"${releases:-(no releases yet)}"
-  [ -n "$recent" ] && usr="$usr"$'\n\n'"Commit history (newest first):"$'\n'"$recent"
-  usr="$usr"$'\n\n'"Working sheet (the current plan - do NOT repeat these as next tasks):"$'\n'"${sheet:-(empty)}"
-
-  sum="$(call_llm "$sys" "$usr")" || { echo "overview failed: $profile/$project" >&2; return 1; }
-  sum="$(printf '%s' "$sum" | strip_think | sanitize | sed -e 's/[[:space:]]*$//' -e '/./,$!d')"
-  [ -n "$sum" ] || { echo "empty overview: $profile/$project" >&2; return 1; }
-  grep -q '^## Now' <<<"$sum" || sum="## Now"$'\n'"$sum"
-  block="<!-- nextup:auto -->"$'\n'"$sum"$'\n'"<!-- /nextup:auto -->"
-
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "=== overview: $profile/$project ($summary_md) ==="
-    printf '%s\n' "$block"
-    return 0
-  fi
-  splice_nextup "$summary_md" "$block" && echo "overview: $profile/$project" || return 1
-}
-
-overview_all() {
-  local rc=0 prof name
-  while IFS= read -r prof; do
-    [ -n "$prof" ] || continue
-    while IFS=$'\t' read -r name _; do
-      [ -n "$name" ] || continue
-      generate_overview "$prof" "$name" || rc=1
-    done < <(notes --profile "$prof" projects 2>/dev/null)
-  done < <(notes config --profiles 2>/dev/null)
-  return $rc
-}
-
 # ── args ────────────────────────────────────────────────────────────
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 command -v curl >/dev/null 2>&1 || die "curl not found on PATH"
@@ -549,22 +425,11 @@ for a in "$@"; do
     --backfill) BACKFILL=1 ;;
     --all)     ALL=1 ;;
     --rewrite) REWRITE=1 ;;
-    --overview) OVERVIEW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*)        die "unknown flag: $a" ;;
     *)         POS+=("$a") ;;
   esac
 done
-
-if [ "$OVERVIEW" -eq 1 ]; then
-  if [ "$ALL" -eq 1 ]; then
-    overview_all
-  else
-    [ ${#POS[@]} -ge 2 ] || die "usage: --overview <profile> <project>   (or --overview --all)"
-    generate_overview "${POS[0]}" "${POS[1]}"
-  fi
-  exit $?
-fi
 
 if [ "$BACKFILL" -eq 1 ]; then
   if [ "$ALL" -eq 1 ]; then
