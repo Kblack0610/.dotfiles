@@ -2,7 +2,10 @@
 // The Shepherd tab: every rundown and chat answer the shepherd kept (`fleet-shepherd log
 // --rundown`, one file each in ~/.agent/shepherd/rundowns), beside a chat with the live
 // shepherd session. The chat is that session's transcript, text only, and a box that types into
-// its pane through /api/send, so an answer it gives here is also kept as a rundown.
+// its pane through /api/send, so an answer it gives here is also kept as a rundown. Above the
+// rundowns, what Binks owes: each line the last `fleet-shepherd check` handed to a pass (its role,
+// how long it has been due, and whether the last pass left it unhandled), and the lines a pass
+// skipped on purpose, with why.
 
 // Transcript events read for the chat. Tool calls are dropped, so a page of them holds few lines.
 const SHEP_EVENTS = 300;
@@ -37,16 +40,37 @@ function rundownCard(r) {
     ` <span class="muted">${shepWhen(r.stamp)}</span></summary><div class="rd-body">${esc(r.body)}</div></details>`;
 }
 
+// Minutes since an epoch in seconds, as "12m"; "-" when the ledger does not say.
+const shepAge = (t) => (t ? dur((Date.now() / 1e3 - t) / 60) : "-");
+
+function dueRow(d) {
+  const flag = d.unhandled ? `<span class="pill ask">unhandled</span>` : "";
+  return `<div class="card"><div class="pills">${flag}<span class="pill">${esc(d.role || "?")}</span>` +
+    `<span class="pill">due ${shepAge(d.first_seen)}</span></div><div class="rd-body">${esc(d.line)}</div></div>`;
+}
+
+function dueHtml(l) {
+  const pass = l.lease_at ? `last pass ${shepAge(l.lease_at)} ago (${esc(l.lease_holder)})` : "no pass yet";
+  const owed = l.due.length ? l.due.map(dueRow).join("")
+    : `<div class="empty">Nothing due: the last check found nothing to move.</div>`;
+  const skips = l.skipped.length
+    ? `<details class="card rd"><summary><b>${l.skipped.length} skipped on purpose</b></summary>` +
+      l.skipped.map((s) => `<div class="rd-body"><b>${esc(s.key)}</b>\n${esc(s.why)} <span class="muted">${shepAge(s.at)} ago</span></div>`).join("") +
+      `</details>` : "";
+  return `<h2 class="sec">Due <span class="muted">${l.due.length}, ${pass}</span></h2>${owed}${skips}`;
+}
+
 function renderShepherd() {
   const el = $("shepherd");
   if (!el.querySelector(".shep")) {
-    el.innerHTML = `<div class="shep"><div class="shep-col"><h2 class="sec">Rundowns <span class="muted" id="sh-count"></span></h2>` +
+    el.innerHTML = `<div class="shep"><div class="shep-col"><div id="sh-due"></div><h2 class="sec">Rundowns <span class="muted" id="sh-count"></span></h2>` +
       `<div id="sh-list"></div></div><div class="shep-col shep-chat"><h2 class="sec">Chat <span class="muted" id="sh-who"></span></h2>` +
       `<div id="sh-chat" class="card"></div><div class="card"><textarea id="sh-text" placeholder="Ask the shepherd (Ctrl+Enter to send)"></textarea>` +
       `<div class="row-end"><span class="err" id="sh-err"></span><button class="btn primary" id="sh-send">Send</button></div></div></div></div>`;
   }
   const d = shst.data;
   const list = d ? d.rundowns : [];
+  $("sh-due").innerHTML = d ? dueHtml(d.ledger) : "";
   $("sh-count").textContent = list.length ? `${list.length} newest` : "";
   $("sh-list").innerHTML = shst.err ? `<div class="card err">${esc(shst.err)}</div>`
     : !d ? `<div class="empty">Loading.</div>`

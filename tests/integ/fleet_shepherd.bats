@@ -434,6 +434,23 @@ idle_row() {
   assert_line --index 1 'escalate DONE: a r-a'
 }
 
+@test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {
+  doc "[$(row a DONE false false)]"
+  STUB_HOLDS=$'unity\t2026\tme\twhy' "$SH" check >/dev/null
+  run cut -f1,2,4 "$FLEET_SHEPHERD_DIR/.due"
+  assert_line $'nudge DONE: a f-a\tshepherd\tnudge DONE: a f-a'
+  assert_line $'pace: hold unity while the machine reads CLEAR\tfleet-pace\tpace: hold unity while the machine reads CLEAR'
+  # a first-seen time from the past survives the next check, and the line comes back unhandled
+  sed -i 's/\t[0-9]*\tnudge/\t1000\tnudge/' "$FLEET_SHEPHERD_DIR/.due"
+  "$SH" check >/dev/null
+  run grep '^nudge' "$FLEET_SHEPHERD_DIR/.due"
+  assert_output $'nudge DONE: a f-a\tshepherd\t1000\tunhandled: nudge DONE: a f-a'
+  # Negative control: a line that left is gone from the record, so nothing stale shows as owed.
+  doc "[]"; "$SH" check || true
+  run cat "$FLEET_SHEPHERD_DIR/.due"
+  assert_output ''
+}
+
 @test "a skipped line stays out while it is due, and is new again once it was not" {
   doc "[$(row a DONE false false)]"
   "$SH" check >/dev/null

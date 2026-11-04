@@ -52,6 +52,7 @@ The human is usually away while this loop runs, so every pass leaves a record an
 - **Page when settled.** When no row is WORKING, no NIGHTLY row is unescalated, and every DONE, LANDED or STALLED row is already nudged, nothing is left to move. If `~/.agent/shepherd/.settled` does not exist, create it and page once: `agent-notify -p normal -t shepherd 'fleet settled: <n> wound down, <m> need you; rundown in ~/.agent/shepherd/log.md'`. Delete `.settled` on any pass that finds work to move again. Keep the loop running; a settled pass costs one `fleet-sessions` call.
 - **Infra.** An `infra:` due line (a red or unreadable k3s domain, or an urgent Sentinel trip) leads the report and gets a line in the log, even when no session moved; each one comes once per trip. Sentinel and Alertmanager page it, so do not page again, and do not start work on it without an order.
 - **In the session.** Each pass also prints its report in its own session, where `/shepherd status` gives the live table.
+- **On the page.** agent-web's Shepherd tab shows what is due, each line's role and age, which ones the last pass left unhandled, the skips with their why, and the last pass time, all read from the same `.due`, `.skipped` and `.lease`. A skip with a vague why reads as vague there, so give the reason the human would want.
 
 A session in a different permission mode holds a peer message for approval. If a message comes back pending approval, say so in the report and do not count it as delivered.
 

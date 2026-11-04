@@ -329,9 +329,14 @@ fn classify(p: &Path) -> Option<String> {
     if p.parent()?.ends_with(".agent/parked") && !p.file_name()?.to_str()?.starts_with('.') {
         return Some(r#"{"kind":"sessions"}"#.to_string());
     }
-    let ext = p.extension()?.to_str()?;
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
+    // fleet-shepherd's ledger: the Shepherd tab's due lines, skips and last pass. Dotfiles have
+    // no extension, so this comes before the `ext` match.
+    if parent == "shepherd" && matches!(name, ".due" | ".skipped" | ".lease") {
+        return Some(r#"{"kind":"shepherd"}"#.to_string());
+    }
+    let ext = p.extension()?.to_str()?;
     if (parent == "agentctl" && name == "runs.jsonl")
         || (parent == "dispatch" && matches!(name, "verdicts.jsonl" | "log.md"))
     {
@@ -1110,10 +1115,18 @@ mod tests {
                 Some(r#"{"kind":"fleet"}"#)
             );
         }
-        assert_eq!(
-            classify(Path::new("/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md")).as_deref(),
-            Some(r#"{"kind":"shepherd"}"#)
-        );
+        for p in [
+            "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md",
+            "/h/.agent/shepherd/.due",
+            "/h/.agent/shepherd/.skipped",
+            "/h/.agent/shepherd/.lease",
+        ] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"shepherd"}"#)
+            );
+        }
+        assert_eq!(classify(Path::new("/h/.agent/shepherd/.skipped.tmp")), None);
         assert_eq!(
             classify(Path::new(
                 "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md.tmp"

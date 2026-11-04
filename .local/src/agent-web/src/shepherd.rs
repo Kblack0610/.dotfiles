@@ -1,6 +1,8 @@
 //! The Shepherd tab: the rundowns and chat answers the shepherd kept
 //! (`fleet-shepherd log --rundown`, read by `hub_core::boards::rundowns`) and the live shepherd
 //! session, so the page can show its transcript and type into it through the Sessions routes.
+//! It also shows what the last check handed to a pass and what a pass chose to leave
+//! (`fleet-shepherd`'s `.due` and `.skipped`, read by `hub_core::boards::due`).
 
 use agent_panel::chooser;
 use axum::Json;
@@ -18,6 +20,7 @@ pub struct Shepherd {
     session: Option<String>,
     status: Option<String>,
     rundowns: Vec<boards::Rundown>,
+    ledger: boards::Due,
 }
 
 /// The agent carrying agent-panel's `shepherd` tag, which it sets only while the lease is live.
@@ -35,6 +38,7 @@ pub async fn get() -> Json<Shepherd> {
             session: a.as_ref().map(|a| a.session_id.clone()),
             status: a.map(|a| a.status),
             rundowns: boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS),
+            ledger: boards::due(&boards::shepherd_dir()),
         }
     })
     .await
@@ -43,6 +47,7 @@ pub async fn get() -> Json<Shepherd> {
         session: None,
         status: None,
         rundowns: Vec::new(),
+        ledger: boards::Due::default(),
     });
     Json(out)
 }
