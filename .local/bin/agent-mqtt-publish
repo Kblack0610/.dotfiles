@@ -33,8 +33,9 @@ _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
 . "$_WATCH_LIB"
 MQTT_HOST="${AGENT_MQTT_HOST:-}"
 MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
-# Per-message guard on the broker call. The agentctl hook runs synchronously inside a
-# runner's lifecycle, so this bounds the worst case a dead broker can add to a runner.
+# Per-message guard on the broker call, so a dead broker fails fast. It does not bound the
+# whole run (the snapshot scan and lock wait are outside it); agentctl's status hook does
+# that with its own timeout, since it runs inside a runner's lifecycle.
 PUB_TIMEOUT="${AGENT_MQTT_TIMEOUT:-3}"
 # 3x the timer cadence (agent-mqtt-publish.timer, 5 min): a workstation that is off or
 # asleep turns its sensors `unavailable` instead of leaving them stale-but-green.

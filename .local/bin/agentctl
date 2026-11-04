@@ -253,10 +253,14 @@ status_write() {
     mv -f "$tmp" "$f"
 
     # Mirror the change into Home Assistant. Synchronous on purpose: from ExecStopPost a
-    # backgrounded child is killed with the unit's cgroup. The publisher bounds itself
-    # (short broker timeout, no-op when unconfigured), and nothing it does can fail a write.
+    # backgrounded child is killed with the unit's cgroup. So the WHOLE run is bounded, not
+    # just its broker calls: its snapshot scan and lock wait took 34s at load 83 on 2026-11-04,
+    # past the user manager's 15s start timeout, and ExecStartPost's `-` does not cover a
+    # timeout, so fleet-dispatch failed to start until it hit start-limit. A cut run loses
+    # nothing: the publisher caches each topic as it sends, and its 5-min timer catches up.
     if command -v agent-mqtt-publish >/dev/null 2>&1; then
-        AGENT_MQTT_TIMEOUT=2 agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
+        AGENT_MQTT_TIMEOUT=2 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
+            agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
     fi
 }
 
