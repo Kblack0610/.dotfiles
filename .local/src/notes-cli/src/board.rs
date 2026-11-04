@@ -263,7 +263,10 @@ fn retire_ai_board(log: &Logger, agent_board: &std::path::Path) {
     }
     match fs::remove_file(&legacy) {
         Ok(()) => log.info("board", &format!("retired {}", legacy.display())),
-        Err(e) => log.info("board", &format!("could not retire {}: {e}", legacy.display())),
+        Err(e) => log.info(
+            "board",
+            &format!("could not retire {}: {e}", legacy.display()),
+        ),
     }
 }
 
@@ -422,6 +425,193 @@ fn agent_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
     open.iter()
         .map(|line| format!("{proj}\t{}", render(line)))
         .collect()
+}
+
+/// One open row of the task feed: `notes board --json`, the one shape every board UI reads.
+///
+/// A VIEW over the sheets, never a store: each field is read off the line on each call, and
+/// `raw` is the line itself, which a UI hands back to `notes ptask --exact` to act on it.
+/// `wave` is the sheet's version (`None` for a playtest check, which has no waves) and `game`
+/// the playtest heading (`None` on a sheet row).
+#[derive(Debug, serde::Serialize, PartialEq)]
+struct FeedRow {
+    profile: String,
+    project: String,
+    lane: &'static str,
+    wave: Option<String>,
+    game: Option<String>,
+    state: &'static str,
+    priority: &'static str,
+    text: String,
+    tags: Vec<String>,
+    marker: Option<String>,
+    since: Option<String>,
+    sheet: String,
+    line: usize,
+    raw: String,
+}
+
+/// One project in the feed, rows or not: a UI needs every project to offer `add` on it.
+#[derive(Debug, serde::Serialize)]
+struct FeedProject {
+    profile: String,
+    project: String,
+    dir: String,
+    version: Option<String>,
+    open: usize,
+    agent_open: usize,
+    playtest_open: usize,
+}
+
+#[derive(serde::Serialize)]
+struct Feed {
+    projects: Vec<FeedProject>,
+    rows: Vec<FeedRow>,
+}
+
+/// The inner text of a line's trailing `<!-- ... -->` comment, where `pr:`, `ask:`, `vk:` and
+/// a `done` proof all live.
+fn marker_of(line: &str) -> Option<String> {
+    let t = line.trim_end().strip_suffix("-->")?;
+    let inner = t[t.rfind("<!--")? + 4..].trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
+/// Where a feed row was read: everything about it that is not on the line.
+struct Origin<'a> {
+    profile: &'a str,
+    project: &'a str,
+    lane: &'static str,
+    wave: Option<&'a str>,
+    game: Option<&'a str>,
+    sheet: &'a std::path::Path,
+}
+
+/// The feed row for one open task `line`. Priority is the line's tag, else the default every
+/// task carries (`md::default_priority`). `tags` are the hashtags no other field already
+/// carries: not the priority, the wave tag (`wave`) or the created tag (`since`).
+fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate) -> FeedRow {
+    let prio = md::task_priority(line).unwrap_or(md::default_priority());
+    let priority = md::PRIORITIES
+        .iter()
+        .find(|(_, tag, _)| *tag == prio)
+        .map_or("high", |(word, _, _)| word);
+    let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let tags = md::find_hashtags(head)
+        .into_iter()
+        .filter(|t| !words.contains(&t.as_str()) && !md::is_wave_tag(t) && !md::is_created_tag(t))
+        .collect();
+    FeedRow {
+        profile: o.profile.to_string(),
+        project: o.project.to_string(),
+        lane: o.lane,
+        wave: o.wave.map(str::to_string),
+        game: o.game.map(str::to_string),
+        state: if line.trim_start().starts_with("- [/]") {
+            "doing"
+        } else {
+            "open"
+        },
+        priority,
+        text: md::task_text(line),
+        tags,
+        marker: marker_of(line),
+        since: md::find_since(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
+        sheet: o.sheet.display().to_string(),
+        line: line_no,
+        raw: line.trim_end().to_string(),
+    }
+}
+
+/// Every open row of one project dir: its sheet's current wave, its agent sheet's, and its
+/// playtest checks, in that order. Split from [`print_json`] to test without a vault.
+fn feed_for_dir(
+    profile: &str,
+    project: &str,
+    dir: &std::path::Path,
+    today: chrono::NaiveDate,
+) -> (FeedProject, Vec<FeedRow>) {
+    let mut rows = Vec::new();
+    let mut version = None;
+    let mut counts = [0usize; 3];
+    for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
+        .into_iter()
+        .enumerate()
+    {
+        let Some(w) = project_tasks::open_wave_rows(&lane.dir(dir)) else {
+            continue;
+        };
+        if lane == Lane::Human {
+            version = Some(w.version.clone());
+        }
+        counts[i] = w.rows.len();
+        let o = Origin {
+            profile,
+            project,
+            lane: name,
+            wave: Some(&w.version),
+            game: None,
+            sheet: &w.sheet,
+        };
+        for (n, l) in &w.rows {
+            rows.push(feed_row(&o, (*n, l), today));
+        }
+    }
+    let file = crate::playtest::path(dir);
+    if let Ok(content) = fs::read_to_string(&file) {
+        for (n, game, l) in crate::playtest::open_rows(&content) {
+            counts[2] += 1;
+            let o = Origin {
+                profile,
+                project,
+                lane: "playtest",
+                wave: None,
+                game: Some(&game),
+                sheet: &file,
+            };
+            rows.push(feed_row(&o, (n, l), today));
+        }
+    }
+    let proj = FeedProject {
+        profile: profile.to_string(),
+        project: project.to_string(),
+        dir: dir.display().to_string(),
+        version,
+        open: counts[0],
+        agent_open: counts[1],
+        playtest_open: counts[2],
+    };
+    (proj, rows)
+}
+
+/// `notes board --json` - every project of every profile and every open row, as one JSON
+/// object `{projects: [...], rows: [...]}`.
+///
+/// READ-ONLY and exit 0 like `--agent`: the web and hub boards poll it. Every profile is
+/// listed in full whatever the board layout folds, because a UI filters for itself.
+pub fn print_json() -> Result<i32> {
+    let today = Local::now().date_naive();
+    let mut feed = Feed {
+        projects: Vec::new(),
+        rows: Vec::new(),
+    };
+    let layout = config::board_layout().unwrap_or_default();
+    for name in layout.sort(config::all_profile_names()?) {
+        let Ok(p) = config::resolve(Some(&name)) else {
+            continue;
+        };
+        for (proj, summary) in daily::discover_project_dirs(&p) {
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
+            let (fp, rows) = feed_for_dir(&name, &proj, dir, today);
+            feed.projects.push(fp);
+            feed.rows.extend(rows);
+        }
+    }
+    println!("{}", serde_json::to_string(&feed)?);
+    Ok(0)
 }
 
 /// `notes board` — regenerate, then print the path so the caller can open it.
@@ -621,6 +811,92 @@ mod tests {
         let rows = agent_rows_for_dir("d", &dir);
         assert_eq!(rows, vec!["d\ta thing".to_string()]);
         assert_eq!(rows[0].split('\t').count(), 2, "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The feed is what both board UIs read: every lane, each row parsed into the shared fields,
+    // and `raw` exactly the line so `ptask --exact` can find it again.
+    #[test]
+    fn the_feed_reads_all_three_lanes_into_one_row_shape() {
+        let dir = sheet(
+            "feed",
+            "# demo\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
+             - [ ] ship it #urgent #c1102 #v0.3.0 #due1110\n- [/] in flight\n- [x] closed\n\n\
+             ## Wave: v0.4.0 (planned)\n- [ ] later one\n",
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
+             - [ ] break it down #low #tier/2 <!-- ask:Ab12 -->\n",
+        );
+        std::fs::write(
+            crate::playtest::path(&dir),
+            "# Playtest\n\n## Arena\n- [ ] spawn 4 bots <!-- pr:812 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let (proj, rows) = feed_for_dir("bnb", "demo", &dir, today);
+
+        assert_eq!(
+            (proj.open, proj.agent_open, proj.playtest_open),
+            (2, 1, 1),
+            "the planned wave and the closed row are not on the board"
+        );
+        assert_eq!(proj.version.as_deref(), Some("v0.3.0"));
+        let lanes: Vec<&str> = rows.iter().map(|r| r.lane).collect();
+        assert_eq!(lanes, ["human", "human", "agent", "playtest"]);
+
+        let r = &rows[0];
+        assert_eq!(r.text, "ship it");
+        assert_eq!((r.state, r.priority), ("open", "urgent"));
+        assert_eq!(
+            r.tags,
+            ["due1110"],
+            "priority, wave and created have their own fields"
+        );
+        assert_eq!(r.since.as_deref(), Some("2026-11-02"));
+        assert_eq!(r.wave.as_deref(), Some("v0.3.0"));
+        assert_eq!(r.raw, "- [ ] ship it #urgent #c1102 #v0.3.0 #due1110");
+        assert_eq!(r.line, 5);
+
+        let r = &rows[1];
+        assert_eq!(
+            (r.state, r.priority),
+            ("doing", "high"),
+            "untagged means high"
+        );
+
+        let r = &rows[2];
+        assert_eq!(
+            (r.priority, r.tags.clone()),
+            ("low", vec!["tier/2".to_string()])
+        );
+        assert_eq!(r.marker.as_deref(), Some("ask:Ab12"));
+        assert!(r.sheet.ends_with("agent/README.md"), "{}", r.sheet);
+
+        let r = &rows[3];
+        assert_eq!((r.wave.clone(), r.game.as_deref()), (None, Some("Arena")));
+        assert_eq!(r.marker.as_deref(), Some("pr:812"));
+        assert_eq!(r.text, "spawn 4 bots");
+
+        // The serialized names are the contract the UIs read.
+        let v = serde_json::to_value(&rows[0]).unwrap();
+        for k in [
+            "profile", "project", "lane", "wave", "game", "state", "priority", "text", "tags",
+            "marker", "since", "sheet", "line", "raw",
+        ] {
+            assert!(v.get(k).is_some(), "missing {k}: {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_with_no_sheet_is_still_in_the_feed_with_no_rows() {
+        let dir = sheet("feedbare", "# prose only\n");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let (proj, rows) = feed_for_dir("personal", "bare", &dir, today);
+        assert!(rows.is_empty());
+        assert_eq!((proj.version, proj.open), (None, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -849,11 +1125,18 @@ mod tests {
 
     #[test]
     fn the_pre_rename_board_is_retired_once_its_replacement_exists() {
-        let dir = sheet("retire", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "retire",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         let legacy = dir.join("ai-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
-        std::fs::write(&legacy, "---\nid: ai-board\ntags: [board]\n---\n\n# AI board\n").unwrap();
+        std::fs::write(
+            &legacy,
+            "---\nid: ai-board\ntags: [board]\n---\n\n# AI board\n",
+        )
+        .unwrap();
 
         retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent);
         assert!(!legacy.exists(), "the stale board is gone");
@@ -865,7 +1148,10 @@ mod tests {
     // by hand; only a file carrying the generator's own `id:` may be removed.
     #[test]
     fn a_hand_written_file_of_the_same_name_is_never_removed() {
-        let dir = sheet("keep", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "keep",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         let mine = dir.join("ai-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
@@ -881,7 +1167,10 @@ mod tests {
 
     #[test]
     fn retiring_is_a_no_op_when_there_is_nothing_to_retire() {
-        let dir = sheet("noop", "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n");
+        let dir = sheet(
+            "noop",
+            "# d\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] x\n",
+        );
         let agent = dir.join("agent-board.md");
         std::fs::write(&agent, "---\nid: agent-board\n---\n").unwrap();
         retire_ai_board(&Logger::new(dir.join("test.log"), false), &agent); // must not panic on a missing file
