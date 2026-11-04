@@ -55,6 +55,7 @@ main { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 49px
 .pill.here { background: var(--accent); color: #fff; }
 .pill.parked { background: var(--busy); color: #fff; }
 .pill.ask { background: var(--wait); color: #fff; }
+.pill.phases { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .acts .btn.danger { border-color: var(--wait); color: var(--wait); }
 .acts .btn.danger.primary { background: var(--wait); color: #fff; }
@@ -91,6 +92,8 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: 760px; }
 .card .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-family: var(--mono); }
 .card .q { white-space: pre-wrap; margin-bottom: 10px; }
+.card .q.planq { max-height: 16em; overflow-y: auto; font: 12px var(--mono); background: var(--tool); padding: 6px 8px; border-radius: 6px; }
+.planpeek { flex-basis: 100%; margin: 4px 0; font-size: 12px; white-space: pre-wrap; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
 .card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .card .opts .rec { border-color: var(--accent); }
 .card .open { float: right; color: var(--accent); cursor: pointer; }
@@ -373,9 +376,44 @@ function pills(a) {
   if (a.parked) p.push('<span class="pill parked">parked</span>');
   if (a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
   if (a.plan) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
+  if (a.phases) p.push(`<span class="pill phases" title="plan phases">${esc(phasesText(a))}</span>`);
   if (a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
   return p.length ? `<div class="pills">${p.join("")}</div>` : "";
 }
+
+// "3/6 phases, next: <name>", from fleet-sessions' read of the plan's ## Phases checklist.
+function phasesText(a) {
+  const p = a.phases;
+  return p ? `${p.done}/${p.total} phases${p.next ? `, next: ${p.next}` : ""}` : "";
+}
+
+// Approve a session's open plan dialog (session action approve-plan) from a Waiting card or a
+// Queue row: the first click arms an in-place confirm, the second sends it.
+st.approving = null;
+function approveButtons(a) {
+  if (!a || !(a.actions || []).includes("approve-plan")) return "";
+  const t = esc(a.target);
+  return st.approving === a.target
+    ? `<button class="btn sm primary" data-approve-go="${t}">Yes, approve the plan</button><button class="btn sm" data-approve-no>Cancel</button>`
+    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
+}
+function rerenderApprove() {
+  if (st.tab === "asks") renderAsks();
+  if (st.tab === "queue") renderQueueList();
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-approve],[data-approve-go],[data-approve-no]");
+  if (!b) return;
+  e.stopPropagation();
+  if (b.dataset.approve) { st.approving = b.dataset.approve; rerenderApprove(); return; }
+  const t = b.dataset.approveGo;
+  st.approving = null;
+  if (!t) { rerenderApprove(); return; }
+  const err = b.closest(".card") && b.closest(".card").querySelector(".err");
+  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); if (err) err.textContent = ""; }
+  catch (x) { if (err) err.textContent = x.message; }
+  refreshAgents();
+}, true);
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
 // here in the page; the confirm's own button sends it. Parked rows offer only unpark.
@@ -396,6 +434,8 @@ function renderActs() {
       ? `<select id="act-acct">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : "";
     const danger = DANGER.includes(c.action) ? " danger" : "";
     html += `<span class="q">${esc(c.action)} ${esc(a.target)}${a.attached ? " (you are attached to it)" : ""}: ${esc(st.opts.describe[c.action] || "")}</span>${pick}`
+      + (c.action === "approve-plan" && a.question && a.question.kind === "plan"
+        ? `<pre class="planpeek">${esc(a.question.text.split("\n").filter((l) => l.trim()).slice(0, 6).join("\n"))}</pre>` : "")
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(c.action)}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
@@ -571,14 +611,16 @@ function sessionCard(a) {
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
   if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
+  if (q.kind === "plan") opts = approveButtons(a);
+  const what = { choice: "asking", tool: "permission", plan: "plan to approve" }[q.kind] || "your turn";
   return `
     <div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">
       <span class="open" data-open>open</span>
-      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${q.kind === "choice" ? "asking" : q.kind === "tool" ? "permission" : "your turn"}</div>
-      <div class="q">${esc(q.text)}</div>
+      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${what}${a.phases ? ` &middot; ${esc(phasesText(a))}` : ""}</div>
+      <div class="q${q.kind === "plan" ? " planq" : ""}">${esc(q.text)}</div>
       <div class="opts">
         ${opts}
-        <input placeholder="reply in this session" data-free><button class="btn" data-reply>Send</button>
+        <input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>
       </div>
       <div class="err"></div>
     </div>`;

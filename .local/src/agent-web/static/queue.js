@@ -54,6 +54,7 @@ function qItem(i) {
     esc(i.project), esc(i.mode), when,
     i.from && i.from !== "human" ? esc(i.from) : "",
     i.session ? `session ${esc(i.session)}` : "",
+    a && a.phases ? esc(phasesText(a)) : "",
     i.state === "done" ? `<span class="${i.status === "ok" ? "" : "qbad"}">${esc(i.status || "")}</span>` : "",
     qPr(i.pr),
   ].filter(Boolean).join(", ");
@@ -61,7 +62,7 @@ function qItem(i) {
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
   const prio = Q_PRIORITIES.map((p) => `<option${p === i.priority ? " selected" : ""}>${p}</option>`).join("");
   const acts = active
-    ? `<div class="opts">${a ? `<button class="btn sm primary" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
+    ? `<div class="opts">${approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
       `<select data-bump="${esc(i.slug)}" title="priority">${prio}</select>` +
       `<button class="btn sm" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";

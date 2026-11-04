@@ -9,6 +9,7 @@
 //! | move      | `claude-acct move <tmux-session> --server S --to <account>`        |
 //! | stop      | tmux: type `/exit` as claude-acct park does, then `kill-window` as wind-down does |
 //! | cancel    | `agent-queue cancel <slug>`, only for a session a queue item started |
+//! | approve-plan | tmux: leave any pane mode, then press the plan dialog's "Yes, auto-accept edits" digit |
 //!
 //! `plan` refuses a target that is not a live or parked session right now and an account the
 //! accounts file does not name, so neither surface can be pointed at an arbitrary pane or
@@ -30,16 +31,18 @@ pub enum Action {
     Move,
     Stop,
     Cancel,
+    ApprovePlan,
 }
 
 impl Action {
-    pub const ALL: [Action; 6] = [
+    pub const ALL: [Action; 7] = [
         Action::Interrupt,
         Action::Park,
         Action::Unpark,
         Action::Move,
         Action::Stop,
         Action::Cancel,
+        Action::ApprovePlan,
     ];
 
     pub fn parse(s: &str) -> Option<Action> {
@@ -54,6 +57,7 @@ impl Action {
             Action::Move => "move",
             Action::Stop => "stop",
             Action::Cancel => "cancel",
+            Action::ApprovePlan => "approve-plan",
         }
     }
 
@@ -66,6 +70,9 @@ impl Action {
             Action::Move => "exit its claude and resume it on the chosen account",
             Action::Stop => "type /exit and close its tmux window",
             Action::Cancel => "cancel its queue item, which kills its tmux session",
+            Action::ApprovePlan => {
+                "accept its plan: press \"Yes, auto-accept edits\" in its plan dialog"
+            }
         }
     }
 }
@@ -89,6 +96,8 @@ pub struct Session {
     pub account: String,
     /// The agent-queue slug whose item runs in this tmux session.
     pub item: Option<String>,
+    /// The digit that accepts the plan, while its pane shows the plan dialog.
+    pub approve_key: Option<char>,
 }
 
 impl From<&chooser::Agent> for Session {
@@ -104,8 +113,44 @@ impl From<&chooser::Agent> for Session {
             attached: a.attached,
             account: a.account.clone(),
             item: None,
+            approve_key: None,
         }
     }
+}
+
+/// The line that heads Claude Code's plan dialog; a permission prompt also offers "1. Yes", so
+/// the digit is only read below this line.
+const PLAN_PROMPT: &str = "Would you like to proceed?";
+/// The dialog sits at the pane's foot: its header is within this many lines of the last one.
+const PLAN_PROMPT_FOOT: usize = 12;
+
+/// The digit of "Yes, auto-accept edits" (else the first "Yes" option) in the plan dialog at the
+/// foot of a `capture-pane -p` capture, or None when the pane shows no plan dialog.
+pub fn plan_approve_key(pane: &str) -> Option<char> {
+    let lines: Vec<&str> = pane.lines().filter(|l| !l.trim().is_empty()).collect();
+    let head = lines
+        .iter()
+        .rposition(|l| l.contains("plan") && l.contains(PLAN_PROMPT))?;
+    if lines.len() - head > PLAN_PROMPT_FOOT {
+        return None;
+    }
+    let options: Vec<(char, &str)> = lines[head + 1..]
+        .iter()
+        .filter_map(|l| {
+            let l = l.trim_start().trim_start_matches('\u{276f}').trim_start();
+            let (n, rest) = l.split_once(". ")?;
+            let mut d = n.chars();
+            match (d.next(), d.next()) {
+                (Some(c), None) if c.is_ascii_digit() => Some((c, rest.trim())),
+                _ => None,
+            }
+        })
+        .collect();
+    options
+        .iter()
+        .find(|(_, t)| t.starts_with("Yes, auto-accept edits"))
+        .or_else(|| options.iter().find(|(_, t)| t.starts_with("Yes")))
+        .map(|(c, _)| *c)
 }
 
 /// The actions a row offers: a parked one can only be unparked, cancel needs a queue item.
@@ -114,6 +159,9 @@ pub fn available(s: &Session) -> Vec<Action> {
         return vec![Action::Unpark];
     }
     let mut v = vec![Action::Interrupt, Action::Park, Action::Move, Action::Stop];
+    if s.approve_key.is_some() {
+        v.insert(0, Action::ApprovePlan);
+    }
     if s.item.is_some() {
         v.push(Action::Cancel);
     }
@@ -168,6 +216,7 @@ pub fn plan(
     if !available(s).contains(&action) {
         return Err(match action {
             Action::Cancel => format!("{target} was not started by a queue item"),
+            Action::ApprovePlan if !s.parked => format!("{target} shows no plan dialog"),
             _ if s.parked => format!("{target} is parked; it can only be unparked"),
             _ => format!("{target} is not parked"),
         });
@@ -192,6 +241,13 @@ pub fn plan(
                 return Err(format!("{target} has no pane id"));
             }
             vec![leave_mode, tmux_keys(&["Escape"])]
+        }
+        Action::ApprovePlan => {
+            let key = s.approve_key.filter(char::is_ascii_digit).map(String::from);
+            match (pane_ok, key) {
+                (true, Some(k)) => vec![leave_mode, tmux_keys(&[&k])],
+                _ => return Err(format!("{target} has no pane id or plan key")),
+            }
         }
         Action::Park => vec![step(&["claude-acct", "park", sess, "--server", srv])],
         Action::Unpark => vec![step(&["claude-acct", "unpark", sess])],
@@ -332,6 +388,14 @@ pub fn gather(runner: &dyn Runner) -> Snapshot {
         .run(&["agent-queue".into(), "list".into(), "--json".into()])
         .unwrap_or_default();
     with_items(&mut sessions, &items, &queue_server());
+    for (a, s) in agents.iter().zip(sessions.iter_mut()) {
+        // Only a session in plan mode can show the dialog, so only those panes are captured.
+        if a.plan && !s.parked && is_word(&s.server) && is_id(&s.pane, '%') {
+            let argv = ["tmux", "-L", &s.server, "capture-pane", "-p", "-t", &s.pane];
+            let argv: Vec<String> = argv.iter().map(|x| x.to_string()).collect();
+            s.approve_key = runner.run(&argv).ok().as_deref().and_then(plan_approve_key);
+        }
+    }
     Snapshot {
         agents: agents.into_iter().zip(sessions).collect(),
         accounts: account::load().into_iter().map(|a| a.name).collect(),
@@ -557,5 +621,80 @@ mod tests {
             assert_eq!(Action::parse(a.name()), Some(a));
         }
         assert_eq!(Action::parse("rm"), None);
+    }
+    /// A pane captured from Claude Code v2.1.318 with its plan dialog open.
+    const PLAN_PANE: &str = "\
+\u{25cf} I wrote a 2-line plan: create hello.txt, then cat it.
+\u{2500}\u{2500}\u{2500}
+ Ready to code?
+ Here is Claude's plan:
+ 1. Create hello.txt in the repo root containing the single line \"hi\".
+ 2. Verify: run cat hello.txt and confirm it prints \"hi\".
+\u{2500}\u{2500}\u{2500}
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+ \u{276f} 1. Yes, auto-accept edits
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+      shift+tab to approve with this feedback
+ ctrl+g to edit in Nvim \u{b7} ~/.claude/plans/plan.md
+
+";
+
+    /// The same session one step earlier: a permission prompt, which also offers "1. Yes".
+    const PERMISSION_PANE: &str = "\
+ Create file
+ Do you want to create plan-creating-hello-txt.md?
+ \u{276f} 1. Yes
+   2. Yes, and always allow access to ~/.claude/plans for this session (shift+tab)
+   3. No
+ Esc to cancel \u{b7} Tab to amend
+";
+
+    #[test]
+    fn the_plan_key_is_read_only_under_the_plan_dialog() {
+        assert_eq!(plan_approve_key(PLAN_PANE), Some('1'));
+        assert_eq!(plan_approve_key(PERMISSION_PANE), None);
+        assert_eq!(plan_approve_key(""), None);
+        // Options ordered differently: the auto-accept one still wins over a plain "Yes".
+        let reordered = PLAN_PANE
+            .replace(
+                "1. Yes, auto-accept edits",
+                "1. Yes, manually approve edits",
+            )
+            .replace(
+                "2. Yes, manually approve edits",
+                "2. Yes, auto-accept edits",
+            );
+        assert_eq!(plan_approve_key(&reordered), Some('2'));
+        // A dialog scrolled far above the foot is an old one the pane no longer shows open.
+        let scrolled = format!("{PLAN_PANE}{}", "output\n".repeat(PLAN_PROMPT_FOOT));
+        assert_eq!(plan_approve_key(&scrolled), None);
+    }
+
+    #[test]
+    fn approve_plan_presses_the_dialog_digit_and_only_when_one_is_shown() {
+        let mut planning = live();
+        planning.approve_key = Some('1');
+        assert_eq!(available(&planning)[0], Action::ApprovePlan);
+        assert_eq!(
+            run(Action::ApprovePlan, &planning, None),
+            [
+                "tmux -L lab copy-mode -q -t %14",
+                "tmux -L lab send-keys -t %14 1"
+            ]
+        );
+        assert!(!available(&live()).contains(&Action::ApprovePlan));
+        let err = plan(
+            Action::ApprovePlan,
+            &live().target,
+            None,
+            &[live()],
+            &accounts(),
+        )
+        .unwrap_err();
+        assert!(err.contains("no plan dialog"), "{err}");
+        let mut parked_plan = parked();
+        parked_plan.approve_key = Some('1');
+        assert_eq!(available(&parked_plan), [Action::Unpark]);
     }
 }

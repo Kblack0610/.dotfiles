@@ -504,6 +504,9 @@ struct AgentOut {
     parked: bool,
     /// The plan file's slug, empty when it has none.
     plan: String,
+    /// Its plan's `## Phases` progress, as fleet-sessions last read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phases: Option<boards::Phases>,
     /// The pending ask this session filed.
     ask: Option<String>,
     /// What `POST /api/session/<target>/<action>` accepts for it.
@@ -546,10 +549,16 @@ async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
 async fn agents() -> Json<Vec<AgentOut>> {
     // Blocking: the dialog is a transcript read, done only for agents that have one open.
     let out = tokio::task::spawn_blocking(|| {
+        let state = std::fs::read_to_string(boards::fleet_state())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let mut phases = boards::phases(&state);
         actions::gather(&actions::System)
             .agents
             .into_iter()
             .map(|(a, s)| AgentOut {
+                phases: phases.remove(&a.target),
                 actions: actions::available(&s)
                     .into_iter()
                     .map(Action::name)

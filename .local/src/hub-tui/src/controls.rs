@@ -10,13 +10,14 @@ use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::Palette;
 
 /// The key that asks for each action.
-pub const KEYS: [(char, Action); 6] = [
+pub const KEYS: [(char, Action); 7] = [
     ('i', Action::Interrupt),
     ('p', Action::Park),
     ('u', Action::Unpark),
     ('m', Action::Move),
     ('x', Action::Stop),
     ('c', Action::Cancel),
+    ('a', Action::ApprovePlan),
 ];
 
 /// An action asked for and waiting on y or n.
@@ -186,6 +187,8 @@ impl Controls {
                 .map(|(a, s)| {
                     let state = if s.parked {
                         cell("parked", p.warn())
+                    } else if s.approve_key.is_some() {
+                        cell("plan ready", p.warn())
                     } else {
                         cell(a.status.clone(), status_style(&a.status, p))
                     };
@@ -320,6 +323,27 @@ pub mod tests {
 
     fn press(c: &mut Controls, k: KeyCode) -> Ask {
         c.key(KeyEvent::from(k))
+    }
+
+    #[test]
+    fn a_approves_only_a_session_whose_pane_shows_the_plan_dialog() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        press(&mut c, KeyCode::Char('a'));
+        assert!(c.confirm.is_none());
+        assert!(matches!(&c.said, Some(Err(e)) if e.contains("approve-plan is not offered")));
+        let mut snap = fixture();
+        snap.agents[0].1.approve_key = Some('1');
+        c.set(snap);
+        press(&mut c, KeyCode::Char('a'));
+        assert_eq!(
+            c.confirm.as_ref().map(|x| x.action),
+            Some(Action::ApprovePlan)
+        );
+        assert_eq!(
+            press(&mut c, KeyCode::Char('y')),
+            Ask::Run("lab/dotfiles-agent-3:2".into(), Action::ApprovePlan, None)
+        );
     }
 
     #[test]
