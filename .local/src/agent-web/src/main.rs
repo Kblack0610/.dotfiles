@@ -11,6 +11,7 @@
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
 mod auth;
+mod fleet;
 mod infra;
 mod jobs;
 mod queue;
@@ -80,6 +81,11 @@ const STATIC: &[(&str, &str, &str)] = &[
         "text/javascript",
         include_str!("../static/shepherd.js"),
     ),
+    (
+        "fleet.js",
+        "text/javascript",
+        include_str!("../static/fleet.js"),
+    ),
 ];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -100,6 +106,7 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     jobs: jobs::Cache,
+    fleet: fleet::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -123,6 +130,7 @@ async fn main() -> Result<()> {
         watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
+        fleet: fleet::Cache::default(),
     });
 
     let api = Router::new()
@@ -138,6 +146,7 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/infra", get(infra_board))
+        .route("/api/fleet", get(fleet_board))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/queue", get(queue::list).post(queue::add))
@@ -264,6 +273,9 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         boards::fleet_state().parent().map(Path::to_path_buf),
         Some(boards::shepherd_dir()),
         Some(boards::daylog_dir()),
+        // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
+        Some(hub_core::jobs::Paths::from_env().agentctl),
+        Some(boards::dispatch_dir()),
     ]
     .into_iter()
     .flatten()
@@ -319,6 +331,12 @@ fn classify(p: &Path) -> Option<String> {
     }
     let ext = p.extension()?.to_str()?;
     let parent = p.parent()?.file_name()?.to_str()?;
+    let name = p.file_name()?.to_str()?;
+    if (parent == "agentctl" && name == "runs.jsonl")
+        || (parent == "dispatch" && matches!(name, "verdicts.jsonl" | "log.md"))
+    {
+        return Some(r#"{"kind":"fleet"}"#.to_string());
+    }
     match ext {
         "json" if parent == "sessions" => Some(r#"{"kind":"sessions"}"#.to_string()),
         "md" if p.ancestors().any(|a| a.ends_with(".agent/queue")) => {
@@ -892,6 +910,14 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
+async fn fleet_board(State(s): State<Shared>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.fleet.get().await,
+    )
+        .into_response()
+}
+
 async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1065,6 +1091,16 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/shepherd/watch.state")), None);
+        for p in [
+            "/h/.local/state/agentctl/runs.jsonl",
+            "/h/.agent/dispatch/verdicts.jsonl",
+            "/h/.agent/dispatch/log.md",
+        ] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"fleet"}"#)
+            );
+        }
         assert_eq!(
             classify(Path::new("/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md")).as_deref(),
             Some(r#"{"kind":"shepherd"}"#)

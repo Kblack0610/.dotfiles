@@ -8,7 +8,7 @@ Install: the installer's `build_local_rust_tools` builds it and links `~/.local/
 
 ```
 hub                              the board, on the Overview tab
-hub --tab sessions               start on another tab (overview, jobs, ci, machines, sessions, forecast, today, history)
+hub --tab sessions               start on another tab (overview, jobs, ci, machines, sessions, forecast, today, history, fleet)
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
 hub --once                       print Overview, Machines and CI as plain text at $COLUMNS, then exit
 hub --once --tab jobs            print one tab; exit 1 when Prometheus did not answer
@@ -28,14 +28,15 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 | 6 Forecast | `fleet-bench forecast`, `vs` and `flow` (`--json`): the all-done-by band (median, p90, last at p50 and slow), the drain (highlighted when not draining), the queue and the unscheduled count, a phase timeline per session out to the last slow finish (late ones marked), the burn-up of scope against done per hour, and the frozen baseline against what happened since. Read on the 60s tick while the tab is shown | - |
 | 7 Today | The day-log record (`~/.agent/daylog/<date>.json`, `day-log.timer` every 5 minutes): waiting on you, merged, still open, sessions bench, timeline, spend. `[`/`]` step a day, `t` back to today | - |
 | 8 History | One row per recorded day: merges, repos, sessions, cost, areas. Enter opens that day on Today | - |
+| 9 Fleet | `hub_core::fleet::collect`, the same reader as agent-web's Fleet tab: the Claude accounts (claude-acct's textfile in Prometheus), one row per agentctl runner in `~/.config/agentctl/agents/*.conf` (last outcome and when, runs and failures in 24h from the run ledger, the last "why" from `activity.log`, the next timer fire, dollars in 24h by the `agentctl_runner` OTel label), the dispatch judge (`~/.agent/dispatch/verdicts.jsonl` newest 30, counts by verdict for 24h and 7d, starts and reaps from `log.md`) and the answer judge (agree, disagree, deferred, pending and the newest disagreements from the asks). Read on entering, on `r`, on an agentctl ledger write and on the 60s tick while it is shown | - |
 
-Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file is written (inotify; an open is not a write): Jobs on the agentctl state dir and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. Forecast has no file to watch: it runs fleet-bench on entering the tab, on `r`, and on the 60s tick while it is shown. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
+Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file is written (inotify; an open is not a write): Jobs on the agentctl state dir and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. Forecast has no file to watch: it runs fleet-bench on entering the tab, on `r`, and on the 60s tick while it is shown. Fleet reads the same way, and also when the agentctl ledger is written; the dispatch and ask files have no watch here, so they show on the next tick. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
 
 ## Keys
 
 | Key | Does |
 |---|---|
-| `1`-`8`, Tab, Shift-Tab | Switch tab |
+| `1`-`9`, Tab, Shift-Tab | Switch tab |
 | `r` | Re-read now |
 | `o` | Open this tab's Grafana dashboard (on Jobs: the selected row's URL) |
 | `j`/`k`, PgUp/PgDn, space, `g`/`G` | Scroll a page; on Jobs, move the selection |
@@ -63,7 +64,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 
 ## Tests
 
-`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, the Forecast page from real `fleet-bench` answers in `tests/fixtures/`, `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. The session controls run against a fixture snapshot and a fake runner (`controls.rs`, `app.rs`), so no test reaches tmux, claude-acct or agent-queue. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
+`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, the Forecast page from real `fleet-bench` answers in `tests/fixtures/`, the Fleet page from a fixture `hub_core::fleet::Fleet` (`fleettab.rs`), `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. The session controls run against a fixture snapshot and a fake runner (`controls.rs`, `app.rs`), so no test reaches tmux, claude-acct or agent-queue. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
 
 ## Troubleshooting
 
