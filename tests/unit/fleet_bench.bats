@@ -1175,3 +1175,41 @@ scorecard_with_data() {
   assert_output --partial 'median 1.39x of predicted'
 }
 
+
+# rowp <session> <target> <done> <total> <plan> [finished]: a row carrying its plan file
+rowp() {
+  printf '{"session_id":"%s","target":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"plan_file":"%s"}\n' \
+    "$1" "$2" "$3" "$4" "${6:-false}" "$5"
+}
+
+@test "flow counts ticked, added, removed and started apart, and balances the open phases" {
+  rowp a lab/game-agent-1:1 0 4 pa > "$SNAP"; sample_at 0
+  { rowp a lab/game-agent-1:1 1 6 pa; rowp b lab/game-agent-2:1 0 3 pb; } > "$SNAP"; sample_at 600
+  { rowp a lab/game-agent-1:1 2 5 pa; rowp b lab/game-agent-2:1 1 3 pb; } > "$SNAP"; sample_at 1200
+  # a switches plans with 3 open; pb ends with 2 open
+  rowp a lab/game-agent-1:1 0 3 pc > "$SNAP"; sample_at 1800
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
+  assert_success
+  run jq -c '{ticked, added, removed, started, started_open, in, open_start, open_end, dropped}' <<<"$output"
+  # open at T0 is 4 (first sample at T0 is the window edge, outside it)
+  assert_output '{"ticked":3,"added":2,"removed":1,"started":2,"started_open":6,"in":8,"open_start":4,"open_end":3,"dropped":5}'
+}
+
+@test "flow says not draining when phases come in faster than they tick, and draining otherwise" {
+  rowp a lab/game-agent-1:1 0 2 pa > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 6 pa > "$SNAP"; sample_at 3600
+  run env BENCH_NOW=$((T0 + 3600)) "$SUBJECT" flow --from "$T0"
+  assert_line --partial 'not draining (in 4/h, out 1/h)'
+  rowp a lab/game-agent-1:1 5 6 pa > "$SNAP"; sample_at 7200
+  run env BENCH_NOW=$((T0 + 7200)) "$SUBJECT" flow --from $((T0 + 3600))
+  assert_line --partial 'draining 4/h'
+}
+
+@test "flow --hourly carries the burn-up: cumulative scope and done per hour" {
+  rowp a lab/game-agent-1:1 0 2 pa > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 3 pa > "$SNAP"; sample_at 3600
+  rowp a lab/game-agent-1:1 3 3 pa > "$SNAP"; sample_at 7200
+  run env BENCH_NOW=$((T0 + 7200)) "$SUBJECT" flow --from "$T0" --json --hourly
+  run jq -c '[.hourly[] | [.in, .ticked, .scope, .done]]' <<<"$output"
+  assert_output '[[1,1,3,1],[0,2,3,3]]'
+}

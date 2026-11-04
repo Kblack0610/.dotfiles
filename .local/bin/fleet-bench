@@ -25,6 +25,9 @@
 #                                on every machine; --run evaluates and appends (each sample does)
 #   fleet-bench throughput [--from T] [--to T]
 #                                runs/h, failures, merges/h, pool wait and load on every host
+#   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
+#                                phases in (plans started, phases added) against phases ticked,
+#                                open at each end, and whether the fleet is draining
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
@@ -129,6 +132,39 @@ def phase_minutes:
       | .prev = $r)
   | .starts as $s
   | [range(1; $s | length) | ($s[.].epoch - $s[. - 1].epoch) / 60 / ($s[.].to - $s[.].from)];
+# progress rows in -> open phases in the newest sample at or before $t
+def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
+  | if $s == null then 0 else
+      map(select(.epoch == $s and (.finished | not) and .phases_total != null and .phases_done != null)
+          | .phases_total - .phases_done | select(. > 0)) | add // 0 end;
+# progress rows in -> one step per sample of each (session, plan): the first sample of a plan
+# starts it with its open phases; every later one ticks, adds or removes phases against the one before
+def flow_steps: map(select(.phases_total != null and .phases_done != null))
+  | group_by([.session_id, .plan_file]) | map(sort_by(.epoch) | . as $r
+      | [{epoch: $r[0].epoch, project: $r[0].project, start: 1, open: ([$r[0].phases_total - $r[0].phases_done, 0] | max),
+          ticked: 0, added: 0, removed: 0}]
+        + [range(1; length) | {epoch: $r[.].epoch, project: $r[.].project, start: 0, open: 0,
+          ticked: ([$r[.].phases_done - $r[. - 1].phases_done, 0] | max),
+          added: ([$r[.].phases_total - $r[. - 1].phases_total, 0] | max),
+          removed: ([$r[. - 1].phases_total - $r[.].phases_total, 0] | max)}]) | add // [];
+def flow_sum: {ticked: (map(.ticked) | add // 0), added: (map(.added) | add // 0),
+  removed: (map(.removed) | add // 0), started: (map(.start) | add // 0), started_open: (map(.open) | add // 0)}
+  | . + {in: (.started_open + .added)};
+# progress rows in -> what came in and what went out between $a and $b. dropped is the open
+# phases that left with a session that ended unfinished: the remainder of the balance.
+def flow($a; $b): . as $p | (($b - $a) / 3600) as $h
+  | ($p | flow_steps | map(select(.epoch > $a and .epoch <= $b))) as $st
+  | ($p | open_at($a)) as $o0 | ($p | open_at($b)) as $o1
+  | ($st | flow_sum) as $f
+  | {from: $a, to: $b, hours: ($h | round2)} + $f
+  + {net_in: ($f.in - $f.removed), in_per_h: ($f.in / $h | round2), out_per_h: ($f.ticked / $h | round2),
+     net_in_per_h: (($f.in - $f.removed) / $h | round2), open_start: $o0, open_end: $o1,
+     dropped: ($o0 + $f.in - $f.removed - $f.ticked - $o1),
+     by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum) | sort_by(-.ticked)),
+     hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum)
+       | reduce .[] as $x ({scope: $o0, done: 0, rows: []};
+           .scope += ($x.in - $x.removed) | .done += $x.ticked
+           | .rows += [$x + {scope: .scope, done: .done}]) | .rows)};
 '
 
 # sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY rows have no session)
@@ -1190,6 +1226,40 @@ cmd_throughput() {
        end)'
 }
 
+# cmd_flow [--from T] [--to T] [--json] [--hourly]: phases in against phases out over a window
+cmd_flow() {
+  local from='' to='' json=0 hourly=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) from=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      --to) to=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      --json) json=1; shift ;;
+      --hourly) hourly=1; shift ;;
+      *) say "usage: fleet-bench flow [--from T] [--to T] [--json] [--hourly]"; return 2 ;;
+    esac
+  done
+  [ -n "$to" ] || to=$(now)
+  [ -n "$from" ] || from=$((to - BENCH_WINDOW_H * 3600))
+  [ "$to" -gt "$from" ] || { say "--to must be after --from"; return 2; }
+  [ -s "$PROGRESS" ] || { [ "$json" = 1 ] && echo null || echo "flow: no samples yet"; return 0; }
+  if [ "$json" = 1 ]; then
+    jq -cs --argjson a "$from" --argjson b "$to" --argjson hr "$hourly" "$JQ_LIB"'
+      flow($a; $b) | if $hr == 1 then . else del(.hourly) end' "$PROGRESS"
+    return
+  fi
+  jq -rs --argjson a "$from" --argjson b "$to" --argjson hr "$hourly" "$JQ_LIB"'
+    flow($a; $b) as $f
+    | "flow \($a | hm) -> \($b | hm) (\($f.hours | round1)h)",
+      "  out: \($f.ticked) phases ticked (\($f.out_per_h)/h)",
+      "  in:  \($f.in) phases (\($f.in_per_h)/h): \($f.started) plans started with \($f.started_open) open, \($f.added) added to running plans; \($f.removed) removed by rewrites",
+      "  open: \($f.open_start) at start, \($f.open_end) at end\(if $f.dropped > 0 then "; \($f.dropped) left open by plans that ended or were switched away from" else "" end)",
+      "  net: " + (($f.out_per_h - $f.net_in_per_h) as $d
+        | if $d > 0 then "draining \($d | round2)/h" else "not draining (in \($f.net_in_per_h)/h, out \($f.out_per_h)/h)" end),
+      ($f.by_project[] | "  \(.project): \(.ticked) out, \(.in) in, \(.removed) removed"),
+      (if $hr == 1 then ($f.hourly[] | "  \(.hour | hm)  +\(.in) -\(.removed) in, \(.ticked) out, scope \(.scope), done \(.done)") else empty end)
+  ' "$PROGRESS"
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -1206,8 +1276,9 @@ main() {
     retro) cmd_retro ;;
     findings) shift; cmd_findings "$@" ;;
     throughput) shift; cmd_throughput "$@" ;;
-    -h | --help) sed -n '2,31p' "$0" ;;
-    *) sed -n '2,27p' "$0" >&2; return 2 ;;
+    flow) shift; cmd_flow "$@" ;;
+    -h | --help) sed -n '2,34p' "$0" ;;
+    *) sed -n '2,30p' "$0" >&2; return 2 ;;
   esac
 }
 

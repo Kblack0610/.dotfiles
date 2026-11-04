@@ -1032,7 +1032,7 @@ pub fn page(
             out.push(blank());
             out.extend(b.recent(w));
         }
-        Tab::Jobs | Tab::Sessions | Tab::Today | Tab::History => {}
+        Tab::Jobs | Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History => {}
     }
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
