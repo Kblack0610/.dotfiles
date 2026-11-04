@@ -4,8 +4,8 @@
 // shepherd session. The chat is that session's transcript, text only, and a box that types into
 // its pane through /api/send, so an answer it gives here is also kept as a rundown. Above the
 // rundowns, what Binks owes: each line the last `fleet-shepherd check` handed to a pass (its role,
-// how long it has been due, and whether the last pass left it unhandled), and the lines a pass
-// skipped on purpose, with why.
+// how long it has been due, and whether the last pass left it unhandled). The lines a pass
+// skipped on purpose, with why, are the shepherd's skips in the Actions tab.
 
 // Transcript events read for the chat. Tool calls are dropped, so a page of them holds few lines.
 const SHEP_EVENTS = 300;
@@ -53,10 +53,7 @@ function dueHtml(l) {
   const pass = l.lease_at ? `last pass ${shepAge(l.lease_at)} ago (${esc(l.lease_holder)})` : "no pass yet";
   const owed = l.due.length ? l.due.map(dueRow).join("")
     : `<div class="empty">Nothing due: the last check found nothing to move.</div>`;
-  const skips = l.skipped.length
-    ? `<details class="card rd"><summary><b>${l.skipped.length} skipped on purpose</b></summary>` +
-      l.skipped.map((s) => `<div class="rd-body"><b>${esc(s.key)}</b>\n${esc(s.why)} <span class="muted">${shepAge(s.at)} ago</span></div>`).join("") +
-      `</details>` : "";
+  const skips = `<div class="row-end"><button class="btn" data-skips>Skipped on purpose, in Actions</button></div>`;
   return `<h2 class="sec">Due <span class="muted">${l.due.length}, ${pass}</span></h2>${owed}${skips}`;
 }
 
@@ -103,7 +100,10 @@ async function shepSend() {
   $("sh-err").textContent = shst.msg;
 }
 
-$("shepherd").addEventListener("click", (e) => { if (e.target.id === "sh-send") shepSend(); });
+$("shepherd").addEventListener("click", (e) => {
+  if (e.target.id === "sh-send") shepSend();
+  else if (e.target.dataset.skips !== undefined) showActions("shepherd", "skip");
+});
 $("shepherd").addEventListener("keydown", (e) => {
   if (e.target.id === "sh-text" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); shepSend(); }
 });
