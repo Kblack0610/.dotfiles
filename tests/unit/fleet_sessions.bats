@@ -179,6 +179,16 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output --partial 'DONE clean'
 }
 
+@test "a plan whose unchecked phases are queue items is DONE once this phase lands, and finished" {
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/3 'queued:x-p2,x-p3'
+  assert_output 'DONE PR #875 merged, tree clean, its next phases are queue items: x-p2,x-p3'
+  session_finished idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/3 'queued:x-p2,x-p3'
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/3 'queued:x-p2,x-p3')" ]
+  # unlanded work still comes first
+  run b idle 0 0 0 30 1 2 0 875 MERGED PASS 1 - 1/3 'queued:x-p2'
+  assert_output --partial 'STALLED PR #875 merged, 2 dirty file(s) left'
+}
+
 @test "nothing open is part of DONE: an ask, plan mode, a prompt or unlanded work blocks it" {
   run b idle 0 1 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'NEEDS 1 pending ask(s)'
@@ -552,6 +562,27 @@ queue_item() {
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
+}
+
+@test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  # its own item names the plan: still LANDED, told to queue the rest
+  queue_item running lab:s1
+  printf 'plan: %s\n' "$SANDBOX/plan.md" > "$SANDBOX/hdr"
+  sed -i "/^session:/r $SANDBOX/hdr" "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  # phase 2 queued by hand, its task naming the plan's file from the other plans dir
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nafter: fix-wave-save\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of /elsewhere/plans/plan.md: rollout\n' \
+    > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r .next_phase <<<"$output")" = 'Phase 2: rollout' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {

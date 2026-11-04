@@ -297,6 +297,22 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
+@test "add --plan refuses a plan another active item names; the calling session's own item does not count" {
+  plan_fixture
+  "$AQ" add --project game --slug mine --running "phase 1 of $SANDBOX/my-plan.md" >/dev/null
+  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
+  assert_success
+  # queued by hand from the plan's copy in another directory: the file name matches
+  "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
+  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "already queued: by-hand (nothing was added)"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
+  assert_failure
+  assert_output --regexp "already queued: (mine by-hand|by-hand mine) "
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" | grep my-plan)" ]
+}
+
 @test "cancel moves a queued item to done, and kills a running item's session" {
   "$AQ" add --project game --slug q "q"
   run "$AQ" cancel q
