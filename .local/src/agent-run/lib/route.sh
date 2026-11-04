@@ -84,7 +84,7 @@ Every key is explicit here on purpose: a forgotten one must not read as a 'no'."
   esac
 
   # I1. A gateway route claiming personal-safety while sitting behind a failover
-  # edge is the llm-judge hole expressed as a config error. Fallbacks fire INSIDE
+  # edge is a silent paid-route spill expressed as a config error. Fallbacks fire INSIDE
   # the router, AFTER the key check, so a scoped key cannot stop the spill.
   if [ "$ROUTE_PERSONAL_SAFE" = yes ] && [ "$ROUTE_TRANSPORT" != anthropic-native ] \
      && [ "$ROUTE_FALLBACK_SAFE" != yes ]; then

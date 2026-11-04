@@ -3,8 +3,8 @@
 #
 # The other harnesses wrap an agent CLI that owns a tool loop. This one owns
 # nothing. It exists because several consumers already speak OpenAI-compatible
-# HTTP directly with their own curl -- comms-triage.sh, notes-version-summary,
-# llm-call.sh -- and each carried its own hardcoded base URL, model and key entry.
+# HTTP directly with their own curl -- comms-triage.sh and notes-version-summary --
+# and each carried its own hardcoded base URL, model and key entry.
 # That is six unshared copies of "which model, whose gateway, whose key", and the
 # reason two of them were found silently spilling onto a paid Lazer route.
 #

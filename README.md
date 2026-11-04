@@ -14,9 +14,9 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.config/{k9s,lazydocker,jesseduffield/lazygit}/` | Cluster + container + git TUIs |
 | `.config/rulesync-global/` | **Source of truth** for shared AI rules + MCP servers (fan-out to Claude/Codex/Gemini/OpenCode) |
 | `.config/codex/` | Codex sync scripts (`sync-ai-global-config.sh`), Codex skills, project-checks heuristics |
-| `.config/shared-hooks/` | `project-map.json`, session preflight, eval reporter, stale-plan archiver — used by all AI tools |
-| `.config/{openclaw,agentctl,llm-judge,playwright,profile,smug}/` | Local agent/orchestration runtime config |
-| `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, llm-judge, settings (see below) |
+| `.config/shared-hooks/` | `project-map.json`, session preflight, stale-plan archiver — used by all AI tools |
+| `.config/{agentctl,playwright,profile}/` | Local agent/orchestration runtime config |
+| `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, settings (see below) |
 | `.opencode/`, `.cursor/`, `.codeium/`, `.serena/` | Per-tool runtime state |
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
@@ -112,27 +112,17 @@ Editing rules: change `.config/rulesync-global/.rulesync/rules/overview.md` (can
 
 This dir is loaded by Claude Code as the project's harness layer:
 
-- **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing, eval format).
+- **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing).
 - **`.claude/agents/`** - subagents, each with an explicit tool ceiling: the generic specialists here (`deep-research-agent`, `technical-writer`, `quality-engineer`, `root-cause-analyst`, `security-engineer`, `compliance-counsel`); the `kb-*` delivery pipeline and `release-coordinator` live in the private overlay. Which ones actually run: `claude-recall stats --kind agent`.
 - **`.claude/skills/`** — 53 domain skills invoked by name; the canonical index is the list in `.claude/CLAUDE.md`, which spans both this repo and the private overlay.
-- **`.claude/commands/`** — 24 slash commands across four namespaces:
-  `/sc:*` (analyze, git, manual-test, research, test), `/my:*` (autopilot, fix-ci, go, judge, worktree-recycle), `/kb:*` (workflow, implement, sprint, ci), `/daily:*` (analysis, standup, summary, slack), plus `binks`, `dream`, `feature`, `remember`.
+- **`.claude/commands/`** - 17 slash commands across four namespaces, counting the private overlay's:
+  `/sc:*` (analyze, git, manual-test, research, test), `/my:*` (autopilot, fix-ci, go, worktree-recycle), `/kb:*` (workflow, implement, ci), `/daily:*` (analysis, standup, summary), plus `dream` and `remember`.
 
   These counts are load-bearing only as a rough orientation — treat `ls ~/.claude/{agents,skills,commands}` as the truth, since the live registry merges this repo with the private overlay.
-- **`.claude/hooks/`** — Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go health), then `stop-post.d/85-sync-plans.sh` (mirror plans → `~/.agent/plans/{project}/`) and `stop-post.d/90-eval-gate.sh` (eval block + lessons capture). Plus `block-pip.sh`, `large-file-warning.sh`, `llm-judge.sh`.
+- **`.claude/hooks/`** - Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go/shell-test health), then `stop-post.d/` (session register, plan sync to `~/.agent/plans/{project}/`, focus reconcile, anchor regen, ask-filed check, wind-down). Plus PreToolUse guards such as `block-pip.sh` and `large-file-warning.sh`. Topology and the per-script list: `.claude/hooks/README.md`.
 - **`.claude/settings.json` / `settings.local.json`** — permissions, env, hook wiring.
 
 The Claude rules and the Codex `AGENTS.md` are deliberately kept in sync via the rulesync source — don't drift one from the other.
-
-## OpenClaw
-
-OpenClaw has a separate bootstrap because durable config is tracked here and runtime state stays in `~/.openclaw/`:
-
-```bash
-~/.dotfiles/.config/openclaw/setup-openclaw.sh
-```
-
-Installs the tracked base config, starter workspaces, and baseline exec approvals without touching provider auth or other ephemeral state. Runtime shape: one front-door `home-orchestrator` agent delegates to workers for ops diagnosis, ops changes, and PR work.
 
 ## Keyboards
 

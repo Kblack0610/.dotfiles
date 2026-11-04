@@ -245,8 +245,6 @@ test_notifications.sh
 # command-center: CC_PROM_URL / CC_GRAFANA_URL name real infra; the env file lives in
 # the private overlay (~/.dotfiles-private/.config/command-center/env).
 .config/command-center/
-.config/smug/
-.config/llm-judge/
 .config/rulesync-global/
 .config/opencode/
 .config/shared-hooks/project-map.json

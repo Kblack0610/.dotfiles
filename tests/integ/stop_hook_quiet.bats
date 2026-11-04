@@ -278,7 +278,7 @@ run_session() {
 }
 
 @test "no post script calls a model: the session eval is session-outcomes, not a Stop-time judge" {
-  run grep -l -E 'llm-judge|llm-call|claude -p|agentctl-run' "$REPO_ROOT"/.claude/hooks/stop-post.d/*.sh
+  run grep -l -E 'claude -p|agentctl-run' "$REPO_ROOT"/.claude/hooks/stop-post.d/*.sh
   assert_failure
 }
 

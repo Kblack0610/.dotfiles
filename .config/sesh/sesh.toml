@@ -3,11 +3,6 @@
 # Sources it merges into one list: live tmux sessions + zoxide frecency + the
 # [[session]] entries below. Read by sesh from $XDG_CONFIG_HOME/sesh/sesh.toml
 # (falls back to ~/.config/sesh/sesh.toml).
-#
-# Note: `smug` is NOT wired in here on purpose. A `startup_command = "smug start X"`
-# is a silent no-op inside a sesh session (smug exits 0 without building anything
-# because sesh has already created the session). smug has been unused since
-# 2026-01; its configs remain at ~/.config/smug/ but nothing launches them.
 
 [default_session]
 preview_command = "eza --all --git --icons --color=always {}"

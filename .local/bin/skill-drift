@@ -475,8 +475,8 @@ declare -A SEEN_NAME=()
 # The Codex corpus is `structural`. It is a different tool's skills, deployed by a
 # different mechanism, with a deliberately smaller 2-key contract; holding it to
 # the Claude one produced 25 findings that could never be actioned, which is how a
-# report becomes something nobody reads. NOFRONTMATTER there was a REAL find
-# (llm-judge had none), so it is not exempted from the checks that mean something.
+# report becomes something nobody reads. It is still held to the checks that mean
+# something anywhere, NOFRONTMATTER among them.
 run_static() {
   local contract="$1"; shift
   local root m d s parent c

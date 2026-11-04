@@ -49,7 +49,7 @@ pub fn today_refs_dir(p: &Profile) -> PathBuf {
 
 /// Resolve a named profile path for editor/shell integration (`notes path <target>`).
 /// This is the single source of truth that nvim, the `ref`/`refs` aliases, and the
-/// smug hub window all consume — so no consumer hardcodes a vault path. Returns
+/// hub landing session (`tmx root hub`) all consume — so no consumer hardcodes a vault path. Returns
 /// `None` for an unknown target so the caller can report it.
 pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
     Some(match target {

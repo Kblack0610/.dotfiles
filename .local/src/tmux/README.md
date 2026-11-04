@@ -464,11 +464,10 @@ Additive to `Prefix+f` (`sessionizer.sh`), which only ever saw *directories* and
 had no preview. Keep that list short - zoxide already covers every project repo,
 so a `[[session]]` entry for one just prints a duplicate row.
 
-**Do not** try to drive a layout tool from `startup_command`: `smug start X` is a
-silent no-op there (exit 0, builds nothing) because sesh creates the session
-first. sesh's own `[[window]]` has no panes; its native layout hooks are the
-`tmuxinator` / `tmuxp` session fields. `smug` itself has been unused since
-2026-01 and is no longer installed by the Arch provisioner.
+**Do not** try to drive a layout tool from `startup_command`: sesh creates the
+session first, so a tool that skips an existing session exits 0 and builds
+nothing. sesh's own `[[window]]` has no panes; its native layout hooks are the
+`tmuxinator` / `tmuxp` session fields.
 
 ## Servers (`Prefix+A`, `tmx`)
 
