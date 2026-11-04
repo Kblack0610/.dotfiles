@@ -316,3 +316,22 @@ line() { sed -n "${1}p" "$AGENTCTL_STATE_DIR/runs.jsonl"; }
   run jq -e 'has("injected") | not' "$AGENTCTL_STATE_DIR/runs.jsonl"
   assert_success
 }
+
+# --- the Home Assistant mirror cannot fail a runner ---
+# ExecStartPost runs `report --lifecycle start` under the user manager's 15s start timeout,
+# and its `-` prefix forgives an exit code but not a timeout. On 2026-11-04 the publisher's
+# scan took 34s at load 83 and fleet-dispatch failed to start five times.
+
+@test "a publisher that hangs does not hold up or fail a lifecycle report" {
+  # Not exec: the hang is a CHILD of the publisher, as a stuck mosquitto_pub or scan would be.
+  printf '#!/usr/bin/env bash\ntouch "%s/publisher-ran"\nsleep 30\n' "$SANDBOX" \
+    > "$SANDBOX/bin/agent-mqtt-publish"
+  chmod +x "$SANDBOX/bin/agent-mqtt-publish"
+  local t0=$SECONDS
+  AGENTCTL_MQTT_BUDGET=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  assert_success
+  # The stub ran (the bound was exercised, not skipped) and was cut well before its 30s.
+  [ -f "$SANDBOX/publisher-ran" ]
+  [ $((SECONDS - t0)) -lt 10 ]
+  assert_equal "$(field state)" 'working'
+}
