@@ -8,6 +8,7 @@
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--since YYYY-MM-DD]
+# A plan item starts its session at once (fleet-dispatch start --item); AGENT_QUEUE_START=0 only queues it.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -239,6 +240,11 @@ cmd_add() {
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   echo "$state $slug -> $f"
+  [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
+  # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
+  exec 8>&-
+  fleet-dispatch start --item "$slug" ||
+    echo "agent-queue: $slug could not start now, so it stays queued for the next dispatch pass" >&2
 }
 
 cmd_list() {
