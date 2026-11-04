@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the number of sessions in progress (fleet-sessions stages WORKING, NEEDS, STALLED
-# and UNCLEAR) and a colour:
+# The bar is three totals and a health dot, "~22 <check>1 !9 <dot>": ~ working (WORKING), the check mark
+# ready for its next step (LANDED or DONE), ! needs you (NEEDS, amber), each shown at 0 so the bar
+# keeps its shape. STALLED and UNCLEAR are in none of the three; the dot carries them.
+# The dot is the fleet's health:
 #   red    a session is STALLED, or a host's fleet_sessions.prom is older than STATE_LATE_SECS
 #   amber  a session is UNCLEAR, or Prometheus has no session numbers
-#   neutral otherwise
+#   green  otherwise
 # The hover has the stage counts, then one section per tmux world (hub, lab: the part of the
 # target before the slash), each with its own counts and one line per session, worst first.
 #
@@ -24,8 +26,8 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 
-# nf-md-robot, written as an escape so an editor cannot strip the glyph from this file.
-ICON=$'\U000f06a9'
+# nf-md-robot, a check mark and a filled circle, written as escapes so an editor cannot strip them.
+ICON=$'\U000f06a9' READY=$'\u2713' DOT=$'\u25cf'
 # fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
 STATE_LATE_SECS=300
 
@@ -89,11 +91,12 @@ counts() {
   [ -n "$out" ] && printf ': %s' "${out#, }"
 }
 
-total=0 n_stalled=0 n_unclear=0 width=8
+total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 n_unclear=0 width=8
 declare -A per_project=() per_stage=()
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ _ p <<< "$r"
   in_progress "$b" && total=$((total + 1))
+  case $b in WORKING) n_work=$((n_work + 1)) ;; LANDED|DONE) n_ready=$((n_ready + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
   [ "$b" = UNCLEAR ] && n_unclear=$((n_unclear + 1))
   ((${#t} > width)) && width=${#t}
@@ -156,8 +159,8 @@ while read -r _ p; do
   phone+=$'\n'"$(pango_esc "$p") $(glyphs "$p")"
 done < <(for p in "${!per_project[@]}"; do printf '%s %s\n' "${per_project[$p]}" "$p"; done | sort -k1,1nr -k2,2)
 
-text="$ICON $total"
-((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
+need="!$n_need"; ((n_need > 0)) && need="$(paint "$C_YEL" "$need")"
+text="$ICON ~$n_work $READY$n_ready $need $(paint "${LEVEL_COLOUR[$level]}" "$DOT")"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && total == 0)) && class=inactive
 emit "$text" "$tip" "$class" "$phone"

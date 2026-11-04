@@ -1,12 +1,13 @@
 #!/usr/bin/env bats
-# ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the
-# sessions in progress (WORKING, NEEDS, STALLED, UNCLEAR) from fleet-sessions on Prometheus; the
-# hover has the stage counts, then a section per tmux world with a line per session. What these
-# pin: the bar is one number whatever the fleet's size (a group per project pushed the clock off
-# the bar); sessions group by world, not repo; landed, done and parked are listed but not in
-# progress; a stalled session or a stale textfile is red, an unclear one amber; a second scrape
-# counts once; Prometheus down reads ? and no textfile reads amber, never a quiet 0. The phone
-# lines are the same counts, then a glyph strip per project, biggest project and worst stage first.
+# ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is three
+# totals from fleet-sessions on Prometheus, ~ working, a check mark ready (LANDED or DONE) and
+# ! need you, then a health dot; the hover has the stage counts, then a section per tmux world
+# with a line per session. What these pin: the bar is three totals whatever the fleet's size (a
+# group per project pushed the clock off the bar); sessions group by world, not repo; parked is
+# listed but counted nowhere; a stalled session or a stale textfile turns the dot red, an unclear
+# one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
+# never a quiet 0. The phone lines are the same counts, then a glyph strip per project, biggest
+# project and worst stage first.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -14,8 +15,8 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ai_agents.sh"
-  ICON=$'\U000f06a9' # nf-md-robot, as an escape so no editor can strip it
-  Y="#ffcc2f" R="#ef5734"
+  ICON=$'\U000f06a9' CK=$'\u2713' DOT=$'\u25cf' # as escapes so no editor can strip them
+  G="#a6e34a" Y="#ffcc2f" R="#ef5734"
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -59,18 +60,18 @@ class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
 phone() { jq -r .phone <<< "$output"; }
 
-@test "the bar is the sessions in progress, one number however many there are" {
+@test "the bar is working, ready and need-you totals and a green dot, however many there are" {
   feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10 \
     lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400 lab/uc-agent-4:1=PARKED:50
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$ICON 3"
+  assert_equal "$(text)" "$ICON ~2 ${CK}2 <span color='$Y'>!1</span> <span color='$G'>$DOT</span>"
   assert_equal "$(class)" ok
   local args=() i
   for i in $(seq 1 40); do args+=("lab/uc-agent-1$i:1=WORKING:5"); done
   feed "${args[@]}"
   run "$MODULE"
-  assert_equal "$(text)" "$ICON 40"
+  assert_equal "$(text)" "$ICON ~40 ${CK}0 !0 <span color='$G'>$DOT</span>"
 }
 
 @test "the hover groups by world, not repo: dotfiles in hub sits with hub, a lab dotfiles with lab" {
@@ -91,7 +92,7 @@ phone() { jq -r .phone <<< "$output"; }
 @test "a stalled session is red, leads the hover and heads its world" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80
   run "$MODULE"
-  assert_equal "$(text)" "<span color='$R'>$ICON 2</span>"
+  assert_equal "$(text)" "$ICON ~1 ${CK}0 !0 <span color='$R'>$DOT</span>"
   assert_equal "$(class)" critical
   run tip
   assert_line --index 1 "<span color='$R'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
@@ -101,6 +102,7 @@ phone() { jq -r .phone <<< "$output"; }
 @test "an unclear session is amber" {
   feed hub/dotfiles:1=UNCLEAR:10
   run "$MODULE"
+  assert_equal "$(text)" "$ICON ~0 ${CK}0 !0 <span color='$Y'>$DOT</span>"
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "<span color='$Y'>1</span> unclear"
@@ -117,13 +119,13 @@ phone() { jq -r .phone <<< "$output"; }
 @test "a second scrape of a session counts once" {
   feed hub/dotfiles:1=WORKING:10 dup:hub/dotfiles:1=WORKING:10
   run "$MODULE"
-  assert_equal "$(text)" "$ICON 1"
+  assert_equal "$(text)" "$ICON ~1 ${CK}0 !0 <span color='$G'>$DOT</span>"
 }
 
-@test "no sessions with a fresh textfile is an inactive 0" {
+@test "no sessions with a fresh textfile is inactive zeros" {
   feed
   run "$MODULE"
-  assert_equal "$(text)" "$ICON 0"
+  assert_equal "$(text)" "$ICON ~0 ${CK}0 !0 <span color='$G'>$DOT</span>"
   assert_equal "$(class)" inactive
 }
 
