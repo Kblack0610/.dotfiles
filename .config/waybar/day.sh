@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Waybar module: the day. The bar is the PRs merged today, then a red !N when anything is
-# red right now (a tripped watch, a failed agent runner, a NotReady node). The hover groups
+# red right now (cc:red_now: a tripped watch, a failed agent runner, a NotReady node, a frozen
+# agent feed, a silent Sentinel). The hover groups
 # the merged PRs by area and repo, lists the latest few, says what waits on you, and names
 # what is red.
 #
 # Merged PRs come from day-log's record for today (DAYLOG_DIR/<YYYY-MM-DD>.json, local
 # day), which day-log.timer refreshes every 5 minutes; this chip only reads it, so it spends
 # no gh calls. A record older than STALE_SECS is shown dimmed with its age, and no record
-# reads -, never 0. Red-now is PROM_RED_NOW, the query the hub board's "red now" line
-# uses; Prometheus unreadable reads !? in amber, never a quiet nothing.
+# reads -, never 0. Red-now is cc:red_now, the home-config recording rule the hub board's
+# "red now" line and the Grafana table also read; Prometheus unreadable reads !? in amber, never a quiet nothing.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -59,7 +60,7 @@ if [ -s "$rec" ] && summary="$(jq -r --argjson n "$LATEST" '
 fi
 
 red_text="" class=ok
-if red="$(prom_q "$PROM_RED_NOW")"; then
+if red="$(prom_q 'cc:red_now')"; then
   mapfile -t RED < <(jq -r '.data.result[].metric.item' <<< "$red" | sort)
   if ((${#RED[@]} > 0)); then
     red_text=" $(paint "$C_RED" "!${#RED[@]}")" class=critical
