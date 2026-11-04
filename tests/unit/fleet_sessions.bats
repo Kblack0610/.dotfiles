@@ -538,7 +538,7 @@ landed_fixture() {
 # queue_item <state> <session> -- a started agent-queue item on session s1's tmux session
 queue_item() {
   mkdir -p "$HOME/.agent/queue/$1"
-  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: normal\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: %s\n---\nfix wave save\n' \
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: %s\n---\nfix wave save\n' \
     "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
 }
 

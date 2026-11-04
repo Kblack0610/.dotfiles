@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::session_actions::Runner;
 
-pub const PRIORITIES: [&str; 4] = ["urgent", "high", "normal", "low"];
+pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
 /// The store's states, in the order every surface shows them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -293,7 +293,7 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
         return Err("bad slug".into());
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high, normal or low".into());
+        return Err("priority is urgent, high or low".into());
     }
     runner.run(&argv(&["bump", slug, priority]))
 }
@@ -328,7 +328,7 @@ mod tests {
         r#"{"slug":"w","project":"game","mode":"plan","priority":"high","from":"human","agent":"claude","queued":"2026-11-03T10:00:00Z","session":"lab:game-agent-2","state":"waiting","file":"/q/waiting/w.md","task":"Pick a side\nthen more"}"#,
         "\n",
         "not json\n",
-        r#"{"slug":"q","project":"dotfiles","mode":"oneshot","priority":"normal","tags":"night at:02:30","after":"w","queued":"2026-11-03T11:00:00Z","state":"queued","task":"later","hold":"after w"}"#,
+        r#"{"slug":"q","project":"dotfiles","mode":"oneshot","priority":"high","tags":"night at:02:30","after":"w","queued":"2026-11-03T11:00:00Z","state":"queued","task":"later","hold":"after w"}"#,
         "\n",
         r#"{"slug":"nostate","task":"x"}"#,
         "\n",
@@ -428,16 +428,19 @@ mod tests {
     #[test]
     fn bump_steps_along_the_scale_and_stops_at_its_ends() {
         let mut i = Item {
-            priority: "normal".into(),
+            priority: "high".into(),
             ..Item::default()
         };
-        assert_eq!(i.bumped(true), Some("high"));
+        assert_eq!(i.bumped(true), Some("urgent"));
         assert_eq!(i.bumped(false), Some("low"));
         i.priority = "urgent".into();
         assert_eq!(i.bumped(true), None);
         i.priority = "low".into();
         assert_eq!(i.bumped(false), None);
         i.priority = "asap".into();
+        assert_eq!(i.bumped(true), None);
+        // NEGATIVE CONTROL: normal is retired, so an old item carrying it does not step.
+        i.priority = "normal".into();
         assert_eq!(i.bumped(true), None);
     }
 }

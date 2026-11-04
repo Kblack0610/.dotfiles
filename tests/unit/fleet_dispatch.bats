@@ -45,7 +45,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 started_item() {
   local d="$AGENT_QUEUE_DIR/${6:-running}"; mkdir -p "$d"
   {
-    printf 'slug: %s\nproject: %s\nmode: oneshot\npriority: normal\nfrom: %s\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n' "$1" "${7:-game}" "${5:-human}"
+    printf 'slug: %s\nproject: %s\nmode: oneshot\npriority: high\nfrom: %s\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n' "$1" "${7:-game}" "${5:-human}"
     printf 'started: 2026-11-03T10:00:00Z\nsession: %s\n' "$2"
     [ -z "${3:-}" ] || printf 'origin: %s\n' "$3"
     [ -z "${4:-}" ] || printf 'area: %s\n' "$4"
@@ -631,7 +631,7 @@ two_items() {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   agent-queue add --project game --slug fix-game --priority high "fix the game"
-  agent-queue add --project app --slug fix-app "fix the app"
+  agent-queue add --project app --slug fix-app --priority low "fix the app"
 }
 
 @test "a starved pool or a starved host that names no repos holds every item" {
@@ -664,13 +664,13 @@ two_items() {
   findings "$(finding throughput-drop game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started game-agent-1: app: fix-app'
-  agent-queue add --project game --slug fix-game-2 "fix it again"
+  agent-queue add --project game --slug fix-game-2 --priority low "fix it again"
   jq '.aliases = {gm: "game"}' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
   findings "$(finding throughput-drop gm)" "$(finding starved pool:light '["elsewhere"]')"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'started'
   assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), every queue item waits'
-  for n in 3 4; do agent-queue add --project game --slug "fix-game-$n" "fix it $n"; done
+  for n in 3 4; do agent-queue add --project game --slug "fix-game-$n" --priority low "fix it $n"; done
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), fix-game-3 (throughput-drop gm), 1 more, every queue item waits'
 }
@@ -681,7 +681,7 @@ two_items() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
   assert_output --partial 'queue item fix-game waits: starved pool:unity'
-  assert_output --partial 'would start queue item fix-app: app oneshot normal'
+  assert_output --partial 'would start queue item fix-app: app oneshot low'
   assert_not_called 'wt new'
 }
 
@@ -704,7 +704,7 @@ two_items() {
   export DISPATCH_PER_PASS=3
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'would start queue item fix-game: game oneshot high'
-  assert_output --partial 'would start queue item fix-app: app oneshot normal'
+  assert_output --partial 'would start queue item fix-app: app oneshot low'
   assert_not_called 'wt new'
 }
 
@@ -1424,7 +1424,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'held (agent-hold dispatch), queue item mine waits'
   stub agent-hold 'exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'would start queue item mine: game oneshot normal'
+  assert_output --partial 'would start queue item mine: game oneshot high'
   assert_not_called 'wt new'
   [ -n "$(qitem queued mine)" ] || fail "dry run moved the item"
 }

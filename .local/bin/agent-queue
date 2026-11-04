@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
-#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
+#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
 #       [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--after slug] [--slug prefix]
@@ -57,7 +57,8 @@ slugify() {
     | sed 's/^-//; s/-$//' | cut -c1-40 | sed 's/-$//'
 }
 
-prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; normal) echo 2 ;; low) echo 3 ;; *) return 1 ;; esac; }
+# urgent|high|low, as on the sheets. A bare add is high: nobody decided, so it is not demoted.
+prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; low) echo 2 ;; *) return 1 ;; esac; }
 
 # Mutations take one lock, so the web page, the shepherd and the dispatcher never interleave.
 # The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
@@ -177,7 +178,7 @@ item_json() {
 }
 
 # Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
-ORDER='sort_by((({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 2)), .queued)'
+ORDER='sort_by((({"urgent":0,"high":1,"low":2}[.priority] // 1)), .queued)'
 
 # collect <states...> [--date D] -> a JSON array of items.
 collect() {
@@ -236,7 +237,7 @@ project_of_cwd() {
 
 # --- verbs ---
 cmd_add() {
-  local project="" mode=oneshot priority=normal tags="" after="" from=human agent=claude slug=""
+  local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -267,7 +268,7 @@ cmd_add() {
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
-  prio_rank "$priority" >/dev/null || die "--priority is urgent, high, normal or low, not $priority"
+  prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$from" in human | shepherd | board:?*:?*) ;; *) die "--from is human, shepherd or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   for tag in $tags; do
@@ -470,7 +471,7 @@ cmd_cancel() {
 
 cmd_bump() {
   local slug="${1:?usage: agent-queue bump <slug> <priority>}" prio="${2:?usage: agent-queue bump <slug> <priority>}" f
-  prio_rank "$prio" >/dev/null || die "priority is urgent, high, normal or low, not $prio"
+  prio_rank "$prio" >/dev/null || die "priority is urgent, high or low, not $prio"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   header_set "$f" priority "$prio"

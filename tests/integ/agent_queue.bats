@@ -28,7 +28,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "queued menu-pick-sides-and-add-people"
   f="$(item queued menu-pick-sides-and-add-people)"
   [ "$(field "$f" mode)" = oneshot ]
-  [ "$(field "$f" priority)" = normal ]
+  [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" from)" = human ]
   [ "$(field "$f" agent)" = claude ]
   [[ "$(field "$f" queued)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]]
@@ -86,12 +86,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "list orders by priority, then queued time, and next is the head" {
-  "$AQ" add --project game --slug b-normal "b"
+  "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"
   "$AQ" add --project game --slug d-urgent --priority urgent "d"
-  "$AQ" add --project game --slug e-normal "e"
+  "$AQ" add --project game --slug e-high --priority high "e"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  assert_output $'d-urgent\nb-normal\ne-normal\nc-low'
+  # A bare add is high, so it queues with the explicit high one, in queued order.
+  assert_output $'d-urgent\nb-bare\ne-high\nc-low'
   run "$AQ" next --json
   assert_success
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
@@ -165,6 +166,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_success
   [ "$("$AQ" next --json | jq -r .slug)" = b ]
   run "$AQ" bump b soon
+  assert_failure
+  # NEGATIVE CONTROL: normal is retired; urgent|high|low is the whole set, as on the sheets.
+  run "$AQ" bump b normal
+  assert_failure; assert_output --partial "urgent, high or low"
+  run "$AQ" add --project game --priority normal "x"
   assert_failure
 }
 
@@ -478,9 +484,9 @@ EOF
   run "$AQ" cancel first
   assert_failure
   "$AQ" add --project game --slug first "f"
-  run "$AQ" bump first high
+  run "$AQ" bump first urgent
   assert_success
-  [ "$(field "$(item queued x-first)" priority)" = normal ]
+  [ "$(field "$(item queued x-first)" priority)" = high ]
 }
 
 @test "a read waits for a writer, so a list never misses an item mid-move" {
