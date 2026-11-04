@@ -4,8 +4,10 @@
 // shepherd session. The chat is that session's transcript, text only, and a box that types into
 // its pane through /api/send, so an answer it gives here is also kept as a rundown. Above the
 // rundowns, what Binks owes: each line the last `fleet-shepherd check` handed to a pass (its role,
-// how long it has been due, and whether the last pass left it unhandled). The lines a pass
-// skipped on purpose, with why, are the shepherd's skips in the Actions tab.
+// how long it has been due, and whether the last pass left it unhandled). Above that, the pass
+// from `fleet-shepherd stats`: the one running now with its attach line, the last verdict, the
+// 24h counts, and why it reads stuck when it does. The lines a pass skipped on purpose, with why,
+// are the shepherd's skips in the Actions tab.
 
 // Transcript events read for the chat. Tool calls are dropped, so a page of them holds few lines.
 const SHEP_EVENTS = 300;
@@ -49,6 +51,25 @@ function dueRow(d) {
     `<span class="pill">due ${shepAge(d.first_seen)}</span></div><div class="rd-body">${esc(d.line)}</div></div>`;
 }
 
+// The pass card: what `fleet-shepherd stats` says, the numbers the Queue chip and Home Assistant show.
+function passHtml(s) {
+  if (!s) return `<h2 class="sec">Pass</h2><div class="empty">fleet-shepherd stats gave nothing.</div>`;
+  const id = (x) => esc((x || "").slice(0, 8));
+  const pills = [];
+  if (s.stuck) pills.push(`<span class="pill ask">stuck</span>`);
+  if (s.unhandled) pills.push(`<span class="pill ask">${s.unhandled} unhandled, ${s.unhandled_checks} checks in a row</span>`);
+  const now = s.pass_running
+    ? `pass ${id(s.pass_id)} ${esc(s.pass_status)}, ${dur(s.pass_age_s / 60)}: <code>${esc(s.attach)}</code>`
+    : s.pass_id ? `no pass running; the last was ${id(s.pass_id)} (${esc(s.pass_status)}): <code>${esc(s.attach)}</code>` : "no pass on record";
+  const last = s.last_pass_id ? `last verdict ${esc(s.last_verdict || "?")} for pass ${id(s.last_pass_id)}, ${dur(s.last_pass_age_s / 60)} ago` : "no verdict on record";
+  const why = s.stuck_why ? `<div class="rd-body">${esc(s.stuck_why)}</div>` : "";
+  return `<h2 class="sec">Pass</h2><div class="card">` +
+    (pills.length ? `<div class="pills">${pills.join("")}</div>` : "") + why +
+    `<div class="rd-body">${now}</div><div class="rd-body">${last}</div>` +
+    `<div class="rd-body muted">last 24h: ${s.passes_24h} passes, ${s.nudges_24h} nudges, ${s.escalations_24h} escalations, ${s.skips_24h} skips; ` +
+    `${s.due} due, ${s.skipped} skipped, ${s.paged} paged</div></div>`;
+}
+
 function dueHtml(l) {
   const pass = l.lease_at ? `last pass ${shepAge(l.lease_at)} ago (${esc(l.lease_holder)})` : "no pass yet";
   const owed = l.due.length ? l.due.map(dueRow).join("")
@@ -67,7 +88,7 @@ function renderShepherd() {
   }
   const d = shst.data;
   const list = d ? d.rundowns : [];
-  $("sh-due").innerHTML = d ? dueHtml(d.ledger) : "";
+  $("sh-due").innerHTML = d ? passHtml(d.stats) + dueHtml(d.ledger) : "";
   $("sh-count").textContent = list.length ? `${list.length} newest` : "";
   $("sh-list").innerHTML = shst.err ? `<div class="card err">${esc(shst.err)}</div>`
     : !d ? `<div class="empty">Loading.</div>`

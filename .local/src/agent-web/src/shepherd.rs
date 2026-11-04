@@ -3,11 +3,14 @@
 //! session, so the page can show its transcript and type into it through the Sessions routes.
 //! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by
 //! `hub_core::boards::due`); what a pass chose to leave is in its log, read by the Actions tab.
+//! Its numbers and the pass running now are `fleet-shepherd stats`, the object the MQTT feed
+//! publishes, so the page and Home Assistant read one source.
 
 use agent_panel::chooser;
 use axum::Json;
 use hub_core::boards;
 use serde::Serialize;
+use serde_json::Value;
 
 /// Rundowns sent to the page. About two weeks at a few a day.
 const RUNDOWNS: usize = 60;
@@ -21,6 +24,23 @@ pub struct Shepherd {
     status: Option<String>,
     rundowns: Vec<boards::Rundown>,
     ledger: boards::Due,
+    /// `fleet-shepherd stats`, or null when it cannot run or says nothing parseable.
+    stats: Option<Value>,
+}
+
+fn stats() -> Option<Value> {
+    let out = std::process::Command::new("fleet-shepherd")
+        .arg("stats")
+        .output()
+        .ok()?;
+    parse_stats(&out.stdout)
+}
+
+/// Only an object counts: an error line or empty output is no stats, not a page of nulls.
+fn parse_stats(out: &[u8]) -> Option<Value> {
+    serde_json::from_slice::<Value>(out)
+        .ok()
+        .filter(Value::is_object)
 }
 
 /// The agent carrying agent-panel's `shepherd` tag, which it sets only while the lease is live.
@@ -39,6 +59,7 @@ pub async fn get() -> Json<Shepherd> {
             status: a.map(|a| a.status),
             rundowns: boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS),
             ledger: boards::due(&boards::shepherd_dir()),
+            stats: stats(),
         }
     })
     .await
@@ -48,6 +69,7 @@ pub async fn get() -> Json<Shepherd> {
         status: None,
         rundowns: Vec::new(),
         ledger: boards::Due::default(),
+        stats: None,
     });
     Json(out)
 }
@@ -72,5 +94,15 @@ mod tests {
         ]);
         assert_eq!(got.map(|a| a.target), Some("b:1".to_string()));
         assert!(armed(vec![agent("a:1", "agent ")]).is_none());
+    }
+
+    #[test]
+    fn stats_are_the_object_fleet_shepherd_prints_and_nothing_else() {
+        let got = parse_stats(br#"{"due":2,"pass_id":"sid","last_verdict":"WORKED"}"#).unwrap();
+        assert_eq!(got["due"], 2);
+        assert_eq!(got["last_verdict"], "WORKED");
+        assert!(parse_stats(b"").is_none());
+        assert!(parse_stats(b"fleet-shepherd: no ledger").is_none());
+        assert!(parse_stats(b"[1,2]").is_none());
     }
 }

@@ -248,6 +248,8 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_output --partial "pass ${id:0:8} is busy"
   assert_equal "$(starts)" 1
   assert_equal "$(outcome)" NOOP
+  # each run clears the runner's item, so the run that started nothing names the pass again
+  assert_equal "$(grep -cxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L hub attach -t dotfiles:shepherd" "$HOME/agentctl.calls")" 2
   # check did not run, so the line the pass holds is not counted against it
   assert_equal "$(grep -c -- --write "$HOME/sessions.calls")" 1
   live "$id" waiting
@@ -678,6 +680,44 @@ idle_row() {
   assert_success
   assert_line --index 0 'unhandled: nudge LANDED: b f-b'
   assert_line --index 1 'escalate DONE: a r-a'
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
+  # a second check in a row with a line owed: the shepherd is stuck, and stuck says which
+  "$SH" check >/dev/null
+  run "$SH" stuck
+  assert_failure 1
+  assert_line 'stuck: an unhandled due line at 2 checks in a row'
+  assert_line 'unhandled: nudge LANDED: b f-b'
+  # Negative control: a check that owes nothing ends the run of checks
+  doc "[$(row a DONE true true), $(row b LANDED true true), $(row c DONE false false)]"
+  "$SH" check >/dev/null
+  [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
+  run "$SH" stuck
+  assert_success
+  assert_output --partial 'passing: 1 due'
+}
+
+@test "stuck: lines due and no pass started in an hour; a recent pass, a live interactive lease or nothing due is passing" {
+  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tescalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf '%s\tp1-1111\tWORKED\tx\n' "$(date -u -d '70 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stuck
+  assert_failure 1
+  assert_line --index 0 --regexp '^stuck: 2 due and no pass started in (69|70|71)m$'
+  assert_line 'last pass: p1-1111 WORKED'
+  assert_line 'escalate NEEDS: b'
+  assert_equal "$("$SH" stats | jq -c '[.stuck, (.stuck_why | test("2 due"))]')" '[true,true]'
+  printf 'interactive %s\n' "$(( $(date +%s) - 300 ))" > "$FLEET_SHEPHERD_DIR/.lease"
+  run "$SH" stuck
+  assert_success
+  rm "$FLEET_SHEPHERD_DIR/.lease"
+  : > "$FLEET_SHEPHERD_DIR/.due"
+  run "$SH" stuck
+  assert_success
+  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '20 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stuck
+  assert_success
+  assert_output --regexp '^passing: 1 due, last pass (19|20|21)m ago$'
 }
 
 @test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {
@@ -744,4 +784,21 @@ idle_row() {
   assert_equal "$(jq -c '[.due, .unhandled, .skipped, .nudges_24h, .escalations_24h, .skips_24h, .passes_24h, .last_verdict, .pass_running]' <<< "$output")" '[2,1,1,1,1,1,1,"WORKED",false]'
   age="$(jq .last_pass_age_s <<< "$output")"
   [ "$age" -ge 540 ] && [ "$age" -le 720 ] || fail "last_pass_age_s $age"
+  assert_equal "$(jq -c '[.pass_id, .pass_status, .pass_age_s, .attach, .last_pass_id, .stuck]' <<< "$output")" '[null,null,null,null,"p1",false]'
+}
+
+@test "stats names the pass running now: its id, status, age and attach line; a pass from the old session attaches there" {
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '30 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  printf 'sid-2\t%s\t3\tdotfiles:shepherd\n' "$(( $(date +%s) - 120 ))" > "$FLEET_SHEPHERD_DIR/.pass"
+  live sid-2 busy
+  run "$SH" stats
+  assert_success
+  assert_equal "$(jq -c '[.pass_running, .pass_id, .pass_status, .attach, .last_pass_id, .last_verdict]' <<< "$output")" \
+    '[true,"sid-2","busy","tmux -L hub attach -t dotfiles:shepherd","p1","WORKED"]'
+  age="$(jq .pass_age_s <<< "$output")"
+  [ "$age" -ge 115 ] && [ "$age" -le 180 ] || fail "pass_age_s $age"
+  assert_equal "$(jq .last_pass_age_s <<< "$output")" "$age"
+  gone
+  printf 'sid-2\t%s\t3\n' "$(( $(date +%s) - 120 ))" > "$FLEET_SHEPHERD_DIR/.pass"
+  assert_equal "$("$SH" stats | jq -c '[.pass_status, .attach]')" '["gone","tmux -L hub attach -t shepherd"]'
 }

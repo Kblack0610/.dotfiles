@@ -490,6 +490,16 @@ cmd_status() {
         [ -n "$r_item" ]    && printf '  item:     %s\n' "$r_item"
         [ -n "$r_detail" ]  && printf '  detail:   %s\n' "$r_detail"
     fi
+    # The runner's verdict on its last run (proof_report), with that run's activity line.
+    local r_outcome r_line
+    r_outcome="$(cat "$(_outcome_file "$name")" 2>/dev/null)" || true
+    if [ -n "$r_outcome" ]; then
+        r_line="$(tail -n 1 "$STATE_DIR/$name/activity.log" 2>/dev/null)" || true
+        case "$r_line" in
+            "["*"] outcome=$r_outcome "*) printf '  outcome:  %s %s\n' "$r_outcome" "${r_line#*"] outcome=$r_outcome "}" ;;
+            *) printf '  outcome:  %s\n' "$r_outcome" ;;
+        esac
+    fi
 
     local stdout="$STATE_DIR/${name}.stdout.log"
     local stderr="$STATE_DIR/${name}.stderr.log"
