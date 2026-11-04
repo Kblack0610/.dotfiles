@@ -675,6 +675,15 @@ resumed() {
 # move is park and unpark back to back, so there is one exit path and one resume path.
 PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 
+# record <session> <what> -- park, move and unpark change the fleet the way a hold does, so each
+# pages low with a `park: <session>` title, as agent-hold does with `hold:` and `go:`. The
+# ledger is removed on unpark; agent-notify's log is what keeps the history.
+record() {
+    local by=""
+    [[ -n "${TMUX:-}" ]] && by=$(tmux display-message -p '#S' 2>/dev/null)
+    agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
+}
+
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
 ledger_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }
 
@@ -829,6 +838,7 @@ park_flow() {
     mv -f "$tmp" "$PARKED/$session"
     if [[ "$verb" == park ]]; then
         echo "claude-acct: parked $session: $PARKED/$session; claude-acct unpark $session resumes it"
+        record "$session" "parked on $(name_of "$from") ($status)"
         return 0
     fi
     unpark_ledger move "$PARKED/$session" "$to" "$name" "$note"
@@ -873,8 +883,13 @@ unpark_ledger() {
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
     rm -f "$file"
     got=$(resumed "$sid" "$pid" "$to")
-    if [[ "$verb" == move ]]; then echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
-    else echo "claude-acct: unparked $session on $name ($note): claude ${got% *}, ${got#* }"; fi
+    if [[ "$verb" == move ]]; then
+        echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
+        record "$session" "moved from $(name_of "$from") to $name"
+    else
+        echo "claude-acct: unparked $session on $name ($note): claude ${got% *}, ${got#* }"
+        record "$session" "unparked on $name"
+    fi
 }
 
 cmd_park() { park_flow park "$@"; }
