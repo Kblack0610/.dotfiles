@@ -257,6 +257,45 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_not_called 'start --item o1'
 }
 
+@test "the next phase starts when its parent closes ok; not on failed, not past an open hold, not when dispatch is held" {
+  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
+  "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
+  "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
+  "$AQ" add --project game --slug other "unrelated" >/dev/null
+  run "$AQ" move ph1 done --status ok
+  assert_success
+  assert_called 'fleet-dispatch start --item ph2'
+  assert_not_called 'start --item other'
+  # A failed parent leaves its next phase held.
+  "$AQ" add --project game --running --slug f1 "fails" >/dev/null
+  "$AQ" add --project game --slug f2 --after f1 "after a failure" >/dev/null
+  run "$AQ" move f1 done --status failed
+  assert_not_called 'start --item f2'
+  # Another hold on the next item still holds it.
+  "$AQ" add --project game --running --slug t1 "tagged parent" >/dev/null
+  AGENT_QUEUE_NOW=08:00 "$AQ" add --project game --slug t2 --after t1 --tags at:23:59 "later today" >/dev/null
+  AGENT_QUEUE_NOW=08:00 run "$AQ" move t1 done --status ok
+  assert_not_called 'start --item t2'
+  # A dispatch hold keeps it queued for the pass.
+  "$AQ" add --project game --running --slug h1 "held parent" >/dev/null
+  "$AQ" add --project game --slug h2 --after h1 "held next" >/dev/null
+  HOLD_EXIT=1 run "$AQ" move h1 done --status ok
+  assert_success
+  assert_output --partial 'dispatch is held, so h2 stays queued'
+  assert_not_called 'start --item h2'
+  [ -f "$(item queued h2)" ]
+  # A start that fails leaves it queued.
+  "$AQ" add --project game --running --slug x1 "parent" >/dev/null
+  "$AQ" add --project game --slug x2 --after x1 "next" >/dev/null
+  FD_EXIT=1 run "$AQ" move x1 done --status ok
+  assert_success
+  assert_output --partial 'x2 could not start now, so it stays queued'
+  AGENT_QUEUE_START=0 "$AQ" add --project game --running --slug z1 "parent" >/dev/null
+  "$AQ" add --project game --slug z2 --after z1 "next" >/dev/null
+  AGENT_QUEUE_START=0 run "$AQ" move z1 done --status ok
+  assert_not_called 'start --item z2'
+}
+
 plan_fixture() {
   cat > "$SANDBOX/my-plan.md" <<'EOF'
 # A plan
