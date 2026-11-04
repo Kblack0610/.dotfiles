@@ -233,12 +233,11 @@ impl App {
         }
     }
 
-    /// The directories to watch: agentctl's ledger and run markers, the night-shift queue and
-    /// the Unity gate ledger (a job started or ended), then the board files.
+    /// The directories to watch: agentctl's ledger and run markers and the Unity gate ledger (a
+    /// job started or ended), then the board files.
     pub fn watched(&self) -> Vec<(PathBuf, bool)> {
         let mut v = vec![
             (self.paths.agentctl.clone(), true),
-            (self.paths.night.clone(), true),
             (self.files.shepherd.clone(), false),
             (self.files.daylog.clone(), false),
         ];
@@ -803,8 +802,7 @@ pub fn is_write(k: &notify::EventKind) -> bool {
 /// Whether a changed path means a job started or ended (agentctl's stdout logs change all the
 /// time and mean neither).
 pub fn is_job_file(paths: &Paths, p: &std::path::Path) -> bool {
-    p.starts_with(&paths.night)
-        || p == paths.unity_runs
+    p == paths.unity_runs
         || matches!(
             p.file_name().and_then(|n| n.to_str()),
             Some("runs.jsonl" | "run")
@@ -958,7 +956,6 @@ mod tests {
         assert!(is_job_file(&a.paths, &st.join("runs.jsonl")));
         assert!(is_job_file(&a.paths, &st.join("dream/run")));
         assert!(!is_job_file(&a.paths, &st.join("dream.stdout.log")));
-        assert!(is_job_file(&a.paths, &a.paths.night.join("done/x.md")));
         assert!(is_job_file(&a.paths, &a.paths.unity_runs));
     }
 
@@ -1020,12 +1017,12 @@ mod tests {
     fn an_open_log_shows_its_tail_and_scrolls_back() {
         let mut a = app(Tab::Jobs);
         let mut j = hub_core::jobs::Job::new(
-            hub_core::jobs::Source::Night,
+            hub_core::jobs::Source::Agentctl,
             "task",
             hub_core::jobs::State::Done,
         );
-        j.log = Some(LogRef::Night {
-            slug: "task".into(),
+        j.log = Some(LogRef::Journal {
+            invocation: "task".into(),
         });
         a.jobs = Some(Jobs {
             at: 0,
