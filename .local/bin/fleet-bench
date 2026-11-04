@@ -75,7 +75,7 @@ set -uo pipefail
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
-: "${BENCH_QUEUE_CMD:=fleet-dispatch queue --json}"   # rows dispatch would start after the live work
+: "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
