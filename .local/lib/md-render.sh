@@ -8,7 +8,7 @@
 # window declared `wrap`, and that produced three separate unreadabilities at once:
 #
 #   * the note's MACHINERY on screen. YAML frontmatter, and the markers the tools address
-#     each other with -- <!-- nextup:auto -->, <!-- STATUS:START -->, <!-- AUTO:START -->,
+#     each other with -- <!-- STATUS:START -->, <!-- AUTO:START -->,
 #     <!-- pr:12 -->. Addressing, not content, and all of it rendered.
 #   * fzf wrapping by COLUMN, which knows nothing about words, so prose broke mid-word
 #     ("docu / ments", "develo / p") with fzf's wrap-sign glyph on every continuation.
