@@ -104,7 +104,7 @@ find . -name "coverage*.json" -o -name "lcov.info" -o -name "coverage.xml" 2>/de
 
 ---
 
-### Phase 4: Dependency Analysis (@devops-architect mindset)
+### Phase 4: Dependency Analysis
 
 **Focus**: outdated packages, breaking changes, upgrade paths
 

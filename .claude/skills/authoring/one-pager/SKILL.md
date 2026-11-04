@@ -19,7 +19,7 @@ Generate a concise 1-2 page problem doc in one of three formats - Problem Brief 
 ## When to use this skill
 
 - User asks to "describe the problem", "write a one-pager", "draft a brief", "write a pitch", or wants a 1-2 page doc framing an issue or proposal.
-- Use this *instead of* `kb-product-owner` (heavy Product Briefs) or `requirements-analyst` (full PRDs) when the user wants something lightweight and domain-neutral.
+- Use this *instead of* `kb-product-owner` (heavy Product Briefs) or the `scope` skill (a full PRD, TSD and SOW) when the user wants something lightweight and domain-neutral.
 
 ## Format selection
 
@@ -194,7 +194,7 @@ After writing, print:
 ## Related
 
 - `kb-product-owner` agent (Paige) - use for full Product Briefs with user stories + acceptance criteria.
-- `requirements-analyst` agent - use for comprehensive PRDs.
+- `scope` skill - use for a comprehensive PRD with its tech spec and SOW.
 - `kb-architect` agent - use for technical specs and ADRs.
 - `~/.notes/lab/HANDBOOK.md` - incubator conventions.
 - `~/.notes/lab/ideas/_IDEAS.md` - raw idea capture (free-form, predates this skill).
