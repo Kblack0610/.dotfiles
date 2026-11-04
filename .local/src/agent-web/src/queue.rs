@@ -41,6 +41,17 @@ pub async fn list() -> ApiResult<Json<Vec<Item>>> {
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
+/// The window's line and what sits now, worded by hub-core as the hub TUI words them.
+pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
+    let s = tokio::task::spawn_blocking(|| hub_queue::stats(&System))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        serde_json::json!({ "week": s.week(), "sitting": s.sitting_line() }),
+    ))
+}
+
 /// Cancel or bump through hub-core, which checks the slug and priority and runs agent-queue.
 async fn act(f: impl FnOnce() -> Result<String, String> + Send + 'static) -> ApiResult<StatusCode> {
     tokio::task::spawn_blocking(f)

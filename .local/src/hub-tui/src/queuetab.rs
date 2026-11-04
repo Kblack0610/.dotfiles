@@ -3,7 +3,7 @@
 //! pick an active item, `c` arms a cancel that waits on y, and `+`/`-` move its priority one
 //! step. Both run agent-queue through hub-core; this file writes nothing.
 
-use hub_core::queue::{Item, Queue, State, Stats, SECTIONS};
+use hub_core::queue::{Item, Queue, State, SECTIONS};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
@@ -112,23 +112,6 @@ fn when(t: Option<&str>, now: i64) -> String {
         .map_or(String::new(), |d| clock(d.timestamp(), now))
 }
 
-/// The week's line from `agent-queue stats`, or None before anything finished.
-fn week(s: &Stats) -> String {
-    let n = |k: &str| s.done.get(k).copied().unwrap_or(0);
-    let done: u64 = s.done.values().sum();
-    let prs: u64 = s.by_project.values().map(|o| o.prs).sum();
-    let m = |v: Option<i64>| v.map_or("-".into(), |v| format!("{v}m"));
-    format!(
-        "since {}: {done} done ({} ok, {} failed, {} cancelled), {prs} with a PR, wait median {}, to PR median {}",
-        s.since,
-        n("ok"),
-        n("failed"),
-        n("cancelled"),
-        m(s.wait_minutes_median),
-        m(s.to_pr_minutes_median)
-    )
-}
-
 /// The Overview's one line: what waits on you, what runs, what is next, what finished today.
 pub fn counts(q: &Queue) -> String {
     let held = q
@@ -207,8 +190,11 @@ pub fn page(q: &Queue, v: &QueueView, p: Palette, now: i64, w: usize) -> Vec<Lin
     let rest = q
         .stats
         .as_ref()
-        .map_or(String::new(), |s| format!("  {}", week(s)));
+        .map_or(String::new(), |s| format!("  {}", s.week()));
     out.push(clip_line(heading("AGENT QUEUE", rest, p), w));
+    if let Some(l) = q.stats.as_ref().and_then(|s| s.sitting_line()) {
+        out.push(clip_line(Line::raw(l), w));
+    }
     out.push(status_line(v, p, w));
     let sel = v.selected(q).map(|i| i.slug.clone());
     for (s, title) in SECTIONS {
@@ -275,6 +261,7 @@ fn status_line(v: &QueueView, p: Palette, w: usize) -> Line<'static> {
 pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
+    use hub_core::queue::Stats;
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(

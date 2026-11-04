@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
         .route("/api/queue/projects", get(queue::projects))
+        .route("/api/queue/stats", get(queue::stats))
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))

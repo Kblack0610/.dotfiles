@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
-  reviewed: "2026-11-04"
+  reviewed: 2026-11-04
 ---
 
 # fleet-bench
@@ -55,7 +55,7 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 
 - `vs [<label>|latest] [--json]`: a frozen forecast against what happened since. It gives phases ticked against those expected by now, each baseline session finished, ahead, on track, behind or gone (behind and ahead come with minutes), scope added to baseline plans, new plans, sessions started since, and inflow now against inflow when frozen.
 
-- `queue [--json]`: the agent queue over the last `BENCH_QUEUE_DAYS` (7) days in one line: items done by outcome (ok, failed, cancelled), how many recorded a PR, done per day, the median wait (queued to started) and the median time to PR (queued to finished, for items with a `pr:`). Every number is `agent-queue stats --json --since <date>` (seam `BENCH_QUEUE_STATS_CMD`), which owns the store and the formulas; `--json` passes that object through, with `by_project` and `by_source` (human, shepherd, board and so on) carrying the same outcomes each. The briefing carries the line, and the scorecard's "Queue" section the tables. Unreadable: exit 1, and `?` in the scorecard.
+- `queue [--json]`: the agent queue over the last `BENCH_QUEUE_DAYS` (7) days in one line: items done by outcome (ok, failed, cancelled), how many recorded a PR, done per day, the wait (queued to started) median and p90 over items that waited, with the items that started at once counted apart (a `--running` or plan item would otherwise read as a 0 min wait), the median time to PR (queued to finished, for items with a `pr:`), and what sits now: how many queued items could start, the oldest one's age, and how many are held. Every number is `agent-queue stats --json --since <date>` (seam `BENCH_QUEUE_STATS_CMD`), which owns the store and the formulas; `--json` passes that object through, with `by_project` and `by_source` (human, shepherd, board and so on) carrying the same outcomes each. The briefing carries the line, and the scorecard's "Queue" section the tables. Unreadable: exit 1, and `?` in the scorecard.
 
 - `throughput [--from T] [--to T]`: runs/h, share not passed, editor-hours and those spent on runs not passed, merges/h per project, each pool's queue, and load per core on every host over 0.5x. Default window is the last 2h; T is an epoch or anything `date -d` reads. Any slot, hold or pace change states this number before and after. Read-only apart from a `git fetch` of each project's default branch.
 

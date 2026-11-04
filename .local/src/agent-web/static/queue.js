@@ -10,10 +10,12 @@ const Q_SECTIONS = [
   ["queued", "Up next"],
   ["done", "Done today"],
 ];
-const qst = { items: null, err: null, projects: [], busy: false, msg: "", draft: null };
+const qst = { items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null };
 
 const refreshQueue = coalesce(async () => {
   try { qst.items = await api("/api/queue"); qst.err = null; } catch (e) { qst.err = e.message; }
+  // The window's line and what sits now; the list still shows when agent-queue stats fails.
+  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}`, sitting: null }; }
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
 });
@@ -114,6 +116,7 @@ function renderQueueList() {
 function drawQueueList(el) {
   if (!qst.items) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
   let html = qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "";
+  if (qst.stats) html += `<div class="muted qstats">${esc(qst.stats.week)}${qst.stats.sitting ? `<br>${esc(qst.stats.sitting)}` : ""}</div>`;
   for (const [state, title] of Q_SECTIONS) {
     const rows = qst.items.filter((i) => i.state === state);
     if (!rows.length && state === "waiting") continue;
