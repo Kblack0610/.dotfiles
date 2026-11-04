@@ -31,10 +31,13 @@
 #   fleet-bench forecast [--json] [--queue] [--baseline <label>]
 #                                every open phase in expected order, all-done-by at the calibrated
 #                                and the recent pace, the drain; --baseline freezes it to compare
+#   fleet-bench vs [<label>|latest] [--json]
+#                                a frozen forecast against what the fleet did since, per session
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD.
+# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
+# BENCH_FORECAST_HORIZON_H.
 
 set -uo pipefail
 
@@ -71,6 +74,7 @@ set -uo pipefail
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch queue --json}"   # rows dispatch would start after the live work
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -80,6 +84,7 @@ SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
 FORECASTS="$DIR/forecasts.jsonl"
+FORECAST_SCORES="$DIR/forecast-scores.jsonl"
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
@@ -170,9 +175,9 @@ def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
 # starts it with its open phases; every later one ticks, adds or removes phases against the one before
 def flow_steps: map(select(.phases_total != null and .phases_done != null))
   | group_by([.session_id, .plan_file]) | map(sort_by(.epoch) | . as $r
-      | [{epoch: $r[0].epoch, project: $r[0].project, start: 1, open: ([$r[0].phases_total - $r[0].phases_done, 0] | max),
+      | [{epoch: $r[0].epoch, session_id: $r[0].session_id, project: $r[0].project, start: 1, open: ([$r[0].phases_total - $r[0].phases_done, 0] | max),
           ticked: 0, added: 0, removed: 0}]
-        + [range(1; length) | {epoch: $r[.].epoch, project: $r[.].project, start: 0, open: 0,
+        + [range(1; length) | {epoch: $r[.].epoch, session_id: $r[.].session_id, project: $r[.].project, start: 0, open: 0,
           ticked: ([$r[.].phases_done - $r[. - 1].phases_done, 0] | max),
           added: ([$r[.].phases_total - $r[. - 1].phases_total, 0] | max),
           removed: ([$r[. - 1].phases_total - $r[.].phases_total, 0] | max)}]) | add // [];
@@ -182,18 +187,76 @@ def flow_sum: {ticked: (map(.ticked) | add // 0), added: (map(.added) | add // 0
 # progress rows in -> what came in and what went out between $a and $b. dropped is the open
 # phases that left with a session that ended unfinished: the remainder of the balance.
 def flow($a; $b): . as $p | (($b - $a) / 3600) as $h
-  | ($p | flow_steps | map(select(.epoch > $a and .epoch <= $b))) as $st
+  | def per($x): if $h > 0 then $x / $h | round2 else null end;
+  ($p | flow_steps | map(select(.epoch > $a and .epoch <= $b))) as $st
   | ($p | open_at($a)) as $o0 | ($p | open_at($b)) as $o1
   | ($st | flow_sum) as $f
   | {from: $a, to: $b, hours: ($h | round2)} + $f
-  + {net_in: ($f.in - $f.removed), in_per_h: ($f.in / $h | round2), out_per_h: ($f.ticked / $h | round2),
-     net_in_per_h: (($f.in - $f.removed) / $h | round2), open_start: $o0, open_end: $o1,
+  + {net_in: ($f.in - $f.removed), in_per_h: per($f.in), out_per_h: per($f.ticked),
+     net_in_per_h: per($f.in - $f.removed), open_start: $o0, open_end: $o1,
      dropped: ($o0 + $f.in - $f.removed - $f.ticked - $o1),
      by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum) | sort_by(-.ticked)),
      hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum)
        | reduce .[] as $x ({scope: $o0, done: 0, rows: []};
            .scope += ($x.in - $x.removed) | .done += $x.ticked
            | .rows += [$x + {scope: .scope, done: .done}]) | .rows)};
+# progress rows in -> a frozen forecast $b against what happened by $t: per baseline session the
+# phases expected by now (p50 and slow) against the phases it ticked, and the scope that came in.
+def vs($b; $t): . as $p | $b.made_epoch as $m
+  | ($p | map(select(.epoch <= $t)) | map(.epoch) | max) as $last
+  | ($p | map(select(.epoch == $last)) | map({key: .session_id, value: .}) | from_entries) as $cur
+  | ($p | flow_steps | map(select(.epoch > $m and .epoch <= $t))) as $st
+  | ($b.schedule | map(.session_id)) as $ids
+  | ($b.schedule | map(. as $s | $cur[$s.session_id] as $r
+      | ($st | map(select(.session_id == $s.session_id))) as $mine
+      | ([$s.phases[] | select(.p50 <= $t)] | length) as $exp
+      | ([$mine | map(.ticked) | add // 0, $s.left] | min) as $act
+      | {target: $s.target, session_id: $s.session_id, left: $s.left, expected: $exp,
+         expected_slow: ([$s.phases[] | select(.slow <= $t)] | length), ticked: $act,
+         added: ($mine | map(.added) | add // 0), removed: ($mine | map(.removed) | add // 0),
+         new_plans: ($mine | map(.start) | add // 0),
+         state: (if $r == null then "gone"
+                 elif $r.finished or $act >= $s.left or ($r.phases_total != null and $r.phases_done != null and $r.phases_done >= $r.phases_total) then "finished"
+                 elif $act > $exp then "ahead" elif $act < $exp then "behind" else "on track" end),
+         next: ($s.phases[$act].name // null)}
+      # behind: minutes since the phase it is on was due; ahead: minutes early on the last one it ticked
+      | . + {min: (if .state == "behind" then (($t - $s.phases[$act].p50) / 60 | floor)
+                   elif .state == "ahead" then (($s.phases[$act - 1].p50 - $t) / 60 | floor) else null end)})) as $rows
+  | ($p | flow($m; $t)) as $f
+  | {label: $b.label, made_epoch: $m, now: $t, hours: (($t - $m) / 3600 | round2),
+     expected: ($rows | map(.expected) | add // 0), expected_slow: ($rows | map(.expected_slow) | add // 0),
+     ticked: ($rows | map(.ticked) | add // 0), ticked_all: $f.ticked,
+     states: ($rows | group_by(.state) | map({key: .[0].state, value: length}) | from_entries),
+     added: ($rows | map(.added) | add // 0), removed: ($rows | map(.removed) | add // 0),
+     new_plans: ($rows | map(.new_plans) | add // 0),
+     started_since: ($st | map(select(.start == 1 and (.session_id as $i | $ids | index($i) | not)) | .session_id) | unique | length),
+     in: $f.in, in_per_h: $f.net_in_per_h, in_per_h_frozen: $b.drain.in_per_h, out_per_h: $f.out_per_h,
+     sessions: $rows};
+# progress rows in -> the score of baseline $b at $t once it resolves: every one of its sessions
+# finished or gone, or $hz hours passed. Nothing until then, so a baseline is scored once.
+def forecast_score($b; $t; $hz): . as $p | $b.made_epoch as $m
+  | ($p | map(select(.epoch <= $t)) | map(.epoch) | max) as $last
+  | ($b.schedule | map(. as $s | ($p | map(select(.session_id == $s.session_id and .epoch > $m and .epoch <= $t))) as $r
+      | ($r | map(select(.finished or (.phases_total != null and .phases_done != null and .phases_done >= .phases_total))) | map(.epoch) | min) as $fin
+      | ($r | map(.epoch) | max) as $seen
+      | if $fin != null then {end: $fin, how: "finished"}
+        # gone: ended by the first sample that no longer had it
+        elif ($seen // $m) < $last then {end: ($p | map(.epoch | select(. > ($seen // $m))) | min), how: "gone"}
+        else {end: null, how: "open"} end)) as $ends
+  | ($ends | map(select(.end == null)) | length) as $open
+  | select($open == 0 or $t - $m >= $hz * 3600)
+  | (if $open == 0 then ($ends | map(.end) | max) else $t end) as $end
+  | def ratio($pred): if $pred == null or $pred <= $m then null else (($end - $m) / ($pred - $m) | round2) end;
+  {label: $b.label, made_epoch: $m, scored_epoch: $t, resolved_by: (if $open == 0 then "all done" else "horizon" end),
+   sessions: ($ends | length), finished: ($ends | map(select(.how == "finished")) | length),
+   gone: ($ends | map(select(.how == "gone")) | length), open: $open,
+   actual_last: (if $open == 0 then $end else null end),
+   bound: (if $open == 0 then "exact" else "lower" end),
+   pred_last_p50: $b.last_p50, pred_last_slow: $b.last_slow, pred_drain: $b.drain.epoch,
+   ratio_p50: ratio($b.last_p50), ratio_slow: ratio($b.last_slow),
+   error_min: (if $b.last_p50 == null then null else (($end - $b.last_p50) / 60 | floor) end),
+   within_slow: ($b.last_slow != null and $end <= $b.last_slow)}
+  + ($p | flow($m; $end) | {in, ticked, in_per_h: .net_in_per_h, in_per_h_frozen: $b.drain.in_per_h});
 '
 
 # sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY rows have no session)
@@ -293,6 +356,9 @@ cmd_sample() {
   [ -n "$est" ] && printf '%s\n' "$est" >> "$ESTIMATES"
   sc=$(new_scores) || { report_outcome FAILED "score step failed"; return 1; }
   [ -n "$sc" ] && printf '%s\n' "$sc" >> "$SCORES"
+  local fs
+  fs=$(new_forecast_scores "$t") || { report_outcome FAILED "forecast score step failed"; return 1; }
+  [ -n "$fs" ] && printf '%s\n' "$fs" >> "$FORECAST_SCORES"
   local n e s
   n=$(grep -c . <<<"$rows"); e=$(grep -c . <<<"$est"); s=$(grep -c . <<<"$sc")
   say "$n sessions, $e new estimates, $s new scores"
@@ -358,6 +424,15 @@ cmd_report() {
       (map(select(.horizon_min >= 480)) | line("horizon over 8h")),
       (map(select(.done_bound == "upper")) | if length > 0 then "  \(length) finished before their first sample, so their real error is smaller than shown" else empty end)
     ' "$SCORES"
+  fi
+  echo
+  echo "Fleet forecast accuracy (ratio = actual over predicted time to the last session's finish)"
+  if [ ! -s "$FORECAST_SCORES" ]; then
+    echo "  nothing scored yet: a baseline is scored when its sessions are all done, or after ${BENCH_FORECAST_HORIZON_H}h"
+  else
+    jq -rs "$JQ_LIB"'
+      "  \(length) baselines scored: median ratio \(map(.ratio_p50 // empty) | median // "-")x as calibrated, \(map(.ratio_slow // empty) | median // "-")x at the slow end; \(map(select(.within_slow)) | length) of \(length) done inside the slow end",
+      (.[-3:][] | "  \(.label): \(.resolved_by), \(.ratio_p50 // "-")x\(if .bound == "lower" then " or more (\(.open) still open)" else "" end), error \(.error_min // "-") min, \(.in) phases came in at \(.in_per_h)/h against \(.in_per_h_frozen)/h frozen")' "$FORECAST_SCORES"
   fi
   echo
   local r st
@@ -1325,6 +1400,55 @@ cmd_forecast() {
         | "    \(.t | hm)  (slow \(.slow | hm))  \(.target | sub("^[^/]*/"; ""))  \(.name)")' <<<"$fc"
 }
 
+# progress_since <epoch>: the progress rows from an hour before it on, so a flow from that epoch
+# has the sample before it and the 9 MB history is not slurped whole.
+progress_since() { jq -c --argjson a "$(($1 - 3600))" 'select(.epoch >= $a)' "$PROGRESS"; }
+
+# baseline_pick [label|latest] -> the newest frozen forecast with that label, or the newest of all
+baseline_pick() {
+  local l="${1:-latest}"
+  [ -s "$FORECASTS" ] || return 1
+  jq -cs --arg l "$l" 'map(select($l == "latest" or .label == $l)) | last // empty' "$FORECASTS" | grep .
+}
+
+# cmd_vs [<label>|latest] [--json]: a frozen forecast against what the fleet did since
+cmd_vs() {
+  local json=0 label=latest b t
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) say "usage: fleet-bench vs [<label>|latest] [--json]"; return 2 ;;
+      *) label="$1"; shift ;;
+    esac
+  done
+  b=$(baseline_pick "$label") || { say "no baseline $label: freeze one with fleet-bench forecast --baseline <label>"; return 1; }
+  t=$(now)
+  local v
+  v=$(progress_since "$(jq -r .made_epoch <<<"$b")" | jq -cs --argjson b "$b" --argjson t "$t" "$JQ_LIB"'vs($b; $t)') || return 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$v"; return 0; fi
+  jq -r "$JQ_LIB"'
+    "vs baseline \(.label) (frozen \(.made_epoch | hm), \(.hours)h ago)",
+    "  ticked: \(.ticked) of the \(.expected) phases expected by now (\(.expected_slow) at the slow end), \(.ticked_all) fleet-wide",
+    "  sessions: " + ([("finished", "ahead", "on track", "behind", "gone") as $k | select(.states[$k] != null) | "\(.states[$k]) \($k)"] | join(", ")),
+    "  scope: +\(.added) added to baseline plans, -\(.removed) removed, \(.new_plans) new plans in them, \(.started_since) sessions started since",
+    "  inflow: \(.in_per_h)/h since against \(.in_per_h_frozen)/h when frozen, out \(.out_per_h)/h",
+    (.sessions | map(select(.state == "behind")) | sort_by(-.min) | if length > 0 then "  behind:", (.[] | "    \(.target | sub("^[^/]*/"; "")): \(.ticked) of \(.expected) expected, \(.min)m past due on \(.next)") else empty end),
+    (.sessions | map(select(.state == "ahead")) | sort_by(-.min) | if length > 0 then "  ahead:", (.[] | "    \(.target | sub("^[^/]*/"; "")): \(.ticked) of \(.expected) expected, \(.min)m early") else empty end)' <<<"$v"
+}
+
+# new_forecast_scores <now> -> a score for each frozen forecast that resolved and has none yet
+new_forecast_scores() {
+  local t="$1" b k min
+  [ -s "$FORECASTS" ] || return 0
+  local todo
+  todo=$(jq -cs --slurpfile d <(cat "$FORECAST_SCORES" 2>/dev/null) '
+    ($d | map("\(.label) \(.made_epoch)")) as $done | .[] | select(("\(.label) \(.made_epoch)") as $k | $done | index($k) | not)' "$FORECASTS")
+  [ -n "$todo" ] || return 0
+  min=$(jq -s 'map(.made_epoch) | min' <<<"$todo")
+  progress_since "$min" | jq -cs --slurpfile todo <(printf '%s\n' "$todo") --argjson t "$t" --argjson hz "$BENCH_FORECAST_HORIZON_H" "$JQ_LIB"'
+    . as $p | $todo[] as $b | $p | forecast_score($b; $t; $hz)'
+}
+
 # cmd_flow [--from T] [--to T] [--json] [--hourly]: phases in against phases out over a window
 cmd_flow() {
   local from='' to='' json=0 hourly=0
@@ -1377,8 +1501,9 @@ main() {
     throughput) shift; cmd_throughput "$@" ;;
     flow) shift; cmd_flow "$@" ;;
     forecast) shift; cmd_forecast "$@" ;;
-    -h | --help) sed -n '2,37p' "$0" ;;
-    *) sed -n '2,33p' "$0" >&2; return 2 ;;
+    vs) shift; cmd_vs "$@" ;;
+    -h | --help) sed -n '2,39p' "$0" ;;
+    *) sed -n '2,35p' "$0" >&2; return 2 ;;
   esac
 }
 

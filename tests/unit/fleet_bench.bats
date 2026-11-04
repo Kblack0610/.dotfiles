@@ -14,6 +14,7 @@ setup() {
   export BENCH_DEFAULT_PHASE_MIN=60
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
+  export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
@@ -1258,4 +1259,40 @@ rowp() {
   refute_line --partial 'queued after this'
   run "$SUBJECT" forecast --baseline
   assert_failure 2
+}
+
+@test "vs compares a frozen forecast with what each session ticked, the scope added and the sessions started since" {
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline m 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 1 4 pa; rowp b lab/game-agent-2:1 1 2 pb; } > "$SNAP"; sample_at 3600
+  { rowp a lab/game-agent-1:1 1 4 pa; rowp b lab/game-agent-2:1 2 2 pb true; rowp c lab/game-agent-3:1 0 1 pc; } > "$SNAP"; sample_at 7200
+  run env BENCH_NOW=$((T0 + 7800)) "$SUBJECT" vs m --json
+  assert_success
+  run jq -c '{expected, ticked, states, added, started_since, a: (.sessions[0] | [.state, .min, .next])}' <<<"$output"
+  assert_output '{"expected":4,"ticked":3,"states":{"behind":1,"finished":1},"added":1,"started_since":1,"a":["behind",10,"phase 2"]}'
+  run env BENCH_NOW=$((T0 + 7800)) "$SUBJECT" vs
+  assert_line --partial 'ticked: 3 of the 4 phases expected by now'
+  assert_line --partial 'game-agent-1:1: 1 of 2 expected, 10m past due on phase 2'
+  run "$SUBJECT" vs nope
+  assert_failure
+}
+
+@test "a baseline is scored once when its sessions are done, and at the horizon as a lower bound" {
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline done 2>/dev/null >/dev/null
+  rowp c lab/game-agent-3:1 0 5 pc > "$SNAP"; sample_at 60
+  BENCH_NOW=$((T0 + 60)) "$SUBJECT" forecast --baseline open 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 2 3 pa; rowp b lab/game-agent-2:1 2 2 pb true; rowp c lab/game-agent-3:1 1 5 pc; } > "$SNAP"; sample_at 7200
+  { rowp a lab/game-agent-1:1 3 3 pa true; rowp c lab/game-agent-3:1 2 5 pc; } > "$SNAP"
+  BENCH_FORECAST_HORIZON_H=4 sample_at 9000
+  # done: a and b were gone from the first sample after it (only c was sampled), so both ended then
+  run jq -sc 'map({label, resolved_by, gone, actual_last: (.actual_last - '"$T0"'), ratio_p50})' "$FLEET_BENCH_DIR/forecast-scores.jsonl"
+  assert_output '[{"label":"done","resolved_by":"all done","gone":2,"actual_last":60,"ratio_p50":0.01}]'
+  BENCH_FORECAST_HORIZON_H=4 sample_at 9600
+  BENCH_FORECAST_HORIZON_H=4 sample_at 14460
+  run jq -sc 'map({label, resolved_by, bound, open})' "$FLEET_BENCH_DIR/forecast-scores.jsonl"
+  assert_output '[{"label":"done","resolved_by":"all done","bound":"exact","open":0},{"label":"open","resolved_by":"horizon","bound":"lower","open":1}]'
+  run "$SUBJECT" report
+  assert_line --partial '2 baselines scored'
+  assert_line --partial 'or more (1 still open)'
 }
