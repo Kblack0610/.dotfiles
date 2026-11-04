@@ -137,7 +137,6 @@ function renderLog() {
   const w = rec.waiting || {};
   const nWait = (w.main || []).length + (w.needs || []).length + (w.asks || []).length;
   const repos = new Set((rec.merged || []).map((m) => m.repo)).size;
-  const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
   let html = `<div class="bhead daynav">
     <span><button class="btn" data-step="-1"${i > 0 ? "" : " disabled"}>&lsaquo;</button>
     <b>${weekday(day)} ${esc(day)}</b> <span class="muted">${rec.live ? "live" : "closed"}, gathered ${rec.gathered_at ? hm(rec.gathered_at) : "?"}</span>
@@ -156,9 +155,7 @@ function renderLog() {
   html += benchTable(rec);
   const tl = rec.timeline || [];
   if (tl.length) html += `<details class="sec-d"><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
-  const y = el.scrollTop;
-  el.innerHTML = html;
-  el.scrollTop = y;
+  paint(el, html);
 }
 
 $("log").addEventListener("click", (e) => {
@@ -179,8 +176,9 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "t") goDay(null);
 });
 
+// Any record written changes the history charts, so a log event refetches both.
+const logFeed = pushed("log", ["log"], refreshLog);
 TABS.log = {
-  show() { renderLog(); if (!lst.rec) refreshLog(); },
-  // Any record written changes the history charts, so every log event refetches both.
-  onEvent(ev) { if (ev.kind === "log" || ev.kind === "resync") refreshLog(); },
+  show() { renderLog(); logFeed.show(!lst.rec); },
+  onEvent: logFeed.onEvent,
 };

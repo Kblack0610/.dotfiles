@@ -37,7 +37,7 @@ function shepWhen(stamp) {
 function rundownCard(r) {
   const open = shst.open.has(r.file) ? " open" : "";
   return `<details class="card rd"${open} data-file="${esc(r.file)}"><summary><b>${esc(r.title)}</b>` +
-    ` <span class="muted">${shepWhen(r.stamp)}</span></summary><div class="rd-body">${esc(r.body)}</div></details>`;
+    ` <span class="muted">${shepWhen(r.stamp)}</span></summary><div class="rd-body md">${md(r.body)}</div></details>`;
 }
 
 // Minutes since an epoch in seconds, as "12m"; "-" when the ledger does not say.
@@ -88,9 +88,9 @@ function renderShepChat() {
   if (!d || !d.target) { el.innerHTML = `<div class="empty">No shepherd armed. Its lease is set when fleet-shepherd starts a pass.</div>`; return; }
   if (shst.chatErr) { el.innerHTML = `<div class="err">${esc(shst.chatErr)}</div>`; return; }
   if (!shst.chat) { el.innerHTML = `<div class="empty">Loading.</div>`; return; }
-  const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  const stick = atBottom(el);
   el.innerHTML = shst.chat.length ? shst.chat.map(evHtml).join("") : `<div class="empty">Nothing said yet.</div>`;
-  if (stick) el.scrollTop = el.scrollHeight;
+  if (stick) toBottom(el);
 }
 
 async function shepSend() {

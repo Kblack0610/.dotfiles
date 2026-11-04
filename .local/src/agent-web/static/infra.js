@@ -11,7 +11,7 @@ const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "pla
 // A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
 const FAILED_OPEN = 25;
 // Each failed group's folded state, which outlives the re-render on every refresh.
-const ist = { data: null, err: null, timer: null, open: {} };
+const ist = { data: null, err: null, open: {} };
 // Recent runs shown before the rest fold away.
 const RECENT_OPEN = 30;
 
@@ -19,11 +19,6 @@ const refreshInfra = coalesce(async () => {
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
   if (st.tab === "infra") renderInfra();
 });
-
-function infraTick() {
-  if (st.tab !== "infra") { clearInterval(ist.timer); ist.timer = null; return; }
-  if (!document.hidden) refreshInfra();
-}
 
 // Status as the cc:* rules give it: 0 ok, 1 warn, 2 red, anything else no data. The colour
 // always comes with its word.
@@ -43,14 +38,10 @@ function ccIndex(series) {
   return by;
 }
 
-const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
-const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" : dur(s / 60));
 const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)} &rarr;</a>` : "";
 
 const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
-
-const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
 
 function kpis(cc) {
   const one = (n) => (cc[n] || {})[""];
@@ -381,18 +372,13 @@ function renderInfra() {
   html += `<h2 class="sec">Recent runs <span class="muted">every job, any source: the Jobs tab</span></h2>${recentTable(inst)}`;
   html += `<h2 class="sec">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h2>${fin.body ? `<div class="panel scroll">${fin.body}</div>` : ""}`;
-  const y = el.scrollTop;
-  el.querySelectorAll("details[data-k]").forEach((d) => { ist.open[d.dataset.k] = d.open; });
-  el.innerHTML = html;
-  el.scrollTop = y;
+  paint(el, html, ist.open);
 }
 
+const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
+
 TABS.infra = {
-  show() {
-    renderInfra();
-    refreshInfra();
-    if (!ist.timer) ist.timer = setInterval(infraTick, INFRA_REFRESH_MS);
-  },
+  show() { renderInfra(); pollInfra(); },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") refreshInfra(); },
 };
