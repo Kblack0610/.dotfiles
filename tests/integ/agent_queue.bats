@@ -13,6 +13,9 @@ setup() {
   REPO="$SANDBOX/repos/game"
   git init -q "$REPO"
   jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app"}, aliases: {"g2": "game"}}' > "$AGENT_QUEUE_PROJECT_MAP"
+  # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
 }
 
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
@@ -161,6 +164,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   f="$(item running by-hand)"
   [ "$(field "$f" session)" = dotfiles-70 ]
   [ -n "$(field "$f" started)" ]
+}
+
+@test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
+  run "$AQ" add --project game --mode plan --slug p1 "plan this"
+  assert_success
+  assert_called 'fleet-dispatch start --item p1'
+  FD_EXIT=1 run "$AQ" add --project game --mode plan --slug p2 "plan that"
+  assert_success
+  assert_output --partial 'p2 could not start now, so it stays queued'
+  [ -f "$(item queued p2)" ]
+  AGENT_QUEUE_START=0 run "$AQ" add --project game --mode plan --slug p3 "plan later"
+  assert_success
+  assert_not_called 'start --item p3'
+  run "$AQ" add --project game --slug o1 "one shot"
+  assert_not_called 'start --item o1'
 }
 
 @test "cancel moves a queued item to done, and kills a running item's session" {

@@ -31,6 +31,9 @@ setup() {
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
   stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   stub judge-stub 'echo "judge called" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
+  # The real agent-queue, copied (never linked: a test that restubs it must not write through).
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$DISPATCH_PROJECT_MAP" AGENT_QUEUE_START=0
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
@@ -1056,4 +1059,99 @@ J
   assert_not_called 'wt new'
   assert_not_called 'start '
   [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "queue wrote a ledger"
+}
+
+# --- the queue ---------------------------------------------------------------------------
+
+qfield() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
+qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
+
+@test "run starts the queue head before any board row, on its repo, and the item records the session" {
+  game_ready
+  agent-queue add --project game --slug low-one --priority low "low"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-menu'
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
+  assert_not_called 'ptask game start fix crash on load'
+  f=$(qitem running fix-menu)
+  [ -n "$f" ] || fail "fix-menu is not running"
+  assert_equal "$(qfield "$f" session)" game-agent-1
+  assert_equal "$(qfield "$f" account)" main
+  [ -n "$(qitem queued low-one)" ] || fail "only one start a pass"
+  assert_equal "$(sed -n 's/^item=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" fix-menu
+}
+
+@test "a queue item runs /one-shot in bypass mode, a night item --pr-only, a plan item in plan mode" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug a "do a"
+  agent-queue add --project game --slug n --tags night "do n"
+  agent-queue add --project game --slug p --mode plan "plan p"
+  for s in a n p; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a claude --model opus --permission-mode bypassPermissions'
+  assert_output --partial '/one-shot do a'
+  assert_output --partial '/one-shot --pr-only do n'
+  assert_output --partial 'AGENT_QUEUE_ITEM=p claude --model opus --permission-mode plan'
+  refute_output --partial '/one-shot plan p'
+}
+
+@test "start --item refuses an item that is not queued, and a failed launch leaves it queued" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug a "do a"
+  stub wt 'exit 1'
+  run cmd_start --item a
+  assert_failure
+  [ -n "$(qitem queued a)" ] || fail "a left queued/"
+  run cmd_start --item nope
+  assert_failure
+  assert_output --partial 'no queue item: nope'
+}
+
+@test "the human's queue item starts while the human is here; a board-filled one waits for away" {
+  game_ready
+  stub fleet-presence 'echo "here 0 tmux"'
+  agent-queue add --project game --slug from-board --from board:game:x "x"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'the human is not away'
+  assert_not_called 'wt new'
+  agent-queue bump from-board low
+  agent-queue add --project game --slug mine "mine"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: mine'
+}
+
+@test "a queue item still waits on every other gate, and a dry run names it and starts nothing" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  stub agent-hold 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'held (agent-hold dispatch), queue item mine waits'
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'would start queue item mine: game oneshot normal'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued mine)" ] || fail "dry run moved the item"
+}
+
+@test "reap closes a queue item whose session ended: ok with a PR, failed without; a closed one is left alone" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug a "do a"
+  agent-queue add --project game --slug b "do b"
+  agent-queue add --project game --slug c "do c"
+  stub wt 'echo "game-$WT_N"'
+  for s in a b c; do WT_N=$s cmd_start --item "$s" >/dev/null; done
+  agent-queue set a pr=12
+  agent-queue move c done --status ok
+  printf 'game-c\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  assert_success
+  assert_output --partial 'failed queue item b'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-a.md)" status)" ok
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
+  [ ! -e "$FLEET_DISPATCH_DIR/live/game-a" ] && [ ! -e "$FLEET_DISPATCH_DIR/live/game-b" ] || fail "ledgers kept"
+  [ ! -e "$FLEET_DISPATCH_DIR/live/game-c" ] || fail "a closed item's ledger outlived it"
 }
