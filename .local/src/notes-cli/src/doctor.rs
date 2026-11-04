@@ -47,6 +47,18 @@ impl Report {
     }
 }
 
+/// `notes doctor --projects`: every project in every profile against the project shape
+/// (`projects::SHAPE`), one line per finding and a count. Exit 0 either way: a finding is a
+/// WARN, never a broken vault.
+pub fn projects() -> Result<i32> {
+    let findings = projects::shape_report()?;
+    for f in &findings {
+        println!("{f}");
+    }
+    println!("{} finding(s)", findings.len());
+    Ok(0)
+}
+
 pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     let mut r = Report::new();
     println!("notes doctor — profile '{}' ({})\n", p.name, p.source);

@@ -740,6 +740,127 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
     Ok(0)
 }
 
+/// The done rows on a sheet, as line ranges: each top-level checked task with the indented
+/// lines under it. A checked subtask under an open row is part of that row and stays.
+pub(crate) fn done_rows(content: &str) -> Vec<std::ops::Range<usize>> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        if !(l.starts_with("- [") && md::is_checked(l)) {
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while end < lines.len()
+            && !lines[end].trim().is_empty()
+            && lines[end].starts_with([' ', '\t'])
+        {
+            end += 1;
+        }
+        out.push(i..end);
+        i = end;
+    }
+    out
+}
+
+/// Put `rows` at the end of the agent note's `## Done rows` section, adding the section
+/// at the foot of the note when it has none.
+fn append_done_rows(content: &str, rows: &[String]) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    match md::section_span(&lines, "Done rows") {
+        Some(span) => {
+            // after the section's last non-blank line, so the rows stay one list
+            let at = lines[span.clone()]
+                .iter()
+                .rposition(|l| !l.trim().is_empty())
+                .map_or(span.start, |k| span.start + k + 1);
+            for (k, r) in rows.iter().enumerate() {
+                out.insert(at + k, r.clone());
+            }
+        }
+        None => {
+            while out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.pop();
+            }
+            out.push(String::new());
+            out.push("## Done rows".to_string());
+            out.extend(rows.iter().cloned());
+        }
+    }
+    format!("{}\n", out.join("\n"))
+}
+
+/// `notes ptask <name> --agent archive [--dry-run]` - move the agent board's done rows into
+/// `agent/versions/<vX.Y.Z>.md`, the note `done` writes their proof into (the human sheet's
+/// open version), under `## Done rows`, verbatim and in board order.
+///
+/// What keeps an agent board inside its budget (`notes doctor --projects`). The human
+/// sheet has no archive: its done rows freeze with its version in `notes projects --roll`.
+pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
+    if lane == Lane::Human {
+        bail!(
+            "archive moves the agent board's done rows (--agent); the human sheet's done rows freeze with `notes projects --roll`"
+        );
+    }
+    let dir = projects::project_dir(p, name)?;
+    let board = crate::agent_sheet::sheet_path(&dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        bail!("{name} has no agent board ({})", board.display());
+    };
+    let ranges = done_rows(&content);
+    if ranges.is_empty() {
+        println!("{name}: no done rows on the agent board");
+        return Ok(0);
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let rows: Vec<String> = ranges
+        .iter()
+        .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
+        .collect();
+    let ver = task_sheet(&dir)
+        .and_then(|s| fs::read_to_string(s).ok())
+        .map_or_else(|| "v0.0.1".to_string(), |c| projects::wave_version_of(&c));
+    let note = projects::agent_note_path(&dir, &ver);
+    if dry_run {
+        println!(
+            "--dry-run: {} done rows would move from {} to {}",
+            ranges.len(),
+            board.display(),
+            note.display()
+        );
+        return Ok(0);
+    }
+
+    // The note first: a failure between the two writes leaves rows in both, never neither.
+    let note = projects::ensure_agent_note(&dir, name, &ver)?;
+    let prior = fs::read_to_string(&note)?;
+    md::write_atomic(&note, &append_done_rows(&prior, &rows))?;
+    let mut drop = vec![false; lines.len()];
+    for i in ranges.iter().flat_map(|r| r.clone()) {
+        drop[i] = true;
+    }
+    let kept: Vec<&str> = lines
+        .iter()
+        .zip(&drop)
+        .filter(|(_, d)| !**d)
+        .map(|(l, _)| *l)
+        .collect();
+    md::write_atomic(&board, &format!("{}\n", kept.join("\n")))?;
+    log.info(
+        "ptask",
+        &format!(
+            "archived {} done rows ({name}) -> {}",
+            ranges.len(),
+            note.display()
+        ),
+    );
+    println!("moved {} done rows -> {}", ranges.len(), note.display());
+    Ok(0)
+}
+
 /// Shared body for `done`/`rm`/`start`: apply `f` to the first open wave task matching
 /// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
 /// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
@@ -1193,5 +1314,101 @@ Version: v1.2.0
         let (out, _) =
             md::edit_first_in_section(SHEET, &h, |l| is_match(l, "first"), toggle).unwrap();
         assert!(out.contains("- [/] first task"));
+    }
+
+    const BOARD: &str = "\
+# demo - agent board
+Version: v0.0.1
+
+## Wave: v0.0.1 (current)
+- [ ] open row #high
+- [x] shipped row #high <!-- pr:12 -->
+  - with a note under it
+- [ ] open parent
+  - [x] a done subtask stays with its parent
+- [x] second shipped row
+";
+
+    #[test]
+    fn done_rows_are_top_level_checked_rows_with_their_children() {
+        let lines: Vec<&str> = BOARD.lines().collect();
+        let rows: Vec<Vec<&str>> = done_rows(BOARD)
+            .into_iter()
+            .map(|r| lines[r].to_vec())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    "- [x] shipped row #high <!-- pr:12 -->",
+                    "  - with a note under it"
+                ],
+                vec!["- [x] second shipped row"],
+            ]
+        );
+    }
+
+    #[test]
+    fn done_rows_join_the_end_of_their_section() {
+        let note = "# n\n\n## Proof\n| a | b | c |\n\n## Notes\n";
+        let once = append_done_rows(note, &["- [x] one".to_string()]);
+        assert!(
+            once.ends_with("## Notes\n\n## Done rows\n- [x] one\n"),
+            "{once}"
+        );
+        let twice = append_done_rows(&once, &["- [x] two".to_string()]);
+        assert!(
+            twice.ends_with("## Done rows\n- [x] one\n- [x] two\n"),
+            "{twice}"
+        );
+    }
+
+    #[test]
+    fn archive_moves_done_rows_to_the_versions_note_the_proof_is_in() {
+        let root = std::env::temp_dir().join(format!("ptask-archive-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.3.0 #beta\n\n## Wave: v0.3.0 (current)\n- [ ] human row\n",
+        )
+        .unwrap();
+        fs::write(dir.join("agent/README.md"), BOARD).unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        assert!(archive(&p, &log, "demo", false, Lane::Human).is_err());
+        archive(&p, &log, "demo", true, Lane::Agent).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/README.md")).unwrap(),
+            BOARD
+        );
+
+        archive(&p, &log, "demo", false, Lane::Agent).unwrap();
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert_eq!(
+            board,
+            "# demo - agent board\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n"
+        );
+        let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
+        assert!(note.contains("## Proof"), "{note}");
+        assert!(
+            note.ends_with("## Done rows\n- [x] shipped row #high <!-- pr:12 -->\n  - with a note under it\n- [x] second shipped row\n"),
+            "{note}"
+        );
+        // nothing left to move is not an error
+        assert_eq!(archive(&p, &log, "demo", false, Lane::Agent).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
     }
 }

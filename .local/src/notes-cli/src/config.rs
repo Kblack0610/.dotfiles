@@ -37,6 +37,10 @@ struct RawConfig {
     /// is active when it is regenerated.
     #[serde(default = "default_board")]
     board: String,
+    /// The cross-project ideas file, relative to `vault`: where `notes focus sweep` moves a
+    /// Focus row tagged `#idea` with no project. Cross-org like `board`, for the same reason.
+    #[serde(default = "default_ideas")]
+    ideas: String,
     /// Multi-account email triage (`notes comms`). Global (spans profiles), so it lives at
     /// the top level rather than per-profile - each account names the profile whose daily
     /// note its critical items surface into. Optional: an empty `[comms]` means the feature
@@ -263,6 +267,10 @@ fn default_board() -> String {
     "lab/projects/board.md".to_string()
 }
 
+fn default_ideas() -> String {
+    "lab/ideas/_IDEAS.md".to_string()
+}
+
 fn default_inbox() -> String {
     "inbox".to_string()
 }
@@ -377,6 +385,8 @@ pub struct Profile {
     /// The cross-org board. Identical on every resolved profile, which is the point: it is not
     /// the active org's board, it is THE board.
     pub board: PathBuf,
+    /// The cross-project ideas file (`#idea` rows with no project). Cross-org, like `board`.
+    pub ideas: PathBuf,
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
@@ -486,6 +496,7 @@ fn builtin_default() -> RawConfig {
         profile,
         vault: default_vault(),
         board: default_board(),
+        ideas: default_ideas(),
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
     }
@@ -677,6 +688,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         // resolves the SAME two values.
         vault: vault.clone(),
         board: vault.join(&raw.board),
+        ideas: vault.join(&raw.ideas),
         inbox: join(&rp.inbox),
         tag_scan,
         state_dir,
@@ -823,6 +835,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         project_index: None,
         vault: PathBuf::from(root),
         board: PathBuf::from(root).join("lab/projects/board.md"),
+        ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
         inbox: r.join("inbox"),
         tag_scan: Vec::new(),
         state_dir: r.join(".state"),
@@ -846,6 +859,7 @@ pub fn print(p: &Profile) {
     // state quietly acquire a personal address.
     println!("vault       {}", p.vault.display());
     println!("board       {}", p.board.display());
+    println!("ideas       {}", p.ideas.display());
     println!("daily       {}", p.daily.display());
     println!("refs        {}", p.refs.display());
     println!("fun         {}", p.fun.display());
