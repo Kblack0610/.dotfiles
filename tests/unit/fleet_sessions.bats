@@ -104,6 +104,28 @@ b() { session_bucket "$@"; }
   assert_output --partial LANDED
 }
 
+@test "a dirty reason names its files, so the nudge says what to land or restore" {
+  # 2026-11-04: agent-18 read "1 dirty file(s) left" and guessed; the file was a re-imported submodule.
+  run b idle 0 0 0 30 1 1 0 875 MERGED PASS 1 - 3/3 - no - External/asset-library
+  assert_output 'STALLED PR #875 merged, 1 dirty file(s) left (External/asset-library)'
+  run b idle 0 0 0 30 1 5 0 - - - 1 - - - no jobs 'a b.txt, c, d, +2 more'
+  assert_output 'STALLED 5 dirty file(s) (a b.txt, c, d, +2 more), no PR'
+  run work_blockers '' busy 0 0 0 0 1 1 0 875 MERGED PASS 1 - 3/3 - no - External/asset-library
+  assert_output '1 dirty file(s) (External/asset-library)'
+  # a session that checks its own row reads the same verdict with names as without
+  run session_finished busy 0 0 0 0 1 1 0 875 MERGED PASS 1 - 3/3 - no - External/asset-library
+  assert_failure
+}
+
+@test "dirty_names lists up to FLEET_DIRTY_NAMES paths, then a count; - when clean" {
+  run dirty_names ''
+  assert_output -
+  run dirty_names $'a\nb'
+  assert_output 'a, b'
+  FLEET_DIRTY_NAMES=2 run dirty_names $'a\nb\nc\nd'
+  assert_output 'a, b, +2 more'
+}
+
 @test "a merged PR suspected of turning a nightly red is STALLED, not LANDED" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 'Tests @f1602292 (#875)'
   assert_output 'STALLED nightly red after PR #875: Tests @f1602292 (#875)'
@@ -653,7 +675,7 @@ queue_item() {
 
   panel "$SANDBOX/wt" "$SANDBOX/plan.md" "[\"$SANDBOX/wt/look-and-feel.conf\"]"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, 1 dirty file(s) left' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, 1 dirty file(s) left (look-and-feel.conf)' ]
 
   # the same dirt in a worktree under ~/.worktrees is the session's, whoever edited it
   mkdir -p "$HOME/.worktrees"
@@ -663,6 +685,7 @@ queue_item() {
   panel "$HOME/.worktrees/wt-x" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
 }
 
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
