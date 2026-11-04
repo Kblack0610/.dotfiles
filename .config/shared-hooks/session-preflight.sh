@@ -230,10 +230,10 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         [ "${agent_total:-0}" -gt "$BOARD_MAX" ] && echo "  +$((agent_total - BOARD_MAX)) more - \`notes board\` for the rest"
-        echo "  (your working board: \`notes ptask <project> --agent add|start|done \"<title>\"\`)"
+        echo "  (your task: \`agent-queue add --running --project <p> \"<task>\"\`; follow-ups: \`notes ptask <project> --agent add\`)"
       elif [ "$AGENT_RC" -eq 0 ]; then
         echo "📥 Agent board clear for this repo — nothing left in flight."
-        echo "  (the QUEUE is the project sheet: \`notes ptask <project> list\`)"
+        echo "  (the human's lane is the project sheet: \`notes ptask <project> list\`; work set up to run: \`agent-queue list\`)"
       else
         echo "📥 Agent board unavailable (\`notes board --agent\` exited $AGENT_RC)."
         echo "  Nothing is known about what is in flight — this is not \"nothing to do\"."
@@ -280,10 +280,10 @@ if command -v notes >/dev/null 2>&1 && declare -F focus_daily_note >/dev/null 2>
       # Two lines, not ten. Turn 1 needs the POINTER; the argument for why the two lanes
       # are separate lives in CLAUDE.md, which is already loaded, and repeating it here
       # cost ~10 lines of every session to re-litigate a settled rule.
-      echo "  → the HUMAN's list, not your queue. Your work: \`notes ptask <project> --agent add|start|done \"<title>\"\` (\`notes board\`)"
+      echo "  → the HUMAN's list, not your queue. Your task: \`agent-queue add --running --project <p> \"<task>\"\` (\`agent-queue list\`)"
     else
       echo "🎯 Focus: none set today — that is the human's list, not yours."
-      echo "  → your work: \`notes ptask <project> --agent add|start|done \"<title>\"\`"
+      echo "  → your task: \`agent-queue add --running --project <p> \"<task>\"\`"
     fi
   )
 fi
