@@ -653,6 +653,10 @@ pub(crate) fn shape_findings(dir: &Path, name: &str) -> Vec<String> {
         out.push(format!("loose {f} (move it to docs/)"));
     }
 
+    if let Ok(content) = fs::read_to_string(dir.join("summary.md")) {
+        out.extend(summary_findings(&content));
+    }
+
     let board = crate::agent_sheet::sheet_path(dir);
     if let Ok(content) = fs::read_to_string(&board) {
         if content.len() > AGENT_BOARD_BUDGET {
@@ -680,6 +684,51 @@ pub(crate) fn shape_findings(dir: &Path, name: &str) -> Vec<String> {
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
         }
+    }
+    out
+}
+
+/// `summary.md` is generated: frontmatter, a title, the template's two pointer lines, and
+/// the STATUS and AUTO blocks. Any other line is hand text, or a retired marker
+/// (`cockpit:`, `nextup:auto`) that nothing reads any more; it belongs on the sheet or
+/// under `docs/`.
+fn summary_findings(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for block in ["STATUS", "AUTO"] {
+        let has = |edge: &str| content.contains(&format!("<!-- {block}:{edge}"));
+        if !has("START") || !has("END") {
+            out.push(format!("summary.md has no {block} block"));
+        }
+    }
+    let mut front = content.starts_with("---\n");
+    let mut in_block = false;
+    let mut stray = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if front {
+            front = i == 0 || line != "---";
+            continue;
+        }
+        if line.contains(":START") && (line.contains("STATUS") || line.contains("AUTO")) {
+            in_block = true;
+        }
+        if in_block {
+            in_block = !(line.contains("STATUS:END") || line.contains("AUTO:END"));
+            continue;
+        }
+        let t = line.trim();
+        let allowed = t.is_empty()
+            || t.starts_with("# ")
+            || t.starts_with("Working sheet:")
+            || t.starts_with("Wants for the agents");
+        if !allowed {
+            stray.push(i + 1);
+        }
+    }
+    if let Some(first) = stray.first() {
+        out.push(format!(
+            "summary.md line {first}: {} line(s) outside STATUS and AUTO (hand text goes on the sheet or under docs/)",
+            stray.len()
+        ));
     }
     out
 }
@@ -4246,6 +4295,31 @@ mod shape_tests {
         assert!(
             f.contains(&"sheet has \"fix the thing\" open 2 times".to_string()),
             "{f:?}"
+        );
+    }
+
+    #[test]
+    fn a_summary_holds_only_its_two_blocks() {
+        let clean = summary_template("demo");
+        assert!(summary_findings(&clean).is_empty(), "{:?}", summary_findings(&clean));
+        // NEGATIVE CONTROL: a retired marker, an old nextup block and hand text are each a
+        // stray line; the STATUS and AUTO bodies are not, whatever they hold.
+        let dirty = clean
+            .replace(
+                "# demo\n",
+                "# demo\n<!-- cockpit: repo=x -->\n<!-- nextup:auto -->\n## Next\n<!-- /nextup:auto -->\n",
+            )
+            .replace("<!-- AUTO:END -->\n", "<!-- AUTO:END -->\n\n## Reference\nhand text\n");
+        let f = summary_findings(&dirty);
+        assert_eq!(
+            f,
+            vec!["summary.md line 8: 6 line(s) outside STATUS and AUTO (hand text goes on the sheet or under docs/)".to_string()],
+        );
+        let no_auto = clean.replace("<!-- AUTO:START", "<!-- gone");
+        assert!(
+            summary_findings(&no_auto).contains(&"summary.md has no AUTO block".to_string()),
+            "{:?}",
+            summary_findings(&no_auto)
         );
     }
 

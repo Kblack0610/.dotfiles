@@ -75,32 +75,9 @@ Model notes:
   because the vault is git-tracked (recoverable) and the product repo stays the source of truth; use
   `--dry-run --rewrite` to preview first.
 
-## Project overview / "Next up" index
+## What is next
 
-`notes-version-summary --overview <profile> <project>` (or `--overview --all`) writes a
-`<!-- nextup:auto -->` block into the project's `summary.md`, above the STATUS marker:
-
-```
-## Now
-<2-4 sentences: current version, what recently shipped, state/health, what is in flight>
-
-## Next
-<1-2 sentences of direction>
-- [ ] <suggested next task>
-- [ ] <...>   (2 to 4, most important first)
-```
-
-It is generated in one pass from the last few release summaries + a dated git log + the full working
-sheet, so `## Now` is a thorough read of where the project is and `## Next` proposes NEW steps (it does
-NOT repeat tasks already on the sheet - the `## Next` items are additive suggestions you can accept). It
-owns only its marker block; STATUS (lab-status) and the AUTO feed (lab-sync) are left untouched.
-
-There is no longer a `## → For the agents` section. It was the human's channel TO the agent and was
-read by the preflight while sitting empty in every live project, so wants now go on the BOARD
-(`notes ptask <project> add "..."`). The agents' own working board is `<project>/agent/README.md`
-(`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
-
-Rolling a version refreshes the overview automatically. `--dry-run` previews.
+A project has no generated "Next up" block: `summary.md` keeps only STATUS (lab-status) and the AUTO feed (lab-sync). What is next is the sheet's current wave, and the lab feed shows its first open row. Wants go on the BOARD (`notes ptask <project> add "..."`); the agents' own working board is `<project>/agent/README.md` (`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
 
 ## The roadmap
 
@@ -155,7 +132,7 @@ shape as the human's half one level down:
 ```
 myapp/
   README.md                      the sheet: current wave + the roadmap
-  summary.md                     the overview
+  summary.md                     STATUS + AUTO feed (generated)
   versions/v1.12.0.md            the human's frozen waves
   agent/
     versions/v1.13.0.md          what the agents did this version, and the evidence

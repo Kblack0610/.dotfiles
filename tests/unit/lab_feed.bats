@@ -39,11 +39,6 @@ f() {
 seed_alpha() {
   mk_summary alpha <<'S'
 # alpha
-<!-- nextup:auto -->
-## Next
-- [ ] Implement Done group visibility #ai
-- [ ] a second thing
-<!-- /nextup:auto -->
 
 <!-- STATUS:START -->
 _2026-07-28_ — v1.11.0 open on v1.10.0. A second sentence that must not reach the row.
@@ -67,6 +62,10 @@ S
   mk_sheet alpha <<'S'
 # alpha
 Version: v1.11.0
+
+## Wave: v1.11.0 (current)
+- [ ] Implement Done group visibility #ai
+- [ ] a second thing
 S
 }
 
@@ -243,7 +242,24 @@ S
 
 # ── what is next ─────────────────────────────────────────────────────────────
 
-@test "next falls back to the sheet when there is no nextup block" {
+@test "a stale nextup block in the summary is not the next task" {
+  # NEGATIVE CONTROL: the LLM-written `nextup:auto` block is retired. Six summaries still
+  # carry one from July-September; the sheet, not that, is what is next.
+  mk_summary kappa <<'S'
+<!-- nextup:auto -->
+## Next
+- [ ] an old guess from a model
+<!-- /nextup:auto -->
+S
+  mk_sheet kappa <<'S'
+# kappa
+## Wave: v0.2.0 (current)
+- [ ] the real next task
+S
+  assert_equal "$(f kappa 5)" 'the real next task'
+}
+
+@test "next is the sheet's first open row" {
   mk_summary iota <<'S'
 <!-- AUTO:START -->
 **shipped `v1.0.0`** (2026-02-02)
