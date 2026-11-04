@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# project-map - add a project to the registry in one step.
+#
+#   project-map add <name> --type game|app|infra [--lab <profile>]
+#                   [--repo <key> [--path <rel>] | --repo-dir <abs>] [--branch <b>]
+#
+# --repo: part of a registered repo; --repo-dir: the project IS that checkout; neither: a
+# key `paths` already holds gains its type and lab, or a project with no code. With --lab it
+# scaffolds the lab project; then it regenerates the anchor and runs project-map-doctor.
+# The edit is left uncommitted in the private checkout; a failed scaffold reverts it.
+# Usage: notes-cli README, "Projects".
+set -euo pipefail
+
+TYPES="game app infra"
+
+die() { echo "project-map: $*" >&2; exit 2; }
+
+usage() {
+  sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-2}"
+}
+
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+
+cmd_add() {
+  local name="" type="" lab="" repo="" path="" repo_dir="" branch=""
+  [ $# -gt 0 ] || usage
+  name="$1"; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --type) type="${2:-}"; shift 2 ;;
+      --lab) lab="${2:-}"; shift 2 ;;
+      --repo) repo="${2:-}"; shift 2 ;;
+      --path) path="${2:-}"; shift 2 ;;
+      --repo-dir) repo_dir="${2:-}"; shift 2 ;;
+      --branch) branch="${2:-}"; shift 2 ;;
+      -h|--help) usage 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  local map; map="$(project_map_file)"
+  [ -f "$map" ] || die "no registry at $map"
+  jq -e . "$map" >/dev/null 2>&1 || die "$map is not valid JSON"
+
+  # -- validate everything before writing anything --------------------------------
+  [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "name \"$name\": lowercase letters, digits, - and _ only"
+  [ -n "$type" ] || die "--type is required (one of: $TYPES)"
+  case " $TYPES " in *" $type "*) ;; *) die "type \"$type\" (one of: $TYPES)" ;; esac
+
+  if jq -e --arg n "$name" '.trackers[$n] | type == "object"' "$map" >/dev/null 2>&1; then
+    die "\"$name\" is already registered (trackers.$name); edit the registry to change it"
+  fi
+  # A key `paths` already registers (a repo with no tracker entry yet) may gain its
+  # type and lab; a name known only as an alias target, or as an alias, may not.
+  local in_paths=0
+  jq -e --arg n "$name" '[.paths // {} | .[]] | index($n) != null' "$map" >/dev/null && in_paths=1
+  if [ "$in_paths" = 0 ] && project_known "$name"; then
+    die "\"$name\" is already a registry name (an alias); pick another"
+  fi
+  if jq -e --arg n "$name" '.aliases // {} | has($n)' "$map" >/dev/null; then
+    die "\"$name\" is an alias in the registry; pick another"
+  fi
+
+  [ -z "$path" ] || [ -n "$repo" ] || die "--path needs --repo"
+  [ -z "$repo" ] || [ -z "$repo_dir" ] || die "--repo and --repo-dir are exclusive: part of a repo, or a repo"
+  [ "$in_paths" = 0 ] || [ -z "$repo_dir" ] || die "\"$name\" already has a checkout in paths"
+  [ "$in_paths" = 0 ] || [ -z "$repo" ] || die "\"$name\" is a repo in paths; it cannot also be part of $repo"
+
+  if [ -n "$repo" ]; then
+    project_known "$repo" || die "--repo \"$repo\" is not a registry key"
+    [ "$repo" != "$name" ] || die "--repo cannot name the project itself"
+    if [ -n "$path" ]; then
+      case "$path" in /*|*..*) die "--path \"$path\" must be relative to the repo, without .." ;; esac
+      path="${path%/}"
+      local checkout; checkout="$(project_repo_path "$repo")"
+      # A checkout not on this machine cannot be looked at; the path is taken as given.
+      if [ -n "$checkout" ] && [ -d "$checkout" ] && [ ! -d "$checkout/$path" ]; then
+        die "--path: $checkout/$path is not a directory"
+      fi
+    fi
+  fi
+
+  if [ -n "$repo_dir" ]; then
+    [ -d "$repo_dir" ] || die "--repo-dir $repo_dir is not a directory"
+    repo_dir="$(realpath "$repo_dir")"
+    local top; top="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)" \
+      || die "--repo-dir $repo_dir is not a git checkout"
+    [ "$(realpath "$top")" = "$repo_dir" ] || die "--repo-dir $repo_dir is inside $top; give the checkout root"
+    if jq -e --arg p "$repo_dir" '.paths // {} | has($p)' "$map" >/dev/null; then
+      die "--repo-dir $repo_dir is already registered as \"$(jq -r --arg p "$repo_dir" '.paths[$p]' "$map")\""
+    fi
+  fi
+
+  if [ -n "$lab" ]; then
+    command -v notes >/dev/null 2>&1 || die "--lab needs the notes CLI on PATH"
+    notes config --profiles 2>/dev/null | grep -qxF -- "$lab" \
+      || die "--lab \"$lab\" is not a notes profile ($(notes config --profiles 2>/dev/null | tr '\n' ' '))"
+  fi
+
+  # -- write: one jq pass, through the stow symlink ---------------------------------
+  # Globals, not locals: the EXIT trap runs after this function has returned.
+  BACKUP="$(mktemp)"; TMP="$(mktemp)"
+  trap 'rm -f "$BACKUP" "$TMP"' EXIT
+  local backup="$BACKUP" tmp="$TMP"
+  cat "$map" > "$backup"
+  jq --arg n "$name" --arg type "$type" --arg lab "$lab" --arg repo "$repo" \
+     --arg path "$path" --arg branch "$branch" --arg dir "$repo_dir" '
+    (if $dir != "" then .paths[$dir] = $n else . end)
+    | .trackers[$n] = ({}
+        + (if $repo != "" then {repo: $repo} else {} end)
+        + (if $path != "" then {path: $path} else {} end)
+        + (if $branch != "" then {branch: $branch} else {} end)
+        + (if $lab != "" then {lab: $lab} else {} end)
+        + {type: $type})' "$map" > "$tmp"
+  # `cat >`, never `mv`: the registry is a stow symlink into the private checkout, and a
+  # rename would replace the link with a file that no repo tracks.
+  cat "$tmp" > "$map"
+  echo "registered $name: $(jq -c --arg n "$name" '.trackers[$n]' "$map")"
+  [ -z "$repo_dir" ] || echo "registered $repo_dir -> $name in paths"
+
+  if [ -n "$lab" ]; then
+    if ! notes --profile "$lab" projects --new "$name"; then
+      cat "$backup" > "$map"
+      echo "project-map: notes could not scaffold $name; the registry is back as it was" >&2
+      exit 1
+    fi
+  fi
+
+  local regen="${REGEN_ANCHOR:-$HOME/.claude/skills/project-index/regen-anchor.sh}"
+  if [ -x "$regen" ]; then
+    "$regen" "$name" >/dev/null || echo "project-map: anchor regen failed for $name (the entry stays)" >&2
+  else
+    echo "project-map: $regen not found; no anchor written for $name" >&2
+  fi
+
+  echo "registry changed in $(realpath "$map"); land it with dotfiles-land"
+  if command -v project-map-doctor >/dev/null 2>&1; then
+    project-map-doctor || { echo "project-map: the doctor failed (the entry stays); fix what it names" >&2; exit 1; }
+  fi
+}
+
+case "${1:-}" in
+  add) shift; cmd_add "$@" ;;
+  -h|--help) usage 0 ;;
+  *) usage ;;
+esac

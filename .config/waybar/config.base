@@ -116,7 +116,6 @@
         "modules": [
             "custom/timebox",
             "custom/ai-agents",
-            "custom/shepherd",
             "custom/dispatch",
             "custom/fleet",
             "custom/ci",
@@ -189,21 +188,8 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
-    // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
-    // Sessions: live agent sessions per fleet-sessions stage, red on STALLED, amber on
-    // UNCLEAR (shepherd.sh). Click opens the hub board on Sessions.
-    "custom/shepherd": {
-        "format": "{}",
-        "return-type": "json",
-        "interval": 60,
-        "exec": "$HOME/.config/waybar/modules.sh gate custom/shepherd $HOME/.config/waybar/shepherd.sh",
-        "signal": 10,
-        "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab sessions",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
-        "tooltip": true
-    },
+    // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
+    // per system: Queue, Dispatch, Sessions, Shepherd (dispatch.sh). Click opens the hub board on Queue.
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",
@@ -215,6 +201,8 @@
         "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
         "tooltip": true
     },
+    // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
+    // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
     "custom/day": {
         "format": "{}",
         "return-type": "json",
