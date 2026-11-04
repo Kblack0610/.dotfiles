@@ -301,9 +301,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines and last pass. Dotfiles have no
-    // extension, so this comes before the `ext` match.
-    if parent == "shepherd" && matches!(name, ".due" | ".lease") {
+    // fleet-shepherd's ledger: the Shepherd tab's due lines, the pass running now and the last
+    // one scored. Dotfiles have no extension, so this comes before the `ext` match.
+    if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
     // The Actions tab's own ledgers: the shepherd's log and agent-notify's (which has no
@@ -1125,6 +1125,8 @@ mod tests {
             "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md",
             "/h/.agent/shepherd/.due",
             "/h/.agent/shepherd/.lease",
+            "/h/.agent/shepherd/.pass",
+            "/h/.agent/shepherd/passes.tsv",
         ] {
             assert_eq!(
                 classify(Path::new(p)).as_deref(),

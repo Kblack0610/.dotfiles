@@ -207,6 +207,22 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
   assert_output --partial 'needs a human'
 }
 
+@test "status names the runner's last verdict with that run's activity line" {
+  seed_runner alpha
+  mkdir -p "$AGENTCTL_STATE_DIR/alpha"
+  printf 'WORKED' > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  printf '[2026-11-04T11:00:00-08:00] outcome=NOOP an earlier run\n[2026-11-04T12:04:09-08:00] outcome=WORKED pass 766abf32: 4 due, 14m\n' \
+    > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  run "$AGENTCTL_BIN" status alpha
+  assert_success
+  assert_line '  outcome:  WORKED pass 766abf32: 4 due, 14m'
+  # Negative control: the stop envelope promoted the verdict with no line of its own, so the
+  # newest line is an earlier run's and is not shown as this one's.
+  printf 'STALLED' > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  run "$AGENTCTL_BIN" status alpha
+  assert_line '  outcome:  STALLED'
+}
+
 @test "status on a runner that never reported omits the block entirely" {
   seed_runner quiet
   run "$AGENTCTL_BIN" status quiet
