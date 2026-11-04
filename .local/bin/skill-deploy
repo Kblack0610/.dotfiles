@@ -113,7 +113,7 @@ adoptable() {
   [ "$found" = 1 ]
 }
 
-linked=0 already=0 conflict=0 adopted=0 relinked=0
+linked=0 already=0 conflict=0 adopted=0 relinked=0 removed=0
 
 # Collision guard: a skill name defined in both repos is ambiguous, not a race.
 # Discovery is by SKILL.md rather than by directory so the flat and categorised
@@ -213,6 +213,40 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   linked=$((linked + 1))
 done
 
-say "skill-deploy: $linked linked, $already already correct, $relinked relinked, $adopted adopted, $conflict conflict(s)"
+# resolve_gone <link> -> the absolute path a dangling link names: the deepest ancestor that
+# still exists, canonicalised, plus the missing tail. readlink -f alone fails once more
+# than the last component is gone (a deleted category), and -m is GNU only.
+resolve_gone() {
+  local t tail=""
+  t=$(readlink "$1")
+  case "$t" in /*) ;; *) t="$(dirname "$1")/$t" ;; esac
+  while [ ! -e "$t" ] && [ "$t" != / ] && [ "$t" != . ]; do
+    tail="/$(basename "$t")$tail"
+    t=$(dirname "$t")
+  done
+  printf '%s%s\n' "$(readlink -f "$t")" "$tail"
+}
+
+# A DANGLING link into one of the repos, for a name neither repo defines any more, is a
+# deleted skill: nothing is left to repoint it to, and Claude Code would list a broken
+# entry. Remove it. A link that resolves, or that points outside the repos, stays.
+for link in "$SKILLS"/*; do
+  [ -L "$link" ] && [ ! -e "$link" ] || continue
+  name=$(basename "$link")
+  [ -n "${OWNER[$name]:-}" ] && continue
+  case "$(resolve_gone "$link")" in
+    "$PUB"/*|"$PRIV"/*) ;;
+    *) continue ;;
+  esac
+  if [ "$DRY" = 1 ]; then
+    loud "WOULD REMOVE $name  (skill deleted from the repos)"
+  else
+    rm -f -- "$link" && loud "REMOVED   $name  (skill deleted from the repos)" \
+      || { loud "FAILED    $name  could not remove stale link"; conflict=$((conflict + 1)); continue; }
+  fi
+  removed=$((removed + 1))
+done
+
+say "skill-deploy: $linked linked, $already already correct, $relinked relinked, $removed removed, $adopted adopted, $conflict conflict(s)"
 [ "$conflict" -gt 0 ] && exit 1
 exit 0

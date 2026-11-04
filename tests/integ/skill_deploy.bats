@@ -131,6 +131,31 @@ mkskill() {
   assert [ -f "$SKILLS/moved/SKILL.md" ]
 }
 
+@test "a dangling link into a repo for a DELETED skill is removed" {
+  mkskill "$PUB" ops/kept
+  ln -s "$PUB/.claude/skills/ops/gone" "$SKILLS/gone"     # its source was deleted
+  run "$SKILL_DEPLOY"
+  assert_success
+  assert_output --partial "REMOVED   gone"
+  assert [ ! -L "$SKILLS/gone" ]
+  assert [ -f "$SKILLS/kept/SKILL.md" ]
+}
+
+@test "--dry-run reports a removal without performing it" {
+  ln -s "$PRIV/.claude/skills/ops/gone" "$SKILLS/gone"
+  run "$SKILL_DEPLOY" --dry-run
+  assert_success
+  assert_output --partial "WOULD REMOVE gone"
+  assert [ -L "$SKILLS/gone" ]
+}
+
+@test "a dangling link outside the repos, with no skill of that name, is left alone" {
+  ln -s /nowhere/at/all "$SKILLS/stranger"
+  run "$SKILL_DEPLOY"
+  assert_success
+  assert_equal "$(readlink "$SKILLS/stranger")" /nowhere/at/all
+}
+
 @test "relinking works across a hop from one repo to the other" {
   # A skill that was public and is now private. The old link points into $PUB.
   mkskill "$PRIV" ops/hopped
