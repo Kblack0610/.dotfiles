@@ -58,9 +58,9 @@ MAIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/fleet"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
-# fleet-dispatch writes live/<tmux session> for each session it starts; its label= line is
-# the row that session is working, shown so the shepherd knows which sessions it fed.
-DISPATCH_LIVE="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/live"
+# A session working a queue item is named by that item's `session:` (<server>:<tmux session>, a
+# bare name on this server); its "<project>: <slug>" is shown so the shepherd knows what it works.
+QUEUE_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
 # claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
@@ -540,7 +540,12 @@ collect() {
   local now heavy line
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
-  local panel
+  local panel items
+  # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
+  items="$(agent-queue list --json --state active 2>/dev/null | jq -r --arg d "$QUEUE_SERVER" '
+    select(.state != "queued" and (.session // "") != "")
+    | (if (.session | contains(":")) then .session | sub(":"; "/") else "\($d)/\(.session)" end)
+      + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
   # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
@@ -596,7 +601,7 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    [ -f "$DISPATCH_LIVE/$tsess" ] && dsp="$(sed -n 's/^label=//p' "$DISPATCH_LIVE/$tsess" | head -1)"
+    dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \

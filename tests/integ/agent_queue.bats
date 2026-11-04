@@ -207,6 +207,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_success
   run "$AQ" cancel r
   assert_failure; assert_output --partial "nothing active"
+  # fleet-dispatch writes <server>:<tmux session>: the kill goes to that server.
+  "$AQ" add --project game --running --session default:game-agent-3 --slug s "s"
+  run "$AQ" cancel s
+  assert_success
+  run grep -- "-L default kill-session -t =game-agent-3" "$NOTES_FIXTURE/calls.log"
+  assert_success
 }
 
 @test "the same slug finished twice in a day keeps both records" {

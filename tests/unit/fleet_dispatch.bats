@@ -41,6 +41,20 @@ setup() {
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 
+# started_item <slug> <session> [origin] [area] [from] [state] [project] -- a started queue item on
+# that session (<server>:<name>, or a bare name on lab): the one record of a running session.
+started_item() {
+  local d="$AGENT_QUEUE_DIR/${6:-running}"; mkdir -p "$d"
+  {
+    printf 'slug: %s\nproject: %s\nmode: oneshot\npriority: normal\nfrom: %s\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n' "$1" "${7:-game}" "${5:-human}"
+    printf 'started: 2026-11-03T10:00:00Z\nsession: %s\n' "$2"
+    [ -z "${3:-}" ] || printf 'origin: %s\n' "$3"
+    [ -z "${4:-}" ] || printf 'area: %s\n' "$4"
+    [[ "${5:-}" != board:* ]] || printf 'lane: human\nprofile: bnb\n'
+    printf -- '---\n%s\n' "$1"
+  } > "$d/20261103-100000-$1.md"
+}
+
 # A notes stand-in with state: rows.<project>.<lane> holds "key<TAB>raw line", and `start`
 # toggles the first open row whose key contains the query, as the real CLI does.
 stub_notes() {
@@ -213,8 +227,7 @@ verdict() {
 @test "candidates: a live dispatched session does not hold its project" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' "- [ ] fix crash $T"
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\n' > "$FLEET_DISPATCH_DIR/live/game-agent-3"
+  started_item other-work game-agent-3 run
   printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
@@ -303,22 +316,19 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'top other'
 }
 
-@test "picks: skips an area a live dispatched session is on, and takes it once that session is gone" {
+@test "picks: skips an area an active item holds, and takes it once that item is closed" {
   verdict game agent k dispatch S 1 wilds
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\narea=wilds\n' > "$FLEET_DISPATCH_DIR/live/game-agent-3"
-  printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  started_item other-work lab:game-agent-3 run wilds
   run picks "$(c_area k 1)" 1
   assert_output ''
-  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue move other-work done --status ok >/dev/null
   run picks "$(c_area k 1)" 1
   assert_equal "$(jq -r .key <<<"$output")" k
 }
 
 @test "picks: the same area name in another project is not busy" {
   verdict other agent k dispatch S 1 wilds
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\narea=wilds\n' > "$FLEET_DISPATCH_DIR/live/game-agent-3"
+  started_item other-work game-agent-3 run wilds
   printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run picks '{"project":"other","stage":"beta","lane":"agent","key":"k","prio":1,"tier":2,"line":""}' 1
   assert_equal "$(jq -r .key <<<"$output")" k
@@ -457,8 +467,7 @@ game_ready() {
   assert_output --partial 'would queue: game (beta) human, fleet, fix crash on load: fix crash on load'
   assert_not_called 'wt new'
   assert_not_called 'start fix crash'
-  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "dry run wrote a ledger"
-  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "dry run queued an item"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "dry run queued an item"
 }
 
 @test "run fills the queue from the board, then starts that item on a detached lab session" {
@@ -474,12 +483,15 @@ game_ready() {
   [ -n "$f" ] || fail "the promoted item is not running"
   assert_equal "$(qfield "$f" from)" 'board:game:fix crash on load'
   assert_equal "$(qfield "$f" priority) $(qfield "$f" lane) $(qfield "$f" profile) $(qfield "$f" area)" 'low human bnb fix crash on load'
-  assert_equal "$(qfield "$f" session)" game-agent-1
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" model)" 'lab:game-agent-1 run opus'
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
   assert_called 'ptask game done "fix crash on load" --proof pr:<N>'
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix-crash-on-load'
-  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1" | paste -sd' ')" 'lab run'
-  assert_equal "$(sed -n 's/^area=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
+  [ ! -e "$FLEET_DISPATCH_DIR/live" ] || fail "wrote the retired dispatch/live ledger"
+  # The session holds a runner slot on its area, read from the item alone.
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run live_runs
+  assert_output 'game/fix crash on load'
 }
 
 @test "fill promotes picks into the queue with no gate and starts nothing; --dry-run lists them" {
@@ -597,7 +609,7 @@ refuses() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
     --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
   assert_success
-  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
 
 @test "run starts nothing while the human is here, and says who saw them" {
@@ -732,8 +744,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   export DISPATCH_MAX_LIVE=1
   project other beta "$SANDBOX/repos/other"
   row other human 'other work' '- [/] other work'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=other\nprofile=bnb\nlane=human\nkey=other work\n' > "$FLEET_DISPATCH_DIR/live/other-agent-1"
+  started_item other-work lab:other-agent-1 run '' 'board:other:other work' running other
   printf 'other-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'live dispatched sessions'
@@ -742,66 +753,98 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 # --- reap --------------------------------------------------------------------------------
 
-@test "reap un-starts the row of a session that ended without it done, and records failed" {
+@test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
+  started_item fix-crash game-agent-1 run '' 'board:game:fix crash'
   run cmd_reap
   assert_success
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
   assert_equal "$(jq -r .verdict "$FLEET_DISPATCH_DIR/verdicts.jsonl")" failed
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "ledger entry kept"
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
 }
 
-@test "reap drops the ledger of a finished row without touching the sheet" {
+@test "reap leaves a board item its session closed ok, and its row, alone" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [x] fix crash'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
-  run cmd_reap
-  assert_not_called 'start'
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "ledger entry kept"
-}
-
-@test "reap leaves a live session alone" {
-  project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash' '- [/] fix crash'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
-  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  run cmd_reap
-  [ -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "reaped a live session"
-  assert_not_called 'start'
-}
-
-@test "reap drops the ledger of a finished row even while its tmux session is still up" {
-  project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash' '- [x] fix crash'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
+  started_item fix-crash game-agent-1 run '' 'board:game:fix crash'
+  agent-queue move fix-crash done --status ok >/dev/null
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
   assert_not_called 'start'
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "a done row kept its project's dispatch slot"
+  # Closed, it holds no slot even while the human reuses its tmux session.
+  run live_runs
+  assert_output ''
+}
+
+@test "reap leaves a live session's item running while it neither waits nor asks" {
+  project game beta "$SANDBOX/repos/game"
+  started_item fix-crash game-agent-1 run
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "moved a working session's item"
+  assert_not_called 'start'
+}
+
+# 2026-11-03: a plan item sat in running/ at its plan, and the Overview's "Waiting for you" was empty.
+@test "reap moves an item to waiting while its session waits on the human or owns a pending ask, and back after" {
+  project game beta "$SANDBOX/repos/game"
+  started_item p lab:game-agent-1
+  started_item q game-agent-2
+  printf 'game-agent-1\ngame-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
+  stub agent-ask 'printf "a1\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-2\n"'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem waiting p)" ] || fail "the session at its plan is not waiting"
+  [ -n "$(qitem waiting q)" ] || fail "the session with a pending ask is not waiting"
+
+  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  [ -n "$(qitem running p)" ] && [ -n "$(qitem running q)" ] || fail "an answered session stayed waiting"
+}
+
+@test "reap moves nothing when it cannot read the sessions or the asks" {
+  project game beta "$SANDBOX/repos/game"
+  started_item p game-agent-1 '' '' human waiting
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'exit 1'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  [ -n "$(qitem waiting p)" ] || fail "moved an item on an unreadable agent-panel"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}"'
+  stub agent-ask 'exit 1'
+  run cmd_reap
+  [ -n "$(qitem waiting p)" ] || fail "moved an item on an unreadable agent-ask"
 }
 
 # --- start: the one launch path for every agent-started session --------------------------
-# 2026-10-28: only `run` tagged @dispatch and wrote a ledger, so restored and hand-launched
+# 2026-10-28: only `run` tagged @dispatch and kept a record, so restored and hand-launched
 # sessions showed no [dispatch] and an agent tagged two by hand with set-option.
 
-@test "start --brief claims the row, cuts a worktree on the named server, tags it there and records the server" {
+@test "start --brief claims the row, promotes it to an item, and starts that item on the named server" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'tidy the loader' '- [ ] tidy the loader'
   printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent \
     --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
   assert_success
-  assert_output --partial 'started game-agent-1: game: tidy the loader'
+  assert_output --partial 'started game-agent-1: game: tidy-the-loader'
   grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
-  assert_called "wt new --server default --detach -c $SANDBOX/repos/game"
-  assert_called 'tmux -L default set-option -t =game-agent-1: @dispatch game: tidy the loader'
-  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p;s/^lane=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1" | paste -sd' ')" 'agent default hand'
+  assert_called "new --server default --detach -c $SANDBOX/repos/game"
+  assert_called 'tmux -L default set-option -t =game-agent-1: @dispatch game: tidy-the-loader'
+  f=$(qitem running tidy-the-loader)
+  [ -n "$f" ] || fail "the row's item is not running"
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" lane) $(qfield "$f" profile)" 'default:game-agent-1 hand agent bnb'
+  assert_equal "$(qfield "$f" from)" 'board:game:tidy the loader'
+  # One /one-shot: the item's brief adds it, so the row brief's own is dropped.
+  assert_equal "$(grep -o '/one-shot' "$NOTES_FIXTURE/cmd" | wc -l)" 1
+  grep -qF 'AGENT_QUEUE_ITEM=tidy-the-loader' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
 }
 
 @test "start --brief refuses a row that is not open, and starts nothing" {
@@ -812,22 +855,45 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   assert_failure
   assert_output --partial 'row no longer open'
   assert_not_called 'wt new'
-  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "wrote a ledger"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
 }
 
 @test "start --resume opens its own session on the named server running claude --resume, and leaves the sheet alone" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
   : > "$NOTES_FIXTURE/tmux.sessions.default"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row 'fix crash' \
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
   assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game claude --permission-mode bypassPermissions --resume abc-123"
-  assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: fix crash'
+  assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: resumed'
   assert_not_called 'start fix crash'
   assert_not_called 'wt new'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "touched the row"
-  assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/fix-crash" | paste -sd' ')" 'default resume'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "a restore with no item wrote one"
+}
+
+@test "start --resume --item re-attaches the started item to the new session; a queued item or a --row is refused" {
+  project game beta "$SANDBOX/repos/game"
+  started_item fix-crash lab:game-agent-9 run '' 'board:game:fix crash'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session fix-crash \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
+  assert_success
+  assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: fix-crash'
+  f=$(qitem running fix-crash)
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:fix-crash resume'
+
+  agent-queue add --project game --slug later "later" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session s2 --cwd "$SANDBOX/repos/game" --resume x --item later
+  assert_failure
+  assert_output --partial 'later is queued'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row 'fix crash' --server default --session s3 \
+    --cwd "$SANDBOX/repos/game" --resume x
+  assert_failure
+  assert_output --partial 'not --row'
+  assert_not_called 'new-session -d -s s2'
+  assert_not_called 'new-session -d -s s3'
 }
 
 @test "start runs claude on the account claude-acct picks, for a brief and for a resume" {
@@ -840,7 +906,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
     --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
   assert_success
-  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
     --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
@@ -856,17 +922,16 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   assert_output --partial 'already exists on default'
   assert_not_called 'new-session'
   assert_not_called 'set-option'
-  [ ! -e "$FLEET_DISPATCH_DIR/live/dotfiles" ] || fail "wrote a ledger for someone else's session"
 }
 
 @test "start refuses a call that is not exactly one launch" {
   printf 'brief\n' > "$SANDBOX/brief.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row r
   assert_failure
-  assert_output --partial 'exactly one of --brief or --resume'
+  assert_output --partial 'exactly one of --brief, --item or --resume'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row r --brief "$SANDBOX/brief.md" --resume x
   assert_failure
-  assert_output --partial 'exactly one of --brief or --resume'
+  assert_output --partial 'exactly one of --brief, --item or --resume'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --brief "$SANDBOX/brief.md"
   assert_failure
   assert_output --partial 'needs the --row'
@@ -880,49 +945,36 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   assert_not_called 'new-session'
 }
 
-@test "reap reads the server from the ledger: a live session on default is kept, one gone from it is settled" {
+@test "reap reads the server from the item: a live session on default is kept, one gone from it is settled" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=fix crash\nserver=default\n' > "$FLEET_DISPATCH_DIR/live/game-agent-1"
+  started_item fix-crash default:game-agent-1 run '' 'board:game:fix crash'
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  stub agent-panel 'exit 0'; stub agent-ask 'exit 0'
   run cmd_reap
-  [ -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "reaped a session live on the server its ledger names"
+  [ -n "$(qitem running fix-crash)" ] || fail "reaped a session live on the server its item names"
   assert_not_called 'start'
 
   # The same name live on lab only is not this session.
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-agent-1" ] || fail "kept a ledger whose session is gone from its server"
+  [ -z "$(qitem running fix-crash)" ] || fail "kept an item whose session is gone from its server"
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
-}
-
-@test "reap keeps a live restore with no row and drops it once its session is gone, touching no sheet" {
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nprofile=bnb\nlane=human\nkey=\nserver=default\norigin=resume\n' > "$FLEET_DISPATCH_DIR/live/restored"
-  printf 'restored\n' > "$NOTES_FIXTURE/tmux.sessions.default"
-  run cmd_reap
-  [ -e "$FLEET_DISPATCH_DIR/live/restored" ] || fail "reaped a live restore"
-  : > "$NOTES_FIXTURE/tmux.sessions.default"
-  run cmd_reap
-  [ ! -e "$FLEET_DISPATCH_DIR/live/restored" ] || fail "kept a restore whose session is gone"
-  assert_not_called 'ptask'
 }
 
 @test "a live hand launch or restore holds none of the runner's slots; its own sessions do" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' "- [ ] fix crash $T"
-  mkdir -p "$FLEET_DISPATCH_DIR/live"
-  printf 'project=game\nserver=lab\norigin=resume\n' > "$FLEET_DISPATCH_DIR/live/restored"
-  printf 'project=game\nserver=lab\norigin=hand\n' > "$FLEET_DISPATCH_DIR/live/by-hand"
+  started_item restored lab:restored resume
+  started_item by-hand lab:by-hand hand
   printf 'restored\nby-hand\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run live_runs
   assert_output ''
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
 
-  printf 'project=game\nserver=lab\norigin=run\narea=wilds\n' > "$FLEET_DISPATCH_DIR/live/game-agent-9"
+  started_item mine lab:game-agent-9 run wilds
   run live_runs
   assert_output game/wilds
 }
@@ -975,7 +1027,6 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_output --partial 'do not mark it done'
   assert_not_called 'wt new'
   assert_not_called 'judge called'
-  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls -A "$FLEET_DISPATCH_DIR/live")" ] || fail "wrote a session ledger"
 }
 
 @test "night: a tier-3 row never becomes a merging item, even with a dispatch verdict" {
@@ -1093,7 +1144,7 @@ J
   assert_not_called 'judge called'
   assert_not_called 'wt new'
   assert_not_called 'start '
-  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "fill --dry-run wrote a ledger"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "fill --dry-run queued an item"
 }
 
 # --- the queue ---------------------------------------------------------------------------
@@ -1112,10 +1163,9 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_not_called 'ptask game start fix crash on load'
   f=$(qitem running fix-menu)
   [ -n "$f" ] || fail "fix-menu is not running"
-  assert_equal "$(qfield "$f" session)" game-agent-1
+  assert_equal "$(qfield "$f" session)" lab:game-agent-1
   assert_equal "$(qfield "$f" account)" main
   [ -n "$(qitem queued low-one)" ] || fail "only one start a pass"
-  assert_equal "$(sed -n 's/^item=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" fix-menu
 }
 
 @test "a queue item runs /one-shot in bypass mode, a night item --pr-only, a plan item in plan mode" {
@@ -1186,6 +1236,4 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'failed queue item b'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-a.md)" status)" ok
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-a" ] && [ ! -e "$FLEET_DISPATCH_DIR/live/game-b" ] || fail "ledgers kept"
-  [ ! -e "$FLEET_DISPATCH_DIR/live/game-c" ] || fail "a closed item's ledger outlived it"
 }

@@ -316,15 +316,17 @@ cmd_show() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug>}" f session dest
+  local slug="${1:?usage: agent-queue cancel <slug>}" f session server dest
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  session="$(fm_get "$f" session)"
+  # `session:` is <server>:<tmux session>, as fleet-dispatch writes it; a bare name is on AQ_TMUX_SERVER.
+  session="$(fm_get "$f" session)"; server="$AQ_TMUX_SERVER"
+  case "$session" in *:*) server="${session%%:*}"; session="${session#*:}" ;; esac
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
-    if tmux -L "$AQ_TMUX_SERVER" kill-session -t "=$session" 2>/dev/null; then
+    if tmux -L "$server" kill-session -t "=$session" 2>/dev/null; then
       echo "killed session $session"
     else
-      echo "agent-queue: session $session was not running on $AQ_TMUX_SERVER" >&2
+      echo "agent-queue: session $session was not running on $server" >&2
     fi
   fi
   header_set "$f" status cancelled
@@ -344,7 +346,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued, from)
 # are not settable: they are what the item is.
-SETTABLE=" project mode priority tags after agent started waiting finished session account plan pr note status area origin lane profile "
+SETTABLE=" project mode priority tags after agent started waiting finished session account model plan pr note status area origin lane profile "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
