@@ -10,6 +10,9 @@
 #                          window of its own, to watch it or talk to it
 #   fleet-shepherd passes [n]
 #                          the pass running now and the last n scored, newest first
+#   fleet-shepherd stats   one JSON object of shepherd numbers for the feed (agent-mqtt-publish
+#                          `summary shepherd`): open, unhandled, skipped and paged due lines, 24h
+#                          nudges, escalations and skips from log.md, passes and the last one's age
 #   fleet-shepherd check   refresh the state document and samples as `run` does, then print
 #                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
@@ -117,7 +120,7 @@ interactive_age() {
   echo $(( ($(date +%s) - at) / 60 ))
 }
 
-# The shepherd skill's nudge rules (steps 3 and 4), over the document: a hands-off row is never
+# The shepherd skill's nudge rules (steps 3 and 4), over the document: a manual row is never
 # moved; DONE, LANDED and STALLED are nudged once; a row for the human is escalated once.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
@@ -125,7 +128,7 @@ cmd_due() {
   out="$(jq -r '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.sessions // [])[]
-      | select((.labels // []) | index("hands-off") | not)
+      | select((.labels // []) | index("manual") | not)
       | if (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
           "nudge \(.bucket): \(.target) \(.fact // "")"
         elif ((.bucket | IN("NEEDS","UNCLEAR")) or ((.bucket | IN("DONE","LANDED","STALLED")) and .nudged))
@@ -206,7 +209,7 @@ overdue_due() {
   done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
       --slurpfile s "$STATE_FILE" --arg eta "$eta" '
     ($s[0].sessions // [] | map(select(.bucket == "WORKING" and ((.reason // "") | startswith("busy") | not)
-                                       and ((.labels // []) | index("hands-off") | not)))
+                                       and ((.labels // []) | index("manual") | not)))
        | map({key: .session_id, value: .}) | from_entries) as $w
     | $eta | split("\n")[] | select(length > 0) | fromjson
     | select((.finished | not) and .phase_min != null and .phase_since_epoch != null and $w[.session_id] != null
@@ -231,7 +234,7 @@ limit_due() {
       | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$LIMIT_RE" \
       && echo "limit: $target stopped on the usage limit"
   done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" '(.sessions // [])[]
-    | select((.labels // []) | index("hands-off") | not)
+    | select((.labels // []) | index("manual") | not)
     | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
     | [.target, .pane] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
@@ -518,7 +521,7 @@ launch_pass() {
   printf '%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" > "$PASS"
   # The pass is the shepherd: no pass moves it. fleet-sessions label needs a live session, and
   # this one is still starting, so the label is written as fleet-sessions keeps it.
-  mkdir -p "$LEDGER/labels" && echo hands-off > "$LEDGER/labels/$id"
+  mkdir -p "$LEDGER/labels" && echo manual > "$LEDGER/labels/$id"
   claude-acct trust "$SERVER" "=$SESSION:" "bypass permissions on" >/dev/null 2>&1 ||
     echo "$NAME: claude did not show bypass mode; look at the pane: $ATTACH" >&2
   agentctl report --name "$NAME" "item=pass ${id:0:8}: $ATTACH" >/dev/null 2>&1 || true
@@ -596,7 +599,7 @@ cmd_open() {
     if ! tmux -L "$SERVER" has-session -t "=$s" 2>/dev/null; then
       fleet-dispatch start --resume "$id" --session "$s" --cwd "$HOME" --project dotfiles --server "$SERVER" || die "could not resume pass $id"
     fi
-    mkdir -p "$LEDGER/labels" && echo hands-off > "$LEDGER/labels/$id"
+    mkdir -p "$LEDGER/labels" && echo manual > "$LEDGER/labels/$id"
   fi
   if [ -n "${TMUX:-}" ] && command -v agent-panel >/dev/null 2>&1; then
     agent-panel jump "$SERVER/$s:"
@@ -614,8 +617,43 @@ cmd_passes() {
   tail -n "${1:-20}" "$PASSES" 2>/dev/null | tac
 }
 
+lines() { local c; c="$(grep -c . "$1" 2>/dev/null)"; echo "${c:-0}"; }
+
+# stats: the numbers, read from the ledgers as they are; writes nothing. A 24h count reads log.md's
+# `- HH:MM UTC MM-DD: <verb> ...` receipts, so a pass that moved a line without logging it is not counted.
+cmd_stats() {
+  local now id="" start="" last="" lstart lverdict
+  now=$(date +%s)
+  { read -r id start _; } 2>/dev/null < "$PASS" || true
+  last="$(tail -n 1 "$PASSES" 2>/dev/null)"
+  lstart="$(cut -f1 <<<"$last")"; lverdict="$(cut -f3 <<<"$last")"
+  [ -z "$lstart" ] || lstart="$(date -u -d "$lstart" +%s 2>/dev/null)" || lstart=""
+  [ -n "$start" ] || start="$lstart"
+  { [ ! -r "$LEDGER/log.md" ] || awk -v now="$(date -u '+%m-%d %H:%M')" -v cut="$(date -u -d '24 hours ago' '+%m-%d %H:%M')" '
+    match($0, /^- [0-9][0-9]:[0-9][0-9] UTC [0-9][0-9]-[0-9][0-9]: /) {
+      k = substr($0, 13, 5) " " substr($0, 3, 5)
+      if (cut <= now ? (k < cut || k > now) : (k < cut && k > now)) next
+      v = $5; sub(/:$/, "", v); print v
+    }' "$LEDGER/log.md"; } |
+    jq -Rsc --argjson now "$now" --argjson start "${start:-null}" --arg verdict "$lverdict" \
+      --argjson due "$(lines "$DUE_LAST")" \
+      --argjson unhandled "$(cut -f4 "$DUE_LAST" 2>/dev/null | grep -c '^unhandled: ')" \
+      --argjson skipped "$(lines "$SKIPPED")" \
+      --argjson paged "$(lines "$PAGED")" \
+      --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \
+      --arg running "$id" '
+      (split("\n") | map(select(length > 0))) as $v
+      | def n(w): $v | map(select(. == w)) | length;
+      {state: $due, due: $due, unhandled: $unhandled, skipped: $skipped, paged: $paged,
+       nudges_24h: n("nudged"), escalations_24h: n("escalated"), skips_24h: n("skipped"),
+       passes_24h: $passes, pass_running: ($running != ""),
+       last_pass_epoch: $start, last_pass_age_s: (if $start == null then null else $now - $start end),
+       last_verdict: (if $verdict == "" then null else $verdict end)}'
+}
+
 case "${1:-}" in
   run)   cmd_run ;;
+  stats) cmd_stats ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
   check) cmd_check ;;

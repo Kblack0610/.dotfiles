@@ -53,7 +53,7 @@ Under-use is a fault too, but never fix it by moving gates. A playground gate al
 Go down the ladder only as far as you need to:
 
 1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages low (Binks acts on it, the human does not) and makes every new session and every gate see it.
-2. **Park the Claude sessions on the roster that are not mid-turn**, by `activity` in `fleet-sessions --json`, skipping `hands-off`:
+2. **Park the Claude sessions on the roster that are not mid-turn**, by `activity` in `fleet-sessions --json`, skipping `manual`:
    - `idle`: `claude-acct park <session>`. No message: it is told why when it is unparked.
    - `shell`: `claude-acct park <session> --stop-shells`. It parks only when every background shell is a wait on GitHub (`gh run watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop), and refuses a local gate, suite or Unity run, which the hold's gate already holds; leave that one running.
    - `busy`: one `fleet-comms` PAUSE message naming the hold, and park it on a later pass once it reads idle.

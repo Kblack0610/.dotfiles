@@ -79,8 +79,8 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   refute_output --partial r2
 }
 
-@test "a hands-off row is never due, and an all-quiet document exits 1" {
-  doc "[$(row a STALLED false false '["hands-off"]'), $(row b WORKING false false)]"
+@test "a manual row is never due, and an all-quiet document exits 1" {
+  doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
   run "$SH" due
   assert_failure
   assert_output ''
@@ -128,7 +128,7 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "no pass id recorded: '$id'"
   grep -qxF -- "-L lab respawn-pane -k -t =shepherd: -c $HOME bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
     fail "$(cat "$HOME/tmux.calls")"
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id")" hands-off
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id")" manual
   grep -qxF -- 'trust lab =shepherd: bypass permissions on' "$HOME/trust.calls"
   grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L lab attach -t shepherd" "$HOME/agentctl.calls"
   assert_equal "$(outcome)" WORKED
@@ -655,4 +655,23 @@ idle_row() {
   assert_line --partial 'open 160m'
   run "$SH" skip 'overdue: t-s1 phase 2/4'
   assert_failure 2
+}
+
+@test "stats counts the ledgers: open, unhandled, skipped and paged lines, 24h receipts from log.md, the last pass" {
+  run "$SH" stats
+  assert_success
+  assert_equal "$(jq -c '[.state, .due, .nudges_24h, .passes_24h, .last_pass_epoch]' <<< "$output")" '[0,0,0,0,null]'
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: escalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k3\twhy\t1\n' > "$FLEET_SHEPHERD_DIR/.skipped"
+  "$SH" log "nudged a: done, wind down"
+  "$SH" log "escalated b: 2 asks"
+  "$SH" log "skipped: c: still gating"
+  printf -- '- %s: nudged old\n' "$(date -u -d '30 hours ago' '+%H:%M UTC %m-%d')" >> "$FLEET_SHEPHERD_DIR/log.md"
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '10 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stats
+  assert_success
+  assert_equal "$(jq -c '[.due, .unhandled, .skipped, .nudges_24h, .escalations_24h, .skips_24h, .passes_24h, .last_verdict, .pass_running]' <<< "$output")" '[2,1,1,1,1,1,1,"WORKED",false]'
+  age="$(jq .last_pass_age_s <<< "$output")"
+  [ "$age" -ge 540 ] && [ "$age" -le 720 ] || fail "last_pass_age_s $age"
 }

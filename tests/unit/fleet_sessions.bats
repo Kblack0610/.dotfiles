@@ -732,11 +732,11 @@ queue_item() {
 
 @test "label adds, removes and prints a session's labels, by target, tmux session or self" {
   landed_fixture
-  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 +hands-off
-  assert_output hands-off
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 +manual
+  assert_output manual
   run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying
-  assert_output hands-off,quality:simplifying
-  CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self -hands-off
+  assert_output manual,quality:simplifying
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self -manual
   assert_output quality:simplifying
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c .labels <<<"$output")" = '["quality:simplifying"]' ]
@@ -749,7 +749,7 @@ queue_item() {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" label nope +x
   assert_failure 2
-  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 hands-off
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 manual
   assert_failure 2
   run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 '+../x'
   assert_failure 2

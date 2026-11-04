@@ -125,6 +125,20 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(payload agents/testhost/summary/dispatch)" ''
 }
 
+@test "the shepherd numbers are fleet-shepherd's own stats, its state the open due lines; output with no count publishes nothing" {
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":6,\"due\":6,\"unhandled\":1,\"nudges_24h\":40}'" > "$SANDBOX/bin/fleet-shepherd"
+  chmod +x "$SANDBOX/bin/fleet-shepherd"
+  run "$PUB" --quiet
+  p="$(payload agents/testhost/summary/shepherd)"
+  assert_equal "$(jq -c '[.state, .unhandled, .nudges_24h]' <<< "$p")" '[6,1,40]'
+  c="$(payload homeassistant/sensor/agent_testhost_summary_shepherd/config)"
+  assert_equal "$(jq -r .name <<< "$c")" 'Shepherd due lines'
+  printf '#!/usr/bin/env bash\necho "{}"\n' > "$SANDBOX/bin/fleet-shepherd"
+  : > "$PUBLOG"
+  run "$PUB" --quiet
+  assert_equal "$(payload agents/testhost/summary/shepherd)" ''
+}
+
 @test "the pager is agent-notify's own stats, its state the pages that reached nobody" {
   printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"raised_24h\":9,\"ntfy_24h\":7,\"none_24h\":2,\"undelivered_1h\":1,\"undelivered_24h\":2}'" > "$SANDBOX/bin/agent-notify"
   chmod +x "$SANDBOX/bin/agent-notify"

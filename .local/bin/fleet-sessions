@@ -66,7 +66,7 @@ QUEUE_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
 # claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
-# Labels say what git, gh and the transcript cannot: a human's `hands-off` (the shepherd
+# Labels say what git, gh and the transcript cannot: a human's `manual` (the shepherd
 # leaves that session alone), or a session's own `quality:<step>` while a cleanup pass runs.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"
