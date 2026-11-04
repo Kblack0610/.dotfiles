@@ -13,7 +13,7 @@ This section is the one definition of the tiers. Humans tagging rows, agents fil
 - `1`: cannot break anything others depend on. Docs, copy and text, one contained bug fix or a new test in one product module.
 - `2`: an ordinary product change in product code, a small feature or bug fix that the row fully describes.
 - `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Tier 3 never gets a merging session, whatever the row is tagged.
-- Tier 3 may run unattended to an open PR only, via night-shift, never past it (human decision 2026-11-02). That is `fleet-dispatch night`, which reads `tier3_only` below; your verdict for a tier 3 row is still `skip`.
+- Tier 3 may run unattended to an open PR only, as a `night` queue item, never past it (human decision 2026-11-02). `fleet-dispatch fill` promotes those rows from `tier3_only` below; your verdict for a tier 3 row is still `skip`.
 
 Judge the tier from what the change touches, not from the tag. A row tagged `#tier/1` that changes a test gate is tier 3.
 

@@ -161,12 +161,6 @@ pub fn read_log(paths: &Paths, r: &LogRef) -> Result<String, String> {
                 text
             })
         }
-        LogRef::Night { slug } => {
-            if !safe_name(slug) {
-                return Err("bad slug".into());
-            }
-            tail_file(&paths.night_logs.join(format!("{slug}.log")))
-        }
         LogRef::Gh { url, done } => gh_log(paths, url, *done),
         LogRef::K8s { ns, job, from, to } => super::loki::job_log(ns, job, *from, *to),
     }
@@ -179,8 +173,6 @@ mod tests {
     fn paths(dir: &Path) -> Paths {
         Paths {
             agentctl: dir.to_path_buf(),
-            night: dir.to_path_buf(),
-            night_logs: dir.to_path_buf(),
             unity_runs: dir.join("runs.tsv"),
             cache: dir.join("cache"),
         }
@@ -232,10 +224,6 @@ mod tests {
                 err: (0, None),
             };
             assert!(read_log(&p, &r).is_err(), "{name}");
-            assert!(
-                read_log(&p, &LogRef::Night { slug: name.into() }).is_err(),
-                "{name}"
-            );
         }
         assert!(read_log(
             &p,
