@@ -27,6 +27,10 @@ default_profile = "personal"
 # one 47-item client project burying the rest. Empty/absent = everything full.
 # full  = ["bnb"]
 
+# --- Project types ------------------------------------------------------------
+# The defaults ship in notes (notes-cli/templates/project_types.toml). Declare a
+# `[project_type.<t>]` table here only to replace that type on this machine.
+
 [hostname_map]
 # Map a machine's short hostname to a profile so corporate boxes auto-root into
 # the right directory. Find the name with `hostname -s`, then uncomment + set.
