@@ -7,6 +7,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
+#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
 #       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--item SLUG])
 #                                    start ONE session the way every agent must: see cmd_start
@@ -35,6 +36,7 @@ set -uo pipefail
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --role observe}"
@@ -645,11 +647,10 @@ cmd_starved() {
   local items last cut started
   agent-hold check dispatch >/dev/null 2>&1 || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
-  started=$(grep -E '^- [0-9-]+ [0-9:]+ started .* \(run\) .*queue item ' "$LOG" 2>/dev/null | tail -n 1 | cut -d' ' -f2,3)
+  started=$(last_run_start)
   if [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then return 0; fi
-  items=$(agent-queue list --json --state queued 2>/dev/null | jq -rs --argjson cut "$cut" '
-    [.[] | select(.hold == null and (.priority == "urgent" or .priority == "high"))
-      | . + {t: (.queued | try fromdateiso8601 catch null)} | select(.t != null and .t < $cut)]
+  items=$(runnable | jq -rs --argjson cut "$cut" '
+    [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   [ -n "$items" ] || return 0
   # shellcheck source=/dev/null
@@ -659,6 +660,53 @@ cmd_starved() {
   sed 's/^/  /' <<<"$items"
   echo "last run start: ${started:-none in the log}; last pass: ${last:-none recorded}"
   return 1
+}
+
+# runnable -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
+# after:), one JSON object a line with t, the queued epoch. Fails when the queue is unreadable.
+runnable() {
+  local q; q=$(agent-queue list --json --state queued 2>/dev/null) || return 1
+  jq -c 'select(.hold == null) | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
+}
+
+# last_run_start -> "YYYY-MM-DD HH:MM" of the last queue item a run pass started, from the log.
+last_run_start() {
+  grep -E '^- [0-9-]+ [0-9:]+ started .* \(run\) .*queue item ' "$LOG" 2>/dev/null | tail -n 1 | cut -d' ' -f2,3
+}
+
+# stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
+# number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
+# all and by urgent/high; starved (the queue-starved verdict); the last pass and last run start;
+# starts in the last hour by origin; reap moves in the last hour, and the items moved
+# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
+cmd_stats() {
+  local now q since started pass=null starved=false
+  now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
+  q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
+  cmd_starved >/dev/null 2>&1 || starved=true
+  started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
+    pass=$(stat -c %Y "$(proof_state_dir)/fleet-dispatch/last-outcome" 2>/dev/null || echo null)
+  awk -v since="$since" '
+    ($2 " " $3) < since { next }
+    $4 == "started" && match($0, / \([a-z]+\) for /) { print "start", substr($0, RSTART + 2, RLENGTH - 8); next }
+    $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
+    $4 == "reaped" { print "settle", "-" }' "$LOG" 2>/dev/null |
+    jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
+      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" '
+      [split("\n")[] | select(length > 0) | split(" ")] as $ev
+      | ($q | map(select(.priority == "urgent" or .priority == "high"))) as $u
+      | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
+        def starts(o): $ev | map(select(.[0] == "start" and .[1] == o)) | length;
+        ($ev | map(select(.[0] == "move") | .[1]) | group_by(.) | map(select(length >= $flap) | .[0])) as $flapping
+      | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length),
+         oldest_runnable_s: age($q), oldest_urgent_s: age($u), starved: $starved,
+         last_pass_epoch: $pass, last_run_start_epoch: $start,
+         starts_1h_run: starts("run"), starts_1h_hand: starts("hand"),
+         starts_1h_redispatch: starts("redispatch"), starts_1h_resume: starts("resume"),
+         reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),
+         flapping_items: ($flapping | length), flapping: $flapping}'
 }
 
 # reap -- settle the queue items whose session is gone (settle_item, then settle_row for a board
@@ -970,6 +1018,7 @@ main() {
     report) cmd_report ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
+    stats) cmd_stats ;;
     start) shift; cmd_start "$@" ;;
     -h | --help) sed -n '2,29p' "$0" ;;
     *) sed -n '2,13p' "$0" >&2; return 2 ;;

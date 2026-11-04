@@ -5,7 +5,7 @@
 #   agent-mqtt-publish --full     republish everything (the timer; refreshes expire_after)
 #   agent-mqtt-publish --dry-run  print `topic<TAB>payload` lines, touch nothing
 #
-# Entities use HA MQTT discovery: runners, watches, open asks and live sessions appear as
+# Entities use HA MQTT discovery: runners, watches, open asks, the dispatch queue and live sessions appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
 # mqtt2prom keeps only numeric and boolean keys, so each text fact Prometheus needs has a
 # number beside it: runner updated_epoch, duration_s (the main process of the last run, null
@@ -98,7 +98,8 @@ emit() {
         watch)   eid="agent_watch_$id" ;;
         sessions) eid="agent_sessions_$id" ;;
         *)       eid="agent_$id"
-                 case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;; esac ;;
+                 case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;;
+                     dispatch) label="Dispatch queue" ;; esac ;;
     esac
     uid="agent_${HOST_ID}_${kind}_${id}"
     base="agents/$HOST_ID/$kind/$id"
@@ -177,6 +178,15 @@ snapshot() {
               {state: $n, asks: [split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160])}]}')" \
             '{"state_class":"measurement"}'
+    fi
+
+    # Dispatch: runnable queue work, starts and reaps in the last hour, flapping items, as
+    # fleet-dispatch itself counts them (`fleet-dispatch stats`); nothing is derived here. A queue
+    # it cannot read publishes nothing, so the sensor goes unavailable at expire_after.
+    if command -v fleet-dispatch >/dev/null 2>&1; then
+        local dstats
+        dstats="$(fleet-dispatch stats 2>/dev/null)" && jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
+            emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
     fi
 
     # Interactive sessions: live Claude panes, the same `agent-panel list` the waybar
