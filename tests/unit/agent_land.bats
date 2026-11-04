@@ -56,7 +56,8 @@ EOF
   printf '2\n' >"$NOTES_FIXTURE/behind"
   run "$LAND" 42 --project dotfiles --title "ship it"
   assert_failure 3
-  assert_output --partial 'behind origin/main by 2'
+  assert_output --partial 'behind origin/main by 2, merge it and re-run'
+  refute_output --partial 're-gate'
   run grep -c 'pr checks\|pr merge\|^notes' "$LOG"
   assert_output 0
 }
