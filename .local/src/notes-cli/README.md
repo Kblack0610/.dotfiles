@@ -164,6 +164,35 @@ The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It li
 
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
+### The task row
+
+Every project sheet, in every project and both lanes, uses one row format. Projects differ only by data in the registry, never by row format.
+
+```
+- [ ] fix(fleet-sessions): class a gh gate-wait shell as a gate wait #high #size/s #c1104
+  Seen agent-10, run 41893820093: the row reads STALLED while its gate runs.
+```
+
+| Part | Required | Rule |
+|---|---|---|
+| `[ ]` `[/]` `[x]` | yes | open, doing (a queue item exists), closed |
+| `type(area): title` | agent lane yes; human lane at triage | Types: `feat fix perf refactor docs test chore ci` for work, `run decide check` for what only the human can do. The area is one lowercase kebab word naming the component. The title is imperative, 80 chars or fewer, and becomes the PR title. |
+| detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
+| priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
+| created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
+| size | no | `#size/s` (small single PR), `#size/m` (one PR), `#size/l` (needs a plan); there is no hour estimate |
+| `#tier/N` `#worker/X` `#vX.Y.Z` `#dueMMDD` | no | as the feed above reads them |
+| `#ask` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
+| marker | on close | `<!-- ... -->` at the end: `pr:N`, a run id or URL, `unverified: <why>` |
+
+No assignee field: the lane is the assignee. No comment thread: detail lines plus the PR. No per-project custom fields.
+
+Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
+
+Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check. A board row that runs as a session goes row -> `ptask start` or a dispatch promote -> queue item -> session -> PR -> `agent-land` closes the queue item and the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
+
+`notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. On the agent board it also counts the open rows not in `type(area): title` form and those with a title over 80 chars, one line each. Human sheet rows are free text and closed by hand, so those two checks skip them.
+
 ### The task feed
 
 `notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
@@ -179,8 +208,6 @@ The human sheet (`README.md`) is the queue: what you asked for and what only you
 - `wave` is null for a playtest row, and `game` is null for a sheet row.
 
 To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or removed the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control; there are no ids in the sheets. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
-
-`notes doctor --projects` checks the row grammar the feed parses, per top-level sheet and agent board row: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), a tier tag that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. Human sheet rows are closed by hand, so they need no marker.
 
 ## Daily-note model
 
