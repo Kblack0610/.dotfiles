@@ -1,0 +1,7 @@
+Checks	Docs within their budgets	2026-11-03T10:00:00.0000000Z ##[group]Run scripts/test/run.sh
+Checks	Docs within their budgets	2026-11-03T10:00:00.0000000Z echo "::error::source, not output"
+Checks	Docs within their budgets	2026-11-03T10:00:00.0000000Z ##[endgroup]
+Checks	Docs within their budgets	2026-11-03T10:00:01.0000000Z ResourceWarning: Enable tracemalloc to get the object allocation traceback
+Checks	Docs within their budgets	2026-11-03T10:00:01.0000000Z docs/harness/throwables.md: words 4256 > 4250
+Checks	Docs within their budgets	2026-11-03T10:00:01.0000000Z ##[error]Process completed with exit code 1.
+Checks	Post job	2026-11-03T10:00:09.0000000Z Cleaning up orphan processes

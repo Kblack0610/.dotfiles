@@ -70,7 +70,7 @@ gh workflow list
 gh workflow run <workflow.yml> -f key=value
 ```
 
-Wait on a run with `--watch` / `--exit-status`, never a sleep loop. A red check is diagnosed, not rerun: diff `--log-failed` against the last green run of the same workflow. `gh run rerun <run-id> --failed` is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip; a test failure is never rerun. Fixing reds: `/my:fix-ci`. Landing a gated PR and recording it: `agent-land`.
+Wait on a run with `--watch` / `--exit-status`, never a sleep loop. A red check is diagnosed, not rerun: diff `--log-failed` against the last green run of the same workflow. `gh run rerun <run-id> --failed` is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip; a test failure is never rerun. Fixing reds: `/my:fix-ci`; red patterns across many runs: `ci-failures`. Landing a gated PR and recording it: `agent-land`.
 
 ## Search
 

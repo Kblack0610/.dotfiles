@@ -1,0 +1,1 @@
+{"databaseId": 107, "workflowName": "Tests", "headBranch": "feat/d", "headSha": "ffffffffffffffffffffffffffffffffffffffff", "event": "workflow_dispatch", "status": "completed", "conclusion": "cancelled", "createdAt": "2026-11-03T15:00:00Z", "attempt": 1, "url": "https://example.invalid/runs/107", "_listed_as": ["test.yml"]}
