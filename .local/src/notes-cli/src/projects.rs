@@ -737,27 +737,118 @@ fn summary_findings(content: &str) -> Vec<String> {
 /// word looks meaningful and is not.
 const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
 
-/// The row grammar the board feed parses, per top-level row: a retired priority word, a
-/// malformed tier, and on the agent board a done row with no proof marker (`ptask done`
-/// refuses one, so it was closed by hand). Human sheet rows are closed by hand by design.
+/// Tags nothing reads any more. Each looks meaningful on a row and changes nothing.
+/// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
+const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
+
+/// The work and human-only types a row title starts with (README "The task row").
+pub(crate) const ROW_TYPES: &[&str] = &[
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "run", "decide", "check",
+];
+
+/// A title longer than this belongs on a detail line under the row.
+const TITLE_MAX: usize = 80;
+
+/// The `type(area): ` prefix of a row's text, when it has a well-formed one: a known type,
+/// then one lowercase kebab word in parentheses, a colon and a space. Returns the title
+/// behind it.
+fn split_row_prefix(text: &str) -> Option<&str> {
+    let (ty, rest) = text.split_once('(')?;
+    let (area, title) = rest.split_once("): ")?;
+    let kebab = !area.is_empty()
+        && !area.starts_with('-')
+        && area
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (ROW_TYPES.contains(&ty) && kebab && !title.trim().is_empty()).then_some(title)
+}
+
+/// A row's title as the grammar counts it: its text with the stamps, the hashtags and the
+/// `type(area): ` prefix taken off.
+fn row_title(line: &str) -> String {
+    let text = md::task_text(line);
+    let bare: Vec<&str> = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect();
+    let bare = bare.join(" ");
+    split_row_prefix(&bare).unwrap_or(&bare).to_string()
+}
+
+/// The row grammar the board feed parses, per top-level row: a retired priority word, two
+/// priorities, a retired tag or `since:` stamp, a malformed tier, and on the agent board a
+/// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
+/// Human sheet rows are closed by hand by design. On the agent board the open rows are also
+/// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer, rolled up to one line
+/// each, since a board written before the grammar fails it on most rows. The human sheet
+/// takes free text: triage rewrites it.
 fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
+    let (mut unprefixed, mut long) = (Vec::new(), Vec::new());
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
         }
         let n = i + 1;
-        let head = line.find("<!--").map_or(line, |i| &line[..i]);
-        for t in md::find_hashtags(head) {
+        let (head, marker) = line.find("<!--").map_or((line, ""), |i| line.split_at(i));
+        let tags = md::find_hashtags(head);
+        for t in &tags {
             if RETIRED_PRIORITIES.contains(&t.as_str()) {
-                out.push(format!("line {n}: #{t} is not a priority (urgent, high or low)"));
-            } else if md::looks_like_tier(&t) && md::tier_tag(&t).is_none() {
+                out.push(format!(
+                    "line {n}: #{t} is not a priority (urgent, high or low)"
+                ));
+            } else if RETIRED_TAGS.contains(&t.as_str()) {
+                out.push(format!("line {n}: #{t} is retired (nothing reads it)"));
+            } else if md::looks_like_tier(t) && md::tier_tag(t).is_none() {
                 out.push(format!("line {n}: #{t} is not a tier (#tier/1, 2 or 3)"));
             }
         }
-        if agent && md::is_checked(line) && !has_proof(line) {
-            out.push(format!("line {n}: done with no proof marker (<!-- pr:N -->)"));
+        let prios: Vec<&String> = tags
+            .iter()
+            .filter(|t| md::PRIORITIES.iter().any(|(w, _, _)| w == t))
+            .collect();
+        if prios.len() > 1 {
+            let named: Vec<String> = prios.iter().map(|t| format!("#{t}")).collect();
+            out.push(format!(
+                "line {n}: {} priorities, keep one",
+                named.join(" ")
+            ));
         }
+        if marker.contains("since:") {
+            out.push(format!(
+                "line {n}: since: is retired, the created stamp is #cMMDD"
+            ));
+        }
+        if agent && md::is_checked(line) && !has_proof(line) {
+            out.push(format!(
+                "line {n}: done with no proof marker (<!-- pr:N -->)"
+            ));
+        }
+        if agent && md::is_open_task(line) {
+            let text = md::task_text(line);
+            let bare: Vec<&str> = text
+                .split_whitespace()
+                .filter(|w| !w.starts_with('#'))
+                .collect();
+            if split_row_prefix(&bare.join(" ")).is_none() {
+                unprefixed.push(n);
+            }
+            if row_title(line).chars().count() > TITLE_MAX {
+                long.push(n);
+            }
+        }
+    }
+    if let Some(first) = unprefixed.first() {
+        out.push(format!(
+            "{} open row(s) not in `type(area): title` form (first: line {first})",
+            unprefixed.len()
+        ));
+    }
+    if let Some(first) = long.first() {
+        out.push(format!(
+            "{} open row(s) with a title over {TITLE_MAX} chars, detail goes on an indented line (first: line {first})",
+            long.len()
+        ));
     }
     out
 }
@@ -3927,6 +4018,7 @@ mod move_layout_tests {
                 "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
                 "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
                 "line 6: done with no proof marker (<!-- pr:N -->)",
+                "4 open row(s) not in `type(area): title` form (first: line 2)",
             ]
         );
         assert_eq!(
@@ -3934,6 +4026,46 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // Each grammar check fires on its bad row; the well-formed rows (the negative control)
+    // draw nothing, on either lane.
+    #[test]
+    fn row_lint_holds_agent_rows_to_the_grammar_and_flags_retired_stamps() {
+        let long = "x".repeat(81);
+        let sheet = format!(
+            "## Wave: v1 (current)\n\
+            - [ ] fix(fleet-sessions): class a gate wait #high #size/s #c1104 <!-- id:ar-142 -->\n\
+            \x20 detail lines are not rows, however long they run on and on and on and on and on\n\
+            - [/] run(home-config): reboot the nas #low\n\
+            - [ ] plain words with no prefix #low\n\
+            - [ ] Fix(Area): wrong case #low\n\
+            - [ ] feat(ok): {long} #low\n\
+            - [ ] feat(two): both #urgent #low\n\
+            - [ ] chore(old): dead tags #oneshot #ci #high\n\
+            - [ ] chore(old): stamped the old way #high <!-- since:2026-10-01 -->\n\
+            - [x] fix(done): closed rows skip the grammar <!-- pr:3 -->\n"
+        );
+        let got = row_findings(&sheet, true);
+        assert_eq!(
+            got,
+            [
+                "line 8: #urgent #low priorities, keep one",
+                "line 9: #oneshot is retired (nothing reads it)",
+                "line 9: #ci is retired (nothing reads it)",
+                "line 10: since: is retired, the created stamp is #cMMDD",
+                "2 open row(s) not in `type(area): title` form (first: line 5)",
+                "1 open row(s) with a title over 80 chars, detail goes on an indented line (first: line 7)",
+            ]
+        );
+        assert_eq!(
+            row_findings(&sheet, false).len(),
+            4,
+            "the human sheet takes free text: only the stamp checks apply"
+        );
+        let clean =
+            "- [ ] fix(a-b2): fine #high <!-- id:x-1 -->\n- [ ] decide(ucp): pick one #low\n";
+        assert_eq!(row_findings(clean, true), Vec::<String>::new());
     }
 
     #[test]
@@ -4301,7 +4433,11 @@ mod shape_tests {
     #[test]
     fn a_summary_holds_only_its_two_blocks() {
         let clean = summary_template("demo");
-        assert!(summary_findings(&clean).is_empty(), "{:?}", summary_findings(&clean));
+        assert!(
+            summary_findings(&clean).is_empty(),
+            "{:?}",
+            summary_findings(&clean)
+        );
         // NEGATIVE CONTROL: a retired marker, an old nextup block and hand text are each a
         // stray line; the STATUS and AUTO bodies are not, whatever they hold.
         let dirty = clean

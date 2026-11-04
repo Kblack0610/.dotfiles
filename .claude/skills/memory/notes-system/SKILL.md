@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [notes, journal, cli]
-  reviewed: "2026-10-22"
+  reviewed: "2026-11-04"
 ---
 
 # notes-system
@@ -110,8 +110,9 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 
 ## Project board
 
-The rules every agent follows on a project's two lanes. The verbs are in the CLI README, Projects cheatsheet. Every lane goes through the `notes` CLI (never hand-edit a sheet); items are a couple of words, plain ASCII.
+The rules every agent follows on a project's two lanes. The verbs are in the CLI README, Projects cheatsheet. Every lane goes through the `notes` CLI (never hand-edit a sheet), in plain ASCII.
 
+- A row's format is the CLI README, "The task row": `type(area): title`, one priority, the stamps `ptask add` writes, detail on indented lines under it. Agent-board rows are filed in that form; a human-sheet row may be free text until triage rewrites it. `notes doctor --projects` lints it.
 - The task a session is on is a queue item, not a row: `agent-queue add --running --project <p> "<task>"` (the dispatcher already made one when `$AGENT_QUEUE_ITEM` is set), closed by `agent-land <N>` or `agent-queue move <slug> done`. Its session, PR and state are what lets another session resume it (`~/.config/agentctl/QUEUE.md`). The agent board is the backlog: follow-ups and subtasks no session is on yet, `notes ptask <project> --agent add "<title>"`. Project names come from `~/.dotfiles-private/.config/shared-hooks/project-map.json`.
 - The project sheet (no `--agent`) is the human's queue. Every open row on its current wave is the work, whoever does it; `start`/`done` the rows you take. Add to it only (1) asks the human wrote, (2) human-only actions (prod writes, releasing, money, legal, product decisions, device runs), or (3) findings with prod user, PHI, security or money impact, each with a `file:line` and a one-line impact. Anything else: fix it in the PR that found it, put it on the agent board and finish it before the wave rolls, or drop it. Check both lanes before adding.
 - `done` needs `--proof <ref>` checkable later (`pr:1142`, `run:<id>`, a URL) or `--unverified "<why>"` when that is the truth. Why: a version cannot roll while its wave has open tasks, and that gate is only worth anything if a ticked box means done.
