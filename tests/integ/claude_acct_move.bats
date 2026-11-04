@@ -108,8 +108,13 @@ case "$verb" in
         elif [ -n "$typed" ]; then start_claude "$typed"
         elif [ -f "$FIX/pending" ] && [ -f "$FIX/down" ]; then
           rm -f "$FIX/screen" "$FIX/down"; start_claude "$(cat "$FIX/pending")"; rm -f "$FIX/pending"
+          # the started claude draws its mode footer, when the test gave one
+          [ -f "$FIX/ready" ] && cp "$FIX/ready" "$FIX/screen"
         fi ;;
-      Down) touch "$FIX/down" ;;
+      # Down on the trust prompt moves its cursor from "No, exit" to "Yes"
+      Down) touch "$FIX/down"
+        grep -qF 'Yes, I trust this folder' "$FIX/screen" 2>/dev/null &&
+          printf ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n \xe2\x9d\xaf Yes, I trust this folder\n' > "$FIX/screen" ;;
       [0-9]) [ "$last" = "$(cat "$FIX/bg-option" 2>/dev/null)" ] && end_claude ;;
     esac ;;
   # copy-mode -q leaves any mode, unless the test made it stick
@@ -435,6 +440,49 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_output 'claude-acct: unparked agent-3 on main (5h 5%, 7d 10%): claude 900, busy'
   [ "$(grep -c 'send-keys -t %8 Down' "$FIX/calls.log")" -eq 1 ]
   [ ! -e "$(PARKED_LEDGER agent-3)" ]
+}
+
+# trust_prompt -- the pane shows the trust prompt of a claude that was started with a task
+trust_prompt() {
+  printf ' Quick safety check: Is this a project you created or one you trust?\n \xe2\x9d\xaf No, exit\n   Yes, I trust this folder\n' > "$FIX/screen"
+  printf 'plan the thing' > "$FIX/pending"
+}
+
+@test "trust: a fresh claude at the trust prompt gets Down, then Enter, and is ready on its mode footer" {
+  trust_prompt
+  printf '  \xe2\x8f\xb8 plan mode on (shift+tab to cycle)\n' > "$FIX/ready"
+  run "$ACCT" trust lab =new-1: "plan mode on"
+  assert_success
+  [ "$(grep -c 'send-keys -t =new-1: Down' "$FIX/calls.log")" -eq 1 ]
+  [ "$(grep -c 'send-keys -t =new-1: Enter' "$FIX/calls.log")" -eq 1 ]
+  # Enter only after the redraw put the cursor on Yes
+  [ "$(grep -n 'send-keys' "$FIX/calls.log" | head -1 | grep -c Down)" -eq 1 ]
+  grep -qF 'plan the thing' "$FIX/started"
+}
+
+@test "trust: a claude already trusted with the folder gets no key" {
+  printf '  \xe2\x8f\xb5\xe2\x8f\xb5 bypass permissions on (shift+tab to cycle)\n' > "$FIX/screen"
+  run "$ACCT" trust lab =new-2: "bypass permissions on"
+  assert_success
+  run grep -c send-keys "$FIX/calls.log"
+  assert_output 0
+}
+
+@test "trust: a pane that never shows the mode footer times out" {
+  echo 'bash: claude: command not found' > "$FIX/screen"
+  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" trust lab =new-3: "plan mode on"
+  assert_failure
+  assert_output --partial 'timed out after 1s waiting for claude in lab =new-3: to show "plan mode on"'
+}
+
+@test "trust: a pane stuck in copy mode gets no key" {
+  trust_prompt
+  touch "$FIX/mode" "$FIX/mode-stuck"
+  CLAUDE_ACCT_MOVE_TIMEOUT=1 run "$ACCT" trust lab =new-4: "plan mode on"
+  assert_failure
+  [ ! -e "$FIX/mode-keys" ]
+  run grep -c send-keys "$FIX/calls.log"
+  assert_output 0
 }
 
 @test "unpark leaves copy mode in a scrolled pane before it types the resume" {

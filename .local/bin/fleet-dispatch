@@ -348,7 +348,7 @@ picks() {
 #                           --item SLUG re-attaches the started item that session was working.
 cmd_start() {
   local project='' prof='' lane=human key='' server="$DISPATCH_SERVER" model='' brief_file='' \
-    resume='' cwd='' session='' area='' item='' it='' st='' brief cmd label origin acct mode
+    resume='' cwd='' session='' area='' item='' it='' st='' brief cmd label origin acct mode ready
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -432,6 +432,13 @@ cmd_start() {
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     agent-queue set "$item" "session=$server:$session" "account=$(basename "${acct:-main}")" "origin=$origin" "model=$model" >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
+    # An account that never opened this repo asks "Do you trust this folder?" first, defaulting
+    # to "No, exit". claude-acct trust answers it once and waits for claude's mode footer.
+    case "$mode" in plan) ready="plan mode on" ;; *) ready="bypass permissions on" ;; esac
+    if command -v claude-acct >/dev/null 2>&1; then
+      claude-acct trust "$server" "=$session:" "$ready" >/dev/null ||
+        say "$session: claude did not show \"$ready\"; look at its pane"
+    fi
   fi
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
