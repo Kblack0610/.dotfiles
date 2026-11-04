@@ -94,7 +94,7 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | --- | --- |
 | Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
 | See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, UNCLEAR amber, LANDED and DONE green, PARKED dim, labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
-| See how many sessions sit in each stage | The waybar agents chip: the bar is the sessions in progress (working, needs, stalled, unclear), red with a stalled one, amber with an unclear one. The hover has the stage counts, then a section per tmux world (hub, lab) with a line per session. Click opens agent-panel, right-click `hub --tab sessions`; `modules.sh toggle agents` hides it |
+| See how many sessions sit in each stage | The waybar agents chip: the bar is three totals, `~` working, a check mark ready (landed or done) and `!` need you, then a health dot, red with a stalled session or a stale `fleet_sessions.prom`, amber with an unclear one, green otherwise. The hover has the stage counts, then a section per tmux world (hub, lab) with a line per session. Click opens agent-panel, right-click `hub --tab sessions`; `modules.sh toggle agents` hides it |
 | See the fleet on the phone | The Home Assistant Template widget shows `fleet-overview`: each waybar chip's `phone` lines (sessions with a glyph strip per project, queue and capacity, CI, red now), published as `summary/overview` by `agent-mqtt-publish`. To show another chip there, give it a `phone` argument to `emit` and add it to `CHIPS` in `fleet-overview`. Widget setup: home-config `apps/home-assistant/README.md` |
 | See a label change at once | `label` sets the window option itself; a session too new to be in the document gets it at the next tick |
 
@@ -103,5 +103,5 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | A window keeps a stage after its session ended | The next tick clears any window carrying `@fleet_stage` that no session claims; check `fleet-state.timer` is running |
 | The phone widget says `<chip>: the chip printed nothing` | Run that chip by hand (`.config/waybar/<chip>.sh`): it crashed or printed no JSON |
 | The agents chip reads `?` | Prometheus did not answer: check `CC_PROM_URL` in `~/.config/command-center/env` |
-| The agents chip is amber and says no `fleet_sessions.prom` | `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
-| The agents chip is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |
+| The agents chip dot is amber and the hover says no `fleet_sessions.prom` | `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
+| The agents chip dot is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |
