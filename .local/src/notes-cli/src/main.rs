@@ -25,8 +25,8 @@ mod logging;
 mod md;
 mod meeting;
 mod playtest;
-mod project_tasks;
 mod project_sweep;
+mod project_tasks;
 mod projects;
 mod status;
 mod summarize;
@@ -38,6 +38,7 @@ mod zettel;
 use agent_sheet::Lane;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use project_tasks::Pick;
 
 #[derive(Parser)]
 #[command(
@@ -132,6 +133,12 @@ enum Cmd {
         /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `rm` only
         #[arg(long, conflicts_with = "agent")]
         playtest: bool,
+        /// The query is one whole open task line, byte for byte (the `raw` field of
+        /// `notes board --json`), not words from it. For a UI: a row edited since it was
+        /// read matches nothing, so nothing is written and the exit is 1. Pass the line
+        /// after `--`, since it starts with `-`
+        #[arg(long)]
+        exact: bool,
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
@@ -140,6 +147,11 @@ enum Cmd {
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
     Board {
+        /// Print every open row of every project as JSON instead of writing the board:
+        /// the human and agent sheets' current waves and the playtest checks, across all
+        /// profiles. READ-ONLY. The feed the board UIs read; the row shape is in the README
+        #[arg(long, conflicts_with = "agent")]
+        json: bool,
         /// Print the agent-lane rows as `<project>\t<text>` instead of writing the board.
         /// READ-ONLY: this path never touches board.md. Exits 0 even with no rows —
         /// "nothing queued for the agent" is a valid answer, not an error, and the
@@ -407,7 +419,7 @@ enum PtaskCmd {
         /// With --playtest: the `## <game>` heading the check goes under (default General)
         #[arg(long)]
         game: Option<String>,
-        /// With --playtest: the PR the check is for, written as `(pr:<n>)`
+        /// With --playtest: the PR the check is for, written as `<!-- pr:<n> -->`
         #[arg(long, value_name = "N")]
         pr: Option<u64>,
         #[arg(required = true, num_args = 1..)]
@@ -572,7 +584,7 @@ fn reset_sigpipe() {}
 
 /// The four verbs `ptask --playtest` takes. Everything else acts on waves, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
-fn playtest_op(sub: Option<PtaskCmd>) -> Result<playtest::Op> {
+fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     Ok(match sub {
         None
         | Some(PtaskCmd::List {
@@ -596,10 +608,10 @@ fn playtest_op(sub: Option<PtaskCmd>) -> Result<playtest::Op> {
         }) => playtest::Op::Done {
             proof,
             unverified,
-            query: query.join(" "),
+            pick: Pick::new(&query.join(" "), exact)?,
         },
         Some(PtaskCmd::Rm { query }) => playtest::Op::Rm {
-            query: query.join(" "),
+            pick: Pick::new(&query.join(" "), exact)?,
         },
         _ => bail!(
             "--playtest takes list, add, done and rm only (no waves: no --to, --wave or --all)"
@@ -710,13 +722,32 @@ fn main() -> Result<()> {
         Cmd::Ptask {
             name,
             playtest: true,
+            exact,
             sub,
             ..
-        } => playtest::run(&prof, &log, &name, playtest_op(sub)?)?,
+        } => {
+            let op = playtest_op(sub, exact)?;
+            if let playtest::Op::Done { pick, .. } | playtest::Op::Rm { pick } = &op {
+                pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
+            }
+            playtest::run(&prof, &log, &name, op)?
+        }
         Cmd::Ptask {
-            name, agent, sub, ..
+            name,
+            agent,
+            exact,
+            sub,
+            ..
         } => {
             let lane = if agent { Lane::Agent } else { Lane::Human };
+            let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
+            let pick = |query: &[String]| -> anyhow::Result<Pick> {
+                let pick = Pick::new(&query.join(" "), exact)?;
+                if let Some(sheet) = &sheet {
+                    pick.sole_in(sheet)?;
+                }
+                Ok(pick)
+            };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
                 Some(PtaskCmd::List { wave, all }) => {
@@ -735,7 +766,7 @@ fn main() -> Result<()> {
                             &log,
                             &name,
                             &dest,
-                            &query.join(" "),
+                            &pick(&query)?,
                             to.as_deref(),
                             lane,
                         )?;
@@ -746,7 +777,7 @@ fn main() -> Result<()> {
                     }
                     // clap's `required_unless_present` guarantees --to here.
                     (None, Some(to)) => {
-                        project_tasks::move_task(&prof, &log, &name, &query.join(" "), &to, lane)?
+                        project_tasks::move_task(&prof, &log, &name, &pick(&query)?, &to, lane)?
                     }
                     (None, None) => unreachable!("clap requires --to without --project"),
                 },
@@ -758,16 +789,16 @@ fn main() -> Result<()> {
                     &prof,
                     &log,
                     &name,
-                    &query.join(" "),
+                    &pick(&query)?,
                     proof.as_deref(),
                     unverified.as_deref(),
                     lane,
                 )?,
                 Some(PtaskCmd::Start { query }) => {
-                    project_tasks::start(&prof, &log, &name, &query.join(" "), lane)?
+                    project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Rm { query }) => {
-                    project_tasks::rm(&prof, &log, &name, &query.join(" "), lane)?
+                    project_tasks::rm(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Edit {
                     text,
@@ -777,16 +808,16 @@ fn main() -> Result<()> {
                     &prof,
                     &log,
                     &name,
-                    &query.join(" "),
+                    &pick(&query)?,
                     text.as_deref(),
                     append.as_deref(),
                     lane,
                 )?,
                 Some(PtaskCmd::Promote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &query.join(" "), -1, lane)?
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane)?
                 }
                 Some(PtaskCmd::Demote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &query.join(" "), 1, lane)?
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane)?
                 }
                 Some(PtaskCmd::Sweep { dry_run }) => {
                     project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
@@ -796,8 +827,14 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Board { agent, projects } => {
-            if agent {
+        Cmd::Board {
+            json,
+            agent,
+            projects,
+        } => {
+            if json {
+                board::print_json()?
+            } else if agent {
                 board::print_agent(&projects)?
             } else {
                 board::run(&log)?
@@ -927,8 +964,7 @@ fn main() -> Result<()> {
             }
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived,
-                name,
+                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
             ) {
                 (Some(n), ..) => {
                     projects::new_project(&prof, &log, &n)?;
@@ -943,7 +979,16 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
-                    projects::roll(&prof, &log, &n, level, force, carry, next.as_deref(), renumber)?;
+                    projects::roll(
+                        &prof,
+                        &log,
+                        &n,
+                        level,
+                        force,
+                        carry,
+                        next.as_deref(),
+                        renumber,
+                    )?;
                     lab_refresh::kick();
                 }
                 (_, _, _, _, Some(n), ..) => {
@@ -1003,7 +1048,7 @@ mod tests {
     fn ptask(args: &[&str]) -> Result<playtest::Op> {
         let argv = ["notes", "ptask", "demo", "--playtest"].iter().chain(args);
         match Cli::try_parse_from(argv).expect("parses").cmd {
-            Cmd::Ptask { sub, .. } => playtest_op(sub),
+            Cmd::Ptask { sub, exact, .. } => playtest_op(sub, exact),
             _ => unreachable!(),
         }
     }

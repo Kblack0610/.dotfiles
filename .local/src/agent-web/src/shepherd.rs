@@ -1,8 +1,8 @@
 //! The Shepherd tab: the rundowns and chat answers the shepherd kept
 //! (`fleet-shepherd log --rundown`, read by `hub_core::boards::rundowns`) and the live shepherd
 //! session, so the page can show its transcript and type into it through the Sessions routes.
-//! It also shows what the last check handed to a pass and what a pass chose to leave
-//! (`fleet-shepherd`'s `.due` and `.skipped`, read by `hub_core::boards::due`).
+//! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by
+//! `hub_core::boards::due`); what a pass chose to leave is in its log, read by the Actions tab.
 
 use agent_panel::chooser;
 use axum::Json;

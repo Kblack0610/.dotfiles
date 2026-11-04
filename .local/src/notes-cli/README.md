@@ -74,14 +74,30 @@ keeps it.
 
 ## Projects cheatsheet
 
-A project lives under its profile's lab tree: `lab/projects/` for personal, `lab/bnb/projects/` for bnb. Each profile has an `index.md`. The CLI owns its `## Current` and `## Archived` lanes. lab-sync regenerates the `## Overview (auto)` block above them. Do not hand-edit either.
+This section is the one description of the lab. `~/.notes/lab/README.md`, the `lab-sync` skill and the `notes-system` skill link here instead of restating it.
 
-A project directory has this shape:
+### The lab tree
+
+```
+~/.notes/lab/
+  README.md                                  pointer to this section
+  ideas/_IDEAS.md                            ideas that span projects or have no project yet (`ideas` config key)
+  briefs/                                    one-pager briefs not yet tied to a project
+  projects/{current,archived}/<name>/        the personal profile
+  <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
+~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
+```
+
+Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
+
+Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's current wave, read-only (`notes board`).
+
+### A project directory
 
 ```
 current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
-  summary.md               the lab bus: status + the release feed lab-sync writes
+  summary.md               the cockpit: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   docs/idea.md             the pitch and key ideas; links to the repo's design docs
@@ -91,7 +107,26 @@ current/<name>/
   versions/vX.Y.Z.md       frozen sheet of a closed version
 ```
 
-`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice. Ideas that span projects go to `lab/ideas/_IDEAS.md` (the `ideas` config key); a bare `#idea` row in Focus lands there.
+`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`, review reports, screenshots) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice.
+
+### One home per fact
+
+| Fact | Its one home | Written by |
+|---|---|---|
+| Name, repo, path in the repo, branch, tracker | `project-map.json` (private dotfiles) | a PR there |
+| Stage, version in progress, current and planned waves | the sheet `README.md` | human, `notes ptask` / `projects` |
+| Where we are | `summary.md` STATUS | `lab-status` |
+| Shipped version | the git tag | the release |
+| What shipped, for users | the repo's `CHANGELOG.md` | the release |
+| What each closed wave did | `versions/vX.Y.Z.md` | `projects --roll` |
+| How it works: stack, build, ship, runbooks, architecture decisions | the repo's `docs/` | docs-write |
+| Pitch, product briefs, research, reviews | the project's `docs/` here | human, skills |
+| Agent plans, lessons, sessions, asks, queue | `~/.agent/<kind>/<name>` | agents |
+| Agent key facts at session start | `~/.agent/anchors/<name>.md` | project-index |
+
+The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->` marker are retired; to ask an agent for something, add a row to the board.
+
+After creating, staging, rolling or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
 
 Every command takes `--profile <p>`. Without it, the active profile is used (`notes config`).
 
@@ -105,7 +140,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
 | close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list |
-| fix an old layout | `projects --migrate <name>` |
+| fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment |
 | see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
 | add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
@@ -119,10 +154,25 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | add a playtest check | `ptask <name> --playtest add [--game <name>] [--pr <n>] "<scene or mode: what to look for>"`; one short ASCII line per check, under `## <game>` (default `## General`) in `playtest.md` |
 | work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest rm "<query>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
 | regenerate the boards | `notes board` |
+| feed a board UI | `notes board --json` (read-only, below); act on a row with `ptask <name> [--agent\|--playtest] --exact <verb> -- "<raw>"` |
 
 The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It lists every profile's projects, main ones first (drafts behind `d`), each with its open work by priority and wave. `1`-`9` or Enter opens a project's tasks, where `a` adds, `m` moves a task to another project, `x` checks it off (asks for a proof), `+`/`-` change its wave and `o` opens the sheet at that row. On the project list, `n` is new, `s` stage, `x` archive and `o` open. `/` searches; Esc steps out of the search, then the filter, then the view. Moving a project between profiles and changing its group stay CLI-only (the table above).
 
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
+
+### The task feed
+
+`notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
+
+- A project is `{profile, project, dir, version, open, agent_open, playtest_open}`. A project with no rows is still listed, so a UI can offer `add` on it.
+- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), or `playtest.md` (`"playtest"`). Its fields are `{profile, project, lane, wave, game, state, priority, text, tags, marker, since, sheet, line, raw}`.
+- `state` is `open` or `doing` (`[/]`).
+- `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
+- `tags` holds the hashtags that no other field carries already. Priority, wave and created tags are left out, since `priority`, `wave` and `since` cover them.
+- `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
+- `wave` is null for a playtest row, and `game` is null for a sheet row.
+
+To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or removed the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control; there are no ids in the sheets. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
 
 ## Daily-note model
 

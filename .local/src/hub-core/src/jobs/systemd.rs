@@ -6,7 +6,7 @@ use std::process::Command;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Got, Job, LogRef, Paths, Source, State};
+use super::{read_or_empty, Got, Job, LogRef, Paths, Source, State};
 
 /// Journald message ids for a unit's job starting, its job finishing, and the unit failing.
 const MSG_STARTING: &str = "7d4958e842da4a758f6c1cdc7b36dcc5";
@@ -122,29 +122,37 @@ fn agentctl_name(unit: &str) -> Option<&str> {
     unit.strip_prefix(AGENTCTL_PREFIX)?.strip_suffix(".service")
 }
 
-fn read_or_empty(p: &std::path::Path) -> Result<String, String> {
-    match std::fs::read_to_string(p) {
-        Ok(s) => Ok(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("{}: {e}", p.display())),
-    }
-}
-
+/// One line of agentctl's `runs.jsonl`, also read by `crate::actions` for its failed runs.
 #[derive(Deserialize)]
-struct LedgerLine {
-    name: String,
+pub(crate) struct LedgerLine {
+    pub(crate) name: String,
     #[serde(default)]
     invocation: String,
-    started: Option<i64>,
-    finished: i64,
+    pub(crate) started: Option<i64>,
+    pub(crate) finished: i64,
     #[serde(default)]
-    result: String,
+    pub(crate) result: String,
     #[serde(default)]
-    exit: String,
+    pub(crate) exit: String,
     #[serde(default)]
-    outcome: String,
+    pub(crate) outcome: String,
     out: (u64, u64),
     err: (u64, u64),
+}
+
+/// Every run in the ledger text, and how many lines could not be read.
+pub(crate) fn ledger_lines(text: &str) -> (Vec<LedgerLine>, usize) {
+    let mut bad = 0;
+    let runs = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| {
+            let r = serde_json::from_str::<LedgerLine>(l).ok();
+            bad += usize::from(r.is_none());
+            r
+        })
+        .collect();
+    (runs, bad)
 }
 
 /// Passed when systemd says success and the runner did not say FAILED or go silent.
@@ -158,13 +166,9 @@ fn ledger_ok(result: &str, outcome: &str) -> Option<bool> {
 
 /// The ledger's runs that finished since `since`, and how many lines could not be read.
 pub(super) fn parse_ledger(text: &str, since: i64) -> (Vec<Job>, usize) {
-    let mut bad = 0;
+    let (runs, bad) = ledger_lines(text);
     let mut jobs = vec![];
-    for l in text.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(r) = serde_json::from_str::<LedgerLine>(l) else {
-            bad += 1;
-            continue;
-        };
+    for r in runs {
         if r.finished < since {
             continue;
         }

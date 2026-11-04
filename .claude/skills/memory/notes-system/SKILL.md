@@ -43,6 +43,7 @@ do not reinvent their logic.
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
 │   └── daily_archive/# archived dailies (YYYY/YYYY-MM/)
+├── lab/              # projects per profile, ideas, briefs: layout and fact homes in the CLI README, Projects cheatsheet
 ├── knowledge/        # compiled articles (nightly knowledge engine + hand edits); SCHEMA.md is the contract, _log/ the engine's per-date logs
 ├── employment/       # job/company notes (corporate profile roots here); README.md maps every engagement
 └── _archive/         # incl. retired Obsidian setup (_archive/obsidian/)

@@ -12,7 +12,7 @@
 use crate::config::Profile;
 use crate::logging::Logger;
 use crate::md;
-use crate::project_tasks;
+use crate::project_tasks::{self, Pick};
 use crate::projects;
 use anyhow::{bail, Result};
 use std::fs;
@@ -35,10 +35,10 @@ pub enum Op {
     Done {
         proof: Option<String>,
         unverified: Option<String>,
-        query: String,
+        pick: Pick,
     },
     Rm {
-        query: String,
+        pick: Pick,
     },
 }
 
@@ -66,16 +66,16 @@ pub fn run(p: &Profile, log: &Logger, name: &str, op: Op) -> Result<i32> {
         Op::Done {
             proof,
             unverified,
-            query,
+            pick,
         } => done_in(
             log,
             &dir,
             &project,
-            &query,
+            &pick,
             proof.as_deref(),
             unverified.as_deref(),
         ),
-        Op::Rm { query } => edit_in(log, &dir, &project, &query, "removed", |_| None),
+        Op::Rm { pick } => edit_in(log, &dir, &project, &pick, "removed", |_| None),
     }
 }
 
@@ -123,7 +123,7 @@ fn games(content: &str) -> Vec<String> {
 }
 
 /// Every open row as `(1-based line, game, line text)`.
-fn open_rows(content: &str) -> Vec<(usize, String, &str)> {
+pub(crate) fn open_rows(content: &str) -> Vec<(usize, String, &str)> {
     games(content)
         .into_iter()
         .flat_map(|g| {
@@ -185,9 +185,11 @@ fn add_in(
         Some(g) => checked("--game", g)?,
         None => DEFAULT_GAME,
     };
+    // The PR goes in the marker comment, where every sheet keeps its `pr:` and `done` adds
+    // its proof, so one reader finds it on any row.
     let mut row = format!("- [ ] {text}");
     if let Some(n) = pr {
-        row.push_str(&format!(" (pr:{n})"));
+        row = md::add_marker(&row, &format!("pr:{n}"));
     }
     let file = path(dir);
     let content = if file.exists() {
@@ -209,26 +211,22 @@ fn done_in(
     log: &Logger,
     dir: &Path,
     project: &str,
-    query: &str,
+    pick: &Pick,
     proof: Option<&str>,
     unverified: Option<&str>,
 ) -> Result<i32> {
     let stamp = project_tasks::proof_stamp(proof, unverified)?;
-    edit_in(log, dir, project, query, "done", |l| {
+    edit_in(log, dir, project, pick, "done", |l| {
         Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
     })
 }
 
-/// Shared body for `done`/`rm`: apply `f` to the first open row matching `query` (the sheet's
-/// own `project_tasks::is_match`). Non-zero exit on no match, as the sheet verbs do.
-fn edit_in<F>(log: &Logger, dir: &Path, project: &str, query: &str, verb: &str, f: F) -> Result<i32>
+/// Shared body for `done`/`rm`: apply `f` to the first open row `pick` names (the sheet's
+/// own matcher). Non-zero exit on no match, as the sheet verbs do.
+fn edit_in<F>(log: &Logger, dir: &Path, project: &str, pick: &Pick, verb: &str, f: F) -> Result<i32>
 where
     F: FnOnce(&str) -> Option<String>,
 {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        bail!("which one? (provide a word from the check)");
-    }
     let file = path(dir);
     if !file.exists() {
         bail!("'{project}' has no playtest.md yet - add a check with `notes ptask {project} --playtest add \"...\"`");
@@ -236,10 +234,8 @@ where
     let content = fs::read_to_string(&file)?;
     let hit = open_rows(&content)
         .into_iter()
-        .find(|(_, _, l)| project_tasks::is_match(l, &query))
-        .and_then(|(_, g, _)| {
-            md::edit_first_in_section(&content, &g, |l| project_tasks::is_match(l, &query), f)
-        });
+        .find(|(_, _, l)| pick.hits(l))
+        .and_then(|(_, g, _)| md::edit_first_in_section(&content, &g, |l| pick.hits(l), f));
     match hit {
         Some((new, matched)) => {
             md::write_atomic(&file, &new)?;
@@ -251,15 +247,111 @@ where
             Ok(0)
         }
         None => {
-            eprintln!("no open playtest check matches '{query}' in {project}");
+            eprintln!("no open playtest check matches '{pick}' in {project}");
             Ok(1)
         }
     }
 }
 
+/// A row in the form `add --pr` wrote before the PR moved into the marker comment,
+/// `<text> (pr:N)`, rewritten to `<text> <!-- pr:N -->`. `None` when the row carries no
+/// trailing inline PR. A row whose marker already names that PR (a `done --proof pr:N`) only
+/// loses the inline copy.
+fn marker_form(line: &str) -> Option<String> {
+    let (head, tail) = match line.find("<!--") {
+        Some(i) => (line[..i].trim_end(), line[i..].trim_end()),
+        None => (line.trim_end(), ""),
+    };
+    let at = head.rfind(" (pr:")?;
+    let n = head[at + 5..].strip_suffix(')')?;
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let token = format!("pr:{n}");
+    let mut out = head[..at].to_string();
+    if !tail.is_empty() {
+        out = format!("{out} {tail}");
+    }
+    let has = tail.split_whitespace().any(|w| w == token);
+    Some(if has {
+        out
+    } else {
+        md::add_marker(&out, &token)
+    })
+}
+
+/// Rewrite every inline `(pr:N)` row of `dir`'s playtest.md to the marker form, for
+/// `projects --migrate`. Returns how many rows changed; 0 and no write when there is none.
+pub(crate) fn fold_inline_prs(dir: &Path) -> Result<usize> {
+    let file = path(dir);
+    let Ok(content) = fs::read_to_string(&file) else {
+        return Ok(0);
+    };
+    let mut n = 0;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|l| match md::is_task(l).then(|| marker_form(l)).flatten() {
+            Some(new) => {
+                n += 1;
+                new
+            }
+            None => l.to_string(),
+        })
+        .collect();
+    if n > 0 {
+        md::write_atomic(&file, &format!("{}\n", lines.join("\n")))?;
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn w(q: &str) -> Pick {
+        Pick::new(q, false).unwrap()
+    }
+
+    #[test]
+    fn an_inline_pr_moves_into_the_marker_comment() {
+        assert_eq!(
+            marker_form("- [ ] Street: strafe: legs blend (pr:1280)").as_deref(),
+            Some("- [ ] Street: strafe: legs blend <!-- pr:1280 -->")
+        );
+        // Done with that PR as proof: the inline copy goes, the marker stays as it was.
+        assert_eq!(
+            marker_form("- [x] logo fades (pr:1) <!-- pr:1 -->").as_deref(),
+            Some("- [x] logo fades <!-- pr:1 -->")
+        );
+        // Done with other proof: both survive, in one comment.
+        assert_eq!(
+            marker_form("- [x] logo fades (pr:1) <!-- unverified: played -->").as_deref(),
+            Some("- [x] logo fades <!-- unverified: played pr:1 -->")
+        );
+        assert_eq!(marker_form("- [ ] no pr here"), None);
+        assert_eq!(marker_form("- [ ] prose (pr:abc)"), None);
+        assert_eq!(
+            marker_form("- [ ] mid (pr:4) text"),
+            None,
+            "only a trailing one"
+        );
+    }
+
+    #[test]
+    fn folding_rewrites_only_rows_and_is_idempotent() {
+        let (dir, _log) = scratch("fold");
+        let before = "# Playtest\n\nA prose line (pr:9)\n\n## G\n- [ ] a (pr:3)\n- [ ] b\n";
+        fs::write(path(&dir), before).unwrap();
+        assert_eq!(fold_inline_prs(&dir).unwrap(), 1);
+        let got = fs::read_to_string(path(&dir)).unwrap();
+        assert_eq!(
+            got,
+            "# Playtest\n\nA prose line (pr:9)\n\n## G\n- [ ] a <!-- pr:3 -->\n- [ ] b\n"
+        );
+        assert_eq!(fold_inline_prs(&dir).unwrap(), 0);
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), got);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// A scratch project dir, unique per test and per thread, plus a logger inside it.
     fn scratch(tag: &str) -> (PathBuf, Logger) {
@@ -331,7 +423,7 @@ mod tests {
             "{got}"
         );
         assert!(
-            got.contains("## Dodgeball\n- [ ] menu: back exits (pr:812)\n"),
+            got.contains("## Dodgeball\n- [ ] menu: back exits <!-- pr:812 -->\n"),
             "{got}"
         );
         let _ = fs::remove_dir_all(&dir);
@@ -408,14 +500,14 @@ One row is one thing to play and check off.
         let (dir, log) = scratch("done");
         fs::write(path(&dir), FILE).unwrap();
         // the gate is the sheet's own: no evidence, no tick, and nothing written
-        let e = done_in(&log, &dir, "demo", "arena", None, None)
+        let e = done_in(&log, &dir, "demo", &w("arena"), None, None)
             .unwrap_err()
             .to_string();
         assert!(e.contains("--proof") && e.contains("--unverified"), "{e}");
         assert_eq!(fs::read_to_string(path(&dir)).unwrap(), FILE);
 
         assert_eq!(
-            done_in(&log, &dir, "demo", "ARENA", None, Some("played it")).unwrap(),
+            done_in(&log, &dir, "demo", &w("ARENA"), None, Some("played it")).unwrap(),
             0
         );
         let got = fs::read_to_string(path(&dir)).unwrap();
@@ -426,7 +518,7 @@ One row is one thing to play and check off.
         assert_eq!(open_count(&dir), 1);
         // a closed row is not matched again
         assert_eq!(
-            done_in(&log, &dir, "demo", "arena", Some("pr:2"), None).unwrap(),
+            done_in(&log, &dir, "demo", &w("arena"), Some("pr:2"), None).unwrap(),
             1
         );
         let _ = fs::remove_dir_all(&dir);
@@ -437,7 +529,7 @@ One row is one thing to play and check off.
         let (dir, log) = scratch("rm");
         fs::write(path(&dir), FILE).unwrap();
         assert_eq!(
-            edit_in(&log, &dir, "demo", "lobby", "removed", |_| None).unwrap(),
+            edit_in(&log, &dir, "demo", &w("lobby"), "removed", |_| None).unwrap(),
             0
         );
         let got = fs::read_to_string(path(&dir)).unwrap();
@@ -446,12 +538,12 @@ One row is one thing to play and check off.
         assert!(got.contains("arena: ball never clips"), "{got}");
         // checked rows are not open, so `rm` cannot reach them
         assert_eq!(
-            edit_in(&log, &dir, "demo", "logo", "removed", |_| None).unwrap(),
+            edit_in(&log, &dir, "demo", &w("logo"), "removed", |_| None).unwrap(),
             1
         );
         // and with no file there is nothing to act on
         let (empty, _) = scratch("rm-none");
-        assert!(edit_in(&log, &empty, "demo", "x", "removed", |_| None).is_err());
+        assert!(edit_in(&log, &empty, "demo", &w("x"), "removed", |_| None).is_err());
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&empty);
     }
