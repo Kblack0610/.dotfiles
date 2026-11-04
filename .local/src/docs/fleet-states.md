@@ -46,7 +46,7 @@ Decided by `session_bucket` in `.local/bin/fleet-sessions`, in this order (first
 | `PARKED` | `claude-acct park` exited its claude to save usage while it waits, and `~/.agent/parked/<tmux session>` holds the resume. agent-panel cannot list it, so the pass reads the ledger; a ledger beside a live claude is stale and the live row wins | Nobody: never nudged or escalated. `claude-acct unpark` resumes it |
 | `NEEDS` | Waiting on a prompt or dialog, a pending ask (even while busy; an attended session files every question it leaves the human, `stop-post.d/88-ask-filed.sh`), or plan approval | The human |
 | `STALLED` | A ready open PR that conflicts with the default branch (even while busy), or idle with unlanded work: dirty files, commits off the default branch, a red or green-but-unmerged PR, or a merge suspected of turning a nightly red | The shepherd nudges once |
-| `WORKING` | Busy, a background shell younger than 2h, a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
+| `WORKING` | Busy, a background shell younger than 2h that waits on a gate, a test or a subagent (any other shell counts only until idle 20m), a heavy child process, idle under 20m, or a PR whose CI is running | Nobody |
 | `LANDED` | Tree clean and the plan has a next phase, or a plan with no `## Phases` checklist and nothing merged | The session starts it |
 | `DONE` | Nothing unlanded, no ask of its own open, idle, and either every `## Phases` line ticked or a merged PR with no checklist (one phase of work) | The shepherd winds it down |
 | `UNCLEAR` | Not in a git repo, or its PR closed unmerged | A human look |

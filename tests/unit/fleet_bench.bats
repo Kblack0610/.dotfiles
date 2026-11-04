@@ -203,6 +203,15 @@ PROM
   assert_output "[{\"target\":\"lab/game-agent-1:1\",\"eta_epoch\":$((T0 + 2 * 3600))},{\"target\":\"lab/game-agent-2:1\",\"eta_epoch\":null}]"
 }
 
+@test "eta --json starts the open phase at the first sample after phases_done last moved" {
+  row a lab/game-agent-1:1 1 3 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 2 3 > "$SNAP"; sample_at 600; sample_at 1200
+  row b lab/game-agent-2:1 0 2 > "$SNAP"; sample_at 1800   # first seen now: its phase starts here
+  { row a lab/game-agent-1:1 2 3; row b lab/game-agent-2:1 0 2; } > "$SNAP"; sample_at 2400
+  run jq -sc 'map({target, phase_since_epoch, phase_min})' < <("$SUBJECT" eta --json)
+  assert_output "[{\"target\":\"lab/game-agent-1:1\",\"phase_since_epoch\":$((T0 + 600)),\"phase_min\":60},{\"target\":\"lab/game-agent-2:1\",\"phase_since_epoch\":$((T0 + 1800)),\"phase_min\":60}]"
+}
+
 @test "report prints the live table and the accuracy line" {
   row a lab/game-agent-1:1 2 4 > "$SNAP"; sample_at 0
   row a lab/game-agent-1:1 4 4 true > "$SNAP"; sample_at 10800

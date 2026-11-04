@@ -12,6 +12,10 @@
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
+#   fleet-shepherd skip "<due line>" "<why>"
+#                          answer a due line by leaving it: it stays out of check while it is
+#                          due. check leads with `unhandled: <line>` for any line the last pass
+#                          was given and neither moved nor skipped
 #   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
@@ -41,8 +45,11 @@ LEASE="$LEDGER/.lease"
 BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
 INFRA="$LEDGER/.infra"       # this pass's infra lines
 INFRA_SEEN="$LEDGER/.infra-seen" # the ones a finished pass has already reported
+DUE_LAST="$LEDGER/.due"      # the due lines the last check handed to a pass
+SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
+: "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -125,6 +132,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(limit_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(overdue_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
   b="$(findings_due)"
   [ -z "$b" ] || out="$b${out:+$'\n'}$out"
@@ -153,6 +162,45 @@ findings_due() {
     | [("finding-\(.rule)-\(.scope)" | gsub("/"; "-")), "\(.fact) \(.decision_class)",
        "\(.decision_class): \(.rule) \(.scope): \(.conclusion)" + (if (.cost // "") != "" then " (\(.cost))" else "" end)]
     | @tsv' <<<"$rows")
+}
+
+# overdue_due -> a line per WORKING session, not mid-turn, whose open phase has run twice its
+# fleet-bench estimate and at least FLEET_SHEPHERD_OVERDUE_MIN. No other line looks at a WORKING
+# row: on 2026-11-03 agent-53 sat 22h at 0/4 and agent-8 at 1/8 and no pass named either. The fact
+# is the phase, so it is nudged once; once the nudge is a phase-length old (at least the floor) and
+# the phase has not moved, it goes to the human, once.
+overdue_due() {
+  local eta now sid key line esc at
+  eta="$(fleet-bench eta --json 2>/dev/null)" || {
+    echo "overdue: fleet-bench eta unreadable, so phase ages are unread"
+    return 0
+  }
+  [ -n "$eta" ] || return 0
+  now="$(date +%s)"
+  while IFS=$'\t' read -r sid key line; do
+    esc="$(sed -n 's/^escalated: //p' "$LEDGER/$sid" 2>/dev/null)"
+    [ "$esc" = "$key" ] && continue
+    if [ "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)" = "$key" ]; then
+      at="$(date -d "$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null)" +%s 2>/dev/null)" || continue
+      [ $(( (now - at) / 60 )) -ge "${line%%$'\x1f'*}" ] || continue
+      printf 'escalate overdue: %s, nudged and not moved; then: fleet-sessions escalate %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
+    else
+      printf 'overdue: %s; then: fleet-sessions mark %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
+    fi
+  done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
+      --slurpfile s "$STATE_FILE" --arg eta "$eta" '
+    ($s[0].sessions // [] | map(select(.bucket == "WORKING" and ((.reason // "") | startswith("busy") | not)
+                                       and ((.labels // []) | index("hands-off") | not)))
+       | map({key: .session_id, value: .}) | from_entries) as $w
+    | $eta | split("\n")[] | select(length > 0) | fromjson
+    | select((.finished | not) and .phase_min != null and .phase_since_epoch != null and $w[.session_id] != null
+           and .phases_done < .phases_total)
+    | ([2 * .phase_min, $floor] | max) as $limit | (($now - .phase_since_epoch) / 60 | floor) as $age
+    | select($age >= $limit)
+    | "phase \(.phases_done + 1)/\(.phases_total)" as $ph
+    | [.session_id, "overdue \($ph)",
+       "\([.phase_min, $floor] | max)\u001f\(.target) \($ph) '"'"'\($w[.session_id].next_phase // "-")'"'"' open \($age)m, expected \(.phase_min)m (\(.basis // "-"))"]
+    | @tsv')
 }
 
 # limit_due -> a line per session stopped on the account's usage limit. Only the pane says so: no
@@ -285,10 +333,45 @@ cmd_check() {
   infra_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
-  if [ "$due_rc" = 1 ]; then settle; return 1; fi
-  [ "$due_rc" = 0 ] || return "$due_rc"
+  [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
+  due="$(receipts <<<"$due")"
+  if [ -z "$due" ]; then settle; return 1; fi
   rm -f "$LEDGER/.settled"
   printf '%s\n' "$due"
+}
+
+# due_key <line> -> the line's identity across passes: no `unhandled:` lead, no ledger call, and
+# minute counts as Nm, so an overdue phase an hour older is still the same line.
+due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; }
+
+# receipts: due lines in, out the ones a pass still owes. Every line a pass is given is answered
+# by moving it (a mark or escalate, so it is no longer due) or by `fleet-shepherd skip`: a skipped
+# line stays out while it is still due, and a line the last pass was given and left as it was
+# comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw.
+receipts() {
+  local line key out="" owed="" keys=""
+  touch "$DUE_LAST" "$SKIPPED"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="$(due_key "$line")"
+    keys+="$key"$'\n'
+    cut -f1 "$SKIPPED" | grep -qxF -- "$key" && continue
+    if grep -qxF -- "$key" "$DUE_LAST"; then owed+="unhandled: $line"$'\n'; else out+="$line"$'\n'; fi
+  done
+  # a skip lasts while its line is due; once it is not, the next time it is due is a new one
+  awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$SKIPPED" > "$SKIPPED.tmp" \
+    && mv -f "$SKIPPED.tmp" "$SKIPPED"
+  printf '%s%s' "$owed" "$out" | while IFS= read -r line; do due_key "$line"; done > "$DUE_LAST"
+  printf '%s%s' "$owed" "$out" | sed '/^$/d'
+}
+
+# skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
+# It logs the skip, so a pass whose only answer was a skip did something and is not STALLED.
+cmd_skip() {
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || die 'usage: fleet-shepherd skip "<due line>" "<why>"'
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  printf '%s\t%s\t%s\n' "$(due_key "$1")" "${2//[$'\t\n']/ }" "$(date +%s)" >> "$SKIPPED"
+  cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
 cmd_run() {
@@ -334,7 +417,8 @@ case "${1:-}" in
   due)   cmd_due ;;
   infra) cmd_infra ;;
   lease) cmd_lease ;;
+  skip)  shift; cmd_skip "$@" ;;
   log)   shift; cmd_log "$@" ;;
-  -h|--help|"") sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|check|due|infra|lease|log)" ;;
+  -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (run|check|due|skip|infra|lease|log)" ;;
 esac

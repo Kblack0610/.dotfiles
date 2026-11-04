@@ -73,7 +73,8 @@ LABELS="$LEDGER/labels"
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
-#                <conflicts: yes|no|- (merging the default branch in would conflict)>
+#                <conflicts: yes|no|- (merging the default branch in would conflict)> \
+#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)>
 #   -> "BUCKET reason"
 # Who must act decides before whether the session is active: an ask waits on the human, and
 # a PR that is otherwise ready but cannot merge wastes the wait, however busy the session is.
@@ -103,6 +104,11 @@ session_bucket() {
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
       if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then
         note=", background shell still running"
+      elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "${17:--}" = jobs ] || [ "${17:--}" = none ]; }; then
+        # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
+        # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
+        # "WORKING shell" sessions were one of those, idle up to 107m, and nothing looked at them.
+        note=", background shell is not a gate or test"
       elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then
         echo "WORKING shell$cn"; return
       else
@@ -553,17 +559,17 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test
+          work jobs human parked compactions topic doing said gate test ojob
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test < <(jq -r '
+    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
-       (.time_use.gate_min // 0), (.time_use.test_min // 0)]
+       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
@@ -587,7 +593,7 @@ collect() {
       fi
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$ojob")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
