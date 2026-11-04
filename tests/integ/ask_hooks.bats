@@ -82,6 +82,26 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: answered'
 }
 
+@test "a prompt a /loop or cron fired before is not the human answering, in either form" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "dispatch is starting nothing; lift the gate?")"
+  # The transcript records the schedule's earlier fires: a slash command and a plain prompt.
+  {
+    echo '{"type":"user","turnOrigin":"human","message":{"role":"user","content":"yes, arm it"}}'
+    echo '{"type":"user","turnOrigin":"scheduled","message":{"role":"user","content":"<command-message>fleet-lead</command-message>\n<command-name>/fleet-lead</command-name>\n<command-args>pass</command-args>"}}'
+    echo '{"type":"user","turnOrigin":"scheduled","message":{"role":"user","content":[{"type":"text","text":"check the deploy"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  settle() { printf '{"session_id":"sid-1","transcript_path":"%s","prompt":"%s"}' "$SANDBOX/t.jsonl" "$1" | bash "$SETTLE" answered; }
+  settle '/fleet-lead pass'
+  settle 'check the deploy '
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # Negative control: a prompt the human typed once before is still an answer.
+  settle 'yes, arm it'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+}
+
 @test "an ask its session left unanswered lands on the agent board as a plain row" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"

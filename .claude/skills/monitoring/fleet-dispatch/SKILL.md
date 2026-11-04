@@ -10,7 +10,7 @@ metadata:
 
 # fleet-dispatch
 
-The intake role of `fleet-lead` (Binks). `fleet-dispatch` feeds the shepherd while the human is away. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` on the `SCHEDULE` in its conf (off while the conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this skill is for running it by hand and reading what it decided. It is the only thing that starts sessions from the board unasked: a `fleet-lead` pass never does, and no order should tell one to.
+The intake role of `fleet-lead` (Binks). `fleet-dispatch` feeds the shepherd while the human is away. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` on the `SCHEDULE` in its conf (off while the conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this skill is for running it by hand and reading what it decided. It is the only thing that starts sessions from the board unasked: a `fleet-lead` pass does so only to heal a starved queue (below), and no order should tell one to.
 
 Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for `AWAY_AFTER_MIN` minutes (set in the conf). It takes no time of day, because a night is a long away. When the human comes back, new starts stop at the next pass and running sessions carry on. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here and starts nothing.
 
@@ -49,6 +49,14 @@ Every session an agent starts goes through `fleet-dispatch start`: the dispatch 
 Only the sessions the dispatch pass started count against `DISPATCH_MAX_LIVE` and its area rule; hand launches and restores carry the label and their item but hold none of its slots. `start` does not check the `dispatch` hold, which pauses only the runner. Before starting anything, read `agent-hold list` and `fleet-pace`'s pace check as for any other new work.
 
 A dispatched session is an ordinary session from then on: the `shepherd` buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation, files the same question with `agent-ask post`, and stops; the human answers in the session or from a board, and either way the answer lands in the session and closes the ask. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`. `fleet-dispatch stats` counts it for the feed (HA sensor "Dispatch queue", Prometheus): runnable items and the oldest one's age, starts in the last hour by origin, reap moves, and the items reaped `DISPATCH_FLAP_MOVES` or more times in an hour. Read those numbers, not the log, to answer "is dispatch moving".
+
+## Starved queue: a fleet-lead pass may start the head item
+
+`fleet-dispatch starved` exits 1 when an urgent or high queue item has been runnable over `DISPATCH_STARVED_MIN` minutes and no run pass started anything (the Sentinel watch `queue-starved` runs it, and its trip reaches the pass as a `watch:` due line). On 2026-11-04 four gates in turn held every pass for 7.5h while the shepherd watched and could not act. A `fleet-lead` pass that sees it:
+
+1. `fleet-dispatch run --dry-run` and `agent-hold list` in one call, to read what stops a real pass.
+2. If the block is load (the pace check says HOLD), account room (`claude-acct room`), or an `agent-hold` anyone set, leave it: those are the gates working. Answer the line with `fleet-shepherd skip` naming the gate; the watch has already paged the human.
+3. Otherwise start the oldest item `starved` named, one per pass: `fleet-dispatch start --item <slug>`. Log it (`fleet-shepherd log "healed starved: <slug>, gate was <what dry-run said>"`) and file the gate that held it as an agent-board row, because a start by hand fixes the item, not the pass.
 
 ## Do NOT
 

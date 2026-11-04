@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # fleet-shepherd - the scheduled shepherd's gate. Every collaborator is a stub: the state
-# document is written by the test, agentctl-run records its prompt instead of calling a
-# model, and agent-notify records its page instead of reaching a phone.
+# document is written by the test, tmux records the pass it would start, the pass's launcher
+# runs a stub agentctl-run that records its prompt instead of calling a model, and
+# agent-notify records its page instead of reaching a phone.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -18,7 +19,10 @@ setup() {
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
-  stub tmux 'echo "$*" >> "$HOME/tmux.calls"; printf "%b" "${STUB_PANE:-}"'
+  stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1; printf "%b" "${STUB_PANE:-}"'
+  stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
+  stub claude-acct '[ "$1" = pick ] && echo "$HOME/.claude-acct2"; [ "$1" = trust ] && echo "$*" >> "$HOME/trust.calls"; exit 0'
+  stub agentctl 'echo "$*" >> "$HOME/agentctl.calls"'
   export PROM_LIB="$HOME/prom-stub.sh"
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -26,13 +30,10 @@ prom_q() {
   printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"value\":[0,\"0\"]\}]}"
 }
 STUB
-  # A pass that moves something logs it, as the skill says; STUB_SILENT makes one that does not.
-  stub agentctl-run 'while [ $# -gt 0 ]; do [ "$1" = -p ] && printf "%s" "$2" > "$HOME/last-prompt"; shift; done
-echo "holder=$FLEET_SHEPHERD_HOLDER" >> "$HOME/run.env"
-[ -n "${STUB_SILENT:-}" ] || echo "## pass" >> "$FLEET_SHEPHERD_DIR/log.md"
-exit "${STUB_RC:-0}"'
+  # What a pass's launcher execs: it records its arguments and environment, not a model run.
+  stub agentctl-run 'printf "%s\n" "$@" > "$HOME/run.args"; printf "%s" "${@: -1}" > "$HOME/last-prompt"
+echo "holder=$FLEET_SHEPHERD_HOLDER config=${CLAUDE_CONFIG_DIR:-}" >> "$HOME/run.env"'
 }
-
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 
 # doc <sessions-json> [main-json]
@@ -44,6 +45,25 @@ row() { # target bucket nudged escalated [labels-json]
 }
 
 outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
+
+# The pass the last run started, and what its launcher hands claude.
+pass_id() { cut -f1 "$FLEET_SHEPHERD_DIR/.pass"; }
+prompt() { bash "$FLEET_SHEPHERD_DIR/.pass.sh" && cat "$HOME/last-prompt"; }
+starts() { grep -c 'respawn-pane' "$HOME/tmux.calls"; }
+# live <id> <status>: claude's session file for the pass, on a live pid (this test's).
+live() { mkdir -p "$HOME/.claude/sessions"; printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "$$" "$1" "$2" > "$HOME/.claude/sessions/$$.json"; }
+gone() { rm -f "$HOME/.claude/sessions/$$.json"; }
+# said <id> <origin> <epoch> [assistant tool]: a transcript entry for the pass.
+said() {
+  mkdir -p "$HOME/.claude/projects/-home"
+  if [ "$2" = assistant ]; then
+    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s"}]}}\n' "$3"
+  else
+    printf '{"type":"user","turnOrigin":"%s","timestamp":"%s"}\n' "$2" "$(date -u -d "@$3" +%FT%T.000Z)"
+  fi >> "$HOME/.claude/projects/-home/$1.jsonl"
+}
+# aged <minutes>: the pass in the window started that long ago.
+aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2 = t; print }' "$FLEET_SHEPHERD_DIR/.pass" > "$HOME/p" && mv "$HOME/p" "$FLEET_SHEPHERD_DIR/.pass"; }
 
 @test "due lists unnudged DONE/LANDED/STALLED, unescalated rows for the human, and nightly red" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
@@ -81,7 +101,7 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   run "$SH" run
   assert_success
   assert_output --partial 'nothing to move'
-  [ ! -e "$HOME/last-prompt" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
   assert_equal "$(outcome)" NOOP
   assert_equal "$(cat "$HOME/sessions.calls")" --write
   [ ! -e "$HOME/pages" ]
@@ -99,40 +119,162 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
 }
 
-@test "run with something due starts the observe pass with the due lines, as the runner" {
+@test "run with something due starts a pass in the tmux window, as the runner, and does not wait for it" {
   doc "[$(row a DONE false false)]"
   run "$SH" run
   assert_success
-  run cat "$HOME/last-prompt"
+  assert_output --partial 'started pass'
+  local id; id="$(pass_id)"
+  [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "no pass id recorded: '$id'"
+  grep -qxF -- "-L lab respawn-pane -k -t =shepherd: -c $HOME bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
+    fail "$(cat "$HOME/tmux.calls")"
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id")" hands-off
+  grep -qxF -- 'trust lab =shepherd: bypass permissions on' "$HOME/trust.calls"
+  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L lab attach -t shepherd" "$HOME/agentctl.calls"
+  assert_equal "$(outcome)" WORKED
+  # The launcher: the observe role, the pass's own session id, the due lines, the runner's lease.
+  run prompt
   assert_line '/fleet-lead pass'
   assert_line 'Roles due: shepherd'
   assert_line 'nudge DONE: a f-a'
-  assert_equal "$(cat "$HOME/run.env")" holder=runner
-  assert_equal "$(outcome)" WORKED
+  run cat "$HOME/run.args"
+  assert_line --index 0 --role
+  assert_line --index 1 observe
+  assert_line --index 2 --session-id
+  assert_line --index 3 "$id"
+  refute_output --partial --max-turns
+  assert_equal "$(cat "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct2"
 }
 
-@test "the run prompt names only the role skills its due lines need" {
+@test "with no pass window it opens one, and with no tmux server the server gets a scope of its own" {
+  doc "[$(row a DONE false false)]"
+  STUB_TMUX_FAIL='has-session' run "$SH" run
+  assert_success
+  grep -q -- "-L lab new-session -d -s shepherd -c $HOME bash" "$HOME/tmux.calls"
+  [ ! -e "$HOME/systemd-run.calls" ]
+  rm "$FLEET_SHEPHERD_DIR/.pass"
+  STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
+  assert_success
+  grep -q -- "--user --scope --quiet tmux -L lab new-session -d -s shepherd" "$HOME/systemd-run.calls"
+}
+
+@test "the pass prompt names only the role skills its due lines need" {
   doc "[$(row a DONE false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
-  run cat "$HOME/last-prompt"
+  run prompt
   assert_line 'Roles due: shepherd, fleet-pace'
   # Negative control: a pace line alone loads no shepherd, and infra alone loads no role.
   doc "[$(row a WORKING false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
-  run cat "$HOME/last-prompt"
+  run prompt
   assert_line 'Roles due: fleet-pace'
   STUB_K3S='[{"value":[0,"2"]}]' run "$SH" run
-  run cat "$HOME/last-prompt"
+  run prompt
+  assert_line 'Roles due: none'
+  # A starved queue loads fleet-dispatch for its self-heal; any other watch stays fleet-lead's own.
+  STUB_TRIPPED='queue-starved\thigh\n' run "$SH" run
+  run prompt
+  assert_line 'Roles due: fleet-dispatch'
+  STUB_TRIPPED='home-k3s-node-disk\turgent\n' run "$SH" run
+  run prompt
   assert_line 'Roles due: none'
 }
 
-@test "a due pass that logs nothing is STALLED, and a failed one is FAILED" {
+@test "a pass still working keeps its window and its due lines; past the limit it is STALLED and replaced" {
   doc "[$(row a DONE false false)]"
-  STUB_SILENT=1 run "$SH" run
+  "$SH" run
+  local id; id="$(pass_id)"
+  live "$id" busy
+  run "$SH" run
+  assert_success
+  assert_output --partial "pass ${id:0:8} is busy"
+  assert_equal "$(starts)" 1
+  assert_equal "$(outcome)" NOOP
+  # check did not run, so the line the pass holds is not counted against it
+  assert_equal "$(grep -c -- --write "$HOME/sessions.calls")" 1
+  live "$id" waiting
+  run "$SH" run
+  assert_equal "$(outcome)" BLOCKED
+  aged 31
+  run "$SH" run
+  assert_failure
+  assert_equal "$(starts)" 2
   assert_equal "$(outcome)" STALLED
-  STUB_RC=3 run "$SH" run
+  grep -qP "\t$id\tSTALLED\tpass ${id:0:8}: 1 due, 31m, still waiting, replaced$" "$FLEET_SHEPHERD_DIR/passes.tsv" ||
+    fail "$(cat "$FLEET_SHEPHERD_DIR/passes.tsv")"
+  [ "$(pass_id)" != "$id" ]
+}
+
+@test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned" {
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  live "$id" idle
+  echo "- 10:00 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  run "$SH" run
+  assert_success
+  assert_output --partial "WORKED pass ${id:0:8}: 1 due"
+  assert_equal "$(outcome)" WORKED
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/$id" ]
+  # Negative controls: the next pass ends without logging, and the one after logs but planned.
+  id="$(pass_id)"; gone
+  run "$SH" run
+  assert_failure
+  assert_equal "$(outcome)" STALLED
+  id="$(pass_id)"
+  echo "- 10:30 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant ExitPlanMode
+  run "$SH" run
+  assert_failure
+  assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
+}
+
+@test "the human typing to a pass stands the runner down; the pass's own first prompt does not" {
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  aged 5
+  live "$id" idle
+  # The pass's own prompt, recorded three minutes after its start (a slow startup), is not the human.
+  said "$id" human "$(( $(date +%s) - 2 * 60 ))"
+  run "$SH" run
+  assert_equal "$(starts)" 2
+  id="$(pass_id)"
+  aged 5
+  said "$id" human "$(( $(date +%s) - 5 * 60 ))"
+  said "$id" human "$(( $(date +%s) - 60 ))"
+  live "$id" busy
+  aged 40
+  run "$SH" run
+  assert_success
+  assert_output --partial "the human is talking to pass ${id:0:8}"
+  assert_equal "$(starts)" 2
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "a pass that cannot start in tmux is FAILED and leaves no pass behind" {
+  doc "[$(row a DONE false false)]"
+  STUB_TMUX_FAIL='respawn-pane' run "$SH" run
   assert_failure
   assert_equal "$(outcome)" FAILED
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass.proof" ]
+}
+
+@test "passes lists the pass in the window, then the scored ones newest first; open names a missing window" {
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local first; first="$(pass_id)"
+  echo "- moved" >> "$FLEET_SHEPHERD_DIR/log.md"
+  "$SH" run
+  run "$SH" passes
+  assert_line --index 0 --regexp "^[0-9-]+ [0-9:]+	$(pass_id)	now	1 due, gone$"
+  assert_line --index 1 --regexp "	$first	WORKED	"
+  STUB_TMUX_FAIL='has-session' run "$SH" open
+  assert_failure 2
+  assert_output --partial 'no pass window'
+  run "$SH" open nosuchpass
+  assert_failure 2
 }
 
 @test "a live interactive lease stands the runner down; a stale one or the runner's own does not" {
@@ -140,15 +282,25 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   "$SH" lease
   run "$SH" run
   assert_output --partial 'standing down'
-  [ ! -e "$HOME/last-prompt" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
   assert_equal "$(outcome)" NOOP
   printf 'interactive %s\n' "$(( $(date +%s) - 31 * 60 ))" > "$FLEET_SHEPHERD_DIR/.lease"
   run "$SH" run
-  [ -e "$HOME/last-prompt" ]
-  rm "$HOME/last-prompt"
+  [ -e "$FLEET_SHEPHERD_DIR/.pass" ]
+  rm "$FLEET_SHEPHERD_DIR/.pass"
   FLEET_SHEPHERD_HOLDER=runner "$SH" lease
   run "$SH" run
-  [ -e "$HOME/last-prompt" ]
+  [ -e "$FLEET_SHEPHERD_DIR/.pass" ]
+}
+
+@test "log - writes one stamped line per stdin line, in one call" {
+  echo "earlier" > "$FLEET_SHEPHERD_DIR/log.md"
+  run "$SH" log - <<<$'nudged a\n\nskipped b: waits on CI'
+  assert_success
+  run cat "$FLEET_SHEPHERD_DIR/log.md"
+  assert_line --index 1 --regexp '^- [0-9]{2}:[0-9]{2} UTC [0-9-]+: nudged a$'
+  assert_line --index 2 --regexp ': skipped b: waits on CI$'
+  [ "$(wc -l < "$FLEET_SHEPHERD_DIR/log.md")" -eq 3 ]
 }
 
 @test "log stamps each entry with the clock's time and appends to the rundown" {
@@ -212,7 +364,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'nothing to move'
   run "$SH" run
   assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O for 38m, claude session unity-core-playground-agent-28'
-  grep -q 'open /mnt/nas/private/immich/upload/thumbs' "$HOME/last-prompt"
+  grep -q 'open /mnt/nas/private/immich/upload/thumbs' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
 @test "a process blocked in one pass only is not due" {
@@ -247,7 +399,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   run "$SH" run
   assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge DONE: a'
   refute_output --partial 'unbound variable'
-  grep -q 'watch: queue-starved tripped (high)' "$HOME/last-prompt"
+  grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
@@ -270,7 +422,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 @test "a failed pass leaves the trip due, so the next pass reports it" {
   doc "[$(row d WORKING false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\n'
-  STUB_RC=1 run "$SH" run
+  "$SH" run
   run "$SH" run
   assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
 }
@@ -415,7 +567,7 @@ idle_row() {
   run "$SH" run
   assert_failure 2
   assert_equal "$(outcome)" FAILED
-  [ ! -e "$HOME/last-prompt" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
   [ ! -e "$HOME/pages" ]
 }
 
@@ -425,7 +577,7 @@ idle_row() {
   assert_success
   assert_line 'nudge DONE: a f-a'
   assert_equal "$(cat "$HOME/sessions.calls")" --write
-  [ ! -e "$HOME/last-prompt" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
 }
 
 @test "check on a quiet fleet exits 1 and pages settled once" {

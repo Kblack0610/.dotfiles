@@ -53,8 +53,16 @@ harness_exec() {
   [ -n "$mcp_file" ] && flags+=(--mcp-config "$mcp_file" --strict-mcp-config)
 
   # There is no human on a timer to answer a prompt or read a plan file. Mirrors
-  # the prompt agentctl-dream and agentctl-nightly-sync already use.
-  flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
+  # the prompt agentctl-dream and agentctl-nightly-sync already use. A run with no
+  # --print is a timer's pass in a tmux window (fleet-shepherd), which a human may
+  # attach to and type into, so it answers them, but still never waits on one.
+  local print=0 a
+  for a in "$@"; do case "$a" in -p|--print) print=1 ;; esac; done
+  if [ "$print" = 1 ]; then
+    flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
+  else
+    flags+=(--append-system-prompt 'You are a scheduled run in a tmux window that a human may attach to. Nobody is waiting on you when you start: never enter plan mode, never write a plan file, and never ask for approval. Execute the task directly and report what you did. If a human types to you, answer them.')
+  fi
 
   if [ -n "${AGENTCTL_EXPLAIN:-}" ]; then
     printf 'harness:     claude\nflags:      '
