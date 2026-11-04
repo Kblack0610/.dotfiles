@@ -22,6 +22,8 @@ pub use agent_panel::chooser::Agent;
 use agent_panel::{account, chooser, tmux};
 use serde::Serialize;
 
+use crate::queue;
+
 /// What a session can be asked to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -350,23 +352,21 @@ fn queue_server() -> String {
     std::env::var("AGENT_QUEUE_TMUX_SERVER").unwrap_or_else(|_| "lab".into())
 }
 
-/// Name each session's queue item from `agent-queue list --json` (one object per line): the
-/// item whose `session` names that tmux session, once it has started. `session` is
-/// `<server>:<tmux-session>`, or a bare tmux session on agent-queue's `server`.
-pub fn with_items(sessions: &mut [Session], items_jsonl: &str, server: &str) {
-    for line in items_jsonl.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+/// Name each session's queue item: the item whose `session` names that tmux session, once it
+/// has started. `session` is `<server>:<tmux-session>`, or a bare tmux session on agent-queue's
+/// `server`.
+pub fn with_items(sessions: &mut [Session], items: &[queue::Item], server: &str) {
+    for i in items {
+        let Some(sess) = i.session.as_deref().filter(|s| !s.is_empty()) else {
             continue;
         };
-        let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
-        let (slug, sess) = (field("slug"), field("session"));
-        if slug.is_empty() || sess.is_empty() || field("state") == "queued" {
+        if i.slug.is_empty() || i.state == queue::State::Queued {
             continue;
         }
         let (srv, sess) = sess.split_once(':').unwrap_or((server, sess));
         for s in sessions.iter_mut() {
             if s.server == srv && s.tmux_session == sess && !s.parked {
-                s.item = Some(slug.to_string());
+                s.item = Some(i.slug.clone());
             }
         }
     }
@@ -384,9 +384,7 @@ pub struct Snapshot {
 pub fn gather(runner: &dyn Runner) -> Snapshot {
     let agents = chooser::collect_all();
     let mut sessions: Vec<Session> = agents.iter().map(Session::from).collect();
-    let items = runner
-        .run(&["agent-queue".into(), "list".into(), "--json".into()])
-        .unwrap_or_default();
+    let items = queue::list(runner, "active").unwrap_or_default();
     with_items(&mut sessions, &items, &queue_server());
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
@@ -592,10 +590,11 @@ mod tests {
         s.push(other);
         with_items(
             &mut s,
-            "{\"slug\":\"a\",\"session\":\"dotfiles-agent-3\",\"state\":\"running\"}\n\
-             not json\n\
-             {\"slug\":\"b\",\"session\":\"dotfiles-agent-9\",\"state\":\"running\"}\n\
-             {\"slug\":\"c\",\"session\":\"dotfiles-agent-3\",\"state\":\"queued\"}\n",
+            &queue::parse(
+                "{\"slug\":\"a\",\"session\":\"dotfiles-agent-3\",\"state\":\"running\"}\n\
+                 {\"slug\":\"b\",\"session\":\"dotfiles-agent-9\",\"state\":\"running\"}\n\
+                 {\"slug\":\"c\",\"session\":\"dotfiles-agent-3\",\"state\":\"queued\"}\n",
+            ),
             "lab",
         );
         assert_eq!(s[0].item.as_deref(), Some("a"));
@@ -604,7 +603,9 @@ mod tests {
 
         with_items(
             &mut s,
-            "{\"slug\":\"d\",\"session\":\"hub:dotfiles-agent-3\",\"state\":\"running\"}\n",
+            &queue::parse(
+                "{\"slug\":\"d\",\"session\":\"hub:dotfiles-agent-3\",\"state\":\"running\"}\n",
+            ),
             "lab",
         );
         assert_eq!(
