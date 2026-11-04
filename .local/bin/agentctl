@@ -674,6 +674,18 @@ cmd_reload() {
         fi
     done < <(list_agent_names)
 
+    # Remove the generated drop-in of a runner whose conf is gone; a hand-written file in
+    # the same dir is kept, and so is the dir then.
+    for d in "$SYSTEMD_USER_DIR"/agentctl@*.service.d; do
+        [ -f "$d/agentctl-oneshot.conf" ] || continue
+        local dn="${d##*/agentctl@}"
+        dn="${dn%.service.d}"
+        [ -f "$CONFIG_DIR/$dn.conf" ] && continue
+        rm -f "$d/agentctl-oneshot.conf"
+        rmdir "$d" 2>/dev/null || true
+        printf 'agentctl: removed orphan drop-in: %s\n' "$dn" >&2
+    done
+
     # Remove orphaned timers
     if [ "${#existing_timers[@]}" -gt 0 ]; then
         for t in "${existing_timers[@]}"; do
