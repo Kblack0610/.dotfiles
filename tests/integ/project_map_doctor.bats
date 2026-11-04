@@ -38,8 +38,7 @@ clean_map() {
   "aliases":{ "mono": "mono-canon" },
   "trackers": {
     "mono-canon": { "system": "vikunja" },
-    "alpha":      { "inherits": "mono-canon", "repo": "mono-canon", "path": "apps/alpha",
-                    "also": [ { "repo": "other-canon", "path": "srv/alpha" } ] },
+    "alpha":      { "inherits": "mono-canon", "repo": "mono-canon", "path": "apps/alpha" },
     "labonly":    { "repo": "other-canon" },
     "default":    { "system": "vikunja" }
   }
@@ -71,19 +70,11 @@ EOF
 }
 
 @test "the clean map's code locations are checked, not skipped" {
-  # NEGATIVE CONTROL for the two failures below: on a clean map the check must run.
+  # NEGATIVE CONTROL for the failure below: on a clean map the check must run.
   clean_map
   run "$DOCTOR" "$MAP"
   assert_success
-  assert_output --partial 'PASS  all 2 code locations sit in a registered repo'
-}
-
-@test "an also location in an unregistered repo fails, and names it" {
-  clean_map
-  jq '.trackers.alpha.also[0].repo = "typo-canon"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
-  run "$DOCTOR" "$MAP"
-  assert_failure
-  assert_output --partial 'trackers.alpha lists srv/alpha in "typo-canon"'
+  assert_output --partial 'PASS  all 1 app paths have a repo'
 }
 
 @test "a path with no repo fails: the resolver never consults it" {
@@ -91,7 +82,7 @@ EOF
   jq '.trackers.labonly = { "path": "apps/lab" }' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'trackers.labonly has a code location without both repo and path'
+  assert_output --partial 'trackers.labonly has path "apps/lab" but no repo'
 }
 
 @test "an inherits pointing at a missing tracker fails, and names it" {

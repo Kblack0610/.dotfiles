@@ -206,15 +206,6 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
 
 # -- the code location comes from the tracker entry ---------------------------
 
-@test "an app's second code location (also) resolves to the app" {
-  git_repo
-  write_map '{ "gamma": { "repo": "other-canon", "path": "Assets/Gamma",
-                          "also": [ { "repo": "mono-canon", "path": "apps/beta" } ] } }'
-  run resolve_project_name "$REPO/apps/beta"
-  assert_success
-  assert_output 'gamma'
-}
-
 @test "a path registered under a DIFFERENT repo does not match in this one" {
   # NEGATIVE CONTROL: matching on `path` alone would make every repo with an apps/alpha
   # directory resolve to whichever project happened to register that path first.
@@ -234,16 +225,6 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
   run resolve_project_name "$REPO"
   assert_success
   assert_output 'mono-canon'
-}
-
-@test "a branch names an app through its also location" {
-  git_repo
-  write_map '{ "gamma": { "repo": "other-canon", "path": "Assets/Gamma",
-                          "also": [ { "repo": "mono-canon", "path": "apps/beta" } ] } }'
-  git -C "$REPO" checkout -q -b feat/gamma/lobby
-  run resolve_project_name "$REPO"
-  assert_success
-  assert_output 'gamma'
 }
 
 @test "a detached HEAD at the repo root resolves to the repo without erroring" {

@@ -22,9 +22,7 @@
 # APP-IN-REPO (step 1). A repo like bnb-platform holds many independently
 # released apps (and unity-core-playground many games), and each should be its own
 # project for tickets/plans/lessons. A project declares where it lives once, in its
-# `trackers` entry: `repo` (the repo's registry key) and `path` (repo-relative). Code
-# in a second repo is listed in `also: [{repo, path}]` (dodginballs: the game in
-# unity-core-playground, its multiplayer API in bnb-platform).
+# `trackers` entry: `repo` (the repo's registry key) and `path` (repo-relative).
 # Two things make that work across the ~35 worktrees of a single repo:
 #
 #   a. The repo is normalized through `git rev-parse --git-common-dir`, so every
@@ -247,8 +245,7 @@ resolve_project_name() {
           while [ -n "$seg" ]; do
             app=$(jq -r --arg r "$repo_name" --arg s "$seg" \
               '[.trackers // {} | to_entries[] | select(.value | type == "object")
-                | select(any(({repo: .value.repo, path: .value.path}), (.value.also // [])[];
-                             .repo == $r and .path == $s)) | .key][0] // empty' \
+                | select(.value.repo == $r and .value.path == $s) | .key][0] // empty' \
               "$map_file" 2>/dev/null || true)
             if [ -n "$app" ]; then echo "$app"; return 0; fi
             case "$seg" in */*) seg="${seg%/*}" ;; *) seg="" ;; esac
@@ -269,9 +266,7 @@ resolve_project_name() {
               seg="${branch#*/}"; seg="${seg%%/*}"
               for cand in "$seg" "${seg%-web}" "${seg%-api}" "${seg%-mobile}"; do
                 app=$(jq -r --arg r "$repo_name" --arg a "$cand" \
-                  '.trackers[$a] | objects
-                   | select(any(({repo, path}), (.also // [])[]; .repo == $r and (.path // "") != ""))
-                   | $a' \
+                  '.trackers[$a] | objects | select(.repo == $r and (.path // "") != "") | $a' \
                   "$map_file" 2>/dev/null || true)
                 if [ -n "$app" ]; then echo "$app"; return 0; fi
               done
