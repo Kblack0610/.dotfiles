@@ -41,7 +41,6 @@ function ccIndex(series) {
 const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)} &rarr;</a>` : "";
 
-const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
 
 function kpis(cc) {
   const one = (n) => (cc[n] || {})[""];

@@ -165,14 +165,18 @@ The human sheet (`README.md`) is the queue: what you asked for and what only you
 `notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
 - A project is `{profile, project, dir, version, open, agent_open, playtest_open}`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), or `playtest.md` (`"playtest"`). Its fields are `{profile, project, lane, wave, game, state, priority, text, tags, marker, since, sheet, line, raw}`.
+- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, wave, game, state, priority, tier, worker, ask, target, text, tags, marker, since, sheet, line, raw}`.
+- A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
-- `tags` holds the hashtags that no other field carries already. Priority, wave and created tags are left out, since `priority`, `wave` and `since` cover them.
+- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `target` the row's own `#vX.Y.Z` tag. `wave` is the section the row sits in; `target` is where it is aimed, which can differ.
+- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, wave or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
 - `wave` is null for a playtest row, and `game` is null for a sheet row.
 
 To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or removed the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control; there are no ids in the sheets. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
+
+`notes doctor --projects` checks the row grammar the feed parses, per top-level sheet and agent board row: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), a tier tag that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. Human sheet rows are closed by hand, so they need no marker.
 
 ## Daily-note model
 

@@ -436,12 +436,21 @@ fn agent_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
 #[derive(Debug, serde::Serialize, PartialEq)]
 struct FeedRow {
     profile: String,
-    project: String,
+    /// None for a Focus row: the daily cockpit belongs to the profile, not a project.
+    project: Option<String>,
     lane: &'static str,
     wave: Option<String>,
     game: Option<String>,
     state: &'static str,
     priority: &'static str,
+    /// `#tier/N`: how hard the row is, which `fleet-dispatch` matches against a worker's max.
+    tier: Option<u8>,
+    /// `#worker/<name>`: the dispatch worker the row is assigned to.
+    worker: Option<String>,
+    /// `#ask`: the row is a question for the human, never dispatched at night.
+    ask: bool,
+    /// The row's own `#vX.Y.Z` tag: the wave it is aimed at, which `wave` may not be yet.
+    target: Option<String>,
     text: String,
     tags: Vec<String>,
     marker: Option<String>,
@@ -480,7 +489,7 @@ fn marker_of(line: &str) -> Option<String> {
 /// Where a feed row was read: everything about it that is not on the line.
 struct Origin<'a> {
     profile: &'a str,
-    project: &'a str,
+    project: Option<&'a str>,
     lane: &'static str,
     wave: Option<&'a str>,
     game: Option<&'a str>,
@@ -489,7 +498,7 @@ struct Origin<'a> {
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the default every
 /// task carries (`md::default_priority`). `tags` are the hashtags no other field already
-/// carries: not the priority, the wave tag (`wave`) or the created tag (`since`).
+/// carries: not the priority, tier, worker, ask, wave tag (`target`) or created tag (`since`).
 fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate) -> FeedRow {
     let prio = md::task_priority(line).unwrap_or(md::default_priority());
     let priority = md::PRIORITIES
@@ -498,13 +507,26 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         .map_or("high", |(word, _, _)| word);
     let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    let tags = md::find_hashtags(head)
+    let all = md::find_hashtags(head);
+    let tier = all.iter().find_map(|t| md::tier_tag(t));
+    let worker = all
+        .iter()
+        .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
+    let ask = all.iter().any(|t| t == "ask");
+    let tags = all
         .into_iter()
-        .filter(|t| !words.contains(&t.as_str()) && !md::is_wave_tag(t) && !md::is_created_tag(t))
+        .filter(|t| {
+            !words.contains(&t.as_str())
+                && !md::is_wave_tag(t)
+                && !md::is_created_tag(t)
+                && !md::looks_like_tier(t)
+                && !t.starts_with("worker/")
+                && t != "ask"
+        })
         .collect();
     FeedRow {
         profile: o.profile.to_string(),
-        project: o.project.to_string(),
+        project: o.project.map(str::to_string),
         lane: o.lane,
         wave: o.wave.map(str::to_string),
         game: o.game.map(str::to_string),
@@ -514,6 +536,10 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
             "open"
         },
         priority,
+        tier,
+        worker,
+        ask,
+        target: md::wave_tag(head).map(|t| t.trim_start_matches('#').to_string()),
         text: md::task_text(line),
         tags,
         marker: marker_of(line),
@@ -548,7 +574,7 @@ fn feed_for_dir(
         counts[i] = w.rows.len();
         let o = Origin {
             profile,
-            project,
+            project: Some(project),
             lane: name,
             wave: Some(&w.version),
             game: None,
@@ -564,7 +590,7 @@ fn feed_for_dir(
             counts[2] += 1;
             let o = Origin {
                 profile,
-                project,
+                project: Some(project),
                 lane: "playtest",
                 wave: None,
                 game: Some(&game),
@@ -585,6 +611,26 @@ fn feed_for_dir(
     (proj, rows)
 }
 
+/// A profile's open Focus rows from today's daily note, lane `focus`, no project. Read-only
+/// here: `notes focus` stays their one writer.
+fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -> Vec<FeedRow> {
+    let Ok(content) = fs::read_to_string(note) else {
+        return Vec::new();
+    };
+    let o = Origin {
+        profile,
+        project: None,
+        lane: "focus",
+        wave: None,
+        game: None,
+        sheet: note,
+    };
+    crate::focus::open_focus_positions(&content)
+        .into_iter()
+        .map(|(n, _, l)| feed_row(&o, (n, &l), today))
+        .collect()
+}
+
 /// `notes board --json` - every project of every profile and every open row, as one JSON
 /// object `{projects: [...], rows: [...]}`.
 ///
@@ -601,6 +647,8 @@ pub fn print_json() -> Result<i32> {
         let Ok(p) = config::resolve(Some(&name)) else {
             continue;
         };
+        feed.rows
+            .extend(focus_rows(&name, &daily::today_path(&p), today));
         for (proj, summary) in daily::discover_project_dirs(&p) {
             let Some(dir) = summary.parent() else {
                 continue;
@@ -827,7 +875,7 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
-             - [ ] break it down #low #tier/2 <!-- ask:Ab12 -->\n",
+             - [ ] break it down #low #tier/2 #ask #worker/asks #keep <!-- ask:Ab12 -->\n",
         );
         std::fs::write(
             crate::playtest::path(&dir),
@@ -856,6 +904,8 @@ mod tests {
         );
         assert_eq!(r.since.as_deref(), Some("2026-11-02"));
         assert_eq!(r.wave.as_deref(), Some("v0.3.0"));
+        assert_eq!(r.target.as_deref(), Some("v0.3.0"));
+        assert_eq!((r.tier, r.ask), (None, false));
         assert_eq!(r.raw, "- [ ] ship it #urgent #c1102 #v0.3.0 #due1110");
         assert_eq!(r.line, 5);
 
@@ -869,8 +919,13 @@ mod tests {
         let r = &rows[2];
         assert_eq!(
             (r.priority, r.tags.clone()),
-            ("low", vec!["tier/2".to_string()])
+            ("low", vec!["keep".to_string()]),
+            "tier, ask and worker have their own fields"
         );
+        assert_eq!((r.tier, r.ask), (Some(2), true));
+        assert_eq!(r.worker.as_deref(), Some("asks"));
+        assert_eq!(r.target, None);
+        assert_eq!(r.project.as_deref(), Some("demo"));
         assert_eq!(r.marker.as_deref(), Some("ask:Ab12"));
         assert!(r.sheet.ends_with("agent/README.md"), "{}", r.sheet);
 
@@ -882,11 +937,38 @@ mod tests {
         // The serialized names are the contract the UIs read.
         let v = serde_json::to_value(&rows[0]).unwrap();
         for k in [
-            "profile", "project", "lane", "wave", "game", "state", "priority", "text", "tags",
-            "marker", "since", "sheet", "line", "raw",
+            "profile", "project", "lane", "wave", "game", "state", "priority", "tier", "worker",
+            "ask", "target", "text", "tags", "marker", "since", "sheet", "line", "raw",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Focus rows ride the same shape with no project; only the Focus section is read, so a
+    // task elsewhere in the note (a Log checklist) is not on the board.
+    #[test]
+    fn focus_rows_are_the_open_focus_tasks_with_no_project() {
+        let dir = sheet("focus", "unused\n");
+        let note = dir.join("2026-11-04.md");
+        std::fs::write(
+            &note,
+            "# 2026-11-04\n\n## Focus\n- [ ] board ui #urgent\n- [x] done one\n- [/] going\n\n\
+             ## Log\n- [ ] not focus\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let rows = focus_rows("personal", &note, today);
+        let got: Vec<(&str, &str, Option<&str>, usize)> = rows
+            .iter()
+            .map(|r| (r.lane, r.text.as_str(), r.project.as_deref(), r.line))
+            .collect();
+        assert_eq!(
+            got,
+            [("focus", "board ui", None, 4), ("focus", "going", None, 6)]
+        );
+        assert_eq!(rows[0].priority, "urgent");
+        assert!(focus_rows("personal", &dir.join("absent.md"), today).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
