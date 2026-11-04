@@ -100,13 +100,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
         log.info("today", &format!("created {}", note.display()));
     }
     conform_legacy_sections(&note, log)?;
-
-    // Swallowed like the feeds below: a briefing or log that cannot be read must never abort
-    // the note.
-    if let Err(e) = refresh_morning(p, &note, today) {
-        log.warn("today", &format!("morning section skipped: {e}"));
-    }
-    link_refs(p, log)?;
+    link_refs_on(p, log, today)?;
     ensure_footer(p, &note)?;
     space_headings(&note)?;
     // A note written before `## Projects` existed carries the `## Work` roster instead; swap it
@@ -463,12 +457,25 @@ fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
     Ok(())
 }
 
-/// Link today's ref files into the note's `## Refs` section (idempotent).
+/// Link today's ref files into the note's `## Refs` section and re-render `## Morning`
+/// (idempotent). The briefing writer calls this after it lands, so a note created before the
+/// briefing stops saying "not written yet".
 pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
-    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    link_refs_on(p, log, Local::now().date_naive())
+}
+
+fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
+    let today = day.format("%Y-%m-%d").to_string();
     let note = p.daily.join(format!("{today}.md"));
+    if !note.exists() {
+        return Ok(());
+    }
+    // Swallowed: a briefing or log that cannot be read must never abort the note.
+    if let Err(e) = refresh_morning(p, &note, day) {
+        log.warn("link-refs", &format!("morning section skipped: {e}"));
+    }
     let refs_dir = p.refs.join(&today);
-    if !note.exists() || !refs_dir.exists() {
+    if !refs_dir.exists() {
         return Ok(());
     }
 
@@ -1934,6 +1941,37 @@ mod tests {
 
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A note created before the briefing lands picks it up on the briefing's `link-refs`, not
+    /// only on the next `notes today`.
+    #[test]
+    fn link_refs_renders_a_briefing_written_after_the_note() {
+        let dir = std::env::temp_dir().join(format!("notes-linkrefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        std::fs::create_dir_all(dir.join("journal/refs/2026-09-30")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-09-30.md");
+        create_note(&p, &log, d("2026-09-30"), &note).unwrap();
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        assert!(std::fs::read_to_string(&note).unwrap().contains("- Briefing: not written yet"));
+
+        std::fs::write(
+            dir.join("journal/refs/2026-09-30/briefing.md"),
+            "# Morning briefing\n\nAs of Tue 06:45, 0 page(s).\n",
+        )
+        .unwrap();
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert!(
+            out.contains("- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45"),
+            "{out}"
+        );
+        assert!(!out.contains("not written yet"), "{out}");
+        assert!(!out.contains("## Refs"), "the briefing is not listed twice:\n{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
