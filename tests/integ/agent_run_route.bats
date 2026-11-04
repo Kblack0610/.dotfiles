@@ -11,9 +11,9 @@
 #   scrub.sh   removes every transport variable, unconditionally
 #   route.sh   puts back exactly what a route file DECLARES
 #
-# The scrub alone would have broken delivery-loop, which legitimately needs the
-# gateway and was expressing that by exporting ANTHROPIC_BASE_URL for
-# agentctl-run to inherit. To the receiving process a declaration and a leftover
+# The scrub alone would break a runner that legitimately needs the gateway and
+# expresses that by exporting ANTHROPIC_BASE_URL for agentctl-run to
+# inherit. To the receiving process a declaration and a leftover
 # are the same bytes; that indistinguishability IS the bug, and a route file is
 # what makes a declaration legible as one.
 #

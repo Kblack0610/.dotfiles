@@ -302,6 +302,11 @@ add_plan() {
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
+  # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
+  local taken
+  taken="$(collect $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
+    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')"
+  [ -z "$taken" ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
     to_entries | map({n: (.key + 1), state: .value.state, name: .value.name,

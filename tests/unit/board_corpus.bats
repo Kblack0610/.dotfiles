@@ -40,7 +40,7 @@ nrows() { board_rows "$1" | grep -c . || true; }
 }
 
 @test "the Ticket-first shape reads all five rows and their real statuses" {
-  # wave-session's parser keyed the header on a literal `#` first column, so this shape
+  # An older parser keyed the header on a literal `#` first column, so this shape
   # matched nothing and returned zero rows -- indistinguishable from an empty queue.
   local f="$BOARDS/queue-ticket-first.md"
   assert_equal "$(nrows "$f")" '5'
@@ -104,14 +104,14 @@ nrows() { board_rows "$1" | grep -c . || true; }
 
 @test "approval is read correctly on both a gated and an approved real board" {
   # `- Approval: PENDING` is not the inverse of the approved token: a board whose line
-  # is neither is misjudged by a `grep PENDING` check. wave-start used to do exactly that.
+  # is neither is misjudged by a `grep PENDING` check.
   board_approved "$BOARDS/queue-ticket-first.md" || fail "approved board read as unapproved"
   board_approved "$BOARDS/wave-gated.md" && fail "PENDING board read as approved"
   return 0
 }
 
 @test "drainable and needs-eyes disagree on the pre-approval board, as designed" {
-  # delivery-loop fails closed on approval; captain-watchdog deliberately does not.
+  # A drainer fails closed on approval; a watcher deliberately does not.
   local f="$BOARDS/wave-gated.md"
   board_drainable "$f"  && fail "an unapproved board must never be drainable"
   board_needs_eyes "$f" || fail "an unapproved board with queued rows is exactly what needs eyes"

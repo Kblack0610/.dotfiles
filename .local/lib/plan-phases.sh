@@ -30,6 +30,13 @@ plan_phases() {
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
+# A jq def: does this queue item (agent-queue list --json) carry phases of plan $p? By file name,
+# since a plan is read from ~/.claude*/plans/ and its cache in ~/.agent/plans/<project>/: its
+# `plan:` field (agent-queue add --plan), or a task that names the plan's file (queued by hand).
+# shellcheck disable=SC2016,SC2034  # literal jq; read by the scripts that source this file
+PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
+  | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
+
 # plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when
 # the file or its checklist is missing.
 plan_phase_list() {

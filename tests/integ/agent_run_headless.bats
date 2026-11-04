@@ -5,9 +5,9 @@
 # — the Focus gate (86-focus-reconcile.sh) blocks a turn that changed code without
 # declaring it on the human's daily `## Focus`, and on a timer there is nobody to answer,
 # so the agent complied the only way it could: `focus add` then `focus done`. One
-# 10-minute captain-watchdog pass put 45 of those into 2026-08-04's note.
+# 10-minute watchdog timer put 45 of those into 2026-08-04's note.
 #
-# It is asserted HERE rather than at each runner because there are seven `claude -p`
+# It is asserted HERE rather than at each runner because there are several `claude -p`
 # callers; a marker set per-call-site is one unrelated edit away from being lost.
 
 setup() {

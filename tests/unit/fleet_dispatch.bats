@@ -26,7 +26,6 @@ setup() {
   stub fleet-bench 'exit 0'
   stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s):  5.0 us,  5.0 sy,  0.0 ni, 90.0 id,  0.0 wa\n"'
   stub fleet-shepherd 'exit 1'
-  stub wave-lock 'exit 1'
   stub claude-acct 'exit 0'   # main account; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
   stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -214,14 +213,6 @@ verdict() {
   run cmd_candidates
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
-}
-
-@test "candidates: a project whose wave lock is held is left alone" {
-  project game beta "$SANDBOX/repos/game"
-  row game human 'fix crash' "- [ ] fix crash $T"
-  stub wave-lock 'exit 0'
-  run cmd_candidates
-  assert_output ''
 }
 
 @test "candidates: a live dispatched session does not hold its project" {

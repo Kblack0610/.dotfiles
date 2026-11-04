@@ -48,9 +48,6 @@ harness_exec() {
   # agentctl-dream lost 17 nights of sweeps to exactly that (settings.json sets
   # defaultMode:plan, which a headless --print inherits) and nightly-sync then
   # repeated it from 07-22, writing zero mem0 entries while still exiting 0.
-  #
-  # Net effect versus what delivery-loop and watch-companion-loop already do:
-  # identical permission behaviour, plus denials they never had.
   flags+=(--dangerously-skip-permissions)
 
   [ -n "$mcp_file" ] && flags+=(--mcp-config "$mcp_file" --strict-mcp-config)

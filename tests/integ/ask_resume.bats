@@ -2,8 +2,8 @@
 # ask-resume: the producer half of the human<->agent loop.
 #
 # `agent-ask answer` records a decision and notifies. For an entire release cycle that was
-# ALL that happened — a wave posted a gate, the human answered `approve` in the cockpit, and
-# the wave stayed blocked forever because no code path anywhere turned the answer back into
+# ALL that happened - an agent posted a gate, the human answered `approve` in the cockpit, and
+# the work stayed blocked forever because no code path anywhere turned the answer back into
 # an action. agent-ask's own header promised "a later fire consumes the answer"; nothing did.
 #
 # So the contract under test is narrow and specific: an answered ask carrying a `resume`
@@ -15,31 +15,33 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
 
-  # wave-start is the harness a `/wave` resume goes through (it owns the per-app lock, the
-  # log and the status contract). Stub it, and record every invocation.
-  cat > "$SANDBOX/bin/wave-start" <<'EOF'
+  # A resume runs headless through agentctl-run. Stub it, and record every invocation.
+  cat > "$SANDBOX/bin/agentctl-run" <<'EOF'
 #!/usr/bin/env bash
-printf 'wave-start %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+printf 'agentctl-run %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
 EOF
-  chmod +x "$SANDBOX/bin/wave-start"
+  chmod +x "$SANDBOX/bin/agentctl-run"
 
-  cat > "$SANDBOX/bin/claude" <<'EOF'
+  # ask-resume detaches with `setsid -f`. Run the command in the foreground instead, so the
+  # call is on disk before ask-resume returns and no test has to wait for it.
+  cat > "$SANDBOX/bin/setsid" <<'EOF'
 #!/usr/bin/env bash
-printf 'claude %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+[ "$1" = -f ] && shift
+"$@"
 EOF
-  chmod +x "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/setsid"
 }
 
-# post a gate whose resume is a wave start; returns the id
+# post a gate whose resume is a headless command; returns the id
 gate() { # $1=project
   "$AGENT_ASK" post --project "${1:-alpha}" --kind gate \
-    --options 'approve|hold|cancel' --resume "/wave ${1:-alpha} start" \
+    --options 'approve|hold|cancel' --resume "/captain ${1:-alpha} go" \
     'Create the tickets and cut the branch?'
 }
 
 calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
 
-# ── the queue ────────────────────────────────────────────────────────────────
+# -- the queue --
 
 @test "GUARD: ask-resume under test is the sandbox copy, not a symlink into the repo" {
   run command -v ask-resume
@@ -47,7 +49,7 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert [ ! -L "$SANDBOX/bin/ask-resume" ]
 }
 
-@test "a pending ask is not resumable — nothing has been decided yet" {
+@test "a pending ask is not resumable - nothing has been decided yet" {
   gate alpha >/dev/null
   run "$AGENT_ASK" resumable alpha
   assert_output ''
@@ -57,7 +59,7 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run bash -c '"$AGENT_ASK" resumable alpha | cut -f1,3'
-  assert_output "$(printf '%s\t/wave alpha start' "$id")"
+  assert_output "$(printf '%s\t/captain alpha go' "$id")"
 }
 
 @test "an answered ask with NO resume command is never resumable" {
@@ -83,7 +85,7 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_output 'alpha beta '
 }
 
-# ── marking ──────────────────────────────────────────────────────────────────
+# -- marking --
 
 @test "mark-resumed takes an ask out of the queue" {
   local id; id="$(gate alpha)"
@@ -114,11 +116,11 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   run "$AGENT_ASK" answer "$id" approve
   assert_success
   run calls
-  assert_output --partial 'wave-start alpha --verb start'
+  assert_output --partial 'agentctl-run --role build -p /captain alpha go'
   run "$AGENT_ASK" resumable alpha
   assert_output ''
   ask-resume --all
-  run bash -c 'grep -c "^wave-start" "$NOTES_FIXTURE/calls.log"'
+  run bash -c 'grep -c "^agentctl-run" "$NOTES_FIXTURE/calls.log"'
   assert_output '1'
 }
 
@@ -128,14 +130,13 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   run "$AGENT_ASK" answer "$id" ok
   assert_success
   run calls
-  refute_output --partial 'wave-start'
-  refute_output --partial 'claude '
+  refute_output --partial 'agentctl-run'
 }
 
 @test "a resume that fails does not fail the answer, and the answer is recorded" {
   unset AGENT_ASK_NO_RESUME
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/wave-start"
-  chmod +x "$SANDBOX/bin/wave-start"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agentctl-run"
+  chmod +x "$SANDBOX/bin/agentctl-run"
   local id; id="$(gate alpha)"
   run "$AGENT_ASK" answer "$id" approve
   assert_success
@@ -143,49 +144,38 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_output 'answered'
 }
 
-# ── running ──────────────────────────────────────────────────────────────────
+# -- running --
 
-@test "a /wave resume goes through wave-start, not a bare claude" {
+@test "a resume runs headless through agentctl-run, build role, with a turn cap" {
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run ask-resume "$id"
   assert_success
   run calls
-  assert_output --partial 'wave-start alpha --verb start'
-  refute_output --partial 'claude '
-}
-
-@test "the verb from the resume command is carried through" {
-  local id
-  id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold' \
-        --resume '/wave alpha ship' 'merge it?')"
-  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
-  ask-resume "$id"
-  run calls
-  assert_output --partial 'wave-start alpha --verb ship'
+  assert_output --partial 'agentctl-run --role build -p /captain alpha go --max-turns 60'
 }
 
 # The single most important test in this file. Resuming twice means two scope-outs of the
-# same items, which means duplicate tickets on a real tracker and two branches for one wave.
+# same items, which means duplicate tickets on a real tracker and two branches for one task.
 @test "an ask resumes EXACTLY ONCE across repeated drains" {
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   ask-resume --all
   ask-resume --all
   ask-resume --all
-  run bash -c 'grep -c "^wave-start" "$NOTES_FIXTURE/calls.log"'
+  run bash -c 'grep -c "^agentctl-run" "$NOTES_FIXTURE/calls.log"'
   assert_output '1'
 }
 
 @test "the ask is marked BEFORE the command runs, so a crash cannot loop forever" {
   # A resume that dies must still leave the queue: these commands create tickets and cut
   # branches, so retrying one on every fire is worse than needing a human.
-  cat > "$SANDBOX/bin/wave-start" <<'EOF'
+  cat > "$SANDBOX/bin/agentctl-run" <<'EOF'
 #!/usr/bin/env bash
-printf 'wave-start %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+printf 'agentctl-run %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
 exit 1
 EOF
-  chmod +x "$SANDBOX/bin/wave-start"
+  chmod +x "$SANDBOX/bin/agentctl-run"
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   ask-resume --all || true
@@ -212,36 +202,10 @@ EOF
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run ask-resume --dry-run --all
-  assert_output --partial 'would run: wave-start alpha --verb start'
+  assert_output --partial "would run: agentctl-run --role build -p '/captain alpha go'"
   run calls
-  refute_output --partial 'wave-start'
+  refute_output --partial 'agentctl-run'
   # and it is still queued, because nothing consumed it
   run bash -c '"$AGENT_ASK" resumable alpha | wc -l'
   assert_output '1'
-}
-
-@test "a non-wave resume falls back to a headless agentctl-run" {
-  local id
-  id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold' \
-        --resume '/captain status' 'carry on?')"
-  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
-  run ask-resume --dry-run "$id"
-  assert_output --partial "would run: agentctl-run --role build -p '/captain status'"
-}
-
-# delivery-loop exports ANTHROPIC_BASE_URL pointing at the gateway's Lazer route, and a
-# resume inherits that env unless it is scrubbed, which would silently move the resume
-# onto the paid Lazer pool.
-@test "the Anthropic transport env is scrubbed before a resume runs" {
-  cat > "$SANDBOX/bin/wave-start" <<'EOF'
-#!/usr/bin/env bash
-printf 'base=%s key=%s\n' "${ANTHROPIC_BASE_URL:-unset}" "${ANTHROPIC_AUTH_TOKEN:-unset}" \
-  >> "$NOTES_FIXTURE/calls.log"
-EOF
-  chmod +x "$SANDBOX/bin/wave-start"
-  local id; id="$(gate alpha)"
-  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
-  ANTHROPIC_BASE_URL=https://llm.example.invalid ANTHROPIC_AUTH_TOKEN=secret ask-resume "$id"
-  run calls
-  assert_output --partial 'base=unset key=unset'
 }

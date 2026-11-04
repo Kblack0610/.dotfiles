@@ -51,15 +51,13 @@ setup() {
   assert_output ''
 }
 
-# AGENTCTL_NAME is the worse half of the leak and deserves its own assertion: wave-start
-# reports with `--name "${AGENTCTL_NAME:-wave}"`, so an inherited name lands fixture values
-# on the SUPERVISING runner's own row. Live dream/status and nightly-sync/status both read
-# `project=demoapp item="start ok"` -- strings that exist only in wave_start.bats -- and the
-# fleet view rendered them as real. A default of `wave` is correct here; `inherited-runner`
-# would mean the identity survived.
+# AGENTCTL_NAME is the worse half of the leak and deserves its own assertion: fleet-shepherd
+# publishes under `${AGENTCTL_NAME:-shepherd}`, so an inherited name lands fixture values
+# on the SUPERVISING runner's own row, and the fleet view renders them as real. A default of
+# `shepherd` is correct here; `inherited-runner` would mean the identity survived.
 @test "an unset AGENTCTL_NAME falls back to the subject's own default, not the runner's" {
-  run bash -c 'printf "%s" "${AGENTCTL_NAME:-wave}"'
-  assert_output 'wave'
+  run bash -c 'printf "%s" "${AGENTCTL_NAME:-shepherd}"'
+  assert_output 'shepherd'
 }
 
 # From 2026-10-28 every Stop-hook run paged the human's phone: wave_roll_outcome.bats drives a

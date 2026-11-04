@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [review, screenshots, markdown, walkthrough]
-  reviewed: "2026-09-23"
+  reviewed: "2026-11-03"
 ---
 
 # flow-review
@@ -14,7 +14,7 @@ Produces a step-by-step walkthrough of ONE user flow as a markdown file, real sc
 
 ## Scope and triggers
 
-Walk one user flow end to end (web at desktop and phone width, mobile app) and write it up as a markdown report with a screenshot per step and a severity on every note (FIX / POLISH / VERIFY / OK), saved to `~/.notes/ref/<project>/<date>-<slug>/` (synced to every device) with a PDF beside it, readable in the terminal with glow or yazi. Use when the user says "walk the payment flow and write it up", "do a flow review", "summary like the Julie one", "screenshot every step of X", "put it in my ref folder", "make a PDF of the review", or wants a readable walkthrough of one journey for a human. Can also convert an existing HTML walkthrough artifact into this format with `scripts/extract-artifact.py`. For a whole-app screen sweep with a coverage matrix use `ui-audit`; for audit-then-fix-and-merge use `delta-audit`; for a wave sign-off gate use `wave-closeout`. This skill reports; it does not fix.
+Walk one user flow end to end (web at desktop and phone width, mobile app) and write it up as a markdown report with a screenshot per step and a severity on every note (FIX / POLISH / VERIFY / OK), saved to `~/.notes/ref/<project>/<date>-<slug>/` (synced to every device) with a PDF beside it, readable in the terminal with glow or yazi. Use when the user says "walk the payment flow and write it up", "do a flow review", "summary like the Julie one", "screenshot every step of X", "put it in my ref folder", "make a PDF of the review", or wants a readable walkthrough of one journey for a human. Can also convert an existing HTML walkthrough artifact into this format with `scripts/extract-artifact.py`. For a whole-app screen sweep with a coverage matrix use `ui-audit`; for audit-then-fix-and-merge use `delta-audit`. A walk that signs off a tree before it merges or ships follows `references/manual-leg.md`. This skill reports; it does not fix.
 
 ## When to Use
 
@@ -39,7 +39,7 @@ Not for every screen in the app (`ui-audit`) or for fixing what you find (`delta
 
 1. **Scope.** Name the flow, its start and end state, the account/role, the surfaces (web, mobile app, native), viewports (default web 1280 and 390), and the env plus the commit it is serving. Confirm the env really serves that commit before capturing; a report against a stale build is worse than none.
 2. **Create the folder** `~/.notes/ref/<project>/<date>-<slug>/shots/`.
-3. **Walk it.** Web with Playwright MCP, Android with `adb-ops`. Save each screenshot straight into `shots/` with a zero-padded running number: `01-checkout-desktop.jpg`. Never embed base64 in the markdown; terminal viewers cannot show it. Drive the flow to its real end state (payment submitted, record written) and check that the state changed.
+3. **Walk it.** Web with Playwright MCP, Android with `adb-ops`. Save each screenshot straight into `shots/` with a zero-padded running number: `01-checkout-desktop.jpg`. Never embed base64 in the markdown; terminal viewers cannot show it. Drive the flow to its real end state (payment submitted, record written) and check that the state changed. When the walk is a pre-merge or pre-release sign-off, follow `references/manual-leg.md` for the order (reset before login), the surfaces and the test routes.
 4. **Judge each step.** One line on what the user does and sees, then one bullet per note, prefixed with its severity in bold (`- **FIX** ...`):
 
    | Severity | Meaning |

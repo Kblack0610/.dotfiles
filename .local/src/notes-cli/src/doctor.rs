@@ -136,7 +136,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
 
     // 8. Wave order: the first `## Wave` names the sheet's declared `Version:`. Every reader
     // takes the first section as the current wave, so a roadmap that opens with a planned one
-    // silently redirects the board, `ptask list` and `/wave` onto unstarted work.
+    // silently redirects the board and `ptask list` onto unstarted work.
     let order = projects::wave_order_findings(p);
     if order.is_empty() {
         r.add(Status::Pass, "wave order", "every sheet opens with its declared version");

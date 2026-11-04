@@ -31,7 +31,7 @@
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
-# so an ask lines up with sessions.jsonl and the sprint blackboards.
+# so an ask lines up with sessions.jsonl and the queue.
 #
 # ONE RECORD FOR "WAITING ON THE HUMAN". A session the human is attached to asks in the
 # conversation AND posts here in the same turn (a Stop check blocks a question left unfiled):
@@ -40,28 +40,28 @@
 # which also types the answer into the session) or when the session ends (stale). A human-only
 # action the session will not wait on is a human-sheet row, not an ask.
 #
-# ASYNC IS THE PRIMARY PATH. The main producers (delivery-loop, /kb:sprint BLOCK) are
-# headless and CANNOT block: they post and exit, and a later fire / `/captain resume`
-# consumes the answer. `post --wait` is a secondary convenience for an attended agent.
+# ASYNC IS THE PRIMARY PATH. Headless producers (timer runners, queue items) CANNOT block:
+# they post and exit, and the ask's `resume` command consumes the answer. `post --wait` is a
+# secondary convenience for an attended agent.
 #
 # ANSWERING IS STARTING. `answer` records the decision, notifies, and then hands the id to
-# `ask-resume`, which runs the ask's `resume` command (a `/wave` resume goes through
-# wave-start, which detaches) and exits silently for an ask that has none. Every surface
+# `ask-resume`, which runs the ask's `resume` command (detached, through agentctl-run) and
+# exits silently for an ask that has none. Every surface
 # that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
 # can record an answer that silently goes nowhere. `resumable` + `mark-resumed` remain
-# the queue behind it: `wave-start` drains `ask-resume --all` as a backstop for an answer
+# the queue behind it: `ask-resume --all` drains it by hand as a backstop for an answer
 # whose resume failed to start, and `resumed_at` empty on an answered ask is still the "your answer went nowhere" signal.
 # AGENT_ASK_NO_RESUME=1 records the answer only (the test sandbox sets it, so no test
-# can start a real wave by answering a gate).
+# can start a real run by answering a gate).
 #
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
-# "PR #1036 is green, merge it?" - the loop's common ask under AUTONOMY=pr.
+# "PR #1036 is green, merge it?".
 
 # LIFECYCLE: pending -> answered | cancelled | stale. Every reader of "waiting on you" asks
 # for --pending, so a stale ask leaves the human's queue without anyone deciding it: it is
 # still answerable, and the morning briefing lists it once, the day it went stale. An ask goes
-# stale after AGENT_ASK_STALE_DAYS unanswered (`expire`, run by the briefing), or when the wave
-# its `task: wave/<app>/<version>` names has shipped (`stale`, run by agentctl-wave-roll).
+# stale after AGENT_ASK_STALE_DAYS unanswered (`expire`, run by the briefing), or by hand
+# (`stale`).
 # cancel and stale stamp `closed_at` and, when given, `closed_reason`.
 #
 # THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one observe-role
@@ -176,13 +176,6 @@ cmd_post() {
   else
     project="$(resolve_project)"
   fi
-  # A wave gate belongs to the wave's app. One release's six gates were each posted twice, once
-  # under the app and once under its monorepo, and the second copy could never be resolved.
-  case "$task" in
-    wave/*/*)
-      local wapp="${task#wave/}"; wapp="${wapp%%/*}"
-      [ "$wapp" = "$project" ] || { echo "agent-ask post: task $task belongs to $wapp, not $project" >&2; return 2; } ;;
-  esac
   # A supervised runner names itself, so its pass can be scored BLOCKED: agent-proof.sh's
   # proof_blocked matches a pending ask on this field, which is how "waiting on the human"
   # stops reading as WORKED or NOOP.
@@ -390,7 +383,7 @@ deliver_to_session() {
 # file_stale_row <ask file>: an ask nobody answered is still an open question, and the ask file is
 # about to leave every queue. Put it on the agent board as a plain row: #ask is for the human's
 # own words, and this is an agent's question. Only
-# a session ending and an ask expiring come here; a wave shipping past an ask means it was decided.
+# a session ending and an ask expiring come here; a hand `stale` means it was decided.
 # Runs inside SessionEnd, so it fails silently. 2026-10-30: ask ZFBwVg held a 352-ask audit and
 # went stale when its session closed, with no row anywhere.
 file_stale_row() {

@@ -8,7 +8,7 @@ agent-web's asks list.
 - CLI: `~/.dotfiles/.local/bin/agent-ask` (public, symlinked into `~/.local/bin`).
 - Store: `~/.agent/asks/{project}/{id}.md`, one flat `key: value` file per ask.
 - `{project}` is ALWAYS the canonical name (resolved via `shared-hooks/project-name.sh`),
-  so an ask lines up with `sessions.jsonl` and the sprint blackboards.
+  so an ask lines up with `sessions.jsonl` and the queue.
 
 ## One record for "waiting on the human"
 
@@ -23,12 +23,10 @@ An ask file is the only record that something waits on the human, for attended s
 
 ## Design: async is primary
 
-The main producers are headless and CANNOT block:
-- `delivery-loop` (agentctl oneshot, ~12-min timer, private overlay)
-- `/kb:sprint` BLOCK handling
+The main producers are headless (timer runners, queue items) and CANNOT block.
 
-So the first-class flow is: post-now -> exit -> answer-later -> consumed on the next
-fire or by `/captain resume`. `post --wait` (block until answered, print the answer) is a
+So the first-class flow is: post-now -> exit -> answer-later -> consumed by the ask's
+`resume` command, which `agent-ask answer` hands to `ask-resume`. `post --wait` (block until answered, print the answer) is a
 SECONDARY convenience for an attended agent only; producers never use it.
 
 ## Verbs
@@ -38,8 +36,8 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --project P     canonical project (default: resolve from $PWD)
   --profile X     profile section (personal / a job profile)
   --session S     link to a sessions.jsonl session id
-  --agent A       who asked (kb-coordinator, delivery-loop, ...)
-  --task T        link to a Focus/Wave task key or tracker ticket
+  --agent A       who asked (kb-coordinator, shepherd, ...)
+  --task T        link to a Focus task key or tracker ticket
   --kind K        question | gate | approval  (gate/approval default options: approve|hold)
   --options a|b|c pipe-separated choices
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
@@ -86,13 +84,9 @@ The judge never answers. agent-web's Waiting tab shows "judge would ..." under t
 
 ## Producer / consumer wiring
 
-Producers (post an ask on a genuine decision-block, record the id, then exit):
-- `/kb:sprint` BLOCK -> also `agent-ask post` from the `## Blocks` / `Needs:` line.
-- `delivery-loop` -> route blocks here instead of a bare notify (private, held until this lands).
+Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
-Consumers (read answered asks and continue):
-- `/captain resume` / `/kb:sprint resume` -> read `~/.agent/asks/{project}/*` for
-  `status: answered`, feed the answers back into dispatch (alongside reconcile-from-disk).
+Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (`agent-ask answer` calls it; `ask-resume --all` drains by hand).
 
 Surfaces:
 - `prefix g` agent-bridge -> `agent-ask list --pending --all` + sentinel trips + gates + live panes.

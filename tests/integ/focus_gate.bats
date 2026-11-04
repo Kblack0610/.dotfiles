@@ -80,7 +80,7 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
 }
 
 @test "CLAUDE_HEADLESS=1 disables it -- a timer has nobody to answer the question" {
-  # Regression: captain-watchdog fires `/captain watch` every 10 minutes. Blocked here,
+  # Regression: a watchdog timer fired `/captain watch` every 10 minutes. Blocked here,
   # the headless agent complied the only way it could -- `focus add` then `focus done` --
   # and 2026-08-04 accumulated 45 `captain watch pass` entries, burying the three real
   # ones. Asking "did you declare your work" only makes sense with a human to ask.

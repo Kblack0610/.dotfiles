@@ -16,12 +16,13 @@
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #
-# Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (start the next phase),
+# Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (queue the next phases, wind down),
 # STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
 # escalated, `claude-acct unpark` resumes it), plus one NIGHTLY row per repo whose default branch is red
 # (the latest decided run of a workflow failed; in practice a nightly or scheduled suite, since the
 # PR gate keeps main green), naming the PRs merged since that workflow was
-# last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`,
+# last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`, or
+# the unchecked ones are queue items (another active item names the plan, PLAN_ITEMS_JQ),
 # nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
 # is DONE without the idle and status checks, so a session can check its own row mid-turn,
 # and `blockers` lists every reason it is false. A plan with no checklist counts as one phase:
@@ -185,7 +186,7 @@ work_blockers() {
   case "$phases" in
     -) [ "$merged" = 1 ] || b+=("no plan file and nothing merged") ;;
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
-    *) [ "${phases%/*}" -ge "${phases#*/}" ] || b+=("next phase: $next") ;;
+    *) [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]] || b+=("next phase: $next") ;;
   esac
   fi
   for id in "${b[@]}"; do out="${out:+$out; }$id"; done
@@ -193,7 +194,8 @@ work_blockers() {
 }
 
 # plan_bucket <reason so far> <phases> <next> <merged 0|1>: nothing is unlanded, so the plan
-# decides. All phases ticked is DONE; one left is LANDED naming it. A plan with no checklist,
+# decides. All phases ticked is DONE, and so is one whose unchecked phases are queue items
+# (next is queued:<slugs>); one left is LANDED naming it. A plan with no checklist,
 # or no plan file, is one phase of work: DONE once its PR merged. Without a merged PR, no
 # checklist is LANDED asking for one and no plan file is the human's call (usually a
 # conversation, which closing on idle would cut off).
@@ -206,6 +208,7 @@ plan_bucket() {
           else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
     *)
       if [ "${phases%/*}" -ge "${phases#*/}" ]; then echo "DONE $why, all ${phases#*/} phases done"
+      elif [[ "$next" == queued:* ]]; then echo "DONE $why, its next phases are queue items: ${next#queued:}"
       else echo "LANDED $why, next phase: $next"; fi ;;
   esac
 }
@@ -546,9 +549,10 @@ collect() {
   local now heavy line
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
-  local panel items
+  local panel items qjson
+  qjson="$(agent-queue list --json --state active 2>/dev/null)"
   # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
-  items="$(agent-queue list --json --state active 2>/dev/null | jq -r --arg d "$QUEUE_SERVER" '
+  items="$(jq -r --arg d "$QUEUE_SERVER" <<<"$qjson" '
     select(.state != "queued" and (.session // "") != "")
     | (if (.session | contains(":")) then .session | sub(":"; "/") else "\($d)/\(.session)" end)
       + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
@@ -559,7 +563,7 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob
+          work jobs human parked compactions topic doing said gate test ojob pq
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -583,6 +587,16 @@ collect() {
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
     else phases="$pdone/$ptotal"; fi
+    # The plan's unchecked phases are queue items of their own: its next phase is not this session's.
+    local dsp=- n=0 e=0
+    dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
+    pq="$pnext"
+    if [ "$phases" != - ] && [ "$phases" != none ] && [ "$pdone" -lt "$ptotal" ]; then
+      local qd
+      qd="$(jq -r --arg p "$planf" --arg own "${dsp#*: }" "$PLAN_ITEMS_JQ"' select(.slug != $own and names_plan($p)) | .slug' \
+            <<<"$qjson" 2>/dev/null | paste -sd, -)"
+      [ -z "$qd" ] || pq="queued:$qd"
+    fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
     if [ "$g" = 1 ]; then
@@ -593,11 +607,11 @@ collect() {
       fi
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" "$ojob")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pnext" "$conflicts")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
@@ -606,8 +620,7 @@ collect() {
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
-    local n=0 e=0 dsp=-; nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
+    nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \

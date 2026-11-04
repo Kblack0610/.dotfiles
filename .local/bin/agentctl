@@ -185,7 +185,7 @@ fmt_dur() {
 # systemd tells a reader whether a unit is running. It cannot tell it what the runner is
 # WORKING ON — which project, which item, whether it is blocked on a human. Before this,
 # every runner answered that differently (sentinel wrote watch-companion/*.state,
-# delivery-loop had its own `status` text, most reported nothing), so the cockpit could
+# one runner had its own `status` text, most reported nothing), so the cockpit could
 # only show active/inactive plus a tail of a freeform log. This is the one shape they all
 # publish instead:
 #
@@ -751,7 +751,7 @@ route contract and refuses (exit 78) rather than degrade. A runner's COMMAND, or
 it calls, invokes it; the caller scores the run with proof_verdict (agent-proof.sh).
 
 The status contract (what a headless runner publishes, and readers consume):
-  agentctl report state=working project=bnb-platform item='/kb:sprint resume'
+  agentctl report state=working project=bnb-platform item='queue: fix-login'
   keys: state(working|idle|ok|blocked|error) project item detail
   Writes MERGE into ~/.local/state/agentctl/<name>/status; the name comes from
   --name or $AGENTCTL_NAME (exported into every unit). start/finish/failure are

@@ -135,7 +135,7 @@ proof_report() {
   local name="$1" verdict="$2" detail="${3:-}"
   local dir="$(proof_state_dir)/$name"
   # A word outside the vocabulary is a caller bug. Record it as FAILED, loudly, rather
-  # than store a value no reader's trip list knows (delivery-loop's FAILED once sat
+  # than store a value no reader's trip list knows (a runner's free-text FAILED once sat
   # invisible to fleet-liveness for exactly this reason).
   case " $AGENT_VERDICTS " in
     *" $verdict "*) ;;

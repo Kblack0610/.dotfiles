@@ -3,7 +3,7 @@
 #
 # Until 2026-08-07 "adversarial review" in the kb pipeline meant persona and tool
 # grant only. No kb-* agent set a `model:`, so kb-developer, kb-reviewer and kb-qa
-# all inherited delivery-loop's single ANTHROPIC_MODEL=claude-sonnet-5: the same
+# all inherited the runner's single ANTHROPIC_MODEL=claude-sonnet-5: the same
 # weights marking their own homework in three different voices.
 #
 # The rule is Herdforge's (docs/architecture/TARGET-WORKFLOW.md), and so is the

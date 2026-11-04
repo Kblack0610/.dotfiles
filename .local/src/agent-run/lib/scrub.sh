@@ -12,8 +12,7 @@
 #
 # UNCONDITIONAL. Not "only when a route is chosen", not "only for gateway
 # routes". A conditional scrub is one whose condition is eventually wrong, and
-# the failure is silent egress. Generalises the single defensive scrub that
-# ask-resume:55 had been doing alone.
+# the failure is silent egress.
 #
 # The classification lives in scrub.list as DATA so a test can assert it is a
 # superset of every such name in the tree. See that file for why each entry is

@@ -2,71 +2,52 @@
 # This file is SOURCED, never executed, so it carries a shell directive rather
 # than a shebang (SC2148).
 #
-# agent-board.sh — ONE reader for the sprint blackboard.
+# agent-board.sh - ONE reader for the sprint blackboard.
 #
-# The board at ~/.agent/plans/{project}/sprint-*.md is the handoff between a wave
-# or /kb:sprint and everything that watches it. Five consumers read it and, until
-# this file, each parsed it its own way:
+# The board at ~/.agent/plans/{project}/sprint-*.md is a markdown task table. Its
+# readers used to parse it each their own way (a header keyed by name, one keyed by
+# a literal `#` column, a bare regex over pipe rows), and each was blind to boards
+# the others could read. This file is the one parser. Today its runtime consumer is
+# the board-observe hook (.claude/hooks/board-observe.sh), which records stage
+# transitions.
 #
-#   the task cockpit   _sprint_items    the good one - header keyed by NAME (retired)
-#   wave-session.sh    rows_of          header keyed by a literal `#` first column,
-#                                       so `| Ticket | P | Title | ... |` read ZERO rows
-#   delivery-loop      a single regex   grep for `queued|in-progress|pr-open` anywhere in a
-#   captain-watchdog   (same regex)     pipe row — three of five real boards contain none of
-#                                       those words, so both daemons were blind to them
-#   wave-start         board glob only  (finds the file; does not parse it)
-#
-# Divergence here is expensive in a specific way: a board the daemons cannot see is
-# not an error, it is SILENCE. delivery-loop reports "no active queue" and stops,
-# which is exactly what it reports when there is genuinely nothing to do.
+# Divergence here is expensive in a specific way: a board a reader cannot see is
+# not an error, it is SILENCE, which reads exactly like "nothing to do".
 #
 # The parser is the one from the task cockpit, extracted after two bugs were fixed
 # in it (#159) that the other parsers still have:
 #
 #   * A new H2 ENDS the table. Without it the column map latched on the first
 #     ticket+status header and every later pipe table in the file was read with the
-#     queue's indices — the wave schema's `## Wave gate` table rendered as six
-#     phantom "working" items, one of which was its own header row.
-#   * A row whose Ticket cell is EMPTY still renders, keyed `~<row>`. A wave writes
-#     its stub board BEFORE the approval gate, deliberately, so a gate stop leaves a
-#     durable artifact — which means every row legitimately has an empty Ticket until
-#     the human approves. Skipping them hid the entire proposal at exactly the moment
-#     the human needed to read it.
+#     queue's indices - a later gate table rendered as six phantom "working" items,
+#     one of which was its own header row.
+#   * A row whose Ticket cell is EMPTY still renders, keyed `~<row>`. A stub board is
+#     written BEFORE its approval gate, so every row legitimately has an empty Ticket
+#     until the human approves. Skipping them hid the entire proposal at exactly the
+#     moment the human needed to read it.
 #
 # Precedent for a public lib sourced by private binaries: .local/lib/agent-proof.sh.
 # They are siblings at runtime (~/.local/lib/), not in their source trees.
 
 # ── the approval marker ──────────────────────────────────────────────────────
 # The one machine-checkable token saying a human approved this board for autonomous
-# delivery. Written by the human at the plan gate, never by an agent. Documented in
-# .claude/commands/kb/sprint.md ("The approval gate") and wave.md.
-#
-# Two readers, asymmetric ON PURPOSE:
-#   delivery-loop   fails closed — no marker, no drain. It merges code unattended.
-#   captain-watchdog does NOT filter on it — an unapproved board is precisely what a
-#                   human wants surfaced, and gating would self-disarm the watchdog
-#                   on the boards that most need eyes.
+# delivery. Written by the human at the plan gate, never by an agent.
 BOARD_APPROVAL_RE='^- *Approval: *APPROVED-FOR-AUTONOMOUS-DELIVERY *$'
 
 # ── board discovery ──────────────────────────────────────────────────────────
 # board_list PROJECT -> every board for a project, one per line, NEWEST FIRST.
 #
-# NEWEST BY MTIME, never by name. A wave is a patch version, so boards are named
-# both `sprint-2026-07-27.md` and `sprint-v1.10.1.md`; `sprint-2026-...` sorts after
+# NEWEST BY MTIME, never by name. Boards are named `sprint-2026-07-27.md` and `sprint-v1.10.1.md`; `sprint-2026-...` sorts after
 # `sprint-v...` in some collations and before it in others, so sorting by name picks
 # a different board depending on locale.
 #
-# This is the ONLY place the board glob is written. It used to appear in six: here,
-# wave-session, wave-start, session-preflight, captain-watchdog and delivery-loop
-# (twice). The glob is not the interesting part — `sprint-*.md` is easy to copy
-# correctly — but every copy also re-decided, silently, what counts as a board and
-# in what order. Adding an archive convention (`sprint-*.md.done`, a `stale/`
-# subdirectory) then has to be found in six places, and the one that is missed does
-# not error: it just keeps handing out a board everything else has stopped counting.
+# This is the ONLY place the board glob is written. Every copy of a glob also
+# re-decides, silently, what counts as a board and in what order, and the copy that
+# misses a new archive convention keeps handing out a board everything else stopped
+# counting.
 board_list() { # $1=project
   [ -n "${1:-}" ] || return 0
-  # `|| true` because EVERY consumer of this library sets `pipefail` (wave-session.sh,
-  # wave-start and delivery-loop all open with `set -uo pipefail`). With pipefail a
+  # `|| true` because a consumer of this library may set `pipefail`. With pipefail a
   # project that simply has no board yet made `ls` exit 2 and took the whole pipeline's
   # status with it, so discovery reported FAILURE for the ordinary, expected case of
   # "nothing scheduled here". Empty output is the answer; a non-zero status is a lie that
@@ -81,7 +62,7 @@ board_newest() { # $1=project
 
 # board_list_all -> every project's boards, newest first ACROSS all projects.
 #
-# Resolving "which project am I" from a checkout fails silently: a wave board is named
+# Resolving "which project am I" from a checkout fails silently: a board is named
 # for the project its BRANCH names, while the reference checkout sits on develop, so the
 # two names differ and the lookup matches nothing. Same rule board_project_of already
 # encodes for attribution - identity comes from the PATH - applied to discovery.
@@ -102,7 +83,7 @@ board_list_all() {
   # timers where a non-zero status is noise.
   [ ${#_all[@]} -gt 0 ] || return 0
   # Re-sorted globally: each board_list is ordered within its project, but a caller
-  # wanting "the newest live wave anywhere" needs one order across all of them.
+  # wanting "the newest live board anywhere" needs one order across all of them.
   ls -1t "${_all[@]}" 2>/dev/null || true
 }
 
@@ -123,11 +104,8 @@ board_find_all() { # $1=predicate fn
 #
 # PREDICATE is the NAME of a function taking a board path (board_needs_eyes,
 # board_drainable, board_approved...). Every scheduled reader of the board wants
-# exactly this — "the newest one that still matters to me" — and each had written
-# out the same six-line loop with its own predicate inlined. captain-watchdog and
-# delivery-loop even said so in a comment: "same contract as captain-watchdog's
-# active_blackboard - now literally the same code, rather than 'kept in sync
-# deliberately'." It was not the same code. Now it is.
+# exactly this - "the newest one that still matters to me" - so the loop is written
+# once here instead of once per reader with its predicate inlined.
 #
 # Returns 0 with empty output when nothing matches: "no board needs me" is the
 # normal state of a quiet project, not a failure, and these run on timers where a
@@ -165,7 +143,7 @@ board_stage_of() { # $1=status text [$2=sentinel text] -> stage
 #
 # awk (not the shell case) is the survivor because only it can express a word boundary:
 # "done" must match and "abandoned" must not. board_stage_of pays one subprocess per
-# call for this; it has exactly one caller (wave-session's _is_live, once per row), so
+# call for this; it is called once per row at most, so
 # the cost is a rounding error against a class of silent misclassification.
 #
 # The boundary is spelled out as character classes, NOT as GNU's \< \>. BSD awk (every
@@ -181,8 +159,8 @@ _BOARD_STAGE_AWK='
 # and classified as `merged`, because `merged` was tested as a bare substring anywhere in
 # the cell -- and this cell mentions a DIFFERENT PR having been merged, in the course of
 # saying the row is still running. A live row read as terminal is the exact silent failure
-# this library exists to end: delivery-loop skips it and the cockpit stops showing it,
-# and "no open rows" is indistinguishable from "done".
+# this library exists to end: every reader skips it, and "no open rows" is
+# indistinguishable from "done".
 #
 # So the VERDICT rules (merged / skipped / review / queued) look only at LEAD, the text
 # before the first sentence break. A cell states its verdict up front -- `MERGED (PR
@@ -231,10 +209,9 @@ board_is_attention() { case "${1:-}" in blocked|error)         return 0 ;; *) re
 # The CLASSES a consumer may ask about. `eyes` (open OR attention) is a class in its
 # own right rather than an `||` at each call site, because it is the one every
 # human-facing surface actually wants and the one each surface got subtly wrong:
-# session-preflight open-coded it as a five-way awk comparison on stage names, and
-# captain-watchdog as `board_has_stage open || board_has_stage attention` — which
-# parses the whole board twice, and silently stops agreeing the moment a sixth stage
-# is added to one list and not the other.
+# an open-coded `board_has_stage open || board_has_stage attention` parses the whole
+# board twice, and silently stops agreeing the moment a sixth stage is added to one
+# list and not the other.
 #
 # An unknown class returns 1 (no match) rather than erroring: a typo'd class must not
 # take down a timer-driven daemon. It is caught in tests instead, where it is cheap.
@@ -338,7 +315,7 @@ board_rows_effective() { # $1=board file $2=project
 # board_observe FILE — record every stage transition since the last look.
 #
 # WHY AN OBSERVER AND NOT A WRITER. A row's Status cell is edited by an LLM agent
-# (the /wave dispatcher, kb-coordinator, wave-overseer) doing Edit on markdown, and
+# (a dispatcher or coordinator) doing Edit on markdown, and
 # the edit OVERWRITES the previous value — so the board holds a current stage and no
 # history at all. The obvious fix is a `board_set_status` writer the dispatchers call
 # instead of editing. That fix is the one this file's header already warns about: it
@@ -382,7 +359,7 @@ board_project_of() { # $1=board file
 # `- Repo: <abs path>`. Nothing read it before, so three drivers resolved it three ways
 # and none asked the board.
 #
-# Anchored `^- *Repo:` for the reason board_is_wave is anchored: a `## Run log` sentence
+# Anchored `^- *Repo:` on purpose: a `## Run log` sentence
 # mentioning a repo describes one, it does not declare one. Empty when the board has no
 # Meta block (legacy boards have none) so the caller can fall back to project_repo_path.
 board_repo_of() { # $1=board file
@@ -438,9 +415,8 @@ board_observe() { # $1=board file -> appends to board_events_file(project)
   # The whole read-modify-write is one critical section. Without it two callers both read
   # the old snapshot, both decide the same transition is new, and both append it — and a
   # duplicate event is indistinguishable from a row that genuinely bounced between two
-  # stages. This is not hypothetical: agentctl-delivery-loop, -wave-watchdog and
-  # -captain-watchdog are all `OnCalendar=*:0/12` with no RandomizedDelaySec, so they fire
-  # on the same wall-clock second every time.
+  # stages. Timers on the same `OnCalendar` with no RandomizedDelaySec fire on the same
+  # wall-clock second, and the hook can race a timer.
   #
   # NOTE: this is the first use of flock in this repo (only vendored bats had one), hence
   # the availability check above rather than assuming it. The lock is a dedicated file, not
@@ -561,32 +537,6 @@ board_events() { # $1=project [$2=ticket]
 board_approved() { grep -Eq "$BOARD_APPROVAL_RE" "${1:-/dev/null}" 2>/dev/null; }
 board_started()  { grep -Eq '^- *Started: *[0-9]' "${1:-/dev/null}" 2>/dev/null; }
 
-# board_is_wave FILE -> 0 if the board DECLARES wave mode in its `## Meta` block.
-#
-# Which driver a board gets is decided by this one test, and getting it wrong is
-# silent both ways: a wave board handed to /kb:sprint is branched, PR'd and merged
-# with no wave semantics at all, and a sprint board handed to /wave waits forever
-# for a branch nobody cut.
-#
-# THE ANCHOR IS THE WHOLE POINT. `- Mode: wave:1` is a declaration; the same words
-# inside a `## Run log` line ("refused: board is Mode: wave:1, needs /wave") are a
-# description of one. An unanchored matcher cannot tell them apart, so a plain
-# sprint board acquires wave mode the moment anything writes prose about a wave
-# into its log — including this harness's own refusal messages, which is exactly
-# the shape that makes it self-inflicted. `^- *` pins it to a Meta list item.
-#
-# Case-insensitive because the Meta block is hand-editable and `Mode: Wave` is the
-# same declaration; the leading `- ` is not negotiable, the capital W is.
-#
-# It lives HERE rather than in delivery-loop (where it started) for the reason this
-# whole file exists: it had two readers that did not agree. delivery-loop's was
-# anchored, wave-overseer/SKILL.md told the model to run a bare `grep -q 'Mode:
-# wave'`. All four wave boards on disk today declare it anchored, so the two have
-# not yet split on a real board — this is a latent divergence being closed before
-# it fires, not a post-mortem. Worth closing early precisely because the failure is
-# a silent mode mismatch, which presents as "the timer fires and nothing moves".
-board_is_wave() { grep -qiE '^- *Mode: *wave' "${1:-/dev/null}" 2>/dev/null; }
-
 # board_has_stage FILE open|attention|eyes -> 0 if any row qualifies
 board_has_stage() {
   local f="${1:-}" class="${2:-}" _t stage
@@ -606,12 +556,11 @@ board_count() {
   printf '%s\n' "$n"
 }
 
-# delivery-loop's predicate: approved AND work left. Fails closed on approval.
+# Approved AND work left. Fails closed on approval.
 board_drainable() { board_approved "${1:-}" && board_has_stage "${1:-}" open; }
 
-# captain-watchdog's predicate: deliberately NOT approval-gated, and it includes
-# ATTENTION — a board whose every row is `blocked` is exactly when the watchdog must
-# not self-disarm.
+# Deliberately NOT approval-gated, and it includes ATTENTION - a board whose every row
+# is `blocked` is exactly when a watcher must not self-disarm.
 board_needs_eyes() { board_has_stage "${1:-}" eyes; }
 
 # How long a board may go without a recorded stage TRANSITION before a scheduled runner
@@ -634,8 +583,8 @@ board_eyes_fresh() { # $1=board file
 
 # The scheduled runner's predicate: needs eyes AND has moved lately.
 #
-# Separate from board_needs_eyes on purpose. session-preflight and the cockpit keep using
-# the unbounded one, because a human SHOULD still be nagged about a row blocked for 50
+# Separate from board_needs_eyes on purpose. A human-facing reader uses the unbounded
+# one, because a human SHOULD still be nagged about a row blocked for 50
 # days. It is only the pass that spends tokens that should stop re-reading it.
 board_needs_eyes_fresh() { board_needs_eyes "${1:-}" && board_eyes_fresh "${1:-}"; }
 
