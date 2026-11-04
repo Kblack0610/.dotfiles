@@ -95,8 +95,11 @@ cmd_add() {
 
   if [ -n "$lab" ]; then
     command -v notes >/dev/null 2>&1 || die "--lab needs the notes CLI on PATH"
-    notes config --profiles 2>/dev/null | grep -qxF -- "$lab" \
-      || die "--lab \"$lab\" is not a notes profile ($(notes config --profiles 2>/dev/null | tr '\n' ' '))"
+    # Read once, then match: `notes ... | grep -q` under pipefail fails when grep exits on
+    # the first line and the writer takes SIGPIPE.
+    local profiles; profiles="$(notes config --profiles 2>/dev/null || true)"
+    grep -qxF -- "$lab" <<<"$profiles" \
+      || die "--lab \"$lab\" is not a notes profile ($(tr '\n' ' ' <<<"$profiles"))"
   fi
 
   # -- write: one jq pass, through the stow symlink ---------------------------------
