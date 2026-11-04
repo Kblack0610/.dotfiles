@@ -143,7 +143,7 @@
         "hide-empty-text": true,
         "tooltip": true
     },
-    // Agents: working, ready and need-you totals and a fleet health dot on the bar; the hover is the fleet-sessions stages, a section
+    // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
