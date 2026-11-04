@@ -22,9 +22,6 @@ AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
 PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
-# The one reader of a plan's `## Phases` checklist, shared with fleet-sessions.
-# shellcheck source=../lib/plan-phases.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
@@ -291,6 +288,9 @@ cmd_add() {
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
 # Every slug is checked before any item is written.
 add_plan() {
+  # The one reader of a plan's `## Phases` checklist, shared with fleet-sessions; only this verb needs it.
+  # shellcheck source=../lib/plan-phases.sh
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || die "cannot read plan-phases.sh"
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
   [ -n "$project" ] || project="$(project_of_cwd)"
