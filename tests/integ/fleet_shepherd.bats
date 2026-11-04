@@ -18,7 +18,7 @@ setup() {
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1; printf "%b" "${STUB_PANE:-}"'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
@@ -411,10 +411,24 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
 
 2026-11-03 19:05 UTC
 
+## Your requests
+
+- ci-cleanup, 1 of 3
+
 agent-48 is on enemies-throw-real, PR #1680 red on PlayMode."
   run cat "$FLEET_SHEPHERD_DIR/log.md"
   assert_output "- 19:05 UTC 11-03: rundown: what is agent-48 doing (rundowns/2026-11-03T1905Z.md)
 - 19:05 UTC 11-03: rundown: fleet at 19:05 (rundowns/2026-11-03T1905Z-2.md)"
+}
+
+@test "log --rundown keeps the record and says so when the requests cannot be read" {
+  export STUB_BENCH_FAIL=1
+  run "$SH" log --rundown "fleet" <<< "3 working."
+  assert_success
+  run cat "$output"
+  assert_output --partial "## Your requests"
+  assert_output --partial "Unreadable, so this record does not say what the human is waiting on"
+  assert_output --partial "3 working."
 }
 
 @test "log --rundown refuses a missing title or an empty body and writes nothing" {

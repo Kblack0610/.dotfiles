@@ -499,7 +499,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags after agent started waiting finished session account model plan pr note status area origin lane profile from "
+SETTABLE=" project mode priority tags after agent started waiting finished session account model plan pr report note status area origin lane profile from "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k

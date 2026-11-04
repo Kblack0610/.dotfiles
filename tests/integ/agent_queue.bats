@@ -224,10 +224,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" set s queued=now
   assert_failure
   "$AQ" move s done --status ok
-  run "$AQ" set s pr=https://example/pr/9 "note=a b c"
+  run "$AQ" set s pr=https://example/pr/9 "note=a b c" report=https://example/report
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-s.md)"
   [ "$(field "$f" pr)" = https://example/pr/9 ]
+  [ "$(field "$f" report)" = https://example/report ]
   [ "$(field "$f" note)" = "a b c" ]
 }
 

@@ -56,7 +56,7 @@ What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue` and `nightly re
 
 ## A task from the human
 
-When the human gives the shepherd a task, plan it with them in the chat until the task text is complete, then queue it: `agent-queue add --from shepherd --project <p> [--mode plan] --priority <p> [--after <slug>] "<task>"`, picking the priority and `after:` from what is already queued (`agent-queue list`). The dispatcher starts it; the shepherd never starts a session itself (fleet-lead, "Do NOT"). Store and verbs: `~/.config/agentctl/QUEUE.md`.
+When the human gives the shepherd a task, plan it with them in the chat until the task text is complete, then queue it: `agent-queue add --from shepherd --project <p> [--mode plan] --priority <p> [--after <slug>] "<task>"`, with `--priority urgent` when the human calls it important or asks for a report back, so it leads every summary (fleet-lead, "Your requests"), and otherwise the priority and `after:` that fit what is already queued (`agent-queue list`). A task with a report says in its text to publish the report and run `agent-queue set <slug> report=<url>`. The dispatcher starts it; the shepherd never starts a session itself (fleet-lead, "Do NOT"). Store and verbs: `~/.config/agentctl/QUEUE.md`.
 
 ## The ledger
 

@@ -36,12 +36,15 @@
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
 #                                day, wait and time to PR, from `agent-queue stats`
+#   fleet-bench requests [--json] [--since T]
+#                                the human's urgent requests, one row each (a plan chain is one row),
+#                                then those finished since T: the head of every shepherd summary
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H, BENCH_QUEUE_STATS_CMD,
-# BENCH_QUEUE_DAYS.
+# BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
 
@@ -83,6 +86,7 @@ set -uo pipefail
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
+: "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --date <day>
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -94,6 +98,8 @@ FINDINGS="$DIR/findings.jsonl"
 FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
+STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
+RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -1137,6 +1143,103 @@ cmd_queue() {
   if [ "${1:-}" = --json ]; then printf '%s\n' "$s"; else queue_line <<<"$s"; fi
 }
 
+# Items in, with $sessions (the state document's rows), $etas (a cell per target) and $since:
+# the requests. A request is an urgent item from the human or the shepherd; `<prefix>-pN` items
+# linked by after: are one request, and n of m reads their phase numbers, so a plan queued from
+# phase 3 says 3 of 6. The shepherd's own intake leads, each group in queue order: sorted by source
+# alone a morning of human-queued items would bury the ask, and newest first would let the next ask
+# bury it (ci-cleanup fell to third within the hour).
+REQUESTS_JQ='
+def prefix: sub("-p[0-9]+$"; "");
+def pnum: (capture("-p(?<n>[0-9]+)$").n | tonumber) // null;
+def asked: .priority == "urgent" and (.from == "human" or .from == "shepherd");
+def live: .state != "done";
+def open: any(.[]; live and asked);
+def keyed: . as $all | map(. as $i | ($i.slug | prefix) as $p
+  | . + {key: (if any($all[]; (.slug == $i.after or .after == $i.slug) and (.slug | prefix) == $p)
+               then $p else $i.slug end)});
+def session_row($c): ($c.session // "" | (if test(":") then sub(":"; "/") else "lab/" + . end) + ":") as $at
+  | ($sessions[0] | map(select(.target | startswith($at)))) as $rows
+  | ($rows | map(select((.dispatch // "") | endswith(": " + $c.slug))) | first)
+    // (if ($rows | length) == 1 then $rows[0] else null end);
+def active_row: sort_by(.slug | pnum // 0) as $c
+  | ($c | map(select(live)) | sort_by(.state == "queued") | first) as $cur
+  | session_row($cur) as $s
+  | ([$c[].slug | pnum] + [$c[] | (.phases // "") | split(" ")[] | tonumber?] | max) as $m
+  | {request: $c[0].key, slugs: ($c | map(.slug)), project: $cur.project, from: $cur.from,
+     queued: $cur.queued, slug: $cur.slug, n: ($cur.slug | pnum), m: $m, state: $cur.state,
+     session: $cur.session, bucket: $s.bucket,
+     pr: (if $s.pr_state == "OPEN" then $s.pr else null end), ci: (if $s.pr_state == "OPEN" then $s.ci else null end),
+     eta: (if $s == null then null else $etas[0][$s.target] end),
+     waits: (if $cur.state == "queued" then $cur.hold // "a dispatch slot"
+             elif $s != null and $s.bucket != "WORKING" then $s.reason | sub("^waiting on "; "") else null end),
+     report: ([$c[].report // empty] | last)};
+def finished_row: sort_by(.finished) as $c
+  | {request: $c[0].key, slugs: ($c | map(.slug)), project: $c[0].project, from: $c[0].from,
+     finished: $c[-1].finished,
+     outcome: (($c | map(.status // "unknown" | select(. != "ok")) | first) // "ok"),
+     prs: ($c | map(.pr // empty)), report: ([$c[].report // empty] | last)};
+group_by(.slug) | map(sort_by(live, .finished) | last) | keyed | group_by(.key)
+| {since: $since,
+   active: (map(select(open) | active_row)
+            | sort_by(.from != "shepherd", .queued)),
+   finished: (map(select(open | not) | map(select(.state == "done" and asked
+                and (.finished // "1970-01-01T00:00:00Z" | fromdateiso8601) >= $since))
+                | select(length > 0) | finished_row) | sort_by(.finished) | reverse)}
+'
+
+# The rows as the block that heads a summary. Every fact it cannot read stays out of its row.
+REQUESTS_TEXT_JQ='
+def cell($label; $v): if $v == null then empty else "\($label)\($v)" end;
+"## Your requests", "",
+(if (.active | length) == 0 then "No urgent request is active."
+ else .active[] | "- " + ([.request,
+     (if .n == null then empty else "\(.n) of \(.m)" end),
+     (.state + (if .bucket == null then "" else "/\(.bucket)" end)),
+     cell(""; .session),
+     (if .pr == null then "no open PR" else "PR #\(.pr) CI \(.ci // "not read")" end),
+     (if .eta == null then "no ETA" else "ETA \(.eta)" end),
+     cell("waits on: "; .waits), cell("report: "; .report)] | join(", ")) end),
+"", "Finished since \(.since | hm):",
+(if (.finished | length) == 0 then "- nothing"
+ else .finished[] | "- " + ([.request, .outcome,
+     (if (.prs | length) == 0 then "no PR" else (.prs | map("#\(.)") | join(" ")) end),
+     (.finished | fromdateiso8601 | hm), cell("report: "; .report)] | join(", ")) end)
+'
+
+# cmd_requests [--json] [--since T]: the human's requests, from the queue, the fleet state document
+# and the ETAs. T defaults to the last rundown, so a finished request is told once.
+cmd_requests() {
+  local json=0 since='' t items first day done_items sessions='[]' etas last out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --since) since=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      *) say "usage: fleet-bench requests [--json] [--since T]"; return 2 ;;
+    esac
+  done
+  t=$(now)
+  if [ -z "$since" ]; then
+    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | head -1)
+    if [ -n "$last" ]; then since=$(stat -c %Y "$last"); else since=$((t - BENCH_WINDOW_H * 3600)); fi
+  fi
+  items=$($BENCH_ITEMS_CMD) || { say "the agent queue is unreadable"; return 1; }
+  # Done items go back to the oldest live chain as well as to T: an earlier phase holds its report.
+  first=$(jq -rs --argjson s "$since" '[$s] + [.[] | select(.priority == "urgent" and .after != null) | .queued | fromdateiso8601] | min' <<<"$items")
+  day=$(date -d "@$first" +%F)
+  while :; do
+    done_items+=$'\n'$($BENCH_DONE_ITEMS_CMD --date "$day") || { say "the agent queue's done items are unreadable"; return 1; }
+    [ "$day" \< "$(date -d "@$t" +%F)" ] || break
+    day=$(date -d "$day + 1 day" +%F)
+  done
+  [ -r "$STATE_FILE" ] && sessions=$(jq -c '.sessions // []' "$STATE_FILE")
+  etas=$(latest_live | jq -cs "$JQ_LIB"'map(select(.eta != null or .finished)
+    | {key: .target, value: (if .finished then "finished" else eta_cell end)}) | from_entries')
+  out=$(printf '%s\n%s\n' "$items" "$done_items" | jq -cs --argjson since "$since" \
+    --slurpfile sessions <(printf '%s\n' "$sessions") --slurpfile etas <(printf '%s\n' "$etas") "$REQUESTS_JQ") || return 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; else jq -r "$JQ_LIB$REQUESTS_TEXT_JQ" <<<"$out"; fi
+}
+
 # queue_section <now>: the queue line, what is active now, and the outcomes by project and by
 # source (human, shepherd, board, ...), in the scorecard
 queue_section() {
@@ -1724,8 +1827,9 @@ main() {
     forecast) shift; cmd_forecast "$@" ;;
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
-    -h | --help) sed -n '2,44p' "$0" ;;
-    *) sed -n '2,38p' "$0" >&2; return 2 ;;
+    requests) shift; cmd_requests "$@" ;;
+    -h | --help) sed -n '2,47p' "$0" ;;
+    *) sed -n '2,41p' "$0" >&2; return 2 ;;
   esac
 }
 

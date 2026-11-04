@@ -1485,3 +1485,139 @@ qstats_fixture() {
   run env BENCH_NOW=$T0 "$SUBJECT" queue --json
   [ "$(jq -r '.active.queued' <<<"$output")" = 1 ]
 }
+
+# --- requests: the head of every shepherd summary ---
+
+# item <slug> <state> <priority> <from> [extra json]: one `agent-queue list --json` row.
+item() {
+  jq -cn --arg s "$1" --arg st "$2" --arg p "$3" --arg f "$4" --argjson x "${5:-{\}}" \
+    '{slug: $s, state: $st, priority: $p, from: $f, project: "game", queued: "2026-11-04T10:00:00Z"} + $x'
+}
+
+requests_setup() {
+  export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub FLEET_STATE_FILE="$SANDBOX/state.json"
+  export TZ=UTC FLEET_SHEPHERD_DIR="$SANDBOX/shepherd" BENCH_NOW=$(date -d 2026-11-04T23:00:00Z +%s)
+  ITEMS="$SANDBOX/items.jsonl" DONE="$SANDBOX/done.jsonl"
+  items_stub; : > "$DONE"
+  # Each day's list is its own: a done item is served once, on the day it finished.
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ngrep "\\"finished\\":\\"$2" "%s"\nexit 0\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  echo '{"sessions":[]}' > "$FLEET_STATE_FILE"
+}
+
+@test "requests: a plan chain is one row with its place, session, PR, ETA and report" {
+  requests_setup
+  row s28 lab/game-agent-28:1 0 5 > "$SNAP"
+  "$SUBJECT" sample
+  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28","report":"https://claude.ai/artifact/1"}' >> "$ITEMS"
+  item ci-p2 queued urgent shepherd '{"after":"ci-p1","hold":"after ci-p1"}' >> "$ITEMS"
+  item ci-p3 queued urgent shepherd '{"after":"ci-p2","hold":"after ci-p2"}' >> "$ITEMS"
+  jq -n '{sessions: [{target: "lab/game-agent-28:1", bucket: "NEEDS", pr: "12", pr_state: "OPEN", ci: "PASS",
+    reason: "waiting on a prompt or permission", dispatch: "game: ci-p1"}]}' > "$FLEET_STATE_FILE"
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -c '.active | map(.request)' <<<"$output")" = '["ci"]' ]
+  [ "$(jq -r '.active[0] | "\(.n)/\(.m) \(.state) \(.bucket) \(.pr) \(.ci) \(.waits)"' <<<"$output")" = "1/3 running NEEDS 12 PASS a prompt or permission" ]
+  [ "$(jq -r '.active[0].eta != null' <<<"$output")" = true ]
+  run "$SUBJECT" requests
+  assert_line --index 0 "## Your requests"
+  assert_line --index 1 --regexp '^- ci, 1 of 3, running/NEEDS, lab:game-agent-28, PR #12 CI PASS, ETA .*, waits on: a prompt or permission, report: https://claude.ai/artifact/1$'
+}
+
+@test "requests: only urgent items from the human or the shepherd count, and the shepherd's lead, each in queue order" {
+  requests_setup
+  item old-ask running urgent human >> "$ITEMS"
+  item new-ask queued urgent human '{"queued":"2026-11-04T20:00:00Z"}' >> "$ITEMS"
+  item via-shepherd queued urgent shepherd '{"queued":"2026-11-04T12:00:00Z"}' >> "$ITEMS"
+  item later-shepherd queued urgent shepherd '{"queued":"2026-11-04T21:00:00Z"}' >> "$ITEMS"
+  item routine running high human >> "$ITEMS"
+  item board-row running urgent board:game:abc >> "$ITEMS"
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -c '.active | map(.request)' <<<"$output")" = '["via-shepherd","later-shepherd","old-ask","new-ask"]' ]
+}
+
+@test "requests: a same-prefix item not linked by after: is its own row, and a chain reads a plan's last phase" {
+  requests_setup
+  item plan-p2 running urgent human >> "$ITEMS"
+  item plan-p5 queued urgent human >> "$ITEMS"
+  item wide-p5 running urgent human '{"phases":"5 6 7"}' >> "$ITEMS"
+  item blossom-p3 running urgent human >> "$ITEMS"
+  item blossom-p4 queued high human '{"after":"blossom-p3"}' >> "$ITEMS"
+  item blossom-p6 queued high human '{"after":"blossom-p4"}' >> "$ITEMS"
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -c '.active | map(.request) | sort' <<<"$output")" = '["blossom","plan-p2","plan-p5","wide-p5"]' ]
+  [ "$(jq -r '.active[] | select(.request == "blossom") | "\(.n) of \(.m)"' <<<"$output")" = "3 of 6" ]
+  [ "$(jq -r '.active[] | select(.request == "wide-p5") | "\(.n) of \(.m)"' <<<"$output")" = "5 of 7" ]
+}
+
+@test "requests: an open chain keeps the report of its finished phase and is not listed as finished" {
+  requests_setup
+  item ci-p1 done urgent shepherd '{"status":"ok","pr":"7","finished":"2026-11-04T22:00:00Z","report":"https://r/1"}' >> "$DONE"
+  item ci-p2 running urgent shepherd '{"after":"ci-p1"}' >> "$ITEMS"
+  run "$SUBJECT" requests --json --since 2026-11-04T21:00:00Z
+  assert_success
+  [ "$(jq -r '.active[0] | "\(.n) of \(.m) \(.report)"' <<<"$output")" = "2 of 2 https://r/1" ]
+  [ "$(jq '.finished | length' <<<"$output")" = 0 ]
+}
+
+@test "requests: what finished since T carries its outcome, and T defaults to the last rundown" {
+  requests_setup
+  item shipped done urgent human '{"status":"ok","pr":"7","finished":"2026-11-04T22:30:00Z"}' >> "$DONE"
+  item broke done urgent shepherd '{"status":"failed","finished":"2026-11-04T22:40:00Z"}' >> "$DONE"
+  item told done urgent human '{"status":"ok","finished":"2026-11-04T20:00:00Z"}' >> "$DONE"
+  item routine done high human '{"status":"ok","finished":"2026-11-04T22:30:00Z"}' >> "$DONE"
+  mkdir -p "$FLEET_SHEPHERD_DIR/rundowns"
+  touch -d 2026-11-04T21:00:00Z "$FLEET_SHEPHERD_DIR/rundowns/2026-11-04T2100Z.md"
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -r '.finished | map("\(.request) \(.outcome) \(.prs | join(","))") | join("; ")' <<<"$output")" = "broke failed ; shipped ok 7" ]
+  run "$SUBJECT" requests --since 2026-11-04T22:35:00Z
+  assert_output --partial "No urgent request is active."
+  assert_line --regexp '^- broke, failed, no PR, '
+  refute_output --partial "shipped"
+}
+
+@test "requests: reads each day's done items from the oldest live chain to now, and an unlinked item widens nothing" {
+  requests_setup
+  item lone running urgent human '{"queued":"2026-10-20T10:00:00Z"}' >> "$ITEMS"
+  item blossom-p3 running urgent human '{"queued":"2026-11-02T10:00:00Z","after":"blossom-p2"}' >> "$ITEMS"
+  run "$SUBJECT" requests --since 2026-11-04T21:00:00Z
+  assert_success
+  run cat "$DONE.calls"
+  assert_output --partial "--date 2026-11-02"
+  assert_output --partial "--date 2026-11-03"
+  assert_output --partial "--date 2026-11-04"
+  refute_output --partial "--date 2026-11-05"
+  refute_output --partial "--date 2026-11-01"
+}
+
+@test "requests: a session recorded without its server is on lab" {
+  requests_setup
+  item ask running urgent human '{"session":"game-agent-28"}' >> "$ITEMS"
+  jq -n '{sessions: [{target: "lab/game-agent-28:1", bucket: "NEEDS", reason: "waiting on a prompt"}]}' > "$FLEET_STATE_FILE"
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -r '.active[0].bucket' <<<"$output")" = NEEDS ]
+}
+
+@test "requests: a fleet state over the 128 KB argument cap still reads" {
+  requests_setup
+  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28"}' >> "$ITEMS"
+  jq -n '{sessions: ([range(0; 2000) | {target: "lab/other-\(.):1", bucket: "WORKING", reason: ("x" * 100)}]
+    + [{target: "lab/game-agent-28:1", bucket: "NEEDS", reason: "waiting on a prompt", dispatch: "game: ci-p1"}])}' > "$FLEET_STATE_FILE"
+  [ "$(wc -c < "$FLEET_STATE_FILE")" -gt 131072 ]
+  run "$SUBJECT" requests --json
+  assert_success
+  [ "$(jq -r '.active[0].bucket' <<<"$output")" = NEEDS ]
+}
+
+@test "requests: an unreadable queue fails rather than reading as no requests" {
+  requests_setup
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" requests
+  assert_failure
+  assert_output --partial "the agent queue is unreadable"
+  refute_output --partial "No urgent request"
+}
