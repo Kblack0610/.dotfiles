@@ -33,9 +33,9 @@ pub struct Body {
 fn entry(action: &str, hours: u64, now: u64) -> Result<Option<String>, &'static str> {
     match action {
         "clear" => Ok(None),
-        "on" | "off" if (1..=MAX_HOURS).contains(&hours) => {
-            Ok(Some(json!({"action": action, "until": now + hours * 3600}).to_string()))
-        }
+        "on" | "off" if (1..=MAX_HOURS).contains(&hours) => Ok(Some(
+            json!({"action": action, "until": now + hours * 3600}).to_string(),
+        )),
         "on" | "off" => Err("hours is 1 to 12"),
         _ => Err("action is on, off or clear"),
     }
@@ -64,10 +64,7 @@ fn manifest(current: &str, host: &str, entry: Option<String>) -> Value {
 fn governed_hosts() -> Result<Vec<String>, String> {
     let base = hub_core::prom::base()?;
     let series = hub_core::prom::instant(&base, "max by (host) (ci_governor_power_state)")?;
-    Ok(series
-        .iter()
-        .map(|s| s.label("host").to_string())
-        .collect())
+    Ok(series.iter().map(|s| s.label("host").to_string()).collect())
 }
 
 pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
@@ -77,7 +74,12 @@ pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
     let hosts = tokio::task::spawn_blocking(governed_hosts)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("cannot read the governor's hosts: {e}")))?;
+        .map_err(|e| {
+            bad(
+                StatusCode::BAD_GATEWAY,
+                format!("cannot read the governor's hosts: {e}"),
+            )
+        })?;
     if !hosts.contains(&host) {
         return Err(bad(
             StatusCode::BAD_REQUEST,
@@ -93,7 +95,14 @@ pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
     let kube = ["--context", ctx.as_str(), REQUEST_TIMEOUT, "-n", NAMESPACE];
     let get: Vec<&str> = kube
         .into_iter()
-        .chain(["get", "configmap", CONFIGMAP, "-o", "json", "--ignore-not-found"])
+        .chain([
+            "get",
+            "configmap",
+            CONFIGMAP,
+            "-o",
+            "json",
+            "--ignore-not-found",
+        ])
         .collect();
     let current = run_cmd("kubectl", &get, None).await?;
     let body = manifest(&current, &host, new).to_string();
@@ -132,7 +141,10 @@ mod tests {
         let m = manifest(current, "aws-burst-1", Some("new".into()));
         assert_eq!(m["metadata"]["name"], CONFIGMAP);
         assert_eq!(m["metadata"]["namespace"], NAMESPACE);
-        assert_eq!(m["data"], json!({"aws-burst-1": "new", "aws-burst-2": "keep"}));
+        assert_eq!(
+            m["data"],
+            json!({"aws-burst-1": "new", "aws-burst-2": "keep"})
+        );
         let m = manifest(current, "aws-burst-1", None);
         assert_eq!(m["data"], json!({"aws-burst-2": "keep"}));
     }
