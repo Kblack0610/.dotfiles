@@ -16,9 +16,9 @@ Away comes from `fleet-presence`: no keypress in any tmux client and no desktop 
 
 Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
 
-- `asks`: `#ask` rows tagged `#worker/asks`, on `unity-playground`, up to tier 2.
+- `asks`: `#ask` rows tagged `#worker/asks`, on `unity-core-playground`, up to tier 2.
 - `fleet`: rows the human tagged `#worker/fleet`, up to tier 1, with a `#tier/N`.
-- `board`: `unity-playground` agent-board rows with no `#worker` tag, up to tier 2. No tags are needed, because the judge reads the tier. A row tagged `#tier/3` stays out.
+- `board`: `unity-core-playground` agent-board rows with no `#worker` tag, up to tier 2. No tags are needed, because the judge reads the tier. A row tagged `#tier/3` stays out.
 
 The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners, build, deploy, harness and tooling) never gets a merging session; it runs unattended only to an open PR, as a `night` queue item (below). A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier.
 
