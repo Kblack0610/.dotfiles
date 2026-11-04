@@ -21,8 +21,8 @@ setup() {
 
   DOCTOR="$REPO_ROOT/.local/bin/project-map-doctor"
   MAP="$HOME/project-map.json"
-  export AGENT_PLANS_DIR="$HOME/plans"
-  mkdir -p "$AGENT_PLANS_DIR"
+  export AGENT_DIR="$HOME/agent"
+  mkdir -p "$AGENT_DIR/plans" "$AGENT_DIR/lessons" "$AGENT_DIR/sessions"
   # sandbox_init redirects HOME, so ~/.config/shared-hooks/lab-roots.sh is absent and the
   # lab check SKIPs. That is deliberate: the private overlay must not leak into the suite.
 }
@@ -133,33 +133,34 @@ EOF
   assert_output --partial 'collides with a project of the same name'
 }
 
-@test "a board directory under an unregistered name fails" {
-  # The write-side canary: a board four daemons poll for, filed where none can see it.
+@test "an ~/.agent key under an unregistered name fails, and names it with its kinds" {
+  # A lesson no preflight injects, a board no daemon polls: filed where nothing reads.
   clean_map
-  mkdir -p "$AGENT_PLANS_DIR/ghost-project"
-  printf '| Ticket | Status |\n' > "$AGENT_PLANS_DIR/ghost-project/sprint-2026-08-03.md"
+  mkdir -p "$AGENT_DIR/plans/ghost-project" "$AGENT_DIR/sessions/ghost-project"
+  printf 'x\n' > "$AGENT_DIR/lessons/ghost-project.md"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'board directory "ghost-project"'
+  assert_output --partial 'runtime key "ghost-project" (lessons plans sessions) under ~/.agent'
 }
 
-@test "a board directory under a registered name passes" {
+@test "registered keys, an anchor's decisions log and reserved _ keys pass" {
   clean_map
-  mkdir -p "$AGENT_PLANS_DIR/alpha"
-  printf '| Ticket | Status |\n' > "$AGENT_PLANS_DIR/alpha/sprint-2026-08-03.md"
+  mkdir -p "$AGENT_DIR/plans/alpha" "$AGENT_DIR/sessions/_unscoped" "$AGENT_DIR/anchors"
+  printf 'x\n' > "$AGENT_DIR/lessons/mono-canon.md"
+  printf 'x\n' > "$AGENT_DIR/anchors/alpha.decisions.md"
+  printf 'x\n' > "$AGENT_DIR/anchors/README.md"
+  printf 'x\n' > "$AGENT_DIR/sessions/index.tsv"
   run "$DOCTOR" "$MAP"
   assert_success
-  assert_output --partial 'board directories are registered'
+  assert_output --partial 'PASS  all 2 runtime keys under ~/.agent are registered projects'
 }
 
-@test "a plans dir with no board is not policed" {
-  # Lessons and anchors legitimately use the basename fallback; only a BOARD is a
-  # delivery contract that must name a registered project.
+@test "a worktree-named key fails: worktree names are never keys" {
   clean_map
-  mkdir -p "$AGENT_PLANS_DIR/scratch-repo"
-  printf 'notes\n' > "$AGENT_PLANS_DIR/scratch-repo/plan.md"
+  mkdir -p "$AGENT_DIR/sessions/mono-agent-3"
   run "$DOCTOR" "$MAP"
-  assert_success
+  assert_failure
+  assert_output --partial '"mono-agent-3" (sessions)'
 }
 
 @test "invalid JSON fails instead of silently reading as empty" {
