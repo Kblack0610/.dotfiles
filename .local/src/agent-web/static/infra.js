@@ -357,18 +357,74 @@ const cst = { armed: "", msg: "" };
 
 function cloudHosts(inst) {
   const by = {};
+  const KEYS = { hours_today: "hours", max_hours_day: "max", usd_per_hour: "rate", idle_seconds: "idle", idle_off_seconds: "idleOff",
+    want: "want", start_min_excess: "excess", held_seconds: "held", start_after_seconds: "holdFor" };
   for (const s of inst.power || []) {
-    const l = s.labels, h = (by[l.host] ||= { host: l.host });
-    if (l.__name__ === "ci_governor_power_state") { h.state = l.state; h.reason = l.reason; }
-    else if (l.__name__ === "ci_governor_power_hours_today") h.hours = s.value;
-    else if (l.__name__ === "ci_governor_power_max_hours_day") h.max = s.value;
-    else if (l.__name__ === "ci_governor_power_override") { h.override = l.action; h.until = s.value; }
+    const l = s.labels, h = (by[l.host] ||= { host: l.host }), k = l.__name__.replace("ci_governor_power_", "");
+    if (k === "state") { h.state = l.state; h.reason = l.reason; }
+    else if (k === "override") { h.override = l.action; h.until = s.value; }
+    else if (k === "last_change") { h.changed = l.action; h.changedAt = s.value; }
+    else if (KEYS[k]) h[KEYS[k]] = s.value;
   }
   return Object.values(by).sort((a, b) => a.host.localeCompare(b.host));
 }
 
+const mins = (s) => Math.floor((s || 0) / 60);
+
+// Where the governor's power rule stands for a host, from its own numbers (governor.py decide()).
+function ruleText(h) {
+  if (h.override === "on") return `held on by the button until ${when(h.until)}`;
+  if (h.override === "off") return `held off by the button until ${when(h.until)}`;
+  const capped = h.max && h.hours >= h.max;
+  if (h.state === "starting") return "booting: its slots count once their runners are online";
+  if (h.state === "stopping") return "stopping";
+  if (h.state === "draining") return capped ? `${h.max} h used today: stops once no slot is busy` : "stops once no slot is busy";
+  if (h.state === "running") return h.idle < 60 ? "busy" : `idle ${mins(h.idle)} of ${mins(h.idleOff)} min, then stops`;
+  if (capped) return `${h.max} h used today: no start until 00:00 UTC`;
+  if (h.held > 0) return `${h.want} jobs past the home hosts, held ${mins(h.held)} of ${mins(h.holdFor)} min, then starts`;
+  return h.want ? `${h.want} job${h.want === 1 ? "" : "s"} past the home hosts, starts at ${h.excess}` : `no job past the home hosts; starts at ${h.excess ?? "?"}`;
+}
+
+// The governor's other series: per host and global, by metric name.
+function governorIndex(inst) {
+  const g = { host: {}, alerts: [], actions: [], usd: {} };
+  for (const s of inst.governor || []) {
+    const l = s.labels, n = l.__name__.replace("ci_governor_", "");
+    if (l.host) {
+      const h = (g.host[l.host] ||= { host: l.host });
+      if (n === "decision") { h.verdict = l.verdict; h.action = l.action; } else h[n] = s.value;
+    } else if (n === "budget_usd") g.usd[l.kind] = s.value;
+    else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
+    else if (n === "budget_action_usd") g.actions.push([l.type, l.status, s.value]);
+    else g[n] = s.value;
+  }
+  return g;
+}
+
+// [150, 100, 100] -> "$100 and $150"
+const usdList = (xs) => [...new Set(xs)].sort((a, b) => a - b).map((x) => "$" + x).join(" and ");
+
+// The month as AWS Budgets last gave it, and what happens at each line.
+function budgetLines(g) {
+  if (g.budget_ok == null) return "";
+  const u = g.usd;
+  if (u.limit == null) return `<div class="muted">Month: the governor has not read the AWS budget yet${g.budget_ok ? "" : ' (its last read failed: runbook, "budget read")'}.</div>`;
+  // AWS forecasts from history; on a new account it can sit below what is already spent.
+  const fc = u.forecast == null || u.forecast < u.actual ? "no AWS forecast yet" : `forecast ${usd(u.forecast)}`;
+  const stale = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span>`;
+  const month = `<div class="month"><span>Month: <b>${usd(u.actual)}</b> of ${usd(u.limit)}, ${fc}</span><span class="m">${meter(u.limit ? u.actual / u.limit : 0, u.actual >= u.limit * 0.75 ? "var(--b-stalled)" : "var(--c2)")}</span><span class="muted">AWS Budgets, as of ${when(g.budget_updated)}${stale}</span></div>`;
+  const act = g.alerts.filter(([b]) => b === "actual").map(([, v]) => v), fore = g.alerts.filter(([b]) => b === "forecasted").map(([, v]) => v);
+  const mails = act.length ? `Emails at ${usdList(act)}${usdList(fore) === usdList(act) ? " (spent or forecast)" : fore.length ? `, forecast at ${usdList(fore)}` : ""}` : "";
+  const stops = [...new Set(g.actions.map(([, , v]) => v))].map((v) => {
+    const fired = g.actions.filter(([, st, x]) => x === v && st !== "STANDBY");
+    return `at $${v} AWS stops it and blocks starts${fired.length ? ` <span class="chip sm" style="--c:var(--b-needs)">${esc(fired.map(([, st]) => st).join(", "))}</span> (undo: runbook, "Budget stop")` : ""}`;
+  });
+  const lines = [mails, ...stops].filter(Boolean).join("; ");
+  return month + (lines ? `<div class="muted">${lines}. Each day stops at its hour cap.</div>` : "");
+}
+
 function cloudCard(inst) {
-  const hosts = cloudHosts(inst);
+  const hosts = cloudHosts(inst), g = governorIndex(inst);
   if (!hosts.length) return "";
   const rows = hosts.map((h) => {
     const btns = CLOUD_ACTS.map(([a, n, label]) => {
@@ -376,9 +432,24 @@ function cloudCard(inst) {
       return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
     }).join(" ");
     const over = h.override && h.override !== "none" ? `${esc(h.override)} until ${when(h.until)}` : "none";
-    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--b-unclear)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="muted">${esc(h.reason || "-")}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h</td><td>${over}</td><td>${btns}</td></tr>`;
+    const why = h.reason && h.reason !== "none" ? h.reason : "";
+    const last = h.changedAt ? `${esc(h.changed)} ${when(h.changedAt)}${why ? ` (${esc(why)})` : ""}` : why ? esc(why) : "-";
+    const cost = h.rate != null ? ` ~${usd((h.hours || 0) * h.rate)}` : "";
+    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--b-unclear)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns}</td></tr>`;
   }).join("");
-  return `<h2 class="sec">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel scroll"><table class="tbl"><tr><th>host</th><th>state</th><th>why</th><th></th><th class="n">today</th><th>override</th><th></th></tr>${rows}</table><div class="err">${esc(cst.msg)}</div></div>`;
+  return `<h2 class="sec">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel"><div class="scroll"><table class="tbl"><tr><th>host</th><th>state</th><th>rule</th><th>last</th><th></th><th class="n">today</th><th>override</th><th></th></tr>${rows}</table></div>${budgetLines(g)}<div class="err">${esc(cst.msg)}</div></div>`;
+}
+
+// The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
+// cycle's verdict and action, and the slots it lets take jobs.
+const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
+function governorPanel(inst) {
+  const g = governorIndex(inst), hosts = Object.values(g.host).sort((a, b) => a.host.localeCompare(b.host));
+  if (g.up == null && !hosts.length) return "";
+  const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
+    : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
+  const rows = hosts.map((h) => `<tr><td>${esc(h.host)}</td><td>${h.live === 1 ? "live" : '<span class="muted">dry run</span>'}</td><td>${esc(h.verdict || "-")}</td><td><span class="chip sm" style="--c:${ACTION_COLOR[h.action] || "var(--b-unclear)"}">${esc((h.action || "-").toUpperCase())}</span></td><td class="n">${h.admitted ?? "-"}</td></tr>`).join("");
+  return `<h2 class="sec">Governor <span class="muted">${health} queue ${g.queue ?? "?"}; a dry-run host is logged, never changed</span></h2><div class="panel scroll"><table class="tbl"><tr><th>host</th><th>mode</th><th>verdict</th><th>action</th><th class="n">admitted</th></tr>${rows}</table></div>`;
 }
 
 async function cloudAct(key, hours) {
@@ -418,6 +489,7 @@ function renderInfra() {
   html += doneToday(inst, t1);
   html += `<h2 class="sec">Red right now <span class="muted">${red.length}</span></h2><div class="panel${red.length ? " down" : ""}">${red.length ? red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("") : "Nothing: every rostered runner is registered and online."}</div>`;
   html += cloudCard(inst);
+  html += governorPanel(inst);
   html += `<h2 class="sec">Pools</h2><div class="panel scroll">${poolsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">CI by machine</h2><div class="panel scroll">${machineSlotsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Queued</h2><div class="panel scroll">${queuedTable(inst)}</div>`;
