@@ -31,6 +31,15 @@
 
 set -uo pipefail
 
+# The agentctl conf is the one home of the DISPATCH_* tuning. The runner exports it; a run from a
+# shell (headroom, a hand start) reads it here, so both see the limits the timer pass uses. A value
+# already in the environment wins (the runner, tests).
+: "${DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"
+while IFS='=' read -r _k _v; do
+  [ -n "${!_k+x}" ] || printf -v "$_k" '%s' "$_v"
+done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
+unset _k _v
+
 : "${DISPATCH_PROFILES:=bnb}"
 : "${DISPATCH_PER_PASS:=1}"   # new sessions a pass; each start after the first reads the gate again
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
@@ -204,6 +213,18 @@ live_units() {
   local u=0 w
   while read -r _ w; do u=$(( u + $(weight_units "$w") )); done < <(live_runs)
   echo "$u"
+}
+
+# live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
+# or resumed. They add load, which the gate reads, but no run slot.
+live_hand() {
+  local slug server sess origin project area state _weight
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight; do
+    [ -n "$slug" ] || continue
+    case "$origin" in '' | run) continue ;; esac
+    session_live "$sess" "$server" && printf '%s/%s\n' "$project" "$area"
+  done < <(item_sessions)
+  return 0
 }
 
 # queue_areas -> "<project>/<area>" for every active queue item that names an area. An item holds
@@ -741,12 +762,13 @@ cmd_starved() {
 }
 
 # headroom [--json] -- the window over the limits: how many more queue items a start could take now
-# (free run slots while every gate is open, else 0 and the gate that holds), and the margin under
+# (free run units while every gate is open, else 0 and the gate that holds), and the margin under
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
 # here raises a limit.
 cmd_headroom() {
-  local live slots load cores idle runnable why could=0
+  local live hand slots load cores idle runnable why could=0
   live=$(live_units)
+  hand=$(live_hand | grep -c . || true)
   slots=$(( DISPATCH_MAX_LIVE - live ))
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
@@ -754,22 +776,26 @@ cmd_headroom() {
   runnable=$(next_items | grep -c . || true)
   why=$(IDLE_NOW=$idle gate any)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
-  jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson max_live "$DISPATCH_MAX_LIVE" \
+  jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$DISPATCH_PER_PASS" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --arg max_load "$DISPATCH_MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, per_pass_limited: ($could > $per_pass),
-     runnable: $runnable, live_runs: $live, max_live: $max_live, slots_free: ($max_live - $live),
+     runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
-            elif $runnable == 0 then "nothing runnable" else null end)}' |
+            elif $runnable == 0 then "nothing runnable" else null end)}
+    # The held reason as one word, so the feed (numbers only) can carry it as a 0/1 per kind.
+    | .held_kind = (.held // "" | if . == "" or . == "nothing runnable" then null
+        elif startswith("DISPATCH_MAX_LIVE") then "slots" elif startswith("load ") then "load"
+        elif startswith("real idle") then "idle" elif test("account") then "account" else "other" end)' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1)",
+        "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room"'
     fi
@@ -793,11 +819,12 @@ last_run_start() {
 # starts in the last hour by origin; reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
 cmd_stats() {
-  local now q since started pass=null starved=false hr=null
+  local now q aq since started pass=null starved=false hr=null
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   # The last pass's headroom, while it is younger than three passes: an old one is no answer.
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
+  aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   cmd_starved >/dev/null 2>&1 || starved=true
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
   # shellcheck source=/dev/null
@@ -809,7 +836,7 @@ cmd_stats() {
     $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
     $4 == "reaped" { print "settle", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
-      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" '
+      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select(.priority == "urgent" or .priority == "high"))) as $u
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
@@ -822,7 +849,19 @@ cmd_stats() {
          starts_1h_redispatch: starts("redispatch"), starts_1h_resume: starts("resume"),
          reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),
          flapping_items: ($flapping | length), flapping: $flapping,
-         could_start: ($hr.could_start // null)}'
+         could_start: ($hr.could_start // null)}
+      # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
+      + (if $aq == null then {} else
+          ($aq.sitting.held_by // {}) as $h
+          | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0),
+             held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0),
+             held_time: (($h.night // 0) + ($h.at // 0))} + ($aq.recent // {}) end)
+      # The room the last pass had, with why it was held as a 0/1 per kind.
+      + (if $hr == null then {} else
+          {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
+           room_load: $hr.load, room_load_cap: $hr.load_cap, room_idle: $hr.idle, room_min_idle: $hr.min_idle}
+          + (["slots", "load", "idle", "account", "other"]
+             | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
 }
 
 # reap -- settle the queue items whose session is gone (settle_item, then settle_row for a board

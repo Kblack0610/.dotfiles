@@ -786,7 +786,7 @@ two_items() {
   assert_not_called 'wt new'
 }
 
-@test "headroom is 0 and names what holds: a gate, or every run slot used" {
+@test "headroom is 0 and names what holds: a gate, or every run unit used" {
   two_items
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
@@ -796,6 +796,32 @@ two_items() {
   export DISPATCH_MAX_LIVE=0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run unit is used'
+}
+
+@test "headroom counts live sessions started by hand apart from run slots, and names the held kind" {
+  two_items
+  started_item run-one lab-run-1 run
+  started_item hand-one lab-hand-1 hand
+  printf 'lab-run-1\nlab-hand-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  export DISPATCH_MAX_LIVE=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .live_hand, .held_kind] | @tsv' <<<"$output")" $'1\t1\tslots'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'run units: 1/1 used, 0 free (heavy 2, light 1), 1 more started by hand'
+  export DISPATCH_MAX_LIVE=6
+  echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r .held_kind <<<"$output")" load
+}
+
+@test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  two_items
+  run env -u DISPATCH_MAX_LIVE -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
+  DISPATCH_MAX_LIVE=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r .max_live <<<"$output")" 2
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {
@@ -1562,6 +1588,9 @@ queued_item() {
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
   jq -e '.last_run_start_epoch != null' <<<"$output"
+  # The whole queue rides along, as agent-queue counts it: 3 queued, 1 held after a phase.
+  assert_equal "$(jq -c '[.queued, .held, .held_after, .held_pr, .held_time, .running, .waiting]' <<<"$output")" '[3,1,1,0,0,0,0]'
+  jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
 }
@@ -1577,9 +1606,10 @@ queued_item() {
   assert_equal "$(jq -r '[.could_start, .runnable] | @tsv' "$FLEET_DISPATCH_DIR/headroom.json")" $'1\t1'
   run cmd_stats
   assert_equal "$(jq -r .could_start <<<"$output")" 1
+  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load]' <<<"$output")" '[0,6,0,0,0]'
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
-  assert_equal "$(jq -r .could_start <<<"$output")" null
+  assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
 }
 
 @test "stats fails, saying so, when the queue is unreadable" {

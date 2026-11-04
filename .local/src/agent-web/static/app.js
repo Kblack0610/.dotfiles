@@ -388,7 +388,7 @@ function answerOnEnter(e) {
 }
 $("asks").addEventListener("keydown", answerOnEnter);
 
-const TAB_NAMES = ["queue", "sessions", "asks", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
+const TAB_NAMES = ["queue", "board", "sessions", "asks", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
