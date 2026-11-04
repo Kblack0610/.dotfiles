@@ -5,8 +5,11 @@
 #
 #   regen-anchor.sh [project]           # project defaults to name resolved from $PWD
 #   regen-anchor.sh [project] --rotate  # also age old decisions out to a sidecar
+#   regen-anchor.sh --all               # every key project_anchor_keys lists (lab-sync)
 #
-# Deterministic + idempotent: same inputs → same AUTO block. No network.
+# Deterministic + idempotent: same inputs -> same AUTO block. No network. The one input
+# that is not a file is today's date, which flips a beta/prod project's status to stale
+# once, 14 days after it was written.
 #
 # WIRED TO A STOP HOOK (stop-post.d/87-regen-anchor.sh). Before that it was wired to
 # NOTHING -- its only caller was a skill a human had to invoke by hand, and the result
@@ -43,15 +46,27 @@ fi
 . "$MD_SPLICE_LIB"
 
 # --- resolve project name + flags ---
-ROTATE=0
+ROTATE=0 ALL=0
 ARGS=()
 for a in "$@"; do
   case "$a" in
     --rotate) ROTATE=1 ;;
+    --all) ALL=1 ;;
     *) ARGS+=("$a") ;;
   esac
 done
 set -- ${ARGS+"${ARGS[@]}"}
+
+# Every project, one process each so one bad anchor cannot stop the rest. No --rotate:
+# rotation rewrites a hand-curated section, which only a deliberate single run may do.
+if [ "$ALL" = 1 ]; then
+  rc=0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    bash "$0" "$key" || rc=1
+  done < <(project_anchor_keys)
+  exit "$rc"
+fi
 
 if [ "${1:-}" != "" ]; then
   PROJECT="$1"
@@ -90,55 +105,66 @@ if command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
 fi
 # newest outcomes month (agentctl-session-outcomes, nightly). Names sort by date.
 LATEST_OUTCOMES=$(ls "$OUTCOMES_DIR" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}\.jsonl$' | tail -1 || true)
-# lab ideation dir (best-effort: same name under ANY bus root). There is more than one:
-# the personal lab, the BNB lab (lab/bnb — BNB is ours, so it roots under lab/ rather than
-# employment/), and a root per client job. lab-roots.sh owns that list; hard-coding the
-# personal root here reported "(no dedicated entry)" for every project under another one.
-# lab-roots.sh ships in the PRIVATE overlay, so it is colocated with the hooks only at the
-# stowed path — not inside ~/.dotfiles. Check both, same as session-preflight.sh.
-for LAB_ROOTS_LIB in "$HOOKS_DIR/lab-roots.sh" "$HOME/.config/shared-hooks/lab-roots.sh"; do
-  if [ -r "$LAB_ROOTS_LIB" ]; then
-    # shellcheck source=/dev/null
-    . "$LAB_ROOTS_LIB"
-    break
-  fi
-done
-if declare -F lab_roots >/dev/null 2>&1; then
-  LAB_ROOT_LIST=$(lab_roots 2>/dev/null || true)
-else
-  LAB_ROOT_LIST="$HOME/.notes/lab/projects/current"
-fi
-# The lab directory name IS the project name -- project-map.json is the sole registry
-# and project-map-doctor enforces that every lab dir has an entry, so there is nothing
-# to search for. The loop this replaces also tried `${PROJECT%-agent}` and
-# `${PROJECT%-platform}`, which silently attached a project's anchor to whatever
-# directory happened to look similar.
-#
-# Searched under EVERY name that belongs to this repo, not just the project's own. The
-# two namespaces are deliberately different: a session in ~/.dotfiles resolves to
-# `dotfiles`, while the human files its lab work under `notes-cockpit` and
-# `agent-runtime`. Matching on the project name alone found nothing for exactly the
-# projects that have the most lab material, and reported "(no dedicated entry)" -- which
-# reads as "nothing here" rather than "looked under the wrong name".
-LAB_DIR=""
+# Lab facts: ONE call, `notes projects --stats --json` (every profile, about 8 ms), kept
+# to the lab projects this key owns: itself, plus each project whose `repo` is this key
+# (project_lab_names), so the dotfiles anchor carries notes-cockpit and agent-runtime and
+# bnb-platform carries its apps. The lab-roots scan this replaces found a project's dir by
+# name and said nothing of its state: no stage, version, open work or status.
+LAB_JSON=""
+command -v notes >/dev/null 2>&1 && LAB_JSON="$(notes projects --stats --json 2>/dev/null || true)"
 LAB_NAMES="$PROJECT"
 if declare -F project_lab_names >/dev/null 2>&1; then
   LAB_NAMES="$(project_lab_names "$PROJECT")"
   [ -n "$LAB_NAMES" ] || LAB_NAMES="$PROJECT"
 fi
-while IFS= read -r lab_root; do
-  [ -n "$lab_root" ] || continue
-  while IFS= read -r lab_name; do
-    [ -n "$lab_name" ] || continue
-    if [ -d "$lab_root/$lab_name" ]; then
-      LAB_DIR="${LAB_DIR:+$LAB_DIR, }\`${lab_root/#$HOME/\~}/$lab_name/\`"
-    fi
-  done <<< "$LAB_NAMES"
-done <<< "$LAB_ROOT_LIST"
-[ -z "$LAB_DIR" ] && LAB_DIR='`~/.notes/lab/` (no dedicated projects/current entry)'
-# repo docs
+# repo docs, and the newest three architecture decision records. Two homes are read
+# because bnb-platform keeps its ADRs under docs/architecture/; a template is not one.
 REPO_DOCS="_(none)_"
 [ -n "$REPO" ] && [ -d "$REPO/docs" ] && REPO_DOCS="$REPO/docs/"
+ADR_DIR="" ADRS=""
+for d in docs/decisions docs/architecture/decisions; do
+  if [ -n "$REPO" ] && [ -d "$REPO/$d" ]; then ADR_DIR="$REPO/$d"; break; fi
+done
+if [ -n "$ADR_DIR" ]; then
+  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | head -3 \
+    | paste -sd, - | sed 's/,/, /g' || true)"
+fi
+
+# The `## Lab` section: one line per lab project (profile, stage, open version, current-wave
+# counts, agent board, dir) and, when the key owns exactly one, its STATUS line. A beta or
+# prod project whose status is missing or older than 14 days is flagged STALE: a shipped
+# project with a month-old "where we are" reads as current to every session.
+lab_section() {
+  echo "## Lab"
+  if [ -z "$LAB_JSON" ]; then
+    echo "- _(notes CLI unavailable; lab facts not read)_"
+    return
+  fi
+  local rows
+  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" '
+    def day: strptime("%Y-%m-%d") | mktime;
+    def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
+    ($names | split("\n")) as $want
+    | [.[] | select(.name as $n | $want | index($n))] as $rows
+    | $rows[]
+    | ((.stage == "beta" or .stage == "prod")
+       and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
+    | "- **\(.name)** (\([.profile, .stage] | map(select(. != "")) | join(", ")))"
+      + (if .version != "" then " \(.version)" else "" end)
+      + ": \(.open) open, \(.done) done this wave, \(.agent) on the agent board"
+      + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
+      + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
+      + "; `\(.dir | tilde)/`"
+      + (if ($rows | length) == 1 and .status != ""
+         then "\n  - Status: " + (if (.status | length) > 200 then .status[:197] + "..." else .status end)
+         else "" end)
+  ' <<<"$LAB_JSON" 2>/dev/null || true)"
+  if [ -n "$rows" ]; then
+    printf '%s\n' "$rows"
+  else
+    echo "- _(no lab project; \`project-map add\` scaffolds one)_"
+  fi
+}
 
 # --- build the AUTO block ---
 auto_block() {
@@ -151,10 +177,12 @@ auto_block() {
   else
     echo "- Outcomes: \`~/.agent/outcomes/$PROJECT/\`"
   fi
-  echo "- Ideation/docs: $LAB_DIR"
   echo "- Repo docs: $REPO_DOCS"
+  [ -n "$ADRS" ] && echo "- ADRs: \`$ADR_DIR/\` (latest: $ADRS)"
   [ -n "$REPO" ] && echo "- Repo: \`$REPO\`"
   [ -n "$TRACKER" ] && echo "- Tracker: $TRACKER"
+  echo
+  lab_section
   echo
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then

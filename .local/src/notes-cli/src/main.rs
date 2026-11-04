@@ -280,6 +280,10 @@ enum Cmd {
         /// is the later waves', agent is the agent board's)
         #[arg(long)]
         stats: bool,
+        /// With --stats: one JSON array instead, adding each project's dir, current wave,
+        /// done count, STATUS line and date, and summary path
+        #[arg(long, requires = "stats")]
+        json: bool,
         /// Print a project's maturity stage; with --set, declare it.
         /// One of: draft, alpha, beta, prod
         #[arg(long, value_name = "NAME")]
@@ -917,6 +921,7 @@ fn main() -> Result<()> {
             version_of,
             waves,
             stats,
+            json,
             agent_note,
             version,
             stage,
@@ -960,7 +965,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if stats {
-                projects::stats()?;
+                projects::stats(json)?;
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths

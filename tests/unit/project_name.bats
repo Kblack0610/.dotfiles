@@ -361,6 +361,24 @@ EOF
   assert_output ''
 }
 
+@test "project_keys: paths names plus object tracker keys, never default or a comment" {
+  write_tracker_map
+  jq '.trackers.default = {"system": "vikunja"}' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
+  run project_keys
+  assert_success
+  assert_output "$(printf '%s\n' app-one app-two cockpit monorepo no-repo runtime toolrepo)"
+}
+
+@test "project_anchor_keys: a repo-only key gets no anchor; an app with a path does" {
+  # cockpit and runtime have a repo and no path: no directory resolves to them, so no
+  # session ever reads an anchor of theirs.
+  write_tracker_map
+  jq '.trackers["app-one"].path = "apps/one"' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
+  run project_anchor_keys
+  assert_success
+  assert_output "$(printf '%s\n' app-one monorepo no-repo toolrepo)"
+}
+
 @test "project_lab_names: a repo lists every project that belongs to it, itself included" {
   write_tracker_map
   run project_lab_names monorepo

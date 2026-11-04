@@ -204,6 +204,32 @@ project_lab_names() {
   ' "$map_file" 2>/dev/null || true
 }
 
+# project_keys -> every registered project key, sorted, one per line: the `paths` names
+# plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
+# and a string-valued `_comment*` key is documentation. The one definition of "the
+# projects": project-map-doctor checks against it and `regen-anchor.sh --all` walks it.
+project_keys() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r '
+    [(.paths // {}) | .[]]
+    + [(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key
+       | select(. != "default")]
+    | unique[]' "$map_file" 2>/dev/null || true
+}
+
+# project_anchor_keys -> the keys that get an anchor at ~/.agent/anchors/<key>.md: every
+# project key except one with a `repo` and no `path`. No directory resolves to such a key
+# (notes-cockpit, agent-runtime: lab projects about a repo's tooling), so no preflight would
+# read its anchor; its lab line is in the repo's anchor instead.
+project_anchor_keys() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  project_keys | jq -rR --slurpfile m "$map_file" '
+    . as $k | ($m[0].trackers[$k] // {}) as $t
+    | select(($t | type) != "object" or ($t.repo // "") == "" or ($t.path // "") != "")'
+}
+
 # project_known <name> -> 0 when <name> is a canonical project in the registry (a repo's
 # project, a tracker, or what an alias resolves to), 1 when it is not (an alias
 # itself, such as monorepo or waybar, or an unknown name), 2 when there is no registry.
