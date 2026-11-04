@@ -97,10 +97,10 @@ Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview
 current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
-  agent/README.md          the agent board (`ptask --agent`)
+  agent/README.md          the agent board (`ptask --agent`): the same `## Wave:` blocks, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
-  agent/versions/vX.Y.Z.md proof table for a version, and the done rows `ptask --agent archive` moves off the board
+  agent/versions/vX.Y.Z.md proof table for a version, and the done rows `ptask --agent archive` or a roll moves off the board
   versions/vX.Y.Z.md       frozen sheet of a closed version
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
@@ -142,8 +142,8 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
-| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list |
-| fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment |
+| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list. The agent board rolls with the sheet: done rows to `agent/versions/<old>.md`, open rows carried to the new wave. `agentctl-wave-roll` runs it when a release tag reaches the sheet, and `project-map-doctor` fails a shipping app whose sheet is behind its newest tag |
+| fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment, and aligns a stale agent board to the sheet's version |
 | see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
 | every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, current wave, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
 | add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |

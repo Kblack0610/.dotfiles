@@ -1449,7 +1449,15 @@ fn sheet_body(title: &str, ver: &str) -> String {
 /// `v0.0.1` for a sheet that has none yet. Keeps `Version:` the single source of truth —
 /// a wave is never named anything the sheet has not already declared.
 pub(crate) fn wave_version_of(content: &str) -> String {
-    sheet_version(content).map_or_else(|| "v0.0.1".to_string(), fmt_version)
+    open_version_of(content).map_or_else(|| "v0.0.1".to_string(), fmt_version)
+}
+
+/// The version a sheet or agent board has OPEN: its `Version:` line, else its first wave's
+/// version. An agent board carries no `Version:` line (it follows the human sheet), so a
+/// reader that needs the open version of either kind of file reads it here; `sheet_version`
+/// stays the strict "is this a human sheet" test.
+pub(crate) fn open_version_of(content: &str) -> Option<(u32, u32, u32)> {
+    sheet_version(content).or_else(|| waves::sections(content).first().and_then(|s| s.version))
 }
 
 /// Does this sheet already carry a `## Wave` section? (The task-sheet test.)
@@ -1644,7 +1652,12 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
     // PROMOTE: the sheet keeps everything below the current wave. If the roadmap already
     // holds a wave named `next`, it becomes the current one, tasks and all — that is the
     // whole point of planning forward. Otherwise open an empty one.
+    // The head (a pitch, or any section above the first wave) stays above the waves: split
+    // what is left at the frozen wave's old start, since nothing before it moved.
     let (rest, _) = waves::cut(content, &current);
+    let rest_lines: Vec<&str> = rest.lines().collect();
+    let head = body_after_head(&rest_lines[..current.start].join("\n"));
+    let rest = format!("{}\n", rest_lines[current.start..].join("\n"));
     let rest_secs = waves::sections(&rest);
     let promoted = rest_secs.iter().find(|s| s.version == Some(next)).cloned();
 
@@ -1656,6 +1669,11 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
         .and_then(|rest| rest.trim().split_once(char::is_whitespace))
         .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
     let mut out: Vec<String> = vec![title, format!("Version: {next_s}{stage}"), String::new()];
+    if !head.is_empty() {
+        out.extend(head);
+        out.push(String::new());
+    }
+    let tail = |s: &str| -> Vec<String> { s.lines().map(|l| l.trim_end().to_string()).collect() };
     match promoted {
         Some(s) => {
             // Re-title it `(current)` and lift it to the top; everything else keeps its order.
@@ -1663,13 +1681,13 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
             taken[0] = format!("## {}", waves::heading_current(&next_s));
             out.extend(taken.into_iter().map(|l| l.trim_end().to_string()));
             out.push(String::new());
-            out.extend(body_after_head(&without));
+            out.extend(tail(&without));
         }
         None => {
             out.push(format!("## {}", waves::heading_current(&next_s)));
             out.push("- [ ] ".to_string());
             out.push(String::new());
-            out.extend(body_after_head(&rest));
+            out.extend(tail(&rest));
         }
     }
     // Collapse runs of blank lines the cut/paste can leave behind.
@@ -1684,6 +1702,151 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
         sheet.pop();
     }
     (frozen, format!("{}\n", sheet.join("\n")))
+}
+
+/// Roll a project's agent board from `cur` to `next`, the way the sheet rolls: done rows go
+/// to `agent/versions/<cur>.md` (the note `ptask done` wrote their proof into), open rows
+/// take the sheet's carry to `next`, and anything else left in the closing wave (prose, a
+/// note under a carried row) is appended to that note, so nothing on the board is dropped.
+/// Returns `(archived, carried)`, or `None` when there is no board with a wave to roll.
+///
+/// No gate: board rows are the agents' subtasks under the human queue, and the sheet's gate
+/// already decided the version is closed. The board carries no `Version:` line; its current
+/// wave IS the sheet's version, which is what this keeps true.
+fn roll_agent_board(
+    dir: &Path,
+    name: &str,
+    cur: (u32, u32, u32),
+    next: (u32, u32, u32),
+) -> Result<Option<(usize, usize)>> {
+    let board = crate::agent_sheet::sheet_path(dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        return Ok(None);
+    };
+    if waves::sections(&content).is_empty() {
+        return Ok(None);
+    }
+    let cur_s = fmt_version(cur);
+    // Notes first, board last: a failure in between leaves rows in both, never neither.
+    let (content, archived) = crate::project_tasks::archive_done_rows(dir, name, &cur_s, &content)?;
+    let (content, carried) = carry_open(&content, next);
+    let (frozen, rolled) = rebuild_sheet(&content, cur, next);
+    let left: Vec<&str> = frozen
+        .lines()
+        .skip_while(|l| !l.starts_with("## "))
+        .skip(1)
+        .filter(|l| !l.trim().is_empty() && l.trim() != "- [ ]")
+        .collect();
+    if !left.is_empty() {
+        let note = ensure_agent_note(dir, name, &cur_s)?;
+        let prior = fs::read_to_string(&note)?;
+        let date = chrono::Local::now().format("%Y-%m-%d");
+        md::write_atomic(
+            &note,
+            &format!(
+                "{}\n\n## Agent board close-out {date}\n\n{}\n",
+                prior.trim_end(),
+                left.join("\n")
+            ),
+        )?;
+    }
+    md::write_atomic(&board, &drop_head_version(&rolled))?;
+    Ok(Some((archived, carried.len())))
+}
+
+/// `content` with its current wave renamed to `to`, and rows tagged for an older wave
+/// retagged to it. Not a carry: a board that never followed its sheet carried nothing through
+/// a release, so its rows get no `carried:N` stamp and untagged rows stay untagged (a stamp on
+/// each of a 646-row board's rows is 12 KiB of bookkeeping that records nothing).
+fn rename_current_wave(content: &str, to: (u32, u32, u32)) -> String {
+    let Some(cur) = waves::sections(content).into_iter().next() else {
+        return content.to_string();
+    };
+    let lines: Vec<String> = content
+        .lines()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == cur.start {
+                return format!("## {}", waves::heading_current(&fmt_version(to)));
+            }
+            let old = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
+            if i > cur.start && i < cur.end && md::is_task(l) && old.is_some_and(|v| v < to) {
+                return crate::project_sweep::retag_wave(l.trim_end(), to, true).0;
+            }
+            l.to_string()
+        })
+        .collect();
+    format!("{}\n", lines.join("\n"))
+}
+
+/// `content` without the `Version:` line in its head (above the first `##`). An agent board
+/// follows its sheet's version, so it carries none of its own.
+///
+/// A rolled head is `title, Version:, blank, link`; the blank that separated the version from
+/// the link goes with it, so a board's head reads `title, link, blank` before and after a roll.
+fn drop_head_version(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let first_wave = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("## "))
+        .unwrap_or(lines.len());
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if i < first_wave && lines[i].trim_start().starts_with("Version:") {
+            let blank_then_head = i + 2 < first_wave && lines[i + 1].trim().is_empty();
+            i += if blank_then_head { 2 } else { 1 };
+            continue;
+        }
+        kept.push(lines[i]);
+        i += 1;
+    }
+    format!("{}\n", kept.join("\n"))
+}
+
+/// Bring an agent board into line with its sheet: drop the retired `Version:` line, and when
+/// its current wave names another version than the sheet's open one, roll it there (done rows
+/// to the open version's agent note, open rows carried). `--migrate`'s step for boards that
+/// predate the roll covering them. Returns what it did, or `None` when already aligned.
+fn align_agent_board(dir: &Path, name: &str) -> Result<Option<String>> {
+    let board = crate::agent_sheet::sheet_path(dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        return Ok(None);
+    };
+    let Some(open) = sheet_path(dir)
+        .and_then(|s| fs::read_to_string(s).ok())
+        .and_then(|c| sheet_version(&c))
+    else {
+        return Ok(None);
+    };
+    let wave = waves::sections(&content).first().and_then(|s| s.version);
+    if let Some(w) = wave.filter(|w| *w != open) {
+        let open_s = fmt_version(open);
+        if waves::find(&content, open).is_some() {
+            // A planned wave already names the open version: roll into it, so the two merge.
+            let (archived, carried) = roll_agent_board(dir, name, open, open)?.unwrap_or((0, 0));
+            return Ok(Some(format!(
+                "agent board {} -> {open_s}: {archived} done row(s) archived, {carried} carried",
+                fmt_version(w)
+            )));
+        }
+        let (content, archived) =
+            crate::project_tasks::archive_done_rows(dir, name, &open_s, &content)?;
+        md::write_atomic(
+            &board,
+            &drop_head_version(&rename_current_wave(&content, open)),
+        )?;
+        return Ok(Some(format!(
+            "agent board {} -> {open_s}: {archived} done row(s) archived, open rows kept in place",
+            fmt_version(w)
+        )));
+    }
+    let dropped = drop_head_version(&content);
+    if dropped != content {
+        md::write_atomic(&board, &dropped)?;
+        return Ok(Some("agent board: dropped its Version line".to_string()));
+    }
+    Ok(None)
 }
 
 /// Did this version actually have agent work? Two sources, because the lane moved.
@@ -1859,6 +2022,9 @@ pub fn roll(
         ensure_agent_note(&dir, name, &fmt_version(cur))?;
     }
 
+    // 3b. the agent board follows: same version, same carry, its done rows to the pair note
+    let agent = roll_agent_board(&dir, name, cur, next)?;
+
     // 4. the promote
     md::write_atomic(&sheet, &new_sheet)?;
 
@@ -1879,6 +2045,11 @@ pub fn roll(
     );
     if promoted {
         println!("promoted the planned wave {next_s} to current");
+    }
+    if let Some((archived, moved)) = agent {
+        println!(
+            "agent board -> {next_s}: {archived} done row(s) archived, {moved} open row(s) carried"
+        );
     }
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
@@ -2205,6 +2376,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     }
 
     let prs = crate::playtest::fold_inline_prs(&dir)?;
+    let board = align_agent_board(&dir, name)?;
 
     log.info(
         "projects",
@@ -2213,7 +2385,11 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
              playtest prs {prs}"
         ),
     );
-    if relocated == 0 && moved == 0 && backfilled == 0 && prs == 0 {
+    if let Some(b) = &board {
+        log.info("projects", &format!("migrated {name}: {b}"));
+        println!("{name}: {b}");
+    }
+    if relocated == 0 && moved == 0 && backfilled == 0 && prs == 0 && board.is_none() {
         if left.is_empty() {
             println!("{name}: already consolidated - nothing to do");
         } else {
@@ -3659,6 +3835,164 @@ _(nothing yet)_
     }
 
     #[test]
+    fn a_roll_keeps_the_pitch_above_the_waves() {
+        // Before: everything between the title and the first wave was re-attached BELOW the
+        // promoted wave, so a sheet's pitch sank under the work on every release.
+        let sheet = "\
+# demo
+Version: v1.6.0 #prod
+Agents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all projects]]
+
+A pitch line.
+Another pitch line.
+
+## Wave: v1.6.0 (current)
+- [x] shipped
+
+## Wave: v1.7.0 (planned)
+- [ ] next thing
+
+## Wave: v1.8.0 (planned)
+- [ ] later
+";
+        for next in [(1, 7, 0), (1, 6, 1)] {
+            let (frozen, rolled) = rebuild_sheet(sheet, (1, 6, 0), next);
+            let at = |needle: &str| {
+                rolled
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("{needle}:\n{rolled}"))
+            };
+            assert!(at("A pitch line.") < at("## Wave:"), "{rolled}");
+            assert!(at("Another pitch line.") < at("## Wave:"), "{rolled}");
+            assert_eq!(rolled.matches("A pitch line.").count(), 1, "{rolled}");
+            assert!(rolled.starts_with("# demo\nVersion: v1."), "{rolled}");
+            assert!(at("later") > at("(current)"), "{rolled}");
+            assert!(!frozen.contains("pitch"), "{frozen}");
+        }
+    }
+
+    const BOARD: &str = "\
+# demo - agent board
+Version: v1.15.0
+Human sheet: [[lab/p/demo/README|demo]]
+
+## Wave: v1.15.0 (current)
+- [x] feat(a): shipped #high <!-- pr:7 -->
+  - its note
+- [ ] fix(b): still open #high
+Some prose left in the wave.
+
+## Wave: v1.18.2 (planned)
+- [ ] chore(c): planned row #low
+";
+
+    fn board_scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("proj-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sheet_at(dir: &Path, ver: &str) {
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: {ver} #beta\n\n## Wave: {ver} (current)\n- [ ] x\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_roll_takes_the_agent_board_with_the_sheet() {
+        let dir = board_scratch("agent-roll");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let board = crate::agent_sheet::sheet_path(&dir);
+        fs::write(&board, BOARD.replace("v1.15.0", "v1.19.1")).unwrap();
+
+        let got = roll_agent_board(&dir, "demo", (1, 19, 1), (1, 20, 0)).unwrap();
+        assert_eq!(got, Some((1, 1)));
+        let b = fs::read_to_string(&board).unwrap();
+        assert!(!b.contains("Version:"), "{b}");
+        assert!(
+            b.starts_with("# demo - agent board\nHuman sheet: [[lab/p/demo/README|demo]]\n\n## "),
+            "the head is the same shape after a roll:\n{b}"
+        );
+        assert!(b.contains("## Wave: v1.20.0 (current)"), "{b}");
+        assert!(b.contains("fix(b): still open"), "open rows carry:\n{b}");
+        assert!(b.contains("<!-- carried:1 -->"), "{b}");
+        assert!(!b.contains("shipped"), "done rows leave the board:\n{b}");
+        assert!(b.contains("chore(c): planned row"), "{b}");
+
+        let note = fs::read_to_string(agent_note_path(&dir, "v1.19.1")).unwrap();
+        assert!(note.contains("## Done rows"), "{note}");
+        assert!(
+            note.contains("feat(a): shipped #high <!-- pr:7 -->\n  - its note"),
+            "{note}"
+        );
+        assert!(
+            note.contains("Some prose left in the wave."),
+            "nothing on the closing wave is dropped:\n{note}"
+        );
+        // NEGATIVE CONTROL: no board, nothing to roll and nothing written.
+        let bare = board_scratch("agent-roll-none");
+        assert_eq!(
+            roll_agent_board(&bare, "demo", (1, 0, 0), (1, 0, 1)).unwrap(),
+            None
+        );
+        assert!(!bare.join("agent").exists());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&bare);
+    }
+
+    #[test]
+    fn migrate_aligns_a_stale_agent_board_to_its_sheet() {
+        let dir = board_scratch("agent-align");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let board = crate::agent_sheet::sheet_path(&dir);
+        sheet_at(&dir, "v1.19.1");
+        let stale = BOARD.replace(
+            "Some prose",
+            "- [ ] fix(d): tagged for the old wave #v1.15.0 #high\nSome prose",
+        );
+        fs::write(&board, &stale).unwrap();
+
+        let did = align_agent_board(&dir, "demo").unwrap().unwrap();
+        assert!(did.contains("v1.15.0 -> v1.19.1"), "{did}");
+        let b = fs::read_to_string(&board).unwrap();
+        assert!(!b.contains("Version:"), "{b}");
+        assert!(b.contains("## Wave: v1.19.1 (current)"), "{b}");
+        assert!(b.contains("## Wave: v1.18.2 (planned)"), "{b}");
+        // A rename, not a carry: untagged rows stay as they were, an old tag follows the
+        // wave, and nothing is stamped carried.
+        assert!(b.contains("- [ ] fix(b): still open #high\n"), "{b}");
+        assert!(
+            b.contains("fix(d): tagged for the old wave #high #v1.19.1"),
+            "{b}"
+        );
+        assert!(!b.contains("carried:"), "{b}");
+        assert!(b.contains("Some prose left in the wave."), "{b}");
+        assert!(!b.contains("feat(a): shipped"), "{b}");
+        let note = fs::read_to_string(agent_note_path(&dir, "v1.19.1")).unwrap();
+        assert!(note.contains("feat(a): shipped"), "{note}");
+        // The board sweeps without a Version line: its first wave is its open version.
+        assert_eq!(open_version_of(&b), Some((1, 19, 1)));
+        assert!(crate::project_sweep::sweep_sheet(&b).is_some_and(|(o, _)| !o.contains("#v1.15.0")));
+        // Idempotent: an aligned board is left alone.
+        assert_eq!(align_agent_board(&dir, "demo").unwrap(), None);
+        assert_eq!(fs::read_to_string(&board).unwrap(), b);
+
+        // A board on the right wave only loses its Version line; its rows stay put.
+        let same = BOARD.replace("v1.15.0", "v1.19.1");
+        fs::write(&board, &same).unwrap();
+        let did = align_agent_board(&dir, "demo").unwrap().unwrap();
+        assert!(did.contains("dropped its Version line"), "{did}");
+        assert_eq!(
+            fs::read_to_string(&board).unwrap(),
+            same.replace("Version: v1.19.1\n", "")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_roll_does_not_strand_the_agents_link_under_the_new_wave() {
         // `Agents:` is a HEAD line, derived from `Version:`. Carried into the body it would
         // sit below the promoted wave naming the version that just closed - wrong, and in
@@ -4555,7 +4889,7 @@ mod shape_tests {
             shape_findings(&dir, "demo", &Overlays::default())
         );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
-        assert!(board.contains("Version: v0.0.1"), "{board}");
+        assert!(board.contains("## Wave: v0.0.1 (current)"), "{board}");
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
     }
@@ -4579,7 +4913,7 @@ mod shape_tests {
         assert!(dir.join("summary.md").is_file());
         // the agent board tracks the sheet's version, not a fresh project's
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
-        assert!(board.contains("Version: v1.2.0"), "{board}");
+        assert!(board.contains("## Wave: v1.2.0 (current)"), "{board}");
         // an existing project's index entry is not the scaffold's business
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert!(!index.contains("|old]]"), "{index}");

@@ -374,6 +374,43 @@ elif [ "$bad" -eq 0 ]; then
   pass "all $n lab/type declarations are valid, and lab dirs match the registry both ways"
 fi
 
+# --- 7b. a shipping app or game's sheet is ahead of its newest release tag -------------
+# The sheet's `Version:` is the version in progress and the git tag is the version shipped,
+# so a sheet at or below its newest tag is working on a release that already went out.
+# `agentctl-wave-roll` rolls the sheet (and its agent board) once a tag reaches it, every
+# 30 minutes: equal is that window (WARN), below means the roll is not happening (FAIL).
+if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; then
+  n=0; bad=0; behind_warns=0
+  while IFS=$'\037' read -r name lab; do
+    [ -n "$name" ] || continue
+    root="$(notes --profile "$lab" path projects 2>/dev/null || true)"
+    [ -n "$root" ] && [ -f "$root/$name/README.md" ] || continue
+    shipped="$(project_release_version "$name" 2>/dev/null || true)"
+    [ -n "$shipped" ] || continue
+    n=$((n + 1))
+    sheet="$(sed -n 's/^Version:[[:space:]]*\(v[0-9][0-9.]*\).*/\1/p' "$root/$name/README.md" | head -1)"
+    if [ -z "$sheet" ]; then
+      fail "lab project \"$name\" ships $shipped but its sheet declares no Version: line"
+      bad=$((bad + 1))
+    elif [ "$sheet" = "$shipped" ]; then
+      warn "lab project \"$name\" sheet $sheet is the shipped tag; agentctl-wave-roll rolls it on its next pass"
+      behind_warns=$((behind_warns + 1))
+    elif [ "$(printf '%s\n%s\n' "${sheet#v}" "${shipped#v}" | sort -V | tail -1)" = "${shipped#v}" ]; then
+      fail "lab project \"$name\" sheet $sheet is behind its shipped tag $shipped (run: agentctl-wave-roll $name)"
+      bad=$((bad + 1))
+    fi
+  done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object")
+    | select(.value.lab and (.value.type == "app" or .value.type == "game"))
+    | "\(.key)\u001f\(.value.lab)"' "$MAP_FILE" 2>/dev/null)
+  if [ "$n" -eq 0 ]; then
+    skip "no app or game here has a sheet and a release tag to compare"
+  elif [ "$bad" -eq 0 ] && [ "$behind_warns" -eq 0 ]; then
+    pass "all $n shipping apps and games have a sheet ahead of their newest tag"
+  fi
+else
+  skip "notes CLI or project-name.sh unavailable; cannot compare sheets to release tags"
+fi
+
 printf '\n'
 if [ "$fails" -gt 0 ]; then
   printf '%s check(s) FAILED\n' "$fails"

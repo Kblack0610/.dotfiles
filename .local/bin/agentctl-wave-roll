@@ -3,7 +3,8 @@
 #
 # For every project that ships (project_release_version non-empty), once the newest tag has
 # reached the sheet's `Version:`, roll it: open tasks carry to the next wave, the finished
-# wave freezes, and the next wave opens after the tag. Notes-only projects are left alone.
+# wave freezes, the next wave opens after the tag, and the agent board follows (notes
+# `projects --roll`). Notes-only projects are left alone.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
 # and an event hook sees none of those. Comparing sheet to tags every pass catches them all.

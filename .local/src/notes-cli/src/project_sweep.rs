@@ -96,11 +96,11 @@ pub(crate) fn retag_wave(line: &str, to: V, to_is_current: bool) -> (String, Opt
 /// Pure core: reorganize a project sheet's wave roadmap. Returns the new content and a
 /// report of everything it moved, or `None` when the sheet is already in this shape.
 ///
-/// Refuses (returns `None`) rather than guessing when the sheet declares no `Version:`, or
-/// when any wave heading names no parseable version - a legacy `## Wave 1 - verify` must not
+/// Refuses (returns `None`) rather than guessing when it has no open version (no `Version:`
+/// line and no versioned first wave; an agent board has only the latter), or when any wave heading names no parseable version - a legacy `## Wave 1 - verify` must not
 /// be renumbered into the roadmap.
 pub(crate) fn sweep_sheet(content: &str) -> Option<(String, Vec<String>)> {
-    let declared = projects::sheet_version(content)?;
+    let declared = projects::open_version_of(content)?;
     let secs = waves::sections(content);
     if secs.is_empty() || secs.iter().any(|s| s.version.is_none()) {
         return None;
@@ -413,9 +413,18 @@ Version: v0.12.1
     }
 
     #[test]
-    fn a_sheet_with_no_version_line_is_refused() {
-        let no_ver = "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a\n";
-        assert!(sweep_sheet(no_ver).is_none());
+    fn a_board_with_no_version_line_sweeps_by_its_first_wave() {
+        // An agent board carries no `Version:` line; its first wave is its open version.
+        let board = "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a #v0.0.9\n";
+        let (out, _) = sweep_sheet(board).expect("a board sweeps");
+        // Byte-for-byte what markdown.lua sweep_waves produces for the same buffer (captured
+        // 2026-11-04 with the headless differential), so the save sweep and this agree.
+        assert_eq!(
+            out,
+            "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a #high #v0.1.0\n- [ ] \n\n---\n### Done\n"
+        );
+        // With no versioned wave at all there is nothing to sweep against.
+        assert!(sweep_sheet("# d\n\n## Wave: misc\n- [ ] a\n").is_none());
     }
 
     // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input

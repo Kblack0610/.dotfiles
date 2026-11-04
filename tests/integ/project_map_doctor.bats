@@ -352,3 +352,61 @@ anchors_for() {
   assert_output --partial 'FAIL  anchor alpha has'
   assert_output --partial 'bytes of key facts'
 }
+
+# -- 7b. a shipping app's sheet is ahead of its newest release tag --
+# A real git repo with a product tag, so the doctor runs the same tag ladder production does.
+
+tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
+  lab_map
+  local repo="$HOME/mono" r
+  git init -q "$repo"
+  git -C "$repo" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+  [ -z "$2" ] || git -C "$repo" tag "alpha-$2"
+  jq --arg r "$repo" '.paths = {($r): "mono-canon"}' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  r="$(lab_root personal)/alpha"
+  mkdir -p "$r"
+  { printf '# alpha\n'; [ -z "$1" ] || printf 'Version: %s #prod\n' "$1"; printf '\n## Wave: v9.9.9 (current)\n'; } > "$r/README.md"
+  export GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
+}
+
+@test "release: a sheet one patch past its tag passes" {
+  tagged_app v1.2.1 v1.2.0
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'all 1 shipping apps and games have a sheet ahead of their newest tag'
+}
+
+@test "release: a sheet at its tag warns, the roll is due on the next pass" {
+  tagged_app v1.2.0 v1.2.0
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'WARN  lab project "alpha" sheet v1.2.0 is the shipped tag'
+}
+
+@test "release: a sheet behind its tag fails, and names the roll" {
+  tagged_app v1.1.9 v1.2.0
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'sheet v1.1.9 is behind its shipped tag v1.2.0 (run: agentctl-wave-roll alpha)'
+}
+
+@test "release: version order is semver, not string order" {
+  tagged_app v1.10.0 v1.9.3
+  run "$DOCTOR" "$MAP"
+  assert_success
+  refute_output --partial 'behind its shipped tag'
+}
+
+@test "release: a shipping app with no Version line fails" {
+  tagged_app "" v1.2.0
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'ships v1.2.0 but its sheet declares no Version: line'
+}
+
+@test "release: an app with no tag is not compared, and says SKIP" {
+  tagged_app v0.0.1 ""
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'SKIP  no app or game here has a sheet and a release tag to compare'
+}

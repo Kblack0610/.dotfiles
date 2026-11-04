@@ -891,11 +891,6 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         println!("{name}: no done rows on the agent board");
         return Ok(0);
     }
-    let lines: Vec<&str> = content.lines().collect();
-    let rows: Vec<String> = ranges
-        .iter()
-        .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
-        .collect();
     let ver = task_sheet(&dir)
         .and_then(|s| fs::read_to_string(s).ok())
         .map_or_else(|| "v0.0.1".to_string(), |c| projects::wave_version_of(&c));
@@ -911,7 +906,38 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     }
 
     // The note first: a failure between the two writes leaves rows in both, never neither.
-    let note = projects::ensure_agent_note(&dir, name, &ver)?;
+    let (kept, n) = archive_done_rows(&dir, name, &ver, &content)?;
+    md::write_atomic(&board, &kept)?;
+    log.info(
+        "ptask",
+        &format!("archived {n} done rows ({name}) -> {}", note.display()),
+    );
+    println!("moved {n} done rows -> {}", note.display());
+    Ok(0)
+}
+
+/// Append a board's done rows to `agent/versions/<ver>.md` under `## Done rows` and return
+/// the board without them, plus how many moved. Writes the note only; the caller writes the
+/// board after, so a failure between the two leaves rows in both, never neither.
+///
+/// Shared by `ptask --agent archive` and `notes projects --roll`, which closes a version's
+/// agent board with it.
+pub(crate) fn archive_done_rows(
+    dir: &Path,
+    name: &str,
+    ver: &str,
+    content: &str,
+) -> Result<(String, usize)> {
+    let ranges = done_rows(content);
+    if ranges.is_empty() {
+        return Ok((content.to_string(), 0));
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let rows: Vec<String> = ranges
+        .iter()
+        .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
+        .collect();
+    let note = projects::ensure_agent_note(dir, name, ver)?;
     let prior = fs::read_to_string(&note)?;
     md::write_atomic(&note, &append_done_rows(&prior, &rows))?;
     let mut drop = vec![false; lines.len()];
@@ -924,17 +950,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         .filter(|(_, d)| !**d)
         .map(|(l, _)| *l)
         .collect();
-    md::write_atomic(&board, &format!("{}\n", kept.join("\n")))?;
-    log.info(
-        "ptask",
-        &format!(
-            "archived {} done rows ({name}) -> {}",
-            ranges.len(),
-            note.display()
-        ),
-    );
-    println!("moved {} done rows -> {}", ranges.len(), note.display());
-    Ok(0)
+    Ok((format!("{}\n", kept.join("\n")), ranges.len()))
 }
 
 /// Shared body for `done`/`rm`/`start`: apply `f` to the first open wave task matching

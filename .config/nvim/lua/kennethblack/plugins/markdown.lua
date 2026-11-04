@@ -435,6 +435,9 @@ return {
       -- every tagged sheet as having no version, and both callers treat that as "not a
       -- sheet" and return silently - so the save sweep and the tW/tw ladder were dead on
       -- every sheet at once, with nothing said.
+      --
+      -- With no `Version:` line, the first wave's version: an agent board carries none (it
+      -- follows the human sheet), and still sweeps. Mirrors projects::open_version_of.
       local function sheet_version(lines)
         for _, l in ipairs(lines) do
           local rest = l:match "^%s*Version:%s*([^#]*)"
@@ -445,11 +448,16 @@ return {
             end
           end
         end
+        for _, l in ipairs(lines) do
+          if l:match "^##%s+Wave" then
+            return parse_ver(l:match "(v%d+%.%d+%.%d+)" or "")
+          end
+        end
         return nil
       end
 
       -- Pure: given all buffer lines, return (new_lines, changed). Rewrites only the `## Wave`
-      -- roadmap. Refuses a sheet with no `Version:` and one whose wave heading names no
+      -- roadmap. Refuses a sheet with no open version and one whose wave heading names no
       -- version (a legacy `## Wave 1 - verify`), rather than renumbering what it cannot name.
       local function sweep_waves(lines, inherit)
         local cur = sheet_version(lines)
@@ -902,7 +910,7 @@ return {
           -- Wave step, on a project sheet: tW pushes a task one wave LATER (out to the
           -- roadmap), tw pulls it one wave SOONER. Same shape as the priority cycle, but a
           -- bounded ladder rather than a ring - sooner stops at the current wave, later opens
-          -- the next patch version. A no-op in a buffer with no `Version:` line.
+          -- the next patch version. A no-op in a buffer with no versioned wave.
           for _, m in ipairs { { "W", 1, "Push task one wave later" }, { "w", -1, "Pull task one wave sooner" } } do
             local key, dir, desc = m[1], m[2], m[3]
             vim.keymap.set("n", "<leader>t" .. key, function()
