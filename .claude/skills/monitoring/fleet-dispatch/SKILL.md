@@ -36,7 +36,7 @@ The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners
 3. Candidates: every open `[ ]` row a worker may take, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, or when `project-map.json` has no repo for it.
 4. Judgment: one sonnet call for up to `DISPATCH_JUDGE_MAX` rows not judged before, in worker order, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text, the policy or `workers.json` changes. To change what gets picked, edit the policy, not the script.
 5. Picks: verdict `dispatch` with size S or M, clear and agent-only, naming one `area`, judged no higher a tier than the row counts as, made under the current policy. Never two sessions on one area: an active queue item holds its area until reap closes it. Worker order first, then `#urgent`, then prod before beta before alpha.
-6. Launch: `fleet-dispatch start` (below) with the row and a `/one-shot <row> ...` brief, on the lab server. The pass publishes WORKED only when a session started, NOOP when a gate stopped it or no row qualified, FAILED when it could not judge or could not start its pick.
+6. Launch: `fleet-dispatch start` (below) with the row and a `/one-shot <row> ...` brief, on the lab server. The pass publishes WORKED only when a session started; BLOCKED when a gate, a finding or no account room left a queue item waiting (amber on every dashboard, never a page; `queue-starved` pages); NOOP when nothing was runnable, the fleet is at its live cap, or the human held dispatch; FAILED when it could not judge or could not start its pick.
 
 ## Starting a session by hand: `fleet-dispatch start`
 

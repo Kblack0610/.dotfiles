@@ -529,15 +529,24 @@ settle_item() {
 # are asked once, for the head: the human's and the shepherd's items need every gate but presence
 # (they asked for it, and may be at the desk), and a board-filled item waits for away. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
+# A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
+# each one published NOOP, which every dashboard showed green. A human's dispatch hold is NOOP.
 run_queue() {
   local items="$1" head scope=any why
   head=$(head -n 1 <<<"$items")
   case "$(jq -r .from <<<"$head")" in board:*) scope=away ;; esac
   why=$(gate "$scope")
-  if [ -n "$why" ]; then settle NOOP "$why, queue item $(jq -r .slug <<<"$head") waits"; [ "$DRY" = 1 ] || return 0; fi
-  pick_item "$items" || { settle NOOP "$PICK_WHY"; return 0; }
+  if [ -n "$why" ]; then
+    settle "$(held_outcome "$why")" "$why, queue item $(jq -r .slug <<<"$head") waits"
+    [ "$DRY" = 1 ] || return 0
+  fi
+  pick_item "$items" || { settle BLOCKED "$PICK_WHY"; return 0; }
   start_item "$PICKED"
 }
+
+# held_outcome <gate reason> -> the outcome of a pass that left runnable work: NOOP when the human
+# held dispatch on purpose (agent-hold), else BLOCKED.
+held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
 # next_items -> the queued items a pass may try, queue order, one JSON object a line: a board item
 # waits for the human to be away (run_queue's gate), so while they are not, it is left out.
@@ -623,7 +632,7 @@ start_item() {
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old.
-  acct=$(claude-acct room 2>/dev/null) || { settle NOOP "no account has room for queue item $slug"; return 0; }
+  acct=$(claude-acct room 2>/dev/null) || { settle BLOCKED "no account has room for queue item $slug"; return 0; }
   model=$(model-lane classify "$(jq -r .task <<<"$it")" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
   if START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --server "$DISPATCH_SERVER" --model "${model:-opus}"; then
     settle WORKED "started queue item $slug"
@@ -777,6 +786,7 @@ cmd_run() {
   live=$(live_runs | grep -c . || true)
   room=$(( DISPATCH_MAX_LIVE - live ))
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
+  # A full fleet is working, not blocked: NOOP.
   if [ "$room" -le 0 ]; then settle NOOP "at $live live dispatched sessions, starting nothing"; return 0; fi
   # The queue comes first; board rows are only looked at while nothing in it is runnable.
   local items; items=$(next_items)
@@ -794,7 +804,7 @@ cmd_run() {
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items)
   [ -n "$items" ] || { settle NOOP "no row qualifies this pass"; return 0; }
-  pick_item "$items" || { settle NOOP "$PICK_WHY"; return 0; }
+  pick_item "$items" || { settle BLOCKED "$PICK_WHY"; return 0; }
   start_item "$PICKED"
 }
 

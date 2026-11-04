@@ -757,6 +757,29 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   assert_equal "$(outcome)" NOOP
 }
 
+@test "run publishes BLOCKED when a gate leaves a queue item waiting, NOOP when the human held dispatch" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item fix-game waits'
+  assert_equal "$(outcome)" BLOCKED
+  stub agent-hold 'echo "dispatch held"; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'held (agent-hold'
+  assert_equal "$(outcome)" NOOP
+  assert_not_called 'wt new'
+}
+
+@test "run publishes BLOCKED when a finding holds every queue item" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug fix-game "fix the game" >/dev/null
+  stub fleet-bench '[ "$1" = findings ] && echo "{\"rule\":\"starved\",\"scope\":\"host\"}"; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'every queue item waits'
+  assert_equal "$(outcome)" BLOCKED
+}
+
 @test "run publishes FAILED when it could not start what it picked" {
   game_ready
   stub wt 'exit 1'
