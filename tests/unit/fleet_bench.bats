@@ -1262,6 +1262,19 @@ rowp() {
   assert_failure 2
 }
 
+@test "a queue past the 128 KB argument limit still freezes, and vs reads the baseline back" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  # 3000 rows of about 60 bytes: over MAX_ARG_STRLEN, which a jq --arg of the queue overflowed.
+  printf '#!/usr/bin/env bash\nfor i in $(seq 3000); do printf %s "$i"; done\n' "'{\"state\":\"unjudged\",\"key\":\"row-%05d-padding-padding\"}\\n'" > "$SANDBOX/bin/queue-stub"
+  chmod +x "$SANDBOX/bin/queue-stub"
+  [ "$("$SANDBOX/bin/queue-stub" | wc -c)" -gt 131072 ]
+  BENCH_QUEUE_CMD=queue-stub BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --baseline big
+  assert_success
+  assert_line --partial 'queued after this: 3000 board rows (0 ready to start)'
+  BENCH_NOW=$((T0 + 120)) run "$SUBJECT" vs big
+  assert_success
+}
+
 @test "vs compares a frozen forecast with what each session ticked, the scope added and the sessions started since" {
   { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" forecast --baseline m 2>/dev/null >/dev/null
