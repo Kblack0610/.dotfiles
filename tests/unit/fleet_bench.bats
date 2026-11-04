@@ -1321,6 +1321,12 @@ items_stub() {
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   run jq -c '.items | {phases, finish: (.finish_p50 - '"$T0"')}' <<<"$output"
   assert_output '{"phases":2,"finish":7800}'
+  # the same plan expanded by agent-queue add --plan: each item counts its own phases, not the plan's open ones
+  items_stub '{"slug":"x2","project":"game","mode":"oneshot","state":"queued","plan":"'"$SANDBOX/plan-q.md"'","phases":"2"}' \
+    '{"slug":"x3","project":"game","mode":"oneshot","state":"queued","plan":"'"$SANDBOX/plan-q.md"'","phases":"3","after":"x2","hold":"after x2"}'
+  BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
+  run jq -c '.items | {phases, finish: (.finish_p50 - '"$T0"')}' <<<"$output"
+  assert_output '{"phases":2,"finish":7800}'
   # negative control: the same forecast with the queue unreadable has no items and says so
   BENCH_ITEMS_CMD=false BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
   assert_success

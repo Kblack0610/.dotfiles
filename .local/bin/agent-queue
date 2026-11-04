@@ -4,6 +4,8 @@
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
+#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--after slug] [--slug prefix]
+#       one oneshot item per unchecked `## Phases` line, each after the one before
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   mine [--session s]    the slug of the running or waiting item this tmux session records
@@ -212,7 +214,7 @@ project_of_cwd() {
 # --- verbs ---
 cmd_add() {
   local project="" mode=oneshot priority=normal tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag
+  local running="" session="" task=() tag planf="" dry=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -225,11 +227,19 @@ cmd_add() {
       --slug) slug="${2:?}"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
+      --plan) planf="${2:?}"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
       --) shift; task+=("$@"); break ;;
       -*) die "unknown option: $1" ;;
       *) task+=("$1"); shift ;;
     esac
   done
+  if [ -n "$planf" ]; then
+    [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
+    [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+    add_plan; return
+  fi
+  [ -z "$dry" ] || die "--dry-run goes with --plan"
   local text
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
@@ -264,6 +274,7 @@ cmd_add() {
     printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\n' "$slug" "$project" "$mode" "$priority"
     [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
     [ -n "$after" ] && printf 'after: %s\n' "$after"
+    [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
     printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
     [ -n "$running" ] && printf 'started: %s\n' "$now"
     [ -n "$session" ] && printf 'session: %s\n' "$session"
@@ -276,6 +287,70 @@ cmd_add() {
   fleet-dispatch start --item "$slug" ||
     echo "agent-queue: $slug could not start now, so it stays queued for the next dispatch pass" >&2
 }
+
+# add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
+# order, each `after:` the one before (the first after --after), carrying `plan:` and
+# `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
+# phase N is open too, for phases that share a branch; the item runs where its first phase is.
+# Every slug is checked before any item is written.
+add_plan() {
+  # The one reader of a plan's `## Phases` checklist, shared with fleet-sessions; only this verb needs it.
+  # shellcheck source=../lib/plan-phases.sh
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || die "cannot read plan-phases.sh"
+  [ -f "$planf" ] || die "--plan $planf: no such file"
+  planf="$(realpath "$planf")"
+  [ -n "$project" ] || project="$(project_of_cwd)"
+  [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
+  project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
+  local groups
+  groups="$(plan_phase_list "$planf" | jq -c '
+    to_entries | map({n: (.key + 1), state: .value.state, name: .value.name,
+      with: ((.value.name | capture("\\(with (?<w>[0-9]+)\\)") | .w | tonumber) // null)}) as $all
+    | reduce ($all[] | select(.state == "open")) as $p ({of: {}, items: []};
+        ($all[($p.with // 0) - 1]) as $w
+        | if $p.with != null and $p.with < $p.n and $p.with > 0 and $w.state == "open" then
+            .of[$p.n | tostring] = .of[$p.with | tostring]
+            | .items[.of[$p.n | tostring]] += [$p]
+          else .of[$p.n | tostring] = (.items | length) | .items += [[$p]] end)
+    | .items | map({phases: map(.n), titles: map(.name | sub(" ?\\(with [0-9]+\\)"; "")
+        | sub("^[0-9]+[.)] "; "") | sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80])})')" ||
+    die "--plan $planf: could not read its Phases checklist"
+  [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist"
+  local prefix
+  prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
+  [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
+  local rows
+  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" '.[]
+    | (.phases | length > 1) as $many
+    | [($pre + "-p\(.phases[0])"), (.phases | join(" ")),
+       ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
+        + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
+        + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
+        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it.")]
+    | @tsv' <<<"$groups")"
+  local s ph text prev="$after"
+  while IFS=$'\t' read -r s ph text; do
+    [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
+  done <<<"$rows"
+  if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
+    die "--after $after: no item has that slug"
+  fi
+  local n=0 total
+  total="$(wc -l <<<"$rows")"
+  while IFS=$'\t' read -r s ph text; do
+    if [ -n "$dry" ]; then
+      printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${prev:--}" "$text"
+    else
+      AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
+        cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} \
+          --from "$from" --agent "$agent" --slug "$s" ${prev:+--after "$prev"} -- "$text" ||
+        die "added $n of $total items from $planf; $s and the rest are not queued"
+    fi
+    n=$((n + 1)); prev="$s"
+  done <<<"$rows"
+}
+# One item through cmd_add, in a subshell so its die stops only that item.
+cmd_add_one() { (cmd_add "$@"); }
 
 cmd_list() {
   local json="" state=active date=""

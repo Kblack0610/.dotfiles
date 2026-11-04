@@ -1482,8 +1482,8 @@ forecast_json() {
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
       [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
-  # an item that names its plan counts that plan's open phases
-  iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
+  # an item with `phases:` (agent-queue add --plan) counts those; one that only names its plan, its plan's open phases
+  iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "" and (.phases // "") == "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
     | while IFS=$'\t' read -r slug pf; do
         printf '{"%s":%s}\n' "$slug" "$(plan_phase_list "$pf" | jq 'map(select(.state == "open")) | length')"
       done | jq -cs 'add // {}')
@@ -1527,7 +1527,7 @@ forecast_json() {
               | ($acc[$pp.basis | kind].factor // 1) as $fac
               | (.hold // "") as $h | ($h | sub("^after "; "")) as $par
               | {slug, project, state, mode,
-                 phases: ($ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
+                 phases: ((.phases // "" | [splits(" +")] | map(select(. != "")) | length | select(. > 0)) // $ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
                  P: ($pp.m * 60 * $fac), S: ($pp.m * 60 * ($r24 // 1)),
                  basis: ($pp.basis + (if $fac != 1 then " x\($fac)" else "" end)),
                  start: ((.started // .queued) | fromdateiso8601? // $t),
