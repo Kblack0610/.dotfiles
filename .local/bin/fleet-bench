@@ -30,14 +30,15 @@
 #                                open at each end, and whether the fleet is draining
 #   fleet-bench forecast [--json] [--queue] [--baseline <label>]
 #                                every open phase in expected order, all-done-by at the calibrated
-#                                and the recent pace, the drain; --baseline freezes it to compare
+#                                and the recent pace, the drain, and the agent queue's items on the
+#                                dispatcher's slots; --baseline freezes it to compare
 #   fleet-bench vs [<label>|latest] [--json]
 #                                a frozen forecast against what the fleet did since, per session
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_FORECAST_HORIZON_H.
+# BENCH_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H.
 
 set -uo pipefail
 
@@ -76,6 +77,8 @@ set -uo pipefail
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
+: "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
+: "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
@@ -166,6 +169,35 @@ def fleet_finish: {median_p50: (map(.finish_p50) | median | if . == null then nu
   p90_p50: (map(.finish_p50) | pct(0.9)), last_p50: (map(.finish_p50) | max),
   median_slow: (map(.finish_slow) | median | if . == null then null else floor end),
   p90_slow: (map(.finish_slow) | pct(0.9)), last_slow: (map(.finish_slow) | max)};
+# queue items in (enriched by forecast_json: phases, P and S seconds a phase, start, live, after,
+# why) -> each item placed on $K dispatcher slots on track $k ("P" or "S"). Running items hold a
+# slot until they end (the finish of its live session when that is on the schedule). Each time
+# the earliest slot frees, it goes to the first queued item in queue order whose after: parent
+# has ended by then, or else to the one ready soonest: fleet-dispatch starts the runnable head.
+# Items with a why, and those behind one, stay unplaced.
+def qplace($t; $K; $k):
+  (map(select(.state == "running")
+       | . + {end: (if .live != null then .live[$k] else ([.start + .phases * .[$k], $t] | max | floor) end)})) as $run
+  | ($run | map(.end)) as $busy
+  | {done: ($run | map({key: .slug, value: .end}) | from_entries),
+     free: ($busy + [range(0; [$K - ($busy | length), 0] | max) | $t] | sort),
+     placed: ($run | map({slug, start, end})),
+     todo: map(select(.state == "queued" and .why == null)), stuck: false}
+  | until((.todo | length) == 0 or .stuck;
+      . as $s
+      | ($s.free[0] // $t) as $slot
+      | [$s.todo | to_entries[] | select(.value.after == null or $s.done[.value.after] != null)
+         | . + {ready: ([$s.done[.value.after // ""] // $t, $t] | max)}] as $can
+      | (($can | map(select(.ready <= $slot)) | first) // ($can | min_by(.ready))) as $pick
+      | if $pick == null then .stuck = true
+        else $pick.value as $it
+          | ([$pick.ready, $slot] | max) as $start
+          | ($start + $it.phases * $it[$k] | floor) as $end
+          | .free = (.free[1:] + [$end] | sort) | .done[$it.slug] = $end
+          | .placed += [{slug: $it.slug, start: $start, end: $end}]
+          | .todo = (.todo | del(.[$pick.key]))
+        end)
+  | {placed: (.placed | INDEX(.slug)), behind: (.todo | map(.slug))};
 # progress rows in -> open phases in the newest sample at or before $t
 def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
   | if $s == null then 0 else
@@ -1371,17 +1403,38 @@ cmd_throughput() {
        end)'
 }
 
-# forecast_json <now> [queue json lines] -> one object: the schedule of every open phase, the
-# fleet's all-done-by at both ends of the band, the drain against the last window's flow, and
-# the queue behind the live work.
+# queue_slots -> how many sessions fleet-dispatch keeps live: BENCH_QUEUE_SLOTS, else its conf's
+# DISPATCH_MAX_LIVE, else the default in fleet-dispatch itself. One source, read, never restated.
+queue_slots() {
+  local n="${BENCH_QUEUE_SLOTS:-}" fd
+  [ -n "$n" ] || n=$(sed -n 's/^DISPATCH_MAX_LIVE=\([0-9][0-9]*\).*/\1/p' "$BENCH_DISPATCH_CONF" 2>/dev/null | tail -1)
+  if [ -z "$n" ] && fd=$(command -v fleet-dispatch); then
+    n=$(sed -n 's/^: "\${DISPATCH_MAX_LIVE:=\([0-9][0-9]*\)}".*/\1/p' "$fd" | head -1)
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] && printf '%s' "$n"
+}
+
+# forecast_json <now> [queue json lines] [items json lines|"!"] -> one object: the schedule of
+# every open phase, the fleet's all-done-by at both ends of the band, the drain against the
+# last window's flow, the board rows behind the live work, and the agent queue's items placed
+# on the dispatcher's slots ("!" when the queue could not be read, null in .items).
 forecast_json() {
-  local t="$1" queue="${2:-}" live names sc="$SCORES"
+  local t="$1" queue="${2:-}" items="${3:-}" live names iphases sc="$SCORES" map=/dev/null slots
   live=$(latest_live)
   [ -s "$sc" ] || sc=/dev/null
+  [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
+  slots=$(queue_slots) || slots=''
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
       [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
+  # an item that names its plan counts that plan's open phases
+  iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
+    | while IFS=$'\t' read -r slug pf; do
+        printf '{"%s":%s}\n' "$slug" "$(plan_phase_list "$pf" | jq 'map(select(.state == "open")) | length')"
+      done | jq -cs 'add // {}')
   jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
+     --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" \
+     --argjson def "$BENCH_DEFAULT_PHASE_MIN" --argjson minb "$BENCH_BASIS_MIN_N" "${CAL_ARGS[@]}" --slurpfile map "$map" \
      --slurpfile live <(printf '%s\n' "$live") --slurpfile p "$PROGRESS" --slurpfile s "$sc" "$JQ_LIB"'
     $nm[0] as $names
     | ($s | map(select(.done_epoch >= $t - $win * 3600) | .ratio // empty) | median) as $r24
@@ -1400,13 +1453,54 @@ forecast_json() {
                  epoch: (if $net > 0 then ($t + $open / $net * 3600 | floor) else null end)},
          queue: (if $queue == "" then null else {rows: ($q | length), ready: ($q | map(select(.state == "ready")) | length),
                  phases_per_plan: $ppp, phases: (($q | length) * ($ppp // 0) | floor)} end),
-         schedule: $sch}'
+         schedule: $sch}
+      + {items: (if $items == "!" then null else
+          ($items | split("\n") | map(select(. != "") | fromjson)) as $it
+          | ($it | map(.slug) | INDEX(.)) as $active
+          | ($p | group_by(.project) | map({key: .[0].project,
+                value: (group_by([.session_id, .plan_file]) | map(phase_minutes) | add // [])}) | from_entries) as $byp
+          | ($byp | [.[]] | add // []) as $every
+          | ($s | accuracy($minn; $lo; $hi) | INDEX(.basis)) as $acc
+          | ($sch | map({key: (.target | sub(":[0-9]+$"; "")), value: {P: .finish_p50, S: .finish_slow}}) | from_entries) as $onsch
+          | ($slots | if . == "" then 1 else tonumber end) as $K
+          | ($it | map(
+              (($map[0].trackers // {})[.project].repo // .project) as $repo
+              | ($byp[$repo] // []) as $j
+              | (if ($j | length) >= $minb then {m: ($j | median), basis: "project-median(\($j | length))"}
+                 elif ($every | length) >= $minb then {m: ($every | median), basis: "fleet-median(\($every | length))"}
+                 else {m: $def, basis: "default"} end) as $pp
+              | ($acc[$pp.basis | kind].factor // 1) as $fac
+              | (.hold // "") as $h | ($h | sub("^after "; "")) as $par
+              | {slug, project, state, mode,
+                 phases: ($ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
+                 P: ($pp.m * 60 * $fac), S: ($pp.m * 60 * ($r24 // 1)),
+                 basis: ($pp.basis + (if $fac != 1 then " x\($fac)" else "" end)),
+                 start: ((.started // .queued) | fromdateiso8601? // $t),
+                 live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
+                 after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
+                 why: (if .state == "waiting" then "waiting on you"
+                       elif ($h | startswith("after ")) and $active[$par] == null then "after \($par), which did not finish ok"
+                       elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
+                       else null end)})) as $e
+          | ($e | qplace($t; $K; "P")) as $a | ($e | qplace($t; $K; "S")) as $b
+          | ($e | map(select(.live == null and $a.placed[.slug] != null)
+                      | {slug, project, state, phases, basis, start: $a.placed[.slug].start,
+                         p50: $a.placed[.slug].end, slow: $b.placed[.slug].end})) as $rows
+          | {count: ($it | length), running: ($it | map(select(.state == "running")) | length),
+             queued: ($it | map(select(.state == "queued")) | length),
+             waiting: ($it | map(select(.state == "waiting")) | length),
+             slots: $K, slots_known: ($slots != ""), on_schedule: ($e | map(select(.live != null)) | length),
+             phases: ($rows | map(.phases) | add // 0),
+             finish_p50: ($rows | map(.p50) | max), finish_slow: ($rows | map(.slow) | max),
+             not_scheduled: ($e | map(select(.why != null) | {slug, why})
+                             + ($a.behind | map({slug: ., why: "behind an item that is not scheduled"}))),
+             schedule: ($rows | sort_by(.p50))} end)}'
 }
 
 # cmd_forecast [--json] [--queue] [--baseline <label>]: when the live work should be done, and in
 # what order. --baseline freezes it into forecasts.jsonl, queue included, for vs to compare.
 cmd_forecast() {
-  local json=0 withq=0 label='' t fc queue=''
+  local json=0 withq=0 label='' t fc queue='' items
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -1418,7 +1512,9 @@ cmd_forecast() {
   [ -s "$PROGRESS" ] || { say "no samples yet: run fleet-bench sample"; return 1; }
   t=$(now)
   [ "$withq" = 0 ] || queue=$($BENCH_QUEUE_CMD 2>/dev/null) || { say "the dispatch queue could not be read; forecast without it"; queue=''; }
-  fc=$(forecast_json "$t" "$queue") || return 1
+  items=$($BENCH_ITEMS_CMD 2>/dev/null) || { say "the agent queue could not be read; forecast without its items"; items='!'; }
+  [ -z "$items" ] || [ "$items" = "!" ] || queue_slots >/dev/null || say "the dispatcher's slot count could not be read; placing queue items on 1 slot"
+  fc=$(forecast_json "$t" "$queue" "$items") || return 1
   if [ -n "$label" ]; then
     mkdir -p "$DIR"
     jq -c --arg l "$label" '{label: $l} + .' <<<"$fc" >> "$FORECASTS"
@@ -1433,8 +1529,18 @@ cmd_forecast() {
     "  drain: " + (if .drain.epoch != null
       then "\(.drain.epoch | hm) at \(.drain.out_per_h)/h out against \(.drain.in_per_h)/h in (last 24h)"
       else "not draining at current inflow (in \(.drain.in_per_h)/h, out \(.drain.out_per_h)/h): no time until one of them changes" end),
+    (if .items == null then "  agent queue: unreadable"
+     elif .items.count == 0 then "  agent queue: empty"
+     else .items as $i
+       | "  agent queue: \($i.count) items (\($i.running) running, \($i.queued) queued, \($i.waiting) waiting on you), \($i.phases) phases on \($i.slots) dispatch slots"
+         + (if ($i.schedule | length) > 0 then ": all done by \($i.finish_p50 | hm), slow \($i.finish_slow | hm)" else "" end)
+         + (if $i.on_schedule > 0 then " (\($i.on_schedule) running already counted above)" else "" end),
+         (if ($i.not_scheduled | length) > 0
+          then "    not scheduled: \($i.not_scheduled | length): " + ($i.not_scheduled | group_by(.why) | map("\(length) \(.[0].why)") | join(", "))
+          else empty end) end),
     (if .queue != null then "  queued after this: \(.queue.rows) board rows (\(.queue.ready) ready to start), about \(.queue.phases) phases at the median \(.queue.phases_per_plan // "-") per plan" else empty end),
-    ([.schedule[] | . as $s | .phases[] | {t: .p50, slow, target: $s.target, name}] | sort_by(.t)) as $all
+    ([(.schedule[] | . as $s | .phases[] | {t: .p50, slow, target: $s.target, name}),
+      (.items.schedule // [] | .[] | {t: .p50, slow, target: "queue:\(.project)", name: .slug})] | sort_by(.t)) as $all
     | .made_epoch as $now | ($all | map(select(.t <= $now))) as $due
     | (if ($due | length) > 0 then "  due now, past their estimate: \($due | length) phases in \($due | map(.target) | unique | length) sessions" else empty end),
       "  next phases, in expected order:",
