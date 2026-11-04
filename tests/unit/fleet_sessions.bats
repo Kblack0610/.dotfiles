@@ -756,6 +756,37 @@ queue_item() {
   [ ! -d "$FLEET_SHEPHERD_DIR/labels" ] || [ -z "$(ls -A "$FLEET_SHEPHERD_DIR/labels")" ]
 }
 
+@test "label ^name flips a label, and a change lands on the session's tmux window" {
+  landed_fixture
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  echo '{"sessions":[{"session_id":"sid-9","target":"lab/s1:1","bucket":"WORKING","labels":[]}]}' > "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 ^manual
+  assert_output manual
+  grep -qxF "tmux -L lab set-option -wq -t =s1:1 @fleet_labels manual" "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 ^manual
+  [ "$output" = - ]
+  grep -qxF "tmux -L lab set-option -wqu -t =s1:1 @fleet_labels" "$NOTES_FIXTURE/calls.log"
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
+}
+
+@test "tmux_project sets stage and labels per server in one call and clears windows with no session" {
+  local doc="$SANDBOX/state.json"
+  jq -n '{sessions: [
+    {session_id: "a", target: "lab/s1:1", bucket: "STALLED", labels: ["manual", "quality:x"]},
+    {session_id: "b", target: "lab/s2:3", bucket: "WORKING", labels: []},
+    {session_id: "c", target: "hub/dotfiles:2", bucket: "LANDED"},
+    {session_id: "d", target: "no-server-here", bucket: "DONE"}]}' > "$doc"
+  printf 's1:1\ngone:4\n' > "$NOTES_FIXTURE/tmux.fleet_windows.lab"
+  : > "$NOTES_FIXTURE/calls.log"
+  tmux_project "$doc"
+  local lab hub
+  lab="$(grep -F 'tmux -L lab set-option' "$NOTES_FIXTURE/calls.log")"
+  hub="$(grep -F 'tmux -L hub set-option' "$NOTES_FIXTURE/calls.log")"
+  [ "$(grep -c 'set-option' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  [ "$lab" = "tmux -L lab set-option -wq -t =s1:1 @fleet_stage STALLED ; set-option -wq -t =s1:1 @fleet_labels manual,quality:x ; set-option -wq -t =s2:3 @fleet_stage WORKING ; set-option -wqu -t =s2:3 @fleet_labels ; set-option -wqu -t =gone:4 @fleet_stage ; set-option -wqu -t =gone:4 @fleet_labels" ]
+  [ "$hub" = "tmux -L hub set-option -wq -t =dotfiles:2 @fleet_stage LANDED ; set-option -wqu -t =dotfiles:2 @fleet_labels" ]
+}
+
 # cells <sid> <target> <ci> <stage>: one board_cells line with everything else fixed
 cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
 
