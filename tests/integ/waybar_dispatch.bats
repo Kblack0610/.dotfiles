@@ -70,6 +70,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 2 "last pass: 3m ago, last start: 12m ago"
   assert_line --index 3 "starts last hour: run 4, hand 1, redispatch 0, resume 0"
   assert_line --index 4 "heals last hour: reaped 7, flapping 0"
+  assert_line --index 5 "headroom: - more could start after the last pass"
 }
 
 @test "no reaps in the hour leaves no +N" {
@@ -93,6 +94,18 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "1 item(s) flapping"
+}
+
+@test "more could start than the limits let the last pass: amber, with the count" {
+  feed summary_dispatch.could_start=2
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  assert_output --partial "2 more could start now: a limit, not the machine, holds them"
+  assert_output --partial "headroom: 2 more could start after the last pass"
+  feed summary_dispatch.could_start=0
+  run "$MODULE"
+  assert_equal "$(class)" ok
 }
 
 @test "queue-starved tripped is red with !, whatever else is fine" {
