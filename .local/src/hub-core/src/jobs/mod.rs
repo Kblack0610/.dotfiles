@@ -7,7 +7,6 @@
 //! |----------|------------------------------------------|-------------------------------------------------|
 //! | agentctl | `systemctl --user list-units agentctl@*`  | the run ledger `<state>/runs.jsonl` (agentctl)  |
 //! | timer    | the same, for other timer-started units  | journald unit records (user journal retention)  |
-//! | night    | `~/.agent/night/{queue,running}`          | `~/.agent/night/done/<date>/*.result.md`        |
 //! | unity    | -                                        | `unity-test-runs/runs.tsv` (the slots ledger)   |
 //! | ci       | runner-exporter `github_runner_state`, `github_actions_job_waiting` | `github_actions_run_recent` |
 //! | k8s      | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
@@ -43,17 +42,15 @@ pub const DEFAULT_WINDOW_SECS: i64 = 24 * 3600;
 pub enum Source {
     Agentctl,
     Timer,
-    Night,
     Unity,
     Ci,
     K8s,
 }
 
 impl Source {
-    pub const ALL: [Source; 6] = [
+    pub const ALL: [Source; 5] = [
         Source::Agentctl,
         Source::Timer,
-        Source::Night,
         Source::Unity,
         Source::Ci,
         Source::K8s,
@@ -62,7 +59,6 @@ impl Source {
         match self {
             Source::Agentctl => "agentctl",
             Source::Timer => "timer",
-            Source::Night => "night",
             Source::Unity => "unity",
             Source::Ci => "ci",
             Source::K8s => "k8s",
@@ -92,8 +88,6 @@ pub enum LogRef {
     },
     /// One systemd invocation in the user journal.
     Journal { invocation: String },
-    /// A night-shift task's log.
-    Night { slug: String },
     /// A GitHub Actions run or job, by its URL.
     Gh { url: String, done: bool },
     /// A k8s Job's pod logs in Loki, from its start to its end (None: to now).
@@ -168,8 +162,6 @@ pub struct Jobs {
 pub struct Paths {
     /// agentctl's state dir: `runs.jsonl`, `<name>.std{out,err}.log`, `<name>/log-mark`.
     pub agentctl: PathBuf,
-    pub night: PathBuf,
-    pub night_logs: PathBuf,
     pub unity_runs: PathBuf,
     /// Where finished GitHub logs are kept once fetched.
     pub cache: PathBuf,
@@ -189,8 +181,6 @@ impl Paths {
             .or_else(|| env("AGENTCTL_STATE"))
             .unwrap_or_else(|| state.join("agentctl"));
         Paths {
-            night: env("NIGHT_SHIFT_DIR").unwrap_or_else(|| home.join(".agent/night")),
-            night_logs: env("NIGHT_SHIFT_LOGS").unwrap_or_else(|| agentctl.join("night-shift")),
             unity_runs: env("UNITY_RUN_LEDGER")
                 .unwrap_or_else(|| state.join("unity-test-runs/runs.tsv")),
             cache: env("XDG_CACHE_HOME")
@@ -244,7 +234,6 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
                     let got = match src {
                         Source::Agentctl => systemd::agentctl(paths, since, at),
                         Source::Timer => systemd::timers(since, at),
-                        Source::Night => local::night(paths, since, at),
                         Source::Unity => {
                             let (mut j, mut e) = local::unity(paths, since);
                             let (g, ge) = remote::gates(at);
@@ -282,7 +271,7 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
 /// A heartbeat timer runs 1440 times a day and would bury everything else. For the
 /// systemd-started sources, each job keeps one row for its latest run (counting the rest in
 /// `runs`) plus a row for every run that did not pass, so a failure is never folded away.
-/// CI, k8s, night and unity runs are each their own piece of work and stay one row per run.
+/// CI, k8s and unity runs are each their own piece of work and stay one row per run.
 pub fn collapse(jobs: Vec<Job>) -> Vec<Job> {
     use std::collections::HashMap;
     let foldable =

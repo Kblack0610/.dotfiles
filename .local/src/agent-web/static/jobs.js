@@ -1,11 +1,11 @@
 "use strict";
-// The Jobs tab: every job that runs on its own (agentctl runners, user timers, night-shift,
-// Unity gates, CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log.
+// The Jobs tab: every job that runs on its own (agentctl runners, user timers, Unity gates,
+// CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log.
 
 // Most sources are files and journald, which push nothing to a browser, so the open tab
 // re-reads on the Infra board's cadence; the server folds reads inside 15s into one.
 const JOBS_REFRESH_MS = 60e3;
-const JOB_SOURCES = ["agentctl", "timer", "night", "unity", "ci", "k8s"];
+const JOB_SOURCES = ["agentctl", "timer", "unity", "ci", "k8s"];
 const JOB_STATES = ["running", "queued", "done"];
 // Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
 const JOBS_OPEN = 200;

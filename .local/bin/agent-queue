@@ -24,7 +24,7 @@ die() { echo "agent-queue: $*" >&2; exit 1; }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # --- the file format ---
-# `key: value` lines, a `---` line, then the task as typed (night-shift's format and parser).
+# `key: value` lines, a `---` line, then the task as typed.
 fm_get() { # file key
   awk -v k="$2" '$0 == "---" { exit }
     index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null

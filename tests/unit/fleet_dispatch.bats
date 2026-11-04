@@ -928,13 +928,10 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 # --- night: tier 3 to an open PR ---------------------------------------------------------
 
-# night_ready: the agent-runtime board in the default profile, a night-shift stand-in that records
-# each queue call and writes the brief to brief.<n>, and every gate passing.
+# night_ready: the agent-runtime board in the default profile, every gate passing.
 night_ready() {
   export DISPATCH_NIGHT_PROFILE='' DISPATCH_NIGHT_PROJECTS=agent-runtime
   project agent-runtime alpha "$SANDBOX/repos/app"
-  stub night-shift 'F="$NOTES_FIXTURE"; n=$(grep -c "^night-shift" "$F/calls.log" 2>/dev/null); printf "%s\n" "$3" > "$F/brief.$(( n + 1 ))"
-    set -- "${@:1:2}" "<brief>" "${@:4}"; echo "night-shift $*" >> "$F/calls.log"; [ -z "${NS_FAIL:-}" ]'
 }
 
 # night_verdict <key> [area] [tier3_only] [size] -- a tier-3 skip under the current policy for the row's text
@@ -949,17 +946,27 @@ night_verdict() {
 
 state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_FIXTURE/rows.agent-runtime.agent"; }
 
-@test "night: a tier-3 agent-runtime row is queued to night-shift, started on the board, and starts no session" {
+# night_keys -> the board keys of the queued night items, sorted.
+night_keys() {
+  agent-queue list --json --state queued | jq -r 'select((" " + (.tags // "") + " ") | contains(" night ")) | .from | ltrimstr("board:agent-runtime:")' | sort | paste -sd, -
+}
+
+fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
+
+@test "night: a tier-3 agent-runtime row is promoted as a night item with its brief, started on the board, no session" {
   night_ready
   row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3 #high'
   night_verdict 'wt done never reaps' wt
 
-  run cmd_night
+  fill
   assert_success
   assert_output --partial 'queued agent-runtime: wt done never reaps'
-  assert_called "night-shift queue $SANDBOX/repos/app <brief> --slug wt done never reaps --project agent-runtime --max-turns 60"
+  f=$(qitem queued wt-done-never-reaps)
+  [ -n "$f" ] || fail "no night item"
+  assert_equal "$(qfield "$f" tags) $(qfield "$f" priority) $(qfield "$f" area)" 'night low wt'
+  assert_equal "$(qfield "$f" from)" 'board:agent-runtime:wt done never reaps'
   [ "$(state_of 'wt done never reaps')" = '- [/]' ] || fail "row not started"
-  run cat "$NOTES_FIXTURE/brief.1"
+  run agent-queue show wt-done-never-reaps
   assert_output --partial 'wt done never reaps (worktree.sh:213)'
   assert_output --partial 'Where: worktree.sh:213'
   assert_output --partial 'Merge gate: make -C tests test-fast'
@@ -970,7 +977,7 @@ state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_F
   [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls -A "$FLEET_DISPATCH_DIR/live")" ] || fail "wrote a session ledger"
 }
 
-@test "night: a tier-3 row never starts a merging session, even with a dispatch verdict" {
+@test "night: a tier-3 row never becomes a merging item, even with a dispatch verdict" {
   night_ready
   echo '{"board": {"max_tier": 9, "projects": ["agent-runtime"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
   row agent-runtime agent 'drop the dead timer' '- [ ] drop the dead timer #tier/3'
@@ -981,9 +988,9 @@ state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_F
   assert_output ''
   run picks "$(all_open)" 5
   assert_output ''
-  run cmd_night
-  assert_called 'night-shift queue'
-  assert_not_called 'wt new'
+  fill
+  assert_equal "$(night_keys)" 'drop the dead timer'
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
 }
 
 @test "night: only rows tier 3 alone holds back; asks, decisions, devices, the human's machine and lower tiers stay out" {
@@ -1001,13 +1008,12 @@ state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_F
 
   run night_rows ''
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'unclear,untagged'
-  run cmd_night
+  fill
   assert_success
-  assert_equal "$(grep -c '^night-shift queue' "$NOTES_FIXTURE/calls.log")" 1
-  assert_called '--slug untagged'
+  assert_equal "$(night_keys)" 'untagged'
 }
 
-@test "night: at most 3 a night, one an area: subtract or fix first, then observer rows, then oldest #high" {
+@test "night: at most 3 active, one an area: subtract or fix first, then observer rows, then oldest #high" {
   night_ready
   row agent-runtime agent 'add a panel' '- [ ] add a panel for y #high'
   row agent-runtime agent 'kpi: board_open' '- [ ] kpi: board_open past threshold #high'
@@ -1018,64 +1024,45 @@ state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_F
   night_verdict 'add a panel'; night_verdict 'kpi: board_open'; night_verdict 'add a column'
   night_verdict 'retire the timer' timers; night_verdict 'retire the hook' timers; night_verdict 'add w'
 
-  run cmd_night
+  fill --dry-run --json
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'retire the hook,kpi: board_open,add a column'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
+  [ "$(state_of 'retire the hook')" = '- [ ]' ] || fail "fill --dry-run started a row"
+  fill
   assert_success
-  assert_equal "$(grep '^night-shift queue' "$NOTES_FIXTURE/calls.log" | sed 's/.*--slug \(.*\) --project.*/\1/' | paste -sd,)" \
-    'retire the hook,kpi: board_open,add a column'
+  assert_equal "$(night_keys)" 'add a column,kpi: board_open,retire the hook'
   [ "$(state_of 'add a panel')" = '- [ ]' ] || fail "a fourth row was started"
+  fill
+  assert_equal "$(agent-queue list --json --state queued | grep -c .)" 3
 }
 
-@test "night: queues nothing when no account has room, while dispatch is held, or over the load pace" {
+@test "night: a row agent-queue will not take is un-started again" {
   night_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   night_verdict 'fix it'
-  stub claude-acct 'exit 1'
-  run cmd_night
-  assert_success
-  assert_output --partial 'no account has room under its weekly pace, queueing nothing'
-
-  stub claude-acct 'exit 0'
-  stub agent-hold 'exit 1'
-  run cmd_night
-  assert_output --partial 'held (agent-hold dispatch), queueing nothing'
-
-  stub agent-hold 'exit 0'
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  run cmd_night
-  assert_output --partial 'over the'
-  assert_not_called 'night-shift'
-  [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row started"
-}
-
-@test "night: the tasks run on the account room names" {
-  night_ready
-  row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
-  night_verdict 'fix it'
-  stub claude-acct '[ "$1" = room ] && echo "/acct/alt"; exit 0'
-  run cmd_night
-  assert_called '--max-turns 60 --account /acct/alt'
-}
-
-@test "night: a row night-shift will not take is un-started again" {
-  night_ready
-  row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
-  night_verdict 'fix it'
-  NS_FAIL=1 run cmd_night
-  assert_output --partial 'night-shift queue failed for fix it; row un-started'
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  stub agent-queue '[ "$1" = add ] && { echo "no room" >&2; exit 1; }; exec "$(dirname "$0")/agent-queue.real" "$@"'
+  fill
+  assert_output --partial 'could not queue agent-runtime row, un-started: fix it'
   [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
 }
 
-@test "night --dry-run names the picks past a gate, and queues and claims nothing" {
+@test "night: a night item waits outside the night window, then starts --pr-only on the account room names" {
   night_ready
-  stub fleet-presence 'echo "here 1 tmux"'
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   night_verdict 'fix it' hooks
-  run cmd_night --dry-run
+  stub claude-acct '[ "$1" = room ] && echo "/acct/alt"; exit 0'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "app-agent-1"'
+  export AGENT_QUEUE_NIGHT=01:00-06:00
+  AGENT_QUEUE_NOW=12:00 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'no row qualifies'
+  [ -n "$(qitem queued fix-it)" ] || fail "not queued for the night"
+  assert_not_called 'wt new'
+  AGENT_QUEUE_NOW=02:00 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'the human is not away'
-  assert_output --partial 'would queue: agent-runtime hooks: fix it'
-  assert_not_called 'night-shift'
-  assert_not_called 'ptask agent-runtime --agent start'
+  assert_called 'CLAUDE_CONFIG_DIR=/acct/alt claude'
+  assert_called '/one-shot --pr-only fix it'
+  [ -n "$(qitem running fix-it)" ] || fail "night item not started in its window"
 }
 
 @test "night: the judge is asked for tier3_only on new rows, and keeps it" {
@@ -1086,10 +1073,10 @@ DISPATCH-VERDICTS-START
 {"project": "agent-runtime", "lane": "agent", "key": "fix it", "tier": 3, "size": "S", "area": "hooks", "clear": true, "agent_only": true, "tier3_only": true, "verdict": "skip", "reason": "tier 3"}
 DISPATCH-VERDICTS-END
 J
-  run cmd_night
+  fill
   assert_success
   assert_called 'judge called'
-  assert_called '--slug fix it'
+  assert_equal "$(night_keys)" 'fix it'
   [ "$(jq -r .tier3_only "$FLEET_DISPATCH_DIR/verdicts.jsonl")" = true ]
 }
 

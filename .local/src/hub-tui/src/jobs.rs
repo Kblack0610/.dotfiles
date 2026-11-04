@@ -1,5 +1,5 @@
-//! The Jobs page: every job `hub_core::jobs::collect` finds (agentctl, timers, night shift,
-//! Unity gates, CI, k8s), filtered and searched, with a log pane under the list.
+//! The Jobs page: every job `hub_core::jobs::collect` finds (agentctl, timers, Unity gates,
+//! CI, k8s), filtered and searched, with a log pane under the list.
 
 use hub_core::jobs::{Job, Jobs, Source, State};
 use ratatui::text::{Line, Span};
@@ -376,7 +376,7 @@ mod tests {
         };
         let id = Some(row_id(v.shown(&j)[v.sel]));
         j.jobs
-            .insert(0, job(Source::Night, "new-task", State::Running, None));
+            .insert(0, job(Source::Timer, "new-task", State::Running, None));
         v.reselect(&j, id);
         assert_eq!(v.shown(&j)[v.sel].name, "dream");
     }
