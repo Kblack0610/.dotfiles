@@ -10,6 +10,7 @@
 //! Served behind the home cluster ingress (home-config `apps/agents`),
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
+mod assets;
 mod auth;
 mod fleet;
 mod infra;
@@ -26,6 +27,7 @@ use std::time::Duration;
 
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
+use assets::LOGIN;
 use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -42,51 +44,6 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
-const INDEX: &str = include_str!("index.html");
-const LOGIN: &str = include_str!("login.html");
-/// The board tabs' scripts, served beside the page. Each registers itself in `TABS`.
-const STATIC: &[(&str, &str, &str)] = &[
-    (
-        "charts.js",
-        "text/javascript",
-        include_str!("../static/charts.js"),
-    ),
-    (
-        "watch.js",
-        "text/javascript",
-        include_str!("../static/watch.js"),
-    ),
-    (
-        "log.js",
-        "text/javascript",
-        include_str!("../static/log.js"),
-    ),
-    (
-        "infra.js",
-        "text/javascript",
-        include_str!("../static/infra.js"),
-    ),
-    (
-        "jobs.js",
-        "text/javascript",
-        include_str!("../static/jobs.js"),
-    ),
-    (
-        "queue.js",
-        "text/javascript",
-        include_str!("../static/queue.js"),
-    ),
-    (
-        "shepherd.js",
-        "text/javascript",
-        include_str!("../static/shepherd.js"),
-    ),
-    (
-        "fleet.js",
-        "text/javascript",
-        include_str!("../static/fleet.js"),
-    ),
-];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
 const PAGE_MAX: usize = 1000;
@@ -165,6 +122,7 @@ async fn main() -> Result<()> {
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
+        .layer(middleware::map_response(assets::headers))
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -382,7 +340,7 @@ async fn require_auth(
 /// The app for a signed-in browser, the sign-in page otherwise.
 async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
     match signed_in(&s, &headers) {
-        Some(_) => Html(INDEX).into_response(),
+        Some(_) => Html(assets::index()).into_response(),
         None => Html(LOGIN.replace("{{error}}", "")).into_response(),
     }
 }
@@ -954,11 +912,13 @@ async fn job_log(Query(q): Query<JobLogQuery>) -> ApiResult<Response> {
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
 }
 
-async fn static_file(UrlPath(name): UrlPath<String>) -> Response {
-    match STATIC.iter().find(|(n, _, _)| *n == name) {
-        Some((_, ctype, body)) => ([(header::CONTENT_TYPE, *ctype)], *body).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+#[derive(Deserialize)]
+struct StaticQuery {
+    v: Option<String>,
+}
+
+async fn static_file(UrlPath(name): UrlPath<String>, Query(q): Query<StaticQuery>) -> Response {
+    assets::file(&name, q.v.as_deref())
 }
 
 async fn events_stream(

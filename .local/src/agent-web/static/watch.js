@@ -56,7 +56,6 @@ function buildLanes(now) {
   return { t0, lanes: [...lanes.values()].sort((a, b) => rank(a.target) - rank(b.target) || a.target.localeCompare(b.target)) };
 }
 
-const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
 function tiles(sessions, state) {
   const n = (b) => sessions.filter((s) => s.bucket === b).length;
@@ -158,9 +157,7 @@ function renderWatch() {
     html += `<h2 class="sec">${b} <span class="muted">${list.length}</span></h2><div class="wgrid">${list.map((s) => card(s, maxCtx, now)).join("")}</div>`;
   }
   html += `<h2 class="sec">Changes <label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></h2><div class="panel feed">${feed(now)}</div>`;
-  const y = el.scrollTop;
-  el.innerHTML = html;
-  el.scrollTop = y;
+  paint(el, html);
 }
 
 $("watch").addEventListener("click", (e) => {
@@ -178,7 +175,9 @@ $("watch").addEventListener("change", (e) => {
   renderWatch();
 });
 
+// fleet-state writes every minute; only the open tab reads it.
+const watchFeed = pushed("watch", ["watch"], refreshWatch);
 TABS.watch = {
-  show() { if (wst.data) renderWatch(); else { renderWatch(); refreshWatch(); } },
-  onEvent(ev) { if (ev.kind === "watch" || ev.kind === "resync") refreshWatch(); },
+  show() { renderWatch(); watchFeed.show(!wst.data); },
+  onEvent: watchFeed.onEvent,
 };

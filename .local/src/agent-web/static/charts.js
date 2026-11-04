@@ -12,15 +12,6 @@ function meter(frac, color) {
   return `<span class="meter"><span style="width:${pct.toFixed(1)}%;background:${color || "var(--accent)"}"></span></span>`;
 }
 
-// "3m", "2h 5m", "4d 3h".
-function dur(min) {
-  if (min == null || isNaN(min)) return "-";
-  min = Math.round(min);
-  if (min < 60) return `${min}m`;
-  if (min < 1440) return `${Math.floor(min / 60)}h${min % 60 ? " " + (min % 60) + "m" : ""}`;
-  return `${Math.floor(min / 1440)}d ${Math.floor((min % 1440) / 60)}h`;
-}
-
 // Long targets keep the tail that tells them apart, cut at a dash:
 // "unity-core-playground-agent-26:1" -> "unity-..agent-26:1".
 function clip(s, n = 24) {

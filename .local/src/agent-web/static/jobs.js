@@ -10,7 +10,7 @@ const JOB_STATES = ["running", "queued", "done"];
 // Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
 const JOBS_OPEN = 200;
 // `hist` is the one job whose every run is listed instead of the folded list.
-const jst = { data: null, err: null, timer: null, src: "", state: "", hist: null, sel: null, log: null, all: false };
+const jst = { data: null, err: null, src: "", state: "", hist: null, sel: null, log: null, all: false };
 
 const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? ""}|${j.state}`;
 
@@ -20,18 +20,6 @@ const refreshJobs = coalesce(async () => {
   if (st.tab === "jobs") renderJobs();
 });
 
-function jobsTick() {
-  if (st.tab !== "jobs") { clearInterval(jst.timer); jst.timer = null; return; }
-  if (!document.hidden) refreshJobs();
-}
-
-// A time today as HH:MM, an older one with its weekday.
-function jobWhen(t) {
-  if (!t) return "-";
-  const d = new Date(t * 1e3);
-  return d.toDateString() === new Date().toDateString() ? clock(t * 1e3)
-    : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-}
 
 function resultCell(j) {
   if (j.state === "running") return `<td class="muted">running</td>`;
@@ -44,11 +32,11 @@ function jobRow(j) {
   const k = jobKey(j);
   const dur = j.state === "queued" ? `wait ${secs(j.secs)}` : secs(j.secs);
   const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">x${j.runs}</a>` : "";
-  const next = j.next ? ` <span class="muted">next ${jobWhen(j.next)}</span>` : "";
+  const next = j.next ? ` <span class="muted">next ${when(j.next)}</span>` : "";
   const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">&rarr;</a>` : "";
   return `<tr class="jr${k === jst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-key="${esc(k)}">` +
     `<td>${esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
-    `<td class="n">${jobWhen(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +
+    `<td class="n">${when(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +
     `<td class="wrap muted">${esc(j.detail || "")}${next}</td></tr>`;
 }
 
@@ -77,14 +65,12 @@ function renderJobs() {
     : `<div class="panel">No jobs match.</div>`;
   html += `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>`;
   if (jst.log) html += `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>`;
-  const y = el.scrollTop;
-  el.innerHTML = html;
-  el.scrollTop = y;
+  paint(el, html);
 }
 
 async function openLog(j) {
   jst.sel = jobKey(j);
-  const title = `${j.source} ${j.name} ${jobWhen(j.started)}`;
+  const title = `${j.source} ${j.name} ${when(j.started)}`;
   if (!j.log) { jst.log = { title, text: j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log." }; renderJobs(); return; }
   jst.log = { title, text: "Loading..." };
   renderJobs();
@@ -110,11 +96,9 @@ $("jobs").addEventListener("click", (e) => {
   if (j) openLog(j);
 });
 
+const pollJobs = poll("jobs", refreshJobs, JOBS_REFRESH_MS);
+
 TABS.jobs = {
-  show() {
-    renderJobs();
-    refreshJobs();
-    if (!jst.timer) jst.timer = setInterval(jobsTick, JOBS_REFRESH_MS);
-  },
+  show() { renderJobs(); pollJobs(); },
   onEvent(ev) { if (ev.kind === "resync" && st.tab === "jobs") refreshJobs(); },
 };
