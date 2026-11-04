@@ -1323,7 +1323,7 @@ queued_item() {
   } > "$d/20261103-100000-$1.md"
 }
 
-@test "starved: an urgent or high item runnable over the limit with no queue start in that time fails and names it; holds, low, new, a recent start and a dispatch hold do not" {
+@test "starved: an urgent or high item runnable over the limit with no run start in that time fails and names it; holds, low, new, a recent run start and a dispatch hold do not, a hand start does not clear it" {
   local old new
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
   queued_item fresh urgent "$new"
@@ -1345,7 +1345,8 @@ queued_item() {
   refute_output --partial 'low-old'
   refute_output --partial 'tagged-old'
   refute_output --partial 'after-old'
-  # A queue that is moving is not starved: a start in the window clears it, a redispatch does not.
+  # A queue the passes are moving is not starved: a run start in the window clears it; a
+  # redispatch or a hand start does not, since neither proves the run pass works.
   mkdir -p "$FLEET_DISPATCH_DIR"
   printf -- '- %s started game-agent-1 on lab (redispatch) for game: queue item x, resume 1\n' "$(date '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
@@ -1353,8 +1354,11 @@ queued_item() {
   printf -- '- %s started game-agent-1 on lab (run) for game: queue item other\n' "$(date -d '-2 hours' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_failure
-  assert_output --partial 'last queue start: '"$(date -d '-2 hours' '+%Y-%m-%d')"
+  assert_output --partial 'last run start: '"$(date -d '-2 hours' '+%Y-%m-%d')"
   printf -- '- %s started game-agent-2 on lab (hand) for game: queue item other2\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_failure
+  printf -- '- %s started game-agent-3 on lab (run) for game: queue item other3\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_success
   stub agent-hold 'exit 1'
