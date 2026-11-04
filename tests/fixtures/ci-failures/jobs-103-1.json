@@ -1,0 +1,1 @@
+{"jobs": [{"id": 1031, "name": "PlayMode 1", "conclusion": "failure", "started_at": "2026-11-03T12:01:00Z", "completed_at": "2026-11-03T12:05:00Z", "runner_name": "pool-1", "html_url": "https://example.invalid/job/1031", "steps": [{"name": "Set up job", "conclusion": "success"}]}]}
