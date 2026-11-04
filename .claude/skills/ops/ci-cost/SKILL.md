@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [ci, cost, benchmark, testing, unity, playground]
-  reviewed: 2026-11-02
+  reviewed: 2026-11-03
 ---
 
 # CI cost
@@ -30,7 +30,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
    - Run `scripts/ci-cost.py` first; it prints runner-hours per workflow per day, the gate median split into EditMode and PlayMode, queue times, and the slowest classes. Extend the script rather than hand-computing a number it should own.
    - For what the script does not give (Unity launch cost, per-class time, a gate's pick, EditMode per assembly) and how to read a window without fooling yourself, follow `docs/operations/ci-cost.md`, Measuring.
    - Raw `gh run list` / `gh run view --json jobs` calls: cache every response in the scratchpad and reuse it; a loop over runs hits the API rate limit fast, and a 502 mid-loop leaves partial data.
-3. **Attribute.** Put every minute in one bucket: which workflow and trigger (nightly, gate, branch dispatch, release), then fixed per-launch cost, per-test cost, over-picking (classes picked that the change cannot affect), retries and solo reruns, or a slow test. Check and rule out the cheap suspects too, and write the ruled-out list down so the next pass does not redo it.
+3. **Attribute.** Put every minute in one bucket: which workflow and trigger (nightly, gate, branch dispatch, release), then fixed per-launch cost, per-test cost, over-picking (classes picked that the change cannot affect), repeat gates (a re-gate after only a main merge, a second gate of a gated commit, a `run_attempt` above 1), solo reruns of a batch red, a cold Library import, or a slow test. Count the workstation's local Unity hours too (the run ledger `scripts/test/slots.sh` writes); the pool numbers leave them out. Check and rule out the cheap suspects too, and write the ruled-out list down so the next pass does not redo it.
 4. **Rank levers, deletion first.** A lever that removes a mechanism, a knob, a rule or a duplicate step ranks above any that adds one (`docs/operations/ci.md` rule 13). Then rank by runner-hours saved per day: minutes saved per run times runs per day that the lever touches. A big saving on a rare run loses to a small one on every gate. Note the floor (a Unity launch costs about a minute however little it runs) so targets stay honest.
 5. **Change one lever per PR,** carrying what `docs/operations/ci.md` rules 1 and 13 require (a test, a negative control, a replay for a picker change, a mechanism removed for one added).
 6. **Re-measure the same way** after it lands, with `scripts/ci-cost.py --days N --before <end of the before window>`, and append the before/after row to `docs/operations/ci-cost.md`. An estimate in a plan is replaced by the measured number, never left standing.
