@@ -1372,9 +1372,10 @@ forecast_json() {
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
       [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
-  jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --argjson names "$names" --arg queue "$queue" \
+  jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
      --slurpfile live <(printf '%s\n' "$live") --slurpfile p "$PROGRESS" --slurpfile s "$sc" "$JQ_LIB"'
-    ($s | map(select(.done_epoch >= $t - $win * 3600) | .ratio // empty) | median) as $r24
+    $nm[0] as $names
+    | ($s | map(select(.done_epoch >= $t - $win * 3600) | .ratio // empty) | median) as $r24
     | ($p | flow($t - $win * 3600; $t)) as $f
     | ($live | schedule($t; $r24 // 1; $names)) as $sch
     | ($sch | map(.left) | add // 0) as $open
@@ -1456,7 +1457,7 @@ cmd_vs() {
   b=$(baseline_pick "$label") || { say "no baseline $label: freeze one with fleet-bench forecast --baseline <label>"; return 1; }
   t=$(now)
   local v
-  v=$(progress_since "$(jq -r .made_epoch <<<"$b")" | jq -cs --argjson b "$b" --argjson t "$t" "$JQ_LIB"'vs($b; $t)') || return 1
+  v=$(progress_since "$(jq -r .made_epoch <<<"$b")" | jq -cs --slurpfile b <(printf '%s\n' "$b") --argjson t "$t" "$JQ_LIB"'vs($b[0]; $t)') || return 1
   if [ "$json" = 1 ]; then printf '%s\n' "$v"; return 0; fi
   jq -r "$JQ_LIB"'
     "vs baseline \(.label) (frozen \(.made_epoch | hm), \(.hours)h ago)",
