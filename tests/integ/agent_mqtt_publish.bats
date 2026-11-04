@@ -108,6 +108,23 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .default_entity_id <<< "$c")" sensor.agent_watch_skill_drift
 }
 
+@test "the dispatch queue is fleet-dispatch's own stats, published as they come" {
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":3,\"runnable_urgent\":1,\"starved\":false,\"flapping_items\":0,\"flapping\":[]}'" > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  run "$PUB" --quiet
+  p="$(payload agents/testhost/summary/dispatch)"
+  assert_equal "$(jq -c '[.state, .runnable_urgent, .starved]' <<< "$p")" '[3,1,false]'
+  c="$(payload homeassistant/sensor/agent_testhost_summary_dispatch/config)"
+  assert_equal "$(jq -r .name <<< "$c")" 'Dispatch queue'
+}
+
+@test "an unreadable dispatch queue publishes no dispatch sensor, rather than a zero" {
+  printf '#!/usr/bin/env bash\necho "{\\"error\\":\\"agent-queue unreadable\\"}"; exit 1\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  run "$PUB" --quiet
+  assert_equal "$(payload agents/testhost/summary/dispatch)" ''
+}
+
 @test "live sessions are counted by agent-panel glyph" {
   printf 'a:1\t~\tp1\tt1\nb:1\t!\tp2\tt2\nc:1\t✓\tp3\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
   run "$PUB" --quiet

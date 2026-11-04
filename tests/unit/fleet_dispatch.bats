@@ -1467,3 +1467,40 @@ queued_item() {
   assert_success
   assert_output --partial 'dispatch is held'
 }
+
+@test "stats: runnable work and its age, starts by origin and reap moves in the last hour, flapping items" {
+  local old new t
+  old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item stuck high "$old"
+  queued_item low-new low "$new"
+  queued_item after-old urgent "$old" '' never-done   # held by its after:, so not runnable
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  t() { date -d "-$1 minutes" '+%Y-%m-%d %H:%M'; }
+  {
+    printf -- '- %s started game-agent-1 on lab (run) for game: queue item old\n' "$(t 120)"
+    printf -- '- %s reaped game-agent-1: queue item old running -> waiting\n' "$(t 110)"
+    printf -- '- %s started game-agent-2 on lab (run) for game: queue item a\n' "$(t 40)"
+    printf -- '- %s started game-agent-3 on lab (hand) for game: queue item b\n' "$(t 30)"
+    printf -- '- %s started game-agent-4 on lab (redispatch) for game: queue item c, resume 1\n' "$(t 20)"
+    for m in 45 30 15; do printf -- '- %s reaped game-agent-3: queue item b running -> waiting\n' "$(t $m)"; done
+    printf -- '- %s reaped game-agent-2: queue item a waiting -> running\n' "$(t 10)"
+    printf -- '- %s reaped game-agent-9: session gone, queue item z done with PR 7\n' "$(t 5)"
+  } > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.runnable, .runnable_urgent, .starved]' <<<"$output")" '[2,1,false]'
+  assert_equal "$(jq -c '[.starts_1h_run, .starts_1h_hand, .starts_1h_redispatch, .starts_1h_resume]' <<<"$output")" '[1,1,1,0]'
+  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[5,1,["b"]]'
+  # The oldest runnable item is the 2h one, give or take the test's own runtime.
+  jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
+  jq -e '.last_run_start_epoch != null' <<<"$output"
+  # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
+  assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
+}
+
+@test "stats fails, saying so, when the queue is unreadable" {
+  stub agent-queue 'exit 1'
+  run cmd_stats
+  assert_failure
+  assert_output '{"error":"agent-queue unreadable"}'
+}
