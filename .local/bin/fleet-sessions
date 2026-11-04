@@ -2,7 +2,7 @@
 # fleet-sessions - where is each live Claude session in its delivery, and does it need anyone?
 #
 #   fleet-sessions                    one row per session, grouped by bucket
-#   fleet-sessions --json             the same, one JSON object per line (for fleet-overseer)
+#   fleet-sessions --json             the same, one JSON object per line (for the shepherd)
 #   fleet-sessions --write            --json, and the fleet state document every view renders
 #                                     ($FLEET_STATE_FILE; schema and vocabulary in
 #                                     .local/src/docs/fleet-states.md), each session with its
@@ -30,8 +30,8 @@
 # A pending ask (NEEDS; the one record of waiting on the human, which a Stop check makes an
 # attended session file) and a ready open PR that conflicts with the default branch (STALLED)
 # decide before the session's status, so none can hide behind WORKING or read as DONE.
-# Facts come from agent-panel, git, gh and the ask queue; no model. fleet-overseer's
-# `status` and `shepherd` verbs read this. Thresholds are the FLEET_* block below.
+# Facts come from agent-panel, git, gh and the ask queue; no model. The shepherd skill's
+# `status` and `nudge` verbs read this. Thresholds are the FLEET_* block below.
 
 set -uo pipefail
 

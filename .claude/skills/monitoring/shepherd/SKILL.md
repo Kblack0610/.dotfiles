@@ -1,0 +1,73 @@
+---
+name: shepherd
+description: >-
+  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases. Use for "which sessions are stuck", "nudge the stalled ones", "wind down the finished ones", "/shepherd status". Load is fleet-pace; one pass is fleet-lead.
+metadata:
+  category: monitoring
+  tags: [agents, fleet, shepherd, nudge, delivery]
+  reviewed: 2026-11-03
+---
+
+# shepherd
+
+The delivery role of `fleet-lead` (Binks). It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
+
+## Verb: `status`
+
+Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and `gh pr list`), with no judgment:
+
+| Bucket | Means | The shepherd |
+|---|---|---|
+| NIGHTLY | one row per repo whose default branch is red: the latest decided run of a workflow failed (or `gh` could not read it). In practice these are nightly and scheduled suites; the PR gate keeps the default branch green, so a NIGHTLY row is not a broken main. Names each red workflow, its sha, and its suspects: the PRs since that workflow's last green, when there are `FLEET_SUSPECTS_MAX` (3) or fewer. `owners` are the live sessions whose merged PR is a suspect | owners get the STALLED nudge; with no owner, it goes to the human, paged high |
+| NEEDS | waiting on a prompt or permission, a plan awaiting approval, a pending ask whose `claude_session` is this session (even while it is busy on other work), or a turn that ended asking the human a question in its own conversation (agent-panel's `question`, the `?` mark) | lists it for the human |
+| STALLED | a ready open PR that conflicts with the default branch, even while busy: its checks are green, or it has none and the session is idle 20m or more (a conflict on a red or running PR rides in its other bucket's reason, `PR #N CI red, conflicts with the default branch`); or idle 20m or more with something unlanded: dirty files or changed files not on the default branch and no PR, a red PR, a green PR not merged, work after a merged PR, or its merged PR is a suspect for a nightly red | nudges once |
+| DONE | nothing unlanded or open (as LANDED), and every line of its plan's `## Phases` checklist is `[x]` or `[-]`, or its PR merged and the plan has no checklist or there is no plan file (one phase of work) | tells it to wind down, once |
+| LANDED | idle, its PR merged (or it never had one) and the tree clean, nothing after the PR, not a suspect for a nightly red, and its plan has an unchecked phase (`next_phase`), or no `## Phases` checklist and nothing merged | sends it on to its next phase, once |
+| UNCLEAR | no plan file and nothing merged, a closed PR, no git | lists it with the reason |
+| WORKING | none of the above, and busy, a background shell idle under 120m (unless its plan is finished: then DONE after 20m), a heavy child process, CI running, or idle under 20m | leaves it alone, unless its open phase is overdue |
+
+**The rule.** Every row's `blockers` lists each reason it is not DONE; quote them when you report a row. A session is DONE when its plan's `## Phases` checklist has no `- [ ]` left (`[x] <name> (#PR)` landed, `[-] <name>: <why>, <board row>` deferred by the human), no ask, prompt or plan approval of its own is open, and nothing it made is unlanded. A plan with no checklist, or no plan file, is one phase: its merged PR with a clean tree is DONE. Then, and only then, it winds down. Until then a merged phase is LANDED and the session carries on with the next one in the same session.
+
+Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every dirty file is its own, but in a repo's main checkout only the files it edited count (`edited_files` from agent-panel), so the human's half-done config does not stall every session in that checkout. Ahead counts files whose content is not on the default branch, not commits, so a squash merge or a local merge of landed work reads 0.
+
+**The watch board.** The hub board's Sessions tab (Prefix o, window `hub:board`) is the same facts as a stage board the human leaves open: one row per session with a column per stage (sync: commits behind the default branch; conflicts: whether merging it in would conflict; tree; PR; CI; plan phases; eta: the expected finish from `fleet-bench eta`, HH:MM or with a weekday when not today, plus its basis short (`s3` is the session's own median over 3 phases, `p16` the project's, `default` nothing measured yet); stage = the bucket; labels; idle; why, which on a WORKING row is the session's last action; task; prs: merged over total this session, all repos; work and wait: how much of its age was work, and the largest other share, jobs, you or parked), the open asks, and below them the last changes from `~/.agent/shepherd/watch.log` ("agent-11  ci pending -> fail, stage WORKING -> STALLED (PR #979 CI red)"). `fleet-state.timer` runs `fleet-sessions tick` every minute: one fetch and collect that writes the state document (with each session's `eta`), appends the changes to `watch.log` and keeps `watch.state`, so the log builds whether or not the tab is open. Read `watch.log` since your last pass to see what moved. `fleet-sessions explain <who>` prints one session in full: plan, each PR with its state, the time split, its last action and message. Parked hours say a session sat still until something woke it, not why, so check before calling one forgotten.
+
+**Labels** carry only what the facts cannot: `fleet-sessions label <session|self> +name|-name` (no ops prints them), shown in the `labels` field. `hands-off` is the human's: the shepherd leaves that session alone. `quality:<step>` is a session's own, set while a cleanup pass runs and shown in the board's quality column. Stages are never labels; they are derived every pass.
+
+`FLEET_IDLE_MIN` (20), `FLEET_SHELL_STALE_MIN` (120: a background shell waiting on a gate, a test or a subagent, by agent-panel's `open_job` class, is WORKING until this, then bucketed on its facts with "background shell idle over 120m"; any other shell, a sleep loop or a watch, is bucketed on its facts after `FLEET_IDLE_MIN` with "background shell is not a gate or test"; a finished plan reads DONE after `FLEET_IDLE_MIN` with "background shell still running") and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the NIGHTLY rows first, then the counts per bucket, then the NEEDS and UNCLEAR rows in full. Read-only.
+
+## Verb: `nudge`
+
+What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue` and `nightly red` due lines. The code (`fleet-shepherd due`) applies the same rules to the state document, so a due line is the row this verb would act on.
+
+1. `fleet-dispatch reap`, which un-starts the row of a dispatched session that ended without it done and drops ledgers whose row is finished. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished` (DONE's work conditions alone, ignoring status and idle, so a session can check its own row mid-turn; wind-down step 0 reads it), `owners`, `dispatch` (the row it was started for, or null), `main_red` (its repo's default branch is red: a NIGHTLY row exists for it; the field name is kept for its JSON readers), and `labels`. NIGHTLY rows come first and lead the report: a nightly red is the most important thing on the board.
+2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
+3. Skip every row whose `labels` holds `hands-off`: the human has it, so it is never messaged or escalated; list it in the report as hands-off. Skip every PARKED row the same way (its claude is gone, so a message wakes nothing); list it as parked. A nightly red never stops work: `main_red` changes no nudge, because the PR gate keeps the default branch green and a nightly is fixed by its owner or the human, not by stalling everyone else. 2026-11-03: the old skip left three sessions idle 3-5 hours on unlanded work behind a Shots-only red, and the human said the nightly should never stop work. For each other DONE, LANDED or STALLED row with `nudged: false`, send one `fleet-comms` message, then record it with `fleet-sessions mark <session_id> "<fact>"`.
+   - DONE: "Your plan is finished and nothing is open: every phase in `<plan_file>` is ticked or deferred. Stop any background shell you started, record board done with proof, then run /wind-down auto."
+   - LANDED with `next_phase`: "PR #N merged. Your next phase is `<next_phase>` (your plan: `<plan_file>`). Tick the phase that landed (`- [x] <name> (#N)`), run /my:autopilot's sanity check (still wanted, not already done on origin/main, no other session on the same files), then start it under /my:autopilot rules: new branch off origin/main, your own recommendation on every design choice, the same landing tail. Where the repo's CLAUDE.md groups phases that touch the same area (unity-core-playground does), put them on that one branch. A plan you wrote for work the human asked for needs no approval. Stop only at a hard stop or a risk you can name (a conflict, a change to shared behaviour, undoing landed work, a likely bad result for the player); then ask the human in this conversation and file it with `agent-ask post --recommend <yours>`, giving that reason (it records your session itself)."
+   - LANDED with no checklist (`phases_total` null, nothing merged yet): "No PR of yours has merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then start the first unchecked phase under the same /my:autopilot rules."
+   - STALLED `nightly red after PR #N`: "The default branch's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
+   - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Merge origin/<base> into your branch and resolve it; never rebase a pushed branch. A green gate stays green: gate again only when the merge changed files your pick depends on (the repo's CI doc, for unity-core-playground docs/operations/ci.md rule 6). Then carry on with your plan."
+   - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
+   The session decides what its next phase is, because it has the plan in context. The shepherd only says that the last one landed.
+   - `overdue:` due line (a WORKING session, not mid-turn, whose open phase has run twice its `fleet-bench eta` estimate and at least an hour): read its pane first. If it is plainly moving (a gate running, output in the last minutes), `fleet-shepherd skip "<line>" "<what it is doing>"`. Otherwise: "Phase `<n>/<m>` `<name>` has been open `<age>`, about twice the `<expected>` a phase takes here. What is blocking it? If it is the human, ask in this conversation and file it with `agent-ask post`; if it is too big, land what works and split the rest into the next phase; otherwise carry on and land it." Then run the ledger call the line prints. An `escalate overdue:` line goes to the human as step 4 says, with the ledger call it prints.
+4. **Escalate.** Rows for the human: NEEDS and UNCLEAR rows, NIGHTLY rows with empty `owners`, and DONE, LANDED or STALLED rows with `nudged: true` (the same fact survived a nudge). Never message them. For each one with `escalated: false`, run `fleet-sessions escalate <session_id> "<fact>"` and add it to this pass's page (`fleet-lead`, Reporting). A NIGHTLY row with owners is theirs to fix; it reaches the human only when the owner's nudge did not move it.
+
+## The ledger
+
+`~/.agent/shepherd/<session_id>` holds the last nudged fact and the last escalated fact. A new fact for the same session (its PR went from red to green, or the next phase merged) is nudged again; the same fact never is. An open PR's fact ends with its head commit (`@branch@<sha12>`), so a push that is still red is a new fact and gets one more nudge. A conflict's fact ends with the merge base instead (`@branch base <sha12>`): the same unresolved conflict at a new head is the same fact, and only a branch that merged the default branch in and then conflicts again is nudged again.
+
+## Do NOT
+
+The fleet-wide list is in `fleet-lead`; these are this role's own.
+
+- Close, kill, or `/wind-down` a session yourself (`claude-acct move` is not a close: the same conversation carries on in the same pane). The shepherd asks; the session winds itself down with `/wind-down auto`, which refuses when its plan is unfinished or its last message is an open question to the human.
+- Message a NEEDS, UNCLEAR, or WORKING session, or repeat a fact the ledger already holds. The exceptions are an `overdue:` line, and `fleet-pace`'s line to a session whose search was killed.
+
+## Related
+
+- `fleet-lead`: the pass that routes these due lines here, and the report and page.
+- `fleet-comms`: message wording.
+- `fleet-bench`: the phase estimates `overdue:` is measured against, and the board's eta column.
+- `one-shot`: the delivery tail (gate, PR, merge, board done, pull, wind-down) a nudge points a session along.
+- `wind-down`: what a DONE session runs as `/wind-down auto`; it checks its row reads `finished` and that no question to the human is open before closing. A human-asked wind-down skips both checks.

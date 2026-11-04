@@ -1,7 +1,7 @@
 ---
 name: fleet-bench
 description: >-
-  Benchmark the agent fleet from counted facts: ETAs and their accuracy, scorecard, KPIs, blocking asks. Use for "when will agent-N be done", "show me the scorecard", "what is waiting on me". Load: fleet-overseer.
+  Benchmark the agent fleet from counted facts: ETAs and their accuracy, scorecard, KPIs, blocking asks. Use for "when will agent-N be done", "show me the scorecard", "what is waiting on me". Load: fleet-pace.
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
@@ -16,7 +16,7 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 ## Scope and triggers
 
-Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | flow | forecast | vs | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "when will the fleet be done", "what order will the work land in", "how did today go against the forecast", "is work coming in faster than it gets done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-overseer) and not for what one session did after it ended (session-outcomes).
+Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | flow | forecast | vs | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "when will the fleet be done", "what order will the work land in", "how did today go against the forecast", "is work coming in faster than it gets done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-pace) and not for what one session did after it ended (session-outcomes).
 
 ## Where to look
 
@@ -142,5 +142,5 @@ The sampler, the scorecard, the CI count and the ask digest call no model. They 
 
 ## Related
 
-- `fleet-overseer`: the shepherd. Its summary reads `fleet-bench eta`, and `fleet-sessions` (which it owns) is this skill's input.
+- `shepherd` and `fleet-lead`: the shepherd reads `fleet-sessions` (this skill's input) and its `overdue:` lines are measured against `fleet-bench eta`; the `fleet-lead` summary quotes the ETAs.
 - `agentctl-session-outcomes` (DREAMING.md "Session outcomes"): PRs, reverts, corrections and cost per ended session. The bench joins it by `session_id`; it does not count those again.

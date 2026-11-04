@@ -31,7 +31,7 @@ set -uo pipefail
 : "${DISPATCH_PROFILES:=bnb}"
 : "${DISPATCH_PER_PASS:=1}"   # one new session a pass: each is easy to evaluate before the next
 : "${DISPATCH_MAX_LIVE:=6}"
-: "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-overseer pace target
+: "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
