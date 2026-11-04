@@ -739,7 +739,7 @@ cmd_headroom() {
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, max_live: $max_live, slots_free: ($max_live - $live),
-     load: ($load | num), load_cap: (($max_load | tonumber) * $cores),
+     load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
