@@ -1198,33 +1198,33 @@ JSON
 # HELP agent_session_context_tokens Context tokens the session holds.
 # TYPE agent_session_context_tokens gauge
 agent_session_context_tokens{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 9
-agent_session_context_tokens{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 120000
+agent_session_context_tokens{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 120000
 # HELP agent_session_idle_minutes Minutes since the session went idle, by agent-panel.
 # TYPE agent_session_idle_minutes gauge
 agent_session_idle_minutes{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 40
-agent_session_idle_minutes{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 3
+agent_session_idle_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 3
 # HELP agent_session_age_minutes Minutes since the session started.
 # TYPE agent_session_age_minutes gauge
-agent_session_age_minutes{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 95
+agent_session_age_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 95
 # HELP agent_session_phases_done Phases ticked in the plan checklist of the session.
 # TYPE agent_session_phases_done gauge
-agent_session_phases_done{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 1
+agent_session_phases_done{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
 # HELP agent_session_phases_total Phases in the plan checklist of the session.
 # TYPE agent_session_phases_total gauge
-agent_session_phases_total{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 4
+agent_session_phases_total{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 4
 # HELP agent_session_behind Commits the branch of the session is behind its base.
 # TYPE agent_session_behind gauge
-agent_session_behind{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 2
+agent_session_behind{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 2
 # HELP agent_session_dirty Uncommitted files in the worktree of the session.
 # TYPE agent_session_dirty gauge
 agent_session_dirty{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 0
-agent_session_dirty{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 5
+agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 5
 # HELP agent_session_conflicts 1 when the branch of the session conflicts with its base.
 # TYPE agent_session_conflicts gauge
-agent_session_conflicts{target="lab/game-agent-2:1",project="_unscoped",bucket="WORKING"} 1
+agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
 # HELP agent_session_info Joins a session target to its Claude Code session_id; always 1.
 # TYPE agent_session_info gauge
-agent_session_info{target="lab/game-agent-2:1",project="_unscoped",session_id="s-123"} 1
+agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
 # HELP agent_sessions Live sessions per fleet-sessions bucket.
 # TYPE agent_sessions gauge
 agent_sessions{bucket="DONE"} 0
