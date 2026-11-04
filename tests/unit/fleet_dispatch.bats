@@ -485,7 +485,11 @@ game_ready() {
   assert_equal "$(qfield "$f" priority) $(qfield "$f" lane) $(qfield "$f" profile) $(qfield "$f" area)" 'low human bnb fix crash on load'
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" model)" 'lab:game-agent-1 run opus'
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
-  assert_called 'ptask game done "fix crash on load" --proof pr:<N>'
+  # The session lands through agent-land, which closes the item and its row: the brief names no ptask.
+  assert_called 'Merge with agent-land <N> (AGENT_QUEUE_ITEM=fix-crash-on-load is set)'
+  assert_called 'promoted from the board row "fix crash on load"'
+  run grep -c 'ptask game done' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix-crash-on-load'
   [ ! -e "$FLEET_DISPATCH_DIR/live" ] || fail "wrote the retired dispatch/live ledger"
   # The session holds a runner slot on its area, read from the item alone.
@@ -1096,6 +1100,19 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   stub agent-queue '[ "$1" = add ] && { echo "no room" >&2; exit 1; }; exec "$(dirname "$0")/agent-queue.real" "$@"'
   fill
   assert_output --partial 'could not queue agent-runtime row, un-started: fix it'
+  [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
+}
+
+@test "night: a cancelled night item (default profile, no profile: line) hands its row back" {
+  night_ready
+  row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
+  night_verdict 'fix it'
+  fill
+  [ "$(state_of 'fix it')" = '- [/]' ] || fail "row not started"
+  [ -z "$(qfield "$(qitem queued fix-it)" profile)" ] || fail "fixture should carry no profile"
+  agent-queue cancel fix-it
+  run cmd_reap
+  assert_output --partial 'un-started agent-runtime: fix it (queue item fix-it ended cancelled)'
   [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
 }
 

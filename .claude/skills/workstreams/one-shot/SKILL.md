@@ -1,20 +1,20 @@
 ---
 name: one-shot
 description: >-
-  Take one task to landed with no check-ins: worktree, final-pass, gate, PR, merge, board proof, wind-down. Use for "one shot this", "/one-shot <task>", "just ship this end to end". --pr-only stops at the PR.
+  Take one task to landed with no check-ins: worktree, final-pass, gate, PR, merge, queue record, wind-down. Use for "one shot this", "/one-shot <task>", "just ship this end to end". --pr-only stops at the PR.
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
-  reviewed: "2026-11-02"
+  reviewed: "2026-11-03"
 ---
 
 # one-shot
 
-Carries one task the whole way: work, validation, PR, merge, board record, wind-down, in a single run with no questions. It owns no procedure of its own. Each step points at the rule or skill that already owns it, so when that source changes this skill does not drift.
+Carries one task the whole way: work, validation, PR, merge, queue record, wind-down, in a single run with no questions. It owns no procedure of its own. Each step points at the rule or skill that already owns it, so when that source changes this skill does not drift.
 
 ## Scope and triggers
 
-Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on the agent board with proof, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
+Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on its agent-queue item, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
 
 ## When to Use
 
@@ -30,7 +30,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
    - Cut a worktree off the remote tip per `~/.claude/CLAUDE.md` (`wt new`, or `git worktree add ~/.worktrees/<repo>-<slug> -b <branch> origin/<base>`). If the session already sits in a clean, current agent worktree, branch there instead.
-   - `notes ptask <project> --agent add "<short title>"` then `start` it (one `start` only: a second one toggles it off).
+   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session); `<slug>` below is that item. Add no board or sheet row; an item promoted from the board closes its own row when it lands.
 
 3. **Implement.** Make the smallest change that fully solves the task, matching the surrounding code. Send broad exploration to Explore subagents. Update the docs the project CLAUDE.md says a change of this kind must touch.
 
@@ -42,20 +42,20 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Start ONE background command and act only on its result:
    ```bash
-   <the project's gate command> && agent-land <N> --project <project> --title "<title>" --sheet --plan ~/.claude/plans/<slug>.md --phase "<task>"
+   <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
-   `agent-land` waits for the PR's checks, merges the validated head, closes the agent-board row, adds and closes the human's `#oneshot` sheet row (a one-shot is always an ask the human wrote), and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--sheet --plan --phase` to its `agent-land`.
+   `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
-   - A sheet row that already asked for this work: drop `--sheet` and `notes ptask <project> done "<row>" --proof pr:<N>` that row instead. A project with no sheet prints `sheet: ... skipped`; say so in the wind-down note.
+   - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
-   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Add the sheet row open with the PR in its title, `notes ptask <project> add "<title> (#N) #oneshot" '#low'` (`#low` stops the CLI defaulting it to `#high`; quote it, or zsh reads a comment), and leave the agent row started.
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`. A board row stays started; the human's merge closes it.
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
-   - **Blocked mode** (hard gate or red gate): write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
+   - **Blocked mode** (hard gate or red gate): `agent-queue move <slug> waiting`, write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
 
 ## Do NOT
 

@@ -48,8 +48,26 @@ esac
 EOF
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
 
+  # The real agent-queue, on a sandbox store: the item steps are its verbs.
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  unset AGENT_QUEUE_ITEM
+
   PLAN="$SANDBOX/plan.md"
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
+}
+
+# item <slug> [from] [lane] [profile] -> a running queue item
+item() {
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  {
+    printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: normal\nfrom: %s\nagent: claude\n' "$1" "${2:-human}"
+    printf 'queued: 2026-11-03T10:00:00Z\nstarted: 2026-11-03T10:00:00Z\n'
+    [ -z "${3:-}" ] || printf 'lane: %s\n' "$3"
+    [ -z "${4:-}" ] || printf 'profile: %s\n' "$4"
+    printf -- '---\n%s\n' "$1"
+  } >"$AGENT_QUEUE_DIR/running/20261103-100000-$1.md"
 }
 
 @test "behind main: stops before the checks and the merge with exit 3" {
@@ -72,14 +90,13 @@ EOF
 }
 
 @test "happy path: each step once, in order, one line each" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --sheet --plan "$PLAN" --phase "6. agent-land"
+  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "6. agent-land"
   assert_success
   assert_output - <<'EOF'
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
 board: closed "ship it" with pr:42
-sheet: added and closed "ship it #oneshot"
 plan: ticked "6. agent-land"
 landed #42
 EOF
@@ -95,8 +112,6 @@ git rev-parse HEAD
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
 notes ptask dotfiles --agent done ship it --proof pr:42
-notes ptask dotfiles add ship it #oneshot #low
-notes ptask dotfiles done ship it #oneshot --proof pr:42
 EOF
 }
 
@@ -154,12 +169,13 @@ EOF
 }
 
 @test "--dry-run prints every step and runs nothing" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --sheet --plan "$PLAN" --phase "6. agent-land" --dry-run
+  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "6. agent-land" --dry-run
   assert_success
   assert_line --index 0 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 1 --partial 'fetch: git fetch origin'
   assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 5 --partial 'plan: tick'
+  assert_line --index 3 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 4 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -173,4 +189,72 @@ EOF
   assert_line --index 0 'merge: #42 already MERGED, recording it'
   run grep -c 'pr merge\|pr checks\|^git' "$LOG"
   assert_output 0
+}
+
+@test "--item: the item gets the PR and moves to done; a human item closes no row and needs no --project" {
+  item tidy-loader
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line --index 3 'item: tidy-loader done with pr:42'
+  assert_line --index 4 'landed #42'
+  run grep -c '^notes' "$LOG"
+  assert_output 0
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr)"' <<<"$output")" 'done ok 42'
+}
+
+@test "AGENT_QUEUE_ITEM is the default item; a board item closes its own row with lane and profile" {
+  item fix-crash 'board:game:fix crash: on load' human bnb
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42 --project ignored --title ignored
+  assert_success
+  assert_line --index 4 'board: closed "fix crash: on load" with pr:42'
+  run grep '^notes' "$LOG"
+  assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42'
+}
+
+@test "an agent-lane board item closes its row with --agent" {
+  item tidy 'board:dotfiles:tidy it' agent
+  run "$LAND" 42 --item tidy --dry-run
+  assert_success
+  assert_line --index 3 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
+  assert_line --index 4 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  run agent-queue show tidy --json
+  assert_equal "$(jq -r .state <<<"$output")" running
+}
+
+@test "an unknown or finished item is refused before the merge" {
+  run "$LAND" 42 --item nope
+  assert_failure 2
+  assert_output --partial 'no queue item nope'
+  item old
+  agent-queue move old done --status ok
+  run "$LAND" 42 --item old
+  assert_failure 2
+  assert_output --partial 'queue item old is done ok, not open'
+  run grep -c 'pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
+@test "a re-run after a failed board step finds the item done with this PR and closes the row" {
+  item fix 'board:game:fix it' human
+  mv "$SANDBOX/bin/notes" "$SANDBOX/notes.ok"
+  printf '#!/usr/bin/env bash\necho "board locked" >&2; exit 1\n' >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$LAND" 42 --item fix
+  assert_failure 1
+  assert_output --partial 'board failed: board locked'
+  mv "$SANDBOX/notes.ok" "$SANDBOX/bin/notes"
+  run "$LAND" 42 --item fix
+  assert_success
+  assert_line --index 0 'merge: #42 already MERGED, recording it'
+  assert_line --index 2 'board: closed "fix it" with pr:42'
+  run "$LAND" 43 --item fix
+  assert_failure 2
+  assert_output --partial 'queue item fix is done ok, not open'
+}
+
+@test "--sheet is gone" {
+  run "$LAND" 42 --project dotfiles --title "ship it" --sheet
+  assert_failure 2
+  assert_output --partial 'unknown flag: --sheet'
 }
