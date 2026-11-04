@@ -216,7 +216,7 @@ function queuedTable(inst) {
     `<tr><td>${esc(g.l.pool || "-")}</td><td>${esc(g.l.repo || "-")}</td><td>${g.l.pr ? "#" + esc(g.l.pr) : "-"}</td><td class="n">${g.n}</td><td class="n">${secs(g.old)}</td><td class="wrap">${esc(g.l.branch || "-")}</td></tr>`).join("")}</table>`;
 }
 
-// What is red: the dashboard's table (watches tripped, runners failed, nodes NotReady) plus the
+// What is red: cc:red_now, the dashboard's table (watches, runners, nodes, feed, Sentinel) plus the
 // board's DOWN line (offline runners, stuck runs, the exporter and GitHub).
 function redItems(inst) {
   const items = (inst.red || []).map((s) => s.labels.item).filter(Boolean).sort();
