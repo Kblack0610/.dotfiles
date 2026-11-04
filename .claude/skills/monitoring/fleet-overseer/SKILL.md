@@ -111,6 +111,8 @@ This is the shape for any status question about the fleet: "where are we", "how 
 5. **How far to trust the ETAs:** the accuracy table from `fleet-bench report` (per basis and per horizon: how many scored, median miss, and actual over predicted time), then one line saying whether the ETAs above run long or short and by how much. An ETA whose basis carries a factor (`project-median(13) x0.3 (n=21)`) is already scaled by its basis's raw ratio, so judge it by that basis's `calibrated` line, and say there is none yet when no calibrated ETA has been scored; do not apply the raw ratio to it a second time. Added 2026-10-28, when that table showed the project-median ETAs ran about 3x long.
 6. **When the fleet is done:** the all-done-by, slow and drain lines from `fleet-bench forecast`, never a hand roll-up of the ETAs, then `fleet-bench vs` against the day's `daily-<date>` baseline (phases ticked against expected, and inflow now against inflow when frozen). Added 2026-11-03, when the human asked for the whole picture: phases, the order of work, and expectations to compare against.
 
+**Keep every answer.** Each summary in this shape, and each answer to a question the human asks the shepherd in chat, is also written with `fleet-shepherd log --rundown "<their question, or rundown>"`, with the answer on stdin. It becomes its own file in `~/.agent/shepherd/rundowns/` and gets a pointer line in `log.md`. Added 2026-11-03, when the human lost answers that existed only in the chat after it compacted.
+
 ## Verb: `shepherd`
 
 One pass. It runs two ways, and only one acts at a time:
@@ -167,13 +169,13 @@ Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file or
 - `fleet`: rows the human tagged `#worker/fleet`, up to tier 1, with a `#tier/N`.
 - `board`: `unity-playground` agent-board rows with no `#worker` tag, up to tier 2. No tags are needed, because the judge reads the tier. A row tagged `#tier/3` stays out.
 
-The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners, build, deploy, harness and tooling) never gets a merging session; it runs unattended only to an open PR, through `fleet-dispatch night` (below). A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier.
+The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners, build, deploy, harness and tooling) never gets a merging session; it runs unattended only to an open PR, as a `night` queue item (below). A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier.
 
 - `fleet-dispatch run --dry-run` runs the gates, says what would stop a real pass, and prints the picks without starting anything. It still judges new rows, up to `DISPATCH_JUDGE_MAX`. `fleet-dispatch run` starts them.
 - `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, judged tier, area, and the one-line reason. A verdict made under an older policy is marked stale.
 - `fleet-dispatch candidates` lists the open rows it would judge next.
 - `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
-- `fleet-dispatch night [--dry-run]` is the night-shift runner's first step (`NIGHT_SHIFT_FILL`), not a timer of its own. Behind the same gates as a run pass, it judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit) and queues up to `DISPATCH_NIGHT_MAX` (3) whose verdict says tier 3 is the only reason to skip (`tier3_only`) into `night-shift queue`, on the account `claude-acct room` names. It skips `#ask`, `decide:`, device, the human's machine, secrets, prod and wishes; it ranks subtract-or-fix rows first, then `kpi:`/`dream`/`retro` rows, then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. It never starts a session.
+- Night items: `fleet-dispatch fill` also judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit) and promotes up to `DISPATCH_NIGHT_MAX` (3 active, one an area) whose verdict says tier 3 is the only reason to skip (`tier3_only`) as queue items tagged `night`, which agent-queue holds to its night window; each brief stops at an open PR. It skips `#ask`, `decide:`, device, the human's machine, secrets, prod and wishes; it ranks subtract-or-fix rows first, then `kpi:`/`dream`/`retro` rows, then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. `fleet-dispatch fill --dry-run` lists them as `night`.
 
 A pass, in order:
 1. Reap. Room is `DISPATCH_MAX_LIVE` minus live dispatched sessions, capped at `DISPATCH_PER_PASS`.

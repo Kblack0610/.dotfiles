@@ -6,7 +6,6 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch reap              settle ledger entries whose session is gone
-#   fleet-dispatch night [--dry-run] queue up to 3 tier-3 harness rows into night-shift, to a PR only
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
 #       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--row KEY])
 #                                    start ONE session the way every agent must: see cmd_start
@@ -23,8 +22,8 @@
 # to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the lab server
 # running /one-shot, tagged @dispatch, with a ledger entry at live/<session>. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
-# `night` is the one way tier 3 runs unattended: the night-shift runner calls it before its run,
-# and it queues the dotfiles boards' tier-3 rows as night-shift tasks, which stop at an open PR.
+# Tier 3 runs unattended only as a `night` item: fill promotes the dotfiles boards' tier-3 rows
+# with that tag, and agent-queue holds them to the night window; each stops at an open PR.
 # Tuning is the DISPATCH_* block, set in the agentctl conf.
 
 set -uo pipefail
@@ -42,13 +41,12 @@ set -uo pipefail
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
-# The night pass: the default notes profile's agent lanes of the dotfiles boards.
+# Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_NIGHT_PROJECTS:=agent-runtime notes-cockpit}"
 : "${DISPATCH_NIGHT_MAX:=3}"
-: "${DISPATCH_NIGHT_TURNS:=60}"
 : "${DISPATCH_NIGHT_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
-# Rows the night pass never queues, whatever the judge says: asks, decisions, anything needing a
+# Rows fill never promotes for the night, whatever the judge says: asks, decisions, anything needing a
 # device or the human's own machine, secrets, prod, wishes. Case-insensitive ERE.
 : "${DISPATCH_NIGHT_SKIP:=#ask\b|^decide:|\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Ranking, first match wins: rows that delete or fix a broken mechanism, then observer findings.
@@ -62,7 +60,7 @@ LOG="$DIR/log.md"
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session,
 # whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
 # spent 50 minutes on a `ci:` row. Raising this is a conversation, not a config edit.
-# Tier 3 may run unattended to an open PR only, via night-shift, never past it (human decision 2026-11-02): see night.
+# Tier 3 may run unattended to an open PR only, as a `night` item, never past it (human decision 2026-11-02): see fill_now.
 UNATTENDED_TIER_CEILING=2
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
@@ -753,9 +751,10 @@ all_open() { VERDICTS=/dev/null cmd_candidates; }
 # cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks into the queue, no
 # gate. --dry-run is the order a pass would promote rows in, with no judge call and no write:
 # `ready` rows are picks over every open row (cached verdicts only, a live area skipped), then
-# `unjudged` rows, which no current verdict covers and the next pass judges first.
+# `night` rows (tier 3, promoted with the night tag), then `unjudged` rows, which no current verdict
+# covers and the next pass judges first.
 cmd_fill() {
-  local open ready unj dry=0 json=''
+  local open ready night unj dry=0 json=''
   while [ $# -gt 0 ]; do
     case "$1" in --dry-run) dry=1 ;; --json) json=1 ;; *) say "fill: unknown argument: $1"; return 2 ;; esac
     shift
@@ -767,14 +766,17 @@ cmd_fill() {
   fi
   open=$(all_open)
   ready=$(picks "$open" 999)
-  unj=$(cmd_candidates)
+  night=$(night_picks "$(night_rows '')")
+  unj=$( { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]')
   if [ -n "$json" ]; then
     { [ -z "$ready" ] || jq -c '. + {state: "ready"}' <<<"$ready"
+      [ -z "$night" ] || jq -c '. + {state: "night"}' <<<"$night"
       [ -z "$unj" ] || jq -c '. + {state: "unjudged"}' <<<"$unj"; }
     return 0
   fi
-  [ -n "$ready$unj" ] || { echo "queue: no open row to start"; return 0; }
+  [ -n "$ready$night$unj" ] || { echo "fill: no open row to promote"; return 0; }
   [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$ready"
+  [ -z "$night" ] || jq -r '"night     \(.project) (\(.stage)) \(.lane), \(.area): \(.key)"' <<<"$night"
   [ -z "$unj" ] || jq -r '"unjudged  \(.project) (\(.stage)) \(.lane): \(.key)"' <<<"$unj"
 }
 
@@ -833,7 +835,7 @@ night_picks() {
     | .[:$max] | .[]' <<<"$1"
 }
 
-# night_brief <row> -- the task night-shift runs with nobody to ask (it adds /one-shot --pr-only)
+# night_brief <row> -- the task a `night` item runs with nobody to ask (start adds /one-shot --pr-only)
 night_brief() {
   local project key text repo where
   project=$(jq -r .project <<<"$1"); key=$(jq -r .key <<<"$1"); repo=$(jq -r .repo <<<"$1")
@@ -842,7 +844,7 @@ night_brief() {
   cat <<EOF
 $text
 
-Queued by fleet-dispatch night from the $project agent board, row "$key". It is tier 3 (harness or tooling), which runs unattended to an open PR only.
+Promoted by fleet-dispatch fill from the $project agent board, row "$key". It is tier 3 (harness or tooling), which runs unattended to an open PR only.
 - Repo: $repo. Its private overlay ~/.dotfiles-private holds the rules, agentctl confs and private bins; dotfiles-land says which repo a file belongs in, and a change that touches both is two PRs.
 - Where: ${where:-the row names no file:line. Find the code it means first; if you cannot name one, stop blocked.}
 - Merge gate: $DISPATCH_NIGHT_GATE.
@@ -850,56 +852,6 @@ Queued by fleet-dispatch night from the $project agent board, row "$key". It is 
 - Done means: the change the row describes is in an open PR with its gate green, and the PR body names the row ($project agent board: "$key"). The row is already started on the board: add no new row and do not mark it done; the human's merge closes it.
 - If the row turns out to need a decision, the human, or a repo other than these two, stop blocked with agent-ask post.
 EOF
-}
-
-# night_queue <row> <account dir> -- claim the row, then queue it; a row that cannot be queued is
-# un-started again, as start does for a session that never opened.
-night_queue() {
-  local c="$1" acct="$2" prof project key repo
-  prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); key=$(jq -r .key <<<"$c")
-  repo=$(jq -r .repo <<<"$c")
-  row_is "$prof" "$project" agent "$key" ' ' || { say "night: row no longer open: $key"; return 1; }
-  np "$prof" ptask "$project" --agent start "$key" >/dev/null 2>&1
-  row_is "$prof" "$project" agent "$key" / || { say "night: could not start row: $key"; return 1; }
-  if ! night-shift queue "$repo" "$(night_brief "$c")" --slug "$key" --project "$project" \
-      --max-turns "$DISPATCH_NIGHT_TURNS" ${acct:+--account "$acct"} >/dev/null; then
-    np "$prof" ptask "$project" --agent start "$key" >/dev/null 2>&1
-    say "night: night-shift queue failed for $key; row un-started"
-    return 1
-  fi
-  logline "night: queued $project agent row for night-shift: $key"
-  echo "queued $project: $key"
-}
-
-# night [--dry-run] -- the night-shift runner's first step. Behind the same gates as a run pass
-# (hold, away, account pace, load, findings, GitHub budget, idle), judge the night projects' new
-# rows and queue the picks into night-shift, which stops each at an open PR. It never starts a
-# session and never merges. It publishes nothing: the runner it runs under publishes the night.
-cmd_night() {
-  local why picked c n=0 acct
-  DRY=0
-  [ "${1:-}" = --dry-run ] && DRY=1
-  mkdir -p "$DIR"
-  exec 9>"$DIR/.lock"
-  flock -n 9 || { say "night: another pass is running, queueing nothing"; return 0; }
-  why=$(gate)
-  if [ -n "$why" ]; then
-    say "night: $why, queueing nothing"
-    [ "$DRY" = 1 ] || return 0
-  fi
-  judge "$(night_rows "$(judged_keys)")" || { say "night: could not judge the new rows, queueing nothing"; return 1; }
-  picked=$(night_picks "$(night_rows '')")
-  [ -n "$picked" ] || { say "night: no tier-3 row qualifies tonight"; return 0; }
-  if [ "$DRY" = 1 ]; then
-    jq -r '"would queue: \(.project) \(.area): \(.key)"' <<<"$picked"
-    return 0
-  fi
-  # The account the tasks run on, asked here as launch does: the gate's answer may be minutes old.
-  acct=$(claude-acct room 2>/dev/null) || { say "night: no account has room, queueing nothing"; return 0; }
-  while IFS= read -r c; do
-    night_queue "$c" "$acct" && n=$(( n + 1 ))
-  done <<<"$picked"
-  say "night: queued $n of $(grep -c . <<<"$picked")"
 }
 
 cmd_report() {
@@ -915,7 +867,6 @@ main() {
     fill) shift; cmd_fill "$@" ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
-    night) shift; cmd_night "$@" ;;
     start) shift; cmd_start "$@" ;;
     -h | --help) sed -n '2,28p' "$0" ;;
     *) sed -n '2,12p' "$0" >&2; return 2 ;;
