@@ -357,7 +357,7 @@ EOF
   assert_output "done:1 queued:1 running:1 "
 }
 
-@test "stats counts states, outcomes, waits and sources from the timestamps" {
+@test "stats counts states, outcomes, waits, time to PR and sources from the timestamps" {
   "$AQ" add --project game --slug a "a"
   "$AQ" add --project app --slug b --from shepherd --tags night "b"
   "$AQ" add --project game --slug c --from board:game:fix-x "c"
@@ -365,8 +365,9 @@ EOF
   "$AQ" set a started=2026-11-03T10:30:00Z
   f="$(item running a)"; sed -i 's/^queued: .*/queued: 2026-11-03T10:00:00Z/' "$f"
   "$AQ" move a done --status ok
-  "$AQ" set a finished=2026-11-03T11:30:00Z
+  "$AQ" set a finished=2026-11-03T11:30:00Z pr=812
   "$AQ" move b done --status cancelled
+  "$AQ" set b finished=2026-11-02T09:00:00Z
   run "$AQ" stats --json --since 2000-01-01
   assert_success
   [ "$(jq -r '.active.queued' <<<"$output")" = 1 ]
@@ -374,11 +375,16 @@ EOF
   [ "$(jq -r '.done.cancelled' <<<"$output")" = 1 ]
   [ "$(jq -r '.wait_minutes_median' <<<"$output")" = 30 ]
   [ "$(jq -r '.run_minutes_median' <<<"$output")" = 60 ]
-  [ "$(jq -r '.done_by_source.shepherd' <<<"$output")" = 1 ]
+  [ "$(jq -r '.to_pr_minutes_median' <<<"$output")" = 90 ]
+  [ "$(jq -c '.per_day' <<<"$output")" = '{"2026-11-02":1,"2026-11-03":1}' ]
+  [ "$(jq -c '.by_source.shepherd | [.done, .cancelled, .prs]' <<<"$output")" = '[1,1,0]' ]
+  [ "$(jq -c '.by_project.game | [.done, .ok, .prs, .wait_minutes_median, .to_pr_minutes_median]' <<<"$output")" = '[1,1,1,30,90]' ]
   [ "$(jq -r '.done_by_tag.night' <<<"$output")" = 1 ]
   run "$AQ" stats
   assert_success
   assert_output --partial "done:"
+  assert_output --partial "to PR:   median 90 min"
+  assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 
 @test "a slug is matched exactly, never as the tail of a longer one" {

@@ -12,6 +12,7 @@ mod fleettab;
 mod fmt;
 mod forecast;
 mod jobs;
+mod queuetab;
 mod tabreq;
 
 use std::io::Write;
@@ -23,7 +24,7 @@ use notify::{RecursiveMode, Watcher};
 
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
-  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet
+  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs)";
@@ -114,6 +115,19 @@ fn print_once(tab: Option<Tab>) -> i32 {
         }
         return 0;
     }
+    // The Overview counts the queue too, so it is read for the default pages as well.
+    if matches!(tab, None | Some(Tab::Overview | Tab::Queue)) {
+        a.queue = Some(hub_core::queue::Queue::read(
+            &hub_core::session_actions::System,
+        ));
+    }
+    if tab == Some(Tab::Queue) {
+        a.tab = Tab::Queue;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
     if tab == Some(Tab::Forecast) {
         a.forecast = Some(forecast::Forecast::read());
         a.tab = Tab::Forecast;
@@ -184,12 +198,13 @@ fn run(tab: Tab) -> std::io::Result<()> {
         let tabs = tx.clone();
         std::thread::spawn(move || tabreq::serve(l, tabs));
     }
-    // A job starting or ending writes one of the job files, and fleet-sessions and day-log
-    // write the board files: each re-reads only its own part.
+    // A job starting or ending writes one of the job files, fleet-sessions and day-log write
+    // the board files, and agent-queue its item files: each re-reads only its own part.
     let files = tx;
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
+    let queue = app.queue_dir.clone();
     let watcher = notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
         let Ok(e) = r else { return };
         if !app::is_write(&e.kind) {
@@ -200,6 +215,9 @@ fn run(tab: Tab) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
+        }
+        if e.paths.iter().any(|p| app::is_queue_file(&queue, p)) {
+            let _ = files.send(Msg::QueueFiles);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.
@@ -217,6 +235,7 @@ fn run(tab: Tab) -> std::io::Result<()> {
     app.read_infra();
     app.read_jobs();
     app.read_boards();
+    app.read_queue();
     if app.tab == Tab::Forecast {
         app.read_forecast();
     }

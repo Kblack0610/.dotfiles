@@ -34,11 +34,14 @@
 #                                dispatcher's slots; --baseline freezes it to compare
 #   fleet-bench vs [<label>|latest] [--json]
 #                                a frozen forecast against what the fleet did since, per session
+#   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
+#                                day, wait and time to PR, from `agent-queue stats`
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H.
+# BENCH_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H, BENCH_QUEUE_STATS_CMD,
+# BENCH_QUEUE_DAYS.
 
 set -uo pipefail
 
@@ -63,6 +66,8 @@ set -uo pipefail
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${BENCH_TIME_DAYS:=7}"
+: "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
+: "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
@@ -643,6 +648,8 @@ cmd_scorecard() {
     echo
     time_section "$t"
     echo
+    queue_section "$t"
+    echo
     echo "## Sessions"
     echo
     echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
@@ -1103,6 +1110,54 @@ kpi_table() {
 # wakes_lines -> the calls-per-wake lines under the KPI table, from `agent-usage wakes` over the
 # scorecard window. Each API call re-reads the session's whole context, so calls per wake is the cost.
 # A background-task wake whose run passed has nothing left to decide: its target is WAKE_CALLS_TARGET.
+# queue_stats <now>: agent-queue's own stats over the last BENCH_QUEUE_DAYS days, or a failure
+# when it cannot be read. agent-queue owns the store and the formulas; this only reads them.
+queue_stats() {
+  local since
+  since=$(date -d "@$(( $1 - BENCH_QUEUE_DAYS * 86400 ))" +%F)
+  $BENCH_QUEUE_STATS_CMD --since "$since" 2>/dev/null | jq -ce 'select(.done and .by_project)' 2>/dev/null
+}
+
+# queue_line < stats: the window in one line (the briefing prints it as is)
+queue_line() {
+  jq -r --argjson days "$BENCH_QUEUE_DAYS" '
+    def m($v): if $v == null then "-" else "\($v)m" end;
+    ([.done[]] | add // 0) as $n
+    | "queue \($days)d: \($n) done (\(.done.ok // 0) ok, \(.done.failed // 0) failed, \(.done.cancelled // 0) cancelled), "
+      + "\([.by_project[].prs] | add // 0) with a PR, \($n / $days * 10 | round / 10)/day, "
+      + "wait median \(m(.wait_minutes_median)), to PR median \(m(.to_pr_minutes_median))"'
+}
+
+cmd_queue() {
+  local s
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench queue [--json]"; return 2 ;; esac
+  s=$(queue_stats "$(now)") || { say "agent-queue stats unreadable"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$s"; else queue_line <<<"$s"; fi
+}
+
+# queue_section <now>: the queue line, what is active now, and the outcomes by project and by
+# source (human, shepherd, board, ...), in the scorecard
+queue_section() {
+  local s
+  echo "## Queue"
+  echo
+  s=$(queue_stats "$1") || { echo "- queue ${BENCH_QUEUE_DAYS}d: ? (\`agent-queue stats\` unreadable)"; return 0; }
+  echo "Items agent-queue finished in the last ${BENCH_QUEUE_DAYS} days, from its own timestamps (\`agent-queue stats\`). Wait is queued to started; to PR is queued to finished, for items that recorded a PR."
+  echo
+  jq -r 'def l: to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end;
+    "- active now: \(.active | l)", "- per day: \(.per_day | l)"' <<<"$s"
+  queue_line <<<"$s" | sed 's/^/- /'
+  local by
+  for by in project source; do
+    echo
+    echo "| ${by^} | Done | OK | Failed | Cancelled | PRs | Wait median | To PR median |"
+    echo "|---|---|---|---|---|---|---|---|"
+    jq -r --arg k "by_$by" 'def m($v): if $v == null then "-" else "\($v)m" end;
+      .[$k] | to_entries | sort_by(-.value.done, .key)[] | .key as $n | .value
+      | "| \($n) | \(.done) | \(.ok) | \(.failed) | \(.cancelled) | \(.prs) | \(m(.wait_minutes_median)) | \(m(.to_pr_minutes_median)) |"' <<<"$s"
+  done
+}
+
 wakes_lines() {
   local w win="${BENCH_WINDOW_H}h"
   w=$($BENCH_WAKES_CMD --since "$win" --json 2>/dev/null) && jq -e .all <<<"$w" >/dev/null 2>&1 \
@@ -1650,8 +1705,9 @@ main() {
     flow) shift; cmd_flow "$@" ;;
     forecast) shift; cmd_forecast "$@" ;;
     vs) shift; cmd_vs "$@" ;;
-    -h | --help) sed -n '2,39p' "$0" ;;
-    *) sed -n '2,35p' "$0" >&2; return 2 ;;
+    queue) shift; cmd_queue "$@" ;;
+    -h | --help) sed -n '2,44p' "$0" ;;
+    *) sed -n '2,38p' "$0" >&2; return 2 ;;
   esac
 }
 
