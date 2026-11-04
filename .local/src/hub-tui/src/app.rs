@@ -11,6 +11,7 @@ use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
 use hub_core::queue::Queue;
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
+use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -22,6 +23,7 @@ use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::queuetab::{self, QueueView};
+use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
@@ -41,10 +43,11 @@ pub enum Tab {
     History,
     Fleet,
     Queue,
+    Board,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Overview,
         Tab::Jobs,
         Tab::Ci,
@@ -55,6 +58,7 @@ impl Tab {
         Tab::History,
         Tab::Fleet,
         Tab::Queue,
+        Tab::Board,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -68,6 +72,7 @@ impl Tab {
             Tab::History => "History",
             Tab::Fleet => "Fleet",
             Tab::Queue => "Queue",
+            Tab::Board => "Board",
         }
     }
     pub fn parse(s: &str) -> Option<Tab> {
@@ -84,9 +89,13 @@ impl Tab {
             Tab::Overview => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue => {
-                None
-            }
+            Tab::Sessions
+            | Tab::Forecast
+            | Tab::Today
+            | Tab::History
+            | Tab::Fleet
+            | Tab::Queue
+            | Tab::Board => None,
         }
     }
 }
@@ -165,6 +174,10 @@ pub enum Msg {
     Queue(Box<Queue>),
     /// A queue cancel or bump ended: its output, or why it failed.
     QueueActed(Result<String, String>),
+    /// `notes board --json`, or why it failed.
+    Tasks(Box<Result<Feed, String>>),
+    /// A board write ended: notes' output, or why it failed.
+    TasksActed(Result<String, String>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -209,6 +222,9 @@ pub struct App {
     pub qv: QueueView,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
+    /// Every project's open rows, for the Board tab; None until the first read.
+    pub tasks: Option<Result<Feed, String>>,
+    pub tv: TaskView,
     /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -232,6 +248,7 @@ pub struct App {
     fleet_read: Read,
     sessions_read: Read,
     queue_read: Read,
+    tasks_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -258,6 +275,8 @@ impl App {
             queue: None,
             qv: QueueView::default(),
             queue_dir: queue_dir(),
+            tasks: None,
+            tv: TaskView::default(),
             controls: Controls::default(),
             runner: Arc::new(actions::System),
             gather: actions::gather,
@@ -274,6 +293,7 @@ impl App {
             fleet_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
+            tasks_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -363,14 +383,7 @@ impl App {
                 &snap.accounts,
             )
             .and_then(|steps| actions::execute(&steps, runner.as_ref()));
-            let r = match r {
-                Ok(out) if out.trim().is_empty() => Ok(format!("{label}: done")),
-                Ok(out) => Ok(format!(
-                    "{label}: {}",
-                    out.lines().collect::<Vec<_>>().join("; ")
-                )),
-                Err(e) => Err(format!("{label}: {e}")),
-            };
+            let r = said(&label, r);
             let _ = tx.send(Msg::Acted(r));
         });
     }
@@ -399,15 +412,33 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = match f(runner.as_ref()) {
-                Ok(out) if out.trim().is_empty() => Ok(format!("{label}: done")),
-                Ok(out) => Ok(format!(
-                    "{label}: {}",
-                    out.lines().collect::<Vec<_>>().join("; ")
-                )),
-                Err(e) => Err(format!("{label}: {e}")),
-            };
+            let r = said(&label, f(runner.as_ref()));
             let _ = tx.send(Msg::QueueActed(r));
+        });
+    }
+
+    /// The board is read through `notes board --json` (hub_core::tasks), never from the
+    /// sheets: on entering the Board tab, on `r`, after a write, and on the tick while shown.
+    /// The vault has no watch here; `notes` is its writer.
+    pub fn read_tasks(&mut self) {
+        if self.tasks_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Tasks(Box::new(hub_core::tasks::feed(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// Run one board write in a worker; the answer comes back as Msg::TasksActed.
+    fn tasks_act(&mut self, label: String, w: hub_core::tasks::Write) {
+        self.tv.running = Some(label.clone());
+        self.tv.said = None;
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = said(&label, hub_core::tasks::apply(runner.as_ref(), &w));
+            let _ = tx.send(Msg::TasksActed(r));
         });
     }
 
@@ -461,6 +492,9 @@ impl App {
                 }
                 if self.tab == Tab::Sessions {
                     self.read_sessions();
+                }
+                if self.tab == Tab::Board {
+                    self.read_tasks();
                 }
             }
             Msg::Files => {
@@ -545,6 +579,24 @@ impl App {
                 self.qv.said = Some(r);
                 self.read_queue();
             }
+            Msg::Tasks(f) => {
+                if let Ok(new) = f.as_ref() {
+                    let was = match &self.tasks {
+                        Some(Ok(old)) => self.tv.selected(old).cloned(),
+                        _ => None,
+                    };
+                    self.tv.reselect(was, new);
+                }
+                self.tasks = Some(*f);
+                if self.tasks_read.done() {
+                    self.read_tasks();
+                }
+            }
+            Msg::TasksActed(r) => {
+                self.tv.running = None;
+                self.tv.said = Some(r);
+                self.read_tasks();
+            }
         }
     }
 
@@ -573,6 +625,9 @@ impl App {
         if self.tab == Tab::Queue && self.queue_key(k) {
             return;
         }
+        if self.tab == Tab::Board && self.board_key(k) {
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -599,6 +654,9 @@ impl App {
                 }
                 if self.tab == Tab::Sessions {
                     self.read_sessions();
+                }
+                if self.tab == Tab::Board {
+                    self.read_tasks();
                 }
             }
             KeyCode::Char('o') => {
@@ -631,6 +689,26 @@ impl App {
         }
         if t == Tab::Queue {
             self.read_queue();
+        }
+        if t == Tab::Board {
+            self.read_tasks();
+        }
+    }
+
+    /// The Board tab's own keys (tasktab.rs). With a prompt or a remove armed every key is
+    /// theirs; the page keeps the selected row in view (draw).
+    fn board_key(&mut self, k: KeyEvent) -> bool {
+        let feed = match &self.tasks {
+            Some(Ok(f)) => Some(f),
+            _ => None,
+        };
+        match self.tv.key(k, feed, self.page) {
+            tasktab::Ask::Pass => false,
+            tasktab::Ask::Done => true,
+            tasktab::Ask::Write(label, w) => {
+                self.tasks_act(label, w);
+                true
+            }
         }
     }
 
@@ -866,6 +944,15 @@ impl App {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
+            // The Board's one section is its selected row, kept in view.
+            if let (Tab::Board, Some(&at)) = (self.tab, sections.first()) {
+                let h = (body.height as usize).max(1);
+                if at < self.scroll {
+                    self.scroll = at.saturating_sub(2);
+                } else if at >= self.scroll + h {
+                    self.scroll = at + 1 - h;
+                }
+            }
             self.sections = sections;
             let max = lines.len().saturating_sub(body.height as usize);
             self.scroll = self.scroll.min(max);
@@ -880,7 +967,11 @@ impl App {
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for (i, t) in Tab::ALL.iter().enumerate() {
-            let label = format!(" {} {} ", (i + 1) % 10, t.title());
+            // 1-9 and 0 reach the first ten; the rest are Tab, Shift-Tab and `hub --tab`.
+            let label = match i {
+                0..=9 => format!(" {} {} ", (i + 1) % 10, t.title()),
+                _ => format!(" {} ", t.title()),
+            };
             s.push(if *t == self.tab {
                 Span::styled(label, self.p.sel())
             } else {
@@ -950,6 +1041,11 @@ impl App {
             Tab::Queue => format!(
                 "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
+            Tab::Board if self.tv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
+            Tab::Board => format!(
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x remove  Esc clear  r refresh  {tabs} tabs  q quit"
+            ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
     }
@@ -964,6 +1060,14 @@ impl App {
             )
         };
         let (mut lines, sections) = match (self.tab, &self.boards, &self.infra) {
+            (Tab::Board, ..) => match &self.tasks {
+                None => reading("notes board"),
+                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                Some(Ok(f)) => {
+                    let (l, at) = tasktab::page(f, &self.tv, self.p, w);
+                    (l, at.into_iter().collect())
+                }
+            },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => (queuetab::page(q, &self.qv, self.p, now, w), vec![]),
@@ -1085,6 +1189,18 @@ impl App {
 pub fn is_write(k: &notify::EventKind) -> bool {
     use notify::EventKind::{Create, Modify, Remove};
     matches!(k, Create(_) | Modify(_) | Remove(_))
+}
+
+/// An action's answer as the status line says it: its output on one line, or why it failed.
+fn said(label: &str, r: Result<String, String>) -> Result<String, String> {
+    match r {
+        Ok(out) if out.trim().is_empty() => Ok(format!("{label}: done")),
+        Ok(out) => Ok(format!(
+            "{label}: {}",
+            out.lines().collect::<Vec<_>>().join("; ")
+        )),
+        Err(e) => Err(format!("{label}: {e}")),
+    }
 }
 
 /// agent-queue's store, as agent-queue finds it.
@@ -1313,6 +1429,71 @@ mod tests {
             Some("agent-queue cancel pick-sides")
         );
         assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
+    }
+
+    #[test]
+    fn the_board_tab_writes_through_notes_and_keeps_its_row_in_view() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Overview, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        assert_eq!(Tab::parse("board"), Some(Tab::Board));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
+        assert_eq!(
+            a.tab,
+            Tab::Board,
+            "Shift-Tab from the Overview is the last tab"
+        );
+        let s = screen(&mut a, 140, 12);
+        assert!(s.lines().next().unwrap().contains("0 Queue  Board"), "{s}");
+        assert!(s.contains("Reading notes board..."), "{s}");
+
+        // The read Shift-Tab started meets the fake's empty answer: wait for it, not a timer.
+        loop {
+            match rx.recv().unwrap() {
+                Msg::Tasks(f) => {
+                    a.handle(Msg::Tasks(f));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert!(screen(&mut a, 140, 12).contains("notes board --json"));
+        a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
+        for _ in 0..4 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 140, 12);
+        assert!(
+            s.contains("water the beds"),
+            "the last row scrolled into view:\n{s}"
+        );
+        assert!(!s.contains("TASK BOARD"), "{s}");
+
+        a.handle(key('q'));
+        assert!(a.quit, "q quits with no prompt open");
+        a.quit = false;
+        a.handle(key('x'));
+        a.handle(key('y'));
+        assert_eq!(a.tv.running.as_deref(), Some("rm in personal/garden"));
+        loop {
+            match rx.recv().unwrap() {
+                Msg::TasksActed(r) => {
+                    a.handle(Msg::TasksActed(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert_eq!(a.tv.said, Some(Ok("rm in personal/garden: done".into())));
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.contains(
+                &"notes ptask garden --profile personal --exact rm -- - [ ] water the beds"
+                    .to_string()
+            ),
+            "{ran:?}"
+        );
     }
 
     #[test]
