@@ -117,7 +117,7 @@ sandbox_init() {
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
   # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
-  unset NTFY_URL NTFY_TOKEN SLACK_WEBHOOK_URL DISPLAY
+  unset NTFY_URL NTFY_TOKEN DISPLAY
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the

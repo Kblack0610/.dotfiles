@@ -4,7 +4,7 @@ What a ROLE means, independent of which harness runs it.
 
 Mirrors the `ticket` CLI's `docs/contract.md`: the contract is the abstraction, the
 harness adapters under `harnesses/` are implementations. `agentctl` has always
-described itself as harness-agnostic (opencode / claude / openclaw / binks); this
+described itself as harness-agnostic (opencode / claude / binks); this
 makes capability agnostic too, instead of burying it in each runner's `COMMAND`.
 
 ## The capability vocabulary
@@ -65,7 +65,7 @@ Four rules, no exceptions:
    `ROLE_FAMILY_EXCLUDE` never launches on a family it must not share, and never
    launches when either side cannot be classified.
 
-Rule 3 is why `openclaw.sh` and `binks.sh` ship as stubs that refuse. A stub that
+Rule 3 is why `binks.sh` ships as a stub that refuses. A stub that
 refuses is worth more than an adapter that pretends.
 
 ## Rule 4: model-family independence

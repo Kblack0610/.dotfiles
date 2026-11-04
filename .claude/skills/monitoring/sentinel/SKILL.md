@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, watches, observe-only, agentctl]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-04"
 ---
 
 # sentinel
@@ -23,7 +23,7 @@ Sentinel - the always-on, observe-only monitoring companion. Talk to it to keep 
 - **Style:** Deterministic-first, sparse (only on state change), advisory (recommends, never acts)
 - **Autonomy rung:** observe / diagnose (never executes, mutates, or touches release gates)
 - **Carrying primitive:** agentctl service (`sentinel`)
-- **Notify channel:** `agent-notify` (state-change only; ntfy / Slack / desktop)
+- **Notify channel:** `agent-notify` (state-change only; ntfy / desktop)
 - **Registry:** `~/.dotfiles/.claude/PERSONAS.md`
 
 The standing watch companion. A persistent `agentctl` service
@@ -176,8 +176,8 @@ registered it. Sentinel remains the single notification voice for whatever it's 
   `--max-turns`) is invoked only on (1) a deterministic TRIP for an `agent_evaluate: true` watch, or
   (2) a `probe: agent` watch on its slow interval. `SENTINEL_AGENT_BUDGET` (default 20/hour) hard-
   stops any storm; over budget, the watch reports "budget exhausted" instead of spending.
-- `agent-notify` (`~/.dotfiles/.local/bin/agent-notify`) fans out to ntfy (`NTFY_URL`), Slack
- (`SLACK_WEBHOOK_URL`), and desktop (`DISPLAY`). Always exits 0 - a notify never fails a pass.
+- `agent-notify` (`~/.local/bin/agent-notify`, stowed from the private overlay) fans out to ntfy
+  (`NTFY_URL`) and desktop (`DISPLAY`). Always exits 0 - a notify never fails a pass.
 
 ## Related
 
