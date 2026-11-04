@@ -74,14 +74,30 @@ keeps it.
 
 ## Projects cheatsheet
 
-A project lives under its profile's lab tree: `lab/projects/` for personal, `lab/bnb/projects/` for bnb. Each profile has an `index.md`. The CLI owns its `## Current` and `## Archived` lanes. lab-sync regenerates the `## Overview (auto)` block above them. Do not hand-edit either.
+This section is the one description of the lab. `~/.notes/lab/README.md`, the `lab-sync` skill and the `notes-system` skill link here instead of restating it.
 
-A project directory has this shape:
+### The lab tree
+
+```
+~/.notes/lab/
+  README.md                                  pointer to this section
+  ideas/_IDEAS.md                            ideas that span projects or have no project yet (`ideas` config key)
+  briefs/                                    one-pager briefs not yet tied to a project
+  projects/{current,archived}/<name>/        the personal profile
+  <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
+~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
+```
+
+Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
+
+Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's current wave, read-only (`notes board`).
+
+### A project directory
 
 ```
 current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
-  summary.md               the lab bus: status + the release feed lab-sync writes
+  summary.md               the cockpit: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   docs/idea.md             the pitch and key ideas; links to the repo's design docs
@@ -91,7 +107,26 @@ current/<name>/
   versions/vX.Y.Z.md       frozen sheet of a closed version
 ```
 
-`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice. Ideas that span projects go to `lab/ideas/_IDEAS.md` (the `ideas` config key); a bare `#idea` row in Focus lands there.
+`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`, review reports, screenshots) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice.
+
+### One home per fact
+
+| Fact | Its one home | Written by |
+|---|---|---|
+| Name, repo, path in the repo, branch, tracker | `project-map.json` (private dotfiles) | a PR there |
+| Stage, version in progress, current and planned waves | the sheet `README.md` | human, `notes ptask` / `projects` |
+| Where we are | `summary.md` STATUS | `lab-status` |
+| Shipped version | the git tag | the release |
+| What shipped, for users | the repo's `CHANGELOG.md` | the release |
+| What each closed wave did | `versions/vX.Y.Z.md` | `projects --roll` |
+| How it works: stack, build, ship, runbooks, architecture decisions | the repo's `docs/` | docs-write |
+| Pitch, product briefs, research, reviews | the project's `docs/` here | human, skills |
+| Agent plans, lessons, sessions, asks, queue | `~/.agent/<kind>/<name>` | agents |
+| Agent key facts at session start | `~/.agent/anchors/<name>.md` | project-index |
+
+The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->` marker are retired; to ask an agent for something, add a row to the board.
+
+After creating, staging, rolling or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
 
 Every command takes `--profile <p>`. Without it, the active profile is used (`notes config`).
 
