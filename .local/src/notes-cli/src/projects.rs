@@ -508,8 +508,83 @@ _(no status yet)_\n<!-- STATUS:END -->\n\n\
     )
 }
 
-/// `notes projects --new <name>` — scaffold `current/<name>/summary.md` and add it to
-/// the index's `## Current` lane. Prints the new summary path.
+/// The files every project carries, relative to its dir, in the order they are scaffolded:
+/// the human sheet first, because the agent board takes its version and home link from it.
+///
+/// - `README.md`: the human's sheet (what only the human can do), `summary.md`: the cockpit.
+/// - `agent/README.md`: the agents' working board.
+/// - `docs/idea.md`: the pitch and key ideas; `docs/tech.md`: the stack, with links to the
+///   repo's own docs. Every other note doc lives in `docs/` too.
+/// - `ideas.md`: unshaped ideas, where `notes focus sweep` puts an `#idea:<project>` row.
+pub(crate) const SHAPE: [&str; 6] = [
+    "README.md",
+    "summary.md",
+    "agent/README.md",
+    "docs/idea.md",
+    "docs/tech.md",
+    "ideas.md",
+];
+
+/// The `*.md` files a project root may hold. Any other note doc belongs in `docs/`.
+pub(crate) const ROOT_MD: [&str; 4] = ["README.md", "summary.md", "ideas.md", "playtest.md"];
+
+/// A fresh `ideas.md`. Also the header `notes focus sweep` gives one it creates.
+pub(crate) fn ideas_template(name: &str) -> String {
+    format!(
+        "# {name} - ideas\n\n\
+Unshaped ideas for {name}, one row each, not yet on a wave. `notes focus sweep` appends a Focus row tagged `#idea:{name}` here; an idea that becomes work moves to the sheet with `notes ptask {name} add`.\n"
+    )
+}
+
+fn idea_doc_template(name: &str) -> String {
+    format!(
+        "# {name} - idea\n\n\
+The pitch: what {name} is, who it is for, the ideas it stands on. Where a repo holds the design doc, link it here instead of copying it.\n"
+    )
+}
+
+fn tech_doc_template(name: &str) -> String {
+    format!(
+        "# {name} - tech\n\n\
+The stack, the repo and how it ships, as links to the repo's own docs rather than a copy of them.\n"
+    )
+}
+
+/// Write every [`SHAPE`] file `dir` lacks, never touching one that exists. Returns the
+/// files written, in [`SHAPE`] order.
+fn scaffold_missing(p: &Profile, dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    let mut wrote = Vec::new();
+    for rel in SHAPE {
+        let path = dir.join(rel);
+        if path.exists() {
+            continue;
+        }
+        let body = match rel {
+            "README.md" => sheet_body(&format!("# {name}"), "v0.0.1"),
+            "summary.md" => summary_template(name),
+            "agent/README.md" => {
+                crate::agent_sheet::ensure_for(p, dir, name)?;
+                wrote.push(path);
+                continue;
+            }
+            "docs/idea.md" => idea_doc_template(name),
+            "docs/tech.md" => tech_doc_template(name),
+            _ => ideas_template(name),
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, body)?;
+        wrote.push(path);
+    }
+    Ok(wrote)
+}
+
+/// `notes projects --new <name>` — scaffold the project [`SHAPE`] under `current/<name>/`
+/// and add it to the index's `## Current` lane. Prints each file written.
+///
+/// On a project that already exists it writes only the files it is missing and leaves the
+/// index alone, so the same verb brings an old project up to the shape.
 pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     let name = name.trim();
     check_name(name)?;
@@ -517,28 +592,132 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         bail!("this profile has no `projects` dir configured");
     };
     let dir = dir_root.join(name);
-    if dir.exists() {
-        bail!("project '{name}' already exists at {}", dir.display());
-    }
+    let existed = dir.exists();
     fs::create_dir_all(&dir)?;
-    let summary = dir.join("summary.md");
-    fs::write(&summary, summary_template(name))?;
-    // the working sheet (README.md) holds the task list; every project starts at v0.0.1.
-    fs::write(
-        dir.join("README.md"),
-        sheet_body(&format!("# {name}"), "v0.0.1"),
-    )?;
+    let wrote = scaffold_missing(p, &dir, name)?;
 
-    if let Some(idx) = &p.project_index {
-        let content = fs::read_to_string(idx).unwrap_or_default();
-        let content = strip_lane_placeholder(&content, "Current");
-        let target = lane_target(&dir);
-        let content = md::insert_under_heading(&content, "Current", &[lane_line(p, &target, name)]);
-        fs::write(idx, content)?;
+    if !existed {
+        if let Some(idx) = &p.project_index {
+            let content = fs::read_to_string(idx).unwrap_or_default();
+            let content = strip_lane_placeholder(&content, "Current");
+            let target = lane_target(&dir);
+            let content =
+                md::insert_under_heading(&content, "Current", &[lane_line(p, &target, name)]);
+            fs::write(idx, content)?;
+        }
     }
-    log.info("projects", &format!("created {}", dir.display()));
-    println!("{}", summary.display());
+    if existed && wrote.is_empty() {
+        println!("{name} already has every shape file");
+        return Ok(());
+    }
+    let verb = if existed { "filled in" } else { "created" };
+    log.info(
+        "projects",
+        &format!("{verb} {} ({} files)", dir.display(), wrote.len()),
+    );
+    for f in &wrote {
+        println!("{}", f.display());
+    }
     Ok(())
+}
+
+/// What a project's [`SHAPE`] check finds, one line per finding:
+///
+/// - a missing shape file (`notes projects --new <name>` writes it);
+/// - a root `*.md` outside [`ROOT_MD`], which belongs in `docs/` (a version note or a
+///   changelog is the layout check's finding instead, fixed by `--migrate`);
+/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
+///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
+/// - an open row written twice on one sheet (same [`md::task_key`]).
+pub(crate) fn shape_findings(dir: &Path, name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for rel in SHAPE {
+        if !dir.join(rel).exists() {
+            out.push(format!("missing {rel} (notes projects --new {name})"));
+        }
+    }
+
+    let mut loose: Vec<String> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|f| f.ends_with(".md") && !ROOT_MD.contains(&f.as_str()))
+        .filter(|f| !is_version_file(f) && !f.eq_ignore_ascii_case("changelog.md"))
+        .collect();
+    loose.sort();
+    for f in loose {
+        out.push(format!("loose {f} (move it to docs/)"));
+    }
+
+    let board = crate::agent_sheet::sheet_path(dir);
+    if let Ok(content) = fs::read_to_string(&board) {
+        if content.len() > AGENT_BOARD_BUDGET {
+            let done = crate::project_tasks::done_rows(&content).len();
+            let fix = if done > 0 {
+                format!("{done} done rows to move: notes ptask {name} --agent archive")
+            } else {
+                "no done rows; the open rows need triage".to_string()
+            };
+            out.push(format!(
+                "agent board is {} KiB, over the {} KiB budget ({fix})",
+                content.len() / 1024,
+                AGENT_BOARD_BUDGET / 1024
+            ));
+        }
+    }
+
+    for (label, path) in [("sheet", dir.join("README.md")), ("agent board", board)] {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for (key, n) in duplicate_open_rows(&content) {
+            out.push(format!("{label} has \"{key}\" open {n} times"));
+        }
+    }
+    out
+}
+
+/// The agent board's size budget. Past it the board is slow to scan and costly to load
+/// into a session; done rows are the first thing to go, because `ptask done` already
+/// wrote their proof to `agent/versions/`.
+pub(crate) const AGENT_BOARD_BUDGET: usize = 32 * 1024;
+
+/// Open rows whose [`md::task_key`] appears more than once on a sheet, with the count, in
+/// first-seen order.
+fn duplicate_open_rows(content: &str) -> Vec<(String, usize)> {
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for line in content.lines().filter(|l| md::is_open_task(l)) {
+        let key = md::task_key(line);
+        match seen.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((key, 1)),
+        }
+    }
+    seen.retain(|(_, n)| *n > 1);
+    seen
+}
+
+/// `notes doctor --projects`: [`shape_findings`] for every indexed project in every
+/// profile, as `<profile>/<project>: <finding>` lines. A profile that does not resolve is
+/// skipped, like [`stats`].
+pub fn shape_report() -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for profile in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&profile)) else {
+            continue;
+        };
+        for (name, summary) in indexed(&p) {
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
+            for f in shape_findings(dir, &name) {
+                out.push(format!("{profile}/{name}: {f}"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `notes projects --archive <name>` — move `current/<name>` to `archived/<name>` and
@@ -1297,6 +1476,22 @@ fn body_after_head(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// Why a project's stage keeps it from rolling, or `None` when it may roll.
+///
+/// A draft or alpha project has no released versions to close, so it keeps one working
+/// list instead of a roadmap of waves. Versions start at beta. `--force` does not override
+/// this: it is about the open work in one wave, and this is about whether the project has
+/// versions at all.
+fn stage_blocks_roll(dir: &Path, name: &str) -> Option<String> {
+    let stage = stage_of(dir)?;
+    matches!(stage.as_str(), "draft" | "alpha").then(|| {
+        format!(
+            "{name} is #{stage}: a draft or alpha project keeps one working list and does not roll. \
+Declare it beta first: notes projects --stage {name} --set beta"
+        )
+    })
+}
+
 /// `notes projects --roll <name> [--minor|--major] [--force]` - close the current version
 /// and open the next on the working sheet.
 ///
@@ -1323,6 +1518,9 @@ pub fn roll(
     renumber: bool,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
+    if let Some(why) = stage_blocks_roll(&dir, name) {
+        bail!(why);
+    }
     let Some(sheet) = sheet_to_roll(&dir, log)? else {
         bail!("{name} has no working sheet to roll (no README.md with a `Version: vX.Y.Z` line)");
     };
@@ -3725,6 +3923,186 @@ mod stats_tests {
         );
         assert_eq!(&cols[4..10], &["0", "0", "0", "0", "0", "0"]);
         assert_eq!(cols[10], dir.join("summary.md").display().to_string());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    struct Sandbox {
+        root: PathBuf,
+        p: Profile,
+        log: Logger,
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn sandbox(tag: &str) -> Sandbox {
+        let root = std::env::temp_dir().join(format!("notes-shape-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut p = config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        fs::create_dir_all(&projects).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(&index, "# Projects\n\n## Current\n_(nothing yet)_\n").unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+        Sandbox { root, p, log }
+    }
+
+    #[test]
+    fn new_writes_the_whole_shape_and_one_index_line() {
+        let s = sandbox("new");
+        new_project(&s.p, &s.log, "demo").unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        for rel in SHAPE {
+            assert!(dir.join(rel).is_file(), "{rel} missing");
+        }
+        assert!(
+            shape_findings(&dir, "demo").is_empty(),
+            "{:?}",
+            shape_findings(&dir, "demo")
+        );
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(board.contains("Version: v0.0.1"), "{board}");
+        let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
+        assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
+    }
+
+    #[test]
+    fn new_on_an_existing_project_fills_gaps_and_overwrites_nothing() {
+        let s = sandbox("fill");
+        let dir = s.p.projects.as_ref().unwrap().join("old");
+        fs::create_dir_all(&dir).unwrap();
+        let sheet = "# old\nVersion: v1.2.0 #beta\n\n## Wave: v1.2.0 (current)\n- [ ] real work\n";
+        fs::write(dir.join("README.md"), sheet).unwrap();
+        fs::write(dir.join("ideas.md"), "my ideas\n").unwrap();
+
+        new_project(&s.p, &s.log, "old").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("README.md")).unwrap(), sheet);
+        assert_eq!(
+            fs::read_to_string(dir.join("ideas.md")).unwrap(),
+            "my ideas\n"
+        );
+        assert!(dir.join("docs/idea.md").is_file());
+        assert!(dir.join("summary.md").is_file());
+        // the agent board tracks the sheet's version, not a fresh project's
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(board.contains("Version: v1.2.0"), "{board}");
+        // an existing project's index entry is not the scaffold's business
+        let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
+        assert!(!index.contains("|old]]"), "{index}");
+        // and a second run writes nothing
+        let before = fs::read_to_string(dir.join("docs/tech.md")).unwrap();
+        new_project(&s.p, &s.log, "old").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("docs/tech.md")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn findings_name_missing_files_loose_docs_and_duplicates() {
+        let s = sandbox("find");
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.1.0 #beta\n\n## Wave: v0.1.0 (current)\n- [ ] fix the thing #high\n- [ ] Fix the thing #low\n- [x] fix the thing\n",
+        )
+        .unwrap();
+        fs::write(dir.join("overview.md"), "notes\n").unwrap();
+        fs::write(dir.join("v0.0.9.md"), "frozen\n").unwrap();
+        fs::write(dir.join("art.svg"), "<svg/>").unwrap();
+
+        let f = shape_findings(&dir, "demo");
+        assert!(
+            f.contains(&"missing summary.md (notes projects --new demo)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(&"missing ideas.md (notes projects --new demo)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(&"loose overview.md (move it to docs/)".to_string()),
+            "{f:?}"
+        );
+        // a version note is the layout check's to report, and only *.md is a note doc
+        assert!(
+            !f.iter()
+                .any(|l| l.contains("v0.0.9") || l.contains("art.svg")),
+            "{f:?}"
+        );
+        // the done copy is not a duplicate; the two open ones are, case and priority aside
+        assert!(
+            f.contains(&"sheet has \"fix the thing\" open 2 times".to_string()),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn an_agent_board_over_budget_says_how_many_done_rows_go() {
+        let s = sandbox("budget");
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let mut board =
+            String::from("# demo - agent board\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n");
+        let mut n = 0;
+        while board.len() <= AGENT_BOARD_BUDGET {
+            board.push_str(&format!("- [x] finished row number {n} with some words\n"));
+            n += 1;
+        }
+        board.push_str("- [ ] still open\n");
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
+        let f = shape_findings(&dir, "demo");
+        let line = f
+            .iter()
+            .find(|l| l.starts_with("agent board is"))
+            .expect("budget finding");
+        assert!(
+            line.contains(&format!(
+                "{n} done rows to move: notes ptask demo --agent archive"
+            )),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn draft_and_alpha_do_not_roll_and_beta_does() {
+        let dir = std::env::temp_dir().join(format!("notes-stage-roll-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let sheet = |stage: &str| {
+            format!("# d\nVersion: v0.1.0 #{stage}\n\n## Wave: v0.1.0 (current)\n- [ ] x\n")
+        };
+        for (stage, blocked) in [
+            ("draft", true),
+            ("alpha", true),
+            ("beta", false),
+            ("prod", false),
+        ] {
+            fs::write(dir.join("README.md"), sheet(stage)).unwrap();
+            let why = stage_blocks_roll(&dir, "d");
+            assert_eq!(why.is_some(), blocked, "{stage}: {why:?}");
+            if let Some(w) = why {
+                assert!(w.contains("notes projects --stage d --set beta"), "{w}");
+            }
+        }
+        // no declared stage: the project predates stages, and rolls as it always did
+        fs::write(
+            dir.join("README.md"),
+            "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n",
+        )
+        .unwrap();
+        assert!(stage_blocks_roll(&dir, "d").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 }

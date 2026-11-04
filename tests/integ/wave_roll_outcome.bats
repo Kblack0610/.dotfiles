@@ -82,6 +82,21 @@ HOOKS
   assert_output --partial 'too far above tag v0.4.0'
 }
 
+@test "a draft or alpha project is skipped; beta still rolls" {
+  shipped_at v0.4.0
+  printf 'v0.4.0\tcurrent\t3\t0\tx\nv0.5.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"
+  echo alpha > "$NOTES_FIXTURE/stage.demoapp"
+  run "$WAVE_ROLL" --dry-run demoapp
+  refute_output --partial 'would roll'
+  run "$WAVE_ROLL" demoapp   # a dry run logs nothing, so read the skip from a real pass
+  assert_success
+  grep -q 'skip demoapp: #alpha does not roll' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  # NEGATIVE CONTROL: the same project declared beta rolls.
+  echo beta > "$NOTES_FIXTURE/stage.demoapp"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'v0.4.0 -> v0.5.0'
+}
+
 @test "the next major is still a plausible planned wave" {
   shipped_at v0.4.0
   printf 'v0.4.0\tcurrent\t3\t0\tx\nv1.0.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"

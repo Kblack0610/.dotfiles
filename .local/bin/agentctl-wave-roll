@@ -91,6 +91,9 @@ while read -r profile; do
       log "skip $name: no versioned sheet (shipped $shipped)"
       continue
     fi
+    # A draft or alpha project keeps one working list; `notes projects --roll` refuses it.
+    stage="$(notes --profile "$profile" projects --stage "$name" 2>/dev/null)"
+    case "$stage" in draft|alpha) log "skip $name: #$stage does not roll"; continue ;; esac
     ver_ge "$shipped" "$ver" || continue            # the open version has not shipped yet
     next="$(next_after "$profile" "$name" "$shipped")"
     open="$(notes --profile "$profile" ptask "$name" list 2>/dev/null | grep -c . || true)"

@@ -83,24 +83,28 @@ current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
   summary.md               the lab bus: status + the release feed lab-sync writes
   agent/README.md          the agent board (`ptask --agent`)
+  ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
+  docs/idea.md             the pitch and key ideas; links to the repo's design docs
+  docs/tech.md             the stack, with links to the repo's docs
   playtest.md              things to play and check off, one per row (`ptask --playtest`)
-  agent/versions/vX.Y.Z.md proof table for a version
+  agent/versions/vX.Y.Z.md proof table for a version, and the done rows `ptask --agent archive` moves off the board
   versions/vX.Y.Z.md       frozen sheet of a closed version
 ```
 
-Other notes (a design doc, `research/`, `ideas.md`) can sit beside these. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose ones and `projects --migrate` folds them in.
+`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice. Ideas that span projects go to `lab/ideas/_IDEAS.md` (the `ideas` config key); a bare `#idea` row in Focus lands there.
 
 Every command takes `--profile <p>`. Without it, the active profile is used (`notes config`).
 
 | I want to | Command |
 |---|---|
 | see projects | `notes projects`, `notes projects --archived`, `notes projects <name>` for its files |
-| add a project | `notes --profile bnb projects --new <name>` |
+| add a project, or fill in a missing shape file | `notes --profile bnb projects --new <name>` |
+| check every project's shape | `notes doctor --projects` |
 | set where it shows in the Overview | `projects --stage <name> --set draft\|alpha\|beta\|prod` |
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
-| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`) |
+| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list |
 | fix an old layout | `projects --migrate <name>` |
 | see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
 | add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |
@@ -111,6 +115,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | drop a task | `ptask <name> rm "<query>"` |
 | tidy a sheet | `ptask <name> sweep` |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |
+| shrink the agent board | `ptask <name> --agent archive [--dry-run]` moves its done rows to `agent/versions/<current version>.md` under `## Done rows` |
 | add a playtest check | `ptask <name> --playtest add [--game <name>] [--pr <n>] "<scene or mode: what to look for>"`; one short ASCII line per check, under `## <game>` (default `## General`) in `playtest.md` |
 | work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest rm "<query>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
 | regenerate the boards | `notes board` |
@@ -125,7 +130,7 @@ Lean by design: **ONE** task list, `## Focus`, swept into `### Urgent` / `### Hi
 `### Low` / `### Done` lanes. There is no second inline list. `## Due` (and its `## Priority`
 ancestor) was removed because two lists in one note make every glance a merge, and anything a
 schedule surfaces IS today's work; a note left over from an older build has its Due items
-folded into Focus on the next run. **Fun** is a standing backlog file linked in the footer.
+folded into Focus on the next run. A row tagged `#idea` leaves Focus for `lab/ideas/_IDEAS.md`, and one tagged `#idea:<project>` for that project's `ideas.md` (the CLI sweep only; the nvim sweep leaves them). **Fun** is a standing backlog file linked in the footer.
 Completed items move to a `## Done` section in the same file (history via git +
 `daily_archive/`), so there's no separate done log.
 

@@ -300,7 +300,12 @@ enum Cmd {
         sub: ClickupCmd,
     },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
-    Doctor,
+    Doctor {
+        /// Instead: check every project in every profile against the project shape, one
+        /// `<profile>/<project>: <finding>` line each
+        #[arg(long)]
+        projects: bool,
+    },
     /// Print the resolved profile + paths
     Config {
         /// List every configured profile name instead
@@ -472,6 +477,13 @@ enum PtaskCmd {
     /// first, roadmap ascending), then by priority inside each wave, done at the foot
     Sweep {
         /// Print what would change and leave the sheet alone
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// With --agent: move the agent board's done rows into `agent/versions/<vX.Y.Z>.md`
+    /// (the note their proof is in), under `## Done rows`
+    Archive {
+        /// Print how many rows would move and leave both files alone
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
@@ -779,6 +791,9 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Sweep { dry_run }) => {
                     project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
                 }
+                Some(PtaskCmd::Archive { dry_run }) => {
+                    project_tasks::archive(&prof, &log, &name, dry_run, lane)?
+                }
             }
         }
         Cmd::Board { agent, projects } => {
@@ -959,7 +974,8 @@ fn main() -> Result<()> {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
-        Cmd::Doctor => doctor::run(&prof, &log)?,
+        Cmd::Doctor { projects: true } => doctor::projects()?,
+        Cmd::Doctor { projects: false } => doctor::run(&prof, &log)?,
         Cmd::Config { profiles } => {
             if profiles {
                 for name in config::all_profile_names()? {
