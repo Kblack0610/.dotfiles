@@ -219,11 +219,14 @@ snapshot() {
         # main_red: repos whose default branch is red, the document's main[] (a widget line).
         # zero: every bucket at 0, so `buckets` names each one and an emptied bucket reads 0,
         # not its last count (an exporter keeps a gauge whose key stops arriving).
+        # shepherd: the fleet-shepherd pass's pane (label shepherd), which is not an agent session.
         buckets="$(jq -c '{at: .generated_at, by: (.sessions | map({key: .target, value: .bucket}) | from_entries),
+                           shepherd: [.sessions[] | select((.labels // []) | index("shepherd")) | .target],
                            main_red: [.main[]?.repo], zero: (.counts // {} | map_values(0))}' \
-            "$fleet" 2>/dev/null)" || buckets='{"at":null,"by":{},"main_red":[]}'
+            "$fleet" 2>/dev/null)" || buckets='{"at":null,"by":{},"shepherd":[],"main_red":[]}'
         sessions="$(agent-panel list 2>/dev/null | jq -cR -s --argjson f "$buckets" '
             [split("\n")[] | select(length > 0) | split("\t")
+             | select(.[0] as $t | ($f.shepherd // []) | index($t) | not)
              | {target: .[0], glyph: .[1], project: .[2], title: .[3],
                 status: (if .[1] == "~" then "working" elif .[1] == "!" then "attention" else "idle" end),
                 bucket: ($f.by[.[0]] // null)}]')"

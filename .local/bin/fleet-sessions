@@ -67,7 +67,8 @@ QUEUE_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # Labels say what git, gh and the transcript cannot: a human's `manual` (the shepherd
-# leaves that session alone), or a session's own `quality:<step>` while a cleanup pass runs.
+# leaves that session alone), a session's own `quality:<step>` while a cleanup pass runs, or
+# `shepherd` on the fleet-shepherd pass itself, which is listed but left out of every count.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"
 
@@ -912,7 +913,8 @@ write_state() {
                    session: (if (.[12] // "") == "" then null else .[12] end)}]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
-      | .counts = ((.sessions | map(.bucket)) as $b
+      # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.
+      | .counts = ((.sessions | map(select((.labels // []) | index("shepherd") | not) | .bucket)) as $b
           | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "PARKED"] + $b | unique)
           | map(. as $k | {key: $k, value: ($b | map(select(. == $k)) | length)}) | from_entries)' > "$tmp"; then
     rm -f "$tmp"; echo "fleet-sessions: could not build $STATE_FILE" >&2; return 1
@@ -940,7 +942,8 @@ sessions_prom() {
   done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')"
   jq -r --argjson p "$projects" "$PROM_JQ"'
     def per($name; $help; f): gauge($name; $help;
-      .sessions | sort_by(.target)[] | [{target, project: ($p[.cwd // ""] // ""), bucket}, f]);
+      .sessions | sort_by(.target)[] | select((.labels // []) | index("shepherd") | not)
+      | [{target, project: ($p[.cwd // ""] // ""), bucket}, f]);
     per("agent_session_context_tokens"; "Context tokens the session holds."; .context_tokens),
     per("agent_session_idle_minutes"; "Minutes since the session went idle, by agent-panel."; .idle_min),
     per("agent_session_age_minutes"; "Minutes since the session started."; .age_min),
