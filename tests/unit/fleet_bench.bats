@@ -1424,7 +1424,9 @@ items_stub() {
 
 qstats_fixture() {
   jq -nc '{since: "2026-10-20", active: {queued: 4, running: 1, waiting: 1}, done: {ok: 3, failed: 1, cancelled: 1},
-    wait_minutes_median: 12, run_minutes_median: 40, to_pr_minutes_median: 95,
+    wait_minutes_median: 12, wait_minutes_p90: 150, started_at_once: 3, run_minutes_median: 40, to_pr_minutes_median: 95,
+    sitting: {queued: 4, runnable: 2, held: 2, held_by: {after: 2}, runnable_age_minutes_median: 300,
+      oldest_runnable: [{slug: "q1", project: "game", minutes: 800}]},
     per_day: {"2026-10-26": 2, "2026-10-27": 3},
     by_project: {game: {done: 3, ok: 2, failed: 1, cancelled: 0, prs: 2, wait_minutes_median: 10, to_pr_minutes_median: 95},
                  app: {done: 2, ok: 1, failed: 0, cancelled: 1, prs: 0, wait_minutes_median: 30, to_pr_minutes_median: null}},
@@ -1437,7 +1439,7 @@ qstats_fixture() {
   qstats_fixture
   run env BENCH_NOW=$T0 "$SUBJECT" queue
   assert_success
-  assert_output 'queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m, to PR median 95m'
+  assert_output 'queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h, 2 held'
   [ "$(cat "$QSTATS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   run env BENCH_NOW=$T0 "$SUBJECT" queue --json
   assert_success
@@ -1454,7 +1456,7 @@ qstats_fixture() {
   assert_line --index 0 '## Queue'
   assert_line '- active now: queued 4, running 1, waiting 1'
   assert_line '- per day: 2026-10-26 2, 2026-10-27 3'
-  assert_line '- queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m, to PR median 95m'
+  assert_line '- queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h, 2 held'
   assert_line '| game | 3 | 2 | 1 | 0 | 2 | 10m | 95m |'
   assert_line '| app | 2 | 1 | 0 | 1 | 0 | 30m | - |'
   assert_line '| shepherd | 1 | 0 | 0 | 1 | 0 | - | - |'
