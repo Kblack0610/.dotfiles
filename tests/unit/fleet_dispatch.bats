@@ -1200,6 +1200,21 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   refute_output --partial '/one-shot plan p'
 }
 
+@test "start --item waits for the new claude's mode footer, answering a trust prompt, and says when it never shows" {
+  project game beta "$SANDBOX/repos/game"
+  stub claude-acct '[ "$1" = trust ] && { echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/trust.rc" 2>/dev/null || echo 0)"; }; exit 0'
+  agent-queue add --project game --slug a "do a"
+  agent-queue add --project game --slug p --mode plan "plan p"
+  cmd_start --item a >/dev/null || fail "start a"
+  echo 1 > "$NOTES_FIXTURE/trust.rc"
+  run cmd_start --item p
+  assert_success
+  assert_output --partial 'game-agent-1: claude did not show "plan mode on"; look at its pane'
+  assert_called 'claude-acct trust lab =game-agent-1: bypass permissions on'
+  assert_called 'claude-acct trust lab =game-agent-1: plan mode on'
+  [ -n "$(qitem running p)" ] || fail "p is running even when its footer never showed"
+}
+
 @test "start --item refuses an item that is not queued, and a failed launch leaves it queued" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug a "do a"

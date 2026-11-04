@@ -19,6 +19,9 @@
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<tmux-session>
 #   claude-acct unpark <tmux-session>|--all
 #                        # resume a parked session in its pane, on the account pick returns now
+#   claude-acct trust <server> <pane> <ready text>
+#                        # wait for a claude just started in that pane to show <ready text>
+#                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
 # One account per session via CLAUDE_CONFIG_DIR; nothing here writes a credential,
@@ -605,24 +608,50 @@ exited() {
     return 1
 }
 
+# trust_step <server> <pane> -- one step through Claude's folder trust prompt, taken from what
+# the pane shows: the cursor on "No, exit" (the default) gets Down, on "Yes, I trust this folder"
+# gets Enter. One key a call, each sent only once the redraw of the last one shows: two keys
+# sent back to back can lose the first. An account that never opened a folder (or, for a
+# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json,
+# which claude-acct never writes. Fails when the pane shows no trust prompt.
+TRUST_CURSOR=$'\xe2\x9d\xaf'
+trust_step() {
+    local screen
+    screen=$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)
+    grep -qF 'Yes, I trust this folder' <<<"$screen" || return 1
+    leave_mode "$1" "$2" || return 0
+    if grep -qE "$TRUST_CURSOR *Yes, I trust this folder" <<<"$screen"; then
+        tmux -L "$1" send-keys -t "$2" Enter
+    else
+        tmux -L "$1" send-keys -t "$2" Down
+    fi
+}
+
 # resumed <session id> <old pid> <to dir> -- a new claude registered that session id on the
 # target account; prints "pid status" for it
-# resumed_or_trusted <server> <pane> <resumed args...> -- resumed, answering Claude's folder
-# trust prompt once on the way: an account that never opened the ledger's cwd asks for it, and
-# its default is "No, exit". The same conversation already ran in that folder on its old
-# account, so the trust carries over; Claude keeps trust per account in .claude.json, which
-# claude-acct never writes. TRUSTED is set empty by unpark_ledger before its wait.
+# resumed_or_trusted <server> <pane> <resumed args...> -- resumed, stepping through the folder
+# trust prompt on the way. The same conversation already ran in that folder on its old account,
+# so the trust carries over.
 resumed_or_trusted() {
     local server="$1" pane="$2"
     shift 2
     resumed "$@" && return 0
-    if [[ -z "$TRUSTED" ]] && tmux -L "$server" capture-pane -p -t "$pane" 2>/dev/null | grep -qF 'Yes, I trust this folder'; then
-        TRUSTED=1
-        leave_mode "$server" "$pane" || return 1
-        tmux -L "$server" send-keys -t "$pane" Down
-        tmux -L "$server" send-keys -t "$pane" Enter
-    fi
+    trust_step "$server" "$pane"
     return 1
+}
+
+# ready_or_trusted <server> <pane> <ready text> -- the pane shows <ready text> and no trust
+# prompt; a trust prompt gets its next step.
+ready_or_trusted() {
+    trust_step "$1" "$2" && return 1
+    tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null | grep -qF -- "$3"
+}
+
+# cmd_trust <server> <pane> <ready text> -- for a launcher that started a claude in a fresh
+# folder (fleet-dispatch start): wait for it, answering the trust prompt once.
+cmd_trust() {
+    (($# == 3)) || { echo "usage: claude-acct trust <server> <pane> <ready text>" >&2; return 2; }
+    await "claude in $1 $2 to show \"$3\"" ready_or_trusted "$1" "$2" "$3"
 }
 resumed() {
     local f pid
@@ -809,7 +838,7 @@ park_flow() {
 # pane, on that account or else the one best() names now, await it, then delete the ledger.
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
-    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got TRUSTED
+    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got
     session="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
@@ -840,7 +869,6 @@ unpark_ledger() {
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
-    TRUSTED=""
     await "session $sid to register on $name" resumed_or_trusted "$server" "$pane" "$sid" "$pid" "$to" ||
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
     rm -f "$file"
@@ -886,6 +914,7 @@ case "${1:-}" in
     move)   shift; cmd_move "$@" ;;
     park)   shift; cmd_park "$@" ;;
     unpark) shift; cmd_unpark "$@" ;;
+    trust)  shift; cmd_trust "$@" ;;
     -h|--help|"") usage ;;
     *) echo "claude-acct: unknown verb '$1'" >&2; usage >&2; exit 1 ;;
 esac
