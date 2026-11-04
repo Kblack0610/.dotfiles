@@ -494,3 +494,53 @@ EOF
   assert_success
   assert_output 'v1.11.0'
 }
+
+# -- a worktree whose checkout is gone (reaped mid-session, or a husk) ---------
+
+@test "a reaped worktree under the worktree root resolves to its repo by name" {
+  write_map
+  export WT_ROOT="$SANDBOX/wt"
+  run resolve_project_name "$WT_ROOT/mono-agent-3"
+  assert_output 'mono-canon'
+}
+
+@test "a husk dir (no .git, Logs only) resolves the same way, from a subdir too" {
+  write_map
+  export WT_ROOT="$SANDBOX/wt"
+  mkdir -p "$WT_ROOT/mono-fix-thing/Logs"
+  run resolve_project_name "$WT_ROOT/mono-fix-thing/Logs"
+  assert_output 'mono-canon'
+}
+
+@test "the longest registered repo name wins" {
+  printf '{ "paths": { "%s": "mono-canon", "%s": "two-canon" } }\n' "$REPO" "$SANDBOX/repos/.mono-two" > "$MAP"
+  export WT_ROOT="$SANDBOX/wt"
+  run resolve_project_name "$WT_ROOT/mono-two-agent-1"
+  assert_output 'two-canon'
+  run resolve_project_name "$WT_ROOT/mono-agent-1"
+  assert_output 'mono-canon'
+}
+
+@test "a name that only shares a prefix without the dash is not claimed" {
+  write_map
+  export WT_ROOT="$SANDBOX/wt"
+  run resolve_project_name "$WT_ROOT/monolith-agent-1"
+  assert_output 'monolith-agent-1'
+}
+
+@test "the same name OUTSIDE the worktree root keeps its basename" {
+  write_map
+  export WT_ROOT="$SANDBOX/wt"
+  run resolve_project_name "$SANDBOX/elsewhere/mono-agent-3"
+  assert_output 'mono-agent-3'
+}
+
+@test "a live worktree still resolves through git, not its name" {
+  write_map
+  git_repo
+  export WT_ROOT="$SANDBOX/wt"
+  mkdir -p "$WT_ROOT"
+  git -C "$REPO" worktree add -q "$WT_ROOT/unrelated-name" -b side
+  run resolve_project_name "$WT_ROOT/unrelated-name"
+  assert_output 'mono-canon'
+}
