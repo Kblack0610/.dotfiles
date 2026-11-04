@@ -1309,3 +1309,56 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-a.md)" status)" ok
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
+
+# --- starved -----------------------------------------------------------------------------
+
+# queued_item <slug> <priority> <queued> [tags] [after]
+queued_item() {
+  local d="$AGENT_QUEUE_DIR/queued"; mkdir -p "$d"
+  {
+    printf 'slug: %s\nproject: game\nmode: oneshot\npriority: %s\nfrom: human\nagent: claude\nqueued: %s\n' "$1" "$2" "$3"
+    [ -z "${4:-}" ] || printf 'tags: %s\n' "$4"
+    [ -z "${5:-}" ] || printf 'after: %s\n' "$5"
+    printf -- '---\n%s\n' "$1"
+  } > "$d/20261103-100000-$1.md"
+}
+
+@test "starved: an urgent or high item runnable over the limit with no queue start in that time fails and names it; holds, low, new, a recent start and a dispatch hold do not" {
+  local old new
+  old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item fresh urgent "$new"
+  queued_item low-old low "$old"
+  queued_item tagged-old high "$old" at:23:59
+  queued_item after-old urgent "$old" '' never-done
+  run cmd_starved
+  assert_success
+  assert_output ''
+  queued_item stuck high "$old"
+  . "$HOME/.local/lib/agent-proof.sh"; mkdir -p "$(proof_state_dir)/fleet-dispatch"
+  [[ "$(proof_state_dir)" == "$HOME"/* || "$(proof_state_dir)" == "$SANDBOX"/* ]]   # never the live state dir
+  echo '[t] outcome=NOOP load 30 on 24 cores is over the 0.7 pace' > "$(proof_state_dir)/fleet-dispatch/activity.log"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  assert_output --partial 'last pass: [t] outcome=NOOP load 30'
+  refute_output --partial 'fresh'
+  refute_output --partial 'low-old'
+  refute_output --partial 'tagged-old'
+  refute_output --partial 'after-old'
+  # A queue that is moving is not starved: a start in the window clears it, a redispatch does not.
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s started game-agent-1 on lab (redispatch) for game: queue item x, resume 1\n' "$(date '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_failure
+  printf -- '- %s started game-agent-1 on lab (run) for game: queue item other\n' "$(date -d '-2 hours' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'last queue start: '"$(date -d '-2 hours' '+%Y-%m-%d')"
+  printf -- '- %s started game-agent-2 on lab (hand) for game: queue item other2\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_success
+  stub agent-hold 'exit 1'
+  run cmd_starved
+  assert_success
+  assert_output --partial 'dispatch is held'
+}
