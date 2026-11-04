@@ -812,6 +812,10 @@ two_items() {
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
+  echo '0.1 0.1 0.1 1/1 1' > "$DISPATCH_LOADAVG"
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.held, .held_kind] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess'
 }
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
@@ -1025,6 +1029,8 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   run cmd_reap
   assert_success
   [ -n "$(qitem running fix-crash)" ] || fail "moved a working session's item"
+  # 2026-11-04: the weight field after state read as "runningheavy", and every pass re-moved every live item.
+  ! grep -q reaped "$FLEET_DISPATCH_DIR/log.md" 2>/dev/null || fail "reaped an item already in its state: $(cat "$FLEET_DISPATCH_DIR/log.md")"
   assert_not_called 'start'
 }
 

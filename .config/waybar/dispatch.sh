@@ -92,12 +92,13 @@ fi
 
 # held: the one gate that held the last pass, if any, by name.
 held=''
-for k in slots load idle account other; do
+for k in slots load idle account assess other; do
   [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
   case $k in
-    slots) held="every run slot is used (DISPATCH_MAX_LIVE)" ;;
+    slots) held="every run unit is used (DISPATCH_MAX_LIVE)" ;;
     load) held="load is over the cap (DISPATCH_MAX_LOAD)" ;;
     idle) held="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
+    assess) held="fleet-assess says the machine is too busy (fleet-assess)" ;;
     account) held="no account has room under its weekly pace" ;;
     other) held="a gate (fleet-dispatch headroom says which)" ;;
   esac
@@ -111,7 +112,7 @@ n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
 tip+=$'\n'"flow: last hour $(($(n0 starts_1h_run) + $(n0 starts_1h_hand) + $(n0 starts_1h_redispatch) + $(n0 starts_1h_resume))) started (run $(d starts_1h_run), hand $(d starts_1h_hand), redispatch $(d starts_1h_redispatch), resume $(d starts_1h_resume)), $(d done_1h) done; $(d done_24h) done in 24h"
 tip+=$'\n'"drain: $drain"
 if [ -n "$(get dispatch.room_max_live)" ]; then
-  room="room: run slots $(d room_live_runs)/$(d room_max_live)"
+  room="room: run units $(d room_live_runs)/$(d room_max_live)"
   [ -n "$(get dispatch.room_live_hand)" ] && room+=", +$(d room_live_hand) started by hand"
   tip+=$'\n'"$room; load $(d room_load) of $(d room_load_cap); idle $(d room_idle)% (floor $(d room_min_idle)%)"
 else

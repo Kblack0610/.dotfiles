@@ -791,7 +791,8 @@ cmd_headroom() {
     # The held reason as one word, so the feed (numbers only) can carry it as a 0/1 per kind.
     | .held_kind = (.held // "" | if . == "" or . == "nothing runnable" then null
         elif startswith("DISPATCH_MAX_LIVE") then "slots" elif startswith("load ") then "load"
-        elif startswith("real idle") then "idle" elif test("account") then "account" else "other" end)' |
+        elif startswith("real idle") then "idle" elif test("account") then "account"
+        elif startswith("fleet-assess") then "assess" else "other" end)' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass))" +
         (if .held then ", held: \(.held)" else "" end),
@@ -860,7 +861,7 @@ cmd_stats() {
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
            room_load: $hr.load, room_load_cap: $hr.load_cap, room_idle: $hr.idle, room_min_idle: $hr.min_idle}
-          + (["slots", "load", "idle", "account", "other"]
+          + (["slots", "load", "idle", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
 }
 
@@ -869,7 +870,7 @@ cmd_stats() {
 # (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed),
 # running/ again once it does not. A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state want waits='' seen=''
+  local s d slug server sess origin project area state _weight want waits='' seen=''
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
@@ -877,7 +878,7 @@ cmd_reap() {
       jq -r 'select((.from | startswith("board:")) and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  while IFS=$'\x1f' read -r slug server sess origin project area state; do
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight; do
     [ -n "$slug" ] || continue
     if ! session_live "$sess" "$server"; then
       settle_item "$slug" "$sess"
