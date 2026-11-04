@@ -423,8 +423,10 @@ cmd_start() {
     model=${model:-opus}
     acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
     cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") ${acct:+CLAUDE_CONFIG_DIR=$(printf '%q' "$acct") }claude --model $(printf '%q' "$model")"
+    # A plan session still needs bypass once the plan is approved, and claude offers it then
+    # only when it was allowed at launch.
     case "$mode" in
-      plan) cmd="$cmd --permission-mode plan $(printf '%q' "$(item_brief "$it")")" ;;
+      plan) cmd="$cmd --permission-mode plan --allow-dangerously-skip-permissions $(printf '%q' "$(item_brief "$it")")" ;;
       *) cmd="$cmd --permission-mode bypassPermissions $(printf '%q' "$(item_brief "$it")")" ;;
     esac
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
