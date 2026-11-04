@@ -136,7 +136,8 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | I want to | Command |
 |---|---|
 | see projects | `notes projects`, `notes projects --archived`, `notes projects <name>` for its files |
-| add a project, or fill in a missing shape file | `notes --profile bnb projects --new <name>` |
+| add a project | `project-map add <name> --type game\|app\|infra --lab <profile>`, plus `--repo <key> --path <dir>` for part of a repo or `--repo-dir <abs>` for a whole one; it writes the registry entry, scaffolds the folder, regenerates the anchor and runs `project-map-doctor`. Land the registry change with dotfiles-land |
+| fill in a missing shape file | `notes --profile bnb projects --new <name>` |
 | check every project's shape | `notes doctor --projects` |
 | set where it shows in the Overview | `projects --stage <name> --set draft\|alpha\|beta\|prod` |
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
