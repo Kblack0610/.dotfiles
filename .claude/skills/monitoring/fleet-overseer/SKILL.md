@@ -111,6 +111,8 @@ This is the shape for any status question about the fleet: "where are we", "how 
 5. **How far to trust the ETAs:** the accuracy table from `fleet-bench report` (per basis and per horizon: how many scored, median miss, and actual over predicted time), then one line saying whether the ETAs above run long or short and by how much. An ETA whose basis carries a factor (`project-median(13) x0.3 (n=21)`) is already scaled by its basis's raw ratio, so judge it by that basis's `calibrated` line, and say there is none yet when no calibrated ETA has been scored; do not apply the raw ratio to it a second time. Added 2026-10-28, when that table showed the project-median ETAs ran about 3x long.
 6. **When the fleet is done:** the all-done-by, slow and drain lines from `fleet-bench forecast`, never a hand roll-up of the ETAs, then `fleet-bench vs` against the day's `daily-<date>` baseline (phases ticked against expected, and inflow now against inflow when frozen). Added 2026-11-03, when the human asked for the whole picture: phases, the order of work, and expectations to compare against.
 
+**Keep every answer.** Each summary in this shape, and each answer to a question the human asks the shepherd in chat, is also written with `fleet-shepherd log --rundown "<their question, or rundown>"`, with the answer on stdin. It becomes its own file in `~/.agent/shepherd/rundowns/` and gets a pointer line in `log.md`. Added 2026-11-03, when the human lost answers that existed only in the chat after it compacted.
+
 ## Verb: `shepherd`
 
 One pass. It runs two ways, and only one acts at a time:
