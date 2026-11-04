@@ -5,7 +5,8 @@
 # is the ci domain status rule, never its own judgement; the hover counts local vs cloud,
 # names each cloud machine, and lists one row per machine instead of one per job; a missed
 # scrape and GitHub not answering read differently; and an unreadable Prometheus shows
-# `CI: prom down`, never the last numbers.
+# `CI: prom down`, never the last numbers. The phone lines say the same without the hover's
+# aligned table, which a proportional widget font cannot draw.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -370,4 +371,29 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
   run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 q0"
+}
+
+@test "phone: the bar, the finished line, the ci status and each pool with slots" {
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_line --index 0 "<b><span color='#ffcc2f'>CI</span></b> 5/10 <span color='#ffcc2f'>q6</span>, finished 24h: 120, <span color='#ffcc2f'>87%</span> passed"
+  assert_line --index 1 --partial "ci:"
+  assert_line --index 2 --partial "unity 3/4 <span color='#ffcc2f'>q5</span>"
+  assert_line --index 2 --partial "light 0/2"
+  refute_output --partial "github-hosted"
+  refute_output --partial "<tt>"
+  refute_output --partial "DOWN:"
+}
+
+@test "phone: what is down is one line" {
+  fixtures offline
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_line --index 3 --partial "DOWN:"
+}
+
+# Negative control: a failed read has no phone lines, so fleet-overview shows its hover instead.
+@test "phone: an unreadable Prometheus has no phone lines to go stale" {
+  CURL_FAIL=1 run "$MODULE"
+  assert_equal "$(jq -r 'has("phone")' <<< "$output")" false
 }

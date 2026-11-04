@@ -2,7 +2,8 @@
 # day.sh: the waybar day chip. The bar is today's merged PRs from day-log's record plus a
 # red !N for what is red now. What these pin: no record reads -, never 0; a record
 # day-log.timer stopped refreshing is dimmed with its age; Prometheus down still shows the merged count
-# and says !? instead of a quiet nothing; PR titles with quotes and markup stay valid.
+# and says !? instead of a quiet nothing; PR titles with quotes and markup stay valid. The phone
+# lines are the merged count and the hover's red-now line.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -117,5 +118,16 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(jq -r .text <<< "$output")" "$MERGE 4 <span color='#ffcc2f'>!?</span>"
   assert_equal "$(jq -r .class <<< "$output")" warn
   run tip
+  assert_output --partial "red now: cannot read http://prom.test"
+}
+
+@test "phone: the merged count and the red-now line, and the reason when Prometheus is unreadable" {
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_line --index 0 "merged today: 4"
+  assert_line --index 1 --partial "watch deploy_drift"
+  assert_equal "${#lines[@]}" 2
+  CURL_FAIL=1 run "$MODULE"
+  run jq -r .phone <<< "$output"
   assert_output --partial "red now: cannot read http://prom.test"
 }
