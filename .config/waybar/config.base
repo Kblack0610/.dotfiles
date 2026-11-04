@@ -116,6 +116,7 @@
         "modules": [
             "custom/timebox",
             "custom/ai-agents",
+            "custom/shepherd",
             "custom/dispatch",
             "custom/fleet",
             "custom/ci",
@@ -190,6 +191,19 @@
     },
     // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
     // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
+    // Sessions: live agent sessions per fleet-sessions stage, red on STALLED, amber on
+    // UNCLEAR (shepherd.sh). Click opens the hub board on Sessions.
+    "custom/shepherd": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/shepherd $HOME/.config/waybar/shepherd.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab sessions",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
+        "tooltip": true
+    },
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",

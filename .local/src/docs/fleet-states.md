@@ -81,6 +81,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` Sessions tab, agent-web Watch tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
+| waybar `custom/shepherd` (`.config/waybar/shepherd.sh`) | `counts` and `idle_min` by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_sessions`, `agent_session_idle_minutes`), and the file's age |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 
@@ -92,8 +93,12 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | --- | --- |
 | Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
 | See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, UNCLEAR amber, LANDED and DONE green, PARKED dim, labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
+| See how many sessions sit in each stage | The waybar sessions chip: `W` working, `N` needs, `S` stalled (red), `U` unclear (amber), `L`/`D` landed and done, `P` parked; a zero is hidden. The hover lists every stalled, unclear and needs session with its idle time. Click opens `hub --tab sessions`; `modules.sh toggle shepherd` hides it |
 | See a label change at once | `label` sets the window option itself; a session too new to be in the document gets it at the next tick |
 
 | Problem | Fix |
 | --- | --- |
 | A window keeps a stage after its session ended | The next tick clears any window carrying `@fleet_stage` that no session claims; check `fleet-state.timer` is running |
+| The sessions chip reads `?` | Prometheus did not answer: check `CC_PROM_URL` in `~/.config/command-center/env` |
+| The sessions chip reads `-` | Prometheus has no `agent_sessions`: `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
+| The sessions chip is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |
