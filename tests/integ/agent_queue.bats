@@ -189,6 +189,27 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+@test "mine: the active item this tmux session records; none exits 1, two exit 2" {
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  run "$AQ" mine
+  assert_failure 1
+  "$AQ" add --project game --running --slug here "this session"
+  "$AQ" add --project game --running --session lab:other --slug elsewhere "another session"
+  run "$AQ" mine
+  assert_success
+  assert_output here
+  run "$AQ" mine --session lab:other
+  assert_output elsewhere
+  "$AQ" add --project game --running --slug second "a second task here"
+  run "$AQ" mine
+  assert_failure 2
+  "$AQ" move here done --status ok
+  "$AQ" move second done --status ok
+  run "$AQ" mine
+  assert_failure 1
+}
+
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
@@ -202,6 +223,78 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_not_called 'start --item p3'
   run "$AQ" add --project game --slug o1 "one shot"
   assert_not_called 'start --item o1'
+}
+
+plan_fixture() {
+  cat > "$SANDBOX/my-plan.md" <<'EOF'
+# A plan
+
+## Phases
+
+- [x] 1. Landed thing: details
+- [ ] 2. Second thing: details
+  - [ ] a step inside phase 2
+- [-] 3. Deferred thing
+- [ ] 4. Fourth thing. More words
+- [ ] 5. Fifth thing (with 4): shares the branch of 4
+- [ ] 6. Sixth thing
+
+## Verification
+
+- [ ] not a phase
+EOF
+}
+
+@test "add --plan queues one oneshot item per unchecked phase, each after the one before; --dry-run writes nothing" {
+  plan_fixture
+  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue my-plan-p2	phases 2	after base$'
+  assert_line --index 2 --regexp '^would queue my-plan-p4	phases 4 5	after my-plan-p2$'
+  assert_line --index 4 --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --priority high --tags night
+  assert_success
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+  f="$(item queued my-plan-p2)"
+  [ "$(field "$f" mode)" = oneshot ]
+  [ "$(field "$f" after)" = base ]
+  [ "$(field "$f" plan)" = "$SANDBOX/my-plan.md" ]
+  [ "$(field "$f" phases)" = 2 ]
+  [ "$(field "$f" priority)" = high ]
+  [ "$(field "$f" tags)" = night ]
+  grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
+  f="$(item queued my-plan-p4)"
+  [ "$(field "$f" after)" = my-plan-p2 ]
+  [ "$(field "$f" phases)" = "4 5" ]
+  grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
+  [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
+  ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
+}
+
+@test "add --plan writes nothing when a slug is taken, and refuses what it cannot expand" {
+  plan_fixture
+  "$AQ" add --project game --slug my-plan-p6 "already queued by hand" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "already in the queue: my-plan-p6 (nothing was added)"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --slug other "a task too"
+  assert_failure
+  assert_output --partial "pass no task with it"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --slug other --mode plan
+  assert_failure
+  printf '# no checklist\n' > "$SANDBOX/empty.md"
+  run "$AQ" add --plan "$SANDBOX/empty.md" --project game
+  assert_failure
+  assert_output --partial "no unchecked phase"
+  run "$AQ" add --plan "$SANDBOX/missing.md" --project game
+  assert_failure
+  run "$AQ" add --project game --dry-run "a task"
+  assert_failure
+  assert_output --partial "--dry-run goes with --plan"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
 @test "cancel moves a queued item to done, and kills a running item's session" {

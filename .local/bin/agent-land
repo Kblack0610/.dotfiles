@@ -10,8 +10,9 @@
 # and moves to done, status ok), board (the item's row when it came from the board, done with
 # pr:<pr>; with no item, the --project/--title agent row), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). One line per step.
-# The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started); with one,
-# --project and --title are not needed and not used: the item is the record.
+# The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
+# one a hand-started session recorded with `agent-queue add --running` (`agent-queue mine`); with
+# one, --project and --title are not needed and not used: the item is the record.
 # Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it and re-run. A merge of
 # <base> keeps a green gate green; gate again only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
@@ -91,6 +92,11 @@ while [ $# -gt 0 ]; do
 done
 [[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
 row=''
+if [ -z "$item" ]; then
+  mine=0
+  item=$(agent-queue mine 2>/dev/null) || mine=$?
+  [ "$mine" -ne 2 ] || die "more than one queue item records this session: pass --item <slug> (agent-queue mine)"
+fi
 if [ -n "$item" ]; then
   # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
   it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
