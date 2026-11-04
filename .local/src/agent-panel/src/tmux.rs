@@ -28,6 +28,10 @@ pub struct Pane {
     /// Window tags set via Prefix+t (see .local/src/tmux/tags.sh), rendered by
     /// tmux itself from the `@tag_*` window options. Empty when untagged.
     pub tags: String,
+    /// The session's fleet stage (`STALLED`, `LANDED`...) and its labels (`manual,x`), copied
+    /// onto the window by each `fleet-sessions` tick. A display copy: the source is fleet-sessions.
+    pub stage: String,
+    pub labels: String,
 }
 
 /// `<server>/<session>:<window>`.
@@ -126,7 +130,7 @@ fn pane_format(now: u64) -> String {
     "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
      #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
      #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
-     #{?#{e|<:NOW,#{@shepherd}},shepherd ,}"
+     #{?#{e|<:NOW,#{@shepherd}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}"
         .replace("NOW", &now.to_string())
 }
 
@@ -151,6 +155,8 @@ fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
             window_id: f.get(6).copied().unwrap_or("").to_string(),
             title: f.get(7).copied().unwrap_or("").to_string(),
             tags: f.get(8).copied().unwrap_or("").trim().to_string(),
+            stage: f.get(9).copied().unwrap_or("").to_string(),
+            labels: f.get(10).copied().unwrap_or("").to_string(),
         });
     }
     panes
@@ -234,7 +240,7 @@ mod tests {
 
     #[test]
     fn parses_panes_with_their_server() {
-        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \n\
+        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\n\
                     hub\t1\t/home/u\t43\t%8\t0\t@4\tt\t\nshort\trow\n";
         let panes = parse_panes("hub", text);
         assert_eq!(panes.len(), 2);
@@ -245,12 +251,15 @@ mod tests {
         assert_eq!(panes[0].window_id, "@3");
         assert_eq!(panes[0].title, "✳ title");
         assert_eq!(panes[0].tags, "pinned");
+        assert_eq!((panes[0].stage.as_str(), panes[0].labels.as_str()), ("STALLED", "manual,x"));
+        assert_eq!((panes[1].stage.as_str(), panes[1].labels.as_str()), ("", ""));
     }
 
     #[test]
     fn shepherd_tag_compares_the_lease_expiry_to_now() {
         let fmt = pane_format(1_700_000_000);
-        assert!(fmt.ends_with("#{?#{e|<:1700000000,#{@shepherd}},shepherd ,}"), "{fmt}");
+        assert!(fmt.contains("#{?#{e|<:1700000000,#{@shepherd}},shepherd ,}\t"), "{fmt}");
+        assert!(fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}"), "{fmt}");
         assert!(!fmt.contains("NOW"));
     }
 }
