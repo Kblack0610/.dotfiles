@@ -695,8 +695,7 @@ impl App {
         }
     }
 
-    /// The Board tab's own keys (tasktab.rs). With a prompt or a remove armed every key is
-    /// theirs; the page keeps the selected row in view (draw).
+    /// The Board tab's own keys (tasktab.rs). With a prompt open every key is its; the page keeps the selected row in view (draw).
     fn board_key(&mut self, k: KeyEvent) -> bool {
         let feed = match &self.tasks {
             Some(Ok(f)) => Some(f),
@@ -1042,9 +1041,8 @@ impl App {
                 "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
-            Tab::Board if self.tv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Board => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x remove  Esc clear  r refresh  {tabs} tabs  q quit"
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  Esc clear  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
@@ -1474,8 +1472,11 @@ mod tests {
         assert!(a.quit, "q quits with no prompt open");
         a.quit = false;
         a.handle(key('x'));
-        a.handle(key('y'));
-        assert_eq!(a.tv.running.as_deref(), Some("rm in personal/garden"));
+        for c in "stale".chars() {
+            a.handle(key(c));
+        }
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.tv.running.as_deref(), Some("drop in personal/garden"));
         loop {
             match rx.recv().unwrap() {
                 Msg::TasksActed(r) => {
@@ -1485,11 +1486,11 @@ mod tests {
                 m => a.handle(m),
             }
         }
-        assert_eq!(a.tv.said, Some(Ok("rm in personal/garden: done".into())));
+        assert_eq!(a.tv.said, Some(Ok("drop in personal/garden: done".into())));
         let ran = fake.0.lock().unwrap().clone();
         assert!(
             ran.contains(
-                &"notes ptask garden --profile personal --exact rm -- - [ ] water the beds"
+                &"notes ptask garden --profile personal --exact drop --why stale -- - [ ] water the beds"
                     .to_string()
             ),
             "{ran:?}"
