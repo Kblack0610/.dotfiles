@@ -15,6 +15,10 @@ set -uo pipefail
 
 AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
 AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+# The registry's resolver, from this tree (public), reading the same map.
+PROJECT_MAP_FILE="$AQ_MAP"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
@@ -178,15 +182,14 @@ move_to() {
 }
 
 # project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
-# start it. An alias becomes its project. The project must reach a checkout by fleet-dispatch's
-# repo_dir rule: a `trackers` entry names its repo (absent = its own name, null = notes-only),
-# and `paths` maps a checkout to that repo. So a game inside a repo (a tracker with `repo`) is
-# runnable, and a notes-only project is not. With no map there is nothing to ask.
+# start it: an alias becomes its project, and the project must reach a checkout through the
+# registry (project-name.sh's project_repo_path). A game inside a repo is runnable; a notes-only
+# project is not. With no map there is nothing to ask.
 project_resolve() {
   [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
-  jq -er --arg p "$1" '(.aliases[$p] // $p) as $n | .trackers[$n] as $t
-    | (if ($t | type) != "object" or ($t | has("repo") | not) then $n else ($t.repo // "") end) as $r
-    | select($r != "" and ([.paths[]?] | index($r)) != null) | $n' "$AQ_MAP" 2>/dev/null
+  local name
+  name="$(jq -r --arg p "$1" '.aliases[$p] // $p' "$AQ_MAP" 2>/dev/null)"
+  [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"
 }
 
 project_of_cwd() {
