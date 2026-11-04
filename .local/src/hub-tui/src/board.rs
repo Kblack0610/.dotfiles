@@ -943,7 +943,8 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// What is red right now: tripped watches, failed runners, NotReady nodes.
+    /// What is red right now (`cc:red_now`): tripped watches, failed runners, NotReady nodes,
+    /// a frozen agent feed, a silent Sentinel.
     pub fn red_now(&self, w: usize) -> Line<'static> {
         let mut items: Vec<&str> = self
             .infra

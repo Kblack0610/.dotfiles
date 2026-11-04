@@ -17,17 +17,15 @@
 //! the three files was ever a backlog, which is why the footer used to list three
 //! "backlogs" for two concepts.
 //!
-//! The note carries the human's own lists plus one generated section, `## Projects`: quick
-//! links to the projects at `#alpha` or `#beta` in this org and the orgs it rolls up. Prod
-//! projects are left out (they are visited directly), so the section stays a few lines. It is
-//! rendered when the note is CREATED and never again, which is the rule for the whole note:
-//! after the morning, only the human writes to it. Everything that changes during the day is
-//! a status page (`status.rs`: watches, comms, inbox) or a regenerated file (`board.rs`),
-//! reached from the footer, one link per line.
+//! Below the human's own lists the note carries one generated section, `## Morning`: one line
+//! each for the briefing (plus its "Needs you" items), the day log and the knowledge engine,
+//! each linking the file that holds the detail. Everything that changes during the day is a
+//! status page (`status.rs`: watches, comms, inbox) or a regenerated file (`board.rs`), reached
+//! from the footer, one link per line.
 //!
-//! An earlier `## Current Projects` block copied the whole lab index in every morning and was
-//! removed for crowding Focus; `## Work` (a job roster with open counts) and `## Comms` were
-//! rewritten every run. The alpha/beta filter and the create-once rule are the answer to both.
+//! Removed for repeating a page the footer already links: `## Current Projects` (the whole lab
+//! index), `## Work` (a job roster), `## Comms` (now a status page), and `## Projects` (alpha/beta
+//! quick links, which the Board's per-project headings and the project index both carry).
 
 use crate::config::{self, Profile};
 use crate::logging::Logger;
@@ -103,9 +101,6 @@ pub fn run(p: &Profile, log: &Logger) -> Result<()> {
     link_refs_on(p, log, today)?;
     ensure_footer(p, &note)?;
     space_headings(&note)?;
-    // A note written before `## Projects` existed carries the `## Work` roster instead; swap it
-    // once. The marker is gone after the first pass, so this cannot repeat during the day.
-    migrate_work(p, log, &note)?;
     // Each feed writes its status page, then strips its section from the note. Swallowed like
     // the board below: a page that cannot be written must never abort the note.
     if let Err(e) = refresh_watches(p, log, &note) {
@@ -207,9 +202,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         s.push('\n');
     }
     s.push_str("- [ ] \n");
-    // Rendered HERE and only here, so the note is written once by whichever machine creates
-    // it and then only changes when the human edits it.
-    s.push_str(&projects_block(p, log));
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
@@ -397,10 +389,13 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
 
 /// The morning briefing's file stem under today's refs dir. Written by `agentctl-briefing`.
 const BRIEFING: &str = "briefing";
+/// The day log's file stem under today's refs dir. Written by `day-log`.
+const SHIPPED: &str = "shipped";
 
 /// `## Morning`: what happened while you were away, below Notes and Focus. The briefing's
 /// headline and its "Needs you" items (each cut before its `-> do:` hint, which stays in the
-/// briefing), then what the knowledge engine compiled since the last note listed it.
+/// briefing), the day log's headline, then what the knowledge engine compiled since the last
+/// note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
     let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
@@ -429,6 +424,18 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
             }
         }
         Err(_) => s.push_str("- Briefing: not written yet\n"),
+    }
+    // The day log, as one line: its first sentence is the count of what merged.
+    if let Ok(text) = fs::read_to_string(p.refs.join(&today_s).join(format!("{SHIPPED}.md"))) {
+        let link = format!("{}/{today_s}/{SHIPPED}", p.refs_rel);
+        let first = text
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split(". ").next().unwrap_or(l).trim_end_matches('.'))
+            .unwrap_or("");
+        s.push_str(format!("- Shipped: [[{link}]] {first}").trim_end());
+        s.push('\n');
     }
     s.push_str(&crate::knowledge::morning_lines(p, prev_note, today));
     s
@@ -484,8 +491,9 @@ fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
         let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                // The briefing is rendered in `## Morning`, so listing it here would say it twice.
-                if stem != "_index" && stem != BRIEFING {
+                // The briefing and day log are rendered in `## Morning`; listing them here would
+                // say it twice.
+                if stem != "_index" && stem != BRIEFING && stem != SHIPPED {
                     names.push(stem.to_string());
                 }
             }
@@ -546,7 +554,8 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         links.push((label.clone(), config::wikilink(&p.root, b)));
     }
     // Board first, then the index. The board is the one the human opens daily (it carries
-    // the live wave + agent lane); the index is the slower "what projects exist" page.
+    // the live wave); the index is the slower "what projects exist" page. The agent board has
+    // no line here: the board's own header links it, one click from this one.
     //
     // The board is linked against the VAULT, not this org's root: it is one cross-org file, so
     // an org-relative link would name a path inside that org that does not exist. That was the
@@ -555,11 +564,6 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // notes.nvim's gf setup), so the vault-relative form resolves from inside any org.
     if let Some(b) = crate::board::board_path(p) {
         links.push(("Board".into(), config::wikilink(&p.vault, &b)));
-    }
-    // The agent lane gets its own link, or `agent-board.md` would be written by every
-    // `notes today` and reachable from nothing.
-    if let Some(b) = crate::board::agent_board_path(p) {
-        links.push(("Agent board".into(), config::wikilink(&p.vault, &b)));
     }
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
@@ -966,76 +970,6 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     publish_and_strip(p, log, note, &watches_page(p), watches_present(p), "Watches")
 }
 
-/// The stages `## Projects` links, in display order. Prod is left out on purpose: a live
-/// product is visited directly, and draft has nothing to look at yet.
-const QUICK_STAGES: [&str; 2] = ["beta", "alpha"];
-
-/// One org's alpha/beta projects as `(stage rank, name, front page)`, sorted beta first.
-fn quick_projects(org: &Profile) -> Vec<(usize, String, PathBuf)> {
-    let mut out: Vec<(usize, String, PathBuf)> = discover_project_dirs(org)
-        .into_iter()
-        .filter_map(|(name, summary)| {
-            let dir = summary.parent()?;
-            let stage = crate::projects::stage_of(dir)?;
-            let rank = QUICK_STAGES.iter().position(|s| *s == stage)?;
-            Some((rank, name, crate::projects::front_page(dir)))
-        })
-        .collect();
-    out.sort();
-    out
-}
-
-/// The `## Projects` section: quick links to every alpha/beta project in this org and each org
-/// it rolls up, one small `### <org>` block per org that has any. Empty string when none do.
-///
-/// Links are VAULT-relative, like the board's: a rolled-up org's project is not under this
-/// org's root. Infallible like `watch_rows`, because `notes today` runs from the shell rc and a
-/// typo in `rollup` must not take it down: an unresolvable org is warned and skipped.
-pub(crate) fn projects_block(p: &Profile, log: &Logger) -> String {
-    let mut rolled: Vec<Profile> = Vec::new();
-    for name in p.rollup.iter().filter(|n| **n != p.name) {
-        match config::resolve(Some(name)) {
-            Ok(org) => rolled.push(org),
-            Err(e) => log.warn("today", &format!("projects: skipping '{name}': {e}")),
-        }
-    }
-    let mut block = String::new();
-    for org in std::iter::once(p).chain(rolled.iter()) {
-        let projects = quick_projects(org);
-        if projects.is_empty() {
-            continue;
-        }
-        block.push_str(&format!("### {}\n", org.name));
-        for (rank, name, page) in projects {
-            let link = config::wikilink(&p.vault, &page);
-            block.push_str(&format!("- [[{link}|{name}]] {}\n", QUICK_STAGES[rank]));
-        }
-    }
-    if block.is_empty() {
-        return block;
-    }
-    format!("\n## Projects\n{block}")
-}
-
-/// Swap a pre-`## Projects` note's `## Work` roster for the Projects section. Keyed on the
-/// legacy heading, so it runs at most once per note and never on a note created by this build.
-fn migrate_work(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    let content = fs::read_to_string(note)?;
-    let stripped = remove_section(&content, "Work");
-    if stripped == content {
-        return Ok(());
-    }
-    let block = projects_block(p, log);
-    let migrated = if block.is_empty() || md::section_lines(&stripped, "Projects").is_some() {
-        stripped
-    } else {
-        insert_before_footer(&stripped, &format!("\n{block}"))
-    };
-    md::write_atomic(note, &migrated)?;
-    log.info("today", "replaced ## Work with ## Projects");
-    Ok(())
-}
-
 /// Create the standing backlog files from templates if missing.
 fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
     ensure_backlog_file(
@@ -1439,116 +1373,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Write a project dir whose front page carries `stage` as its head tag.
-    fn project(dir: &Path, name: &str, stage: &str) {
-        let d = dir.join(name);
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("summary.md"), format!("# {name}\n\n#{stage}\n")).unwrap();
-    }
-
-    /// `## Projects` is quick links to what is in alpha or beta, nothing else: prod is visited
-    /// directly and draft has nothing to look at. Every link must open a real file, and the
-    /// lab index stays reachable from the footer.
-    #[test]
-    fn a_fresh_note_links_alpha_and_beta_projects_only() {
-        let dir = std::env::temp_dir().join(format!("notes-quick-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let projects = dir.join("lab/projects/current");
-        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
-        project(&projects, "live", "prod");
-        project(&projects, "shiny", "beta");
-        project(&projects, "early", "alpha");
-        project(&projects, "idea", "draft");
-        project(&projects, "untagged", "nothing");
-        let mut p = profile(dir.to_str().unwrap());
-        p.projects = Some(projects.clone());
-        p.project_index = Some(projects.parent().unwrap().join("index.md"));
-
-        let log = Logger::new(dir.join("log"), false);
-        let note = dir.join("journal/daily/2026-08-05.md");
-        create_note(&p, &log, d("2026-08-05"), &note).unwrap();
-        ensure_footer(&p, &note).unwrap();
-        let out = std::fs::read_to_string(&note).unwrap();
-
-        let block = md::section_lines(&out, "Projects").expect("no Projects section");
-        assert_eq!(
-            block,
-            vec![
-                "### test",
-                "- [[lab/projects/current/shiny/summary|shiny]] beta",
-                "- [[lab/projects/current/early/summary|early]] alpha",
-            ],
-            "beta then alpha, prod/draft/untagged left out:\n{out}"
-        );
-        for target in wikilink_targets(&block.join("\n")) {
-            assert!(
-                dir.join(format!("{target}.md")).exists(),
-                "link does not open a file: {target}"
-            );
-        }
-        assert!(
-            out.contains("- test projects: [[lab/projects/index]]"),
-            "footer links the index, scoped to its org:\n{out}"
-        );
-        assert!(out.find("## Focus").unwrap() < out.find("## Projects").unwrap());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An org with no alpha/beta project gets no heading, and no org at all means no section.
-    #[test]
-    fn no_quick_projects_means_no_section() {
-        let dir = std::env::temp_dir().join(format!("notes-quick-none-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let projects = dir.join("lab/projects/current");
-        project(&projects, "live", "prod");
-        let mut p = profile(dir.to_str().unwrap());
-        p.projects = Some(projects);
-        let log = Logger::new(dir.join("log"), false);
-        assert_eq!(projects_block(&p, &log), "");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The targets of every `[[target]]` / `[[target|alias]]` in `s`.
-    fn wikilink_targets(s: &str) -> Vec<String> {
-        s.split("[[")
-            .skip(1)
-            .filter_map(|r| r.split("]]").next())
-            .map(|t| t.split('|').next().unwrap().to_string())
-            .collect()
-    }
-
-    /// A note from before this build carries `## Work`: it is swapped for `## Projects` once,
-    /// and the next pass changes nothing - the note is not rewritten during the day.
-    #[test]
-    fn a_legacy_work_section_becomes_projects_once() {
-        let dir = std::env::temp_dir().join(format!("notes-work-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let projects = dir.join("lab/projects/current");
-        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
-        project(&projects, "shiny", "beta");
-        let mut p = profile(dir.to_str().unwrap());
-        p.projects = Some(projects);
-        let note = dir.join("journal/daily/2026-10-14.md");
-        std::fs::write(
-            &note,
-            "# 2026-10-14\n\n## Focus\n- [ ] mine\n\n## Work\n- bnb - [[lab/bnb/log/x]] (0 open)\n\n---\nBacklog: [[journal/backlogs/fun]]\n",
-        )
-        .unwrap();
-        let log = Logger::new(dir.join("log"), false);
-
-        migrate_work(&p, &log, &note).unwrap();
-        let once = std::fs::read_to_string(&note).unwrap();
-        assert!(!once.contains("## Work"), "{once}");
-        assert!(once.contains("## Projects\n### test\n- [[lab/projects/current/shiny/summary|shiny]] beta\n\n---\n"), "{once}");
-        assert!(once.contains("- [ ] mine"));
-
-        migrate_work(&p, &log, &note).unwrap();
-        assert_eq!(std::fs::read_to_string(&note).unwrap(), once, "migration repeated");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn strip_backlog_footer_removes_footer_and_keeps_body() {
         // A note whose last H2 (`## Due`) sits directly above the footer: capture()
@@ -1900,8 +1724,9 @@ mod tests {
     }
 
     /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items without
-    /// their `-> do:` hints, then the knowledge log the previous note did not list. Re-running it
-    /// changes nothing.
+    /// their `-> do:` hints, the day log's first sentence, then one line for the knowledge logs
+    /// the previous note did not list. Re-running it changes nothing, and `## Refs` lists neither
+    /// the briefing nor the day log.
     #[test]
     fn morning_shows_the_briefing_and_unlisted_knowledge_above_notes() {
         let dir = std::env::temp_dir().join(format!("notes-morning-{}", std::process::id()));
@@ -1912,6 +1737,11 @@ mod tests {
         std::fs::write(
             dir.join("journal/refs/2026-09-30/briefing.md"),
             "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45, 2 page(s), 1 high.\n\n## Needs you\n\n- wave-roll STALLED -> do: agentctl status wave-roll\n\n## Quiet\n\n- 15 watches OK\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("journal/refs/2026-09-30/shipped.md"),
+            "# Day log, 2026-09-30\n\n3 merged in 2 repos, whose spend is $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
         for (d, line) in [("28", "- created [[knowledge/a]]: r"), ("29", "- updated [[knowledge/b]]: r")] {
@@ -1933,7 +1763,7 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Knowledge: [[knowledge/_log/2026/09/2026-09-29]]\n  - updated [[knowledge/b]]\n";
+        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 merged in 2 repos, whose spend is $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
         assert!(at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"), "{out}");
@@ -1941,6 +1771,10 @@ mod tests {
 
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        let after = std::fs::read_to_string(&note).unwrap();
+        assert!(!after.contains("## Refs"), "Morning already links both:
+{after}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

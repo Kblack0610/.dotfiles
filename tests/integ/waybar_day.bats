@@ -25,7 +25,7 @@ STUB
   record
 }
 
-# red item ... -> Prometheus's answer to PROM_RED_NOW.
+# red item ... -> Prometheus's answer to cc:red_now.
 red() {
   python3 - "$FX/red.json" "$@" <<'PY'
 import json, sys

@@ -48,7 +48,7 @@ Every session an agent starts goes through `fleet-dispatch start`: the dispatch 
 
 Only the sessions the dispatch pass started count against `DISPATCH_MAX_LIVE` and its area rule; hand launches and restores carry the label and their item but hold none of its slots. `start` does not check the `dispatch` hold, which pauses only the runner. Before starting anything, read `agent-hold list` and `fleet-pace`'s pace check as for any other new work.
 
-A dispatched session is an ordinary session from then on: the `shepherd` buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation, files the same question with `agent-ask post`, and stops; the human answers in the session or from a board, and either way the answer lands in the session and closes the ask. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`.
+A dispatched session is an ordinary session from then on: the `shepherd` buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation, files the same question with `agent-ask post`, and stops; the human answers in the session or from a board, and either way the answer lands in the session and closes the ask. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`. `fleet-dispatch stats` counts it for the feed (HA sensor "Dispatch queue", Prometheus): runnable items and the oldest one's age, starts in the last hour by origin, reap moves, and the items reaped `DISPATCH_FLAP_MOVES` or more times in an hour. Read those numbers, not the log, to answer "is dispatch moving".
 
 ## Do NOT
 

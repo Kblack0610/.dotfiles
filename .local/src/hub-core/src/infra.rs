@@ -51,10 +51,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Recent runs, one series per run: the value is when it finished, or how long it took.
         ("recent", format!("{W} (github_actions_run_recent)")),
         ("recent_dur", format!("{W} (github_actions_run_recent_duration_seconds)")),
-        // The same three sources as the dashboard's "What is red" table.
-        ("red", r#"label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
-            or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
-            or label_replace(kube_node_status_condition{condition="Ready",status="true"} == 0, "item", "node $1 NotReady", "node", "(.+)")"#.into()),
+        // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
+        // which the dashboard's "What is red" table and the waybar day chip also read.
+        ("red", "cc:red_now".into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
