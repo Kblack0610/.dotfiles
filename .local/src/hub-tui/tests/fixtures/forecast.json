@@ -1,0 +1,942 @@
+{
+  "made_epoch": 1793752197,
+  "made_at": "2026-11-03T16:29:57-0800",
+  "slow_ratio": 2,
+  "sessions": 29,
+  "unscheduled": 3,
+  "open": 97,
+  "median_p50": 1793766975,
+  "p90_p50": 1793776743,
+  "last_p50": 1793801013,
+  "median_slow": 1793780997,
+  "p90_slow": 1793796038,
+  "last_slow": 1793838597,
+  "drain": {
+    "out_per_h": 6.88,
+    "in_per_h": 10.63,
+    "epoch": null
+  },
+  "queue": null,
+  "schedule": [
+    {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "target": "hub/dotfiles:4",
+      "project": "dotfiles",
+      "bucket": "NEEDS",
+      "phases_done": 0,
+      "phases_total": 12,
+      "left": 12,
+      "late_min": null,
+      "basis": "project-median(78) x1.19 (n=254)",
+      "phases": [
+        {
+          "name": "Step 0 board row",
+          "p50": 1793753181,
+          "slow": 1793754639
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793755323,
+          "slow": 1793758239
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793757465,
+          "slow": 1793761839
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793759607,
+          "slow": 1793765439
+        },
+        {
+          "name": "phase 5",
+          "p50": 1793761749,
+          "slow": 1793769039
+        },
+        {
+          "name": "phase 6",
+          "p50": 1793763891,
+          "slow": 1793772639
+        },
+        {
+          "name": "phase 7",
+          "p50": 1793766033,
+          "slow": 1793776239
+        },
+        {
+          "name": "phase 8",
+          "p50": 1793768175,
+          "slow": 1793779839
+        },
+        {
+          "name": "phase 9",
+          "p50": 1793770317,
+          "slow": 1793783439
+        },
+        {
+          "name": "phase 10",
+          "p50": 1793772459,
+          "slow": 1793787039
+        },
+        {
+          "name": "phase 11",
+          "p50": 1793774601,
+          "slow": 1793790639
+        },
+        {
+          "name": "phase 12",
+          "p50": 1793776743,
+          "slow": 1793794239
+        }
+      ],
+      "finish_p50": 1793776743,
+      "finish_slow": 1793794239
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "target": "hub/dotfiles:6",
+      "project": "dotfiles",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 6,
+      "left": 6,
+      "late_min": null,
+      "basis": "project-median(78) x1.19 (n=254)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793753181,
+          "slow": 1793754639
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793755323,
+          "slow": 1793758239
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793757465,
+          "slow": 1793761839
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793759607,
+          "slow": 1793765439
+        },
+        {
+          "name": "phase 5",
+          "p50": 1793761749,
+          "slow": 1793769039
+        },
+        {
+          "name": "phase 6",
+          "p50": 1793763891,
+          "slow": 1793772639
+        }
+      ],
+      "finish_p50": 1793763891,
+      "finish_slow": 1793772639
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000002",
+      "target": "hub/dotfiles:8",
+      "project": "dotfiles",
+      "bucket": "WORKING",
+      "phases_done": 1,
+      "phases_total": 5,
+      "left": 4,
+      "late_min": 335,
+      "basis": "project-median(70) x1.12 (n=235)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793754145,
+          "slow": 1793755677
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793756094,
+          "slow": 1793759157
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793758043,
+          "slow": 1793762637
+        }
+      ],
+      "finish_p50": 1793758043,
+      "finish_slow": 1793762637
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000003",
+      "target": "hub/platform:1",
+      "project": "platform",
+      "bucket": "NEEDS",
+      "phases_done": 2,
+      "phases_total": 5,
+      "left": 3,
+      "late_min": 90,
+      "basis": "project-median(5) x1.16 (n=249)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793753589,
+          "slow": 1793754597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793754981,
+          "slow": 1793756997
+        }
+      ],
+      "finish_p50": 1793754981,
+      "finish_slow": 1793756997
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000004",
+      "target": "lab/unity-core-playground-agent-12:1",
+      "project": "unity-core-playground",
+      "bucket": "NEEDS",
+      "phases_done": 0,
+      "phases_total": 4,
+      "left": 4,
+      "late_min": null,
+      "basis": "project-median(171) x1.13 (n=246)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795397
+        }
+      ],
+      "finish_p50": 1793776605,
+      "finish_slow": 1793795397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000005",
+      "target": "lab/unity-core-playground-agent-13:1",
+      "project": "unity-core-playground",
+      "bucket": "STALLED",
+      "phases_done": 0,
+      "phases_total": 2,
+      "left": 2,
+      "late_min": null,
+      "basis": "project-median(175) x1.16 (n=249)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793754638
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760549,
+          "slow": 1793769038
+        }
+      ],
+      "finish_p50": 1793760549,
+      "finish_slow": 1793769038
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000006",
+      "target": "lab/unity-core-playground-agent-18:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 2,
+      "phases_total": 3,
+      "left": 1,
+      "late_min": null,
+      "basis": "project-median(180) x1.15 (n=250)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752304,
+          "slow": 1793758118
+        }
+      ],
+      "finish_p50": 1793752304,
+      "finish_slow": 1793758118
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000007",
+      "target": "lab/unity-core-playground-agent-2:1",
+      "project": "unity-core-playground",
+      "bucket": "STALLED",
+      "phases_done": 8,
+      "phases_total": 10,
+      "left": 2,
+      "late_min": null,
+      "basis": "project-median(181) x1.19 (n=254)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793756606,
+          "slow": 1793762438
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793765174,
+          "slow": 1793776838
+        }
+      ],
+      "finish_p50": 1793765174,
+      "finish_slow": 1793776838
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000008",
+      "target": "lab/unity-core-playground-agent-24:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 3,
+      "phases_total": 5,
+      "left": 2,
+      "late_min": null,
+      "basis": "project-median(181) x1.19 (n=254)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793758407,
+          "slow": 1793764239
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793766975,
+          "slow": 1793778639
+        }
+      ],
+      "finish_p50": 1793766975,
+      "finish_slow": 1793778639
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000009",
+      "target": "lab/unity-core-playground-agent-26:1",
+      "project": "unity-core-playground",
+      "bucket": "NEEDS",
+      "phases_done": 4,
+      "phases_total": 6,
+      "left": 2,
+      "late_min": 161,
+      "basis": "project-median(168) x1.12 (n=237)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760261,
+          "slow": 1793766597
+        }
+      ],
+      "finish_p50": 1793760261,
+      "finish_slow": 1793766597
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000010",
+      "target": "lab/unity-core-playground-agent-32:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 2,
+      "phases_total": 3,
+      "left": 1,
+      "late_min": 40,
+      "basis": "project-median(175) x1.16 (n=249)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793755238
+        }
+      ],
+      "finish_p50": 1793752197,
+      "finish_slow": 1793755238
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "target": "lab/unity-core-playground-agent-33:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 5,
+      "phases_total": 6,
+      "left": 1,
+      "late_min": null,
+      "basis": "session-median(4) x0.66 (n=75)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793768762,
+          "slow": 1793824238
+        }
+      ],
+      "finish_p50": 1793768762,
+      "finish_slow": 1793824238
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000012",
+      "target": "lab/unity-core-playground-agent-40:1",
+      "project": "unity-core-playground",
+      "bucket": "LANDED",
+      "phases_done": 3,
+      "phases_total": 6,
+      "left": 3,
+      "late_min": null,
+      "basis": "project-median(180) x1.19 (n=254)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793753777,
+          "slow": 1793759318
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793761917,
+          "slow": 1793772998
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793770056,
+          "slow": 1793786678
+        }
+      ],
+      "finish_p50": 1793770056,
+      "finish_slow": 1793786678
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000013",
+      "target": "lab/unity-core-playground-agent-40-b:1",
+      "project": "unity-core-playground-agent-40-b",
+      "bucket": "WORKING",
+      "phases_done": 7,
+      "phases_total": 9,
+      "left": 2,
+      "late_min": 730,
+      "basis": "session-median(5) x0.66 (n=74)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793754573,
+          "slow": 1793759397
+        }
+      ],
+      "finish_p50": 1793754573,
+      "finish_slow": 1793759397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000014",
+      "target": "lab/unity-core-playground-agent-47:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 1,
+      "phases_total": 2,
+      "left": 1,
+      "late_min": 114,
+      "basis": "project-median(171) x1.13 (n=246)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        }
+      ],
+      "finish_p50": 1793752197,
+      "finish_slow": 1793752197
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000015",
+      "target": "lab/unity-core-playground-agent-48:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 1,
+      "phases_total": 3,
+      "left": 2,
+      "late_min": 759,
+      "basis": "project-median(156) x1 (n=215)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793759397,
+          "slow": 1793766597
+        }
+      ],
+      "finish_p50": 1793759397,
+      "finish_slow": 1793766597
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000016",
+      "target": "lab/unity-core-playground-agent-49:1",
+      "project": "unity-core-playground",
+      "bucket": "NEEDS",
+      "phases_done": 1,
+      "phases_total": 2,
+      "left": 1,
+      "late_min": 1223,
+      "basis": "project-median(153) x0.97 (n=193)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        }
+      ],
+      "finish_p50": 1793752197,
+      "finish_slow": 1793752197
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000017",
+      "target": "lab/unity-core-playground-agent-5:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 4,
+      "left": 4,
+      "late_min": null,
+      "basis": "project-median(171) x1.13 (n=246)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795397
+        }
+      ],
+      "finish_p50": 1793776605,
+      "finish_slow": 1793795397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000018",
+      "target": "lab/unity-core-playground-agent-50:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 4,
+      "phases_total": 6,
+      "left": 2,
+      "late_min": 1366,
+      "basis": "session-median(3) x0.65 (n=71)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793755317,
+          "slow": 1793761797
+        }
+      ],
+      "finish_p50": 1793755317,
+      "finish_slow": 1793761797
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000019",
+      "target": "lab/unity-core-playground-agent-51:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 4,
+      "left": 4,
+      "late_min": null,
+      "basis": "project-median(170) x1.13 (n=239)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795397
+        }
+      ],
+      "finish_p50": 1793776605,
+      "finish_slow": 1793795397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000020",
+      "target": "lab/unity-core-playground-agent-53:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 4,
+      "left": 4,
+      "late_min": 1405,
+      "basis": "project-median(146) x0.99 (n=180)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793759325,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793766453,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793773581,
+          "slow": 1793795397
+        }
+      ],
+      "finish_p50": 1793773581,
+      "finish_slow": 1793795397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000021",
+      "target": "lab/unity-core-playground-agent-54:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 3,
+      "phases_total": 6,
+      "left": 3,
+      "late_min": 1334,
+      "basis": "project-median(148) x0.99 (n=183)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793759325,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793766453,
+          "slow": 1793780997
+        }
+      ],
+      "finish_p50": 1793766453,
+      "finish_slow": 1793780997
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000022",
+      "target": "lab/unity-core-playground-agent-55:1",
+      "project": "unity-core-playground",
+      "bucket": "LANDED",
+      "phases_done": 3,
+      "phases_total": 7,
+      "left": 4,
+      "late_min": null,
+      "basis": "project-median(174) x1.13 (n=246)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752238
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766638
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793781038
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795438
+        }
+      ],
+      "finish_p50": 1793776605,
+      "finish_slow": 1793795438
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000023",
+      "target": "lab/unity-core-playground-agent-56:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 3,
+      "phases_total": 6,
+      "left": 3,
+      "late_min": null,
+      "basis": "project-median(178) x1.15 (n=250)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793757638
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760477,
+          "slow": 1793772038
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768757,
+          "slow": 1793786438
+        }
+      ],
+      "finish_p50": 1793768757,
+      "finish_slow": 1793786438
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000024",
+      "target": "lab/unity-core-playground-agent-59:1",
+      "project": "unity-core-playground",
+      "bucket": "NEEDS",
+      "phases_done": 1,
+      "phases_total": 5,
+      "left": 4,
+      "late_min": 1035,
+      "basis": "project-median(150) x0.99 (n=189)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793759325,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793766453,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793773581,
+          "slow": 1793795397
+        }
+      ],
+      "finish_p50": 1793773581,
+      "finish_slow": 1793795397
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000025",
+      "target": "lab/unity-core-playground-agent-60:1",
+      "project": "unity-core-playground",
+      "bucket": "NEEDS",
+      "phases_done": 4,
+      "phases_total": 7,
+      "left": 3,
+      "late_min": null,
+      "basis": "project-median(177) x1.16 (n=249)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793755838
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760549,
+          "slow": 1793770238
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768901,
+          "slow": 1793784638
+        }
+      ],
+      "finish_p50": 1793768901,
+      "finish_slow": 1793784638
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000026",
+      "target": "lab/unity-core-playground-agent-62:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 6,
+      "left": 6,
+      "late_min": null,
+      "basis": "project-median(170) x1.13 (n=239)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795397
+        },
+        {
+          "name": "phase 5",
+          "p50": 1793784741,
+          "slow": 1793809797
+        },
+        {
+          "name": "phase 6",
+          "p50": 1793792877,
+          "slow": 1793824197
+        }
+      ],
+      "finish_p50": 1793792877,
+      "finish_slow": 1793824197
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000027",
+      "target": "lab/unity-core-playground-agent-7:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 4,
+      "left": 4,
+      "late_min": null,
+      "basis": "project-median(175) x1.16 (n=249)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752838
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760549,
+          "slow": 1793767238
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768901,
+          "slow": 1793781638
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793777253,
+          "slow": 1793796038
+        }
+      ],
+      "finish_p50": 1793777253,
+      "finish_slow": 1793796038
+    },
+    {
+      "session_id": "00000000-0000-4000-8000-000000000028",
+      "target": "lab/unity-core-playground-agent-8:1",
+      "project": "unity-core-playground",
+      "bucket": "WORKING",
+      "phases_done": 0,
+      "phases_total": 7,
+      "left": 7,
+      "late_min": null,
+      "basis": "project-median(171) x1.13 (n=246)",
+      "phases": [
+        {
+          "name": "phase 1",
+          "p50": 1793752197,
+          "slow": 1793752197
+        },
+        {
+          "name": "phase 2",
+          "p50": 1793760333,
+          "slow": 1793766597
+        },
+        {
+          "name": "phase 3",
+          "p50": 1793768469,
+          "slow": 1793780997
+        },
+        {
+          "name": "phase 4",
+          "p50": 1793776605,
+          "slow": 1793795397
+        },
+        {
+          "name": "phase 5",
+          "p50": 1793784741,
+          "slow": 1793809797
+        },
+        {
+          "name": "phase 6",
+          "p50": 1793792877,
+          "slow": 1793824197
+        },
+        {
+          "name": "phase 7",
+          "p50": 1793801013,
+          "slow": 1793838597
+        }
+      ],
+      "finish_p50": 1793801013,
+      "finish_slow": 1793838597
+    }
+  ]
+}

@@ -8,6 +8,7 @@ mod day;
 mod fit;
 mod fleet;
 mod fmt;
+mod forecast;
 mod jobs;
 mod tabreq;
 
@@ -20,7 +21,7 @@ use notify::{RecursiveMode, Watcher};
 
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
-  TAB     overview|jobs|ci|machines|sessions|today|history
+  TAB     overview|jobs|ci|machines|sessions|forecast|today|history
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs)";
@@ -93,6 +94,14 @@ fn print_once(tab: Option<Tab>) -> i32 {
     if let Some(t @ (Tab::Sessions | Tab::Today | Tab::History)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
         a.tab = t;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    if tab == Some(Tab::Forecast) {
+        a.forecast = Some(forecast::Forecast::read());
+        a.tab = Tab::Forecast;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -193,6 +202,9 @@ fn run(tab: Tab) -> std::io::Result<()> {
     app.read_infra();
     app.read_jobs();
     app.read_boards();
+    if app.tab == Tab::Forecast {
+        app.read_forecast();
+    }
     let mut term = ratatui::init();
     let res = (|| {
         loop {
