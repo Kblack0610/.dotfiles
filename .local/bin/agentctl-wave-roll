@@ -85,7 +85,7 @@ while read -r profile; do
     [ -n "$name" ] || continue
     [ -z "$ONE" ] || [ "$name" = "$ONE" ] || continue
     fetch_tags "$name"
-    shipped="$(project_release_version "$name" "$(dirname "$sheet")/summary.md" 2>/dev/null)"
+    shipped="$(project_release_version "$name" 2>/dev/null)"
     [ -n "$shipped" ] || continue                    # notes-only: no tag to roll by
     if ! is_ver "$ver" || [ "$(basename "$sheet")" = summary.md ]; then
       log "skip $name: no versioned sheet (shipped $shipped)"

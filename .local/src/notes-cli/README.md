@@ -97,7 +97,7 @@ Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview
 ```
 current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
-  summary.md               the cockpit: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
+  summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   docs/idea.md             the pitch and key ideas; links to the repo's design docs
@@ -113,7 +113,7 @@ current/<name>/
 
 | Fact | Its one home | Written by |
 |---|---|---|
-| Name, repo, path in the repo, branch, tracker | `project-map.json` (private dotfiles) | a PR there |
+| Name, lab profile, type, repo, path in the repo, branch, tracker, release epic, tag glob | `project-map.json` (private dotfiles) `trackers.<name>` | a PR there |
 | Stage, version in progress, current and planned waves | the sheet `README.md` | human, `notes ptask` / `projects` |
 | Where we are | `summary.md` STATUS | `lab-status` |
 | Shipped version | the git tag | the release |
@@ -124,7 +124,7 @@ current/<name>/
 | Agent plans, lessons, sessions, asks, queue | `~/.agent/<kind>/<name>` | agents |
 | Agent key facts at session start | `~/.agent/anchors/<name>.md` | project-index |
 
-The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->` marker are retired; to ask an agent for something, add a row to the board.
+The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->`, `<!-- cockpit: -->` and `<!-- tagglob: -->` markers are retired (wiring is the registry entry); to ask an agent for something, add a row to the board.
 
 After creating, staging, rolling or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
 

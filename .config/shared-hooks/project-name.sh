@@ -107,7 +107,47 @@ project_repo_path() {
 
 # ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
 #
-# project_release_version <project> [summary] -> `v1.11.0`, or "" if it ships nothing.
+# project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
+#
+# The registry owns each project's wiring (lab, type, path, branch, root, releaseEpic,
+# tagGlob, prFilter); a `<!-- cockpit: -->` marker in its summary.md used to. Own entry
+# only: `inherits` merges tracker config (labels, epics), and a field like `tagGlob`
+# copied from a parent would name the parent's tags.
+project_field() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg n "$1" --arg k "$2" '
+    (.trackers[$n] // {}) | select(type == "object") | .[$k] // empty
+    | select(type != "object" and type != "array")' "$map_file" 2>/dev/null || true
+}
+
+# project_release_tag <project> -> the newest shipped TAG (`time-tangle-web-v1.0.1`), or "".
+#
+# The one place that decides which tags belong to a project. A project that IS its repo
+# takes git_latest_tag's full ladder, where a bare `v*` cannot collide with a sibling. An
+# app inside a monorepo takes product-scoped globs only: git_latest_tag would fall
+# through to bare `v*` and hand back a SIBLING's tag - measured: `time-tangle` resolved
+# to a different app's mobile tag entirely. The registry's `tagGlob` overrides both, for
+# a product whose tag prefix is not its name (the portfolio ships `portfolio-v*`).
+project_release_tag() {
+  local proj="$1" repo lib glob
+  repo="$(project_repo_path "$proj")"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+
+  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=/dev/null
+  . "$lib" 2>/dev/null || return 0
+
+  glob="$(project_field "$proj" tagGlob)"
+  if [ "$(project_repo_name "$proj")" = "$proj" ]; then
+    git_latest_tag "$repo" "$proj" "$glob"
+  else
+    git_product_tag "$repo" "$proj" "$glob"
+  fi
+}
+
+# project_release_version <project> -> `v1.11.0`, or "" if it ships nothing.
 #
 # THE EMPTY STRING IS THE INTERESTING ANSWER. It is the one discriminator the wave
 # needs, and it needs no new config key to express:
@@ -127,30 +167,8 @@ project_repo_path() {
 #
 # Prints the bare VERSION, not the tag: callers want `v1.11.0`, not `<app>-v1.11.0`.
 project_release_version() {
-  local proj="$1" summary="${2:-}" repo repo_name lib tag=""
-  repo="$(project_repo_path "$proj")"
-  [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-
-  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
-  [ -f "$lib" ] || return 0
-  # shellcheck source=/dev/null
-  . "$lib" 2>/dev/null || return 0
-
-  repo_name="$(project_repo_name "$proj")"
-  if [ "$repo_name" = "$proj" ]; then
-    # The project IS the repo, so a bare `v*` cannot collide with a sibling product
-    # and git_latest_tag's full ladder (incl. the `<!-- tagglob: -->` override and
-    # `git describe`) is exactly right.
-    tag="$(git_latest_tag "$repo" "$proj" "$summary")"
-  else
-    # An app inside a monorepo. git_latest_tag would fall through to bare `v*` and
-    # hand back a SIBLING's tag - measured: `time-tangle` resolved to a different app's
-    # mobile tag entirely. Product-scoped globs only, plus the summary's explicit
-    # `<!-- tagglob: -->` when the caller supplied one: a product whose tag prefix is not
-    # its project name (portfolio ships `portfolio-v*`) is unreachable without it.
-    tag="$(git_product_tag "$repo" "$proj" "$summary")"
-  fi
-
+  local tag
+  tag="$(project_release_tag "$1")"
   [ -n "$tag" ] || return 0
   # Tag -> bare version, for BOTH tag shapes. `##*-v` strips a product prefix
   # (`shipper-v1.11.0` -> `1.11.0`) but leaves an unprefixed tag untouched

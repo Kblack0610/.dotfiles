@@ -9,7 +9,7 @@
 #
 #   * the note's MACHINERY on screen. YAML frontmatter, and the markers the tools address
 #     each other with -- <!-- nextup:auto -->, <!-- STATUS:START -->, <!-- AUTO:START -->,
-#     <!-- cockpit: vikunja=3 ... -->. Addressing, not content, and all of it rendered.
+#     <!-- pr:12 -->. Addressing, not content, and all of it rendered.
 #   * fzf wrapping by COLUMN, which knows nothing about words, so prose broke mid-word
 #     ("docu / ments", "develo / p") with fzf's wrap-sign glyph on every continuation.
 #   * markdown left as SOURCE: `## Now`, `- [ ]`, `**bold**`, `[text](url)`.
@@ -190,7 +190,7 @@ BEGIN { if (W < 30) W = 30 }
   }
 
   # HTML comments. Scanned with index() rather than a regex because a marker may itself
-  # contain `>` (<!-- cockpit: ... branch=develop -->), and /<!--[^>]*-->/ stops at it.
+  # contain `>` (<!-- unverified: a -> b -->), and /<!--[^>]*-->/ stops at it.
   if (COM) {
     p = index(line, "-->")
     if (p == 0) next
