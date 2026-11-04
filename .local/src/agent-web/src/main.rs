@@ -88,6 +88,8 @@ struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
     events: broadcast::Sender<String>,
+    /// The paths agent-web could not watch, so changes there reach no page until a retry works.
+    watch_off: WatchOff,
     infra: infra::Cache,
     jobs: jobs::Cache,
 }
@@ -104,11 +106,13 @@ async fn main() -> Result<()> {
     let oauth = auth::OAuth::load()?;
     let sessions = auth::Sessions::load();
     let (events, _) = broadcast::channel(256);
-    watch(events.clone())?;
+    let watch_off = WatchOff::default();
+    watch(events.clone(), watch_off.clone())?;
     let state = Arc::new(AppState {
         oauth,
         sessions,
         events,
+        watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
     });
@@ -156,16 +160,58 @@ fn is_new_project(kind: &EventKind, p: &Path, projects: &Path) -> bool {
     matches!(kind, EventKind::Create(_)) && p.parent() == Some(projects)
 }
 
+/// How long a failed watch waits before it is tried again, doubling up to the cap. The usual
+/// failure is the per-user inotify limit (another program holds the watches), and nothing sends
+/// an event when it frees some, so this is a retry with backoff.
+const WATCH_RETRY_FIRST: Duration = Duration::from_secs(10);
+const WATCH_RETRY_MAX: Duration = Duration::from_secs(300);
+
+type WatchOff = Arc<std::sync::Mutex<Vec<String>>>;
+type Target = (PathBuf, RecursiveMode);
+
+/// Watch each target; return the ones that failed, each logged. A failed watch is not fatal:
+/// the server still answers, the page says live updates are off, and the watch is retried.
+fn add_watches(w: &mut impl Watcher, targets: Vec<Target>) -> Vec<Target> {
+    targets
+        .into_iter()
+        .filter(|(p, mode)| match w.watch(p, *mode) {
+            Ok(()) => false,
+            Err(e) => {
+                eprintln!("agent-web: cannot watch {}: {e}", p.display());
+                true
+            }
+        })
+        .collect()
+}
+
+/// The SSE message that tells the page which paths are not watched (none: live updates on).
+fn live_msg(off: &[String]) -> String {
+    serde_json::json!({"kind": "live", "off": off}).to_string()
+}
+
+/// Record the failed set and tell the pages, if it changed.
+fn publish_off(off: &WatchOff, tx: &broadcast::Sender<String>, failed: &[Target]) {
+    let now: Vec<String> = failed
+        .iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+    let mut cur = off.lock().unwrap_or_else(|e| e.into_inner());
+    if *cur != now {
+        let _ = tx.send(live_msg(&now));
+        *cur = now;
+    }
+}
+
 /// inotify on the session registry and the transcripts. Each change becomes one
 /// small SSE message; the browser decides whether it cares. Transcripts sit directly in each
 /// project dir, so nothing below it is watched: a recursive watch took one inotify watch per
-/// `tool-results` and `subagents` dir, and agent-web would not start when the user's limit was
-/// nearly used up.
-fn watch(tx: broadcast::Sender<String>) -> Result<()> {
+/// `tool-results` and `subagents` dir.
+fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let claude = session::home().join(".claude");
     let projects = claude.join("projects");
     let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
     let watched = projects.clone();
+    let events = tx.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         if matches!(ev.kind, EventKind::Access(_)) {
@@ -176,25 +222,28 @@ fn watch(tx: broadcast::Sender<String>) -> Result<()> {
                 let _ = new_dirs.send(p.clone());
             }
             if let Some(msg) = classify(p) {
-                let _ = tx.send(msg); // no subscribers is fine
+                let _ = events.send(msg); // no subscribers is fine
             }
         }
     })?;
-    w.watch(&claude.join("sessions"), RecursiveMode::NonRecursive)?;
-    w.watch(&projects, RecursiveMode::NonRecursive)?;
-    for entry in std::fs::read_dir(&projects)?.flatten() {
-        if entry.path().is_dir() {
-            w.watch(&entry.path(), RecursiveMode::NonRecursive)?;
-        }
+    let flat = RecursiveMode::NonRecursive;
+    let mut targets: Vec<Target> = vec![(claude.join("sessions"), flat), (projects.clone(), flat)];
+    if let Ok(dirs) = std::fs::read_dir(&projects) {
+        targets.extend(
+            dirs.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .map(|p| (p, flat)),
+        );
     }
     let asks = session::home().join(".agent").join("asks");
     if asks.is_dir() {
-        w.watch(&asks, RecursiveMode::Recursive)?;
+        targets.push((asks, RecursiveMode::Recursive));
     }
     // agent-queue's store; its states and done/<date>/ come and go, so watch it whole.
     let queue = session::home().join(".agent").join("queue");
     std::fs::create_dir_all(&queue)?;
-    w.watch(&queue, RecursiveMode::Recursive)?;
+    targets.push((queue, RecursiveMode::Recursive));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -205,16 +254,30 @@ fn watch(tx: broadcast::Sender<String>) -> Result<()> {
     .flatten()
     {
         if dir.is_dir() {
-            w.watch(&dir, RecursiveMode::NonRecursive)?;
+            targets.push((dir, flat));
         }
     }
+    let mut failed = add_watches(&mut w, targets);
+    publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
     // because notify must not be called from inside its own event handler.
     tokio::spawn(async move {
-        while let Some(dir) = new_dirs_rx.recv().await {
-            if let Err(e) = w.watch(&dir, RecursiveMode::NonRecursive) {
-                eprintln!("agent-web: cannot watch {}: {e}", dir.display());
+        let mut delay = WATCH_RETRY_FIRST;
+        loop {
+            let retry = !failed.is_empty();
+            tokio::select! {
+                dir = new_dirs_rx.recv() => {
+                    let Some(dir) = dir else { break };
+                    failed.extend(add_watches(&mut w, vec![(dir, flat)]));
+                }
+                () = tokio::time::sleep(delay), if retry => {
+                    // A project dir removed since needs no watch; anything else waits to exist.
+                    failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
+                    failed = add_watches(&mut w, std::mem::take(&mut failed));
+                    delay = if failed.is_empty() { WATCH_RETRY_FIRST } else { (delay * 2).min(WATCH_RETRY_MAX) };
+                }
             }
+            publish_off(&off, &tx, &failed);
         }
     });
     Ok(())
@@ -758,11 +821,15 @@ async fn static_file(UrlPath(name): UrlPath<String>) -> Response {
 async fn events_stream(
     State(s): State<Shared>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let stream = BroadcastStream::new(s.events.subscribe()).map(|m| {
+    // Each page first learns whether live updates are on, then gets the changes.
+    let off = live_msg(&s.watch_off.lock().unwrap_or_else(|e| e.into_inner()));
+    let changes = BroadcastStream::new(s.events.subscribe()).map(|m| {
         // A lagged receiver skipped messages; tell the page to refetch everything.
-        let data = m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string());
-        Ok(SseEvent::default().data(data))
+        m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string())
     });
+    let stream = tokio_stream::once(off)
+        .chain(changes)
+        .map(|data| Ok(SseEvent::default().data(data)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -819,6 +886,35 @@ mod tests {
     #[tokio::test]
     async fn an_unchanged_pane_gives_up_at_the_bound() {
         assert_eq!(settle(&[], 5).await, (false, 5));
+    }
+
+    /// A path that cannot be watched comes back as failed and does not stop the others; the
+    /// pages hear about the failed set once, and again only when it changes.
+    #[tokio::test]
+    async fn a_failed_watch_is_reported_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("agent-web-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = dir.join("missing");
+        let mut w = notify::recommended_watcher(|_: notify::Result<notify::Event>| {}).unwrap();
+        let flat = RecursiveMode::NonRecursive;
+        let failed = add_watches(&mut w, vec![(gone.clone(), flat), (dir.clone(), flat)]);
+        assert_eq!(
+            failed.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
+            vec![gone.clone()]
+        );
+
+        let (tx, mut rx) = broadcast::channel(8);
+        let off = WatchOff::default();
+        publish_off(&off, &tx, &failed);
+        publish_off(&off, &tx, &failed);
+        let msg: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(msg["kind"], "live");
+        assert_eq!(msg["off"][0], gone.display().to_string());
+        assert!(rx.try_recv().is_err(), "an unchanged set is not sent again");
+        publish_off(&off, &tx, &[]);
+        let msg: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(msg["off"], serde_json::json!([]));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
