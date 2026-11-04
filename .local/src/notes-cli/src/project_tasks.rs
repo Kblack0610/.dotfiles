@@ -113,15 +113,34 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
 /// predicate the cockpit and `ptask list` use, so the three cannot disagree about what is
 /// on a board.
 pub(crate) fn open_wave_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
+    let w = open_wave_rows(dir)?;
+    Some((w.version, w.rows.into_iter().map(|(_, l)| l).collect()))
+}
+
+/// A sheet's current wave as `notes board --json` reads it: where the sheet is, its version,
+/// and each open row with its 1-based line number.
+pub(crate) struct OpenWave {
+    pub sheet: PathBuf,
+    pub version: String,
+    pub rows: Vec<(usize, String)>,
+}
+
+/// [`open_wave_for_dir`] with the sheet path and line numbers kept. The one reader both use,
+/// so the JSON feed and the rendered board cannot list different rows.
+pub(crate) fn open_wave_rows(dir: &Path) -> Option<OpenWave> {
     let sheet = task_sheet(dir)?;
     let content = fs::read_to_string(&sheet).ok()?;
     let heading = current_wave(&content)?;
-    let open: Vec<String> = md::section_numbered(&content, &heading)
+    let rows = md::section_numbered(&content, &heading)
         .into_iter()
         .filter(|(_, l)| md::is_open_task(l))
-        .map(|(_, l)| l.trim_end().to_string())
+        .map(|(n, l)| (n, l.trim_end().to_string()))
         .collect();
-    Some((projects::wave_version_of(&content), open))
+    Some(OpenWave {
+        version: projects::wave_version_of(&content),
+        sheet,
+        rows,
+    })
 }
 
 /// The directory a verb acts in: the project's own, or its agent board's.
@@ -154,6 +173,77 @@ fn sheet_and_wave(
 /// `done`/`start`/`rm`, matching `focus.rs::is_match`.
 pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
+}
+
+/// Which row a verb acts on: the first open task whose text contains some words, or the one
+/// open task whose line is exactly `raw`.
+///
+/// `Exact` is for a UI. It shows a row from `notes board --json` and acts on that row's `raw`
+/// field, so the write is optimistic concurrency without id stamps in the sheets: when the
+/// line was edited, ticked or removed since the UI read it, nothing matches, nothing is
+/// written, and the verb exits 1 so the UI refreshes. Words could hit a different row.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Pick {
+    Words(String),
+    Exact(String),
+}
+
+impl Pick {
+    /// The pick for `query`, refusing an empty one: an empty query matches every row.
+    pub(crate) fn new(query: &str, exact: bool) -> Result<Pick> {
+        if exact {
+            let raw = query.trim_end();
+            if !md::is_open_task(raw) {
+                bail!("--exact takes a whole open task line, as `notes board --json` prints it in `raw`");
+            }
+            return Ok(Pick::Exact(raw.to_string()));
+        }
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            bail!("which one? (provide a word from the task)");
+        }
+        Ok(Pick::Words(q))
+    }
+
+    /// Whether `line` is the row this pick names.
+    pub(crate) fn hits(&self, line: &str) -> bool {
+        match self {
+            Pick::Words(q) => is_match(line, q),
+            Pick::Exact(raw) => md::is_open_task(line) && line.trim_end() == raw,
+        }
+    }
+
+    /// Refuse an exact pick whose line is on `sheet` more than once. Twin rows cannot be
+    /// told apart by their text, and the verb would act on whichever comes first, which may
+    /// sit in another wave than the one the UI showed. A missing sheet passes: the verb
+    /// itself reports that.
+    pub(crate) fn sole_in(&self, sheet: &Path) -> Result<()> {
+        if let Pick::Exact(raw) = self {
+            let n = fs::read_to_string(sheet)
+                .map(|c| c.lines().filter(|l| self.hits(l)).count())
+                .unwrap_or(0);
+            if n > 1 {
+                bail!(
+                    "'{raw}' is on {} {n} times; --exact cannot tell twins apart, so nothing was written (edit one by hand)",
+                    sheet.display()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The task sheet a ptask verb on `name` and `lane` reads, if the project has one.
+pub(crate) fn sheet_of(p: &Profile, name: &str, lane: Lane) -> Result<Option<PathBuf>> {
+    Ok(task_sheet(&lane_dir(p, name, lane)?))
+}
+
+impl std::fmt::Display for Pick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pick::Words(q) | Pick::Exact(q) => f.write_str(q),
+        }
+    }
 }
 
 /// `notes ptask <name> list [--wave vX.Y.Z | --all]` — TSV of OPEN tasks.
@@ -261,14 +351,10 @@ pub fn move_task(
     p: &Profile,
     log: &Logger,
     name: &str,
-    query: &str,
+    pick: &Pick,
     to: &str,
     lane: Lane,
 ) -> Result<i32> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        bail!("which one? (provide a word from the task)");
-    }
     let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
@@ -277,8 +363,8 @@ pub fn move_task(
     let (heading, grown) = target_wave(&content, Some(to), true)?;
     let content = grown.unwrap_or(content);
 
-    let Some((new, line, from)) = move_within(&content, &query, &heading, to)? else {
-        eprintln!("no open task matches '{query}' outside {heading} in {name}");
+    let Some((new, line, from)) = move_within(&content, pick, &heading, to)? else {
+        eprintln!("no open task matches '{pick}' outside {heading} in {name}");
         return Ok(1);
     };
     md::write_atomic(&sheet, &new)?;
@@ -296,19 +382,18 @@ pub fn move_task(
 /// matches.
 fn move_within(
     content: &str,
-    query: &str,
+    pick: &Pick,
     heading: &str,
     to: &str,
 ) -> Result<Option<(String, String, String)>> {
     // Find it in any wave EXCEPT the target, so a move onto its own wave is a clear no-op
     // rather than a silent delete-and-reinsert.
-    let Some((from, line)) = find_open(content, query, Some(heading)) else {
+    let Some((from, line)) = find_open(content, pick, Some(heading)) else {
         return Ok(None);
     };
-    let Some((cut, _)) =
-        md::edit_first_in_section(content, &from, |l| is_match(l, query), |_| None)
+    let Some((cut, _)) = md::edit_first_in_section(content, &from, |l| pick.hits(l), |_| None)
     else {
-        bail!("could not lift '{query}' out of {from}");
+        bail!("could not lift '{pick}' out of {from}");
     };
     // Retag to the target, as `demote` does. The row keeping its old `#v` tag is how a moved
     // task got dragged straight back by the next `sweep`, which buckets by tag.
@@ -320,14 +405,14 @@ fn move_within(
 /// The first open row matching `query` (lower-cased) in wave order, skipping the wave
 /// headed `skip`: `(source heading, line)`. The one search both forms of `move` use, so
 /// "which row does `move <query>` take" has a single answer.
-fn find_open(content: &str, query: &str, skip: Option<&str>) -> Option<(String, String)> {
+fn find_open(content: &str, pick: &Pick, skip: Option<&str>) -> Option<(String, String)> {
     for s in waves::sections(content) {
         if Some(s.heading.as_str()) == skip {
             continue;
         }
         if let Some((_, l)) = md::section_numbered(content, &s.heading)
             .into_iter()
-            .find(|(_, l)| is_match(l, query))
+            .find(|(_, l)| pick.hits(l))
         {
             return Some((s.heading.clone(), l.trim_end().to_string()));
         }
@@ -349,14 +434,10 @@ pub fn move_to_project(
     log: &Logger,
     src: &str,
     dest: &str,
-    query: &str,
+    pick: &Pick,
     to: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        bail!("which one? (provide a word from the task)");
-    }
     let src_dir = lane_dir(p, src, lane)?;
     let dest_dir = lane_dir(p, dest, lane)?;
     let Some(src_sheet) = task_sheet(&src_dir) else {
@@ -366,8 +447,8 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Wave` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
-    let Some(moved) = transfer(&src_sheet, &dest_sheet, &query, to)? else {
-        eprintln!("no open task matches '{query}' in {src}");
+    let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to)? else {
+        eprintln!("no open task matches '{pick}' in {src}");
         return Ok(1);
     };
     log.info(
@@ -407,7 +488,7 @@ struct Lifted {
 fn transfer(
     src_sheet: &Path,
     dest_sheet: &Path,
-    query: &str,
+    pick: &Pick,
     to: Option<&str>,
 ) -> Result<Option<Lifted>> {
     let same = match (src_sheet.canonicalize(), dest_sheet.canonicalize()) {
@@ -421,7 +502,7 @@ fn transfer(
     }
     let src = fs::read_to_string(src_sheet)?;
     let dest = fs::read_to_string(dest_sheet)?;
-    let Some(moved) = lift_into(&src, &dest, query, to)? else {
+    let Some(moved) = lift_into(&src, &dest, pick, to)? else {
         return Ok(None);
     };
     md::write_atomic(dest_sheet, &moved.dest)?;
@@ -438,16 +519,15 @@ fn transfer(
 /// Pure core of a cross-project move: the first open row matching `query` in `src` (any
 /// wave, in order - the same search the same-sheet `move` runs), cut from `src` and
 /// inserted into `dest`'s current wave or its existing wave `to`. `None` on no match.
-fn lift_into(src: &str, dest: &str, query: &str, to: Option<&str>) -> Result<Option<Lifted>> {
+fn lift_into(src: &str, dest: &str, pick: &Pick, to: Option<&str>) -> Result<Option<Lifted>> {
     // Resolve the destination before looking at the source: a dest with no wave to land
     // in is the refusal, whether or not the query would have matched.
     let (into, _) = target_wave(dest, to, false)?;
-    let Some((from, line)) = find_open(src, query, None) else {
+    let Some((from, line)) = find_open(src, pick, None) else {
         return Ok(None);
     };
-    let Some((cut, _)) = md::edit_first_in_section(src, &from, |l| is_match(l, query), |_| None)
-    else {
-        bail!("could not lift '{query}' out of {from}");
+    let Some((cut, _)) = md::edit_first_in_section(src, &from, |l| pick.hits(l), |_| None) else {
+        bail!("could not lift '{pick}' out of {from}");
     };
     let line = retag_into(dest, &into, &line);
     let grown = md::insert_under_heading(dest, &into, std::slice::from_ref(&line));
@@ -501,14 +581,10 @@ pub fn step(
     p: &Profile,
     log: &Logger,
     name: &str,
-    query: &str,
+    pick: &Pick,
     dir: i32,
     lane: Lane,
 ) -> Result<i32> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        bail!("which one? (provide a word from the task)");
-    }
     let dir_word = if dir < 0 { "promote" } else { "demote" };
     let dir_proj = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir_proj) else {
@@ -527,7 +603,7 @@ pub fn step(
         let Some(sv) = s.version else { continue };
         if let Some((_, l)) = md::section_numbered(&content, &s.heading)
             .into_iter()
-            .find(|(_, l)| is_match(l, &q))
+            .find(|(_, l)| pick.hits(l))
         {
             let tagged = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
             at = Some((
@@ -539,7 +615,7 @@ pub fn step(
         }
     }
     let Some((at_v, from, line)) = at else {
-        eprintln!("no open task matches '{query}' in {name}");
+        eprintln!("no open task matches '{pick}' in {name}");
         return Ok(1);
     };
 
@@ -565,9 +641,9 @@ pub fn step(
             waves::heading_planned(&waves::fmt(to))
         }),
     };
-    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| is_match(l, &q), |_| None)
+    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| pick.hits(l), |_| None)
     else {
-        bail!("could not lift '{query}' out of {from}");
+        bail!("could not lift '{pick}' out of {from}");
     };
     let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&retagged));
     md::write_atomic(&sheet, &new)?;
@@ -603,14 +679,14 @@ pub fn done(
     p: &Profile,
     log: &Logger,
     name: &str,
-    query: &str,
+    pick: &Pick,
     proof: Option<&str>,
     unverified: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
     let marker = stamp.clone();
-    let (code, matched) = edit(p, log, name, query, "done", lane, move |l| {
+    let (code, matched) = edit(p, log, name, pick, "done", lane, move |l| {
         Some(md::add_marker(&md::set_checkbox(l, 'x'), &marker))
     })?;
     let Some(matched) = matched.filter(|_| code == 0) else {
@@ -664,8 +740,8 @@ fn record_proof(p: &Profile, name: &str, query: &str, stamp: &str) -> Result<()>
 }
 
 /// `notes ptask <name> rm <query>` — delete the first open wave task matching `<query>`.
-pub fn rm(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Result<i32> {
-    Ok(edit(p, log, name, query, "removed", lane, |_| None)?.0)
+pub fn rm(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
+    Ok(edit(p, log, name, pick, "removed", lane, |_| None)?.0)
 }
 
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching wave task's
@@ -675,7 +751,7 @@ pub fn retext(
     p: &Profile,
     log: &Logger,
     name: &str,
-    query: &str,
+    pick: &Pick,
     text: Option<&str>,
     append: Option<&str>,
     lane: Lane,
@@ -684,7 +760,7 @@ pub fn retext(
     if text.or(append).is_none_or(str::is_empty) {
         bail!("edit needs the new words: --text \"<new text>\" or --append \"<more>\"");
     }
-    Ok(edit(p, log, name, query, "edited", lane, |l| {
+    Ok(edit(p, log, name, pick, "edited", lane, |l| {
         let new = match (text, append) {
             (Some(t), _) => t.to_string(),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
@@ -697,8 +773,8 @@ pub fn retext(
 
 /// `notes ptask <name> start <query>` — toggle the first matching wave task between todo
 /// (`[ ]`) and in-progress (`[/]`).
-pub fn start(p: &Profile, log: &Logger, name: &str, query: &str, lane: Lane) -> Result<i32> {
-    Ok(edit(p, log, name, query, "toggled", lane, |l| {
+pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
+    Ok(edit(p, log, name, pick, "toggled", lane, |l| {
         let mark = if l.trim_start().starts_with("- [/]") {
             ' '
         } else {
@@ -869,7 +945,7 @@ fn edit<F>(
     p: &Profile,
     log: &Logger,
     name: &str,
-    query: &str,
+    pick: &Pick,
     verb: &str,
     lane: Lane,
     f: F,
@@ -877,14 +953,10 @@ fn edit<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        bail!("which one? (provide a word from the task)");
-    }
     let Some((sheet, heading, content)) = sheet_and_wave(p, name, lane)? else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
-    match md::edit_first_in_section(&content, &heading, |l| is_match(l, &query), f) {
+    match md::edit_first_in_section(&content, &heading, |l| pick.hits(l), f) {
         Some((new, matched)) => {
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
@@ -892,7 +964,7 @@ where
             Ok((0, Some(matched)))
         }
         None => {
-            eprintln!("no open task matches '{query}' in {name}");
+            eprintln!("no open task matches '{pick}' in {name}");
             Ok((1, None))
         }
     }
@@ -901,6 +973,86 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A words pick, as `ptask <verb> <query>` builds one.
+    fn w(q: &str) -> Pick {
+        Pick::new(q, false).unwrap()
+    }
+
+    #[test]
+    fn an_exact_pick_hits_only_its_own_line_byte_for_byte() {
+        let raw = "- [ ] Second task #high";
+        let pick = Pick::new(raw, true).unwrap();
+        assert!(pick.hits("- [ ] Second task #high"));
+        assert!(
+            pick.hits("- [ ] Second task #high  "),
+            "trailing space is not an edit"
+        );
+        // Every edit someone else could have made since the UI read the row.
+        assert!(!pick.hits("- [ ] second task #high"), "retexted");
+        assert!(!pick.hits("- [/] Second task #high"), "started");
+        assert!(!pick.hits("- [x] Second task #high"), "ticked");
+        assert!(!pick.hits("- [ ] Second task #low"), "reprioritised");
+        assert!(
+            !pick.hits("- [ ] Second task #high and more"),
+            "a longer row"
+        );
+        // Words still match by contained, case-folded text.
+        assert!(w("SECOND").hits("- [ ] Second task #high"));
+    }
+
+    #[test]
+    fn a_pick_refuses_what_could_match_the_wrong_row() {
+        assert!(
+            Pick::new("  ", false).is_err(),
+            "empty words match every row"
+        );
+        assert!(
+            Pick::new("second task", true).is_err(),
+            "exact needs the whole line"
+        );
+        assert!(
+            Pick::new("- [x] done task", true).is_err(),
+            "a closed row is never a target"
+        );
+        assert!(
+            Pick::new("- [ ] ", true).is_err(),
+            "the placeholder is not a row"
+        );
+    }
+
+    #[test]
+    fn an_exact_pick_refuses_twin_rows() {
+        let dir = std::env::temp_dir().join(format!("ptask-twins-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sheet = dir.join("README.md");
+        let row = "- [ ] Same row #high";
+        fs::write(
+            &sheet,
+            format!("## Wave: v0.1.0 (current)\n{row}\n- [ ] other\n"),
+        )
+        .unwrap();
+        let pick = Pick::new(row, true).unwrap();
+        assert!(pick.sole_in(&sheet).is_ok(), "one copy is fine");
+        // NEGATIVE CONTROL: a second identical line anywhere on the sheet is refused.
+        fs::write(
+            &sheet,
+            format!("## Wave: v0.1.0 (current)\n{row}\n## Wave: v0.2.0\n{row}\n"),
+        )
+        .unwrap();
+        assert!(pick.sole_in(&sheet).is_err());
+        // Words picks keep their first-match behaviour.
+        assert!(w("same").sole_in(&sheet).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_stale_exact_pick_moves_nothing() {
+        let h = waves::sections(SRC)[0].heading.clone();
+        let stale = Pick::new("- [ ] spawn bug that was renamed since", true).unwrap();
+        assert!(move_within(SRC, &stale, &h, "v0.5.0").unwrap().is_none());
+        assert!(lift_into(SRC, DEST, &stale, None).unwrap().is_none());
+    }
 
     const SHEET: &str = "\
 # demo
@@ -1065,8 +1217,14 @@ Version: v1.13.0
     fn a_moved_row_takes_its_new_wave_tag_and_survives_a_sweep() {
         let sheet = "# demo\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n- [ ] stays\n\n## Wave: v1.14.0 (planned)\n- [ ] later #v1.14.0\n";
         let line = retag_for(sheet, "- [ ] moved #v1.13.0 #urgent", "v1.14.0");
-        assert!(line.contains("#v1.14.0") && !line.contains("#v1.13.0"), "{line}");
-        assert!(!line.contains("#urgent"), "urgent is only legal in the current wave: {line}");
+        assert!(
+            line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("#urgent"),
+            "urgent is only legal in the current wave: {line}"
+        );
         let placed = md::insert_under_heading(sheet, "Wave: v1.14.0 (planned)", &[line]);
         let swept = project_sweep::sweep_sheet(&placed).map_or(placed.clone(), |(c, _)| c);
         let later = waves::find(&swept, (1, 14, 0)).unwrap();
@@ -1159,7 +1317,9 @@ Version: v1.2.0
 
     #[test]
     fn a_cross_project_move_lands_in_the_dest_current_wave_retagged() {
-        let m = lift_into(SRC, DEST, "spawn bug", None).unwrap().unwrap();
+        let m = lift_into(SRC, DEST, &w("spawn bug"), None)
+            .unwrap()
+            .unwrap();
         assert_eq!(m.from, "Wave: v0.4.0 (current)");
         assert_eq!(m.into, "Wave: v1.2.0 (current)");
         // Source tag swapped for the dest's; priority, other tags and the marker kept.
@@ -1186,7 +1346,7 @@ Version: v1.2.0
 
     #[test]
     fn a_cross_project_move_with_to_lands_in_an_existing_planned_wave() {
-        let m = lift_into(SRC, DEST, "spawn", Some("v1.3.0"))
+        let m = lift_into(SRC, DEST, &w("spawn"), Some("v1.3.0"))
             .unwrap()
             .unwrap();
         assert_eq!(m.into, "Wave: v1.3.0 (planned)");
@@ -1207,7 +1367,7 @@ Version: v1.2.0
     // The source search spans every wave, as the same-sheet move's does.
     #[test]
     fn a_cross_project_move_finds_a_row_in_a_planned_source_wave() {
-        let m = lift_into(SRC, DEST, "netcode", None).unwrap().unwrap();
+        let m = lift_into(SRC, DEST, &w("netcode"), None).unwrap().unwrap();
         assert_eq!(m.from, "Wave: v0.5.0 (planned)");
         assert_eq!(m.line, "- [ ] dodgeball netcode #high #v1.2.0");
     }
@@ -1215,7 +1375,7 @@ Version: v1.2.0
     // Agents may not create planned waves on another project's roadmap.
     #[test]
     fn a_cross_project_move_refuses_a_dest_wave_that_does_not_exist() {
-        let e = lift_into(SRC, DEST, "spawn", Some("v9.0.0"))
+        let e = lift_into(SRC, DEST, &w("spawn"), Some("v9.0.0"))
             .unwrap_err()
             .to_string();
         assert!(e.contains("no wave v9.0.0"), "{e}");
@@ -1223,15 +1383,17 @@ Version: v1.2.0
 
     #[test]
     fn a_cross_project_move_refuses_a_dest_with_no_wave() {
-        assert!(lift_into(SRC, "# prose only\n\nnothing here\n", "spawn", None).is_err());
+        assert!(lift_into(SRC, "# prose only\n\nnothing here\n", &w("spawn"), None).is_err());
     }
 
     #[test]
     fn a_cross_project_move_with_no_match_is_none() {
-        assert!(lift_into(SRC, DEST, "no such row", None).unwrap().is_none());
+        assert!(lift_into(SRC, DEST, &w("no such row"), None)
+            .unwrap()
+            .is_none());
         // A closed row is not movable.
         let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
-        assert!(lift_into(&closed, DEST, "menu polish", None)
+        assert!(lift_into(&closed, DEST, &w("menu polish"), None)
             .unwrap()
             .is_none());
     }
@@ -1240,7 +1402,7 @@ Version: v1.2.0
     #[test]
     fn a_cross_project_move_into_an_unversioned_wave_drops_the_source_tag() {
         let dest = "# legacy\n\n## Wave: new (current)\n- [ ] x\n";
-        let m = lift_into(SRC, dest, "spawn", None).unwrap().unwrap();
+        let m = lift_into(SRC, dest, &w("spawn"), None).unwrap().unwrap();
         assert!(!m.line.contains("#v0.4.0"), "{}", m.line);
         assert!(m.line.contains("<!-- since:2026-10-01 carried:2 -->"));
     }
@@ -1258,7 +1420,7 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let m = transfer(&s, &t, "spawn", None).unwrap().unwrap();
+        let m = transfer(&s, &t, &w("spawn"), None).unwrap().unwrap();
         assert_eq!(fs::read_to_string(&s).unwrap(), m.src);
         assert_eq!(fs::read_to_string(&t).unwrap(), m.dest);
         assert!(!m.src.contains("spawn") && m.dest.contains("spawn"));
@@ -1272,10 +1434,10 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let same = transfer(&s, &s, "spawn", None).unwrap_err().to_string();
+        let same = transfer(&s, &s, &w("spawn"), None).unwrap_err().to_string();
         assert!(same.contains("same sheet"), "{same}");
-        assert!(transfer(&s, &t, "spawn", Some("v9.0.0")).is_err());
-        assert!(transfer(&s, &t, "no such row", None).unwrap().is_none());
+        assert!(transfer(&s, &t, &w("spawn"), Some("v9.0.0")).is_err());
+        assert!(transfer(&s, &t, &w("no such row"), None).unwrap().is_none());
         assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
         assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
         let _ = fs::remove_dir_all(&d);
@@ -1287,7 +1449,9 @@ Version: v1.2.0
     fn the_same_project_move_is_unchanged() {
         let (h, grown) = target_wave(SRC, Some("v0.5.0"), true).unwrap();
         assert!(grown.is_none());
-        let (new, line, from) = move_within(SRC, "spawn", &h, "v0.5.0").unwrap().unwrap();
+        let (new, line, from) = move_within(SRC, &w("spawn"), &h, "v0.5.0")
+            .unwrap()
+            .unwrap();
         assert_eq!(from, "Wave: v0.4.0 (current)");
         assert_eq!(
             line,
@@ -1297,7 +1461,9 @@ Version: v1.2.0
             new,
             "# unity-playground\nVersion: v0.4.0\n\n## Wave: v0.4.0 (current)\n- [ ] playground thing #high\n- [ ] dodgeball menu polish #low\n\n## Wave: v0.5.0 (planned)\n- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->\n- [ ] dodgeball netcode #v0.5.0 #high\n"
         );
-        assert!(move_within(SRC, "netcode", &h, "v0.5.0").unwrap().is_none());
+        assert!(move_within(SRC, &w("netcode"), &h, "v0.5.0")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
