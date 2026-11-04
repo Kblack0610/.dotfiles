@@ -85,4 +85,3 @@ These hold for every role; each role skill adds its own.
 - `fleet-comms`: channel choice and message wording for every message a role sends.
 - `fleet-bench`: the ETAs, findings and throughput a pass and the summary quote.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running a pass acts.
-- `wave-overseer`, `sprint-overseer`: delivery-state watchdogs for one wave or sprint. Neither of them looks at the machine.
