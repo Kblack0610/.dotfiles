@@ -165,6 +165,96 @@ seed_anchor() {
   [ ! -f "$HOME/.agent/anchors/proj.decisions.md" ]
 }
 
+# ── the Lab section and --all ───────────────────────────────────────────────
+
+# One `notes projects --stats --json` row. $1 name, $2 stage, $3 status_date, $4 status.
+lab_row() {
+  printf '{"profile":"bnb","name":"%s","dir":"%s/lab/%s","stage":"%s","version":"v1.2.0","wave":"v1.2.0","open":3,"done":2,"urgent":0,"high":1,"low":1,"planned":4,"agent":5,"status":"%s","status_date":"%s","sheet":"x","summary":"y"}' \
+    "$1" "$HOME" "$1" "$2" "$4" "$3"
+}
+
+@test "regen-anchor: the Lab section carries the project's counts and its status" {
+  echo "[$(lab_row proj beta "$(date +%F)" 'boss fight in review'),$(lab_row other prod '' '')]" \
+    > "$NOTES_FIXTURE/stats.json"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '## Lab'
+  assert_output --partial "- **proj** (bnb, beta) v1.2.0: 3 open, 2 done this wave, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
+  assert_output --partial '  - Status: boss fight in review'
+  refute_output --partial 'STALE'
+  refute_output --partial '**other**'
+}
+
+@test "regen-anchor: a prod project with an old status is flagged STALE" {
+  echo "[$(lab_row proj prod 2026-01-01 'shipped')]" > "$NOTES_FIXTURE/stats.json"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial 'status 2026-01-01 (STALE, over 14 days at prod)'
+}
+
+@test "regen-anchor: an old status on an alpha project is not stale" {
+  echo "[$(lab_row proj alpha 2026-01-01 'early days')]" > "$NOTES_FIXTURE/stats.json"
+  run bash "$REGEN" proj
+  run cat "$ANCHOR"
+  refute_output --partial 'STALE'
+}
+
+@test "regen-anchor: a repo key lists each of its lab projects, without a status line" {
+  cat > "$MAP" <<'EOF2'
+{ "paths": {}, "aliases": {},
+  "trackers": { "proj": {}, "app-a": { "repo": "proj", "path": "apps/a" },
+                "app-b": { "repo": "proj", "path": "apps/b" } } }
+EOF2
+  echo "[$(lab_row app-a beta "$(date +%F)" 'a status'),$(lab_row app-b alpha '' '')]" \
+    > "$NOTES_FIXTURE/stats.json"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- **app-a** (bnb, beta)'
+  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: 3 open, 2 done this wave, 5 on the agent board; no status;'
+  refute_output --partial '  - Status:'
+}
+
+@test "regen-anchor: says so when the notes CLI gives no lab facts" {
+  rm -f "$NOTES_FIXTURE/stats.json"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '_(notes CLI unavailable; lab facts not read)_'
+}
+
+@test "regen-anchor: links the newest three ADRs, never the template" {
+  mkdir -p "$HOME/repo/docs/decisions"
+  for f in 000-template.md 001-a.md 002-b.md 003-c.md 004-d.md README.md; do
+    touch "$HOME/repo/docs/decisions/$f"
+  done
+  cat > "$MAP" <<EOF2
+{ "paths": { "$HOME/repo": "proj" }, "aliases": {}, "trackers": {} }
+EOF2
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial "- ADRs: \`$HOME/repo/docs/decisions/\` (latest: 004-d.md, 003-c.md, 002-b.md)"
+}
+
+@test "regen-anchor --all: scaffolds every project's anchor, but none for a repo-only key" {
+  cat > "$MAP" <<'EOF2'
+{ "paths": { "/repos/toolrepo": "toolrepo" }, "aliases": {},
+  "trackers": { "default": { "system": "vikunja" }, "_comment": "doc",
+                "game": { "repo": "toolrepo", "path": "games/g" },
+                "board-only": { "repo": "toolrepo" }, "proj": {} } }
+EOF2
+  run bash "$REGEN" --all
+  assert_success
+  for k in toolrepo game proj; do
+    [ -f "$HOME/.agent/anchors/$k.md" ] || fail "no anchor for $k"
+  done
+  [ ! -e "$HOME/.agent/anchors/board-only.md" ] || fail "a repo-only key got an anchor"
+  [ ! -e "$HOME/.agent/anchors/default.md" ] || fail "the tracker fallback got an anchor"
+}
+
 # ── the stop hook ────────────────────────────────────────────────────────────
 
 @test "87-regen-anchor: refreshes the anchor for the session's project" {

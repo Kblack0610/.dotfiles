@@ -23,6 +23,8 @@ setup() {
   MAP="$HOME/project-map.json"
   export AGENT_DIR="$HOME/agent"
   mkdir -p "$AGENT_DIR/plans" "$AGENT_DIR/lessons" "$AGENT_DIR/sessions"
+  # The doctor reads the key list from project-name.sh; the worktree's copy, not the stow.
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   # sandbox_init redirects HOME, so ~/.config/shared-hooks/lab-roots.sh is absent and the
   # lab check SKIPs. That is deliberate: the private overlay must not leak into the suite.
 }
@@ -150,9 +152,10 @@ EOF
   printf 'x\n' > "$AGENT_DIR/anchors/alpha.decisions.md"
   printf 'x\n' > "$AGENT_DIR/anchors/README.md"
   printf 'x\n' > "$AGENT_DIR/sessions/index.tsv"
+  anchors_for mono-canon other-canon alpha   # an anchors dir is checked for completeness too
   run "$DOCTOR" "$MAP"
   assert_success
-  assert_output --partial 'PASS  all 2 runtime keys under ~/.agent are registered projects'
+  assert_output --partial 'PASS  all 3 runtime keys under ~/.agent are registered projects'
 }
 
 @test "a worktree-named key fails: worktree names are never keys" {
@@ -285,4 +288,67 @@ EOF
   PATH="$SANDBOX/bin:/usr/bin:/bin" run "$DOCTOR" "$MAP"
   assert_success
   assert_output --partial 'SKIP  notes CLI unavailable'
+}
+
+# ── 5b. every project has an anchor, inside its budget ──────────────────────
+
+# anchors_for <name>... -- a small anchor for each, so only the one a test breaks fails.
+anchors_for() {
+  mkdir -p "$AGENT_DIR/anchors"
+  local n
+  for n in "$@"; do printf '# %s\n\n## Key URLs & facts\n- a fact\n' "$n" > "$AGENT_DIR/anchors/$n.md"; done
+}
+
+@test "anchors: no anchors dir is a SKIP, never a PASS" {
+  clean_map
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial "SKIP  no $AGENT_DIR/anchors"
+}
+
+@test "anchors: every project with an anchor passes; a repo-only key needs none" {
+  # labonly has a repo and no path: no directory resolves to it, so no session reads an
+  # anchor for it. NEGATIVE CONTROL for the failures below.
+  clean_map
+  anchors_for mono-canon other-canon alpha
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'PASS  all 3 projects have an anchor inside the budget'
+}
+
+@test "anchors: a project with no anchor fails and names it" {
+  clean_map
+  anchors_for mono-canon other-canon
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'FAIL  project "alpha" has no anchor'
+}
+
+@test "anchors: an anchor past the injected budget fails" {
+  clean_map
+  anchors_for mono-canon other-canon alpha
+  { echo "## Blockers / known issues"; head -c 7000 /dev/zero | tr '\0' 'x'; echo; } \
+    >> "$AGENT_DIR/anchors/alpha.md"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'FAIL  anchor alpha injects'
+}
+
+@test "anchors: a long decisions log is not counted, since it is not injected" {
+  clean_map
+  anchors_for mono-canon other-canon alpha
+  { echo "## Decisions log"; head -c 9000 /dev/zero | tr '\0' 'x'; echo; echo "## Links"; } \
+    >> "$AGENT_DIR/anchors/alpha.md"
+  run "$DOCTOR" "$MAP"
+  assert_success
+}
+
+@test "anchors: key facts past their own budget fail" {
+  clean_map
+  anchors_for mono-canon other-canon alpha
+  { head -c 2500 /dev/zero | tr '\0' 'x'; echo; } >> "$AGENT_DIR/anchors/alpha.md"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'FAIL  anchor alpha has'
+  assert_output --partial 'bytes of key facts'
 }
