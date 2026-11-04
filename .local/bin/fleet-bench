@@ -161,7 +161,7 @@ def flow($a; $b): . as $p | (($b - $a) / 3600) as $h
      net_in_per_h: (($f.in - $f.removed) / $h | round2), open_start: $o0, open_end: $o1,
      dropped: ($o0 + $f.in - $f.removed - $f.ticked - $o1),
      by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum) | sort_by(-.ticked)),
-     hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: (.[0].epoch / 3600 | floor) * 3600} + flow_sum)
+     hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum)
        | reduce .[] as $x ({scope: $o0, done: 0, rows: []};
            .scope += ($x.in - $x.removed) | .done += $x.ticked
            | .rows += [$x + {scope: .scope, done: .done}]) | .rows)};
