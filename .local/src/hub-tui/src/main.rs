@@ -14,6 +14,7 @@ mod forecast;
 mod jobs;
 mod queuetab;
 mod tabreq;
+mod tasktab;
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -25,7 +26,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
        hub actions --since WHEN [--json]
-  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue
+  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue|board
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs)
@@ -166,6 +167,14 @@ fn print_once(tab: Option<Tab>) -> i32 {
     }
     if tab == Some(Tab::Queue) {
         a.tab = Tab::Queue;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    if tab == Some(Tab::Board) {
+        a.tasks = Some(hub_core::tasks::feed(&hub_core::session_actions::System));
+        a.tab = Tab::Board;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
