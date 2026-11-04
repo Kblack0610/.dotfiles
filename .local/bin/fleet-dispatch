@@ -456,26 +456,27 @@ item_brief() {
   jq -r .task <<<"$it"
   echo
   row=$(item_row "$it")
-  if [ -z "$row" ]; then
-    echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
-    echo "When the PR merges: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
-  elif [ -n "$pr_only" ]; then
+  if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
+  elif [ -n "$pr_only" ]; then
+    echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
+    echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
   else
-    local prof project lane key on=''
-    IFS=$'\t' read -r prof project lane key <<<"$row"
-    [ "$lane" = agent ] && on=' --agent'
-    echo "This is agent-queue item $slug, promoted from the $project $lane board row \"$key\"."
-    echo "When the PR merges: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok; and close the row: notes${prof:+ --profile $prof} ptask $project$on done \"$key\" --proof pr:<N>"
+    local key
+    key=$(cut -d$'\x1f' -f4 <<<"$row")
+    echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
+    echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
   echo "If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open."
 }
 
-# item_row <item json> -> "<profile>\t<project>\t<lane>\t<key>" of a `from: board:` item, else nothing.
+# item_row <item json> -> "<profile> <project> <lane> <key>", joined by the unit separator, of a
+# `from: board:` item, else nothing. Not a tab: read collapses runs of tabs, so the empty profile of
+# a default-profile row would shift every field after it.
 item_row() {
   jq -r 'select(.from | startswith("board:")) | (.from | ltrimstr("board:")) as $r
-    | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | @tsv' <<<"$1"
+    | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
 # settle_row <slug> -- a board item that ended failed or cancelled hands its row back: un-start it
@@ -487,7 +488,7 @@ settle_row() {
   [ "$(jq -r '.state + "/" + (.status // "")' <<<"$it")" = done/ok ] && return 0
   [ "$(jq -r .state <<<"$it")" = "done" ] || return 0
   row=$(item_row "$it"); [ -n "$row" ] || return 0
-  IFS=$'\t' read -r prof project lane key <<<"$row"
+  IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
   row_is "$prof" "$project" "$lane" "$key" / || return 0
   np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1

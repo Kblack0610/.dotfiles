@@ -231,6 +231,11 @@ cmd_add() {
   for tag in $tags; do
     case "$tag" in at:*) [[ "$tag" =~ ^at:([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "a time tag is at:HH:MM, not $tag" ;; esac
   done
+  # A hand-started session records itself: <tmux server>:<session>, the shape reap reads.
+  if [ -n "$running" ] && [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
+    session="$(basename "${TMUX%%,*}"):$(tmux display-message -p '#{session_name}' 2>/dev/null)"
+    [ "${session##*:}" != "" ] || session=""
+  fi
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   local resolved

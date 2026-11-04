@@ -178,6 +178,17 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -n "$(field "$f" started)" ]
 }
 
+@test "--running inside tmux records <server>:<session> by default; outside it, none" {
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/default,123,0" run "$AQ" add --project game --running --slug here "this session"
+  assert_success
+  [ "$(field "$(item running here)" session)" = default:dotfiles-agent-9 ]
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --session given --slug given "given"
+  [ "$(field "$(item running given)" session)" = given ]
+  run "$AQ" add --project game --running --slug nowhere "no tmux"
+  [ -z "$(field "$(item running nowhere)" session)" ]
+}
+
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success

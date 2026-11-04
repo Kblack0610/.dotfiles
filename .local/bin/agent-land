@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> --project <board project> --title "<board row title>"
-#              [--plan <file> --phase "<text>"] [--sheet] [--dry-run]
+#   agent-land <pr> [--item <slug>] [--plan <file> --phase "<text>"] [--dry-run]
+#   agent-land <pr> --project <board project> --title "<board row title>" [--plan ...] [--dry-run]
 #
 # Steps, stopping at the first failure: fetch (HEAD must contain origin/<base>, checked before
 # and after the checks), checks (the PR's checks pass: CI, a required check), merge (--squash
-# --match-head-commit HEAD, then gh pr view must say MERGED), board (agent row done with pr:<pr>), sheet (--sheet: a "<title>
-# #oneshot" row added and closed), plan (--plan: the one "- [ ] <phase>" line becomes
-# "- [x] <phase> (#<pr>)"). One line per step.
+# --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets pr:<pr>
+# and moves to done, status ok), board (the item's row when it came from the board, done with
+# pr:<pr>; with no item, the --project/--title agent row), plan (--plan: the one "- [ ] <phase>"
+# line becomes "- [x] <phase> (#<pr>)"). One line per step.
+# The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started); with one,
+# --project and --title are not needed and not used: the item is the record.
 # Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it and re-run. A merge of
 # <base> keeps a green gate green; gate again only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
@@ -71,14 +74,14 @@ current_with_base() {
   fi
 }
 
-pr='' project='' title='' plan='' phase='' sheet=0 dry=0
+pr='' project='' title='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --project) project="${2:?--project needs a value}" && shift ;;
   --title) title="${2:?--title needs a value}" && shift ;;
   --plan) plan="${2:?--plan needs a value}" && shift ;;
   --phase) phase="${2:?--phase needs a value}" && shift ;;
-  --sheet) sheet=1 ;;
+  --item) item="${2:?--item needs a value}" && shift ;;
   --dry-run) dry=1 ;;
   -h | --help) usage ;;
   -*) die "unknown flag: $1" ;;
@@ -87,7 +90,32 @@ while [ $# -gt 0 ]; do
   shift
 done
 [[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
-[ -n "$project" ] && [ -n "$title" ] || die "--project and --title are required"
+row=''
+if [ -n "$item" ]; then
+  # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
+  it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
+  # A done item that already carries this PR is a re-run after a failed board step.
+  case "$(jq -r --arg pr "$pr" 'if .state == "done" and .pr == $pr then "rerun" else .state end' <<<"$it")" in
+  running | waiting | queued | rerun) ;;
+  *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
+  esac
+  # The notes argv that closes a `from: board:<project>:<key>` item's row, one word a line,
+  # as fleet-dispatch reads it; empty for any other item.
+  row=$(jq -r --arg pr "$pr" 'select(.from | startswith("board:")) | (.from | ltrimstr("board:") | split(":")) as $r
+    | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
+      + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
+      + ["done", ($r[1:] | join(":")), "--proof", "pr:\($pr)"] | .[]' <<<"$it")
+else
+  [ -n "$project" ] && [ -n "$title" ] || die "--project and --title are required without a queue item (--item or AGENT_QUEUE_ITEM)"
+fi
+# board_cmd -> the notes argv that closes the row, one word a line: the item's, or --project/--title.
+board_cmd() {
+  if [ -n "$item" ]; then
+    [ -z "$row" ] || printf '%s\n' "$row"
+  else
+    printf '%s\n' ptask "$project" --agent "done" "$title" --proof "pr:$pr"
+  fi
+}
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
   [ -f "$plan" ] || die "no plan file: $plan"
@@ -100,8 +128,9 @@ if [ "$dry" -eq 1 ]; then
   echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (must be 0)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
-  echo "board: notes ptask $project --agent done \"$title\" --proof pr:$pr"
-  [ "$sheet" -eq 0 ] || echo "sheet: notes ptask $project add \"$title #oneshot\" '#low' && notes ptask $project done \"$title #oneshot\" --proof pr:$pr"
+  [ -z "$item" ] || echo "item: agent-queue set $item pr=$pr && agent-queue move $item done --status ok"
+  mapfile -t b < <(board_cmd)
+  [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
   exit 0
 fi
@@ -127,19 +156,18 @@ else
   echo "merge: #$pr MERGED at ${head:0:8}"
 fi
 
-out=$(notes ptask "$project" --agent "done" "$title" --proof "pr:$pr" 2>&1) || fail board "$(lastline "$out")"
-echo "board: closed \"$title\" with pr:$pr"
-
-if [ "$sheet" -eq 1 ]; then
-  if out=$(notes ptask "$project" add "$title #oneshot" '#low' 2>&1); then
-    out=$(notes ptask "$project" "done" "$title #oneshot" --proof "pr:$pr" 2>&1) || fail sheet "$(lastline "$out")"
-    echo "sheet: added and closed \"$title #oneshot\""
-  else
-    case "$out" in
-    *'no current project named'*) echo "sheet: $project has no sheet, skipped" ;;
-    *) fail sheet "$(lastline "$out")" ;;
-    esac
+if [ -n "$item" ]; then
+  if [ "$(jq -r .state <<<"$it")" != "done" ]; then
+    out=$(agent-queue set "$item" "pr=$pr" 2>&1) || fail item "$(lastline "$out")"
+    out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
   fi
+  echo "item: $item done with pr:$pr"
+fi
+
+mapfile -t b < <(board_cmd)
+if [ "${#b[@]}" -gt 0 ]; then
+  out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
+  echo "board: closed \"${b[-3]}\" with pr:$pr"
 fi
 
 if [ -n "$plan" ]; then
