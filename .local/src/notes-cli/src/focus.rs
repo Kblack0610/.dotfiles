@@ -65,7 +65,7 @@ fn remove_first(content: &str, query: &str) -> Option<(String, String)> {
 /// cockpit needs the position to JUMP to a task and the key to CLOSE it (`focus done`
 /// matches on `md::task_key`). Shares [`md::section_span`]'s authored-region boundary with
 /// every other verb here, so the read and write sides cannot disagree about what exists.
-fn open_focus_positions(content: &str) -> Vec<(usize, String, String)> {
+pub(crate) fn open_focus_positions(content: &str) -> Vec<(usize, String, String)> {
     md::section_numbered(content, FOCUS)
         .into_iter()
         .filter(|(_, l)| md::is_open_task(l))

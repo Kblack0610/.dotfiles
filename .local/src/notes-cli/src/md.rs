@@ -704,6 +704,22 @@ pub fn wave_tag(line: &str) -> Option<String> {
     split_wave(line).1
 }
 
+/// The tier a `#tier/N` hashtag (without its `#`) names, 1 to 3 as `fleet-dispatch` reads it
+/// (`row_tier`); None for any other tag, a malformed tier included.
+pub fn tier_tag(tag: &str) -> Option<u8> {
+    tag.strip_prefix("tier/")
+        .and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| (1..=3).contains(n))
+}
+
+/// A tag that tries to be a tier: `#tier`, `#tier3`, `#tier/x`. Paired with [`tier_tag`]
+/// it tells a malformed tier from an unrelated word like `#tierlist`.
+pub fn looks_like_tier(tag: &str) -> bool {
+    tag.strip_prefix("tier").is_some_and(|r| {
+        r.is_empty() || r.starts_with('/') || r.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
 /// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
 /// then `[A-Za-z0-9_/.-]*`, so `#wedding`, nested `#wedding/venue` and the dotted
 /// `#v0.12.1` wave tag all parse. Deliberately skips (mirroring the care
