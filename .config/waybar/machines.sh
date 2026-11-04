@@ -19,7 +19,7 @@ FLEET=(
     "thinkpad-game|tp|tp"
 )
 
-# Pango colours (Catppuccin-ish, matches ai_agents.sh)
+# Pango colours (Catppuccin-ish)
 C_GRN="<span color='#a6e3a1'>"   # up
 C_RED="<span color='#f38ba8'>"   # down
 C_END="</span>"

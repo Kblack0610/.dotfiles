@@ -207,9 +207,9 @@ snapshot() {
             emit summary pager mdi:bell-alert "$(jq -c '{state: .undelivered_24h} + .' <<< "$pstats")" '{"state_class":"measurement"}'
     fi
 
-    # Interactive sessions: live Claude panes, the same `agent-panel list` the waybar
-    # ai-agents module reads. Glyphs are agent-panel's own: `~` working, `!` needs you,
-    # anything else idle. One summary sensor, plus one sensor per project (the bar's groups).
+    # Interactive sessions: live Claude panes from `agent-panel list`. Glyphs are agent-panel's
+    # own: `~` working, `!` needs you, anything else idle. One summary sensor, plus one sensor
+    # per project.
     # The delivery bucket (NEEDS, LANDED, STALLED, ...) is read from the fleet state document,
     # never worked out here: agent-panel is the live tier, the document the slower one, and
     # a session the document has not seen yet has bucket null.

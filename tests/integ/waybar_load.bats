@@ -51,24 +51,24 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "the bar is this machine's CPU and load, plain like the RAM pill" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% L 12.0"
   assert_equal "$(jq -r .class <<< "$output")" ok
 }
 
 @test "with no saved sample CPU reads -, then the next run measures from that one" {
   rm "$LOAD_CPU_STATE"
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "CPU - LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU - L 12.0"
   # 100 more ticks, 25 of them idle: 75% since the run above, nowhere near the since-boot 30%.
   echo "cpu  575 0 100 1225 200 0 0 0 0 0" > "$LOAD_STAT"
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "CPU 75% LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 75% L 12.0"
 }
 
 @test "iowait counts as idle" {
   echo "cpu  500 0 100 700 700 0 0 0 0 0" > "$LOAD_STAT"
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% L 12.0"
 }
 
 @test "the class follows load per core: warn from 1, critical from 1.5" {
@@ -127,7 +127,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "Prometheus down: the local CPU and load stay, the tooltip says so, no machine rows" {
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% LOAD 12.0"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% L 12.0"
   run tip
   assert_output --partial "fleet telemetry unavailable (http://prom.test)"
   refute_output --partial "razer-laptop"
