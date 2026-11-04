@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is three totals and a health dot, "~22 <check>1 !9 <dot>": ~ working (WORKING), the check mark
-# ready for its next step (LANDED or DONE), ! needs you (NEEDS, amber), each shown at 0 so the bar
-# keeps its shape. STALLED and UNCLEAR are in none of the three; the dot carries them.
-# The dot is the fleet's health:
+# The bar is the robot and three totals, "<robot> ~22 <check>1 !9": ~ working (WORKING, amber), the
+# check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red), each shown
+# at 0 so the bar keeps its shape. STALLED and UNCLEAR are in none of the three; the robot's colour
+# carries them. The robot is the fleet's health:
 #   red    a session is STALLED, or a host's fleet_sessions.prom is older than STATE_LATE_SECS
 #   amber  a session is UNCLEAR, or Prometheus has no session numbers
 #   green  otherwise
@@ -26,8 +26,8 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 
-# nf-md-robot, a check mark and a filled circle, written as escapes so an editor cannot strip them.
-ICON=$'\U000f06a9' READY=$'\u2713' DOT=$'\u25cf'
+# nf-md-robot and a check mark, written as escapes so an editor cannot strip them.
+ICON=$'\U000f06a9' READY=$'\u2713'
 # fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
 STATE_LATE_SECS=300
 
@@ -159,8 +159,7 @@ while read -r _ p; do
   phone+=$'\n'"$(pango_esc "$p") $(glyphs "$p")"
 done < <(for p in "${!per_project[@]}"; do printf '%s %s\n' "${per_project[$p]}" "$p"; done | sort -k1,1nr -k2,2)
 
-need="!$n_need"; ((n_need > 0)) && need="$(paint "$C_YEL" "$need")"
-text="$ICON ~$n_work $READY$n_ready $need $(paint "${LEVEL_COLOUR[$level]}" "$DOT")"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $(paint "$C_RED" "!$n_need")"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && total == 0)) && class=inactive
 emit "$text" "$tip" "$class" "$phone"

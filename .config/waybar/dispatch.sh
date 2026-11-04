@@ -34,7 +34,6 @@ PASS_LATE_SECS=2700
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
 URGENT_LATE_SECS=3600
 C_DIM="#7f7f7f"
-C_GRN="${LEVEL_COLOUR[0]}"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
