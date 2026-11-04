@@ -255,3 +255,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_success
   [ "$(field "$(item queued x-first)" priority)" = normal ]
 }
+
+@test "a read waits for a writer, so a list never misses an item mid-move" {
+  "$AQ" add --project game "one item" >/dev/null
+  # Hold the writers' lock; a read must block on it, not read a half-moved store.
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  run timeout 1 "$AQ" list --json
+  [ "$status" -eq 124 ]
+  flock -u 9
+  run "$AQ" list --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = one-item ]
+  # A store that does not exist yet reads as empty and is not created by the read.
+  rm -rf "$AGENT_QUEUE_DIR"
+  run "$AQ" list
+  assert_success
+  [ ! -e "$AGENT_QUEUE_DIR" ]
+}
