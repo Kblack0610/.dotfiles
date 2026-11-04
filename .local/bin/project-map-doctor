@@ -22,7 +22,7 @@
 set -uo pipefail
 
 MAP_FILE="${1:-${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}}"
-AGENT_PLANS_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}"
+AGENT_DIR="${AGENT_DIR:-$HOME/.agent}"
 
 fails=0
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -102,28 +102,41 @@ while IFS= read -r line; do
 done < <(jq -r '(.aliases // {}) | to_entries[] | "\(.key)\t\(.value)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n aliases resolve and none shadow a project" || skip "no aliases to check"
 
-# --- 5. every directory holding a sprint board is a registered project --------------
-# The write-side canary. A board under an unregistered name is work that four daemons
-# poll for and none of them can see.
-if [ -d "$AGENT_PLANS_DIR" ]; then
+# --- 5. every key under ~/.agent is a registered project ---------------------------
+# Plans, lessons, sessions, asks, outcomes, dreams and evals are filed per project. A key
+# the registry does not know is runtime state no project reads: a lesson no preflight
+# injects, a board no daemon polls, a corpus the dream sweeps on its own. A leading `_`
+# marks a key that is deliberately no project (_unscoped, _runner, _archive).
+if [ -d "$AGENT_DIR" ]; then
   n=0; bad=0
-  for d in "$AGENT_PLANS_DIR"/*/; do
-    [ -d "$d" ] || continue
-    ls "$d"/sprint-*.md >/dev/null 2>&1 || continue
-    name="$(basename "$d")"
+  strays="$(
+    for kind in anchors plans lessons sessions asks outcomes dreams evals; do
+      for e in "$AGENT_DIR/$kind"/*; do
+        [ -e "$e" ] || continue
+        name="$(basename "$e")"
+        if [ -f "$e" ]; then
+          case "$name" in *.md) name="${name%.md}"; name="${name%.decisions}" ;; *) continue ;; esac
+        fi
+        case "$name" in _* | README) continue ;; esac
+        printf '%s\t%s\n' "$name" "$kind"
+      done
+    done | sort
+  )"
+  while IFS=$'\t' read -r name kinds; do
+    [ -n "$name" ] || continue
     n=$((n + 1))
     if ! is_known "$name"; then
-      fail "board directory \"$name\" holds sprint boards but names no registered project"
+      fail "runtime key \"$name\" ($kinds) under ~/.agent names no registered project: register its repo in paths, or move it under ~/.agent/_archive/"
       bad=$((bad + 1))
     fi
-  done
+  done < <(awk -F'\t' '{k[$1] = k[$1] (k[$1] ? " " : "") $2} END {for (x in k) print x "\t" k[x]}' <<<"$strays" | sort)
   if [ "$n" -eq 0 ]; then
-    skip "no sprint boards on disk to check"
+    skip "no keys under $AGENT_DIR to check"
   elif [ "$bad" -eq 0 ]; then
-    pass "all $n board directories are registered projects"
+    pass "all $n runtime keys under ~/.agent are registered projects"
   fi
 else
-  skip "no $AGENT_PLANS_DIR; cannot check board directories"
+  skip "no $AGENT_DIR; cannot check runtime keys"
 fi
 
 # --- 6. every lab project is registered ---------------------------------------------

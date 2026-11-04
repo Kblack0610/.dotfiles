@@ -225,6 +225,8 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .tbl tr.tot td { font-weight: 600; border-bottom: 0; }
 .tbl tr.hgrp td { padding-top: 10px; font-weight: 600; }
 .scroll { overflow-x: auto; }
+.month { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 6px 0 4px; border-top: 1px solid var(--line); font-size: 13px; }
+.month .m { flex: 1 1 120px; max-width: 240px; }
 details.area { margin-bottom: 8px; }
 details.area summary { cursor: pointer; font-weight: 600; display: flex; gap: 8px; align-items: center; }
 .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }

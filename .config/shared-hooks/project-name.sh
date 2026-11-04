@@ -12,7 +12,8 @@
 #   4. basename (leading dot stripped) looked up in `aliases`.
 #   5. Under the worktree root with no checkout left: the registered repo its
 #      <repo>-<slug> name starts with.
-#   6. basename (leading dot stripped) as-is.
+#   6. basename (leading dot stripped): a repo's checkout name, or outside any repo
+#      a registered key, else the reserved `_unscoped`.
 #
 # The app step runs BEFORE the exact-path lookup on purpose. A monorepo root is normally
 # registered in `paths` (bnb-platform), so checking `paths` first would short-circuit and
@@ -306,6 +307,12 @@ resolve_project_name() {
           ;;
       esac
     fi
+
+    # Outside any repo, a basename is a project only when the registry knows it. $HOME,
+    # /tmp, a session scratchpad or ~/.cache are no project, and naming them by basename
+    # minted ~/.agent keys (kblack0610, scratchpad, tmp) that the dream swept nightly.
+    # They share the one reserved key; a leading `_` marks a key that is no project.
+    if [ -z "${top:-}" ] && ! project_known "$base"; then echo "_unscoped"; return 0; fi
   fi
 
   echo "$base"

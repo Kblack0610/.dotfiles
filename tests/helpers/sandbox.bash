@@ -86,6 +86,10 @@ sandbox_init() {
   unset TMUX TMUX_PANE
   export TMUX_TMPDIR="$SANDBOX/tmp"
 
+  # The real registry, when a shell exports it, would beat the sandbox's $HOME and make
+  # the resolver answer from this host's projects; a test that needs a map writes its own.
+  unset PROJECT_MAP_FILE
+
   # Detach from any inherited agentctl identity, for the same reason and with a worse
   # blast radius: rewriting $HOME is NOT enough to isolate agentctl state.
   #
