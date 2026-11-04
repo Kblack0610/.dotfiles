@@ -2,9 +2,14 @@
 # fleet-shepherd - the shepherd as a scheduled runner, gated on the fleet state document.
 #
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): defer to a live
-#                          interactive shepherd, refresh the state document, and run a headless
-#                          `/fleet-lead pass` only when the document holds
-#                          something to move
+#                          interactive shepherd, score the last pass, refresh the state
+#                          document, and when it holds something to move start a fresh
+#                          `/fleet-lead pass` in tmux session shepherd on server lab
+#   fleet-shepherd open [id]
+#                          attach to the pass window, or resume an earlier pass in a
+#                          window of its own, to watch it or talk to it
+#   fleet-shepherd passes [n]
+#                          the pass running now and the last n scored, newest first
 #   fleet-shepherd check   refresh the state document and samples as `run` does, then print
 #                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
@@ -24,14 +29,19 @@
 #   fleet-shepherd log [--heading] <text>
 #                          append to the rundown ($LEDGER/log.md) stamped with the clock's
 #                          time: a `## <date time> <text>` heading, or a `- <time>: <text>` line
+#   fleet-shepherd log - < lines
+#                          one `- <time>: <line>` per stdin line, so a pass logs its moves
+#                          in one call
 #   fleet-shepherd log --rundown <title> < body
 #                          keep a rundown or a chat answer as its own record,
 #                          $LEDGER/rundowns/<date>T<hhmm>Z.md, and point at it from log.md.
 #                          What the human asked for in chat survives compaction and restarts,
 #                          and agent-web's Shepherd tab lists these records
 #
-# Most passes find nothing to move, and deciding that is a jq query, not a model run. An
-# interactive shepherd loop holds the human's latest word in context, so its lease wins.
+# Most runs find nothing to move, and deciding that is a jq query, not a model run. A pass that
+# is due starts with a fresh context (about 60k), where one long /loop chat re-read 100k+ on every
+# tick and compacted 12 times on 2026-11-03. An interactive pass the human types holds their
+# latest word in context, so its lease wins.
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
 
 set -uo pipefail
@@ -47,7 +57,12 @@ INFRA="$LEDGER/.infra"       # this pass's infra and watch lines
 DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what the last check handed to a pass
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
-MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
+PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>: the pass in the tmux window now
+PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
+SERVER="${FLEET_SHEPHERD_SERVER:-lab}"
+SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
+ATTACH="tmux -L $SERVER attach -t $SESSION"
+: "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long is STALLED and replaced
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
@@ -76,8 +91,8 @@ cmd_lease() {
 # one tmux session holds many agents, and a session option reads as set on every pane in it.
 # Readers show the tag only while that is in the future (.tmux.conf @shepherd_live, agent-panel),
 # so a shepherd that stopped renewing drops its tag with no cleanup. Every server in the socket
-# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). A headless pass has
-# no pane, so it only clears.
+# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). A runner's pass in its
+# tmux window is tagged like a human's; a run outside tmux has no pane, so it only clears.
 tag_pane() {
   local dir sock pid val
   dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
@@ -89,7 +104,7 @@ tag_pane() {
         [ -z "$val" ] || tmux -S "$sock" set-option -p -t "$pid" -u @shepherd 2>/dev/null
       done
   done
-  [ "$1" = interactive ] && [ -n "${TMUX:-}" ] || return 0
+  [ -n "${TMUX:-}" ] || return 0
   # Bare tmux under $TMUX is the server this pass runs in; $TMUX_PANE names its pane.
   tmux set-option -p ${TMUX_PANE:+-t "$TMUX_PANE"} @shepherd "$2" 2>/dev/null || true
 }
@@ -97,7 +112,7 @@ tag_pane() {
 # interactive_age -> minutes since a live interactive pass, or nothing when there is none.
 interactive_age() {
   local holder at
-  read -r holder at < "$LEASE" 2>/dev/null || return 0
+  { read -r holder at; } 2>/dev/null < "$LEASE" || return 0
   [ "$holder" = interactive ] && [[ "$at" =~ ^[0-9]+$ ]] || return 0
   echo $(( ($(date +%s) - at) / 60 ))
 }
@@ -281,6 +296,11 @@ cmd_log() {
   local heading=0
   [ "${1:-}" = --rundown ] && { shift; log_rundown "$@"; return; }
   [ "${1:-}" = --heading ] && { heading=1; shift; }
+  if [ "$*" = - ]; then
+    local line
+    while IFS= read -r line; do [ -z "$line" ] || cmd_log "$line"; done
+    return 0
+  fi
   [ -n "$*" ] || die "usage: fleet-shepherd log [--heading] <text>"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   if [ "$heading" = 1 ]; then
@@ -393,6 +413,7 @@ line_role() {
   case "${1#unhandled: }" in
     nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
     pace:*|blocked:*|limit:*) echo fleet-pace ;;
+    "watch: queue-starved "*) echo fleet-dispatch ;;   # its "Starved queue" self-heal
     *) echo fleet-lead ;;
   esac
 }
@@ -405,6 +426,105 @@ roles_for() {
   printf '%s\n' "${r:-none}"
 }
 
+# --- the pass: an interactive claude in a tmux window, one per due run ---------------------
+# A pass is a fresh `/fleet-lead pass` session in tmux session $SESSION on server $SERVER, so the
+# human can attach, watch it work and type to it (`fleet-shepherd open`). The runner does not wait
+# for it: the next run reads how it went and scores it, and only then starts the next one.
+
+# pass_status <id> -> the session's claude status (idle, busy, shell, waiting), or gone.
+pass_status() {
+  local f pid
+  for f in "$HOME/.claude/sessions"/*.json; do
+    grep -qF "\"$1\"" "$f" 2>/dev/null && [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$1" ] || continue
+    pid="$(jq -r '.pid // empty' "$f")"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    jq -r '.status // "idle"' "$f"
+    return 0
+  done
+  echo gone
+}
+
+pass_transcript() {
+  local f
+  for f in "$HOME/.claude/projects"/*/"$1.jsonl"; do [ -e "$f" ] && { echo "$f"; return 0; }; done
+  return 0
+}
+
+# talking <id> -> 0 when the human typed into the pass in the last lease window. The pass's own
+# prompt is the first human-origin entry, so it never counts; tool results carry no origin.
+talking() {
+  local tp at
+  tp="$(pass_transcript "$1")"
+  [ -n "$tp" ] || return 1
+  at="$(jq -r 'select(.type == "user" and .turnOrigin == "human") | .timestamp' "$tp" 2>/dev/null | tail -n +2 | tail -n 1)"
+  at="$(date -d "$at" +%s 2>/dev/null)" || return 1
+  [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
+}
+
+# score_pass <id> <start> <due count> [why] -> "<verdict>\t<detail>" for the finished pass, by the
+# shared verdict over log.md (every move is logged) and its assistant turns (a plan is STALLED).
+# A why is a pass that never finished. It is recorded in passes.tsv and the pass file goes.
+score_pass() {
+  local id="$1" start="$2" n="$3" why="${4:-}" verdict detail log tp
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
+  proof_restore "$PASS.proof" || proof_watch "$LEDGER/log.md"
+  log="$(mktemp)"
+  tp="$(pass_transcript "$id")"
+  [ -z "$tp" ] || jq -r 'select(.type == "assistant") | .message.content[]? | (.text // .name // empty)' "$tp" > "$log" 2>/dev/null
+  if [ -n "$why" ]; then verdict=STALLED; else verdict="$(proof_verdict "$log" 0)"; fi
+  rm -f "$log"
+  detail="pass ${id:0:8}: $n due, $(( ($(date +%s) - start) / 60 ))m${why:+, $why}"
+  printf '%s\t%s\t%s\t%s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$verdict" "$detail" >> "$PASSES"
+  rm -f "$PASS" "$PASS.proof" "$LEDGER/labels/$id"
+  printf '%s\t%s\n' "$verdict" "$detail"
+}
+
+pass_prompt() {
+  printf '/fleet-lead pass\n\nRoles due: %s\n\nDue this pass (from fleet-shepherd due):\n%s\n' "$(roles_for "$1")" "$1"
+}
+
+# launch_pass <due>: write the pane's launcher and start it in the pass window. The launcher
+# carries the runner's environment, since a tmux pane gets the server's, not the caller's.
+launch_pass() {
+  local id n acct v cmd
+  id="$(cat /proc/sys/kernel/random/uuid)" || return 1
+  n="$(printf '%s\n' "$1" | grep -c .)"
+  acct="$(claude-acct pick 2>/dev/null)" || acct=""
+  {
+    echo '#!/usr/bin/env bash'
+    echo "# fleet-shepherd pass $id, $(date -u '+%F %H:%M UTC'). The tmux pane runs this."
+    for v in PATH AGENTCTL_NAME AGENTCTL_INBOX AGENTCTL_STATE AGENTCTL_STATE_DIR CLAUDE_TELEMETRY_SERVICE \
+             MODEL HARNESS ROUTE DATA_CLASS FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_LEASE_MIN; do
+      [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
+    done
+    echo 'export FLEET_SHEPHERD_HOLDER=runner'
+    [ -z "$acct" ] || printf 'export CLAUDE_CONFIG_DIR=%q\n' "$acct"
+    # shellcheck disable=SC2016
+    echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
+    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$1")"
+  } > "$LEDGER/.pass.sh" || return 1
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$PASS.proof"
+  cmd="bash $(printf '%q' "$LEDGER/.pass.sh")"
+  if tmux -L "$SERVER" has-session -t "=$SESSION" 2>/dev/null; then
+    tmux -L "$SERVER" respawn-pane -k -t "=$SESSION:" -c "$HOME" "$cmd"
+  elif tmux -L "$SERVER" list-sessions >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1; then
+    tmux -L "$SERVER" new-session -d -s "$SESSION" -c "$HOME" "$cmd"
+  else
+    # No server: one started from the runner's unit would die with the unit, so it gets a scope.
+    systemd-run --user --scope --quiet tmux -L "$SERVER" new-session -d -s "$SESSION" -c "$HOME" "$cmd"
+  fi || { rm -f "$PASS.proof"; return 1; }
+  printf '%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" > "$PASS"
+  # The pass is the shepherd: no pass moves it. fleet-sessions label needs a live session, and
+  # this one is still starting, so the label is written as fleet-sessions keeps it.
+  mkdir -p "$LEDGER/labels" && echo hands-off > "$LEDGER/labels/$id"
+  claude-acct trust "$SERVER" "=$SESSION:" "bypass permissions on" >/dev/null 2>&1 ||
+    echo "$NAME: claude did not show bypass mode; look at the pane: $ATTACH" >&2
+  agentctl report --name "$NAME" "item=pass ${id:0:8}: $ATTACH" >/dev/null 2>&1 || true
+  echo "$id"
+}
+
 cmd_run() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local age
@@ -414,37 +534,90 @@ cmd_run() {
     publish NOOP "interactive shepherd live (${age}m)"
     return 0
   fi
+  # The last pass first, before check hands out its lines again: one still working or talking
+  # to the human keeps the window, and one that is done is scored.
+  local id start n st mins scored="" sv="" sd=""
+  if { read -r id start n; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
+    st="$(pass_status "$id")"
+    mins=$(( ($(date +%s) - start) / 60 ))
+    if talking "$id"; then
+      echo "$NAME: the human is talking to pass ${id:0:8} - standing down."
+      publish NOOP "the human is talking to pass ${id:0:8}: $ATTACH"
+      return 0
+    fi
+    case "$st" in
+      idle|gone) scored="$(score_pass "$id" "$start" "$n")" ;;
+      *)
+        if [ "$mins" -lt "$FLEET_SHEPHERD_PASS_MAX_MIN" ]; then
+          echo "$NAME: pass ${id:0:8} is $st (${mins}m)."
+          publish "$([ "$st" = waiting ] && echo BLOCKED || echo NOOP)" "pass ${id:0:8} $st ${mins}m: $ATTACH"
+          return 0
+        fi
+        scored="$(score_pass "$id" "$start" "$n" "still $st, replaced")" ;;
+    esac
+    sv="${scored%%$'\t'*}" sd="${scored#*$'\t'}"
+    [ -z "$scored" ] || echo "$NAME: $sv $sd"
+  fi
+  local rc=0
+  case "$sv" in FAILED|STALLED) rc=1 ;; esac
   local due due_rc=0
   due="$(cmd_check)" || due_rc=$?
   if [ "$due_rc" = 1 ]; then
     echo "$NAME: nothing to move."
-    publish NOOP "nothing to move"
-    return 0
+    publish "${sv:-NOOP}" "${sd:+$sd; }nothing to move"
+    return "$rc"
   elif [ "$due_rc" != 0 ]; then
-    publish FAILED "could not refresh or read the state document"
+    publish FAILED "${sd:+$sd; }could not refresh or read the state document"
     return "$due_rc"
   fi
   printf '%s: due\n%s\n' "$NAME" "$due"
-  export FLEET_SHEPHERD_HOLDER=runner
-  # Scored here, by the shared verdict: a pass that was due moves something, and every
-  # move is logged, so log.md is the artifact. Unchanged after a due pass is STALLED.
-  # shellcheck source=/dev/null
-  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md"
-  local rc=0 log verdict
-  log="$(mktemp)"; trap "rm -f '$log'" EXIT # expanded now: $log is local, and gone by EXIT
-  agentctl-run --role observe -p "/fleet-lead pass
-
-Roles due: $(roles_for "$due")
-
-Due this pass (from fleet-shepherd due):
-$due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
-  verdict="$(proof_verdict "$log" "$rc" 2>/dev/null)" || true
-  publish "${verdict:-FAILED}" "$(printf '%s' "$due" | wc -l | tr -d ' ') due$([ "$rc" = 0 ] || printf ' (exit %s)' "$rc")"
+  local new
+  new="$(launch_pass "$due")" || {
+    publish FAILED "${sd:+$sd; }could not start a pass in tmux -L $SERVER session $SESSION"
+    return 1
+  }
+  echo "$NAME: started pass ${new:0:8}: $ATTACH"
+  publish "${sv:-WORKED}" "${sd:+$sd; }started pass ${new:0:8}: $(printf '%s\n' "$due" | grep -c .) due, $ATTACH"
   return "$rc"
+}
+
+# open [id]: the pass window, or an earlier pass resumed in a window of its own, to read or talk to.
+cmd_open() {
+  local id="${1:-}" cur="" s
+  { read -r cur _; } 2>/dev/null < "$PASS" || true
+  if [ -n "$id" ]; then
+    id="$( { printf '%s\n' "$cur"; cut -f2 "$PASSES" 2>/dev/null; } | grep -m1 "^$id")" || die "no pass $1 (fleet-shepherd passes)"
+  fi
+  if [ -z "$id" ] || [ "$id" = "$cur" ]; then
+    tmux -L "$SERVER" has-session -t "=$SESSION" 2>/dev/null || die "no pass window: no session $SESSION on $SERVER (fleet-shepherd passes)"
+    s="$SESSION"
+  else
+    s="$SESSION-${id:0:8}"
+    if ! tmux -L "$SERVER" has-session -t "=$s" 2>/dev/null; then
+      fleet-dispatch start --resume "$id" --session "$s" --cwd "$HOME" --project dotfiles --server "$SERVER" || die "could not resume pass $id"
+    fi
+    mkdir -p "$LEDGER/labels" && echo hands-off > "$LEDGER/labels/$id"
+  fi
+  if [ -n "${TMUX:-}" ] && command -v agent-panel >/dev/null 2>&1; then
+    agent-panel jump "$SERVER/$s:"
+  else
+    exec tmux -L "$SERVER" attach -t "=$s"
+  fi
+}
+
+# passes [n]: the pass in the window now, then the last n scored, newest first.
+cmd_passes() {
+  local id start n
+  if { read -r id start n; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
+    printf '%s\t%s\tnow\t%s due, %s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$n" "$(pass_status "$id")"
+  fi
+  tail -n "${1:-20}" "$PASSES" 2>/dev/null | tac
 }
 
 case "${1:-}" in
   run)   cmd_run ;;
+  open)  shift; cmd_open "$@" ;;
+  passes) shift; cmd_passes "$@" ;;
   check) cmd_check ;;
   due)   cmd_due ;;
   infra) cmd_infra ;;
@@ -452,5 +625,5 @@ case "${1:-}" in
   skip)  shift; cmd_skip "$@" ;;
   log)   shift; cmd_log "$@" ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|check|due|skip|infra|lease|log)" ;;
+  *) die "unknown verb: $1 (run|open|passes|check|due|skip|infra|lease|log)" ;;
 esac

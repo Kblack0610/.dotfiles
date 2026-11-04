@@ -74,10 +74,10 @@ lease_from() {
   assert_equal "$(grep shepherd <<<"$rows" | cut -d' ' -f1)" "$PANE_SIB"
 }
 
-@test "the runner's lease and a lease outside tmux tag nothing and still clear" {
+@test "the runner's pass in its tmux window is tagged too; a lease outside tmux tags nothing and still clears" {
   run lease_from runner "$PANE_ONE"
   assert_success
-  assert_equal "$(tag "$SRV_A" "$PANE_ONE")" ''
+  [ -n "$(tag "$SRV_A" "$PANE_ONE")" ] || fail "the runner's pass pane is not tagged"
   assert_equal "$(tag "$SRV_A" "$PANE_TWO")" ''
   assert_equal "$(tag "$SRV_B" "$PANE_THREE")" ''
 
