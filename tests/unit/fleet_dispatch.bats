@@ -1042,3 +1042,18 @@ J
   assert_called '--slug fix it'
   [ "$(jq -r .tier3_only "$FLEET_DISPATCH_DIR/verdicts.jsonl")" = true ]
 }
+
+@test "queue lists ready picks then unjudged rows, and never judges, claims or launches" {
+  game_ready
+  row game human 'add a new map' "- [ ] add a new map $T"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" queue
+  assert_success
+  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load: fix crash on load'
+  assert_line --index 1 'unjudged  game (beta) human: add a new map'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" queue --json
+  assert_equal "$(jq -r '"\(.state) \(.key)"' <<<"$output" | paste -sd, -)" 'ready fix crash on load,unjudged add a new map'
+  assert_not_called 'judge called'
+  assert_not_called 'wt new'
+  assert_not_called 'start '
+  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "queue wrote a ledger"
+}
