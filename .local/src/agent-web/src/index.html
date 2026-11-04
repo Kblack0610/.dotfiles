@@ -82,6 +82,16 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px auto 8px; max-width: 760px; }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
+#queue > *, #queue h2.sec { max-width: 760px; }
+#q-list .card { max-width: none; }
+.qitem .q { margin-bottom: 6px; max-height: 12em; overflow-y: auto; }
+.qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
+.qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
+.qbad { color: var(--b-needs); font-weight: 600; }
+.qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
+.qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
+.qadd select, .qitem select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.qhint { font-size: 12px; margin-top: 4px; }
 .board { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
 .board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
@@ -225,7 +235,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   <span class="conn" id="conn" title="live updates"></span>
   <h1>Agents</h1>
   <div class="tabs">
-    <button id="tab-sessions" class="on">Sessions<span id="wait-badge"></span></button>
+    <button id="tab-queue" class="on">Queue<span id="queue-badge"></span></button>
+    <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
     <button id="tab-asks">Waiting<span id="ask-badge"></span></button>
     <button id="tab-watch">Watch</button>
     <button id="tab-log">Log</button>
@@ -256,6 +267,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
       <div class="err" id="err"></div>
     </div>
   </section>
+  <section id="queue" class="board"></section>
   <section id="asks" hidden></section>
   <section id="watch" class="board" hidden></section>
   <section id="log" class="board" hidden></section>
@@ -268,7 +280,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "sessions", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "queue", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 
@@ -298,6 +310,8 @@ const refreshAgents = coalesce(async () => {
   renderList();
   renderBadge();
   if (st.tab === "asks") renderAsks();
+  // A session coming or going changes which queue rows have an Open button.
+  if (st.tab === "queue") renderQueueList();
   if (st.sel) {
     const a = st.agents.find((x) => x.target === st.sel.target);
     if (a) { st.sel = a; renderHead(); } else { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
@@ -541,7 +555,7 @@ $("asks").addEventListener("keydown", (e) => {
   if (btn) btn.click();
 });
 
-const TAB_NAMES = ["sessions", "asks", "watch", "log", "infra", "jobs"];
+const TAB_NAMES = ["queue", "sessions", "asks", "watch", "log", "infra", "jobs"];
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
@@ -552,7 +566,7 @@ function setTab(t) {
   $("detail").hidden = t !== "sessions";
   if (t === "asks") renderAsks();
   if (TABS[t]) TABS[t].show();
-  try { history.replaceState(null, "", t === "sessions" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
+  try { history.replaceState(null, "", t === "queue" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -576,9 +590,10 @@ function connect() {
 <script src="/static/log.js"></script>
 <script src="/static/infra.js"></script>
 <script src="/static/jobs.js"></script>
+<script src="/static/queue.js"></script>
 <script>
 "use strict";
-if (TAB_NAMES.includes(location.hash.slice(1))) setTab(location.hash.slice(1));
+setTab(TAB_NAMES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "queue");
 connect();
 </script>
 </body>
