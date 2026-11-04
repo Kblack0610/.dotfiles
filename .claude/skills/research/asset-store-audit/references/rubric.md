@@ -35,7 +35,7 @@ Write plain ASCII only (no em dashes, no unicode arrows). Be specific and honest
 - Big env packs often carry a URP sub-package under a pipeline-named .unitypackage; judge the URP one, not the outer built-in/HDRP materials.
 - Binary-serialized .mat/.prefab (no %YAML) are old (2017-2020 authoring) and cannot be reviewed as text.
 - Vendor character frameworks (Malbers AC, Invector, PlayMaker demos) overlap character-base; judge whether the art/clips stand alone without the code.
-- Characters, creatures, animation sets and audio have no library path in unity-core yet (catalog is props/weapons only); say what they would need.
+- Every kind has a library path now (checked 2026-11-04): props and scenery (EnvironmentProfiles), humanoid and beast characters (CharacterProfiles, BeastProfiles), animation clip packs (ClipPacks), audio (AudioProfiles, ogg q6), UI sprites (UiProfiles) and effects (EffectProfiles). Name the scaffold the pack would use.
 
 ## Two libraries: judge every pack for both
 
