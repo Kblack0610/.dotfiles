@@ -1,20 +1,22 @@
 //! The Queue tab: agent-queue's items, and adding, cancelling and re-ranking them.
 //!
-//! agent-queue is the only writer of `~/.agent/queue` (design: `~/.config/agentctl/QUEUE.md`),
-//! so every route here shells out to it with plain arguments, never a shell, and hands its
-//! stderr back as the error the page shows.
+//! agent-queue is the only writer of `~/.agent/queue` (design: `~/.config/agentctl/QUEUE.md`).
+//! The list, cancel and bump go through `hub_core::queue`, which the hub TUI reads too; add
+//! shells out here, since its task goes on stdin. Every call is plain arguments, never a shell,
+//! and agent-queue's stderr comes back as the error the page shows.
 
 use std::process::Stdio;
 
 use axum::http::StatusCode;
 use axum::Json;
+use hub_core::queue::{self as hub_queue, Item, PRIORITIES};
+use hub_core::session_actions::System;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 
 use crate::{bad, ApiResult};
 
 const MODES: &[&str] = &["oneshot", "plan"];
-const PRIORITIES: &[&str] = &["urgent", "high", "normal", "low"];
 
 /// A slug or a project name: what agent-queue itself writes, so nothing else reaches its argv.
 fn is_word(s: &str) -> bool {
@@ -31,15 +33,6 @@ fn is_tags(s: &str) -> bool {
             && t.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
     })
-}
-
-/// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
-fn parse_items(jsonl: &str) -> Vec<serde_json::Value> {
-    jsonl
-        .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(serde_json::Value::is_object)
-        .collect()
 }
 
 /// Run agent-queue; its stdout on success, its stderr as a 400 otherwise.
@@ -83,10 +76,22 @@ async fn run(args: &[&str], stdin: Option<&str>) -> ApiResult<String> {
     }
 }
 
-/// Every active item plus today's finished ones, in queue order.
-pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
-    let out = run(&["list", "--json", "--state", "all"], None).await?;
-    Ok(Json(parse_items(&out)))
+/// Every active item plus today's finished ones, in queue order, read through hub-core.
+pub async fn list() -> ApiResult<Json<Vec<Item>>> {
+    tokio::task::spawn_blocking(|| hub_queue::list(&System, "all"))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+}
+
+/// Cancel or bump through hub-core, which checks the slug and priority and runs agent-queue.
+async fn act(f: impl FnOnce() -> Result<String, String> + Send + 'static) -> ApiResult<StatusCode> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
 #[derive(Deserialize)]
@@ -155,25 +160,11 @@ pub struct SlugBody {
 }
 
 pub async fn cancel(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
-    if !is_word(&b.slug) {
-        return Err(bad(StatusCode::BAD_REQUEST, "bad slug"));
-    }
-    run(&["cancel", &b.slug], None).await?;
-    Ok(StatusCode::NO_CONTENT)
+    act(move || hub_queue::cancel(&System, &b.slug)).await
 }
 
 pub async fn bump(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
-    if !is_word(&b.slug) {
-        return Err(bad(StatusCode::BAD_REQUEST, "bad slug"));
-    }
-    if !PRIORITIES.contains(&b.priority.as_str()) {
-        return Err(bad(
-            StatusCode::BAD_REQUEST,
-            "priority is urgent, high, normal or low",
-        ));
-    }
-    run(&["bump", &b.slug, &b.priority], None).await?;
-    Ok(StatusCode::NO_CONTENT)
+    act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await
 }
 
 /// The projects a task may be queued for: the names in project-map.json, which is also what
@@ -214,13 +205,6 @@ mod tests {
             tags: tags.into(),
             task: task.into(),
         }
-    }
-
-    #[test]
-    fn list_keeps_each_object_line_and_skips_the_rest() {
-        let got = parse_items("{\"slug\":\"a\"}\n\nnot json\n[1]\n{\"slug\":\"b\"}\n");
-        let slugs: Vec<&str> = got.iter().filter_map(|v| v["slug"].as_str()).collect();
-        assert_eq!(slugs, ["a", "b"]);
     }
 
     #[test]

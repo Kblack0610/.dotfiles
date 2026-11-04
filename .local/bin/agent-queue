@@ -413,14 +413,23 @@ cmd_stats() {
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def source: (.from // "human") | split(":")[0];
     def count_by(f): group_by(f) | map({key: (.[0] | f), value: length}) | from_entries;
+    def has_pr: (.pr // "") != "";
+    def to_pr: [.[] | select(has_pr) | mins(.queued; .finished)] | median;
+    def outcomes: {done: length, ok: map(select(.status == "ok")) | length,
+      failed: map(select(.status == "failed")) | length, cancelled: map(select(.status == "cancelled")) | length,
+      prs: map(select(has_pr)) | length, wait_minutes_median: ([.[] | mins(.queued; .started)] | median),
+      to_pr_minutes_median: to_pr};
+    def group(f): group_by(f) | map({key: (.[0] | f), value: outcomes}) | from_entries;
     (map(select(.state == "done"))) as $done
     | {since: $since,
        active: (map(select(.state != "done")) | count_by(.state)),
        done: ($done | count_by(.status // "unknown")),
        wait_minutes_median: ([.[] | mins(.queued; .started)] | median),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
-       done_by_project: ($done | count_by(.project)),
-       done_by_source: ($done | count_by(source)),
+       to_pr_minutes_median: ($done | to_pr),
+       per_day: ($done | count_by((.finished // "")[:10])),
+       by_project: ($done | group(.project)),
+       by_source: ($done | group(source)),
        done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
   jq -r '"since \(.since)",
@@ -428,8 +437,10 @@ cmd_stats() {
     "done:    \(.done | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end)",
     "wait:    median \(.wait_minutes_median // "-") min from queued to started",
     "run:     median \(.run_minutes_median // "-") min from started to finished",
-    "project: \(.done_by_project | to_entries | map("\(.key) \(.value)") | join(", "))",
-    "source:  \(.done_by_source | to_entries | map("\(.key) \(.value)") | join(", "))"' <<<"$stats"
+    "to PR:   median \(.to_pr_minutes_median // "-") min from queued to finished with a PR",
+    "per day: \(.per_day | to_entries | map("\(.key) \(.value)") | join(", "))",
+    "project: \(.by_project | to_entries | map("\(.key) \(.value.done) (\(.value.prs) PR)") | join(", "))",
+    "source:  \(.by_source | to_entries | map("\(.key) \(.value.done) (\(.value.prs) PR)") | join(", "))"' <<<"$stats"
 }
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0

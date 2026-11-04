@@ -9,6 +9,7 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
+use hub_core::queue::Queue;
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -20,6 +21,7 @@ use crate::controls::{Ask, Controls};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
+use crate::queuetab::{self, QueueView};
 use crate::{board, day, fleet, fleettab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
@@ -38,10 +40,11 @@ pub enum Tab {
     Today,
     History,
     Fleet,
+    Queue,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Overview,
         Tab::Jobs,
         Tab::Ci,
@@ -51,6 +54,7 @@ impl Tab {
         Tab::Today,
         Tab::History,
         Tab::Fleet,
+        Tab::Queue,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -63,6 +67,7 @@ impl Tab {
             Tab::Today => "Today",
             Tab::History => "History",
             Tab::Fleet => "Fleet",
+            Tab::Queue => "Queue",
         }
     }
     pub fn parse(s: &str) -> Option<Tab> {
@@ -79,7 +84,9 @@ impl Tab {
             Tab::Overview => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet => None,
+            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue => {
+                None
+            }
         }
     }
 }
@@ -153,6 +160,11 @@ pub enum Msg {
     Sessions(Box<Snapshot>),
     /// A session action ended: its output, or why it failed.
     Acted(Result<String, String>),
+    /// An item file under the queue dir was written, moved or removed.
+    QueueFiles,
+    Queue(Box<Queue>),
+    /// A queue cancel or bump ended: its output, or why it failed.
+    QueueActed(Result<String, String>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -192,6 +204,11 @@ pub struct App {
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
     pub fleet: Option<hub_core::fleet::Fleet>,
+    /// agent-queue's items and week, for the Queue tab and the Overview's counts.
+    pub queue: Option<Queue>,
+    pub qv: QueueView,
+    /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
+    pub queue_dir: PathBuf,
     /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -214,6 +231,7 @@ pub struct App {
     forecast_read: Read,
     fleet_read: Read,
     sessions_read: Read,
+    queue_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -237,6 +255,9 @@ impl App {
             boards: None,
             forecast: None,
             fleet: None,
+            queue: None,
+            qv: QueueView::default(),
+            queue_dir: queue_dir(),
             controls: Controls::default(),
             runner: Arc::new(actions::System),
             gather: actions::gather,
@@ -252,6 +273,7 @@ impl App {
             forecast_read: Read::default(),
             fleet_read: Read::default(),
             sessions_read: Read::default(),
+            queue_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -260,12 +282,13 @@ impl App {
     }
 
     /// The directories to watch: agentctl's ledger and run markers and the Unity gate ledger (a
-    /// job started or ended), then the board files.
+    /// job started or ended), then the board files and agent-queue's store.
     pub fn watched(&self) -> Vec<(PathBuf, bool)> {
         let mut v = vec![
             (self.paths.agentctl.clone(), true),
             (self.files.shepherd.clone(), false),
             (self.files.daylog.clone(), false),
+            (self.queue_dir.clone(), true),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -352,6 +375,42 @@ impl App {
         });
     }
 
+    /// The queue is read through agent-queue (hub_core::queue), never from its files: on
+    /// start (the Overview counts it), on a write under the queue dir, on `r`, after an action,
+    /// and on the tick when there is no file watch.
+    pub fn read_queue(&mut self) {
+        if self.queue_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Queue(Box::new(Queue::read(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// Run a queue cancel or bump in a worker; the answer comes back as Msg::QueueActed.
+    fn queue_act(
+        &mut self,
+        label: String,
+        f: impl FnOnce(&dyn Runner) -> Result<String, String> + Send + 'static,
+    ) {
+        self.qv.running = Some(label.clone());
+        self.qv.said = None;
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = match f(runner.as_ref()) {
+                Ok(out) if out.trim().is_empty() => Ok(format!("{label}: done")),
+                Ok(out) => Ok(format!(
+                    "{label}: {}",
+                    out.lines().collect::<Vec<_>>().join("; ")
+                )),
+                Err(e) => Err(format!("{label}: {e}")),
+            };
+            let _ = tx.send(Msg::QueueActed(r));
+        });
+    }
+
     pub fn read_infra(&mut self) {
         if self.infra_read.want() {
             let tx = self.tx.clone();
@@ -392,6 +451,7 @@ impl App {
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
                     self.read_boards();
+                    self.read_queue();
                 }
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
@@ -467,6 +527,24 @@ impl App {
                 self.controls.said = Some(r);
                 self.read_sessions();
             }
+            Msg::QueueFiles => self.read_queue(),
+            Msg::Queue(q) => {
+                let was = self
+                    .queue
+                    .as_ref()
+                    .and_then(|old| self.qv.selected(old))
+                    .map(|i| i.slug.clone());
+                self.qv.reselect(was, &q);
+                self.queue = Some(*q);
+                if self.queue_read.done() {
+                    self.read_queue();
+                }
+            }
+            Msg::QueueActed(r) => {
+                self.qv.running = None;
+                self.qv.said = Some(r);
+                self.read_queue();
+            }
         }
     }
 
@@ -492,12 +570,17 @@ impl App {
         if self.tab == Tab::Sessions && self.sessions_key(k) {
             return;
         }
+        if self.tab == Tab::Queue && self.queue_key(k) {
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char(c @ '1'..='9') => {
-                if let Some(t) = Tab::ALL.get(c as usize - '1' as usize) {
+            // 1-9 are the first nine pages and 0 the tenth, as on the tab bar.
+            KeyCode::Char(c @ '0'..='9') => {
+                let i = (c as usize - '0' as usize + 9) % 10;
+                if let Some(t) = Tab::ALL.get(i) {
                     self.go(*t);
                 }
             }
@@ -507,6 +590,7 @@ impl App {
                 self.read_infra();
                 self.read_jobs();
                 self.read_boards();
+                self.read_queue();
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
                 }
@@ -544,6 +628,30 @@ impl App {
         }
         if t == Tab::Sessions {
             self.read_sessions();
+        }
+        if t == Tab::Queue {
+            self.read_queue();
+        }
+    }
+
+    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item, c arms a cancel, +/-
+    /// move its priority. The page scrolls with PgUp/PgDn, space and g/G.
+    fn queue_key(&mut self, k: KeyEvent) -> bool {
+        match self.qv.key(k, self.queue.as_ref()) {
+            queuetab::Ask::Pass => false,
+            queuetab::Ask::Done => true,
+            queuetab::Ask::Cancel(slug) => {
+                self.queue_act(format!("cancel {slug}"), move |r| {
+                    hub_core::queue::cancel(r, &slug)
+                });
+                true
+            }
+            queuetab::Ask::Bump(slug, prio) => {
+                self.queue_act(format!("bump {slug} to {prio}"), move |r| {
+                    hub_core::queue::bump(r, &slug, prio)
+                });
+                true
+            }
         }
     }
 
@@ -772,7 +880,7 @@ impl App {
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for (i, t) in Tab::ALL.iter().enumerate() {
-            let label = format!(" {} {} ", i + 1, t.title());
+            let label = format!(" {} {} ", (i + 1) % 10, t.title());
             s.push(if *t == self.tab {
                 Span::styled(label, self.p.sel())
             } else {
@@ -815,7 +923,7 @@ impl App {
     }
 
     fn hints(&self) -> String {
-        let tabs = format!("1-{}", Tab::ALL.len());
+        let tabs = "0-9";
         match self.tab {
             Tab::Jobs if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
             Tab::Jobs if self.jv.log.is_some() => {
@@ -838,6 +946,10 @@ impl App {
             }
             Tab::Today => format!("[ ] day  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit"),
             Tab::History => format!("j/k pick a day  Enter open it in Today  {tabs} tabs  q quit"),
+            Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
+            Tab::Queue => format!(
+                "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+            ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
     }
@@ -851,7 +963,11 @@ impl App {
                 vec![],
             )
         };
-        match (self.tab, &self.boards, &self.infra) {
+        let (mut lines, sections) = match (self.tab, &self.boards, &self.infra) {
+            (Tab::Queue, ..) => match &self.queue {
+                None => reading("agent-queue"),
+                Some(q) => (queuetab::page(q, &self.qv, self.p, now, w), vec![]),
+            },
             (Tab::Forecast, ..) => match &self.forecast {
                 None => reading("fleet-bench forecast"),
                 Some(f) => (forecast::page(f, self.p, now, w), vec![]),
@@ -877,7 +993,17 @@ impl App {
             (Tab::History, Some(b), _) => (day::history(&b.hist, self.hist_sel, self.p, w), vec![]),
             (_, _, None) => reading("Prometheus"),
             (t, _, Some(i)) => (board::page(t, i, self.p, now, w, &self.hosts), vec![]),
+        };
+        if self.tab == Tab::Overview {
+            let what = match &self.queue {
+                None => Span::styled("reading...", self.p.dim()),
+                Some(q) if !q.errors.is_empty() => Span::styled(q.errors.join("; "), self.p.warn()),
+                Some(q) => Span::raw(queuetab::counts(q)),
+            };
+            let l = Line::from(vec![Span::styled("AGENT QUEUE  ", self.p.head()), what]);
+            lines.splice(0..0, [crate::fit::clip_line(l, w), Line::raw("")]);
         }
+        (lines, sections)
     }
 
     pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
@@ -959,6 +1085,22 @@ impl App {
 pub fn is_write(k: &notify::EventKind) -> bool {
     use notify::EventKind::{Create, Modify, Remove};
     matches!(k, Create(_) | Modify(_) | Remove(_))
+}
+
+/// agent-queue's store, as agent-queue finds it.
+fn queue_dir() -> PathBuf {
+    std::env::var_os("AGENT_QUEUE_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".agent/queue")
+        })
+}
+
+/// Whether a changed path is a queue item: agent-queue writes `<state>/<slug>.md` and
+/// `done/<date>/<slug>.md`, and nothing else under the dir means a change.
+pub fn is_queue_file(dir: &Path, p: &Path) -> bool {
+    p.starts_with(dir) && p.extension().is_some_and(|e| e == "md")
 }
 
 /// Whether a changed path means a job started or ended (agentctl's stdout logs change all the
@@ -1112,6 +1254,76 @@ mod tests {
         assert!(ran.iter().all(|c| !c.starts_with("tmux")), "{ran:?}");
     }
 
+    #[test]
+    fn zero_opens_the_queue_tab_and_the_overview_counts_the_queue() {
+        let mut a = app(Tab::Overview);
+        assert!(screen(&mut a, 140, 30).contains("AGENT QUEUE  reading..."));
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        let s = screen(&mut a, 140, 30);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("9 Fleet  0 Queue"), "{s}");
+        assert_eq!(
+            lines[1].trim_end(),
+            "AGENT QUEUE  1 waiting for you, 1 running, 2 up next (1 held), 1 done today"
+        );
+        assert!(lines[3].contains("Reading Prometheus..."), "{s}");
+
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Queue);
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            s.contains("WAITING FOR YOU  1") && s.contains("UP NEXT  2"),
+            "{s}"
+        );
+        assert!(
+            s.lines().last().unwrap().contains("c cancel  +/- priority"),
+            "{s}"
+        );
+        a.handle(key('1'));
+        assert_eq!(a.tab, Tab::Overview);
+    }
+
+    #[test]
+    fn a_confirmed_cancel_runs_agent_queue_through_hub_core() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Queue, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.handle(key('c'));
+        assert!(fake.0.lock().unwrap().is_empty(), "nothing runs before y");
+        assert!(screen(&mut a, 140, 30).contains("Cancel pick-sides?"));
+        a.handle(key('y'));
+        assert_eq!(a.qv.running.as_deref(), Some("cancel pick-sides"));
+        // The worker sends QueueActed when agent-queue ends: wait for it, not a timer.
+        loop {
+            match rx.recv().unwrap() {
+                Msg::QueueActed(r) => {
+                    a.handle(Msg::QueueActed(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert_eq!(a.qv.said, Some(Ok("cancel pick-sides: done".into())));
+        let ran = fake.0.lock().unwrap().clone();
+        // The re-read after it may already be running agent-queue list.
+        assert_eq!(
+            ran.first().map(String::as_str),
+            Some("agent-queue cancel pick-sides")
+        );
+        assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
+    }
+
+    #[test]
+    fn only_an_item_file_under_the_queue_dir_is_a_queue_change() {
+        let d = Path::new("/q");
+        assert!(is_queue_file(d, Path::new("/q/queued/fix-it.md")));
+        assert!(is_queue_file(d, Path::new("/q/done/2026-11-03/fix-it.md")));
+        assert!(!is_queue_file(d, Path::new("/q/queued/.fix-it.tmp")));
+        assert!(!is_queue_file(d, Path::new("/elsewhere/queued/fix-it.md")));
+    }
+
     fn screen(a: &mut App, w: u16, h: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         t.draw(|f| a.draw(f)).unwrap();
@@ -1177,7 +1389,7 @@ mod tests {
             s.contains("dotfiles:4") && s.contains("Step 0 board row"),
             "{s}"
         );
-        assert!(s.lines().last().unwrap().contains("1-9/Tab pages"), "{s}");
+        assert!(s.lines().last().unwrap().contains("0-9/Tab pages"), "{s}");
     }
 
     #[test]

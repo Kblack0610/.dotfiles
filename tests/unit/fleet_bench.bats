@@ -26,6 +26,10 @@ setup() {
   export BENCH_WAKES_CMD=wakes-stub WAKES="$SANDBOX/wakes.json"
   printf '#!/usr/bin/env bash\n[ "$1 $2 $3" = "--since 24h --json" ] && cat "%s"\n' "$WAKES" > "$SANDBOX/bin/wakes-stub"
   chmod +x "$SANDBOX/bin/wakes-stub"
+  # agent-queue stats, canned: records --since and serves $QSTATS when it exists, else fails
+  export BENCH_QUEUE_STATS_CMD=qstats-stub QSTATS="$SANDBOX/qstats.json"
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$QSTATS" "$QSTATS" > "$SANDBOX/bin/qstats-stub"
+  chmod +x "$SANDBOX/bin/qstats-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -728,7 +732,7 @@ kpi_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -739,9 +743,10 @@ kpi_fixture() {
   assert_line --index 2 '## Forecast'
   assert_line --index 3 '## Bottlenecks'
   assert_line --index 4 '## Where the time went'
-  assert_line --index 5 '## Sessions'
-  assert_line --index 6 '## Agent depth'
-  assert_line --index 7 '## Session time'
+  assert_line --index 5 '## Queue'
+  assert_line --index 6 '## Sessions'
+  assert_line --index 7 '## Agent depth'
+  assert_line --index 8 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1387,4 +1392,66 @@ items_stub() {
   # fresh is under an hour old, so the comparison is against daily-1
   assert_line --regexp '^vs baseline daily-1 '
   assert_line --partial '- ticked: 2 of the 2 phases expected by now'
+}
+
+qstats_fixture() {
+  jq -nc '{since: "2026-10-20", active: {queued: 4, running: 1, waiting: 1}, done: {ok: 3, failed: 1, cancelled: 1},
+    wait_minutes_median: 12, run_minutes_median: 40, to_pr_minutes_median: 95,
+    per_day: {"2026-10-26": 2, "2026-10-27": 3},
+    by_project: {game: {done: 3, ok: 2, failed: 1, cancelled: 0, prs: 2, wait_minutes_median: 10, to_pr_minutes_median: 95},
+                 app: {done: 2, ok: 1, failed: 0, cancelled: 1, prs: 0, wait_minutes_median: 30, to_pr_minutes_median: null}},
+    by_source: {human: {done: 4, ok: 3, failed: 1, cancelled: 0, prs: 2, wait_minutes_median: 12, to_pr_minutes_median: 95},
+                shepherd: {done: 1, ok: 0, failed: 0, cancelled: 1, prs: 0, wait_minutes_median: null, to_pr_minutes_median: null}},
+    done_by_tag: {}}' > "$QSTATS"
+}
+
+@test "queue prints the week from agent-queue stats since BENCH_QUEUE_DAYS ago, --json passes it through" {
+  qstats_fixture
+  run env BENCH_NOW=$T0 "$SUBJECT" queue
+  assert_success
+  assert_output 'queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m, to PR median 95m'
+  [ "$(cat "$QSTATS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
+  run env BENCH_NOW=$T0 "$SUBJECT" queue --json
+  assert_success
+  [ "$(jq -r '.by_project.game.prs' <<<"$output")" = 2 ]
+  run "$SUBJECT" queue --bogus
+  assert_failure 2
+}
+
+@test "the scorecard's queue section tables outcomes by project and source, and says ? when agent-queue is unreadable" {
+  qstats_fixture
+  source "$SUBJECT"
+  run queue_section "$T0"
+  assert_success
+  assert_line --index 0 '## Queue'
+  assert_line '- active now: queued 4, running 1, waiting 1'
+  assert_line '- per day: 2026-10-26 2, 2026-10-27 3'
+  assert_line '- queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m, to PR median 95m'
+  assert_line '| game | 3 | 2 | 1 | 0 | 2 | 10m | 95m |'
+  assert_line '| app | 2 | 1 | 0 | 1 | 0 | 30m | - |'
+  assert_line '| shepherd | 1 | 0 | 0 | 1 | 0 | - | - |'
+  rm "$QSTATS"
+  run queue_section "$T0"
+  assert_success
+  assert_output --partial '- queue 7d: ? (`agent-queue stats` unreadable)'
+  run "$SUBJECT" queue
+  assert_failure 1
+}
+
+@test "queue reads the real agent-queue's store: an item done with a PR counts as one" {
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  echo '{"paths": {"/x/game": "game"}}' > "$AGENT_QUEUE_PROJECT_MAP"
+  export BENCH_QUEUE_STATS_CMD="agent-queue stats --json"
+  agent-queue add --project game --slug landed "landed"
+  agent-queue add --project game --slug waiting "still queued"
+  agent-queue move landed running
+  agent-queue set landed pr=901
+  agent-queue move landed "done" --status ok
+  run env BENCH_NOW=$T0 "$SUBJECT" queue
+  assert_success
+  assert_output --partial 'queue 7d: 1 done (1 ok, 0 failed, 0 cancelled), 1 with a PR'
+  run env BENCH_NOW=$T0 "$SUBJECT" queue --json
+  [ "$(jq -r '.active.queued' <<<"$output")" = 1 ]
 }
