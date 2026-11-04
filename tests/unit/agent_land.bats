@@ -203,6 +203,32 @@ EOF
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr)"' <<<"$output")" 'done ok 42'
 }
 
+@test "a hand-started session's own item is the record: no --item, no --project needed" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item by-hand
+  agent-queue set by-hand session=default:dotfiles-agent-9
+  run "$LAND" 42
+  assert_success
+  assert_line --index 3 'item: by-hand done with pr:42'
+  run agent-queue show by-hand --json
+  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done 42'
+}
+
+@test "two items recording this session are refused before the merge" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item one
+  item two
+  agent-queue set one session=default:dotfiles-agent-9
+  agent-queue set two session=default:dotfiles-agent-9
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_failure
+  assert_output --partial 'pass --item'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "AGENT_QUEUE_ITEM is the default item; a board item closes its own row with lane and profile" {
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42 --project ignored --title ignored

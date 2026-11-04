@@ -189,6 +189,27 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+@test "mine: the active item this tmux session records; none exits 1, two exit 2" {
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  run "$AQ" mine
+  assert_failure 1
+  "$AQ" add --project game --running --slug here "this session"
+  "$AQ" add --project game --running --session lab:other --slug elsewhere "another session"
+  run "$AQ" mine
+  assert_success
+  assert_output here
+  run "$AQ" mine --session lab:other
+  assert_output elsewhere
+  "$AQ" add --project game --running --slug second "a second task here"
+  run "$AQ" mine
+  assert_failure 2
+  "$AQ" move here done --status ok
+  "$AQ" move second done --status ok
+  run "$AQ" mine
+  assert_failure 1
+}
+
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success

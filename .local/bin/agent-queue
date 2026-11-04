@@ -6,6 +6,7 @@
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#   mine [--session s]    the slug of the running or waiting item this tmux session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item); AGENT_QUEUE_START=0 only queues it.
@@ -27,6 +28,14 @@ ACTIVE="queued running waiting"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# The caller's own session as an item records it: <tmux server>:<session>, the shape reap reads.
+own_session() {
+  [ -n "${TMUX:-}" ] || return 1
+  local name
+  name="$(tmux display-message -p '#{session_name}' 2>/dev/null)"
+  [ -n "$name" ] || return 1
+  printf '%s:%s\n' "$(basename "${TMUX%%,*}")" "$name"
+}
 
 # --- the file format ---
 # `key: value` lines, a `---` line, then the task as typed.
@@ -231,11 +240,8 @@ cmd_add() {
   for tag in $tags; do
     case "$tag" in at:*) [[ "$tag" =~ ^at:([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "a time tag is at:HH:MM, not $tag" ;; esac
   done
-  # A hand-started session records itself: <tmux server>:<session>, the shape reap reads.
-  if [ -n "$running" ] && [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
-    session="$(basename "${TMUX%%,*}"):$(tmux display-message -p '#{session_name}' 2>/dev/null)"
-    [ "${session##*:}" != "" ] || session=""
-  fi
+  # A hand-started session records itself.
+  if [ -n "$running" ] && [ -z "$session" ]; then session="$(own_session)" || session=""; fi
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   local resolved
@@ -318,6 +324,22 @@ cmd_show() {
   if [ "${2:-}" = --json ]; then item_json "$f"; return 0; fi
   printf 'state: %s\nfile: %s\n' "$(state_of "$f")" "$f"
   cat -- "$f"
+}
+
+# A hand-started session's item, so agent-land can close it with no slug: exit 1 when
+# none records this session, 2 when more than one does (pass the slug).
+cmd_mine() {
+  local session='' slugs
+  case "${1:-}" in --session) session="${2:?--session needs a value}" ;; '') ;; *) die "usage: agent-queue mine [--session s]" ;; esac
+  [ -n "$session" ] || session="$(own_session)" || die "not in tmux: pass --session <server>:<session>"
+  lock_read
+  slugs="$(collect running waiting | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')"
+  [ -n "$slugs" ] || return 1
+  if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
+    echo "agent-queue: more than one item records $session: $(tr '\n' ' ' <<<"$slugs")" >&2
+    return 2
+  fi
+  printf '%s\n' "$slugs"
 }
 
 cmd_cancel() {
@@ -436,7 +458,7 @@ cmd_stats() {
 
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac
