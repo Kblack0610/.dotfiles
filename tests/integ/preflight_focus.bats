@@ -100,12 +100,12 @@ seed_focus() {
     "$(date +%F)" "${1:-}" > "$HOME/.notes/journal/daily/$(date +%F).md"
 }
 
-@test "with Focus items the nudge sends PROJECT work to ptask, not to Focus" {
+@test "with Focus items the nudge sends the session's task to the queue, not to Focus" {
   seed_focus '- [ ] a human task'
   run context
   assert_output --partial 'a human task'
-  assert_output --partial 'notes ptask <project> --agent add|start|done'
-  assert_output --partial 'notes board'
+  assert_output --partial 'agent-queue add --running --project <p>'
+  assert_output --partial 'agent-queue list'
 }
 
 @test "with Focus items the nudge never tells an agent to add to Focus" {
@@ -118,13 +118,13 @@ seed_focus() {
   refute_output --partial 'notes focus add'
 }
 
-@test "an empty Focus is reported as fine, and still points at the board" {
+@test "an empty Focus is reported as fine, and points at the queue" {
   # The old empty-state text ("capture what we're on") read as an instruction to fill the
-  # human's list. An agent with nothing on Focus must be sent to ptask, not to `notes today`.
+  # human's list. An agent with nothing on Focus is sent to its queue item, not to `notes today`.
   seed_focus ''
   run context
   assert_output --partial 'none set'
-  assert_output --partial 'notes ptask <project> --agent add|start|done'
+  assert_output --partial 'agent-queue add --running --project <p>'
   refute_output --partial 'notes focus add'
 }
 
