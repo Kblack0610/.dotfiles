@@ -428,13 +428,6 @@ registry() {
   done
 }
 
-@test "post refuses a wave gate filed under another project than the wave's app" {
-  run "$AGENT_ASK" post --project big-platform --task wave/shop/v1.16.0 --kind gate 'ship?'
-  assert_failure 2
-  run "$AGENT_ASK" post --project shop --task wave/shop/v1.16.0 --kind gate 'ship?'
-  assert_success
-}
-
 # ── the answer judge (shadow) ────────────────────────────────────────────────
 
 # fake_judge <json>: a judge command that prints <json> between the markers, and logs its prompt.

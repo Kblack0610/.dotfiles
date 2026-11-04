@@ -5,9 +5,8 @@
 # working|idle|ok|blocked|error - and `blocked` meaning specifically "a healthy process
 # waiting on a human", which is the one thing a systemd unit state can never express.
 #
-# It was a good contract with one adopter. Seven of eight runners wrote nothing, so the
-# fleet view answered "is the unit active" rather than "what is it doing", and two
-# runners (wave, captain-watchdog) had no conf at all and were invisible entirely.
+# A runner that writes nothing leaves the fleet view answering "is the unit active"
+# rather than "what is it doing".
 #
 # The conformance test below is the part that matters long-term: it is what stops the
 # fleet drifting back to one adopter.
@@ -42,9 +41,8 @@ _glyph_for() {
 }
 
 @test "a runner reporting working shows busy even when its unit is inactive" {
-  # wave-start detaches with setsid, so agentctl@wave.service is inactive for the whole
-  # pass. Before this, a live wave rendered dim-idle: the contract said working and the
-  # glyph said nothing was happening.
+  # A runner that detaches with setsid leaves its unit inactive for the whole pass. The
+  # contract says working, so the glyph must too, not dim-idle.
   assert_equal "$(_glyph_for working inactive)" '~'
 }
 
@@ -87,42 +85,13 @@ _publishes() { # <script path>
 
 # Runners that publish through neither. Each needs a reason; an empty list is the goal.
 #
-# The silent ones are `comms`, `delivery-loop` and `captain-watchdog`. The roster-wide
-# assertion that would catch them ships with the PRIVATE change which fixes it - those
-# scripts and the conf dir both live in the private overlay, and a test that is red the
-# day it lands only teaches people to ignore red.
-#
-# captain-watchdog joined the roster when it stopped being its own scheduler; folding it
-# in made it VISIBLE, which is a different thing from making it publish. It still reports
-# through neither mechanism.
+# The silent one is `comms`. The roster-wide assertion that would catch it ships with the
+# PRIVATE change which fixes it - that script and the conf dir both live in the private
+# overlay, and a test that is red the day it lands only teaches people to ignore red.
 _known_non_adopters() {
   cat <<'EOF'
 comms
-delivery-loop
-captain-watchdog
 EOF
-}
-
-@test "wave-start reports through the contract" {
-  run grep -F 'agentctl report' "$REPO_ROOT/.local/bin/wave-start"
-  assert_success
-}
-
-@test "wave-start names itself explicitly rather than trusting the environment" {
-  # AGENTCTL_NAME is only set by the systemd unit; wave-start runs under setsid, so a
-  # bare `agentctl report` would die with "no agent name".
-  run grep -F -- '--name "${AGENTCTL_NAME:-wave}"' "$REPO_ROOT/.local/bin/wave-start"
-  assert_success
-}
-
-@test "every state wave-start reports is one the contract accepts" {
-  local s
-  for s in $(grep -oE '_report (working|idle|ok|blocked|error)' "$REPO_ROOT/.local/bin/wave-start" | awk '{print $2}' | sort -u); do
-    case "$s" in
-      working|idle|ok|blocked|error) ;;
-      *) fail "wave-start reports '$s', which agentctl would reject" ;;
-    esac
-  done
 }
 
 # ── one launcher ─────────────────────────────────────────────────────────────

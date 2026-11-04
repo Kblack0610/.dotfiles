@@ -2,7 +2,7 @@
 //! heading format, shared by `projects` (roll) and `project_tasks` (ptask).
 //!
 //! A sheet carries a ROADMAP. The FIRST `## Wave …` section is the CURRENT wave — the one
-//! `/wave` runs, the one `notes board` shows, the one `roll` freezes. Every `## Wave …`
+//! `notes board` shows, the one `roll` freezes. Every `## Wave ...`
 //! after it is PLANNED: the road forward, held in ascending version order.
 //!
 //! ```markdown
@@ -18,7 +18,7 @@
 //!
 //! Planned waves are structurally invisible to every reader that predates them.
 //! `md::section_span` ends at the next `## `, and CURRENT is defined by POSITION (first),
-//! not by the `(current)` suffix — which is how `notes ptask list`, `notes board`, `/wave`
+//! not by the `(current)` suffix - which is how `notes ptask list`, `notes board`
 //! and the cockpit keep seeing exactly the current wave and nothing else, unchanged.
 //! Anything that writes a planned section must therefore keep it BELOW the current one;
 //! `insert_planned` is the only sanctioned way to do that.
@@ -163,7 +163,7 @@ pub(crate) fn current_of(content: &str, declared: Option<(u32, u32, u32)>) -> Op
 ///
 /// Position is the invariant the whole design rests on: every pre-existing reader takes
 /// the first `## Wave` as the current one, so a planned section that lands above it would
-/// silently redirect `ptask`, `board` and `/wave` onto work that has not started. Hence
+/// silently redirect `ptask` and `board` onto work that has not started. Hence
 /// one function that can only ever append downward.
 pub(crate) fn insert_planned(content: &str, ver: (u32, u32, u32)) -> String {
     let secs = sections(content);
@@ -264,7 +264,7 @@ Version: v1.13.0
     }
 
     // A planned wave must land in version order and NEVER above the current one — if it
-    // did, every existing reader (ptask/board/wave, all of which take the first `## Wave`)
+    // did, every existing reader (ptask/board, both of which take the first `## Wave`)
     // would silently switch to work that has not started.
     #[test]
     fn a_planned_wave_lands_in_order_and_never_first() {

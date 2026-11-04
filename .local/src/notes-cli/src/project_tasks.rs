@@ -159,7 +159,7 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
 /// `notes ptask <name> list [--wave vX.Y.Z | --all]` — TSV of OPEN tasks.
 ///
 /// Bare `list` is the current wave and emits exactly the four columns it always has —
-/// `path<TAB>line<TAB>key<TAB>text` — because the cockpit and `/wave` both parse it. A
+/// `path<TAB>line<TAB>key<TAB>text` - because the cockpit parses it. A
 /// wave SELECTOR adds a fifth column (the wave's version) rather than changing the first
 /// four, so a reader that only wants `$1..$4` is unaffected either way.
 pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool, lane: Lane) -> Result<i32> {
@@ -594,8 +594,8 @@ pub fn step(
 ///   into the line's marker comment beside any existing `vk:`/`ask:` id.
 /// - `--unverified "<why>"` — no checkable artifact exists. Also stamped, and visibly so,
 ///   because the failure mode of a proof field is not people lying in it, it is people
-///   leaving it blank until it means nothing. `/wave`'s report already had this instinct:
-///   `n/a - <why>` mandatory rather than blank.
+///   leaving it blank until it means nothing. The manual walk has the same
+///   instinct: `n/a - <why>` mandatory rather than blank.
 ///
 /// Either way the row lands in the version's agent note (`agent/versions/<vX.Y.Z>.md`), which is what
 /// turns a pile of ticked boxes into an evidence trail somebody can audit.
@@ -891,9 +891,9 @@ Version: v1.13.0
 ";
 
     // THE invariant the whole roadmap rests on. Everything that predates planned waves -
-    // `notes board`, `notes ptask list`, `/wave`, the cockpit - reads the CURRENT wave via
+    // `notes board`, `notes ptask list`, the cockpit - reads the CURRENT wave via
     // this one function. If a planned task ever shows up here, the board starts advertising
-    // work that has not started and `/wave` starts dispatching it.
+    // work that has not started.
     #[test]
     fn the_board_sees_the_current_wave_and_none_of_the_roadmap() {
         let dir = std::env::temp_dir().join(format!("ptask-roadmap-{}", std::process::id()));

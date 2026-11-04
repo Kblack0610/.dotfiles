@@ -16,7 +16,7 @@ test,ci,bench,scaling,game-eval,eval        Tests, CI and benches
 
 tmux,fleet-sessions,fleet,fleet-shepherd,fleet-dispatch,agent-mqtt   Fleet boards and shepherd
 fleet-bench,briefing,agent-ask              Metrics, asks and briefing
-agentctl,agent-run,agent-proof,board-runner,meeting-ingest  agentctl runners
+agentctl,agent-run,agent-proof,meeting-ingest  agentctl runners
 session-outcomes,hooks,stop-hook,dream,agent  Hooks, outcomes and dream
 skills,rules,claude,kb                      Skills and rules
 waybar,hypr                                 Desktop

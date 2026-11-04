@@ -1,11 +1,9 @@
 #!/usr/bin/env bats
-# agent-board.sh — the ONE sprint-blackboard parser, shared by notes-cockpit,
-# wave-session, delivery-loop and captain-watchdog.
+# agent-board.sh - the ONE sprint-blackboard parser.
 #
 # Why this file is worth its length: divergence between board readers is not a loud
-# failure, it is SILENCE. A board delivery-loop cannot parse reports as "no active
-# queue" — byte-identical to a board with genuinely nothing to do. Three of the five
-# real boards on disk were invisible to both headless daemons for weeks.
+# failure, it is SILENCE. A board a reader cannot parse reports as "nothing to do",
+# byte-identical to a board with genuinely nothing to do.
 #
 # So each parser bug that actually happened gets a test that reproduces it.
 
@@ -23,10 +21,10 @@ write_bb() { cat > "$BB"; }
 nrows() { board_rows "$BB" | grep -c . || true; }
 field() { board_rows "$BB" | sed -n "${1}p" | cut -d$'\037' -f"$2"; }
 
-# ── the header-shape bug (wave-session's rows_of returned ZERO rows) ──────────
+# -- the header-shape bug (a `#`-keyed parser returned ZERO rows) ----------
 
 @test "a board headed Ticket-first is read, not silently skipped" {
-  # THE regression. wave-session's parser keyed the header on a literal `#` first
+  # THE regression. An older parser keyed the header on a literal `#` first
   # column, so this real on-disk shape matched nothing and it returned zero rows —
   # which reads exactly like an empty queue.
   write_bb <<'EOF'
@@ -175,7 +173,7 @@ EOF
 }
 
 @test "board_approved is false for PENDING and for a missing key" {
-  # Both negative controls matter: delivery-loop fails CLOSED, so a parser that
+  # Both negative controls matter: a drainer fails CLOSED, so a parser that
   # returned true here would drain an unapproved board and merge code unattended.
   write_bb <<'EOF'
 ## Meta
@@ -187,66 +185,6 @@ EOF
 - Started: 2026-07-27
 EOF
   run board_approved "$BB"; assert_failure
-}
-
-# ── board_is_wave: which driver a board gets ─────────────────────────────────
-
-@test "board_is_wave reads a Meta declaration, in either case" {
-  write_bb <<'EOF'
-## Meta
-- Mode: wave:1
-EOF
-  run board_is_wave "$BB"; assert_success
-  # The Meta block is hand-editable, so the capital is not a different mode.
-  write_bb <<'EOF'
-## Meta
-- Mode: Wave:1
-EOF
-  run board_is_wave "$BB"; assert_success
-}
-
-@test "board_is_wave ignores PROSE about a wave — the anchor is the whole point" {
-  # THE negative control, and the reason this predicate is anchored. A board that
-  # merely TALKS about wave mode is not in it. Every line below is a real message
-  # this harness emits: delivery-loop's own refusal text names the mode it refused,
-  # and an overseer pass quotes the board it just read. An unanchored matcher makes
-  # a plain sprint board acquire wave mode the moment the harness writes about one
-  # — self-inflicted, and silent, because a mode mismatch presents as "the timer
-  # fires and nothing moves".
-  write_bb <<'EOF'
-## Meta
-- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY
-
-## Run log
-- 07:48 refused: sprint-v1.11.1.md is Mode: wave:1 with no wave driver armed
-- 07:56 overseer pass: confirmed `Mode: wave` on the sibling board, not this one
-
-## Overseer pass
-A `Mode: wave:1` board is drainable by delivery-loop, which fires /kb:sprint resume.
-EOF
-  run board_is_wave "$BB"; assert_failure
-}
-
-@test "board_is_wave is false for a plain sprint board and a missing file" {
-  write_bb <<'EOF'
-## Meta
-- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY
-EOF
-  run board_is_wave "$BB"; assert_failure
-  # Same no-op-on-missing-file contract as every other predicate here: a timer-driven
-  # daemon must not die because a board was archived between two passes.
-  run board_is_wave "$BATS_TEST_TMPDIR/gone.md"; assert_failure
-  run board_is_wave; assert_failure
-}
-
-@test "board_is_wave agrees with the real wave fixtures" {
-  # Provenance guard: the fixtures are sanitized copies of real boards, so if a wave
-  # ever stops declaring its mode the way these do, this fails instead of the driver
-  # silently picking /kb:sprint.
-  run board_is_wave "$BATS_TEST_DIRNAME/../fixtures/boards/wave-gated.md"
-  assert_success
-  run board_is_wave "$BATS_TEST_DIRNAME/../fixtures/boards/queue-ticket-first.md"
-  assert_failure
 }
 
 @test "board_drainable needs BOTH approval and open work" {
@@ -284,7 +222,7 @@ EOF
 }
 
 @test "board_needs_eyes ignores approval and includes blocked rows" {
-  # captain-watchdog is observe-only: an UNAPPROVED board is exactly what a human
+  # A watcher is observe-only: an UNAPPROVED board is exactly what a human
   # wants surfaced, and a board whose every row is blocked is precisely when it must
   # NOT self-disarm.
   write_bb <<'EOF'
@@ -436,8 +374,8 @@ stage_via_rows() {
 # board were the dated one, `ls -1` and `ls -1t` would return the same order and
 # dropping the `t` would break nothing. The newest here must sort LAST by name.
 #
-# The shape is realistic, not contrived: a wave cuts `sprint-v1.10.1.md` for a patch
-# release after a dated `/kb:sprint` board is already sitting in the directory.
+# The shape is realistic, not contrived: a version-named `sprint-v1.10.1.md` board lands
+# for a patch release after a dated board is already sitting in the directory.
 seed_boards() { # $1=project — leaves `sprint-v1.10.1.md` newest, `sprint-2026-08-01.md` older
   local d="$AGENT_PLANS_DIR/$1"
   mkdir -p "$d"
@@ -616,7 +554,7 @@ EOF
 }
 
 @test "board_repo_of ignores a Run log sentence that merely mentions a repo" {
-  # The anchor is the whole point, exactly as for board_is_wave: a `## Run log` line
+  # The anchor is the whole point: a `## Run log` line
   # DESCRIBING a repo is not the board DECLARING one. Without `^- *Repo:` this board
   # would hand a driver a path lifted out of prose.
   write_bb <<'EOF'
@@ -650,22 +588,22 @@ EOF
   assert_output ''
 }
 
-@test "board_find_all finds a wave filed under a project no checkout resolves to" {
+@test "board_find_all finds a board filed under a project no checkout resolves to" {
   # THE regression, 2026-08-28. A watchdog resolved its project from one fixed checkout
-  # sitting on develop, while the live wave board was filed under the project its BRANCH
+  # sitting on develop, while the live board was filed under the project its BRANCH
   # named. Those two names differ, so the project-scoped lookup matched nothing and the
-  # runner reported "no live wave" for ~16 hours, with no error anywhere.
+  # runner reported "no live board" for ~16 hours, with no error anywhere.
   local P="$HOME/.agent/plans"
   mkdir -p "$P/refrepo" "$P/otherapp"
   printf '## Rows\n| Ticket | Title | Status |\n|---|---|---|\n| 1 | a | blocked |\n' \
     > "$P/refrepo/sprint-legacy.md"
-  printf '## Meta\n- Repo: /home/x/dev/bnb/platform\n- Mode: wave:1\n' \
+  printf '## Meta\n- Repo: /home/x/dev/bnb/platform\n- Approval: APPROVED-FOR-AUTONOMOUS-DELIVERY\n' \
     > "$P/otherapp/sprint-v1.13.0.md"
 
   # The old, project-scoped question: asked of the checkout's name, finds nothing.
-  assert_equal "$(board_find refrepo board_is_wave)" ''
+  assert_equal "$(board_find refrepo board_approved)" ''
   # The fleet-wide question: finds it regardless of which checkout is asking.
-  assert_equal "$(board_find_all board_is_wave)" "$P/otherapp/sprint-v1.13.0.md"
+  assert_equal "$(board_find_all board_approved)" "$P/otherapp/sprint-v1.13.0.md"
 }
 
 # -- the staleness damper: transitions, never the board's own mtime --------------------
@@ -698,7 +636,7 @@ setup_eyes_board() {  # $1=project
 }
 
 @test "a board the watcher keeps touching is still stale: mtime is not the signal" {
-  # THE 2026-08-28 finding. captain-watchdog appended a run-log paragraph every 12
+  # THE 2026-08-28 finding. A watchdog appended a run-log paragraph every 12
   # minutes, so the board's mtime was always minutes old while its actionable state had
   # not moved in 50 days -- 1029 full agent passes on frozen state. Only the event log,
   # which is written on a real stage change, can tell those apart.

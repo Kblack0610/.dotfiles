@@ -233,7 +233,6 @@ cmd_candidates() {
       [ -n "$name" ] || continue
       stage=$(stage_of "$sheet")
       case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
-      wave-lock check "$name" >/dev/null 2>&1 && continue
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       for lane in human agent; do
@@ -792,7 +791,6 @@ night_rows() {
     sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
     case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
-    wave-lock check "$name" >/dev/null 2>&1 && continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     n=0

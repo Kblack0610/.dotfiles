@@ -73,8 +73,8 @@ refuses is worth more than an adapter that pretends.
 A reviewer that shares the author's model family is not an independent review; it
 is the same weights marking their own homework in a different voice. Ours were
 exactly that until 2026-08-07 — no `kb-*` agent set a `model:`, so kb-developer,
-kb-reviewer and kb-qa all inherited `delivery-loop`'s single
-`ANTHROPIC_MODEL=claude-sonnet-5`, and the separation was persona plus tool grant
+kb-reviewer and kb-qa all inherited the runner's single
+`ANTHROPIC_MODEL`, and the separation was persona plus tool grant
 only.
 
 Two optional role keys:

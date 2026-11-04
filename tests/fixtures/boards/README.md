@@ -22,11 +22,8 @@ work. `make -C tests corpus-check` prints the live paths on the machine that has
 
 | fixture | written by | what makes it its own case |
 |---|---|---|
-| `queue-ticket-first.md` | `/kb:sprint` | No `#` column — the shape `wave-session`'s parser read as ZERO rows |
+| `queue-ticket-first.md` | a batch run | No `#` column - the shape a `#`-keyed parser read as ZERO rows |
 | `wave-numbered.md` | a wave | Has `#` but **no Title column**, so the parser falls back to the first non-structural cell |
-| `wave-gated.md` | a wave, pre-approval | Every Ticket cell is EMPTY (the stub written before the gate) and a second `## Wave gate` table follows the queue. Carries the `## Meta` block with `- Mode: wave:1`, which decides which DRIVER the board gets (`board_is_wave`) |
+| `wave-gated.md` | a wave, pre-approval | Every Ticket cell is EMPTY (the stub written before the gate) and a second `## Wave gate` table follows the queue. Carries a `## Meta` block with `- Mode: wave:1` |
 
-The `## Meta` block is part of the shape, not preamble. The first cut of `wave-gated.md`
-flattened it to a bare `- Approval:` line and dropped `- Mode: wave:1` — so the one fixture
-documenting "a wave" did not declare itself a wave, and any test of driver selection would
-have passed against a board no wave has ever written. Keep Meta verbatim.
+The `## Meta` block is part of the shape, not preamble: `board_approved` and `board_repo_of` read it. Keep Meta verbatim.

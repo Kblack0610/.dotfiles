@@ -66,8 +66,7 @@ _merge_proof_ere_safe() {
 # merge_proof_branch REPO_DIR — the branch work integrates ON.
 #
 # NOT hardcoded to main, which is where the Go original can get away with being
-# lazy. bnb/platform integrates on `develop` (kb/sprint step 6 pulls develop
-# between tickets); this repo integrates on `main`. Getting this wrong is the
+# lazy. bnb/platform integrates on `develop`; this repo integrates on `main`. Getting this wrong is the
 # quiet failure mode — proving content is on `main` when the team merges to
 # `develop` refuses every true claim.
 #

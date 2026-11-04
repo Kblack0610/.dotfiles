@@ -24,21 +24,8 @@ if [ -r "$ANCHOR_LIB" ]; then
   # shellcheck source=/dev/null
   . "$ANCHOR_LIB"
 fi
-# The one board parser (see .local/lib/agent-board.sh). Guarded for the same stow reason
-# as focus-lib above: losing the stranded-sprint banner is survivable, losing the whole
-# preflight is not.
-for AGENT_BOARD_LIB_CANDIDATE in "${AGENT_BOARD_LIB:-}" "$HOME/.local/lib/agent-board.sh" \
-                                 "$(dirname "$0")/../../.local/lib/agent-board.sh"; do
-  if [ -n "$AGENT_BOARD_LIB_CANDIDATE" ] && [ -r "$AGENT_BOARD_LIB_CANDIDATE" ]; then
-    # shellcheck source=/dev/null
-    . "$AGENT_BOARD_LIB_CANDIDATE"
-    break
-  fi
-done
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
-# Honour AGENT_PLANS_DIR, the override agent-board.sh reads. Without it this hook and
-# the library it calls disagree about where boards live the moment anything sets it —
-# the banner would test one directory for existence and read boards out of another.
+# AGENT_PLANS_DIR overrides where plans live.
 PLAN_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$PROJECT_NAME"
 LESSONS_FILE="$HOME/.agent/lessons/${PROJECT_NAME}.md"
 ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
@@ -107,35 +94,6 @@ HEADER=$(
     echo
   fi
 
-  # Stranded-sprint detection — surface an in-flight sprint at turn 1 so the user
-  # never has to remember to resume after a crash/outage/process-exit.
-  #
-  # This used to grep for the literal words queued|in-progress|pr-open. Those are three
-  # of the many strings a Status cell actually holds, and NOT the ones a wave writes
-  # (`in-wave`, `reverted-from-wave`) or that a human writes by hand (`**DONE - PR #1036
-  # merged**`, `blocked on access`). Measured against the real boards on this machine the
-  # regex matched NOTHING while two rows sat `working` — so the banner whose entire job is
-  # to stop work being forgotten was itself silently forgotten. Ask the shared parser,
-  # which normalizes every one of those spellings to a stage.
-  #
-  # board_needs_eyes, not board_drainable: an unapproved board still needs the human's
-  # eyes at turn 1 — that is exactly the state an approval gate leaves it in.
-  if [ -d "$PLAN_DIR" ] && declare -F board_find >/dev/null 2>&1; then
-    ACTIVE_SPRINT="$(board_find "$PROJECT_NAME" board_needs_eyes)"
-    if [ -n "$ACTIVE_SPRINT" ]; then
-      # board_count, not a local awk over the stage names. The awk that stood here
-      # listed all five in-flight stages by hand, so it was a fourth copy of the
-      # vocabulary board_in_class owns — and one that would have kept printing a
-      # confident count while quietly ignoring any stage added after it was written.
-      n=$(board_count "$ACTIVE_SPRINT" eyes)
-      mtime=$(stat -c %Y "$ACTIVE_SPRINT" 2>/dev/null || echo 0)
-      age=$(( ( $(date +%s) - mtime ) / 60 ))
-      echo "⚠ ACTIVE SPRINT: $(basename "$ACTIVE_SPRINT") — ${n:-1} in-flight row(s), last touched ${age}m ago."
-      echo "  Say \"resume\" (or run /captain) to reconcile against live gh/tracker/sentinel state and continue."
-      echo
-    fi
-  fi
-
   # The dream PROSE is no longer injected. It is a model's re-narration of the lessons
   # the anchor's digest already carries -- a third surface for one fact, and the longest
   # of the three. The mem0 queue COUNT stays, because it is the one part that is
@@ -179,9 +137,8 @@ fi
 
 # The agent board - what a previous session left IN FLIGHT on this repo, at turn 1.
 #
-# Not the queue. The queue is the project's own sheet and `/wave` reads all of it; this
-# is `<project>/agent/README.md`, the subtasks and state under a queue row, so a fresh
-# session can resume a wave instead of restarting it.
+# Not the human's sheet: this is `<project>/agent/README.md`, the agent's own backlog, so a
+# fresh session can resume work instead of restarting it.
 #
 # THE JOIN IS `trackers.<project>.repo`, NOT THE DIRECTORY NAME. The two namespaces are
 # deliberately different and only agreed by coincidence: a session in ~/.dotfiles
