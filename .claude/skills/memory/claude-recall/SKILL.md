@@ -1,11 +1,11 @@
 ---
 name: claude-recall
 description: >-
-  Verbatim search over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "that command from last week". Curated recall is mem0-ops.
+  Verbatim search and counts over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "what do I keep asking for", "which skills and agents get used". Curated recall is mem0-ops.
 metadata:
   category: memory
   tags: [memory, recall, session]
-  reviewed: "2026-07-14"
+  reviewed: "2026-11-03"
 ---
 
 # claude-recall
@@ -56,6 +56,12 @@ claude-recall list --project brightsign --limit 20
 
 # Print a full session by id or unique prefix (add --thinking to include reasoning)
 claude-recall show 15eeee34
+
+# Counts: typed /commands, Skill calls, subagent spawns, intents, repeated prompts
+claude-recall stats --days 30                                  # every kind, top 20 each
+claude-recall stats --kind intent --origin interactive         # asks a skill should have caught
+claude-recall stats --kind prompt --origin interactive --min 3 # skill candidates (3+ sessions)
+claude-recall stats --kind agent --by week --json              # agent use per ISO week
 ```
 
 Search filters: `--project` (substring on cwd basename), `--branch` (exact
@@ -63,9 +69,20 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 `--thinking` (include thinking blocks; excluded by default), `--context N`
 (snippet width, default 120), `--limit N` (`0` = all).
 
+## stats: counting what recurs
+
+`stats` is the one counter for "how often": skill-drift, skill-refine and the Monday briefing read it, so do not grep transcripts for a count elsewhere.
+
+- SESSIONS is the headline column. A `/loop` that fires a command 200 times in one session is one session.
+- `inter` vs `auto`: `turnOrigin` decides where present (`human` is interactive; a /loop fire, a peer message or a task notification is auto); older records fall back to `entrypoint == sdk-cli` and `isMeta`. Interactive is not proof a person typed it: a session fleet-dispatch starts gets its task as an interactive turn.
+- A subagent's Skill and Agent calls count toward its parent session; its dispatch prompt is not a typed prompt.
+- Prompts: only the first line, only when it opens with a letter or digit (pasted output does not), harness text skipped. Normalised (paths, URLs, SHAs, numbers masked, filler words dropped, first 8 words) and clustered with typo tolerance. Exact repeats are rare, which is why intents exist.
+- Intents: `~/.config/claude-recall/intents.tsv` (override with `CLAUDE_RECALL_INTENTS`) maps phrases to the skills that cover them. Each intent row says in how many of its sessions a covering skill actually ran; a low share means the task gets asked for in words and the skill never fires. Tune the phrases there; it is data, not code.
+- `CLAUDE_TRANSCRIPTS` (colon-separated) replaces the transcript roots; the bats suite uses it.
+
 ## Notes
 
-- Reads Claude Code sessions, plus Claude Cowork's `local-agent-mode-sessions`
+- Reads `~/.claude/projects` and `~/.claude-work/projects`, plus Claude Cowork's `local-agent-mode-sessions`
   on macOS when that directory exists.
 - Filenames ARE session ids; `show` accepts a unique prefix.
 - No index means results are always current - a session you closed a minute ago

@@ -126,6 +126,38 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
+  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\ncat "%s/pr-$3"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  echo OPEN > "$SANDBOX/pr-7"; echo OPEN > "$SANDBOX/pr-8"
+  "$AQ" add --project game --slug blocked --priority urgent --tags "pr:Org/game#7" "a"
+  "$AQ" add --project game --slug base "b"
+  "$AQ" add --project game --slug both --priority urgent --after base --tags "pr:Org/game#8" "c"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"blocked\") | .hold'"
+  assert_output "pr:Org/game#7 not merged"
+  [ "$("$AQ" next --json | jq -r .slug)" = base ]
+  echo MERGED > "$SANDBOX/pr-7"; echo MERGED > "$SANDBOX/pr-8"
+  AGENT_QUEUE_PR_TTL=0 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = blocked ]
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
+  assert_output "after base"
+  # A merged PR is cached for good: once more with gh failing makes no difference.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  [ "$("$AQ" next --json | jq -r .slug)" = blocked ]
+  run "$AQ" add --project game --tags "pr:1653" "x"
+  assert_failure; assert_output --partial "pr:<owner>/<repo>#<N>"
+}
+
+@test "a pr: tag holds while gh cannot read the PR" {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
+  run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "pr:Org/game#9 not merged"
+}
+
 @test "bump changes priority and with it the order" {
   "$AQ" add --project game --slug a "a"
   "$AQ" add --project game --slug b "b"

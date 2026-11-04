@@ -335,3 +335,30 @@ codex_report() {
   codex_report
   assert_output --partial "BADNAME"
 }
+
+# ── UNUSED reads claude-recall stats ─────────────────────────────────────────
+#
+# A skill reached only by its typed /command was reported unused while the counter was
+# a grep for Skill-tool calls. Three deployed skills: one run by the Skill tool, one only
+# typed as a /command, one never touched.
+@test "UNUSED: a skill typed as a /command counts as used; an untouched one is reported" {
+  mkdir -p "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx/-p" "$REPO/codex"
+  : > "$HOME/empty/CLAUDE.md"
+  for s in by-tool by-slash idle; do
+    mkdir -p "$HOME/empty/skills/$s"
+    printf -- '---\nname: %s\ndescription: x\n---\n' "$s" > "$HOME/empty/skills/$s/SKILL.md"
+  done
+  ts="\"timestamp\":\"$(date -u +%FT%TZ)\""
+  cat > "$HOME/empty/tx/-p/s.jsonl" <<JSONL
+{"type":"user","turnOrigin":"human","cwd":"/p",$ts,"message":{"role":"user","content":"<command-name>/by-slash</command-name>"}}
+{"type":"assistant","cwd":"/p",$ts,"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"by-tool"}}]}}
+JSONL
+  CLAUDE_SKILLS="$HOME/empty/skills" DOTFILES="$HOME/empty/pub" \
+  DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
+  CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
+  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" \
+    run "$DRIFT"
+  assert_output --regexp 'UNUSED +idle '
+  refute_output --regexp 'UNUSED +by-slash '
+  refute_output --regexp 'UNUSED +by-tool '
+}

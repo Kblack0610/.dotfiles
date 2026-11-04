@@ -52,7 +52,7 @@ if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ]; then
 fi
 
 # --- build the record fields ---
-HISTORY="$HOME/.claude/history.jsonl"
+HISTORY="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/history.jsonl"
 FIRST_PROMPT=""
 if [ -f "$HISTORY" ]; then
   # first non-slash-command prompt for this session; fallback to first display

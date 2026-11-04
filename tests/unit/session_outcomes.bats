@@ -231,6 +231,18 @@ EOF
   assert_output --partial '"tokens_after_last_edit":7'
 }
 
+@test "uses: agents by subagent_type, Skill calls and typed /commands; quoted or tool-result tags do not count" {
+  cat > "$TR/uses.jsonl" <<'EOF'
+{"type":"user","message":{"content":"<command-name>/one-shot</command-name>"}}
+{"type":"user","message":{"content":"<command-message>one-shot</command-message>\n<command-name>/one-shot</command-name>"}}
+{"type":"user","message":{"content":"This session is being continued. Earlier: <command-name>/quoted</command-name>"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Agent","input":{"subagent_type":"Explore"}},{"type":"tool_use","id":"b","name":"Task","input":{}},{"type":"tool_use","id":"c","name":"Skill","input":{"skill":"final-pass"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"<command-name>/inner</command-name>"},{"type":"text","text":"<command-name>/inner</command-name>"}]}}
+EOF
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; so_transcript_metrics "$1" | jq -c .uses' _ "$TR/uses.jsonl"
+  assert_output '{"subagents":{"Explore":1,"general-purpose":1},"skills":{"final-pass":1},"slash":{"one-shot":2}}'
+}
+
 @test "activity: a transcript with no usage counts its calls and no tokens, and reaches the row" {
   "$SUBJECT" run
   run jq -sr 'map(select(.session_id == "sess-a"))[0].activity | "\(.tool_calls) \(.tokens)"' "$SO_OUT/proj/2026-10.jsonl"
