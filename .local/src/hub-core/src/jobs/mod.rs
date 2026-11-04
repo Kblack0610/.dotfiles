@@ -19,7 +19,7 @@ mod local;
 pub mod log;
 mod loki;
 mod remote;
-mod systemd;
+pub(crate) mod systemd;
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,6 +32,15 @@ pub use log::read_log;
 /// failed outright returns no jobs and one error; one that skipped a bad record keeps the
 /// rest and says what it skipped.
 type Got = (Vec<Job>, Vec<String>);
+
+/// A ledger's text; a file that does not exist yet is empty, anything else unreadable is an error.
+pub(crate) fn read_or_empty(p: &std::path::Path) -> Result<String, String> {
+    match std::fs::read_to_string(p) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+    }
+}
 
 /// How far back finished runs are listed by default. The exporter and journald both hold
 /// about a day, so a longer window would only be longer for some sources.

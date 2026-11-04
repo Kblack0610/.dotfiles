@@ -3,6 +3,7 @@
 //! to the tools that own the data (curl for Prometheus, systemctl and journalctl, gh,
 //! claude-acct, agent-queue, tmux); an async caller wraps it in `spawn_blocking`.
 
+pub mod actions;
 pub mod boards;
 pub mod fleet;
 pub mod infra;

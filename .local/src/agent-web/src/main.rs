@@ -13,6 +13,7 @@
 mod assets;
 mod auth;
 mod cloud;
+mod feed;
 mod fleet;
 mod infra;
 mod jobs;
@@ -114,6 +115,7 @@ async fn main() -> Result<()> {
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/shepherd", get(shepherd::get))
+        .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -237,6 +239,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
+        // agent-notify's ledger, for the Actions tab.
+        hub_core::actions::Paths::from_env()
+            .notify_log
+            .parent()
+            .map(Path::to_path_buf),
     ]
     .into_iter()
     .flatten()
@@ -292,10 +299,15 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines, skips and last pass. Dotfiles have
-    // no extension, so this comes before the `ext` match.
-    if parent == "shepherd" && matches!(name, ".due" | ".skipped" | ".lease") {
+    // fleet-shepherd's ledger: the Shepherd tab's due lines and last pass. Dotfiles have no
+    // extension, so this comes before the `ext` match.
+    if parent == "shepherd" && matches!(name, ".due" | ".lease") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
+    }
+    // The Actions tab's own ledgers: the shepherd's log and agent-notify's (which has no
+    // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
+    if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
+        return Some(r#"{"kind":"actions"}"#.to_string());
     }
     let ext = p.extension()?.to_str()?;
     if (parent == "agentctl" && name == "runs.jsonl")
@@ -1110,7 +1122,6 @@ mod tests {
         for p in [
             "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md",
             "/h/.agent/shepherd/.due",
-            "/h/.agent/shepherd/.skipped",
             "/h/.agent/shepherd/.lease",
         ] {
             assert_eq!(
@@ -1118,7 +1129,22 @@ mod tests {
                 Some(r#"{"kind":"shepherd"}"#)
             );
         }
-        assert_eq!(classify(Path::new("/h/.agent/shepherd/.skipped.tmp")), None);
+        assert_eq!(classify(Path::new("/h/.agent/shepherd/.skipped")), None);
+        assert_eq!(classify(Path::new("/h/.agent/shepherd/.due.tmp")), None);
+        for p in [
+            "/h/.agent/shepherd/log.md",
+            "/h/.local/state/agent-notify/log",
+        ] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"actions"}"#)
+            );
+        }
+        assert_eq!(
+            classify(Path::new("/h/.local/state/agent-notify/log.delivery")),
+            None
+        );
+        assert_eq!(classify(Path::new("/h/.local/state/other/log")), None);
         assert_eq!(
             classify(Path::new(
                 "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md.tmp"

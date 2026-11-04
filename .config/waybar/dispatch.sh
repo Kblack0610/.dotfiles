@@ -2,7 +2,8 @@
 # Waybar module: dispatch. The bar is the runnable queue items and how long since dispatch
 # last started one, a dim +N when heals (reaps) ran in the last hour, and a colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in PASS_LATE_SECS
-#   amber  the last pass left runnable work waiting (BLOCKED), or an item is flapping
+#   amber  the last pass left runnable work waiting (BLOCKED), an item is flapping, or more
+#          could start than the limits let the last pass (could_start, `fleet-dispatch headroom`)
 #   green  otherwise; a deep queue that is moving is not a fault
 # The hover says runnable by priority, the last pass, starts by kind and heals.
 #
@@ -55,6 +56,8 @@ pass_age=$((now - ${pass:-0})) start_age=-
 level=0 why=()
 [ "$(get runner.blocked)" = 1 ] && level=1 why+=("the last pass left runnable work waiting (BLOCKED)")
 ((${flapping:-0} > 0)) && level=1 why+=("$flapping item(s) flapping between running and waiting")
+could="$(get dispatch.could_start)"
+((${could:-0} > 0)) && level=1 why+=("$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)")
 [ "$(get watch.tripped)" = 1 ] && level=2 why+=("queue-starved is tripped")
 [ "$(get runner.failed)" = 1 ] && level=2 why+=("the fleet-dispatch runner failed")
 ((pass_age > PASS_LATE_SECS)) && level=2 why+=("no pass in $(prom_dur "$pass_age"); is fleet-dispatch.timer running?")
@@ -70,5 +73,6 @@ tip+=$'\n'"runnable: $runnable ($urgent urgent or high), oldest $(prom_dur "$(ge
 tip+=$'\n'"last pass: $(prom_dur "$pass_age") ago, last start: $start_age ago"
 tip+=$'\n'"starts last hour: run $(get dispatch.starts_1h_run), hand $(get dispatch.starts_1h_hand), redispatch $(get dispatch.starts_1h_redispatch), resume $(get dispatch.starts_1h_resume)"
 tip+=$'\n'"heals last hour: reaped ${reaped:-0}, flapping ${flapping:-0}"
+tip+=$'\n'"headroom: ${could:--} more could start after the last pass"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"

@@ -9,7 +9,8 @@
 #                                     eta from `fleet-bench eta`, and fleet_sessions.prom
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
-#   fleet-sessions label <who> [+name|-name ...]  set, clear or (no ops) print a session's labels
+#   fleet-sessions label <who> [+name|-name|^name ...]  set, clear, flip or (no ops) print a
+#                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
 #                                     minute and on each ask change); the hub Sessions tab
@@ -255,24 +256,78 @@ resolve_sid() {
   echo "$sid"
 }
 
-# label <who> [+name|-name ...]: add or remove labels, then print the session's labels.
+# label <who> [+name|-name|^name ...]: add, remove or flip labels, then print the session's labels.
+# ^name lets a key binding (agent-panel ctrl-t) flip one without reading it first.
 label() {
-  local who="${1:-}" sid op name tmp
-  [ -n "$who" ] || { echo "usage: fleet-sessions label <who> [+name|-name ...]" >&2; return 2; }
+  local who="${1:-}" sid op name tmp add
+  [ -n "$who" ] || { echo "usage: fleet-sessions label <who> [+name|-name|^name ...]" >&2; return 2; }
   sid="$(resolve_sid "$who")" || return 2
   case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   shift
   mkdir -p "$LABELS"
   for op in "$@"; do
-    name="${op#[+-]}"
+    name="${op#[+^-]}"
     if [ "$name" = "$op" ] || ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9:._-]*$ ]]; then
-      echo "fleet-sessions: label ops are +name or -name ([A-Za-z0-9:._-]), got '$op'" >&2; return 2
+      echo "fleet-sessions: label ops are +name, -name or ^name ([A-Za-z0-9:._-]), got '$op'" >&2; return 2
     fi
+    add=0
+    case "${op:0:1}" in
+      +) add=1 ;;
+      ^) grep -qxF -- "$name" "$LABELS/$sid" 2>/dev/null || add=1 ;;
+    esac
     tmp="$(mktemp "$LABELS/.$sid.XXXXXX")" || return 1
-    { grep -vxF -- "$name" "$LABELS/$sid" 2>/dev/null; [ "${op:0:1}" = + ] && echo "$name"; } > "$tmp"
+    { grep -vxF -- "$name" "$LABELS/$sid" 2>/dev/null; [ "$add" = 1 ] && echo "$name"; } > "$tmp"
     if [ -s "$tmp" ]; then mv "$tmp" "$LABELS/$sid"; else rm -f "$tmp" "$LABELS/$sid"; fi
   done
+  [ $# -gt 0 ] && tmux_labels "$sid"
   labels_of "$sid"
+}
+
+# --- tmux projection ----------------------------------------------------------------------
+# The state document's stage and labels, copied onto each session's tmux window as @fleet_stage
+# and @fleet_labels, so the window-status format (.tmux.conf) and agent-panel show them. It is a
+# projection, never read back as a fact. Targets are <server>/<session>:<window>.
+
+# tmux_project <state document>: per server, set both options on every session's window and clear
+# them from windows that no longer hold one (a claude that exited in a pane that stayed). One tmux
+# call per server; a server it cannot reach is skipped and the next tick tries again.
+tmux_project() {
+  local want srv have t st lb
+  local -a cmd
+  want="$(jq -r '.sessions[] | select(.target | test("^[^/]+/[^:]+:"))
+    | [.target, .bucket, ((.labels // []) | join(","))] | @tsv' "$1" 2>/dev/null)" || return 0
+  for srv in $( { find "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" -maxdepth 1 -type s -printf '%f\n' 2>/dev/null
+                  [ -n "$want" ] && cut -d/ -f1 <<<"$want"; } | sort -u); do
+    have="$(tmux -L "$srv" list-windows -a -f '#{@fleet_stage}' -F '#{session_name}:#{window_index}' 2>/dev/null)" || continue
+    cmd=()
+    while IFS=$'\t' read -r t st lb; do
+      [ -n "$t" ] && [ "${t%%/*}" = "$srv" ] || continue
+      t="${t#*/}"
+      have="$(grep -vxF -- "$t" <<<"$have")"
+      cmd+=(set-option -wq -t "=$t" @fleet_stage "$st" \;)
+      if [ -n "$lb" ]; then cmd+=(set-option -wq -t "=$t" @fleet_labels "$lb" \;)
+      else cmd+=(set-option -wqu -t "=$t" @fleet_labels \;); fi
+    done <<<"$want"
+    while IFS= read -r t; do
+      [ -n "$t" ] && cmd+=(set-option -wqu -t "=$t" @fleet_stage \; set-option -wqu -t "=$t" @fleet_labels \;)
+    done <<<"$have"
+    [ ${#cmd[@]} -gt 0 ] || continue
+    unset 'cmd[-1]'
+    tmux -L "$srv" "${cmd[@]}" >/dev/null 2>&1 || echo "fleet-sessions: tmux projection on $srv failed" >&2
+  done
+}
+
+# tmux_labels <sid>: put one session's labels on its window now, so a change made from agent-panel
+# shows on its relaunch instead of at the next tick. The target comes from the state document; a
+# session too new to be in it gets its labels at the next tick.
+tmux_labels() {
+  local t l
+  t="$(jq -r --arg s "$1" '.sessions[] | select(.session_id == $s) | .target' "$STATE_FILE" 2>/dev/null | head -1)"
+  [[ "$t" == */*:* ]] || return 0
+  l="$(paste -sd, "$LABELS/$1" 2>/dev/null)" || l=""
+  if [ -n "$l" ]; then tmux -L "${t%%/*}" set-option -wq -t "=${t#*/}" @fleet_labels "$l" >/dev/null 2>&1
+  else tmux -L "${t%%/*}" set-option -wqu -t "=${t#*/}" @fleet_labels >/dev/null 2>&1; fi
+  return 0
 }
 
 # --- facts ------------------------------------------------------------------------------
@@ -864,6 +919,7 @@ write_state() {
   mv -f "$tmp" "$STATE_FILE" || return 1
   prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
     echo "fleet-sessions: could not write fleet_sessions.prom" >&2
+  tmux_project "$STATE_FILE"
 }
 
 # sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per

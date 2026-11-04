@@ -24,10 +24,14 @@ use notify::{RecursiveMode, Watcher};
 
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
+       hub actions --since WHEN [--json]
   TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
-  tab     ask the running hub to show TAB (the next hub to start takes it when none runs)";
+  tab     ask the running hub to show TAB (the next hub to start takes it when none runs)
+  actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
+          actor and the escalations, trips and failed runs, or {actions, counts, errors} with
+          --json. Exits 1 when a ledger could not be read.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -47,6 +51,10 @@ fn main() {
             die(&format!("hub tab: {e}"));
         }
         return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("actions") {
+        it.next();
+        std::process::exit(actions(it.cloned().collect()));
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -72,6 +80,41 @@ fn main() {
     if let Err(e) = run(start) {
         die(&format!("hub: {e}"));
     }
+}
+
+/// `hub actions`: hub-core's actions reader, so the briefing's digest is the Actions tab's.
+fn actions(args: Vec<String>) -> i32 {
+    let (mut since, mut json) = (None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--since" => since = it.next().and_then(|s| parse_since(s)),
+            "--json" => json = true,
+            _ => die(USAGE),
+        }
+    }
+    let since = since.unwrap_or_else(|| die(USAGE));
+    let (items, err) = match hub_core::queue::list(&hub_core::session_actions::System, "all") {
+        Ok(items) => (items, None),
+        Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
+    };
+    let mut g = hub_core::actions::gather(&hub_core::actions::Paths::from_env(), since, &items);
+    g.errors.extend(err);
+    if json {
+        println!("{}", serde_json::to_string(&g).unwrap_or_default());
+    } else {
+        print!("{}", hub_core::actions::digest(&g));
+    }
+    i32::from(!g.errors.is_empty())
+}
+
+/// Epoch seconds, or an RFC 3339 time.
+fn parse_since(s: &str) -> Option<i64> {
+    s.parse().ok().or_else(|| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|t| t.timestamp())
+    })
 }
 
 fn die(msg: &str) -> ! {
