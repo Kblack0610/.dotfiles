@@ -100,7 +100,7 @@ emit() {
         sessions) eid="agent_sessions_$id" ;;
         *)       eid="agent_$id"
                  case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;;
-                     dispatch) label="Dispatch queue" ;; pager) label="Pages undelivered (24h)" ;; esac ;;
+                     dispatch) label="Dispatch queue" ;; shepherd) label="Shepherd due lines" ;; pager) label="Pages undelivered (24h)" ;; esac ;;
     esac
     uid="agent_${HOST_ID}_${kind}_${id}"
     base="agents/$HOST_ID/$kind/$id"
@@ -188,6 +188,14 @@ snapshot() {
         local dstats
         dstats="$(fleet-dispatch stats 2>/dev/null)" && jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
             emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
+    fi
+
+    # Shepherd: open, unhandled and skipped due lines, 24h nudges, escalations and passes, and the
+    # last pass, as `fleet-shepherd stats` reads them from its ledgers; the HA state is the open due lines.
+    if command -v fleet-shepherd >/dev/null 2>&1; then
+        local sstats
+        sstats="$(fleet-shepherd stats 2>/dev/null)" && jq -e '.due | numbers' <<< "$sstats" >/dev/null 2>&1 &&
+            emit summary shepherd mdi:sheep "$sstats" '{"state_class":"measurement"}'
     fi
 
     # Pager: what agent-notify raised and which channel took it in the last 24h, as

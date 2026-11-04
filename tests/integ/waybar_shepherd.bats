@@ -25,7 +25,7 @@ STUB
 # feed [series=value ...] -> Prometheus's answer: host h1 with 5 working, 2 needs, 1 done, its
 # textfile written 60s ago, and the two needs sessions idle 30 and 90 minutes. A series is
 # BUCKET (a count), idle:BUCKET:target (minutes), mtime (age in seconds) or dup (a second scrape
-# of h1); h2: prefixes another host; a value of - drops the series.
+# of h1), shep:<field> (a summary/shepherd number); h2: prefixes another host; a value of - drops the series.
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -43,6 +43,8 @@ for k, v in s.items():
     if k == "mtime":
         m = {"__name__": "node_textfile_mtime_seconds", "file": "/var/lib/node_exporter/textfile/fleet_sessions.prom"}
         v = 100000 - v
+    elif k.startswith("shep:"):
+        m = {"__name__": "mqtt_" + k[5:], "topic": "agents_" + host + "_summary_shepherd"}
     elif k.startswith("idle:"):
         _, b, t = k.split(":", 2)
         m = {"__name__": "agent_session_idle_minutes", "bucket": b, "target": t, "project": "proj"}
@@ -118,4 +120,21 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_success
   assert_equal "$(text)" "$ICON <span color='#ffcc2f'>?</span>"
   assert_equal "$(class)" warn
+}
+
+@test "the shepherd's numbers close the hover; an unhandled due line turns the chip amber; off the feed they are left out" {
+  run "$MODULE"
+  refute_output --partial 'shepherd '
+  feed shep:due=6 shep:unhandled=0 shep:skipped=12 shep:nudges_24h=40 shep:escalations_24h=45 shep:passes_24h=3 shep:last_pass_epoch=99100
+  run "$MODULE"
+  assert_equal "$(class)" ok
+  run tip
+  assert_line --index 3 'NEEDS  hub/a:1  proj  idle 30m'
+  assert_line --index 4 'shepherd 6 due, 0 unhandled, 12 skipped; 24h 40 nudges, 45 escalations, 3 passes; last pass 15m ago'
+  feed shep:due=6 shep:unhandled=2
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  assert_line --index 1 --partial '2 shepherd due line(s) unhandled'
+  assert_output --partial 'last pass none'
 }

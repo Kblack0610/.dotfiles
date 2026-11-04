@@ -7,7 +7,9 @@
 #   red    a session is STALLED, or a host's fleet_sessions.prom is older than STATE_LATE_SECS
 #   amber  a session is UNCLEAR
 #   green  otherwise; NEEDS is the human's queue, not a fault
-# The hover lists every stalled, unclear and needs session with its idle time, worst first.
+# The hover lists every stalled, unclear and needs session with its idle time, worst first, then
+# the shepherd's own numbers (summary/shepherd, `fleet-shepherd stats`); a due line the last pass
+# neither moved nor skipped (unhandled) is amber.
 #
 # Read from Prometheus (the fleet_sessions.prom textfile `fleet-sessions tick` writes each
 # minute), so the chip reads the same on the laptop thin client. Sessions are per host, so
@@ -31,6 +33,7 @@ C_GRN="${LEVEL_COLOUR[0]}"
 now="${SHEPHERD_NOW:-$(date +%s)}"
 title="<b>Sessions</b>  fleet-sessions stages, every minute"
 q='agent_sessions or agent_session_idle_minutes{bucket=~"STALLED|UNCLEAR|NEEDS"} or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
+q+=' or ({__name__=~"mqtt_.+", topic=~"agents_.+_summary_shepherd"} and on (topic) cc:agents_topic_live)'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -47,8 +50,15 @@ if [ "$counts" = "{}" ]; then
   exit 0
 fi
 n() { jq -r --arg b "$1" '.[$b] // 0' <<< "$counts"; }
+# shep <field> -> a summary/shepherd number, max over hosts, or nothing when it is not on the feed.
+shep() {
+  jq -r --arg k "mqtt_$1" '[.data.result[] | select(.metric.__name__ == $k
+    and (.metric.topic // "" | endswith("_summary_shepherd"))) | .value[1] | tonumber | floor] | max // empty' <<< "$raw"
+}
 
 level=0 why=()
+s_unh="$(shep unhandled)"
+((${s_unh:-0} > 0)) && level=1 why+=("$s_unh shepherd due line(s) unhandled: the last pass neither moved nor skipped them")
 n_unclear="$(n UNCLEAR)" n_stalled="$(n STALLED)"
 ((n_unclear > 0)) && level=1 why+=("$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged")
 ((n_stalled > 0)) && level=2 why+=("$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts")
@@ -85,5 +95,11 @@ while IFS=$'\t' read -r bucket target project idle; do
 done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_idle_minutes")
     | {b: .metric.bucket, t: (.metric.target // "?"), p: (.metric.project // "-"), i: (.value[1] | tonumber | floor)}]
   | unique_by(.t) | sort_by(({STALLED: 0, UNCLEAR: 1, NEEDS: 2}[.b] // 3), -.i)[] | [.b, .t, .p, .i] | @tsv' <<< "$raw")
+
+if [ -n "$(shep due)" ]; then
+  d() { local x; x="$(shep "$1")"; printf '%s' "${x:--}"; }
+  s_pass="$(shep last_pass_epoch)"
+  tip+=$'\n'"shepherd $(d due) due, ${s_unh:-0} unhandled, $(d skipped) skipped; 24h $(d nudges_24h) nudges, $(d escalations_24h) escalations, $(d passes_24h) passes; last pass $([ -n "$s_pass" ] && echo "$(prom_dur $((now - s_pass))) ago" || echo none)"
+fi
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
