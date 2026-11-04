@@ -401,6 +401,8 @@ write_release_map() {
     "shipper":   { "system": "vikunja", "repo": "monorepo" },
     "webbish":   { "system": "vikunja", "repo": "monorepo" },
     "quiet-app": { "system": "vikunja", "repo": "monorepo" },
+    "portfolio-site": { "system": "vikunja", "repo": "monorepo", "tagGlob": "portfolio-v*", "lab": "personal" },
+    "strict":    { "system": "vikunja", "repo": "monorepo", "tagGlob": "absent-v*" },
     "no-repo":   { "system": "vikunja" }
   }
 }
@@ -483,6 +485,42 @@ EOF
 
   export PROJECT_MAP_FILE="$HOME/does-not-exist.json"
   run project_release_version shipper
+  assert_success
+  assert_output ''
+}
+
+@test "project_release_version: the registry's tagGlob reaches a product whose tags are not its name" {
+  write_release_map
+  tagged_repo portfolio-v1.6.4 shipper-v9.9.9
+  run project_release_version portfolio-site
+  assert_success
+  assert_output 'v1.6.4'
+}
+
+@test "project_release_version: a tagGlob that matches nothing is empty, never a sibling's tag" {
+  # NEGATIVE CONTROL: falling through to the product globs or bare v* would answer
+  # strict-v2.0.0 or v9.9.9 here.
+  write_release_map
+  tagged_repo strict-v2.0.0 v9.9.9
+  run project_release_version strict
+  assert_success
+  assert_output ''
+}
+
+@test "project_field: one scalar from the project's own entry, empty for a missing key or project" {
+  write_release_map
+  run project_field portfolio-site lab
+  assert_output 'personal'
+  run project_field portfolio-site tagGlob
+  assert_output 'portfolio-v*'
+  run project_field shipper lab
+  assert_success
+  assert_output ''
+  run project_field nobody lab
+  assert_success
+  assert_output ''
+  # The string-valued comment key must not kill the read (see the JQ TRAP note).
+  run project_field _comment_lab_projects lab
   assert_success
   assert_output ''
 }

@@ -138,15 +138,15 @@ fn is_placeholder(t: &str) -> bool {
     t.starts_with('_') && t.ends_with('_')
 }
 
-// -- the cockpit marker: declared per-project facts -------------------------
+// -- wiring lives in the registry ---------------------------------------------
 //
-// `<!-- cockpit: vikunja=3 pathfilter=apps/x -->` in `summary.md` carries the WIRING a
-// project needs (repo, tracker ids, path filters) - facts a person sets once and never
-// looks at again. Three consumers grep it, so those keys live there rather than in a
-// second file.
+// A project's WIRING (lab profile, type, repo, path, branch, tracker ids, release epic, tag
+// glob) is a field of its `trackers.<name>` entry in project-map.json, read with
+// `project_field`. The `<!-- cockpit: -->` marker that used to carry it in `summary.md` is
+// retired: it was a second registry that six scripts grepped and nothing checked.
 //
-// What a person CHANGES does not belong in an HTML comment. See the stage/group section
-// below: that is a hashtag on the sheet, where every other per-project fact already is.
+// What a person CHANGES does not belong in an HTML comment either. See the stage/group
+// section below: that is a hashtag on the sheet, where every other per-project fact is.
 
 /// The maturity ladder, least to most real. A project's `stage=` must be one of these.
 ///
@@ -474,10 +474,10 @@ fn check_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Scaffold for a new `summary.md` — the machine COCKPIT. The task list lives on the
-/// README sheet ([`sheet_body`]); this file only carries what the tools grep. The
-/// cockpit/STATUS/AUTO markers are load-bearing (lab-sync keys on them), so they are
-/// verbatim.
+/// Scaffold for a new `summary.md`: two generated blocks and nothing a person edits. The
+/// task list lives on the README sheet ([`sheet_body`]). The STATUS/AUTO markers are
+/// load-bearing (lab-status and lab-sync key on them), so they are verbatim. There is no
+/// wiring marker: that is the project's entry in project-map.json.
 ///
 /// There is deliberately NO `## → For the agents` section. It was the human's channel TO
 /// the agent, and it was the wrong one in the most complete way available: the session
@@ -496,12 +496,12 @@ fn check_name(name: &str) -> Result<()> {
 ///
 /// The maturity tag is NOT here: it is `#draft` on the sheet's `Version:` line, where a
 /// person can see and change it. See the stage/group section above. This file keeps only
-/// wiring nobody edits by hand.
+/// generated blocks.
 fn summary_template(name: &str) -> String {
     format!(
         "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
-<!-- cockpit: vikunja= release-epic= pathfilter= branch= prfilter= -->\n\n\
-Working sheet: [[README]] - this file is the machine cockpit (lab-sync / preflight read it). Edit README, not here.\n\n\
+\n\
+Working sheet: [[README]] - this file is generated (lab-status, lab-sync). Edit README, not here.\n\n\
 Wants for the agents go on the BOARD, not here: `notes ptask {name} add \"<title>\" #ai` (the session preflight injects that lane at turn 1).\n\n\
 <!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
 _(no status yet)_\n<!-- STATUS:END -->\n\n\
@@ -513,7 +513,7 @@ _(no status yet)_\n<!-- STATUS:END -->\n\n\
 /// The files every project carries, relative to its dir, in the order they are scaffolded:
 /// the human sheet first, because the agent board takes its version and home link from it.
 ///
-/// - `README.md`: the human's sheet (what only the human can do), `summary.md`: the cockpit.
+/// - `README.md`: the human's sheet (what only the human can do), `summary.md`: STATUS + AUTO.
 /// - `agent/README.md`: the agents' working board.
 /// - `docs/idea.md`: the pitch and key ideas; `docs/tech.md`: the stack, with links to the
 ///   repo's own docs. Every other note doc lives in `docs/` too.
@@ -3334,7 +3334,9 @@ _(nothing yet)_
         // and NOT a canonical marker: the directory name is the project name, so a
         // scaffolded marker is a second source of truth for it from the very first day.
         assert!(!t.contains("canonical:"));
-        // the cockpit points at the working sheet; the task list is NOT in summary.md
+        // and NOT the retired wiring marker: that is the registry entry now.
+        assert!(!t.contains("cockpit:"));
+        // the summary points at the working sheet; the task list is NOT in summary.md
         assert!(t.contains("Working sheet: [[README]]"));
         // and NOT the retired human->agent channel. It was read by the preflight and
         // written by nobody, in all seven live projects, while the board's `#ai` lane was

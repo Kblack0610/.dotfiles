@@ -31,13 +31,13 @@
 # second copy of a rule does not drift with an error, it drifts with a plausible
 # answer.
 #
-# The reference implementation is regen-lab-feed.sh's, which is the one that had
-# already been corrected on every point above. This file is that logic lifted
-# verbatim; the private overlay's regen scripts become callers.
+# The reference implementation was regen-lab-feed.sh's, which had already been
+# corrected on every point above. This file is that logic lifted verbatim; the lab-sync
+# scripts reach it through project_release_tag in project-name.sh.
 #
 # Public API:
-#   git_latest_tag    <repo> <name> [summary]                       -> one tag, or ""
-#   git_product_tag   <repo> <product>                               -> one tag, or ""
+#   git_latest_tag    <repo> <name> [glob]                          -> one tag, or ""
+#   git_product_tag   <repo> <product> [glob]                       -> one tag, or ""
 #   git_shipping_next <repo> <tag> <branch> [pathfilter] [limit]     -> N subject lines
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
 #
@@ -70,14 +70,14 @@ _gr_highest() {
   fi
 }
 
-# git_latest_tag <repo> <name> [summary] — the CURRENT RELEASE tag, highest
+# git_latest_tag <repo> <name> [glob] - the CURRENT RELEASE tag, highest
 # version wins.
 #
 # NOT `git describe`. describe walks HEAD's ancestry, so it misses a newer tag cut
 # on a commit HEAD cannot reach — which is the normal case for a release tag cut on
 # a release branch while you sit on develop. Resolution order:
 #
-#   1. `<!-- tagglob: PATTERN -->` in summary.md (explicit override)
+#   1. <glob>, when the caller passes one (the registry's `tagGlob`)
 #   2. highest `<name>-v*`   (monorepo, product-prefixed tags)
 #   3. highest `v*`          (single-product repo)
 #   4. `git describe --tags --abbrev=0`  (last resort)
@@ -85,17 +85,13 @@ _gr_highest() {
 # Every step goes through _gr_highest, so a prerelease never wins over its own
 # release at any step.
 #
-# An explicit tagglob is AUTHORITATIVE and never falls through to a later step.
+# An explicit glob is AUTHORITATIVE and never falls through to a later step.
 # Falling through would hand a monorepo caller some other product's tag, which is
 # worse than the empty string it asked for.
 git_latest_tag() {
-  local repo="$1" name="$2" summary="${3:-}" glob="" t=""
+  local repo="$1" name="$2" glob="${3:-}" t=""
   [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
 
-  if [ -f "$summary" ]; then
-    glob=$(grep -oE '<!--[[:space:]]*tagglob:[[:space:]]*[^ ]+[[:space:]]*-->' "$summary" 2>/dev/null \
-      | head -1 | sed -E 's/.*tagglob:[[:space:]]*([^ ]+)[[:space:]]*-->/\1/' || true)
-  fi
   if [ -n "$glob" ]; then
     _gr_highest "$repo" "$glob"
     return 0
@@ -107,14 +103,11 @@ git_latest_tag() {
   printf '%s' "$t"
 }
 
-# git_product_tag <repo> <product> - one PRODUCT's release tag inside a monorepo.
+# git_product_tag <repo> <product> [glob] - one PRODUCT's release tag inside a monorepo.
 #
 # git_latest_tag's step 3 falls back to a bare `v*`, which is right for a repo that
 # ships one thing and actively wrong for a repo that ships several: that glob matches
-# every product's tags at once. Its own header already says so: "falling through would
-# hand a monorepo caller some other product's tag, which is worse than the empty string
-# it asked for", but the guarantee only holds for an explicit `<!-- tagglob: -->`, and
-# a caller with no summary.md still falls through.
+# every product's tags at once.
 #
 # Measured, which is why this exists: asking this monorepo for `time-tangle` returned a
 # SIBLING PRODUCT's tag. `time-tangle-v*` matches nothing (its tags are
@@ -131,25 +124,18 @@ git_latest_tag() {
 # The primary/web line wins over a platform line deliberately: web ships more often
 # than mobile here, so it is the line that tracks "what version is this product on".
 #
-# An explicit `<!-- tagglob: -->` in `summary` wins over all three, because a product whose
-# tag prefix is not its project name cannot be reached by any of them: the portfolio ships
-# `portfolio-v*` while the project is `kenneth-black-portfolio`, so every glob below misses
-# and the honest-but-wrong answer is "never shipped". The declaration is already there and
-# `git_latest_tag` already honours it; reading it here too keeps ONE source for the fact
-# rather than adding a second one to the registry. It is safe against the hazard this
-# function exists for, because a tagglob is explicit and product-scoped by construction --
-# it is the bare `v*` FALLBACK that is dangerous, not a declared glob.
+# An explicit <glob> (the registry's `tagGlob`) wins over all three, because a product
+# whose tag prefix is not its project name cannot be reached by any of them: the
+# portfolio ships `portfolio-v*` while the project is `kenneth-black-portfolio`. A
+# declared glob is product-scoped by construction; it is the bare `v*` FALLBACK that is
+# dangerous.
 git_product_tag() {
-  local repo="$1" product="$2" summary="${3:-}" glob t=""
+  local repo="$1" product="$2" glob="${3:-}" t=""
   [ -n "$repo" ] && [ -n "$product" ] && [ -d "$repo/.git" ] \
     && command -v git >/dev/null 2>&1 || return 0
-  if [ -f "$summary" ]; then
-    glob=$(grep -oE '<!--[[:space:]]*tagglob:[[:space:]]*[^ ]+[[:space:]]*-->' "$summary" 2>/dev/null \
-      | head -1 | sed -E 's/.*tagglob:[[:space:]]*([^ ]+)[[:space:]]*-->/\1/' || true)
-    if [ -n "$glob" ]; then
-      _gr_highest "$repo" "$glob"
-      return 0
-    fi
+  if [ -n "$glob" ]; then
+    _gr_highest "$repo" "$glob"
+    return 0
   fi
   for glob in "${product}-v*" "${product}-web-v*" "${product}-*-v*"; do
     t=$(_gr_highest "$repo" "$glob")

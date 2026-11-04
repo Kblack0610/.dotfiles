@@ -11,6 +11,7 @@
 #   stats                       profile name stage version open urgent high low planned agent sheet
 #   focus.all                   profile  file  line  key  text
 #   ptask.<profile>.<project>   path  line  key  text
+#   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -30,6 +31,8 @@ done
 set -- "${args[@]+"${args[@]}"}"
 
 case "${1:-}" in
+  # `notes --profile P path <kind>` -> the root the fixture names in path.<P>.<kind>
+  path) emit "path.${profile}.${2:-}" ;;
   config)
     if [ "${2:-}" = "--profiles" ]; then
       emit profiles

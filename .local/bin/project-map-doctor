@@ -71,7 +71,7 @@ while IFS= read -r line; do
   n=$((n + 1))
   jq -e --arg p "$parent" '(.trackers // {}) | has($p)' "$MAP_FILE" >/dev/null 2>&1 \
     || fail "trackers.$name inherits \"$parent\", which is not a tracker"
-done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value.inherits) | "\(.key)\t\(.value.inherits)"' "$MAP_FILE" 2>/dev/null)
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.inherits) | "\(.key)\t\(.value.inherits)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n inherits targets exist" || skip "no inherits to check"
 
 # --- 3. every `repo` relation names a registered project ----------------------------
@@ -83,7 +83,7 @@ while IFS= read -r line; do
   name="${line%%	*}"; repo="${line#*	}"
   n=$((n + 1))
   is_known "$repo" || fail "trackers.$name has repo \"$repo\", which names no registered project"
-done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value.repo != null) | "\(.key)\t\(.value.repo)"' "$MAP_FILE" 2>/dev/null)
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.repo != null) | "\(.key)\t\(.value.repo)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n repo relations resolve" || skip "no repo relations to check"
 
 # --- 4. aliases point at real projects, and never shadow one ------------------------
@@ -245,7 +245,7 @@ if declare -F lab_roots >/dev/null 2>&1; then
       if [ -z "$repo" ]; then
         warn "lab project \"$name\" claims prod but resolves no repo - nothing can verify it"
         stage_warns=$((stage_warns + 1))
-      elif [ -z "$(project_release_version "$name" "$d/summary.md" 2>/dev/null || true)" ]; then
+      elif [ -z "$(project_release_version "$name" 2>/dev/null || true)" ]; then
         fail "lab project \"$name\" claims prod but $repo has shipped no tag for it"
         bad=$((bad + 1))
       fi
@@ -260,44 +260,74 @@ else
   skip "lab-roots.sh unavailable (private overlay); cannot check project stages"
 fi
 
-# --- 7. archived lab projects that USED to resolve and now do not ---------------------
-# lab_roots yields only `current/` roots, by design -- that is where active work lives.
-# But `projects/archived/` is still READ: regen-project-index.sh renders an "archived"
-# section with a repo column for each. So an archived directory whose name is not a
-# registered project silently loses that column, and check 6 cannot see it.
+# --- 7. lab and type: the schema, and lab dirs match the registry both ways ----------
+# The registry owns each project's wiring (`lab`, `type`, ...), which a cockpit marker in
+# the project's summary.md used to carry. A marker nothing checked drifted; these checks
+# are what make the registry copy safe to rely on.
 #
-# This is not hypothetical. `archived/binks/` carried `<!-- canonical: binks-agent -->`
-# and the lab dir is named `binks`; when the marker join was deleted, `binks` resolved to
-# nothing. Registering `binks` with `repo: binks-agent` restored it. Found only because
-# someone looked -- which is what this check is for.
-#
-# WARN, not FAIL: an archived project with no repo at all (`home`, `old`, `playground`)
-# is a perfectly normal end state, and a directory nobody will touch again does not
-# deserve to break a gate. The signal worth having is the DELTA -- a name that resolves
-# to nothing while its summary still claims a repo.
-warns=0
-archived_root="$HOME/.notes/lab/projects/archived"
-if [ -d "$archived_root" ]; then
-  n=0
-  for d in "$archived_root"/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    n=$((n + 1))
-    is_known "$name" && continue
-    # Only worth reporting if the summary names a repo the registry could have resolved.
-    claim="$(grep -oE 'canonical:[[:space:]]*[A-Za-z0-9_.-]+' "$d/summary.md" 2>/dev/null \
-      | head -1 | sed 's/.*:[[:space:]]*//' || true)"
-    if [ -n "$claim" ] && is_known "$claim"; then
-      warn "archived lab project \"$name\" is unregistered but its summary still claims \"$claim\" — its index row lost its repo"
-    fi
-  done
-  if [ "$n" -eq 0 ]; then
-    skip "no archived lab projects"
-  elif [ "$warns" -eq 0 ]; then
-    pass "all $n archived lab projects resolve (or claim nothing)"
+# Every `lab` names a real notes profile, every entry with a lab declares a type from the
+# closed set, every such entry has its directory under that profile, and every directory
+# under a profile's projects says that profile. A dir moved between profiles with the
+# registry left behind fails here instead of reading the wrong org's state.
+TYPES="game app infra"
+profiles=""
+command -v notes >/dev/null 2>&1 && profiles="$(notes config --profiles 2>/dev/null || true)"
+n=0; bad=0
+while IFS=$'\037' read -r name lab type; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  if [ -n "$type" ]; then
+    case " $TYPES " in
+      *" $type "*) ;;
+      *) fail "trackers.$name has type \"$type\" (one of: $TYPES)"; bad=$((bad + 1)) ;;
+    esac
   fi
-else
-  skip "no archived lab root on this machine"
+  [ -n "$lab" ] || continue
+  if [ -z "$type" ]; then
+    fail "trackers.$name has lab \"$lab\" but no type (one of: $TYPES)"
+    bad=$((bad + 1))
+  fi
+  [ -n "$profiles" ] || continue
+  if ! printf '%s\n' "$profiles" | grep -qxF -- "$lab"; then
+    fail "trackers.$name has lab \"$lab\", which is not a notes profile ($(printf '%s' "$profiles" | tr '\n' ' '))"
+    bad=$((bad + 1))
+    continue
+  fi
+  root="$(notes --profile "$lab" path projects 2>/dev/null || true)"
+  # A profile whose vault is not on this machine cannot be looked at; that is a skip.
+  [ -n "$root" ] && [ -d "$root" ] || continue
+  if [ ! -d "$root/$name" ] && [ ! -d "$(dirname "$root")/archived/$name" ]; then
+    fail "trackers.$name has lab \"$lab\" but $root has no $name/ (current or archived)"
+    bad=$((bad + 1))
+  fi
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object")
+  | select(.value.lab or .value.type)
+  | "\(.key)\u001f\(.value.lab // "")\u001f\(.value.type // "")"' "$MAP_FILE" 2>/dev/null)
+
+if [ -n "$profiles" ]; then
+  while IFS= read -r prof; do
+    [ -n "$prof" ] || continue
+    root="$(notes --profile "$prof" path projects 2>/dev/null || true)"
+    [ -n "$root" ] && [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      lab="$(jq -r --arg n "$name" '(.trackers[$n] // {}) | if type == "object" then .lab // "" else "" end' "$MAP_FILE" 2>/dev/null)"
+      if [ "$lab" != "$prof" ]; then
+        fail "lab project \"$name\" sits under profile $prof but trackers.$name.lab is \"${lab:-unset}\""
+        bad=$((bad + 1))
+      fi
+    done
+  done <<<"$profiles"
+fi
+
+if [ "$n" -eq 0 ]; then
+  skip "no registry entry declares a lab or type"
+elif [ -z "$profiles" ]; then
+  [ "$bad" -eq 0 ] && pass "all $n lab/type declarations use known types"
+  skip "notes CLI unavailable; cannot match lab dirs to the registry"
+elif [ "$bad" -eq 0 ]; then
+  pass "all $n lab/type declarations are valid, and lab dirs match the registry both ways"
 fi
 
 printf '\n'
