@@ -658,12 +658,17 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str, o: &Overlays) -> Resul
     Ok(())
 }
 
+/// The dirs a project root may hold besides its files: the agent board, frozen waves, and
+/// `docs/`, which takes everything else.
+const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
+
 /// What a project's [`SHAPE`] check finds, one line per finding:
 ///
 /// - a missing shape file or type overlay file (`notes projects --new <name>` writes it);
 /// - a registry fact its type requires and the registry lacks (only `repo` today);
-/// - a root `*.md` outside [`Overlays::root_md`], which belongs in `docs/` (a version note
-///   or a changelog is the layout check's finding instead, fixed by `--migrate`);
+/// - a root entry outside the shape: a `*.md` outside [`Overlays::root_md`] or a dir outside
+///   [`ROOT_DIRS`] belongs in `docs/`, any other file in `docs/assets/` (dotfiles are not
+///   checked; a version note or a changelog is the layout check's finding, fixed by `--migrate`);
 /// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
 ///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
 /// - an open row written twice on one sheet (same [`md::task_key`]).
@@ -689,18 +694,31 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
     }
 
     let root_md = o.root_md(name);
-    let mut loose: Vec<String> = fs::read_dir(dir)
+    let mut loose: Vec<(String, bool)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|f| f.ends_with(".md") && !root_md.contains(&f.as_str()))
-        .filter(|f| !is_version_file(f) && !f.eq_ignore_ascii_case("changelog.md"))
+        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path().is_dir())))
+        .filter(|(f, _)| !f.starts_with('.'))
+        .filter(|(f, is_dir)| {
+            if *is_dir {
+                !ROOT_DIRS.contains(&f.as_str())
+            } else {
+                !root_md.contains(&f.as_str())
+                    && !is_version_file(f)
+                    && !f.eq_ignore_ascii_case("changelog.md")
+            }
+        })
         .collect();
     loose.sort();
-    for f in loose {
-        out.push(format!("loose {f} (move it to docs/)"));
+    for (f, is_dir) in loose {
+        out.push(if is_dir {
+            format!("loose {f}/ (move it to docs/)")
+        } else if f.ends_with(".md") {
+            format!("loose {f} (move it to docs/)")
+        } else {
+            format!("loose {f} (move it to docs/assets/)")
+        });
     }
 
     if let Ok(content) = fs::read_to_string(dir.join("summary.md")) {
@@ -2300,9 +2318,9 @@ pub fn wave_order_findings(p: &Profile) -> Vec<String> {
 /// Departures from the canonical project shape, as short lines for `notes doctor`.
 ///
 /// The shape: `README.md` (sheet), `summary.md` (cockpit), `agent/`, `versions/<vX.Y.Z>.md`,
-/// plus whatever notes and dirs a project wants. What is reported: a version note or
-/// `changelog.md` loose at a project root (readers only look in `versions/`), a project dir
-/// no index lane lists, a lane line whose target is missing or sits in another org's tree,
+/// and `docs/` for everything else ([`shape_findings`] reports any other root entry). What is
+/// reported here: a version note or `changelog.md` loose at a project root (readers only look
+/// in `versions/`), a project dir no index lane lists, a lane line whose target is missing or sits in another org's tree,
 /// and a dir under `current/` or `archived/` that is not a project at all.
 pub fn layout_findings(p: &Profile) -> Vec<String> {
     // Every OTHER org's projects tree, so a cross-org lane line can say whose it is.
@@ -4450,6 +4468,9 @@ mod shape_tests {
         fs::write(dir.join("overview.md"), "notes\n").unwrap();
         fs::write(dir.join("v0.0.9.md"), "frozen\n").unwrap();
         fs::write(dir.join("art.svg"), "<svg/>").unwrap();
+        for d in ["shots", "docs", "agent", "versions", ".obsidian"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
 
         let f = shape_findings(&dir, "demo", &Overlays::default());
         assert!(
@@ -4464,10 +4485,23 @@ mod shape_tests {
             f.contains(&"loose overview.md (move it to docs/)".to_string()),
             "{f:?}"
         );
-        // a version note is the layout check's to report, and only *.md is a note doc
+        // a binary goes to docs/assets/, a dir under docs/
         assert!(
-            !f.iter()
-                .any(|l| l.contains("v0.0.9") || l.contains("art.svg")),
+            f.contains(&"loose art.svg (move it to docs/assets/)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(&"loose shots/ (move it to docs/)".to_string()),
+            "{f:?}"
+        );
+        // NEGATIVE CONTROL: the shape's own dirs, dotfiles and a version note (the layout
+        // check's to report) are not loose
+        assert!(
+            !f.iter().any(|l| l.contains("v0.0.9")
+                || l.contains("docs/ (")
+                || l.contains("agent/ (")
+                || l.contains("versions/ (")
+                || l.contains(".obsidian")),
             "{f:?}"
         );
         // the done copy is not a duplicate; the two open ones are, case and priority aside

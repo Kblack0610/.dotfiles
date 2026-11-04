@@ -63,7 +63,7 @@ set -uo pipefail
 : "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
-: "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/bench}"
+: "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/docs/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
