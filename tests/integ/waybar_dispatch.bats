@@ -82,9 +82,23 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 2 "oldest: runnable 12h59m, urgent 12h59m"
   assert_line --index 3 "flow: last hour 5 started (run 4, hand 1, redispatch 0, resume 0), 4 done; 40 done in 24h"
   assert_line --index 4 "drain: last 6h +18 added, -30 done: shrinking, clears in about 30h at that rate"
-  assert_line --index 5 "room: run units 16/24, +5 started by hand; load 27 of 36; idle 35% (floor 30%)"
+  assert_line --index 5 "room: run units <span color='#a6e34a'>16/24</span>, +5 started by hand; load <span color='#a6e34a'>27 of 36</span>; idle <span color='#ffcc2f'>35% (floor 30%)</span>"
   assert_line --index 6 "last pass 3m ago, last start 12m ago"
   assert_line --index 7 "heals last hour: reaped 7, flapping 0; could start now: - more"
+}
+
+@test "each room number takes its own colour: green with room, amber near its limit, red past it" {
+  feed summary_dispatch.room_live_runs=24 summary_dispatch.room_load=40 summary_dispatch.room_idle=20
+  run "$MODULE"
+  run tip
+  assert_output --partial "room: run units <span color='#ffcc2f'>24/24</span>"
+  assert_output --partial "load <span color='#ef5734'>40 of 36</span>"
+  assert_output --partial "idle <span color='#ef5734'>20% (floor 30%)</span>"
+  feed summary_dispatch.room_load=29 summary_dispatch.room_idle=40
+  run "$MODULE"
+  run tip
+  assert_output --partial "load <span color='#ffcc2f'>29 of 36</span>"
+  assert_output --partial "idle <span color='#a6e34a'>40% (floor 30%)</span>"
 }
 
 @test "more added than done in 6h reads growing, never a clear time" {

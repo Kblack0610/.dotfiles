@@ -112,9 +112,16 @@ n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
 tip+=$'\n'"flow: last hour $(($(n0 starts_1h_run) + $(n0 starts_1h_hand) + $(n0 starts_1h_redispatch) + $(n0 starts_1h_resume))) started (run $(d starts_1h_run), hand $(d starts_1h_hand), redispatch $(d starts_1h_redispatch), resume $(d starts_1h_resume)), $(d done_1h) done; $(d done_24h) done in 24h"
 tip+=$'\n'"drain: $drain"
 if [ -n "$(get dispatch.room_max_live)" ]; then
-  room="room: run units $(d room_live_runs)/$(d room_max_live)"
+  # Each number in its own colour, labels plain: green with room, amber near its limit, red past it.
+  # Full units are amber at most: the gates, not the count, decide when the machine is full.
+  units=$(n0 room_live_runs) cap=$(n0 room_max_live) load=$(n0 room_load) lcap=$(n0 room_load_cap)
+  idle=$(n0 room_idle) floor=$(n0 room_min_idle)
+  ul=0; [ "$units" -ge "$cap" ] && ul=1
+  ll=0; [ $((load * 100)) -ge $((lcap * 80)) ] && ll=1; [ "$load" -gt "$lcap" ] && ll=2
+  il=0; [ "$idle" -lt $((floor + 10)) ] && il=1; [ "$idle" -lt "$floor" ] && il=2
+  room="room: run units $(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
   [ -n "$(get dispatch.room_live_hand)" ] && room+=", +$(d room_live_hand) started by hand"
-  tip+=$'\n'"$room; load $(d room_load) of $(d room_load_cap); idle $(d room_idle)% (floor $(d room_min_idle)%)"
+  tip+=$'\n'"$room; load $(paint "${LEVEL_COLOUR[$ll]}" "$load of $lcap"); idle $(paint "${LEVEL_COLOUR[$il]}" "$idle% (floor $floor%)")"
 else
   tip+=$'\n'"room: no headroom from a pass in the last 45 minutes"
 fi
