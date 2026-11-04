@@ -35,11 +35,11 @@ clean_map() {
   cat > "$MAP" <<'EOF'
 {
   "paths":  { "/tmp/mono": "mono-canon", "/tmp/other": "other-canon" },
-  "apps":   { "mono-canon": { "apps/alpha": "alpha" } },
   "aliases":{ "mono": "mono-canon" },
   "trackers": {
     "mono-canon": { "system": "vikunja" },
-    "alpha":      { "inherits": "mono-canon", "repo": "mono-canon" },
+    "alpha":      { "inherits": "mono-canon", "repo": "mono-canon", "path": "apps/alpha",
+                    "also": [ { "repo": "other-canon", "path": "srv/alpha" } ] },
     "labonly":    { "repo": "other-canon" },
     "default":    { "system": "vikunja" }
   }
@@ -70,12 +70,28 @@ EOF
   refute_output --partial 'PASS  all 0 lab projects'
 }
 
-@test "an apps.<repo> key naming no registered project fails, and names it" {
+@test "the clean map's code locations are checked, not skipped" {
+  # NEGATIVE CONTROL for the two failures below: on a clean map the check must run.
   clean_map
-  jq '.apps = { "typo-canon": { "apps/alpha": "alpha" } }' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'PASS  all 2 code locations sit in a registered repo'
+}
+
+@test "an also location in an unregistered repo fails, and names it" {
+  clean_map
+  jq '.trackers.alpha.also[0].repo = "typo-canon"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'apps."typo-canon" names no registered project'
+  assert_output --partial 'trackers.alpha lists srv/alpha in "typo-canon"'
+}
+
+@test "a path with no repo fails: the resolver never consults it" {
+  clean_map
+  jq '.trackers.labonly = { "path": "apps/lab" }' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has a code location without both repo and path'
 }
 
 @test "an inherits pointing at a missing tracker fails, and names it" {

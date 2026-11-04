@@ -25,14 +25,15 @@ setup() {
   REPO="$SANDBOX/repos/mono"
 }
 
-# write_map <apps-json> -- a map whose `mono` repo is registered by absolute path.
+# write_map <trackers-json> -- a map whose `mono` repo is registered by absolute path.
+# Apps are tracker entries with `repo` + `path`; the string key catches an unguarded jq.
 write_map() {
+  local trackers="${1:-{\}}"
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "mono-canon" },
-  "apps":  { "mono-canon": ${1:-{\}} },
   "aliases": { "aliased-dir": "from-alias" },
-  "trackers": {}
+  "trackers": $(jq -c '. + {"_comment": "a string value"}' <<<"$trackers")
 }
 EOF
 }
@@ -48,7 +49,9 @@ git_repo() {
   git -C "$REPO" commit -qm init
 }
 
-APPS='{ "apps/alpha": "alpha", "apps/beta": "beta" }'
+APPS='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" },
+        "beta":  { "repo": "mono-canon", "path": "apps/beta" } }'
+ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
 
 # -- the pre-existing contract, which must not regress -----------------------
 
@@ -185,7 +188,7 @@ APPS='{ "apps/alpha": "alpha", "apps/beta": "beta" }'
   # NEGATIVE CONTROL: the branch fallback must be gated on being AT the worktree root.
   # Ungated, packages/shared on a fix/alpha/... branch answered
   # "alpha" -- a directory that is plainly not that app.
-  git_repo; write_map '{ "apps/alpha": "alpha" }'
+  git_repo; write_map "$ALPHA"
   git -C "$REPO" checkout -q -b fix/alpha/some-bug
   run resolve_project_name "$REPO/packages/shared"
   assert_success
@@ -194,11 +197,53 @@ APPS='{ "apps/alpha": "alpha", "apps/beta": "beta" }'
 }
 
 @test "the branch is IGNORED for a cwd inside a not-yet-registered sibling app" {
-  git_repo; write_map '{ "apps/alpha": "alpha" }'
+  git_repo; write_map "$ALPHA"
   git -C "$REPO" checkout -q -b fix/alpha/some-bug
   run resolve_project_name "$REPO/apps/beta"
   assert_success
   assert_output 'mono-canon'
+}
+
+# -- the code location comes from the tracker entry ---------------------------
+
+@test "an app's second code location (also) resolves to the app" {
+  git_repo
+  write_map '{ "gamma": { "repo": "other-canon", "path": "Assets/Gamma",
+                          "also": [ { "repo": "mono-canon", "path": "apps/beta" } ] } }'
+  run resolve_project_name "$REPO/apps/beta"
+  assert_success
+  assert_output 'gamma'
+}
+
+@test "a path registered under a DIFFERENT repo does not match in this one" {
+  # NEGATIVE CONTROL: matching on `path` alone would make every repo with an apps/alpha
+  # directory resolve to whichever project happened to register that path first.
+  git_repo
+  write_map '{ "alpha": { "repo": "other-canon", "path": "apps/alpha" } }'
+  run resolve_project_name "$REPO/apps/alpha"
+  assert_success
+  assert_output 'mono-canon'
+}
+
+@test "a tracker with a repo but no path does not claim a branch segment" {
+  # A lab project that shares the repo (repo, no path) is not an app of it: a
+  # refactor/packages/... branch must not resolve to a tracker named packages.
+  git_repo
+  write_map '{ "packages": { "repo": "mono-canon" } }'
+  git -C "$REPO" checkout -q -b refactor/packages/auth-cleanup
+  run resolve_project_name "$REPO"
+  assert_success
+  assert_output 'mono-canon'
+}
+
+@test "a branch names an app through its also location" {
+  git_repo
+  write_map '{ "gamma": { "repo": "other-canon", "path": "Assets/Gamma",
+                          "also": [ { "repo": "mono-canon", "path": "apps/beta" } ] } }'
+  git -C "$REPO" checkout -q -b feat/gamma/lobby
+  run resolve_project_name "$REPO"
+  assert_success
+  assert_output 'gamma'
 }
 
 @test "a detached HEAD at the repo root resolves to the repo without erroring" {
@@ -252,7 +297,6 @@ write_tracker_map() {
     "/repos/toolrepo": "toolrepo",
     "/repos/monorepo": "monorepo"
   },
-  "apps": {},
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
@@ -393,7 +437,6 @@ write_release_map() {
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "monorepo" },
-  "apps": {},
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",

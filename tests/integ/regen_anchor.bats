@@ -33,7 +33,6 @@ setup() {
   cat > "$MAP" <<'EOF'
 {
   "paths": { "/repos/toolrepo": "toolrepo" },
-  "apps": {},
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a string value, to catch an unguarded jq",
@@ -178,7 +177,7 @@ seed_anchor() {
   mkdir -p "$HOME/proj"
 
   cat > "$MAP" <<EOF
-{ "paths": { "$HOME/proj": "proj" }, "apps": {}, "aliases": {}, "trackers": {} }
+{ "paths": { "$HOME/proj": "proj" }, "aliases": {}, "trackers": {} }
 EOF
 
   CLAUDE_PROJECT_DIR="$HOME/proj" run bash "$HOOK" </dev/null

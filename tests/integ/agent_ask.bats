@@ -411,8 +411,8 @@ registry() {
   ln -sf "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
   printf '%s\n' '{"paths":{"/r/big":"big-platform"},"aliases":{"monorepo":"big-platform"},
-    "apps":{"big-platform":{"apps/shop":"shop"}},
-    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"}}}' > "$PROJECT_MAP_FILE"
+    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"},
+      "shop":{"repo":"big-platform","path":"apps/shop"}}}' > "$PROJECT_MAP_FILE"
 }
 
 @test "post refuses an explicit project the registry does not know, or an alias" {

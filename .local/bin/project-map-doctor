@@ -45,23 +45,30 @@ pass "map is valid JSON ($MAP_FILE)"
 known() {
   jq -r '
     [ (.paths // {}) | to_entries[] | .value ]
-    + [ (.apps  // {}) | to_entries[] | .value | to_entries[] | .value ]
     + [ (.trackers // {}) | keys[] | select(. != "default") ]
     | unique[]' "$MAP_FILE" 2>/dev/null
 }
 is_known() { known | grep -qxF -- "$1"; }
 
-# --- 1. every `apps.<repo>` key names a registered repo -----------------------------
-# A typo here does not error: the app block is simply never consulted and every path in
-# that repo falls through to the repo name.
+# --- 1. every code location (`path`, `also[]`) sits in a registered repo ----------------
+# resolve_project_name maps a directory to a project only through a `repo` + `path` pair.
+# A `path` with no `repo`, or an `also` item missing either half, is never consulted:
+# sessions in that directory silently file under the repo instead.
 n=0
-while IFS= read -r repo; do
-  [ -n "$repo" ] || continue
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="${line%%	*}"; rest="${line#*	}"; repo="${rest%%	*}"; path="${rest#*	}"
   n=$((n + 1))
-  is_known "$repo" || fail "apps.\"$repo\" names no registered project"
-done < <(jq -r '(.apps // {}) | keys[]' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n apps.<repo> keys are registered projects" \
-  || skip "no apps blocks to check"
+  if [ -z "$repo" ] || [ -z "$path" ]; then
+    fail "trackers.$name has a code location without both repo and path (repo=\"$repo\" path=\"$path\")"
+  elif ! is_known "$repo"; then
+    fail "trackers.$name lists $path in \"$repo\", which is not a registered project"
+  fi
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $k
+  | ((select(.value.path) | {repo: .value.repo, path: .value.path}), (.value.also // [])[])
+  | "\($k)\t\(.repo // "")\t\(.path // "")"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n code locations sit in a registered repo" \
+  || skip "no code locations to check"
 
 # --- 2. every `inherits` names a real tracker ---------------------------------------
 n=0
