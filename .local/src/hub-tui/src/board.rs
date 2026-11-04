@@ -1039,7 +1039,8 @@ pub fn page(
         | Tab::Today
         | Tab::History
         | Tab::Fleet
-        | Tab::Queue => {}
+        | Tab::Queue
+        | Tab::Board => {}
     }
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
