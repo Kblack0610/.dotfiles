@@ -606,11 +606,13 @@ struct Ask {
     recommend: String,
     /// The Claude session that asked, empty for a headless run: the tab puts the ask under it.
     session: String,
+    /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
+    judge: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
-/// claude_session.
+/// claude_session, judge, answered_by.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -627,6 +629,7 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     .collect(),
                 recommend: f.get(10).copied().unwrap_or("").into(),
                 session: f.get(15).copied().unwrap_or("").into(),
+                judge: f.get(16).copied().unwrap_or("").into(),
             })
         })
         .collect()
@@ -876,6 +879,10 @@ mod tests {
         assert_eq!(asks[0].options, vec!["approve", "hold"]);
         assert_eq!(asks[0].recommend, "approve");
         assert_eq!(asks[0].kind, "gate");
+        assert_eq!(asks[0].judge, "");
+        let judged =
+            "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
+        assert_eq!(parse_asks(judged)[0].judge, "answer:b");
     }
 
     #[test]

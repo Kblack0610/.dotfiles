@@ -493,6 +493,15 @@ function renderAsks() {
   if (input) { input.value = keep.v; input.focus(); }
 }
 
+// The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
+function judgeLine(a) {
+  if (!a.judge) return "";
+  const call = a.judge === "human" ? "leave it to you"
+    : a.judge === "take-recommend" ? `take the recommendation (${a.recommend})`
+    : `answer "${a.judge.replace(/^answer:/, "")}"`;
+  return `<div class="meta">judge would ${esc(call)}</div>`;
+}
+
 function drawAsks() {
   const live = asking();
   if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
@@ -503,6 +512,7 @@ function drawAsks() {
     <div class="card" data-id="${esc(a.id)}">
       <div class="meta">${esc(a.project)} &middot; ${owner(a) ? esc(owner(a).target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
       <div class="q">${esc(a.question)}</div>
+      ${judgeLine(a)}
       <div class="opts">
         ${a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (rec)" : ""}</button>`).join("")}
         <input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>
