@@ -1429,7 +1429,7 @@ cmd_forecast() {
     | (if ($due | length) > 0 then "  due now, past their estimate: \($due | length) phases in \($due | map(.target) | unique | length) sessions" else empty end),
       "  next phases, in expected order:",
       ($all | map(select(.t > $now)) | .[:10][]
-        | "    \(.t | hm)  (slow \(.slow | hm))  \(.target | sub("^[^/]*/"; ""))  \(.name)")' <<<"$fc"
+        | "    \(.t | hm)  (slow \(.slow | hm))  \(.target | sub("^[^/]*/"; ""))  \(.name | if length > 70 then .[:67] + "..." else . end)")' <<<"$fc"
 }
 
 # progress_since <epoch>: the progress rows from an hour before it on, so a flow from that epoch
