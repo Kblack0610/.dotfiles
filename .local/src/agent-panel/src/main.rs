@@ -29,6 +29,10 @@ enum Cmd {
         /// One JSON object per line with session and transcript facts (fleet-sessions).
         #[arg(long)]
         json: bool,
+        /// Add a row per parked session (`claude-acct park`), the attached ones first: what
+        /// hub-core `session_actions` acts on.
+        #[arg(long)]
+        parked: bool,
     },
     /// Exit 0 when the transcript's last word asks the human something (a question, a step for
     /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
@@ -52,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List { json }) => chooser::run_list(json),
+        Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
         Some(Cmd::AsksHuman { transcript }) => {
             std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
         }

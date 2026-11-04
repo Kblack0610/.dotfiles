@@ -53,21 +53,9 @@ mod tests {
 
     fn agent(target: &str, tags: &str) -> chooser::Agent {
         chooser::Agent {
-            glyph: ' ',
             target: target.into(),
-            short_target: target.into(),
-            project: "dotfiles".into(),
-            repo_full: "dotfiles".into(),
-            summary: String::new(),
-            jsonl: None,
             tags: tags.into(),
-            pane: format!("default/%{target}"),
-            session_id: format!("sid-{target}"),
-            cwd: String::new(),
-            status: "idle".into(),
-            plan: false,
-            ask: false,
-            started_at: None,
+            ..Default::default()
         }
     }
 

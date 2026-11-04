@@ -19,6 +19,11 @@ pub struct Pane {
     /// tmux's stable pane id (`%12`). A window target hits the ACTIVE pane, which in a
     /// split window may not be the agent, so anything that types into a pane uses this.
     pub pane_id: String,
+    /// A client is attached to the pane's session and this is its active window: the window
+    /// the human is looking at. Other windows of an attached session are not "here".
+    pub attached: bool,
+    /// tmux's stable window id (`@3`), which survives a renumber, for closing the window.
+    pub window_id: String,
     pub title: String,
     /// Window tags set via Prefix+t (see .local/src/tmux/tags.sh), rendered by
     /// tmux itself from the `@tag_*` window options. Empty when untagged.
@@ -118,7 +123,8 @@ fn list_server_panes(server: &str) -> Vec<Pane> {
 /// (fleet-shepherd lease), so the tag needs the clock, which a list-panes format has
 /// no variable for: `now` is spliced in, the same test as .tmux.conf `@shepherd_live`.
 fn pane_format(now: u64) -> String {
-    "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t#{pane_title}\t\
+    "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
+     #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
      #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
      #{?#{e|<:NOW,#{@shepherd}},shepherd ,}"
         .replace("NOW", &now.to_string())
@@ -141,8 +147,10 @@ fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
             current_path: f[2].to_string(),
             pid,
             pane_id: f.get(4).copied().unwrap_or("").to_string(),
-            title: f.get(5).copied().unwrap_or("").to_string(),
-            tags: f.get(6).copied().unwrap_or("").trim().to_string(),
+            attached: f.get(5).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0) > 0,
+            window_id: f.get(6).copied().unwrap_or("").to_string(),
+            title: f.get(7).copied().unwrap_or("").to_string(),
+            tags: f.get(8).copied().unwrap_or("").trim().to_string(),
         });
     }
     panes
@@ -226,12 +234,15 @@ mod tests {
 
     #[test]
     fn parses_panes_with_their_server() {
-        let text = "hub\t0\t/home/u\t42\t%7\t✳ title\tpinned \nshort\trow\n";
+        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \n\
+                    hub\t1\t/home/u\t43\t%8\t0\t@4\tt\t\nshort\trow\n";
         let panes = parse_panes("hub", text);
-        assert_eq!(panes.len(), 1);
+        assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].server, "hub");
         assert_eq!(panes[0].pid, 42);
         assert_eq!(panes[0].pane_id, "%7");
+        assert!(panes[0].attached && !panes[1].attached);
+        assert_eq!(panes[0].window_id, "@3");
         assert_eq!(panes[0].title, "✳ title");
         assert_eq!(panes[0].tags, "pinned");
     }

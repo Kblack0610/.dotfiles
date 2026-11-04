@@ -289,6 +289,35 @@ tmux_calls() { cat "$FIX/calls.log"; }
   [ "$status" -eq 2 ]
 }
 
+@test "move --to resumes on the named account, not the one with the most room" {
+  usage main 20 30
+  usage alt 5 10
+  session lab agent-8 %19 800 801 idle "$ALT"
+  run "$ACCT" move agent-8 --server lab --to main
+  assert_success
+  assert_output --partial 'from alt to main (5h 20%, 7d 30%)'
+  run cat "$FIX/started"
+  assert_output --partial "cd $(q "$HOME/wt") && env -u CLAUDE_CONFIG_DIR claude --resume sid-1"
+}
+
+@test "move --to refuses an unknown account before touching tmux, and a full or current one" {
+  run "$ACCT" move agent-9 --server lab --to nobody
+  [ "$status" -eq 2 ]; assert_output --partial "no account 'nobody'"
+  run "$ACCT" move agent-9 --server lab --to
+  [ "$status" -eq 2 ]; assert_output --partial '--to needs an account name'
+  run "$ACCT" park agent-9 --server lab --to alt
+  [ "$status" -eq 2 ]; assert_output --partial '--to is for move'
+  [ ! -f "$FIX/calls.log" ]
+  session lab agent-9 %21 900 901 idle "$ALT"
+  run "$ACCT" move agent-9 --server lab --to alt
+  assert_failure; assert_output --partial 'already on alt (5h 5%, 7d 10%)'
+  usage main 100 40
+  run "$ACCT" move agent-9 --server lab --to main
+  assert_failure; assert_output --partial 'main has no room (5h 100%, 7d 40%)'
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
 
 # --- park and unpark ---
 

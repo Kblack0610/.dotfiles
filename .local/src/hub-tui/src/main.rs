@@ -4,6 +4,7 @@
 
 mod app;
 mod board;
+mod controls;
 mod day;
 mod fit;
 mod fleet;
@@ -93,6 +94,11 @@ fn print_once(tab: Option<Tab>) -> i32 {
     let mut out = std::io::stdout().lock();
     if let Some(t @ (Tab::Sessions | Tab::Today | Tab::History)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
+        if t == Tab::Sessions {
+            a.controls.set(hub_core::session_actions::gather(
+                &hub_core::session_actions::System,
+            ));
+        }
         a.tab = t;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
@@ -204,6 +210,9 @@ fn run(tab: Tab) -> std::io::Result<()> {
     app.read_boards();
     if app.tab == Tab::Forecast {
         app.read_forecast();
+    }
+    if app.tab == Tab::Sessions {
+        app.read_sessions();
     }
     let mut term = ratatui::init();
     let res = (|| {
