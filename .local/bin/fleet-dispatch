@@ -61,6 +61,7 @@ set -uo pipefail
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
+HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session,
 # whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
@@ -771,8 +772,10 @@ last_run_start() {
 # starts in the last hour by origin; reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
 cmd_stats() {
-  local now q since started pass=null starved=false
+  local now q since started pass=null starved=false hr=null
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
+  # The last pass's headroom, while it is younger than three passes: an old one is no answer.
+  [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   cmd_starved >/dev/null 2>&1 || starved=true
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -785,7 +788,7 @@ cmd_stats() {
     $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
     $4 == "reaped" { print "settle", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
-      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" '
+      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select(.priority == "urgent" or .priority == "high"))) as $u
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
@@ -797,7 +800,8 @@ cmd_stats() {
          starts_1h_run: starts("run"), starts_1h_hand: starts("hand"),
          starts_1h_redispatch: starts("redispatch"), starts_1h_resume: starts("resume"),
          reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),
-         flapping_items: ($flapping | length), flapping: $flapping}'
+         flapping_items: ($flapping | length), flapping: $flapping,
+         could_start: ($hr.could_start // null)}'
 }
 
 # reap -- settle the queue items whose session is gone (settle_item, then settle_row for a board
@@ -1104,7 +1108,11 @@ cmd_report() {
 
 main() {
   case "${1:-}" in
-    run) shift; cmd_run "$@" ;;
+    run)
+      shift; cmd_run "$@"; local rc=$?
+      # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
+      [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
+      return "$rc" ;;
     candidates) cmd_candidates ;;
     fill) shift; cmd_fill "$@" ;;
     report) cmd_report ;;
