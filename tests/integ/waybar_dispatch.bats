@@ -82,7 +82,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 2 "oldest: runnable 12h59m, urgent 12h59m"
   assert_line --index 3 "flow: last hour 5 started (run 4, hand 1, redispatch 0, resume 0), 4 done; 40 done in 24h"
   assert_line --index 4 "drain: last 6h +18 added, -30 done: shrinking, clears in about 30h at that rate"
-  assert_line --index 5 "room: run slots 16/24, +5 started by hand; load 27 of 36; idle 35% (floor 30%)"
+  assert_line --index 5 "room: run units 16/24, +5 started by hand; load 27 of 36; idle 35% (floor 30%)"
   assert_line --index 6 "last pass 3m ago, last start 12m ago"
   assert_line --index 7 "heals last hour: reaped 7, flapping 0; could start now: - more"
 }
@@ -98,11 +98,15 @@ tip() { jq -r .tooltip <<< "$output"; }
   feed summary_dispatch.room_held_slots=1
   run "$MODULE"
   run tip
-  assert_output --partial "held by: every run slot is used (DISPATCH_MAX_LIVE)"
+  assert_output --partial "held by: every run unit is used (DISPATCH_MAX_LIVE)"
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
   assert_output --partial "held by: no account has room under its weekly pace"
+  feed summary_dispatch.room_held_assess=1
+  run "$MODULE"
+  run tip
+  assert_output --partial "held by: fleet-assess says the machine is too busy (fleet-assess)"
   feed
   run "$MODULE"
   run tip
