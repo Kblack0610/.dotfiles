@@ -53,18 +53,26 @@ async fn run(args: &[&str], stdin: Option<&str>) -> ApiResult<String> {
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-queue: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        bad(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("agent-queue: {e}"),
+        )
+    })?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(text.as_bytes())
-            .await
-            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-queue: {e}")))?;
+        pipe.write_all(text.as_bytes()).await.map_err(|e| {
+            bad(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("agent-queue: {e}"),
+            )
+        })?;
     }
-    let out = child
-        .wait_with_output()
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-queue: {e}")))?;
+    let out = child.wait_with_output().await.map_err(|e| {
+        bad(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("agent-queue: {e}"),
+        )
+    })?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -95,7 +103,11 @@ pub struct AddBody {
 
 /// The argv for `agent-queue add`, or why the body is refused. The task goes on stdin.
 fn add_args(b: &AddBody) -> Result<Vec<String>, &'static str> {
-    let mode = if b.mode.is_empty() { "oneshot" } else { &b.mode };
+    let mode = if b.mode.is_empty() {
+        "oneshot"
+    } else {
+        &b.mode
+    };
     let priority = if b.priority.is_empty() {
         "normal"
     } else {

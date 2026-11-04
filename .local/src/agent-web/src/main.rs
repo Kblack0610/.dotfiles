@@ -1039,7 +1039,10 @@ mod tests {
             Some(r#"{"kind":"queue"}"#)
         );
         assert_eq!(classify(Path::new("/h/.agent/queue/.lock")), None);
-        assert_eq!(classify(Path::new("/h/.agent/queue/queued/.add.AbC123")), None);
+        assert_eq!(
+            classify(Path::new("/h/.agent/queue/queued/.add.AbC123")),
+            None
+        );
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/state.json")).as_deref(),
             Some(r#"{"kind":"watch"}"#)
