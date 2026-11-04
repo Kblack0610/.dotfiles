@@ -14,7 +14,7 @@
 #
 # WHY THE ROLE IS NOT CLAUDE-SHAPED
 # agentctl has always documented itself as harness-agnostic (opencode, claude,
-# openclaw, binks) but had no HARNESS key - the choice hid inside each COMMAND.
+# binks) but had no HARNESS key - the choice hid inside each COMMAND.
 # Meanwhile opencode already modelled roles as agents with tool grants. So the
 # role is the abstraction and claude is one implementation of it, not the name on
 # the tin. Structure mirrors the `ticket` CLI: entrypoint + lib/ + harnesses/.

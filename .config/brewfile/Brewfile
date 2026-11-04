@@ -32,7 +32,6 @@ brew "starship"
 brew "tree-sitter"  # required by nvim-treesitter (main branch) to compile parsers
 brew "stow"
 brew "tmux"
-brew "smug"  # tmux session manager (replaced tmuxinator)
 brew "uv"
 brew "btop"
 brew "bun"

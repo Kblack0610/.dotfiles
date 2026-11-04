@@ -214,7 +214,6 @@ apply_dotfiles() {
 ^/\.config/firefox$
 ^/\.config/Code$
 ^/\.config/Windsurf$
-^/\.config/vnc$
 ^/\.config/cups$
 ^/\.config/unity3d$
 ^/\.config/zoomus\.conf$

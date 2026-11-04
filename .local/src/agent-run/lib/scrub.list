@@ -60,8 +60,8 @@ OPENCODE_CONFIG_PATH
 OPENCODE_HOME                     # config-discovery root; relocating it reselects the provider
 OPENCODE_AUTH_FILE                # credentials
 
-# --- The `raw` harness convention. comms-triage.sh, notes-version-summary and
-# llm-call.sh all read these names, so an inherited value repoints a summariser
+# --- The `raw` harness convention. comms-triage.sh and notes-version-summary
+# both read these names, so an inherited value repoints a summariser
 # at somebody else's gateway exactly as easily as an ANTHROPIC_* one.
 LLM_BASE_URL
 LLM_MODEL

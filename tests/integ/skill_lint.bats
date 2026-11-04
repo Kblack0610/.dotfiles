@@ -291,8 +291,8 @@ PY
 # 2-key frontmatter contract. Holding it to the Claude one (category/tags/reviewed,
 # category directories, the house ASCII rule) produced 25 findings that could never
 # be actioned - which is how a report becomes something nobody reads. But the checks
-# that mean something anywhere still apply: llm-judge having NO frontmatter at all
-# was a real find.
+# that mean something anywhere still apply: a skill with NO frontmatter at all is
+# still flagged.
 
 # The local report needs a whole machine, so point every input at an empty sandbox
 # and let only the codex corpus have content.
@@ -320,8 +320,8 @@ codex_report() {
   refute_output --partial "NONASCII"
 }
 
-# The checks that mean something anywhere still fire. This is the one that found
-# llm-judge, which had no frontmatter at all and had never been scanned.
+# The checks that mean something anywhere still fire, starting with a skill that
+# has no frontmatter at all.
 @test "codex: missing frontmatter IS still flagged" {
   mkdir -p "$REPO/codex/nofm"
   printf '# no frontmatter at all\n' > "$REPO/codex/nofm/SKILL.md"

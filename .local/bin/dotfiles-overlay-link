@@ -8,7 +8,7 @@
 #   points at the (now-empty) public path. When `stow` runs from the overlay it
 #   refuses to replace those pre-existing links - it calls them conflicts and
 #   silently skips ("review manually") - so the private half never attaches and
-#   ~/.config/smug, ~/.local/bin/agent-notify, etc. dangle.
+#   ~/.config/agentctl, ~/.local/bin/agent-notify, etc. dangle.
 #
 #   This repoints every dead link straight at the overlay. It is idempotent and
 #   SAFE: it only ever touches a link that is missing or dangling, and never
