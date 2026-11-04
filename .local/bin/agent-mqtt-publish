@@ -190,8 +190,9 @@ snapshot() {
             emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
     fi
 
-    # Shepherd: open, unhandled and skipped due lines, 24h nudges, escalations and passes, and the
-    # last pass, as `fleet-shepherd stats` reads them from its ledgers; the HA state is the open due lines.
+    # Shepherd: open, unhandled and skipped due lines, 24h nudges, escalations and passes, the pass
+    # running now (id, age, attach line), the last verdict and whether it is stuck, as `fleet-shepherd
+    # stats` reads them from its ledgers. HA gets every field as an attribute; the state is the open due lines.
     if command -v fleet-shepherd >/dev/null 2>&1; then
         local sstats
         sstats="$(fleet-shepherd stats 2>/dev/null)" && jq -e '.due | numbers' <<< "$sstats" >/dev/null 2>&1 &&

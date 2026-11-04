@@ -11,8 +11,13 @@
 #   fleet-shepherd passes [n]
 #                          the pass running now and the last n scored, newest first
 #   fleet-shepherd stats   one JSON object of shepherd numbers for the feed (agent-mqtt-publish
-#                          `summary shepherd`): open, unhandled, skipped and paged due lines, 24h
-#                          nudges, escalations and skips from log.md, passes and the last one's age
+#                          `summary shepherd`, agent-web's Shepherd tab): open, unhandled,
+#                          skipped and paged due lines, 24h nudges, escalations and skips from
+#                          log.md, passes, the pass running now (id, status, age, attach line),
+#                          the last scored one (id, verdict) and why the shepherd is stuck, if it is
+#   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
+#                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
+#                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, then print
 #                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
@@ -60,6 +65,7 @@ INFRA="$LEDGER/.infra"       # this pass's infra and watch lines
 DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what the last check handed to a pass
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
+UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<session:window>: the pass running now
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
 SERVER="${FLEET_SHEPHERD_SERVER:-hub}"  # hub, beside the human's chats; Prefix o jumps to it
@@ -76,11 +82,19 @@ LEGACY=shepherd   # the session passes ran in until 2026-11-04; legacy_sweep ret
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
+# A pass may run PASS_MAX_MIN before the next 15-minute run replaces it, so a busy shepherd starts
+# one at least every 45m; 60 leaves room for a late timer.
+: "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
 
+# publish <verdict> <detail>: the run's outcome, and the pass on record as the runner's item, so
+# `agentctl status shepherd` names it after a run that started none (each run clears the item).
 publish() {
+  local id where
+  { read -r id _ _ where; } 2>/dev/null < "$PASS" || true
+  [ -z "${id:-}" ] || agentctl report --name "$NAME" "item=pass ${id:0:8}: tmux -L $SERVER attach -t ${where:-$LEGACY}" >/dev/null 2>&1 || true
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   proof_report "$NAME" "$1" "$2" 2>/dev/null || true
@@ -405,6 +419,12 @@ receipts() {
   awk 'NR == FNR { if ($0 != "") k[$0] = 1; next } $0 in k' <(printf '%s' "$keys") "$PAGED" > "$PAGED.tmp" \
     && mv -f "$PAGED.tmp" "$PAGED"
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
+  if [ -n "$owed" ]; then
+    seen="$(cat "$UNHANDLED" 2>/dev/null)"
+    echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+  else
+    rm -f "$UNHANDLED"
+  fi
   printf '%s%s' "$owed" "$out" | sed '/^$/d'
 }
 
@@ -544,7 +564,6 @@ launch_pass() {
   mkdir -p "$LEDGER/labels" && printf 'manual\nshepherd\n' > "$LEDGER/labels/$id"
   claude-acct trust "$SERVER" "$WIN" "bypass permissions on" >/dev/null 2>&1 ||
     echo "$NAME: claude did not show bypass mode; look at the pane: $ATTACH" >&2
-  agentctl report --name "$NAME" "item=pass ${id:0:8}: $ATTACH" >/dev/null 2>&1 || true
   echo "$id"
 }
 
@@ -671,38 +690,71 @@ lines() { local c; c="$(grep -c . "$1" 2>/dev/null)"; echo "${c:-0}"; }
 # stats: the numbers, read from the ledgers as they are; writes nothing. A 24h count reads log.md's
 # `- HH:MM UTC MM-DD: <verb> ...` receipts, so a pass that moved a line without logging it is not counted.
 cmd_stats() {
-  local now id="" start="" last="" lstart lverdict
+  local now id="" start="" where="" last="" lstart lid lverdict st="" iage
   now=$(date +%s)
-  { read -r id start _; } 2>/dev/null < "$PASS" || true
+  { read -r id start _ where; } 2>/dev/null < "$PASS" || true
   last="$(tail -n 1 "$PASSES" 2>/dev/null)"
-  lstart="$(cut -f1 <<<"$last")"; lverdict="$(cut -f3 <<<"$last")"
+  IFS=$'\t' read -r lstart lid lverdict _ <<<"$last"
   [ -z "$lstart" ] || lstart="$(date -u -d "$lstart" +%s 2>/dev/null)" || lstart=""
-  [ -n "$start" ] || start="$lstart"
+  [ -z "$id" ] || st="$(pass_status "$id")"
+  iage="$(interactive_age)"
   { [ ! -r "$LEDGER/log.md" ] || awk -v now="$(date -u '+%m-%d %H:%M')" -v cut="$(date -u -d '24 hours ago' '+%m-%d %H:%M')" '
     match($0, /^- [0-9][0-9]:[0-9][0-9] UTC [0-9][0-9]-[0-9][0-9]: /) {
       k = substr($0, 13, 5) " " substr($0, 3, 5)
       if (cut <= now ? (k < cut || k > now) : (k < cut && k > now)) next
       v = $5; sub(/:$/, "", v); print v
     }' "$LEDGER/log.md"; } |
-    jq -Rsc --argjson now "$now" --argjson start "${start:-null}" --arg verdict "$lverdict" \
+    jq -Rsc --argjson now "$now" --argjson pstart "${start:-null}" --argjson lstart "${lstart:-null}" \
+      --arg verdict "$lverdict" --arg lid "$lid" --arg id "$id" --arg st "$st" \
+      --arg attach "tmux -L $SERVER attach -t ${where:-$LEGACY}" \
       --argjson due "$(lines "$DUE_LAST")" \
       --argjson unhandled "$(cut -f4 "$DUE_LAST" 2>/dev/null | grep -c '^unhandled: ')" \
+      --argjson streak "$(c="$(cat "$UNHANDLED" 2>/dev/null)"; echo "${c//[!0-9]/}" | grep . || echo 0)" \
       --argjson skipped "$(lines "$SKIPPED")" \
       --argjson paged "$(lines "$PAGED")" \
       --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \
-      --arg running "$id" '
+      --argjson lease "$([ -n "$iage" ] && [ "$iage" -lt "$FLEET_SHEPHERD_LEASE_MIN" ] && echo true || echo false)" \
+      --argjson stuckmin "$FLEET_SHEPHERD_STUCK_MIN" '
       (split("\n") | map(select(length > 0))) as $v
       | def n(w): $v | map(select(. == w)) | length;
-      {state: $due, due: $due, unhandled: $unhandled, skipped: $skipped, paged: $paged,
-       nudges_24h: n("nudged"), escalations_24h: n("escalated"), skips_24h: n("skipped"),
-       passes_24h: $passes, pass_running: ($running != ""),
-       last_pass_epoch: $start, last_pass_age_s: (if $start == null then null else $now - $start end),
-       last_verdict: (if $verdict == "" then null else $verdict end)}'
+      def nul: if . == "" then null else . end;
+      ($pstart // $lstart) as $start
+      | (if $start == null then null else $now - $start end) as $age
+      | (if $due > 0 and ($lease | not) and ($age == null or $age > $stuckmin * 60)
+           then "\($due) due and no pass started in \(if $age == null then "the ledger" else "\($age / 60 | floor)m" end)"
+         elif $streak >= 2 then "an unhandled due line at \($streak) checks in a row"
+         else null end) as $stuck
+      | {state: $due, due: $due, unhandled: $unhandled, unhandled_checks: $streak, skipped: $skipped, paged: $paged,
+         nudges_24h: n("nudged"), escalations_24h: n("escalated"), skips_24h: n("skipped"),
+         passes_24h: $passes, pass_running: ($id != ""),
+         pass_id: ($id | nul), pass_status: ($st | nul),
+         pass_age_s: (if $pstart == null then null else $now - $pstart end),
+         attach: (if $id == "" then null else $attach end),
+         last_pass_epoch: $start, last_pass_age_s: $age,
+         last_pass_id: ($lid | nul), last_verdict: ($verdict | nul),
+         stuck: ($stuck != null), stuck_why: $stuck}'
+}
+
+# stuck: exit 1 naming why when the shepherd has stopped passing, else 0 (stats decides; the
+# Sentinel watch shepherd-stuck runs it). The output is what the page carries.
+cmd_stuck() {
+  local s
+  s="$(cmd_stats)" && [ -n "$s" ] || die "could not read the shepherd's ledger at $LEDGER"
+  if [ "$(jq -r .stuck <<<"$s")" != true ]; then
+    jq -r '"passing: \(.due) due, last pass \(if .last_pass_age_s then "\(.last_pass_age_s / 60 | floor)m ago" else "none on record" end)"' <<<"$s"
+    return 0
+  fi
+  jq -r '"stuck: \(.stuck_why)",
+    "last pass: \(.last_pass_id // "none" | .[:8]) \(.last_verdict // "")",
+    (if .pass_id then "pass now: \(.pass_id[:8]) \(.pass_status), \(.pass_age_s // 0 | . / 60 | floor)m: \(.attach)" else empty end)' <<<"$s"
+  cut -f4 "$DUE_LAST" 2>/dev/null | head -n 5
+  return 1
 }
 
 case "${1:-}" in
   run)   cmd_run ;;
   stats) cmd_stats ;;
+  stuck) cmd_stuck ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
   check) cmd_check ;;
@@ -712,5 +764,5 @@ case "${1:-}" in
   skip)  shift; cmd_skip "$@" ;;
   log)   shift; cmd_log "$@" ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|open|passes|check|due|skip|infra|lease|log)" ;;
+  *) die "unknown verb: $1 (run|open|passes|stats|stuck|check|due|skip|infra|lease|log)" ;;
 esac
