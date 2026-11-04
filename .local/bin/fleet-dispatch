@@ -5,9 +5,9 @@
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch reap              settle ledger entries whose session is gone
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
-#       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--row KEY])
+#       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--item SLUG])
 #                                    start ONE session the way every agent must: see cmd_start
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
@@ -20,7 +20,7 @@
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and added
 # to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the lab server
-# running /one-shot, tagged @dispatch, with a ledger entry at live/<session>. Pause: `agent-hold set dispatch`.
+# running /one-shot, tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # Tier 3 runs unattended only as a `night` item: fill promotes the dotfiles boards' tier-3 rows
 # with that tag, and agent-queue holds them to the night window; each stops at an open PR.
@@ -53,7 +53,6 @@ set -uo pipefail
 : "${DISPATCH_NIGHT_FIRST:=\b(delete|remove|drop|retire|prune|strip|broken|never|fails|failing|failed|dead|wrong|stale|leaks?|orphans?|races?)\b}"
 : "${DISPATCH_NIGHT_OBSERVER:=^(kpi|retro|dream)\b}"
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
-LIVE="$DIR/live"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
 
@@ -148,10 +147,7 @@ np() {
   if [ -n "$p" ]; then notes --profile "$p" "$@"; else notes "$@"; fi
 }
 
-# ledger_field <file> <name> -> that line's value
-ledger_field() { sed -n "s/^$2=//p" "$1" | head -1; }
-
-# session_live <session> [server] -- a ledger older than the server= line was always on DISPATCH_SERVER.
+# session_live <session> [server]
 session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
 
 # The env prefix that starts claude on the account claude-acct pick chooses
@@ -167,23 +163,34 @@ account_env() {
   return 0
 }
 
-# ledger_live <ledger file> -- is its session up, on the server the ledger names?
-ledger_live() { session_live "${1##*/}" "$(ledger_field "$1" server)"; }
+# item_sessions -> one line per running or waiting queue item with a session, its fields split by
+# US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
+# state. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`; a
+# bare name is on DISPATCH_SERVER (tmux turns a ':' in a session name into '_', so one ':' splits).
+item_sessions() {
+  agent-queue list --json --state active 2>/dev/null | jq -r --arg d "$DISPATCH_SERVER" '
+    select(.state != "queued" and (.session // "") != "")
+    | (.session | index(":")) as $i
+    | [.slug, (if $i then .session[:$i] else $d end), (if $i then .session[$i + 1:] else .session end),
+       (.origin // ""), .project, (.area // ""), .state] | join("\u001f")' 2>/dev/null
+  return 0
+}
 
 # live_runs -> "<project>/<area>" for every running session this runner started itself. A hand
 # launch or a restore is tagged and tracked like any other, but holds none of the runner's
 # slots: a dozen restored sessions must not stop dispatch for the day.
 live_runs() {
-  local f
-  for f in "$LIVE"/*; do
-    [ -f "$f" ] || continue
-    case "$(ledger_field "$f" origin)" in '' | run) ;; *) continue ;; esac
-    ledger_live "$f" && printf '%s/%s\n' "$(ledger_field "$f" project)" "$(ledger_field "$f" area)"
-  done
+  local slug server sess origin project area state
+  while IFS=$'\x1f' read -r slug server sess origin project area state; do
+    [ -n "$slug" ] || continue
+    case "$origin" in '' | run) ;; *) continue ;; esac
+    session_live "$sess" "$server" && printf '%s/%s\n' "$project" "$area"
+  done < <(item_sessions)
   return 0
 }
 
-# queue_areas -> "<project>/<area>" for every active queue item that names an area.
+# queue_areas -> "<project>/<area>" for every active queue item that names an area. An item holds
+# its area from start until reap closes it, so a session that ended unreaped still holds it.
 queue_areas() {
   agent-queue list --json --state active 2>/dev/null | jq -r 'select(.area) | "\(.project)/\(.area)"' 2>/dev/null
   return 0
@@ -304,13 +311,13 @@ latest_verdicts() {
 # picks <candidates> <room> -> the rows to launch: the row's latest verdict is a dispatch made
 # under the current policy for its current text, S or M, clear, agent-only, naming one area, and
 # judged no higher a tier than the row counts as (all checked here too, so a lax verdict cannot
-# launch anything); never two on an area, live or picked now; asks first, then most urgent, then
+# launch anything); never two on an area, held by an active item or picked now; asks first, then most urgent, then
 # prod before beta before alpha.
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --arg sig "$(policy_sig)" --argjson max "$UNATTENDED_TIER_CEILING" \
-    --argjson busy "$({ live_runs; queue_areas; } | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
+    --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) '
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
@@ -328,17 +335,20 @@ picks() {
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
-# its server (the human reads [dispatch] as "an agent started this") with a ledger at
-# live/<session> naming that server, which reap and fleet-sessions read. Before this, only
-# `run` did either, and agents tagged their hand launches with set-option, which the human
-# had to ask about twice.
-#   --brief FILE --row KEY  claim the open row, cut a worktree off --cwd (default: the
-#                           project's repo) with `wt new`, and run claude on the brief there.
+# its server (the human reads [dispatch] as "an agent started this"), and a session doing work
+# has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
+# Before this, only `run` did either, and agents tagged their hand launches with set-option,
+# which the human had to ask about twice.
+#   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
+#                           repo) with `wt new`, claude on the item's brief there.
+#   --brief FILE --row KEY  claim the open row, promote it into a queue item with the brief as
+#                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
+#                           --item SLUG re-attaches the started item that session was working.
 cmd_start() {
   local project='' prof='' lane=human key='' server="$DISPATCH_SERVER" model='' brief_file='' \
-    resume='' cwd='' session='' area='' item='' it='' brief cmd label origin flag=()
+    resume='' cwd='' session='' area='' item='' it='' st='' brief cmd label origin acct mode
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -361,58 +371,41 @@ cmd_start() {
     esac
     shift 2
   done
+  if [ -n "$brief_file" ]; then
+    [ -z "$resume$item" ] || { say "start: give exactly one of --brief, --item or --resume"; return 2; }
+    [ -n "$project" ] || { say "start: --project is required"; return 2; }
+    [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
+    [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
+    brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
+    # The row becomes a queue item and the item is what starts: one record and one launch for
+    # every session. The item's brief adds /one-shot and how to close the row, so a brief that
+    # opens with /one-shot is not run through it twice.
+    promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
+      '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" >/dev/null || return 1
+    item=$PROMOTED key=''
+  elif [ -z "$item$resume" ]; then
+    say "start: give exactly one of --brief, --item or --resume"
+    return 2
+  fi
   if [ -n "$item" ]; then
-    [ -z "$brief_file$resume$key$session" ] || { say "start: --item is a launch of its own: no --brief, --resume, --row or --session"; return 2; }
     it=$(agent-queue show "$item" --json 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
-    [ "$(jq -r .state <<<"$it")" = queued ] || { say "start: $item is $(jq -r .state <<<"$it"), not queued"; return 1; }
+    st=$(jq -r .state <<<"$it")
+    if [ -n "$resume" ]; then
+      case "$st" in running | waiting) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
+    else
+      [ -z "$key$session" ] || { say "start: --item is a launch of its own: no --row or --session"; return 2; }
+      [ "$st" = queued ] || { say "start: $item is $st, not queued"; return 1; }
+    fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
   fi
   [ -n "$project" ] || { say "start: --project is required"; return 2; }
-  [ "$lane" = agent ] && flag=(--agent)
 
-  if [ -n "$item" ]; then
-    [ -n "$cwd" ] || cwd=$(repo_dir "$project")
-    [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
-    origin=${START_ORIGIN:-hand}
-    model=${model:-opus}
-    local acct mode; acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
-    cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") ${acct:+CLAUDE_CONFIG_DIR=$(printf '%q' "$acct") }claude --model $(printf '%q' "$model")"
-    case "$mode" in
-      plan) cmd="$cmd --permission-mode plan $(printf '%q' "$(item_brief "$it")")" ;;
-      *) cmd="$cmd --permission-mode bypassPermissions $(printf '%q' "$(item_brief "$it")")" ;;
-    esac
-    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
-    [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
-    agent-queue set "$item" "session=$session" "account=$(basename "${acct:-main}")" >/dev/null &&
-      agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
-  elif [ -n "$brief_file" ] && [ -z "$resume" ]; then
-    [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
-    [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
-    [ -n "$cwd" ] || cwd=$(repo_dir "$project")
-    [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
-    brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
-    origin=${START_ORIGIN:-hand}
-
-    # Claim: the row must still be open right now, and `start` must leave THIS row started.
-    row_is "$prof" "$project" "$lane" "$key" ' ' ||
-      { say "skip $project: row no longer open: $key"; return 1; }
-    np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-    row_is "$prof" "$project" "$lane" "$key" / ||
-      { say "skip $project: could not start row: $key"; return 1; }
-
-    model=${model:-opus}
-    cmd="$(account_env)claude --model $(printf '%q' "$model") --permission-mode bypassPermissions $(printf '%q' "$brief")"
-    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
-    if [ -z "$session" ]; then
-      np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-      say "wt new failed for $project; row un-started"
-      return 1
-    fi
-  elif [ -n "$resume" ] && [ -z "$brief_file" ]; then
+  if [ -n "$resume" ]; then
+    [ -z "$key" ] || { say "start: --resume takes the --item it was working, not --row"; return 2; }
     [ -n "$session" ] && [ -n "$cwd" ] || { say "start: --resume needs --session and --cwd"; return 2; }
     [ -d "$cwd" ] || { say "start: not a directory: $cwd"; return 2; }
-    # One agent per session: the ledger and the label belong to the whole session, so a
+    # One agent per session: the item and the label belong to the whole session, so a
     # restore never lands in a session someone already has (a main checkout's, say).
     if session_live "$session" "$server"; then
       say "start: session $session already exists on $server; pass another --session"
@@ -422,19 +415,30 @@ cmd_start() {
     cmd="$(account_env)claude${model:+ --model $(printf '%q' "$model")} --permission-mode bypassPermissions --resume $(printf '%q' "$resume")"
     tmux -L "$server" new-session -d -s "$session" -c "$cwd" "$cmd" ||
       { say "could not create session $session on $server"; return 1; }
+    [ -z "$item" ] || agent-queue set "$item" "session=$server:$session" "origin=$origin" >/dev/null ||
+      say "restored $session, but could not record it on queue item $item"
   else
-    say "start: give exactly one of --brief or --resume"
-    return 2
+    [ -n "$cwd" ] || cwd=$(repo_dir "$project")
+    [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
+    origin=${START_ORIGIN:-hand}
+    model=${model:-opus}
+    acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
+    cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") ${acct:+CLAUDE_CONFIG_DIR=$(printf '%q' "$acct") }claude --model $(printf '%q' "$model")"
+    case "$mode" in
+      plan) cmd="$cmd --permission-mode plan $(printf '%q' "$(item_brief "$it")")" ;;
+      *) cmd="$cmd --permission-mode bypassPermissions $(printf '%q' "$(item_brief "$it")")" ;;
+    esac
+    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
+    [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
+    agent-queue set "$item" "session=$server:$session" "account=$(basename "${acct:-main}")" "origin=$origin" "model=$model" >/dev/null &&
+      agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
   fi
 
-  label="$project: $(cut -c1-60 <<<"${key:-${item:-resumed}}")"
+  label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
   tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
-  mkdir -p "$LIVE"
-  printf 'project=%s\nprofile=%s\nlane=%s\nkey=%s\nitem=%s\narea=%s\nmodel=%s\nlabel=%s\nserver=%s\norigin=%s\nstarted=%s\n' \
-    "$project" "$prof" "$lane" "$key" "$item" "$area" "${model:-}" "$label" "$server" "$origin" "$(date -Iseconds)" > "$LIVE/$session"
-  logline "started $session on $server ($origin) for $project $lane: ${key:-${item:+queue item $item}${resume:+resume $resume}}"
+  logline "started $session on $server ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
 }
 
@@ -475,7 +479,7 @@ item_row() {
 }
 
 # settle_row <slug> -- a board item that ended failed or cancelled hands its row back: un-start it
-# and record `failed`, as reap does for a ledger row, so it is not promoted again until its text
+# and record `failed`, so it is not promoted again until its text
 # changes. Idempotent: a row no longer started is left alone (done by its session, or settled).
 settle_row() {
   local it row prof project lane key flag=()
@@ -551,13 +555,12 @@ start_item() {
 
 # --- verbs ---------------------------------------------------------------------------
 
-# reap -- a ledger entry whose row is no longer started, or whose session is gone: done row ->
-# drop it; row still started with the session gone -> un-start it and record `failed`, so it
-# is not picked again until its text changes. A live session whose row is done is dropped too:
-# the human may reuse its tmux session after the dispatched Claude ends, and that must not
-# hold a dispatch slot.
+# reap -- settle the queue items whose session is gone (settle_item, then settle_row for a board
+# item), and keep each live one's state true to its session: waiting/ while it waits on the human
+# (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed),
+# running/ again once it does not. A session neither read can see is left where it is.
 cmd_reap() {
-  local f s project prof lane key item flag d
+  local s d slug server sess origin project area state want waits='' seen=''
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
@@ -565,42 +568,32 @@ cmd_reap() {
       jq -r 'select((.from | startswith("board:")) and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  for f in "$LIVE"/*; do
-    [ -f "$f" ] || continue
-    s="${f##*/}"
-    project=$(ledger_field "$f" project); prof=$(ledger_field "$f" profile)
-    lane=$(ledger_field "$f" lane); key=$(ledger_field "$f" key); item=$(ledger_field "$f" item)
-    if [ -n "$item" ]; then
-      if ledger_live "$f"; then
-        [ "$(item_state "$item")" = "done" ] || continue
-        logline "reaped $s: queue item $item closed (session still up)"
-      else
-        settle_item "$item" "$s"
-        settle_row "$item"
-      fi
-      rm -f -- "$f"
+  while IFS=$'\x1f' read -r slug server sess origin project area state; do
+    [ -n "$slug" ] || continue
+    if ! session_live "$sess" "$server"; then
+      settle_item "$slug" "$sess"
+      settle_row "$slug"
       continue
     fi
-    if ledger_live "$f"; then
-      # A restore with no row has nothing to settle while its session runs.
-      [ -z "$key" ] && continue
-      row_is "$prof" "$project" "$lane" "$key" / && continue
-      logline "reaped $s: $project $lane row no longer open (session still up): $key"
-      rm -f -- "$f"
-      continue
-    fi
-    flag=(); [ "$lane" = agent ] && flag=(--agent)
-    if [ -n "$key" ] && row_is "$prof" "$project" "$lane" "$key" /; then
-      np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-      jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" \
-        '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "session ended without the row done", at: $at}' >> "$VERDICTS"
-      logline "reaped $s: session gone, row un-started: $project $lane: $key"
-      echo "un-started $project: $key ($s ended without it done)"
-    else
-      logline "reaped $s: session gone${key:+, $project $lane row no longer open: $key}"
-    fi
-    rm -f -- "$f"
-  done
+    [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
+    [ "$seen" = 1 ] || continue
+    want=running; grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting
+    [ "$state" = "$want" ] && continue
+    agent-queue move "$slug" "$want" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
+  done < <(item_sessions)
+  return 0
+}
+
+# waiting_sessions -> "<server>/<tmux session>" for each Claude waiting on its human (agent-panel),
+# and the bare tmux session of each pending ask; fails when either cannot be read, so a pass that
+# cannot see never moves an item.
+waiting_sessions() {
+  local panel asks
+  panel=$(agent-panel list --json 2>/dev/null) || return 1
+  asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
+  jq -r 'select(.status == "waiting") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null
+  cut -f13 <<<"$asks" | grep .
+  return 0
 }
 
 # real_idle -> percent of the machine idle over a two-frame top sample; the first frame is since boot.
@@ -724,7 +717,7 @@ fill_now() {
 }
 
 # promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue; a row
-# that cannot be added is un-started again, as start does for a session that never opened.
+# that cannot be added is un-started again. The new item's slug is left in PROMOTED.
 promote() {
   local c="$1" tags="$2" task="$3" prof project lane key area out slug flag=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
@@ -739,7 +732,7 @@ promote() {
     say "could not queue $project row, un-started: $key ($out)"
     return 1
   fi
-  slug=$(awk '{ print $2; exit }' <<<"$out")
+  slug=$(awk '{ print $2; exit }' <<<"$out"); PROMOTED=$slug
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $key"
   echo "queued $project: $key"

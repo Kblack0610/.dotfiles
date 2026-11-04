@@ -510,17 +510,33 @@ landed_fixture() {
   [ "$(wc -l < "$HOME/runcalls")" -eq 3 ]
 }
 
-@test "a session fleet-dispatch started carries its row as dispatch; others carry null" {
+# queue_item <state> <session> -- a started agent-queue item on session s1's tmux session
+queue_item() {
+  mkdir -p "$HOME/.agent/queue/$1"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: normal\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+}
+
+@test "a session working a queue item carries the item as dispatch; others carry null" {
   landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 
-  mkdir -p "$HOME/.agent/dispatch/live"
-  printf 'project=apociseum\nlabel=apociseum: fix wave save\n' > "$HOME/.agent/dispatch/live/s1"
+  queue_item running lab:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix wave save' ]
+  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
   run "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_line --index 1 --partial '[dispatch: apociseum: fix wave save]'
+  assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
+
+  # A bare session name is on the queue's server; the same name on another server is not this one.
+  rm -r "$HOME/.agent/queue/running"; queue_item waiting s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
+  rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {
