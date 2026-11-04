@@ -177,9 +177,16 @@ move_to() {
   mv -- "$f" "$dest" && printf '%s\n' "$dest"
 }
 
-project_known() { # name -> true when project-map knows it, or there is no map to ask
-  [ -f "$AQ_MAP" ] || return 0
-  jq -e --arg p "$1" '[.paths[]?] + [.aliases // {} | keys[]] | index($p) != null' "$AQ_MAP" >/dev/null 2>&1
+# project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
+# start it. An alias becomes its project. The project must reach a checkout by fleet-dispatch's
+# repo_dir rule: a `trackers` entry names its repo (absent = its own name, null = notes-only),
+# and `paths` maps a checkout to that repo. So a game inside a repo (a tracker with `repo`) is
+# runnable, and a notes-only project is not. With no map there is nothing to ask.
+project_resolve() {
+  [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
+  jq -er --arg p "$1" '(.aliases[$p] // $p) as $n | .trackers[$n] as $t
+    | (if ($t | type) != "object" or ($t | has("repo") | not) then $n else ($t.repo // "") end) as $r
+    | select($r != "" and ([.paths[]?] | index($r)) != null) | $n' "$AQ_MAP" 2>/dev/null
 }
 
 project_of_cwd() {
@@ -222,7 +229,9 @@ cmd_add() {
   done
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
-  project_known "$project" || die "unknown project: $project (not in $AQ_MAP)"
+  local resolved
+  resolved="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
+  project="$resolved"
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
   lock

@@ -12,7 +12,8 @@ setup() {
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   REPO="$SANDBOX/repos/game"
   git init -q "$REPO"
-  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app"}, aliases: {"g2": "game"}}' > "$AGENT_QUEUE_PROJECT_MAP"
+  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app"}, aliases: {"g2": "game"},
+    trackers: {"level": {repo: "game", path: "Assets/Level"}, "notes": {repo: null}, "app": {}}}' > "$AGENT_QUEUE_PROJECT_MAP"
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
@@ -66,11 +67,22 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ ! -d "$AGENT_QUEUE_DIR/queued" ] || [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
 }
 
-@test "an alias is a known project, and a slug cannot be active twice" {
+@test "an alias is filed as its project, and a slug cannot be active twice" {
   run "$AQ" add --project g2 --slug dup "x"
   assert_success
+  [ "$(field "$(item queued dup)" project)" = game ]
   run "$AQ" add --project game --slug dup "y"
   assert_failure; assert_output --partial "already in the queue: dup"
+}
+
+@test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
+  run "$AQ" add --project level --slug in-repo "x"
+  assert_success
+  [ "$(field "$(item queued in-repo)" project)" = level ]
+  run "$AQ" add --project app --slug own-name "y"
+  assert_success
+  run "$AQ" add --project notes --slug notes-only "z"
+  assert_failure; assert_output --partial "unknown project: notes"
 }
 
 @test "list orders by priority, then queued time, and next is the head" {
