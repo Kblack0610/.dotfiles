@@ -729,6 +729,41 @@ two_items() {
   refute_output --partial 'started queue item fix-app'
 }
 
+# The model-lane stub runs just before the pass's launch: here it is another start that took the head.
+@test "an item another start took between the pick and the launch is not FAILED, and the pass goes on" {
+  two_items
+  export DISPATCH_PER_PASS=2
+  stub model-lane '[ -n "$(ls "$AGENT_QUEUE_DIR/queued" | grep fix-game)" ] && agent-queue move fix-game running >/dev/null; echo "{}"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queue item fix-game was started by another start'
+  assert_output --partial 'started queue item fix-app'
+  refute_output --partial 'could not start'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "a pass whose only item another start took publishes NOOP" {
+  two_items
+  agent-queue cancel fix-app >/dev/null
+  stub model-lane 'agent-queue move fix-game running >/dev/null; echo "{}"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'another start took the 1 queue item(s) this pass picked'
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "a start waits for another start of a queue item to claim its own, and leaves it queued past the wait" {
+  two_items
+  export DISPATCH_START_WAIT=0
+  mkdir -p "$FLEET_DISPATCH_DIR"; exec 7>"$FLEET_DISPATCH_DIR/.start.lock"; flock 7
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
+  exec 7>&-
+  assert_failure
+  assert_output --partial 'another start held the queue lock for 0s; fix-app stays queued'
+  [ -n "$(qitem queued fix-app)" ] || fail "fix-app stays queued"
+  assert_not_called 'wt new'
+}
+
 @test "a pass a limit stopped while work waits and the gates are open says which limit, still WORKED" {
   two_items
   agent-queue add --project app --slug fix-app-2 "fix the app again"
