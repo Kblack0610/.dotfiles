@@ -16,12 +16,17 @@ Usage:
                            [--context N] [--limit N] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
+  claude-recall stats [--days N | --since YYYY-MM-DD] [--kind slash,skill,agent,prompt]
+                      [--origin interactive|auto|all] [--by week|project] [--top K]
+                      [--min N] [--min-words N] [--project P] [--json]
 
 Examples:
   claude-recall search "privacy overlay" --project dotfiles --since 2026-07-01
   claude-recall search "TODO|FIXME" --regex --role assistant
   claude-recall list --project brightsign
   claude-recall show 15eeee34
+  claude-recall stats --kind prompt --origin interactive --min 3   # skill candidates
+  claude-recall stats --kind agent --by week
 """
 import argparse
 import json
@@ -30,10 +35,17 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path.home()
-ROOTS = [HOME / ".claude" / "projects"]
+# CLAUDE_TRANSCRIPTS (colon-separated) replaces the default roots; skill-drift uses the same
+# variable, so a test or a caller points both tools at one corpus. The bnb and personal
+# accounts symlink their projects/ to ~/.claude/projects; the work account does not.
+if os.environ.get("CLAUDE_TRANSCRIPTS"):
+    ROOTS = [Path(p) for p in os.environ["CLAUDE_TRANSCRIPTS"].split(":") if p]
+else:
+    ROOTS = [HOME / ".claude" / "projects", HOME / ".claude-work" / "projects"]
 COWORK = HOME / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
 if COWORK.exists():
     ROOTS.append(COWORK)
@@ -401,6 +413,322 @@ def cmd_show(a):
     return 0
 
 
+STATS_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+CMD_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
+# Masks applied before a prompt becomes a counting key, so "fix PR #712" and "fix PR #713"
+# are one workflow. Order matters: URLs and paths hold digits the later masks would split.
+PROMPT_MASKS = [
+    (re.compile(r"https?://\S+"), " url "),
+    # An inline /command is counted by the skill it triggers, not as part of a prompt.
+    (re.compile(r"(?<![\w/])/[a-z][\w:-]*"), " "),
+    (re.compile(r"(?:~|\.{1,2})?(?:/[\w.@~+-]+){2,}/?"), " path "),
+    (re.compile(r"\b[0-9a-f]{7,40}\b"), " sha "),
+    (re.compile(r"\d+"), " n "),
+    (re.compile(r"[^\w\s]+|_+"), " "),
+]
+
+
+def letters(w):
+    return "".join(sorted(w))
+
+
+# Courtesy and assent words carry no workflow, and the human types them fast, so they are
+# matched by sorted letters: thanks, thansk and tahnks are all one filler.
+FILLERS = {letters(w) for w in (
+    "ok", "okay", "k", "thanks", "thank", "thx", "ty", "you", "please", "pls", "plz",
+    "yes", "yeah", "yep", "cool", "great", "nice", "sure", "go", "ahead", "now", "and", "then")}
+
+
+def prompt_words(text):
+    t = text.lower()
+    for rx, rep in PROMPT_MASKS:
+        t = rx.sub(rep, t)
+    return t.split()
+
+
+def normalize_prompt(text, words=8):
+    return " ".join([w for w in prompt_words(text) if letters(w) not in FILLERS][:words])
+
+
+def intents_path():
+    env = os.environ.get("CLAUDE_RECALL_INTENTS")
+    if env:
+        return Path(env)
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(HOME / ".config")
+    return Path(xdg) / "claude-recall" / "intents.tsv"
+
+
+def load_intents():
+    """[(name, {skills}, [phrase, ...])] from intents.tsv; a phrase is a list of words,
+    each matched by sorted letters (typo-tolerant), or as a prefix when it ends in *."""
+    out = []
+    try:
+        lines = intents_path().read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        name, skills, phrases = (x.strip() for x in parts)
+        out.append((name, {x for x in skills.split(",") if x and x != "-"},
+                    [p.lower().split() for p in phrases.split("|") if p.strip()]))
+    return out
+
+
+def word_matches(pat, word):
+    if pat.endswith("*"):
+        return word.startswith(pat[:-1])
+    return letters(pat) == letters(word)
+
+
+def match_intents(intents, text):
+    words = prompt_words(text)
+    hits = []
+    for name, _skills, phrases in intents:
+        for ph in phrases:
+            n = len(ph)
+            if any(all(word_matches(ph[j], words[i + j]) for j in range(n))
+                   for i in range(len(words) - n + 1)):
+                hits.append(name)
+                break
+    return hits
+
+
+def cluster_key(norm):
+    """Letters of each word sorted, so a transposition typo counts with its word. Only the
+    grouping uses this; the row shows the commonest spelling."""
+    return " ".join(letters(w) for w in norm.split())
+
+
+def user_text(rec):
+    """Typed text of a user record, or None for tool results."""
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return None
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return None
+
+
+def user_origin(rec):
+    """interactive or auto. turnOrigin is authoritative where present (human, scheduled for
+    a /loop fire, peer, sdk, task_notification, system); older records lack it, so a headless
+    entrypoint or an isMeta injection (skill bodies, hook feedback) counts as auto.
+    interactive is not proof a person typed it: a session fleet-dispatch starts gets its
+    task as the opening interactive turn."""
+    o = rec.get("turnOrigin")
+    if isinstance(o, str):
+        return "interactive" if o == "human" else "auto"
+    if rec.get("entrypoint") == "sdk-cli" or rec.get("isMeta"):
+        return "auto"
+    return "interactive"
+
+
+# Text our own tooling types into a session (claude-acct park/move resume it with tmux
+# send-keys, so it arrives as an interactive turn), plus harness text that has no turnOrigin
+# on older transcripts. None of it is a request anyone typed.
+HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
+                    "[Request interrupted", "Another Claude session sent", "Caveat:",
+                    "This session was parked", "This session was moved",
+                    "Moved to the alt Claude account")
+
+
+def stats_repo(label):
+    """dotfiles-agent-6 -> dotfiles: a numbered worktree counts toward its repo."""
+    return re.sub(r"-agent-\d+(?:-[a-z])?$", "", label)
+
+
+def stats_events(path, since):
+    """Yield (kind, key, origin, day, example) for one transcript.
+
+    A subagent transcript contributes its Skill and Agent calls but no prompts or slash
+    commands: its user records are the parent's dispatch prompt, not anything typed.
+    """
+    sub = "subagents" in path.parts
+    session_auto = None
+    for line in path.open(errors="replace"):
+        # Cheap substring gates before json.loads: tool results and api records are most
+        # of the bytes and none of the signal.
+        if '"type":"assistant"' in line:
+            if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line):
+                continue
+        elif '"type":"user"' in line:
+            if sub or '"tool_use_id"' in line:
+                continue
+        else:
+            continue
+        rec = parse_line(line)
+        if not rec:
+            continue
+        ts = str(rec.get("timestamp") or "")[:10]
+        if session_auto is None and rec.get("entrypoint"):
+            session_auto = rec["entrypoint"] == "sdk-cli"
+        if ts < since:
+            continue
+        rtype = rec.get("type")
+        if rtype == "assistant":
+            origin = "auto" if (session_auto or rec.get("entrypoint") == "sdk-cli") else "interactive"
+            for b in (rec.get("message") or {}).get("content") or []:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") == "Skill" and inp.get("skill"):
+                    yield "skill", str(inp["skill"]).lstrip("/"), origin, ts, ""
+                elif b.get("name") in ("Agent", "Task"):
+                    yield "agent", str(inp.get("subagent_type") or "general-purpose"), origin, ts, ""
+        elif rtype == "user":
+            text = user_text(rec)
+            if not text:
+                continue
+            origin = user_origin(rec)
+            m = CMD_RE.search(text)
+            if m:
+                yield "slash", m.group(1), origin, ts, ""
+                continue
+            # The first line only, and only when it opens with a letter or digit: what the
+            # human types is one paragraph, and what follows a newline (or opens with a box
+            # rule, a bullet, a cowsay border) is pasted output that would match everything.
+            s = text.strip().split("\n", 1)[0].strip()
+            if (origin != "interactive" or not s[:1].isalnum()
+                    or s.startswith(HARNESS_PREFIXES)):
+                continue
+            yield "prompt", None, origin, ts, s
+
+
+def cmd_stats(a):
+    """Count slash commands, skills, subagents and repeated prompts. SESSIONS is the
+    headline: a /loop that re-fires a command 200 times in one session is one session."""
+    kinds = set(a.kind.split(",")) if a.kind else set(STATS_KINDS)
+    bad = kinds - set(STATS_KINDS)
+    if bad:
+        print(f"claude-recall stats: unknown kind {','.join(sorted(bad))} "
+              f"(one of {','.join(STATS_KINDS)})", file=sys.stderr)
+        return 2
+    if a.since:
+        since = a.since
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d")
+    since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+
+    intents = load_intents() if "intent" in kinds else []
+    if "intent" in kinds and not intents:
+        print(f"claude-recall stats: no intents in {intents_path()}", file=sys.stderr)
+    covers = {name: skills for name, skills, _ in intents}
+    agg = {}
+    used = {}  # session -> skills and slash commands it ran, for intent coverage
+
+    def add(kind, key, shown, bucket, session, origin, example):
+        row = agg.setdefault((kind, key, bucket), {
+            "calls": 0, "sessions": set(), "interactive": set(), "auto": set(),
+            "example": _flatten(example, 100), "shown": {}})
+        row["calls"] += 1
+        row["shown"][shown] = row["shown"].get(shown, 0) + 1
+        row["sessions"].add(session)
+        row[origin].add(session)
+
+    for path in iter_files():
+        try:
+            if path.stat().st_mtime < since_epoch:
+                continue
+        except OSError:
+            continue
+        session = path.parent.parent.name if "subagents" in path.parts else path.stem
+        project = None
+        try:
+            for kind, key, origin, day, example in stats_events(path, since):
+                if kind in ("skill", "slash"):
+                    used.setdefault(session, set()).add(key)
+                if a.origin != "all" and origin != a.origin:
+                    continue
+                if project is None:
+                    project = stats_repo(session_meta_project(path))
+                if a.project and a.project not in project:
+                    continue
+                if a.by == "week":
+                    y, w, _ = datetime.strptime(day, "%Y-%m-%d").isocalendar()
+                    bucket = f"{y}-W{w:02d}"
+                elif a.by == "project":
+                    bucket = project
+                else:
+                    bucket = ""
+                if kind != "prompt":
+                    if kind in kinds:
+                        add(kind, key, key, bucket, session, origin, example)
+                    continue
+                for name in match_intents(intents, example):
+                    add("intent", name, name, bucket, session, origin, example)
+                if "prompt" in kinds:
+                    shown = normalize_prompt(example)
+                    if len(shown.split()) >= a.min_words:
+                        add("prompt", cluster_key(shown), shown, bucket, session, origin, example)
+        except OSError:
+            continue
+
+    rows = [{
+        "kind": k, "key": max(r["shown"], key=r["shown"].get), "bucket": b,
+        "calls": r["calls"], "sessions": len(r["sessions"]),
+        "interactive_sessions": len(r["interactive"]),
+        "auto_sessions": len(r["auto"]), "example": r["example"],
+        # intent only: the sessions where a skill that covers it actually ran. A low share
+        # means the task gets described in words and the skill never fires.
+        **({"covered_sessions": sum(1 for x in r["sessions"] if used.get(x, set()) & covers[key]),
+            "covered_by": sorted(covers[key])} if k == "intent" else {}),
+    } for (k, key, b), r in agg.items() if len(r["sessions"]) >= a.min]
+    rows.sort(key=lambda r: (STATS_KINDS.index(r["kind"]), r["bucket"],
+                             -r["sessions"], -r["calls"], r["key"]))
+    if a.top:
+        seen, kept = {}, []
+        for r in rows:
+            g = (r["kind"], r["bucket"])
+            seen[g] = seen.get(g, 0) + 1
+            if seen[g] <= a.top:
+                kept.append(r)
+        rows = kept
+
+    if a.json:
+        print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
+                          "rows": rows}, ensure_ascii=False))
+        return 0
+    if not rows:
+        print(f"nothing counted since {since}")
+        return 0
+    last = None
+    for r in rows:
+        g = (r["kind"], r["bucket"])
+        if g != last:
+            head = r["kind"] + (f"  {r['bucket']}" if r["bucket"] else "")
+            print(c(BOLD, f"\n{head}") + c(DIM, "   sessions  calls  inter  auto"))
+            last = g
+        key = r["key"]
+        if r["kind"] == "prompt":
+            key = f"{key}  {c(DIM, '| ' + r['example'])}"
+        elif r["kind"] == "intent":
+            by = ",".join(r["covered_by"]) or "no skill"
+            cov = f"skill ran in {r['covered_sessions']}/{r['sessions']} ({by})"
+            key = f"{key}  {c(DIM, cov)}"
+        print(f"  {r['sessions']:>8} {r['calls']:>6} {r['interactive_sessions']:>6} "
+              f"{r['auto_sessions']:>5}  {key}")
+    print(c(DIM, f"\nsince {since}, origin {a.origin}"))
+    return 0
+
+
+def session_meta_project(path):
+    """The project label of a transcript from its first record that carries a cwd."""
+    with path.open(errors="replace") as fh:
+        for line in fh:
+            if '"cwd":"' in line:
+                rec = parse_line(line)
+                if rec and rec.get("cwd"):
+                    return project_of(rec, path)
+    return path.parent.name.lstrip("-").split("-")[-1]
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -434,6 +762,22 @@ def main():
                     help="only sessions whose transcript changed after this epoch")
     cd.add_argument("--verbose", "-v", action="store_true", help="count to stderr")
     cd.set_defaults(func=cmd_cards)
+
+    st = sub.add_parser("stats", help="count slash commands, skills, subagents, repeated prompts")
+    st.add_argument("--days", type=int, default=30, help="window in days (default 30)")
+    st.add_argument("--since", help="window start YYYY-MM-DD (overrides --days)")
+    st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default all)")
+    st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
+                    help="interactive = a turn in a CLI session (typed, or a dispatched task); "
+                         "auto = headless, /loop fires, peer messages")
+    st.add_argument("--by", choices=["week", "project"], help="split counts by ISO week or repo")
+    st.add_argument("--top", type=int, default=20, help="rows per kind and bucket (0 = all)")
+    st.add_argument("--min", type=int, default=1, help="drop rows seen in fewer sessions")
+    st.add_argument("--min-words", type=int, default=3,
+                    help="prompts shorter than this after masking are not counted")
+    st.add_argument("--project", "-p", help="substring match on repo")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(func=cmd_stats)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)
