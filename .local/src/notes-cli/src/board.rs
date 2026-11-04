@@ -104,6 +104,25 @@ fn lane_tasks(dir: &std::path::Path, lane: Lane) -> Option<(String, Vec<String>)
     project_tasks::open_wave_for_dir(&lane.dir(dir))
 }
 
+/// The one line the human board gives a project's playtest.md: how many checks wait, linked
+/// to the file. Never the rows themselves: they are played from the file. `None` when no check
+/// is open.
+fn playtest_line(dir: &std::path::Path) -> Option<String> {
+    let vault = config::resolve(None).ok()?.vault;
+    playtest_line_for(dir, &vault)
+}
+
+/// The pure half of [`playtest_line`], linked by the same fail-closed rule as a heading.
+fn playtest_line_for(dir: &std::path::Path, vault: &std::path::Path) -> Option<String> {
+    let n = crate::playtest::open_count(dir);
+    if n == 0 {
+        return None;
+    }
+    let link = link_for("playtest.md", vault, Some(&crate::playtest::path(dir)));
+    let s = if n == 1 { "" } else { "s" };
+    Some(format!("- {n} playtest check{s} waiting -> {link}\n"))
+}
+
 /// The `N open` tail both renderers share, so the two counts cannot disagree.
 fn counts(open: &[String]) -> String {
     format!("{} open", open.len())
@@ -127,10 +146,12 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
             return None;
         }
         s.push_str("_(nothing queued)_\n");
-        return Some(s);
     }
     for l in &open {
         s.push_str(&format!("- [ ] {}\n", render(l)));
+    }
+    if lane == Lane::Human {
+        s.push_str(&playtest_line(dir).unwrap_or_default());
     }
     Some(s)
 }
@@ -140,7 +161,8 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
 /// The board has to hold every org or it is not a board, and it has to be readable or nobody
 /// opens it. One client project contributing 47 multi-sentence rows made the two goals fight;
 /// folding the orgs you are not in settles it without hiding anything, because the count is
-/// still exact and the name is still a link to the full list.
+/// still exact and the name is still a link to the full list. On the human board a project
+/// with playtest checks waiting gets its playtest line indented under that one.
 fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String> {
     let (version, open) = lane_tasks(dir, lane)?;
     if open.is_empty() && lane == Lane::Agent {
@@ -156,6 +178,9 @@ fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<
         s.push_str(&format!(" - next: {}", truncate_words(&next, 60)));
     }
     s.push('\n');
+    if let Some(pl) = playtest_line(dir).filter(|_| lane == Lane::Human) {
+        s.push_str(&format!("  {pl}"));
+    }
     Some(s)
 }
 
@@ -719,6 +744,55 @@ mod tests {
         assert!(a.contains("v0.0.1 - 1 open"), "{a}");
         assert!(a.contains("next: push nightly-sync dedup fix"), "{a}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_playtest_checks_are_one_counted_line_on_the_human_board_only() {
+        let dir = sheet(
+            "playtest",
+            "# game\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] a sheet row\n",
+        );
+        std::fs::write(
+            crate::playtest::path(&dir),
+            "# Playtest\n\n## General\n- [ ] lobby: two pads join\n- [x] title: fades\n\n\
+             ## Dodgeball\n- [ ] arena: ball never clips\n- [ ] menu: back exits\n",
+        )
+        .unwrap();
+
+        let vault = dir.parent().unwrap();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            playtest_line_for(&dir, vault).unwrap(),
+            format!("- 3 playtest checks waiting -> [[{name}/playtest|playtest.md]]\n")
+        );
+
+        let b = project_block("game", &dir, Lane::Human).unwrap();
+        assert_eq!(b.matches("playtest check").count(), 1, "{b}");
+        assert!(b.contains("3 playtest checks waiting -> "), "{b}");
+        assert!(
+            !b.contains("lobby") && !b.contains("arena"),
+            "never the rows:\n{b}"
+        );
+        let r = project_rollup_line("game", &dir, Lane::Human).unwrap();
+        assert!(r.contains("\n  - 3 playtest checks waiting -> "), "{r}");
+        write_agent_sheet(
+            &dir,
+            "# game - agent board\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] sub\n",
+        );
+        let a = project_block("game", &dir, Lane::Agent).unwrap();
+        assert!(!a.contains("playtest"), "{a}");
+
+        // every check ticked: no line at all
+        std::fs::write(
+            crate::playtest::path(&dir),
+            "# Playtest\n\n## General\n- [x] done\n",
+        )
+        .unwrap();
+        assert!(playtest_line_for(&dir, vault).is_none());
+        assert!(!project_block("game", &dir, Lane::Human)
+            .unwrap()
+            .contains("playtest"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -152,7 +152,7 @@ fn sheet_and_wave(
 
 /// An open wave task matching `query` (already lower-cased) — the shared predicate for
 /// `done`/`start`/`rm`, matching `focus.rs::is_match`.
-fn is_match(line: &str, query: &str) -> bool {
+pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
@@ -626,7 +626,7 @@ pub fn done(
 ///
 /// The gate itself, kept out of `done` so it is testable without a vault. A bare `done`
 /// must FAIL: the roll gate above only means something if a ticked checkbox does.
-fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Result<String> {
+pub(crate) fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Result<String> {
     match (proof, unverified) {
         (Some(_), Some(_)) => bail!("--proof and --unverified are alternatives; pick one"),
         (Some(r), None) if !r.trim().is_empty() => Ok(r.trim().to_string()),
