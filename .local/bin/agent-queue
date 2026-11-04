@@ -497,8 +497,8 @@ cmd_bump() {
   echo "$slug -> $prio"
 }
 
-# The fields only the dispatcher and the session record. Identity fields (slug, queued, from)
-# are not settable: they are what the item is.
+# The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
+# settable: they are what the item is. `from` is, so a project rename can move a board origin.
 SETTABLE=" project mode priority tags after agent started waiting finished session account model plan pr note status area origin lane profile from "
 
 cmd_set() {
@@ -509,6 +509,9 @@ cmd_set() {
     k="${kv%%=*}"
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
+    if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
+      die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"
+    fi
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"

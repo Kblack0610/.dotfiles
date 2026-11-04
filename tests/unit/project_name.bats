@@ -62,12 +62,24 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
   assert_output 'mono-canon'
 }
 
-@test "a non-git directory falls back to its basename, dot stripped" {
+@test "a non-git directory named for a registered key resolves to it, dot stripped" {
+  write_map
+  mkdir -p "$HOME/.mono-canon"
+  run resolve_project_name "$HOME/.mono-canon"
+  assert_success
+  assert_output 'mono-canon'
+}
+
+@test "a non-git directory the registry does not know is _unscoped, never its basename" {
+  # $HOME, /tmp and session scratchpads minted keys (kblack0610, tmp, scratchpad) that the
+  # dream then swept nightly. NEGATIVE CONTROL: on the old ladder this printed 'someproj'.
   write_map
   mkdir -p "$HOME/.someproj"
   run resolve_project_name "$HOME/.someproj"
   assert_success
-  assert_output 'someproj'
+  assert_output '_unscoped'
+  run resolve_project_name "$HOME"
+  assert_output '_unscoped'
 }
 
 @test "an aliases entry resolves a bare basename outside any repo" {
@@ -587,14 +599,14 @@ EOF
   write_map
   export WT_ROOT="$SANDBOX/wt"
   run resolve_project_name "$WT_ROOT/monolith-agent-1"
-  assert_output 'monolith-agent-1'
+  assert_output '_unscoped'
 }
 
-@test "the same name OUTSIDE the worktree root keeps its basename" {
+@test "the same name OUTSIDE the worktree root is not claimed either" {
   write_map
   export WT_ROOT="$SANDBOX/wt"
   run resolve_project_name "$SANDBOX/elsewhere/mono-agent-3"
-  assert_output 'mono-agent-3'
+  assert_output '_unscoped'
 }
 
 @test "a live worktree still resolves through git, not its name" {

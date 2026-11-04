@@ -233,11 +233,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 @test "a project rename moves the item's board origin with it, so agent-land closes the right row" {
   "$AQ" add --project game --from "board:game:fix the lobby: soon" --slug r "fix the lobby"
-  run "$AQ" set r project=game-renamed "from=board:game-renamed:fix the lobby: soon"
+  run "$AQ" set r project=level "from=board:level:fix the lobby: soon"
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/queued/*-r.md)"
-  [ "$(field "$f" project)" = game-renamed ]
-  [ "$(field "$f" from)" = "board:game-renamed:fix the lobby: soon" ]
+  [ "$(field "$f" project)" = level ]
+  [ "$(field "$f" from)" = "board:level:fix the lobby: soon" ]
+}
+
+@test "set refuses a project the registry does not know, or an alias, and writes nothing" {
+  "$AQ" add --project game --slug s "fix the lobby"
+  run "$AQ" set s project=nowhere
+  assert_failure
+  assert_output --partial 'unknown project: nowhere'
+  run "$AQ" set s project=g2 note=x
+  assert_failure
+  f="$(ls "$AGENT_QUEUE_DIR"/queued/*-s.md)"
+  [ "$(field "$f" project)" = game ]
+  [ -z "$(field "$f" note)" ]
 }
 
 @test "plan mode and --running are recorded; --running starts in running/" {
