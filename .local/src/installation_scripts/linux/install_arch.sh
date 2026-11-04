@@ -278,6 +278,27 @@ setup_printing() {
 }
 
 # Override: Setup Sunshine game streaming with GPU auto-detection
+setup_3d_printing() {
+    log_section "Setting up 3D printing (native OrcaSlicer)"
+
+    # Native build from the AUR. A Docker wrapper at ~/.local/bin/orca-slicer
+    # was retired 2026-11-04; it shadowed this binary on PATH.
+    install_aur_package "orca-slicer"
+
+    # Presets live in home-config (apps/orcaslicer/profiles); desktop-link.sh
+    # links them into ~/.config/OrcaSlicer and fills the A1 LAN code from SOPS.
+    local link="$HOME/dev/home/home-config/apps/orcaslicer/desktop-link.sh"
+    if [[ -L "$HOME/.config/OrcaSlicer/user/default/process" ]]; then
+        log_info "OrcaSlicer presets already linked to home-config"
+    elif [[ ! -x "$link" ]]; then
+        log_warning "Manual step: clone home-config to ~/dev/home/home-config, then run $link"
+    elif [[ ! -f "$HOME/.config/sops/age/keys.txt" ]]; then
+        log_warning "Manual step: restore the age key to ~/.config/sops/age/keys.txt, then run $link"
+    else
+        "$link" || log_warning "desktop-link.sh failed - see ~/.config/orcaslicer/README.md"
+    fi
+}
+
 setup_sunshine() {
     log_section "Setting up Sunshine (game streaming)"
 
@@ -758,6 +779,7 @@ install_all() {
     step containers  setup_kubernetes
 
     step printing    setup_printing
+    step printing    setup_3d_printing
 
     # Game streaming
     step streaming   setup_sunshine
