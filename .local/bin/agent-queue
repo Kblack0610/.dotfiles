@@ -117,7 +117,8 @@ find_item() {
 }
 
 state_of() { # file -> its state, from its directory
-  case "$1" in "$AQ_DIR"/done/*) echo "done" ;; *) basename "$(dirname "$1")" ;; esac
+  local d
+  case "$1" in "$AQ_DIR"/done/*) echo "done" ;; *) d="${1%/*}"; echo "${d##*/}" ;; esac
 }
 
 # The status of the most recent finished item with this slug, empty if none.
@@ -137,15 +138,37 @@ hhmm_in() {
 
 # hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
 hold_reason() {
-  local f="$1" after tag now
-  after="$(fm_get "$f" after)"
-  if [ -n "$after" ] && [ "$(done_status "$after")" != ok ]; then echo "after $after"; return; fi
+  local HOLD=""
+  hold_for "$(fm_get "$1" after)" "$(fm_get "$1" tags)"
+  [ -z "$HOLD" ] || printf '%s\n' "$HOLD"
+}
+
+# memo <key> <cmd...> -> sets MEMO_V to the command's output, cached in LIST_MEMO when the caller
+# (collect, stats) set LIST_MEMO_ON: a cache that lives for one listing, so a listing asks each `after`
+# slug and each project's weight once. Without one it just runs the command, so a check after a
+# move never reads a stale answer. Sets a variable, not stdout, so the cache survives the call.
+memo() {
+  local k="$1"; shift
+  if [ -z "${LIST_MEMO_ON-}" ]; then MEMO_V="$("$@")"; return; fi
+  [ -n "${LIST_MEMO[$k]+x}" ] || LIST_MEMO[$k]="$("$@")"
+  MEMO_V="${LIST_MEMO[$k]}"
+}
+
+# hold_for <after> <tags> -> sets HOLD to hold_reason's answer for these header values.
+hold_for() {
+  local after="$1" tags="$2" tag now MEMO_V
+  HOLD=""
+  if [ -n "$after" ]; then
+    memo "done:$after" done_status "$after"
+    [ "$MEMO_V" = ok ] || { HOLD="after $after"; return; }
+  fi
+  [ -n "$tags" ] || return 0
   now="${AGENT_QUEUE_NOW:-$(date +%H:%M)}"
-  for tag in $(fm_get "$f" tags); do
+  for tag in $tags; do
     case "$tag" in
-      night) hhmm_in "$now" "$AQ_NIGHT" || { echo "night ($AQ_NIGHT)"; return; } ;;
-      at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { echo "$tag"; return; } ;;
-      pr:?*/?*#[0-9]*) [ "$(pr_state "${tag#pr:}")" = MERGED ] || { echo "$tag not merged"; return; } ;;
+      night) hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
+      at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { HOLD="$tag"; return; } ;;
+      pr:?*/?*#[0-9]*) [ "$(pr_state "${tag#pr:}")" = MERGED ] || { HOLD="$tag not merged"; return; } ;;
     esac
   done
 }
@@ -167,19 +190,49 @@ pr_state() {
   echo "$state"
 }
 
-# item_json <file> -> one JSON object: every header key, plus state, file, task, and hold. An item
-# with no weight line gets item_weight's answer, so every reader sees a weight.
-item_json() {
-  local f="$1" state hold="" weight
-  state="$(state_of "$f")"
-  [ "$state" = queued ] && hold="$(hold_reason "$f")"
-  weight="$(fm_get "$f" weight)"
-  [ -n "$weight" ] || weight="$(item_weight "$(fm_get "$f" project)" "$(fm_get "$f" mode)" "$(fm_get "$f" phases)")"
-  awk '$0 == "---" { exit } { i = index($0, ":"); if (i > 1) { v = substr($0, i + 1); sub(/^ +/, "", v); print substr($0, 1, i - 1) "\t" v } }' "$f" \
-    | jq -Rnc --arg state "$state" --arg file "$f" --arg task "$(fm_body "$f")" --arg hold "$hold" \
-      --arg weight "$weight" '([inputs | split("\t") | {(.[0]): (.[1:] | join("\t"))}] | add // {})
-       + {weight: $weight, state: $state, file: $file, task: $task} + (if $hold == "" then {} else {hold: $hold} end)'
+# item_rec <file> -> the item as one record for ITEM_JQ: state, file, task, hold and weight, then
+# its header keys and values; fields end in \x1f and the record in \x1e. One read of the file in
+# bash, so a listing costs one jq in all, not a handful of processes per item (1.7s for 70 items).
+# Header keys as fm_get reads them: up to the first colon, the value's leading spaces dropped; the
+# object keeps the last of a repeated key and the rules (after, tags, weight) read the first.
+item_rec() {
+  local f="$1" line k v state d hold="" task="" in_body="" weight="" HOLD MEMO_V
+  local -a kv=()
+  local -A first=()
+  case "$f" in "$AQ_DIR"/done/*) state=done ;; *) d="${f%/*}"; state="${d##*/}" ;; esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$in_body" ]; then task+="$line"$'\n'; continue; fi
+    [ "$line" = --- ] && { in_body=1; continue; }
+    case "$line" in
+      ?*:*)
+        k="${line%%:*}"; v="${line#*:}"; v="${v#"${v%%[! ]*}"}"
+        kv+=("$k" "$v")
+        [ -n "${first[$k]+x}" ] || first[$k]="$v"
+        ;;
+    esac
+  done < "$f"
+  task="${task%"${task##*[!$'\n']}"}"
+  if [ "$state" = queued ]; then hold_for "${first[after]-}" "${first[tags]-}"; hold="$HOLD"; fi
+  weight="${first[weight]-}"
+  if [ -z "$weight" ]; then
+    memo "weight:${first[project]-}"$'\x1f'"${first[mode]-}"$'\x1f'"${first[phases]-}" \
+      item_weight "${first[project]-}" "${first[mode]-}" "${first[phases]-}"
+    weight="$MEMO_V"
+  fi
+  printf '%s\x1f' "$state" "$f" "$task" "$hold" "$weight" "${kv[@]}"
+  printf '\x1e'
 }
+
+# item_rec records -> a JSON array of items: every header key, plus state, file, task and, for a
+# held queued item, hold. An item with no weight line gets item_weight's answer, so every reader
+# sees a weight.
+ITEM_JQ='split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f
+  | ([range(5; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
+    + {weight: $f[4], state: $f[0], file: $f[1], task: $f[2]}
+    + (if $f[3] == "" then {} else {hold: $f[3]} end))'
+
+# item_json <file> -> that item as one JSON object.
+item_json() { item_rec "$1" | jq -Rsc "$ITEM_JQ | .[]"; }
 
 # Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
 ORDER='sort_by((({"urgent":0,"high":1,"low":2}[.priority] // 1)), .queued)'
@@ -187,16 +240,17 @@ ORDER='sort_by((({"urgent":0,"high":1,"low":2}[.priority] // 1)), .queued)'
 # collect <states...> [--date D] -> a JSON array of items.
 collect() {
   local states=() date="" s f
+  local -A LIST_MEMO=(); local LIST_MEMO_ON=1
   while [ $# -gt 0 ]; do
     case "$1" in --date) date="$2"; shift 2 ;; *) states+=("$1"); shift ;; esac
   done
   for s in "${states[@]}"; do
     if [ "$s" = "done" ]; then
-      for f in "$AQ_DIR/done/${date:-$(date +%F)}"/*.md; do [ -e "$f" ] && item_json "$f"; done
+      for f in "$AQ_DIR/done/${date:-$(date +%F)}"/*.md; do [ -e "$f" ] && item_rec "$f"; done
     else
-      while IFS= read -r f; do item_json "$f"; done < <(items_in "$AQ_DIR/$s")
+      while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s")
     fi
-  done | jq -sc "$ORDER"
+  done | jq -Rsc "$ITEM_JQ | $ORDER"
 }
 
 # header_set <file> <key> <value> -> rewrite the header field in place, atomically.
@@ -575,15 +629,16 @@ cmd_stats() {
     esac
   done
   local stats
+  local -A LIST_MEMO=(); local LIST_MEMO_ON=1
   lock_read
   stats="$({
-    for s in $ACTIVE; do while IFS= read -r f; do item_json "$f"; done < <(items_in "$AQ_DIR/$s"); done
+    for s in $ACTIVE; do while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s"); done
     for d in "$AQ_DIR"/done/*/; do
       [ -d "$d" ] || continue
       [[ "$(basename "$d")" < "$since" ]] && continue
-      for f in "$d"*.md; do [ -e "$f" ] && item_json "$f"; done
+      for f in "$d"*.md; do [ -e "$f" ] && item_rec "$f"; done
     done
-  } | jq -sc --arg since "$since" '
+  } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" '
     def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;
