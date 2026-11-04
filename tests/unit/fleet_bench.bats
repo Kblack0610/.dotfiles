@@ -14,6 +14,7 @@ setup() {
   export BENCH_DEFAULT_PHASE_MIN=60
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
+  export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
@@ -717,7 +718,7 @@ kpi_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, before the breakdown and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -725,11 +726,12 @@ kpi_fixture() {
   run grep -e '^## ' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## KPIs'
   assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
-  assert_line --index 2 '## Bottlenecks'
-  assert_line --index 3 '## Where the time went'
-  assert_line --index 4 '## Sessions'
-  assert_line --index 5 '## Agent depth'
-  assert_line --index 6 '## Session time'
+  assert_line --index 2 '## Forecast'
+  assert_line --index 3 '## Bottlenecks'
+  assert_line --index 4 '## Where the time went'
+  assert_line --index 5 '## Sessions'
+  assert_line --index 6 '## Agent depth'
+  assert_line --index 7 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1212,4 +1214,115 @@ rowp() {
   run env BENCH_NOW=$((T0 + 7200)) "$SUBJECT" flow --from "$T0" --json --hourly
   run jq -c '[.hourly[] | [.in, .ticked, .scope, .done]]' <<<"$output"
   assert_output '[[1,1,3,1],[0,2,3,3]]'
+}
+
+@test "forecast schedules each open phase in plan order with its name, a late one restarting from now" {
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plan-a.md"
+  { rowp a lab/game-agent-1:1 1 3 "$SANDBOX/plan-a.md"; row b lab/game-agent-2:1 0 1; } > "$SNAP"; sample_at 0
+  # the default 60 min a phase, no calibration yet: a's next phase is due at T0+1h, b's at T0+1h
+  run env BENCH_NOW=$((T0 + 600)) "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '[.schedule[] | [.target, [.phases[] | [.name, .p50 - '"$T0"']]]]' <<<"$output"
+  assert_output '[["lab/game-agent-1:1",[["two",3600],["three",7200]]],["lab/game-agent-2:1",[["phase 1",3600]]]]'
+  # at T0+1.5h both are late: their current phase is due now and the rest follow at the pace
+  run env BENCH_NOW=$((T0 + 5400)) "$SUBJECT" forecast --json
+  run jq -c '{open, sessions, last: (.last_p50 - '"$T0"'), median: (.median_p50 - '"$T0"'), a: [.schedule[0].phases[].p50 - '"$T0"']}' <<<"$output"
+  assert_output '{"open":3,"sessions":2,"last":9000,"median":7200,"a":[5400,9000]}'
+  run env BENCH_NOW=$((T0 + 5400)) "$SUBJECT" forecast
+  assert_line --partial 'due now, past their estimate: 2 phases in 2 sessions'
+  assert_line --partial 'game-agent-1:1  three'
+}
+
+@test "forecast says not draining when inflow is at or above burn, and gives a drain time otherwise" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 1 6 > "$SNAP"; sample_at 3600
+  BENCH_WINDOW_H=1 BENCH_NOW=$((T0 + 3600)) run "$SUBJECT" forecast
+  assert_line --partial 'drain: not draining at current inflow (in 4/h, out 1/h)'
+  row a lab/game-agent-1:1 5 6 > "$SNAP"; sample_at 7200
+  BENCH_WINDOW_H=1 BENCH_NOW=$((T0 + 7200)) run "$SUBJECT" forecast --json
+  # 1 open at 4/h out and none in: a quarter hour
+  run jq -c '.drain | [.out_per_h, .in_per_h, .epoch - '"$((T0 + 7200))"']' <<<"$output"
+  assert_output '[4,0,900]'
+}
+
+@test "forecast --baseline freezes one labelled line with the queue, and a dead queue still forecasts" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  printf '#!/usr/bin/env bash\necho %s\necho %s\n' "'{\"state\":\"ready\",\"key\":\"x\"}'" "'{\"state\":\"unjudged\",\"key\":\"y\"}'" > "$SANDBOX/bin/queue-stub"
+  chmod +x "$SANDBOX/bin/queue-stub"
+  BENCH_QUEUE_CMD=queue-stub BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --baseline morning
+  assert_success
+  assert_line --partial 'queued after this: 2 board rows (1 ready to start), about 4 phases at the median 2 per plan'
+  run jq -c '{label, open, queue: .queue.rows, n: (.schedule | length)}' "$FLEET_BENCH_DIR/forecasts.jsonl"
+  assert_output '{"label":"morning","open":2,"queue":2,"n":1}'
+  BENCH_QUEUE_CMD=false BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --queue
+  assert_success
+  assert_line --partial 'dispatch queue could not be read'
+  refute_line --partial 'queued after this'
+  run "$SUBJECT" forecast --baseline
+  assert_failure 2
+}
+
+@test "a queue past the 128 KB argument limit still freezes, and vs reads the baseline back" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  # 3000 rows of about 60 bytes: over MAX_ARG_STRLEN, which a jq --arg of the queue overflowed.
+  printf '#!/usr/bin/env bash\nfor i in $(seq 3000); do printf %s "$i"; done\n' "'{\"state\":\"unjudged\",\"key\":\"row-%05d-padding-padding\"}\\n'" > "$SANDBOX/bin/queue-stub"
+  chmod +x "$SANDBOX/bin/queue-stub"
+  [ "$("$SANDBOX/bin/queue-stub" | wc -c)" -gt 131072 ]
+  BENCH_QUEUE_CMD=queue-stub BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --baseline big
+  assert_success
+  assert_line --partial 'queued after this: 3000 board rows (0 ready to start)'
+  BENCH_NOW=$((T0 + 120)) run "$SUBJECT" vs big
+  assert_success
+}
+
+@test "vs compares a frozen forecast with what each session ticked, the scope added and the sessions started since" {
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline m 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 1 4 pa; rowp b lab/game-agent-2:1 1 2 pb; } > "$SNAP"; sample_at 3600
+  { rowp a lab/game-agent-1:1 1 4 pa; rowp b lab/game-agent-2:1 2 2 pb true; rowp c lab/game-agent-3:1 0 1 pc; } > "$SNAP"; sample_at 7200
+  run env BENCH_NOW=$((T0 + 7800)) "$SUBJECT" vs m --json
+  assert_success
+  run jq -c '{expected, ticked, states, added, started_since, a: (.sessions[0] | [.state, .min, .next])}' <<<"$output"
+  assert_output '{"expected":4,"ticked":3,"states":{"behind":1,"finished":1},"added":1,"started_since":1,"a":["behind",10,"phase 2"]}'
+  run env BENCH_NOW=$((T0 + 7800)) "$SUBJECT" vs
+  assert_line --partial 'ticked: 3 of the 4 phases expected by now'
+  assert_line --partial 'game-agent-1:1: 1 of 2 expected, 10m past due on phase 2'
+  run "$SUBJECT" vs nope
+  assert_failure
+}
+
+@test "a baseline is scored once when its sessions are done, and at the horizon as a lower bound" {
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline done 2>/dev/null >/dev/null
+  rowp c lab/game-agent-3:1 0 5 pc > "$SNAP"; sample_at 60
+  BENCH_NOW=$((T0 + 60)) "$SUBJECT" forecast --baseline open 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 2 3 pa; rowp b lab/game-agent-2:1 2 2 pb true; rowp c lab/game-agent-3:1 1 5 pc; } > "$SNAP"; sample_at 7200
+  { rowp a lab/game-agent-1:1 3 3 pa true; rowp c lab/game-agent-3:1 2 5 pc; } > "$SNAP"
+  BENCH_FORECAST_HORIZON_H=4 sample_at 9000
+  # done: a and b were gone from the first sample after it (only c was sampled), so both ended then
+  run jq -sc 'map({label, resolved_by, gone, actual_last: (.actual_last - '"$T0"'), ratio_p50})' "$FLEET_BENCH_DIR/forecast-scores.jsonl"
+  assert_output '[{"label":"done","resolved_by":"all done","gone":2,"actual_last":60,"ratio_p50":0.01}]'
+  BENCH_FORECAST_HORIZON_H=4 sample_at 9600
+  BENCH_FORECAST_HORIZON_H=4 sample_at 14460
+  run jq -sc 'map({label, resolved_by, bound, open})' "$FLEET_BENCH_DIR/forecast-scores.jsonl"
+  assert_output '[{"label":"done","resolved_by":"all done","bound":"exact","open":0},{"label":"open","resolved_by":"horizon","bound":"lower","open":1}]'
+  run "$SUBJECT" report
+  assert_line --partial '2 baselines scored'
+  assert_line --partial 'or more (1 still open)'
+}
+
+@test "scorecard Forecast section carries the forecast and the newest baseline an hour or more old against since" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline daily-1 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 1 3 pa; rowp b lab/game-agent-2:1 1 2 pb; } > "$SNAP"; sample_at 3600
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" forecast --baseline fresh 2>/dev/null >/dev/null
+  BENCH_NOW=$((T0 + 3660)) "$SUBJECT" scorecard
+  run sed -n '/^## Forecast/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --regexp '^forecast .*: 2 sessions with a plan, 3 phases open$'
+  assert_line --regexp '^- all done by: median '
+  assert_line --regexp '^  - .* game-agent-1:1  phase 3$'
+  # fresh is under an hour old, so the comparison is against daily-1
+  assert_line --regexp '^vs baseline daily-1 '
+  assert_line --partial '- ticked: 2 of the 2 phases expected by now'
 }
