@@ -216,6 +216,23 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// agentctl's runs that finished since `since` plus its running units, each run with its
+/// next timer start: the Jobs tab's agentctl source, unfolded.
+pub fn agentctl_runs(paths: &Paths, since: i64) -> (Vec<Job>, Vec<String>) {
+    systemd::agentctl(paths, since, now())
+}
+
+/// The run ledger's text as runs, and how many lines could not be read.
+pub fn parse_agentctl_ledger(text: &str, since: i64) -> (Vec<Job>, usize) {
+    systemd::parse_ledger(text, since)
+}
+
+/// Each user timer's next start, unix seconds, keyed by the unit it starts
+/// (`agentctl@<name>.service`); 0 when systemd has none.
+pub fn timer_starts() -> Result<std::collections::HashMap<String, i64>, String> {
+    systemd::timers_next()
+}
+
 /// Collect every source in parallel: the slow ones are network (Prometheus) and journald.
 pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
     let at = now();

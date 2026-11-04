@@ -269,6 +269,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
     <button id="tab-log">Log</button>
     <button id="tab-infra">Infra</button>
     <button id="tab-jobs">Jobs</button>
+    <button id="tab-fleet">Fleet</button>
   </div>
   <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
 </header>
@@ -302,6 +303,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   <section id="log" class="board" hidden></section>
   <section id="infra" class="board" hidden></section>
   <section id="jobs" class="board" hidden></section>
+  <section id="fleet" class="board" hidden></section>
 </main>
 <script>
 "use strict";
@@ -665,7 +667,7 @@ $("asks").addEventListener("keydown", (e) => {
   if (btn) btn.click();
 });
 
-const TAB_NAMES = ["queue", "sessions", "asks", "shepherd", "watch", "log", "infra", "jobs"];
+const TAB_NAMES = ["queue", "sessions", "asks", "shepherd", "watch", "log", "infra", "jobs", "fleet"];
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
@@ -710,6 +712,7 @@ function connect() {
 <script src="/static/jobs.js"></script>
 <script src="/static/queue.js"></script>
 <script src="/static/shepherd.js"></script>
+<script src="/static/fleet.js"></script>
 <script>
 "use strict";
 setTab(TAB_NAMES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "queue");

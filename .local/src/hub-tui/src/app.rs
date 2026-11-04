@@ -20,7 +20,7 @@ use crate::controls::{Ask, Controls};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
-use crate::{board, day, fleet};
+use crate::{board, day, fleet, fleettab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -37,10 +37,11 @@ pub enum Tab {
     Forecast,
     Today,
     History,
+    Fleet,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Overview,
         Tab::Jobs,
         Tab::Ci,
@@ -49,6 +50,7 @@ impl Tab {
         Tab::Forecast,
         Tab::Today,
         Tab::History,
+        Tab::Fleet,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -60,6 +62,7 @@ impl Tab {
             Tab::Forecast => "Forecast",
             Tab::Today => "Today",
             Tab::History => "History",
+            Tab::Fleet => "Fleet",
         }
     }
     pub fn parse(s: &str) -> Option<Tab> {
@@ -76,7 +79,7 @@ impl Tab {
             Tab::Overview => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History => None,
+            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet => None,
         }
     }
 }
@@ -144,6 +147,7 @@ pub enum Msg {
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
     Forecast(Box<Forecast>),
+    Fleet(Box<hub_core::fleet::Fleet>),
     Log(u64, Result<String, String>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
@@ -187,6 +191,7 @@ pub struct App {
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
+    pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -207,6 +212,7 @@ pub struct App {
     jobs_read: Read,
     boards_read: Read,
     forecast_read: Read,
+    fleet_read: Read,
     sessions_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
@@ -230,6 +236,7 @@ impl App {
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
+            fleet: None,
             controls: Controls::default(),
             runner: Arc::new(actions::System),
             gather: actions::gather,
@@ -243,6 +250,7 @@ impl App {
             jobs_read: Read::default(),
             boards_read: Read::default(),
             forecast_read: Read::default(),
+            fleet_read: Read::default(),
             sessions_read: Read::default(),
             log_gen: 0,
             page: 20,
@@ -285,6 +293,18 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Forecast(Box::new(Forecast::read())));
+            });
+        }
+    }
+
+    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger and the dispatch and ask
+    /// files, so it reads on entering, on `r`, on the tick and on an agentctl file event while
+    /// it is shown.
+    pub fn read_fleet(&mut self) {
+        if self.fleet_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
             });
         }
     }
@@ -376,11 +396,19 @@ impl App {
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
                 }
+                if self.tab == Tab::Fleet {
+                    self.read_fleet();
+                }
                 if self.tab == Tab::Sessions {
                     self.read_sessions();
                 }
             }
-            Msg::Files => self.read_jobs(),
+            Msg::Files => {
+                self.read_jobs();
+                if self.tab == Tab::Fleet {
+                    self.read_fleet();
+                }
+            }
             Msg::BoardFiles => self.read_boards(),
             Msg::Tab(t) => self.go(t),
             Msg::Boards(b) => {
@@ -393,6 +421,12 @@ impl App {
                 self.forecast = Some(*f);
                 if self.forecast_read.done() {
                     self.read_forecast();
+                }
+            }
+            Msg::Fleet(f) => {
+                self.fleet = Some(*f);
+                if self.fleet_read.done() {
+                    self.read_fleet();
                 }
             }
             Msg::Infra(i) => {
@@ -476,6 +510,9 @@ impl App {
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
                 }
+                if self.tab == Tab::Fleet {
+                    self.read_fleet();
+                }
                 if self.tab == Tab::Sessions {
                     self.read_sessions();
                 }
@@ -501,6 +538,9 @@ impl App {
         self.scroll = 0;
         if t == Tab::Forecast {
             self.read_forecast();
+        }
+        if t == Tab::Fleet {
+            self.read_fleet();
         }
         if t == Tab::Sessions {
             self.read_sessions();
@@ -790,7 +830,7 @@ impl App {
             Tab::Sessions => format!(
                 "j/k pick  i p u m x c act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Forecast => {
+            Tab::Forecast | Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Today if self.day.is_some() => {
@@ -815,6 +855,10 @@ impl App {
             (Tab::Forecast, ..) => match &self.forecast {
                 None => reading("fleet-bench forecast"),
                 Some(f) => (forecast::page(f, self.p, now, w), vec![]),
+            },
+            (Tab::Fleet, ..) => match &self.fleet {
+                None => reading("the fleet"),
+                Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
             },
             (Tab::Sessions, b, _) => {
                 let mut l = self.controls.lines(self.p, w);
@@ -1097,6 +1141,23 @@ mod tests {
     }
 
     #[test]
+    fn the_fleet_tab_draws_the_workers_and_judges() {
+        let mut a = app(Tab::Fleet);
+        assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        let s = screen(&mut a, 160, 40);
+        assert!(s.lines().next().unwrap().contains("9 Fleet"), "{s}");
+        for want in [
+            "CLAUDE ACCOUNTS",
+            "WORKERS",
+            "DISPATCH JUDGE",
+            "ANSWER JUDGE",
+        ] {
+            assert!(s.contains(want), "{want} missing from\n{s}");
+        }
+    }
+
+    #[test]
     fn before_the_first_answer_it_says_it_is_reading() {
         let mut a = app(Tab::Machines);
         assert!(screen(&mut a, 80, 10).contains("Reading Prometheus..."));
@@ -1116,7 +1177,7 @@ mod tests {
             s.contains("dotfiles:4") && s.contains("Step 0 board row"),
             "{s}"
         );
-        assert!(s.lines().last().unwrap().contains("1-8/Tab pages"), "{s}");
+        assert!(s.lines().last().unwrap().contains("1-9/Tab pages"), "{s}");
     }
 
     #[test]

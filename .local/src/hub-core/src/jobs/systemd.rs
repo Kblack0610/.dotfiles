@@ -38,7 +38,7 @@ struct Timer {
 }
 
 /// Each timer-activated service and its next start, unix seconds.
-fn timers_next() -> Result<HashMap<String, i64>, String> {
+pub(super) fn timers_next() -> Result<HashMap<String, i64>, String> {
     let out = run(
         "systemctl",
         &["--user", "list-timers", "--all", "-o", "json"],

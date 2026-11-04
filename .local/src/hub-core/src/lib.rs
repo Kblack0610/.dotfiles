@@ -4,6 +4,7 @@
 //! claude-acct, agent-queue, tmux); an async caller wraps it in `spawn_blocking`.
 
 pub mod boards;
+pub mod fleet;
 pub mod infra;
 pub mod jobs;
 pub mod prom;

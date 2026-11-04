@@ -8,6 +8,7 @@ mod controls;
 mod day;
 mod fit;
 mod fleet;
+mod fleettab;
 mod fmt;
 mod forecast;
 mod jobs;
@@ -22,7 +23,7 @@ use notify::{RecursiveMode, Watcher};
 
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
-  TAB     overview|jobs|ci|machines|sessions|forecast|today|history
+  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs)";
@@ -100,6 +101,14 @@ fn print_once(tab: Option<Tab>) -> i32 {
             ));
         }
         a.tab = t;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    if tab == Some(Tab::Fleet) {
+        a.fleet = Some(hub_core::fleet::collect());
+        a.tab = Tab::Fleet;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -210,6 +219,9 @@ fn run(tab: Tab) -> std::io::Result<()> {
     app.read_boards();
     if app.tab == Tab::Forecast {
         app.read_forecast();
+    }
+    if app.tab == Tab::Fleet {
+        app.read_fleet();
     }
     if app.tab == Tab::Sessions {
         app.read_sessions();

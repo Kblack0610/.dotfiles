@@ -35,6 +35,11 @@ pub fn shepherd_dir() -> PathBuf {
     env("FLEET_SHEPHERD_DIR").unwrap_or_else(|| home().join(".agent/shepherd"))
 }
 
+/// `fleet-dispatch`'s dir: `verdicts.jsonl` and `log.md` (its `FLEET_DISPATCH_DIR`).
+pub fn dispatch_dir() -> PathBuf {
+    env("FLEET_DISPATCH_DIR").unwrap_or_else(|| home().join(".agent/dispatch"))
+}
+
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
 pub fn daylog_dir() -> PathBuf {
     std::env::var_os("DAYLOG_DIR")

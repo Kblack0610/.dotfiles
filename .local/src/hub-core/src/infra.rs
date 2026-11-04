@@ -48,9 +48,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Recent runs, one series per run: the value is when it finished, or how long it took.
         ("recent", format!("{W} (github_actions_run_recent)")),
         ("recent_dur", format!("{W} (github_actions_run_recent_duration_seconds)")),
-        // claude-acct's textfile, only while it is fresh; no `max without` here, which would drop
-        // the metric names the card reads. An empty answer makes the card say no data.
-        ("accounts", r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#.into()),
         // The same three sources as the dashboard's "What is red" table.
         ("red", r#"label_replace(mqtt_tripped{topic=~"agents_.+_watch_.+"} == 1, "item", "watch $1", "topic", "agents_.+_watch_(.+)")
             or label_replace(mqtt_failed{topic=~"agents_.+_runner_.+"} == 1, "item", "runner $1", "topic", "agents_.+_runner_(.+)")
@@ -61,7 +58,6 @@ pub const OPTIONAL: &[&str] = &[
     "red",
     "exporter_up",
     "rate_left",
-    "accounts",
     "cores",
     "runner_cores",
     "withheld",
@@ -178,7 +174,6 @@ mod tests {
                 "red",
                 "exporter_up",
                 "rate_left",
-                "accounts",
                 "cores",
                 "runner_cores",
                 "withheld",
